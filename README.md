@@ -30,6 +30,10 @@ This tutorial explains how to use the `ForecastingModel` class for time series f
 
 The `ForecastingModel` class is designed to be a flexible framework for time series forecasting. It supports various neural network architectures and forecasting strategies, allowing you to experiment with different approaches for your specific forecasting problem.
 
+➡️ [Preprocessing Guide](docs/preprocessor.md)  
+➡️ [Custom Blocks Guide](docs/custom_blocks.md)
+
+
 ## Installation
 
 Before using the `ForecastingModel` class, ensure you have PyTorch installed:
@@ -57,7 +61,7 @@ Here's a simple example of how to use the `ForecastingModel` class:
 ```python
 import torch
 import torch.nn as nn
-from your_module import ForecastingModel, LSTMEncoder, LSTMDecoder
+from foreblocks import ForecastingModel, LSTMEncoder, LSTMDecoder
 
 # Define input parameters
 input_size = 1  # Number of features in input
@@ -244,7 +248,7 @@ model = ForecastingModel(
 ```python
 import torch
 import torch.nn as nn
-from your_module import ForecastingModel, LSTMEncoder, LSTMDecoder, AttentionModule
+from foreblocks import ForecastingModel, LSTMEncoder, LSTMDecoder, AttentionModule
 
 # Parameters
 input_size = 3  # Multivariate time series with 3 features
