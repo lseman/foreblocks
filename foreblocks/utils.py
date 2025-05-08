@@ -1,4 +1,5 @@
 
+import contextlib
 import time
 import copy
 import warnings
@@ -101,6 +102,13 @@ class Trainer:
             "save_model_path": None, "gradient_accumulation_steps": 1,
             "l1_regularization": 0.0, "kl_weight": 1.0
         }
+
+    # set a single config parameter
+    def set_config(self, key: str, value: Any):
+        if key in self.config:
+            self.config[key] = value
+        else:
+            raise KeyError(f"Config key '{key}' not found.")
 
     def _init_tracking(self):
         self.history = {"train_losses": [], "val_losses": [], "learning_rates": []}
@@ -214,7 +222,7 @@ class Trainer:
                     if val_loss is not None:
                         print(f", Val Loss = {val_loss:.4f}")
                     else:
-                        print()
+                        print("")
 
                 if val_loader:
                     if val_loss + self.config['min_delta'] < self.best_val_loss:
@@ -257,3 +265,137 @@ class Trainer:
         plt.plot(self.history['learning_rates'], label='Learning Rate')
         plt.xlabel('Epoch'); plt.ylabel('LR'); plt.grid(True)
         plt.tight_layout(); plt.show()
+
+    def metrics(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Dict[str, float]:
+        """
+        Compute error metrics (MSE, RMSE, MAE) over the full validation set prediction.
+
+        Args:
+            X_val: Tensor of shape [N, seq_len, input_size]
+            y_val: Tensor of shape [N, target_len, output_size]
+
+        Returns:
+            Dictionary with 'mse', 'rmse', and 'mae'
+        """
+        self.model.eval()
+        X_val = X_val.to(self.device)
+        y_val = y_val.to(self.device)
+
+        target_len = y_val.shape[1]
+        output_size = y_val.shape[2]
+        forecast = torch.zeros((X_val.shape[0] + target_len - 1, output_size), device=self.device)
+        count = torch.zeros_like(forecast)
+
+        with torch.no_grad():
+            for i in range(X_val.shape[0]):
+                x = X_val[i].unsqueeze(0)  # [1, seq_len, input_size]
+                pred = self.model(x).squeeze(0)  # [target_len, output_size]
+                forecast[i:i + target_len] += pred
+                count[i:i + target_len] += 1
+
+        forecast = (forecast / count).squeeze()
+        
+        # Reconstruct ground truth for comparison
+        aligned_truth = torch.zeros_like(forecast)
+        truth_count = torch.zeros_like(forecast)
+
+        y_val = y_val.squeeze()
+        for i in range(y_val.shape[0]):
+            aligned_truth[i:i + target_len] += y_val[i]
+            truth_count[i:i + target_len] += 1
+
+        aligned_truth = aligned_truth / torch.clamp(truth_count, min=1.0)
+
+        # Compute metrics using existing helper
+        metrics = self._compute_metrics(forecast, aligned_truth)
+
+        print("\nValidation Forecast Error Metrics:")
+        for k, v in metrics.items():
+            print(f"  {k.upper():<5} = {v:.6f}")
+
+        return metrics
+
+    def plot_prediction(self, X_val: torch.Tensor, y_val: torch.Tensor, full_series: Optional[torch.Tensor] = None, offset: int = 0):
+        """
+        Plot predicted sequence over the validation data, aligned to form a full series forecast.
+        
+        Args:
+            X_val: Tensor of shape [N, seq_len, input_size]
+            y_val: Tensor of shape [N, target_len, output_size]
+            full_series: (Optional) Original full time series for reference
+            offset: (Optional) Index offset for where the validation data starts in the full series
+        """
+        self.model.eval()
+        X_val = X_val.to(self.device)
+        y_val = y_val.to(self.device)
+
+        target_len = y_val.shape[1]
+        output_size = y_val.shape[2]
+        forecast = torch.zeros((X_val.shape[0] + target_len - 1, output_size), device=self.device)
+        count = torch.zeros_like(forecast)
+
+        with torch.no_grad():
+            for i in range(X_val.shape[0]):
+                x = X_val[i].unsqueeze(0)  # [1, seq_len, input_size]
+                pred = self.model(x).squeeze(0)  # [target_len, output_size]
+                forecast[i:i + target_len] += pred
+                count[i:i + target_len] += 1
+
+        forecast = (forecast / count).squeeze().cpu().numpy()
+
+        # Get corresponding ground truth target region
+        y_full = y_val.squeeze().cpu().numpy()
+        aligned_truth = np.zeros_like(forecast)
+        truth_count = np.zeros_like(forecast)
+
+        for i in range(len(y_full)):
+            aligned_truth[i:i + target_len] += y_full[i]
+            truth_count[i:i + target_len] += 1
+
+        aligned_truth = aligned_truth / np.maximum(truth_count, 1)
+
+        metrics = self._compute_metrics(forecast, aligned_truth)
+        print("\nValidation Forecast Error Metrics:")
+        for k, v in metrics.items():
+            print(f"  {k.upper():<5} = {v:.6f}")
+
+        if full_series is not None:
+            full_series = full_series.squeeze().cpu().numpy()
+            forecast_start = offset + X_val.shape[1]
+            plt.plot(np.arange(len(full_series)), full_series, label="Original", alpha=0.5)
+            plt.plot(np.arange(forecast_start, forecast_start + len(forecast)), forecast, label="Forecast", color="orange")
+            plt.axvline(x=forecast_start, color="gray", linestyle="--", label="Forecast Start")
+        else:
+            plt.plot(forecast, label="Forecast", color="orange")
+
+        plt.title("Validation Prediction")
+        plt.xlabel("Time Step")
+        plt.ylabel("Value")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    def _compute_metrics(self, prediction: Union[np.ndarray, torch.Tensor],
+                        target: Union[np.ndarray, torch.Tensor]) -> Dict[str, float]:
+        """
+        Compute error metrics between prediction and target:
+        MSE, RMSE, MAE.
+
+        Args:
+            prediction: Forecasted values as NumPy array or Torch tensor
+            target: Ground truth values as NumPy array or Torch tensor
+
+        Returns:
+            Dictionary with keys 'mse', 'rmse', and 'mae'
+        """
+        if isinstance(prediction, torch.Tensor):
+            prediction = prediction.detach().cpu().numpy()
+        if isinstance(target, torch.Tensor):
+            target = target.detach().cpu().numpy()
+
+        mse = np.mean((prediction - target) ** 2)
+        rmse = np.sqrt(mse)
+        mae = np.mean(np.abs(prediction - target))
+
+        return {"mse": mse, "rmse": rmse, "mae": mae}

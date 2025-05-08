@@ -1,41 +1,13 @@
 # Standard library
 import copy
-import importlib
-import math
-import time
-import warnings
-
-# Scientific computing and data manipulation
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from scipy.signal import savgol_filter
-
-# Machine learning and preprocessing
-from sklearn.ensemble import IsolationForest
-from sklearn.impute import KNNImputer
-from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsRegressor, LocalOutlierFactor
-from sklearn.preprocessing import StandardScaler
 
 # PyTorch
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.amp import autocast, GradScaler
-
-# Typing
-from typing import Dict, List, Optional, Tuple, Union
-
-# EWT
-import ewtpy
-from ewtpy import EWT1D
 
 from .aux import *
-#from extra import *
 from .enc_dec import *
 from .att import *
-
 
 class ForecastingModel(nn.Module):
     def __init__(
@@ -406,6 +378,40 @@ class ForecastingModel(nn.Module):
         mask = torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1)
         mask.fill_diagonal_(0)
         return mask
+
+
+    def _generate_time_features(self, seq_len, device):
+        """
+        Generate simple positional features for time series.
+        For more complex time features, you could incorporate day of week,
+        hour of day, etc. if that information is available.
+        """
+        batch_size = 1  # Will be broadcast to all batches
+
+        # Create simple positional features
+        pos = torch.arange(0, seq_len, device=device).unsqueeze(0).unsqueeze(-1).float()
+        pos = pos / seq_len  # Normalize to [0, 1]
+
+        # Option: Create more complex features for the time dimension
+        # For example, sine and cosine features like in positional encoding
+        time_features = torch.zeros(
+            batch_size, seq_len, self.time_features_dim, device=device
+        )
+
+        # Simple increment
+        time_features[:, :, 0] = pos.squeeze(-1)
+
+        # Sine features at different frequencies (similar to positional encoding)
+        if self.time_features_dim > 1:
+            for i in range(1, self.time_features_dim):
+                if i % 2 == 1:
+                    # Sine with different frequencies
+                    time_features[:, :, i] = torch.sin(pos * (2 ** (i // 2)))
+                else:
+                    # Cosine with different frequencies
+                    time_features[:, :, i] = torch.cos(pos * (2 ** (i // 2 - 1)))
+
+        return time_features
 
     def _forward_autoregressive(self, src, targets, epoch):
         batch_size, _, _ = src.shape
