@@ -12,8 +12,8 @@ from .enc_dec import (
 )
 from .att import AttentionLayer
 from .preprocessing import TimeSeriesPreprocessor
-from .utils import TimeSeriesDataset, create_dataloaders, train_model
-#from .pipeline import TimeSeriesSeq2Seq
+from .utils import TimeSeriesDataset, create_dataloaders, Trainer
+from .pipeline import TimeSeriesSeq2Seq
 
 # Define package metadata
 __version__ = "0.1.0"
@@ -34,6 +34,7 @@ __all__ = [
     "AttentionLayer",
     "TimeSeriesPreprocessor",
     "TimeSeriesDataset",
+    "TimeSeriesSeq2Seq",
+    "Trainer",
     "create_dataloaders",
-    "train_model",
 ]
