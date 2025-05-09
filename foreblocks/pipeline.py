@@ -4,6 +4,8 @@ from typing import Optional, Dict, Any
 # Torch
 import torch
 
+from .preprocessing import TimeSeriesPreprocessor
+
 # Model components (these must be implemented or imported from your package)
 from .core import ForecastingModel
 from .enc_dec import (
@@ -35,6 +37,8 @@ class TimeSeriesSeq2Seq:
         enc_embedding=None,
         dec_embedding=None,
         scheduled_sampling_fn=None,
+        encoder=None,
+        decoder=None,
     ):
         self.model_type = model_type
         self.model_params = model_params or {}
@@ -50,6 +54,8 @@ class TimeSeriesSeq2Seq:
         self.enc_embedding = enc_embedding
         self.dec_embedding = dec_embedding
         self.scheduled_sampling_fn = scheduled_sampling_fn
+        self.encoder = encoder
+        self.decoder = decoder
 
         self.model = None
         self.trainer = None
@@ -132,7 +138,8 @@ class TimeSeriesSeq2Seq:
                 hidden_size=hs,
             )
         else:
-            raise ValueError(f"Unsupported model type: {self.model_type}")
+            encoder = self.encoder
+            decoder = self.decoder
 
         # Forecasting model
         self.model = ForecastingModel(
@@ -172,6 +179,11 @@ class TimeSeriesSeq2Seq:
 
     def evaluate_model(self, X_val, y_val):
         return self.trainer.metrics(X_val, y_val)
+        
+    def preprocess(self, X, **preprocessor_kwargs):
+        self.input_preprocessor = TimeSeriesPreprocessor(**preprocessor_kwargs)
+        return self.input_preprocessor.fit_transform(X)
+
 
     def plot_prediction(self, X_val, y_val, full_series=None, offset=0):
         self.trainer.plot_prediction(X_val, y_val, full_series=full_series, offset=offset)

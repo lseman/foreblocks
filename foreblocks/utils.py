@@ -152,8 +152,6 @@ class Trainer:
         return None
 
     def _forward_pass(self, X, y):
-        if hasattr(self.model, 'forward_with_teacher_forcing'):
-            return self.model.forward_with_teacher_forcing(X, y, self.config['teacher_forcing_ratio'])
         return self.model(X, y)
 
     def _compute_loss(self, outputs, targets):

@@ -60,7 +60,7 @@ class ForecastingModel(nn.Module):
             self.decoder = decoder
 
         self.output_size = output_size or (decoder.output_size if decoder else None)
-        self.pred_len = self.output_size or self.target_len
+        self.pred_len = self.target_len
         self.label_len = decoder.output_size if decoder else None
         self.input_skip_connection = input_skip_connection
         self.input_size = encoder.input_size if encoder else None

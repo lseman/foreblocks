@@ -37,11 +37,11 @@ class TimeSeriesPreprocessor:
         self,
         normalize=True,
         differencing=False,
-        detrend=True,
-        apply_ewt=True,
+        detrend=False,
+        apply_ewt=False,
         window_size=24,
         horizon=10,
-        remove_outliers=True,
+        remove_outliers=False,
         outlier_threshold=0.05,
         outlier_method="iqr",
         impute_method="auto",
@@ -50,8 +50,10 @@ class TimeSeriesPreprocessor:
         log_transform=False,
         filter_window=5,
         filter_polyorder=2,
-        apply_filter=True,
+        apply_filter=False,
         self_tune=False,
+        generate_time_features=False,
+        apply_imputation=False,
     ):
         self.normalize = normalize
         self.differencing = differencing
@@ -70,6 +72,8 @@ class TimeSeriesPreprocessor:
         self.apply_filter = apply_filter
         self.remove_outliers = remove_outliers
         self.self_tune = self_tune
+        self.generate_time_features = generate_time_features
+        self.apply_imputation = apply_imputation
 
         # Fitted parameters
         self.scaler = None
@@ -78,7 +82,6 @@ class TimeSeriesPreprocessor:
         self.trend_component = None
         self.ewt_components = None
         self.ewt_boundaries = None
-
 
     def _auto_configure(self, data):
         if not self.self_tune:
@@ -89,42 +92,53 @@ class TimeSeriesPreprocessor:
         # Basic stats
         mean_vals = np.nanmean(data, axis=0)
         std_vals = np.nanstd(data, axis=0)
-        min_vals = np.nanmin(data, axis=0)
-        max_vals = np.nanmax(data, axis=0)
         missing_rate = np.mean(np.isnan(data))
-        
-        print(f"→ Shape: {data.shape}")
-        print(f"→ Mean: {mean_vals}")
-        print(f"→ Std: {std_vals}")
-        print(f"→ Min: {min_vals}")
-        print(f"→ Max: {max_vals}")
-        print(f"→ Missing rate: {missing_rate:.4f}")
-
-        # Skewness and log suggestion
         from scipy.stats import skew
         skews = skew(data, nan_policy='omit')
-        max_skew = np.max(np.abs(skews))
-        self.log_transform = max_skew > 1
-        print(f"→ Skewness per feature: {np.round(skews, 3)}")
-        print(f"→ Log transform? {'✅' if self.log_transform else '❌'} (max |skew| = {max_skew:.3f})")
 
-        # Trend detection via ADF test
+        # Log transform per feature
+        self.log_transform_flags = (np.abs(skews) > 1).tolist()
+        print(f"→ Skewness per feature: {np.round(skews, 3)}")
+        print(f"→ Log transform (per feature): {self.log_transform_flags}")
+
+        # Stationarity detection with ADF test
         try:
             from statsmodels.tsa.stattools import adfuller
-            pvals = []
-            for i in range(data.shape[1]):
-                try:
-                    pval = adfuller(data[:, i][~np.isnan(data[:, i])])[1]
-                    pvals.append(pval)
-                except:
-                    pvals.append(1.0)
+            pvals = [adfuller(data[:, i][~np.isnan(data[:, i])])[1]
+                    if np.sum(~np.isnan(data[:, i])) > 10 else 1.0
+                    for i in range(data.shape[1])]
             self.detrend = any(p > 0.05 for p in pvals)
-            print(f"→ ADF test p-values: {np.round(pvals, 4)}")
-            print(f"→ Detrend? {'✅' if self.detrend else '❌'} (any p > 0.05)")
+            print(f"→ ADF p-values: {np.round(pvals, 4)} → Detrend? {'✅' if self.detrend else '❌'}")
         except ImportError:
             print("→ ADF test skipped (statsmodels not installed)")
 
-        # Imputation method
+        # Seasonality detection
+        try:
+            from statsmodels.tsa.seasonal import STL
+            seasonal_flags = []
+            for i in range(data.shape[1]):
+                try:
+                    res = STL(data[:, i], period=24, robust=True).fit()
+                    seasonal_flags.append(res.seasonal.std() > 0.1 * res.trend.std())
+                except Exception:
+                    seasonal_flags.append(False)
+            print(f"→ Seasonality flags (STL): {seasonal_flags}")
+        except ImportError:
+            print("→ STL skipped (statsmodels not installed)")
+
+        # SNR for filter
+        stds = np.nanstd(data, axis=0)
+        valid_stds = stds[~np.isnan(stds) & (stds > 1e-8)]
+
+        if valid_stds.size > 0:
+            snr = np.nanmean(np.abs(data)) / np.mean(valid_stds)
+        else:
+            snr = 0.0  # or float('inf') depending on your logic
+
+        self.apply_filter = snr < 2
+        print(f"→ SNR = {snr:.2f} → Apply filter? {'✅' if self.apply_filter else '❌'}")
+
+        # Imputation suggestion
         if missing_rate == 0:
             self.impute_method = None
         elif missing_rate < 0.05:
@@ -133,26 +147,49 @@ class TimeSeriesPreprocessor:
             self.impute_method = "knn"
         else:
             self.impute_method = "iterative"
-        print(f"→ Imputation method: {self.impute_method or 'None (no missing data)'}")
+        print(f"→ Missing rate: {missing_rate:.3f} → Imputation: {self.impute_method or 'None'}")
 
-        # EWT band estimation
-        self.ewt_bands = min(5, max(2, int(data.shape[0] // 100)))
-        print(f"→ EWT bands: {self.ewt_bands}")
+        # EWT band estimation via entropy
+        from scipy.stats import entropy
+        band_suggestions = []
+        for i in range(data.shape[1]):
+            hist, _ = np.histogram(data[:, i][~np.isnan(data[:, i])], bins=20, density=True)
+            band_suggestions.append(int(np.clip(entropy(hist) * 1.5, 2, 10)))
+        self.ewt_bands = int(np.round(np.mean(band_suggestions)))
+        print(f"→ EWT bands (entropy-based): {self.ewt_bands}")
 
-        # # Outlier method suggestion
-        # if data.shape[0] > 500 and data.shape[1] > 1:
-        #     self.outlier_method = "ecod"
-        # elif data.shape[0] > 100:
-        #     self.outlier_method = "zscore"
-        # else:
-        #     self.outlier_method = "iqr"
+        # Outlier method suggestion
+        if data.shape[0] > 1000:
+            self.outlier_method = "ecod"
+        elif np.any(np.abs(skews) > 2.5):
+            self.outlier_method = "zscore"
+        else:
+            self.outlier_method = "iqr"
         print(f"→ Outlier method: {self.outlier_method}")
+
+        # Summary (optional pretty table)
+        try:
+            from tabulate import tabulate
+            print(tabulate([
+                ["Shape", data.shape],
+                ["Detrend", self.detrend],
+                ["Log Transform (any)", any(self.log_transform_flags)],
+                ["Imputation", self.impute_method],
+                ["EWT Bands", self.ewt_bands],
+                ["Filter?", self.apply_filter],
+                ["Outlier Method", self.outlier_method]
+            ], headers=["Config", "Value"], tablefmt="pretty"))
+        except ImportError:
+            pass
+
         print("✅ Self-tuning configuration complete.\n")
-
-
 
     def fit_transform(self, data, time_stamps=None, feats=None):
         """Preprocess input data and return (X, y, full_processed_data)."""
+
+        # if processed is tensor, convert to numpy
+        if isinstance(data, torch.Tensor):
+            data = data.cpu().numpy()
         processed = data.copy()
         self._auto_configure(processed)
 
@@ -161,17 +198,19 @@ class TimeSeriesPreprocessor:
             self.log_offset = np.where(min_val <= 0, np.abs(min_val) + 1.0, 0.0)
             processed = np.log(processed + self.log_offset)
 
-        processed = self._impute_missing(processed)
-        self._plot_comparison(data, processed, "After Imputation", time_stamps)
+
+        if self.apply_imputation:
+            processed = self._impute_missing(processed)
+            self._plot_comparison(data, processed, "After Imputation", time_stamps)
 
         if self.remove_outliers:
             cleaned = np.stack([self._remove_outliers(processed[:, i]).ravel() for i in range(processed.shape[1])], axis=1)
             self._plot_comparison(processed, cleaned, "After Outlier Removal", time_stamps)
             processed = cleaned
-
+        
         if self.apply_ewt:
             processed = self._apply_ewt_and_detrend(processed, time_stamps)
-
+        
         if self.apply_filter:
             filtered = self.adaptive_filter(processed)
             self._plot_comparison(processed, filtered, "After Adaptive Filtering", time_stamps)
@@ -186,7 +225,7 @@ class TimeSeriesPreprocessor:
             self.scaler = StandardScaler()
             processed = self.scaler.fit_transform(processed)
 
-        if time_stamps is not None:
+        if time_stamps is not None and self.generate_time_features:
             time_feats = self.generate_time_features(time_stamps)
             processed = np.concatenate((processed, time_feats), axis=1)
 
