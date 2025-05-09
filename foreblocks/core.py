@@ -15,7 +15,7 @@ class ForecastingModel(nn.Module):
         encoder=None,
         decoder=None,
         target_len=5,
-        forecasting_strategy="seq2seq",  # seq2seq | autoregressive | direct
+        forecasting_strategy="seq2seq",
         input_preprocessor=None,
         output_postprocessor=None,
         attention_module=None,
@@ -33,121 +33,82 @@ class ForecastingModel(nn.Module):
         enc_embbedding=None,
         dec_embedding=None,
     ):
-        super(ForecastingModel, self).__init__()
-
-        if multi_encoder_decoder:
-            assert (
-                input_processor_output_size is not None
-            ), "input_size must be provided for multi_encoder_decoder"
-            assert (
-                encoder is not None and decoder is not None
-            ), "You must provide a base encoder and decoder module"
-
-            # Automatically clone encoder/decoder for each input feature
-            self.encoder = nn.ModuleList(
-                [
-                    self._clone_module(encoder)
-                    for _ in range(input_processor_output_size)
-                ]
-            )
-            self.decoder = nn.ModuleList(
-                [
-                    self._clone_module(decoder)
-                    for _ in range(input_processor_output_size)
-                ]
-            )
-            self.decoder_aggregator = nn.Linear(
-                input_processor_output_size, 1, bias=False
-            )  # input_size = num decoders
-
-        else:
-            self.encoder = encoder
-            self.decoder = decoder
+        super().__init__()
 
         self.multi_encoder_decoder = multi_encoder_decoder
-        self.hidden_size = hidden_size
         self.strategy = forecasting_strategy
-        self.target_len = target_len
         self.teacher_forcing_ratio = teacher_forcing_ratio
         self.scheduled_sampling_fn = scheduled_sampling_fn
         self.model_type = model_type
-
+        self.target_len = target_len
+        self.hidden_size = hidden_size
+        self.use_attention = attention_module is not None
         self.attention_module = attention_module
-        self.use_attention = self.attention_module is not None
-
-        self.output_size = output_size or (decoder.output_size if decoder else None)
-        self.pred_len = output_size or target_len
-        self.output_block = output_block or nn.Identity()
 
         self.input_preprocessor = input_preprocessor or nn.Identity()
         self.output_postprocessor = output_postprocessor or nn.Identity()
         self.input_normalization = input_normalization or nn.Identity()
         self.output_normalization = output_normalization or nn.Identity()
-        self.start_token = (
-            nn.Linear(self.hidden_size, self.output_size) if decoder else None
-        )
-        self.time_features_dim = 1  # Default to 1, can be changed based on your needs
-        self.label_len = self.decoder.output_size if decoder else None
+        self.output_block = output_block or nn.Identity()
 
+        if multi_encoder_decoder:
+            self.encoder = nn.ModuleList([self._clone_module(encoder) for _ in range(input_processor_output_size)])
+            self.decoder = nn.ModuleList([self._clone_module(decoder) for _ in range(input_processor_output_size)])
+            self.decoder_aggregator = nn.Linear(input_processor_output_size, 1, bias=False)
+        else:
+            self.encoder = encoder
+            self.decoder = decoder
+
+        self.output_size = output_size or (decoder.output_size if decoder else None)
+        self.pred_len = self.output_size or self.target_len
+        self.label_len = decoder.output_size if decoder else None
         self.input_skip_connection = input_skip_connection
+        self.input_size = encoder.input_size if encoder else None
+
+        if decoder:
+            self.start_token = nn.Linear(self.hidden_size, self.output_size)
+        else:
+            self.start_token = None
 
         if model_type == "transformer":
-            if enc_embbedding is not None:
-                self.enc_embedding = enc_embbedding
-            else:
-                self.enc_embedding = TimeSeriesEncoder(encoder.input_size, encoder.hidden_size)
-            if dec_embedding is not None:
-                self.dec_embedding = dec_embedding
-            else:
-                self.dec_embedding = TimeSeriesEncoder(encoder.input_size, encoder.hidden_size)
+            self.enc_embedding = enc_embbedding or TimeSeriesEncoder(encoder.input_size, encoder.hidden_size)
+            self.dec_embedding = dec_embedding or TimeSeriesEncoder(encoder.input_size, encoder.hidden_size)
 
         if self.use_attention:
-            self.output_layer = nn.Linear(
-                decoder.output_size + encoder.hidden_size, self.output_size
-            )
+            self.output_layer = nn.Linear(decoder.output_size + encoder.hidden_size, self.output_size)
         elif decoder:
             self.output_layer = nn.Linear(decoder.output_size, self.output_size)
         else:
             self.output_layer = nn.Identity()
 
-        self.input_size = encoder.input_size
-
-        self.project_output = nn.Linear(
-            self.input_size, self.output_size
-        )
-
+        self.project_output = nn.Linear(self.input_size, self.output_size)
 
     def _clone_module(self, module):
         return copy.deepcopy(module)
 
     def forward(self, src, targets=None, epoch=None):
         if self.strategy == "direct":
-            # Direct models like Informer take a tuple of inputs
             return self._forward_direct(src)
 
-        # seq2seq or autoregressive: src is a tensor
-        if self.input_preprocessor is not None:
-            if self.input_skip_connection:
-                src = self.input_preprocessor(src) + src
-            else:
-                src = self.input_preprocessor(src)
+        if self.input_skip_connection:
+            src = self.input_preprocessor(src) + src
+        else:
+            src = self.input_preprocessor(src)
 
         src = self.input_normalization(src)
 
-        if self.strategy == "seq2seq":
+        if self.strategy in ["seq2seq", "transformer_seq2seq"]:
             if self.model_type == "transformer":
                 return self._forward_transformer_seq2seq(src, targets, epoch)
             if self.multi_encoder_decoder:
-                return self._forward_seq2seq_multi(src, targets, epoch)  # NEW
+                return self._forward_seq2seq_multi(src, targets, epoch)
             return self._forward_seq2seq(src, targets, epoch)
 
-        elif self.strategy == "transformer_seq2seq":
-            return self._forward_transformer_seq2seq(src, targets, epoch)
-        elif self.strategy == "autoregressive":
+        if self.strategy == "autoregressive":
             return self._forward_autoregressive(src, targets, epoch)
-        else:
-            raise ValueError(f"Unsupported strategy: {self.strategy}")
 
+        raise ValueError(f"Unsupported strategy: {self.strategy}")
+    
     def _forward_seq2seq(self, src, targets, epoch):
         batch_size, _, _ = src.shape
         device = src.device

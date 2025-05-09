@@ -51,6 +51,7 @@ class TimeSeriesPreprocessor:
         filter_window=5,
         filter_polyorder=2,
         apply_filter=True,
+        self_tune=False,
     ):
         self.normalize = normalize
         self.differencing = differencing
@@ -68,6 +69,7 @@ class TimeSeriesPreprocessor:
         self.filter_polyorder = filter_polyorder
         self.apply_filter = apply_filter
         self.remove_outliers = remove_outliers
+        self.self_tune = self_tune
 
         # Fitted parameters
         self.scaler = None
@@ -77,9 +79,82 @@ class TimeSeriesPreprocessor:
         self.ewt_components = None
         self.ewt_boundaries = None
 
+
+    def _auto_configure(self, data):
+        if not self.self_tune:
+            return
+
+        print("\n📊 [Self-Tuning Preprocessing Configuration]")
+
+        # Basic stats
+        mean_vals = np.nanmean(data, axis=0)
+        std_vals = np.nanstd(data, axis=0)
+        min_vals = np.nanmin(data, axis=0)
+        max_vals = np.nanmax(data, axis=0)
+        missing_rate = np.mean(np.isnan(data))
+        
+        print(f"→ Shape: {data.shape}")
+        print(f"→ Mean: {mean_vals}")
+        print(f"→ Std: {std_vals}")
+        print(f"→ Min: {min_vals}")
+        print(f"→ Max: {max_vals}")
+        print(f"→ Missing rate: {missing_rate:.4f}")
+
+        # Skewness and log suggestion
+        from scipy.stats import skew
+        skews = skew(data, nan_policy='omit')
+        max_skew = np.max(np.abs(skews))
+        self.log_transform = max_skew > 1
+        print(f"→ Skewness per feature: {np.round(skews, 3)}")
+        print(f"→ Log transform? {'✅' if self.log_transform else '❌'} (max |skew| = {max_skew:.3f})")
+
+        # Trend detection via ADF test
+        try:
+            from statsmodels.tsa.stattools import adfuller
+            pvals = []
+            for i in range(data.shape[1]):
+                try:
+                    pval = adfuller(data[:, i][~np.isnan(data[:, i])])[1]
+                    pvals.append(pval)
+                except:
+                    pvals.append(1.0)
+            self.detrend = any(p > 0.05 for p in pvals)
+            print(f"→ ADF test p-values: {np.round(pvals, 4)}")
+            print(f"→ Detrend? {'✅' if self.detrend else '❌'} (any p > 0.05)")
+        except ImportError:
+            print("→ ADF test skipped (statsmodels not installed)")
+
+        # Imputation method
+        if missing_rate == 0:
+            self.impute_method = None
+        elif missing_rate < 0.05:
+            self.impute_method = "interpolate"
+        elif missing_rate < 0.15:
+            self.impute_method = "knn"
+        else:
+            self.impute_method = "iterative"
+        print(f"→ Imputation method: {self.impute_method or 'None (no missing data)'}")
+
+        # EWT band estimation
+        self.ewt_bands = min(5, max(2, int(data.shape[0] // 100)))
+        print(f"→ EWT bands: {self.ewt_bands}")
+
+        # # Outlier method suggestion
+        # if data.shape[0] > 500 and data.shape[1] > 1:
+        #     self.outlier_method = "ecod"
+        # elif data.shape[0] > 100:
+        #     self.outlier_method = "zscore"
+        # else:
+        #     self.outlier_method = "iqr"
+        print(f"→ Outlier method: {self.outlier_method}")
+        print("✅ Self-tuning configuration complete.\n")
+
+
+
     def fit_transform(self, data, time_stamps=None, feats=None):
         """Preprocess input data and return (X, y, full_processed_data)."""
         processed = data.copy()
+        self._auto_configure(processed)
 
         if self.log_transform:
             min_val = processed.min(axis=0)

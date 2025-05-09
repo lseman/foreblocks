@@ -13,6 +13,7 @@ import torch.nn as nn
 from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 
+from .vsgd import *
 
 class TimeSeriesDataset(torch.utils.data.Dataset):
     """Dataset for time series data"""
@@ -71,15 +72,19 @@ def create_dataloaders(X_train, y_train, X_val=None, y_val=None, batch_size=32):
 
     return train_dataloader, None
 
+
 class Trainer:
     def __init__(self, model: nn.Module, config: Optional[Dict[str, Any]] = None,
                  optimizer: Optional[torch.optim.Optimizer] = None,
                  criterion: Optional[Callable] = None,
                  scheduler: Optional[Any] = None,
-                 device: Optional[str] = None):
+                 device: Optional[str] = None,
+                 use_wandb: bool = False,
+                 wandb_config: Optional[Dict[str, Any]] = None):
 
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = model.to(self.device)
+        self.use_wandb = use_wandb
 
         self.config = self._default_config()
         if config:
@@ -92,6 +97,11 @@ class Trainer:
 
         self._init_tracking()
 
+        if self.use_wandb:
+            import wandb
+            wandb.init(**(wandb_config or {}))
+            wandb.watch(self.model, log="all", log_freq=100)
+
     def _default_config(self):
         return {
             "num_epochs": 100, "learning_rate": 0.001, "weight_decay": 0.0,
@@ -103,7 +113,6 @@ class Trainer:
             "l1_regularization": 0.0, "kl_weight": 1.0
         }
 
-    # set a single config parameter
     def set_config(self, key: str, value: Any):
         if key in self.config:
             self.config[key] = value
@@ -118,9 +127,18 @@ class Trainer:
         self.current_epoch = 0
 
     def _get_optimizer(self):
-        return torch.optim.Adam(self.model.parameters(),
-                                 lr=self.config['learning_rate'],
-                                 weight_decay=self.config['weight_decay'])
+        print("Warning: Using custom VSGD optimizer.")
+        #return torch.optim.Adam(self.model.parameters(),
+        #                        lr=self.config['learning_rate'],
+        #                        weight_decay=self.config['weight_decay'])
+        return VSGD(self.model.parameters(),
+                    lr=self.config['learning_rate'],
+                    weight_decay=self.config['weight_decay'],
+                    ghattg=30.0,
+                    ps=1e-8,
+                    tau1=0.81,
+                    tau2=0.9,
+                    eps=1e-8)
 
     def _get_criterion(self):
         return nn.MSELoss()
@@ -133,16 +151,10 @@ class Trainer:
             )
         return None
 
-    def _run_callbacks(self, hook, callbacks, *args):
-        for cb in callbacks or []:
-            fn = getattr(cb, hook, None)
-            if callable(fn):
-                fn(*args)
-
     def _forward_pass(self, X, y):
         if hasattr(self.model, 'forward_with_teacher_forcing'):
             return self.model.forward_with_teacher_forcing(X, y, self.config['teacher_forcing_ratio'])
-        return self.model(X)
+        return self.model(X, y)
 
     def _compute_loss(self, outputs, targets):
         loss = self.criterion(outputs, targets)
@@ -178,18 +190,14 @@ class Trainer:
         total_loss = 0.0
         for batch_idx, (X, y) in enumerate(dataloader):
             X, y = X.to(self.device), y.to(self.device)
-            self._run_callbacks('on_batch_start', callbacks, self, batch_idx)
             with autocast('cuda') if self.config['use_amp'] else contextlib.nullcontext():
                 outputs = self._forward_pass(X, y)
                 loss = self._compute_loss(outputs, y)
-
             self._step_optimizer(loss, batch_idx, len(dataloader))
             total_loss += loss.item()
-            self._run_callbacks('on_batch_end', callbacks, self, batch_idx, {"loss": loss.item()})
-
         return total_loss / len(dataloader)
 
-    def evaluate(self, dataloader, callbacks=None):
+    def evaluate(self, dataloader):
         self.model.eval()
         total_loss = 0.0
         with torch.no_grad():
@@ -202,48 +210,58 @@ class Trainer:
         return total_loss / len(dataloader.dataset)
 
     def train(self, train_loader, val_loader=None, callbacks=None):
-            from tqdm import tqdm
-            self._init_tracking()
-            num_epochs = self.config['num_epochs']
-            for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
-                self.current_epoch = epoch
-                train_loss = self.train_epoch(train_loader, callbacks)
-                self.history['train_losses'].append(train_loss)
+        from tqdm import tqdm
+        self._init_tracking()
+        num_epochs = self.config['num_epochs']
 
-                val_loss = None
-                if val_loader:
-                    val_loss = self.evaluate(val_loader, callbacks)
-                    self.history['val_losses'].append(val_loss)
+        for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
+            self.current_epoch = epoch
+            train_loss = self.train_epoch(train_loader, callbacks)
+            self.history['train_losses'].append(train_loss)
+            if (epoch + 1) % 50 == 0:
+                print(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}", end='')
+                if val_loss is not None:
+                    print(f", Val Loss = {val_loss:.4f}")
+                else:
+                    print("")
+            val_loss = None
+            if val_loader:
+                val_loss = self.evaluate(val_loader)
+                self.history['val_losses'].append(val_loss)
 
-                self.history['learning_rates'].append(self.optimizer.param_groups[0]['lr'])
+            current_lr = self.optimizer.param_groups[0]['lr']
+            self.history['learning_rates'].append(current_lr)
 
-                if (epoch + 1) % 50 == 0:
-                    print(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}", end='')
-                    if val_loss is not None:
-                        print(f", Val Loss = {val_loss:.4f}")
-                    else:
-                        print("")
+            if self.use_wandb:
+                import wandb
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "learning_rate": current_lr
+                })
 
-                if val_loader:
-                    if val_loss + self.config['min_delta'] < self.best_val_loss:
-                        self.best_val_loss = val_loss
-                        self.epochs_without_improvement = 0
-                        self.best_model_state = copy.deepcopy(self.model.state_dict())
-                        if self.config['save_model_path']:
-                            self.save(self.config['save_model_path'])
-                    else:
-                        self.epochs_without_improvement += 1
+            if val_loader:
+                if val_loss + self.config['min_delta'] < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self.epochs_without_improvement = 0
+                    self.best_model_state = copy.deepcopy(self.model.state_dict())
+                    if self.config['save_model_path']:
+                        self.save(self.config['save_model_path'])
+                else:
+                    self.epochs_without_improvement += 1
 
-                    if self.epochs_without_improvement >= self.config['patience']:
-                        print("Early stopping triggered.")
-                        break
+                if self.epochs_without_improvement >= self.config['patience']:
+                    print("Early stopping triggered.")
+                    break
 
-                if self.scheduler:
-                    self.scheduler.step(val_loss if val_loader else train_loss)
+            if self.scheduler:
+                self.scheduler.step(val_loss if val_loader else train_loss)
 
-            if self.best_model_state:
-                self.model.load_state_dict(self.best_model_state)
-            return self.history
+        if self.best_model_state:
+            self.model.load_state_dict(self.best_model_state)
+
+        return self.history
 
     def save(self, path):
         torch.save({
@@ -252,6 +270,7 @@ class Trainer:
             'history': self.history,
             'config': self.config
         }, path)
+
 
     def plot_learning_curves(self, figsize=(10, 5)):
         plt.figure(figsize=figsize)
@@ -343,21 +362,6 @@ class Trainer:
 
         forecast = (forecast / count).squeeze().cpu().numpy()
 
-        # Get corresponding ground truth target region
-        y_full = y_val.squeeze().cpu().numpy()
-        aligned_truth = np.zeros_like(forecast)
-        truth_count = np.zeros_like(forecast)
-
-        for i in range(len(y_full)):
-            aligned_truth[i:i + target_len] += y_full[i]
-            truth_count[i:i + target_len] += 1
-
-        aligned_truth = aligned_truth / np.maximum(truth_count, 1)
-
-        metrics = self._compute_metrics(forecast, aligned_truth)
-        print("\nValidation Forecast Error Metrics:")
-        for k, v in metrics.items():
-            print(f"  {k.upper():<5} = {v:.6f}")
 
         if full_series is not None:
             full_series = full_series.squeeze().cpu().numpy()

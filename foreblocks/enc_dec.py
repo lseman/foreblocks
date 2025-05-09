@@ -165,8 +165,9 @@ class TimeSeriesEncoder(nn.Module):
         x = self.positional_encoding(x)      # [B, T, hidden_size]
         return x
 
+
 class XFormerAttention(nn.Module):
-    def __init__(self, d_model, nhead, dropout=0.0, batch_first=True):
+    def __init__(self, d_model, nhead, dropout=0.1, batch_first=True):
         super().__init__()
         assert d_model % nhead == 0, "d_model must be divisible by nhead"
         self.d_model = d_model
@@ -175,62 +176,81 @@ class XFormerAttention(nn.Module):
         self.batch_first = batch_first
         self.head_dim = d_model // nhead
 
+        # Projections
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-    def forward(self, query, key, value, attn_mask=None, key_padding_mask=None, is_causal=False, need_weights=False):
+    def forward(
+        self,
+        query,
+        key,
+        value,
+        attn_mask=None,
+        key_padding_mask=None,
+        is_causal=False,
+        need_weights=False,
+    ):
         if not self.batch_first:
             query, key, value = map(lambda x: x.transpose(0, 1), (query, key, value))
 
         B, T_q, _ = query.shape
         _, T_k, _ = key.shape
 
-        q = self.q_proj(query).reshape(B, T_q, self.nhead, self.head_dim).transpose(1, 2)
+        # Project and reshape into multi-head format
+        q = self.q_proj(query).reshape(B, T_q, self.nhead, self.head_dim).transpose(1, 2)  # (B, H, T_q, D)
         k = self.k_proj(key).reshape(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
         v = self.v_proj(value).reshape(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
 
-        if not HAS_XFORMERS or need_weights:
-            attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-
-            if is_causal:
-                causal_mask = torch.ones(T_q, T_k, device=q.device).tril()
-                attn_scores = attn_scores.masked_fill(~causal_mask.bool()[None, None, :, :], float('-inf'))
-
-            if attn_mask is not None:
-                if attn_mask.dim() == 2:
-                    attn_mask = attn_mask[None, None, :, :]
-                elif attn_mask.dim() == 3:
-                    attn_mask = attn_mask[:, None, :, :]
-                attn_scores = attn_scores.masked_fill(attn_mask == 0, float('-inf'))
-
-            if key_padding_mask is not None:
-                key_mask = key_padding_mask[:, None, None, :].expand(-1, self.nhead, T_q, -1)
-                attn_scores = attn_scores.masked_fill(key_mask, float('-inf'))
-
-            attn_weights = F.softmax(attn_scores, dim=-1)
-            if self.training and self.dropout > 0:
-                attn_weights = F.dropout(attn_weights, p=self.dropout)
-
-            output = torch.matmul(attn_weights, v).transpose(1, 2).reshape(B, T_q, self.d_model)
-            output = self.out_proj(output)
-
+        if HAS_XFORMERS and not need_weights and key_padding_mask is None and attn_mask is None:
+            # Use memory-efficient attention
+            out = xops.memory_efficient_attention(q, k, v, attn_bias=None if not is_causal else xops.LowerTriangularMask(), p=self.dropout)
+            out = out.transpose(1, 2).reshape(B, T_q, self.d_model)
+            out = self.out_proj(out)
             if not self.batch_first:
-                output = output.transpose(0, 1)
+                out = out.transpose(0, 1)
+            return out, None
 
-            return output, attn_weights if need_weights else None
+        # Manual attention
+        scale = math.sqrt(self.head_dim)
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / scale  # (B, H, T_q, T_k)
 
-        # Use xFormers
-        attn_bias = LowerTriangularMask() if is_causal else None
-        output = memory_efficient_attention(q, k, v, attn_bias=attn_bias, p=self.dropout)
-        output = output.transpose(1, 2).reshape(B, T_q, self.d_model)
-        output = self.out_proj(output)
+        # Causal mask
+        if is_causal:
+            causal_mask = torch.ones(T_q, T_k, device=query.device).tril()
+            attn_scores = attn_scores.masked_fill(causal_mask == 0, float('-inf'))
+
+        # Attention mask (e.g. user-supplied mask)
+        if attn_mask is not None:
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask[None, None, :, :]  # (1,1,T_q,T_k)
+            elif attn_mask.dim() == 3:
+                attn_mask = attn_mask[:, None, :, :]  # (B,1,T_q,T_k)
+            attn_scores = attn_scores.masked_fill(attn_mask == 0, float('-inf'))
+
+        # Key padding mask
+        if key_padding_mask is not None:
+            key_mask = key_padding_mask[:, None, None, :].expand(B, self.nhead, T_q, T_k)
+            attn_scores = attn_scores.masked_fill(key_mask, float('-inf'))
+
+        # Clamp to avoid NaNs
+        attn_scores = torch.nan_to_num(attn_scores, nan=-1e4)
+        attn_scores = torch.clamp(attn_scores, min=-1e4, max=1e4)
+
+        attn_weights = F.softmax(attn_scores, dim=-1)
+
+        if self.training and self.dropout > 0:
+            attn_weights = F.dropout(attn_weights, p=self.dropout)
+
+        out = torch.matmul(attn_weights, v)  # (B, H, T_q, D)
+        out = out.transpose(1, 2).reshape(B, T_q, self.d_model)
+        out = self.out_proj(out)
 
         if not self.batch_first:
-            output = output.transpose(0, 1)
+            out = out.transpose(0, 1)
 
-        return output, None
+        return out, attn_weights if need_weights else None
     
 class TransformerEncoderLayer(nn.Module):
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"):
@@ -366,56 +386,70 @@ class TransformerDecoder(nn.Module):
 
 # === Variational Encoder Wrapper ===
 class VariationalEncoderWrapper(nn.Module):
-    def __init__(self, base_encoder, latent_dim):
+    def __init__(self, base_encoder: nn.Module, latent_dim: int):
         super().__init__()
         self.base_encoder = base_encoder
         self.latent_dim = latent_dim
-        self.hidden_to_mu = None
-        self.hidden_to_logvar = None
         self.hidden_size = base_encoder.hidden_size
+
+        # Properly registered projection layers
+        self.hidden_to_mu = nn.Linear(self.hidden_size, latent_dim)
+        self.hidden_to_logvar = nn.Linear(self.hidden_size, latent_dim)
 
     def forward(self, x):
         encoder_outputs, encoder_hidden = self.base_encoder(x)
+
+        # Works for LSTM (tuple) and GRU (tensor)
         if isinstance(encoder_hidden, tuple):
-            h = encoder_hidden[0][-1]
+            h = encoder_hidden[0][-1]  # Last layer's hidden state
         else:
             h = encoder_hidden[-1]
-
-        # Lazy init hidden size based on actual tensor
-        if self.hidden_to_mu is None:
-            self.hidden_to_mu = nn.Linear(h.size(-1), self.latent_dim).to(h.device)
-            self.hidden_to_logvar = nn.Linear(h.size(-1), self.latent_dim).to(h.device)
 
         mu = self.hidden_to_mu(h)
         logvar = self.hidden_to_logvar(h)
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
-        z = mu + eps * std
+        z = mu + eps * std  # Reparameterization trick
+
         return encoder_outputs, (z, mu, logvar)
+
     
 # === Latent-aware Decoder Wrapper ===
 class LatentConditionedDecoder(nn.Module):
-    def __init__(self, base_decoder, latent_dim, hidden_size, num_layers=1):
+    def __init__(self, base_decoder: nn.Module, latent_dim: int, hidden_size: int, num_layers: int = 1, rnn_type='lstm'):
         super().__init__()
         self.base_decoder = base_decoder
         self.latent_to_hidden = nn.Linear(latent_dim, hidden_size * num_layers)
-        self.num_layers = num_layers
+        self.latent_to_cell = nn.Linear(latent_dim, hidden_size * num_layers) if rnn_type == 'lstm' else None
+
         self.hidden_size = hidden_size
+        self.num_layers = num_layers
         self.output_size = base_decoder.output_size
+        self.rnn_type = rnn_type.lower()
 
-    def forward(self, x, hidden):
-        z = hidden[0]
-        if z.dim() == 3 and z.size(0) == self.num_layers:
-            z = z[-1]  # ✅ extract last layer: [batch_size, latent_dim]
-        batch_size = z.size(0)
-        projected = self.latent_to_hidden(z)  # [batch, hidden_size * num_layers]
+    def forward(self, x, latent):
+        if latent.dim() == 3 and latent.size(0) == self.num_layers:
+            latent = latent[-1]
 
-        h0 = projected.view(self.num_layers, batch_size, self.hidden_size)
-        c0 = torch.zeros_like(h0)
+        batch_size = latent.size(0)
+        h0 = self.latent_to_hidden(latent).view(self.num_layers, batch_size, self.hidden_size)
 
-        return self.base_decoder(x, (h0, c0))
+        if self.rnn_type == 'lstm':
+            c0 = self.latent_to_cell(latent).view(self.num_layers, batch_size, self.hidden_size)
+            return self.base_decoder(x, (h0, c0))
+        else:
+            return self.base_decoder(x, h0)
 
-# === VAE Loss Function ===
-def vae_loss_function(recon_x, target, kl):
+def compute_kl_divergence(mu, logvar):
+    """
+    KL divergence between N(mu, sigma^2) and N(0,1)
+    """
+    return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / mu.size(0)
+
+def vae_loss_function(recon_x, target, mu, logvar):
+    """
+    VAE loss = reconstruction loss + KL divergence
+    """
     recon_loss = F.mse_loss(recon_x, target, reduction='mean')
-    return recon_loss + (kl if kl is not None else 0.0), recon_loss, kl
+    kl = compute_kl_divergence(mu, logvar)
+    return recon_loss + kl, recon_loss, kl

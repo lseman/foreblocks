@@ -34,7 +34,7 @@ __all__ = [
     "AttentionLayer",
     "TimeSeriesPreprocessor",
     "TimeSeriesDataset",
-    "TimeSeriesSeq2Seq",
     "Trainer",
     "create_dataloaders",
+    "TimeSeriesSeq2Seq",
 ]
