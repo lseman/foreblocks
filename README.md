@@ -19,19 +19,21 @@ ForeBlocks is a flexible, modular deep learning framework for time series foreca
 ## Installation
 
 ```bash
-pip install torch
+git clone https://github.com/lseman/foreblocks
+cd foreblocks
+pip install -e .
 ```
 
 ## Key Features
 
-✅ **Multiple Forecasting Strategies**: Seq2Seq, Autoregressive, and Direct approaches  
-✅ **Modular Architecture**: Easily customize and extend components  
-✅ **Advanced Models**: LSTM, GRU, Transformer, and VAE-based architectures  
-✅ **State-of-the-Art Preprocessing**: Adaptive data preprocessing with automatic configuration  
-✅ **Attention Mechanisms**: Various attention modules for improved performance  
-✅ **Multi-Feature Support**: Specialized architectures for multivariate time series  
-✅ **Training Utilities**: Built-in trainer with callbacks, metrics, and visualizations  
-✅ **Transparent API**: Intuitive interface with extensive documentation  
+**Multiple Forecasting Strategies**: Seq2Seq, Autoregressive, and Direct approaches  
+**Modular Architecture**: Easily customize and extend components  
+**Advanced Models**: LSTM, GRU, Transformer, and VAE-based architectures  
+**State-of-the-Art Preprocessing**: Adaptive data preprocessing with automatic configuration  
+**Attention Mechanisms**: Various attention modules for improved performance  
+**Multi-Feature Support**: Specialized architectures for multivariate time series  
+**Training Utilities**: Built-in trainer with callbacks, metrics, and visualizations  
+**Transparent API**: Intuitive interface with extensive documentation  
 
 ## Quick Start
 
