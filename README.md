@@ -1,4 +1,6 @@
-# ForeBlocks: Advanced Time Series Forecasting Library
+# ForeBlocks: Modular Seq2Seq Library
+
+![Data Flow Diagram](logo.svg)
 
 ForeBlocks is a flexible, modular deep learning framework for time series forecasting built on PyTorch. It offers various neural network architectures and forecasting strategies to tackle complex time series prediction problems.
 

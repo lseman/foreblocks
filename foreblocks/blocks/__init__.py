@@ -29,10 +29,14 @@ from .famous import N_BEATS
 # Mamba blocks
 from .mamba import MambaBlock
 
+# NHA
+from .nha import NHA
+
 __all__ = [
     # Simple blocks
     'GRU',
     
+    'NHA',
     # Fourier-based blocks
     'FourierFeatures', 'AdaptiveFourierFeatures',
     
