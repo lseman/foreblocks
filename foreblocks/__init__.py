@@ -14,6 +14,7 @@ from .att import AttentionLayer
 from .preprocessing import TimeSeriesPreprocessor
 from .utils import TimeSeriesDataset, create_dataloaders, Trainer
 from .pipeline import TimeSeriesSeq2Seq
+from .aux import ModelConfig, TrainingConfig
 
 # Define package metadata
 __version__ = "0.1.0"
@@ -37,4 +38,7 @@ __all__ = [
     "Trainer",
     "create_dataloaders",
     "TimeSeriesSeq2Seq",
+    "ModelConfig",
+    "TrainingConfig",
+    'blocks',
 ]

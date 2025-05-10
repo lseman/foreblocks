@@ -1,384 +1,339 @@
-# ForeBlocks Tutorial
+# ForeBlocks: Advanced Time Series Forecasting Library
 
-This tutorial explains how to use the `ForecastingModel` class for time series forecasting with PyTorch. The ForecastingModel is a versatile framework that supports different forecasting strategies including sequence-to-sequence (seq2seq), autoregressive, and direct approaches.
+ForeBlocks is a flexible, modular deep learning framework for time series forecasting built on PyTorch. It offers various neural network architectures and forecasting strategies to tackle complex time series prediction problems.
 
 ## Table of Contents
 
-- [ForeBlocks Tutorial](#foreblocks-tutorial)
-  - [Table of Contents](#table-of-contents)
-  - [Overview](#overview)
-  - [Installation](#installation)
-  - [Key Features](#key-features)
-  - [Basic Usage](#basic-usage)
-  - [Forecasting Strategies](#forecasting-strategies)
-    - [1. Sequence-to-Sequence (seq2seq)](#1-sequence-to-sequence-seq2seq)
-    - [2. Autoregressive](#2-autoregressive)
-    - [3. Direct](#3-direct)
-  - [Advanced Features](#advanced-features)
-    - [Attention Mechanism](#attention-mechanism)
-    - [Multi-Encoder-Decoder Architecture](#multi-encoder-decoder-architecture)
-    - [Teacher Forcing and Scheduled Sampling](#teacher-forcing-and-scheduled-sampling)
-    - [Transformer-based Models](#transformer-based-models)
-  - [Complete Examples](#complete-examples)
-    - [LSTM-based Seq2Seq Model with Attention](#lstm-based-seq2seq-model-with-attention)
-    - [Transformer-based Model](#transformer-based-model)
-  - [Troubleshooting](#troubleshooting)
-    - [Common Issues and Solutions](#common-issues-and-solutions)
-    - [Tips for Better Performance](#tips-for-better-performance)
-
-## Overview
-
-The `ForecastingModel` class is designed to be a flexible framework for time series forecasting. It supports various neural network architectures and forecasting strategies, allowing you to experiment with different approaches for your specific forecasting problem.
-
-➡️ [Preprocessing Guide](docs/preprocessor.md)  
-➡️ [Custom Blocks Guide](docs/custom_blocks.md)
-
+- [Installation](#installation)
+- [Key Features](#key-features)
+- [Quick Start](#quick-start)
+- [Architecture Overview](#architecture-overview)
+- [Forecasting Models](#forecasting-models)
+- [Advanced Usage](#advanced-usage)
+- [Documentation](#documentation)
+- [Examples](#examples)
+- [Troubleshooting](#troubleshooting)
 
 ## Installation
-
-Before using the `ForecastingModel` class, ensure you have PyTorch installed:
 
 ```bash
 pip install torch
 ```
 
-You'll also need to have your own encoder and decoder modules defined, which will be used by the `ForecastingModel`.
-
 ## Key Features
 
-- **Multiple Forecasting Strategies**: Supports sequence-to-sequence (seq2seq), autoregressive, and direct forecasting approaches.
-- **Attention Mechanism**: Optional attention module to improve forecasting performance.
-- **Multi-Encoder-Decoder Architecture**: Ability to use separate encoder-decoder pairs for each input feature.
-- **Teacher Forcing**: Control the rate of teacher forcing during training.
-- **Scheduled Sampling**: Gradually decrease teacher forcing ratio during training.
-- **Transformer Support**: Support for transformer-based models.
-- **Pre/Post Processing**: Customizable input preprocessing and output postprocessing.
+✅ **Multiple Forecasting Strategies**: Seq2Seq, Autoregressive, and Direct approaches  
+✅ **Modular Architecture**: Easily customize and extend components  
+✅ **Advanced Models**: LSTM, GRU, Transformer, and VAE-based architectures  
+✅ **State-of-the-Art Preprocessing**: Adaptive data preprocessing with automatic configuration  
+✅ **Attention Mechanisms**: Various attention modules for improved performance  
+✅ **Multi-Feature Support**: Specialized architectures for multivariate time series  
+✅ **Training Utilities**: Built-in trainer with callbacks, metrics, and visualizations  
+✅ **Transparent API**: Intuitive interface with extensive documentation  
 
-## Basic Usage
-
-Here's a simple example of how to use the `ForecastingModel` class:
+## Quick Start
 
 ```python
+from foreblocks import TimeSeriesSeq2Seq, ModelConfig, TrainingConfig
 import torch
-import torch.nn as nn
-from foreblocks import ForecastingModel, LSTMEncoder, LSTMDecoder
+import pandas as pd
 
-# Define input parameters
-input_size = 1  # Number of features in input
-hidden_size = 64
-num_layers = 2
-output_size = 1  # Number of features to predict
-target_len = 10  # Prediction horizon
+# Load your time series data
+data = pd.read_csv('your_data.csv')
+X = data.values
 
-# Create encoder and decoder
-encoder = LSTMEncoder(
-    input_size=input_size,
-    hidden_size=hidden_size,
-    num_layers=num_layers
+# Create model configuration
+model_config = ModelConfig(
+    model_type="lstm",
+    input_size=X.shape[1],
+    output_size=1,
+    hidden_size=64,
+    target_len=24,  # Forecast horizon
+    teacher_forcing_ratio=0.5
 )
 
-decoder = LSTMDecoder(
-    input_size=output_size,
-    hidden_size=hidden_size,
-    output_size=output_size,
-    num_layers=num_layers
+# Create training configuration
+training_config = TrainingConfig(
+    num_epochs=100,
+    learning_rate=0.001,
+    patience=10
 )
 
-# Create the forecasting model
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
-    target_len=target_len,
-    forecasting_strategy="seq2seq",
-    teacher_forcing_ratio=0.5,
-    output_size=output_size
+# Initialize model
+model = TimeSeriesSeq2Seq(
+    model_config=model_config,
+    training_config=training_config,
+    device="cuda" if torch.cuda.is_available() else "cpu"
 )
 
-# Use the model for training
-batch_size = 32
-seq_len = 50  # Input sequence length
+# Preprocess data with automatic configuration
+X_train, y_train, processed_data = model.preprocess(X, self_tune=True)
 
-# Create dummy data
-x = torch.randn(batch_size, seq_len, input_size)
-y = torch.randn(batch_size, target_len, output_size)
+# Convert to DataLoader
+from torch.utils.data import TensorDataset, DataLoader
+train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), 
+                            torch.tensor(y_train, dtype=torch.float32))
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
-# Forward pass
-outputs = model(x, y)
+# Train the model
+history = model.train_model(train_loader)
 
-# Calculate loss and backpropagate
-criterion = nn.MSELoss()
-loss = criterion(outputs, y)
-loss.backward()
+# Make predictions
+with torch.no_grad():
+    predictions = model.predict(X_test)
+
+# Visualize results
+model.plot_prediction(X_test, y_test)
 ```
 
-## Forecasting Strategies
+## Architecture Overview
 
-The `ForecastingModel` supports three main forecasting strategies:
+ForeBlocks follows a modular design pattern with these key components:
 
-### 1. Sequence-to-Sequence (seq2seq)
+1. **Core Components**:
+   - `ForecastingModel`: The main model class integrating encoders, decoders, and forecasting strategies
+   - `TimeSeriesSeq2Seq`: High-level interface for building and training forecasting models
 
-The sequence-to-sequence approach uses an encoder to process the input sequence and a decoder to generate predictions one step at a time. This is the default strategy and is suitable for most forecasting problems.
+2. **Neural Network Modules**:
+   - Encoders: LSTM, GRU, Transformer encoders
+   - Decoders: Corresponding decoder architectures
+   - Attention: Various attention mechanisms
+
+3. **Preprocessing Pipeline**:
+   - `TimeSeriesPreprocessor`: Advanced data preparation with automatic feature detection
+
+4. **Training Utilities**:
+   - `Trainer`: Manages training, evaluation, and visualization
+   - Metrics: MAE, RMSE, MAPE, and other forecasting metrics
+
+## Forecasting Models
+
+### Sequence-to-Sequence (Seq2Seq)
+
+The default and most versatile approach, using an encoder-decoder architecture with optional attention:
 
 ```python
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
-    forecasting_strategy="seq2seq",
-    target_len=12  # Predict 12 steps ahead
+model_config = ModelConfig(
+    model_type="lstm",
+    strategy="seq2seq",
+    input_size=3,
+    output_size=1,
+    hidden_size=64,
+    num_encoder_layers=2,
+    num_decoder_layers=2,
+    target_len=24
 )
 ```
 
-### 2. Autoregressive
+### Autoregressive Models
 
-The autoregressive approach generates predictions one step at a time, with each prediction used as input for the next step.
+Generate predictions recursively, feeding each output back as input:
 
 ```python
-model = ForecastingModel(
-    encoder=None,  # No encoder needed
-    decoder=ar_decoder,  # Custom autoregressive decoder
-    forecasting_strategy="autoregressive",
+model_config = ModelConfig(
+    model_type="lstm",
+    strategy="autoregressive",
+    input_size=1,
+    output_size=1,
+    hidden_size=64,
     target_len=12
 )
 ```
 
-### 3. Direct
+### Direct Forecasting Models
 
-The direct approach predicts all future time steps at once using a single decoder. This is useful for models like Informer.
-
-```python
-model = ForecastingModel(
-    encoder=None,  # Not used in direct strategy
-    decoder=direct_decoder,  # Custom decoder for direct forecasting
-    forecasting_strategy="direct",
-    target_len=12
-)
-```
-
-## Advanced Features
-
-### Attention Mechanism
-
-To enable attention mechanism in your forecasting model:
+Predict all future steps at once:
 
 ```python
-attention_module = YourAttentionModule()  # Custom attention module
-
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
-    attention_module=attention_module,
-    forecasting_strategy="seq2seq"
-)
-```
-
-The attention mechanism helps the model focus on relevant parts of the input sequence when making predictions.
-
-### Multi-Encoder-Decoder Architecture
-
-For multivariate time series with heterogeneous features, you can use the multi-encoder-decoder architecture:
-
-```python
-model = ForecastingModel(
-    encoder=base_encoder,  # Base encoder to be cloned for each feature
-    decoder=base_decoder,  # Base decoder to be cloned for each feature
-    multi_encoder_decoder=True,
-    input_processor_output_size=input_size,  # Number of features
-    forecasting_strategy="seq2seq"
-)
-```
-
-This creates a separate encoder-decoder pair for each input feature, which are then aggregated using a learnable linear layer.
-
-### Teacher Forcing and Scheduled Sampling
-
-Teacher forcing is a technique used during training where the ground truth is used as input to the decoder at each time step. You can control the teacher forcing ratio:
-
-```python
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
-    teacher_forcing_ratio=0.5  # Use teacher forcing 50% of the time
-)
-```
-
-You can also implement scheduled sampling to gradually decrease the teacher forcing ratio during training:
-
-```python
-def scheduled_sampling_fn(epoch):
-    # Gradually decrease teacher forcing ratio
-    return max(0.0, 1.0 - 0.1 * epoch)
-
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
-    teacher_forcing_ratio=1.0,
-    scheduled_sampling_fn=scheduled_sampling_fn
+model_config = ModelConfig(
+    model_type="lstm",
+    strategy="direct",
+    input_size=5,
+    output_size=1,
+    hidden_size=128,
+    target_len=48
 )
 ```
 
 ### Transformer-based Models
 
-The `ForecastingModel` also supports transformer-based architectures:
+Leverage self-attention for capturing long-range dependencies:
 
 ```python
-from your_module import TransformerEncoder, TransformerDecoder, TimeSeriesEncoder
-
-# Time series encoders
-enc_embedding = TimeSeriesEncoder(input_size, d_model)
-dec_embedding = TimeSeriesEncoder(input_size, d_model)
-
-# Transformer modules
-encoder = TransformerEncoder(...)
-decoder = TransformerDecoder(...)
-
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
+model_config = ModelConfig(
     model_type="transformer",
-    forecasting_strategy="seq2seq",
-    enc_embbedding=enc_embedding,
-    dec_embedding=dec_embedding
+    strategy="transformer_seq2seq",
+    input_size=4,
+    output_size=4,
+    hidden_size=128,
+    dim_feedforward=512,
+    nheads=8,
+    num_encoder_layers=3,
+    num_decoder_layers=3,
+    target_len=96
 )
 ```
 
-## Complete Examples
+## Advanced Usage
 
-### LSTM-based Seq2Seq Model with Attention
+### Multi-Encoder-Decoder Architecture
+
+Process different features with separate encoders and decoders:
+
+```python
+model_config = ModelConfig(
+    multi_encoder_decoder=True,
+    input_size=5,  # 5 features
+    output_size=1,
+    hidden_size=64,
+    model_type="lstm",
+    target_len=24
+)
+```
+
+### Attention Mechanisms
+
+Add attention for improved performance:
+
+```python
+from foreblocks.attention import AttentionLayer
+
+attention_module = AttentionLayer(
+    method="dot",
+    attention_backend="self",
+    encoder_hidden_size=64,
+    decoder_hidden_size=64
+)
+
+model = TimeSeriesSeq2Seq(
+    model_config=model_config,
+    attention_module=attention_module
+)
+```
+
+### Customizing Preprocessing
+
+Fine-tune the preprocessing pipeline:
+
+```python
+X_train, y_train, processed_data = model.preprocess(
+    X,
+    normalize=True,
+    differencing=True,
+    detrend=True,
+    apply_ewt=True,
+    window_size=48,
+    horizon=24,
+    remove_outliers=True,
+    outlier_method="iqr",
+    self_tune=True
+)
+```
+
+### Teacher Forcing and Scheduled Sampling
+
+Control the learning process:
+
+```python
+def scheduled_sampling_fn(epoch):
+    return max(0.0, 1.0 - 0.1 * epoch)  # Linear decay
+
+model = TimeSeriesSeq2Seq(
+    model_config=model_config,
+    scheduled_sampling_fn=scheduled_sampling_fn
+)
+```
+
+## Documentation
+
+➡️ [Preprocessing Guide](docs/preprocessor.md)  
+➡️ [Custom Blocks Guide](docs/custom_blocks.md)
+
+## Examples
+
+We provide various examples for different forecasting scenarios:
+
+### LSTM-based Seq2Seq with Attention
 
 ```python
 import torch
 import torch.nn as nn
-from foreblocks import ForecastingModel, LSTMEncoder, LSTMDecoder, AttentionModule
-
-# Parameters
-input_size = 3  # Multivariate time series with 3 features
-hidden_size = 64
-num_layers = 2
-output_size = 1  # Predict one feature
-target_len = 24  # Forecast horizon of 24 time steps
-
-# Create encoder and decoder
-encoder = LSTMEncoder(
-    input_size=input_size,
-    hidden_size=hidden_size,
-    num_layers=num_layers,
-    bidirectional=True  # Use bidirectional LSTM for encoder
+from foreblocks import (
+    TimeSeriesSeq2Seq, 
+    ModelConfig, 
+    TrainingConfig, 
+    AttentionLayer
 )
 
-decoder = LSTMDecoder(
-    input_size=output_size,
-    hidden_size=hidden_size,
-    output_size=hidden_size,  # Output size before final projection
-    num_layers=num_layers
+# Model configuration
+model_config = ModelConfig(
+    model_type="lstm",
+    input_size=3,
+    output_size=1,
+    hidden_size=64,
+    num_encoder_layers=2,
+    num_decoder_layers=2,
+    target_len=24
 )
 
 # Create attention module
-attention = AttentionModule(
-    hidden_size=hidden_size * 2,  # Doubled because of bidirectional encoder
-    attention_type="general"
+attention = AttentionLayer(
+    method="general",
+    encoder_hidden_size=64,
+    decoder_hidden_size=64
 )
 
 # Create model
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
+model = TimeSeriesSeq2Seq(
+    model_config=model_config,
     attention_module=attention,
-    target_len=target_len,
-    forecasting_strategy="seq2seq",
-    teacher_forcing_ratio=0.5,
-    output_size=output_size,
     output_block=nn.Sequential(
         nn.Dropout(0.1),
         nn.ReLU()
     )
 )
 
-# Example training loop
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-criterion = nn.MSELoss()
-
-for epoch in range(100):
-    # Get your batch data
-    x_batch, y_batch = get_batch()  # Your data loading function
-    
-    # Forward pass
-    outputs = model(x_batch, y_batch, epoch=epoch)
-    
-    # Calculate loss
-    loss = criterion(outputs, y_batch)
-    
-    # Backward pass
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    
-    print(f"Epoch {epoch}, Loss: {loss.item()}")
-
-# Inference
-with torch.no_grad():
-    test_input = get_test_data()  # Your test data
-    predictions = model(test_input)
+# Training (assuming data is prepared)
+model.train_model(train_loader, val_loader)
 ```
 
 ### Transformer-based Model
 
 ```python
-import torch
-import torch.nn as nn
-from your_module import (
-    ForecastingModel, 
-    TransformerEncoder, 
-    TransformerDecoder, 
-    TimeSeriesEncoder
+from foreblocks import (
+    TimeSeriesSeq2Seq, 
+    ModelConfig, 
+    TrainingConfig
 )
 
-# Parameters
-input_size = 4  # Multivariate time series with 4 features
-d_model = 128
-nhead = 8
-num_encoder_layers = 3
-num_decoder_layers = 3
-dim_feedforward = 512
-output_size = 4  # Predict all features
-target_len = 96  # Long forecast horizon
-
-# Create time series encoders
-enc_embedding = TimeSeriesEncoder(input_size, d_model)
-dec_embedding = TimeSeriesEncoder(input_size, d_model)
-
-# Create transformer encoder and decoder
-encoder = TransformerEncoder(
-    d_model=d_model,
-    nhead=nhead,
-    num_encoder_layers=num_encoder_layers,
-    dim_feedforward=dim_feedforward,
-    dropout=0.1,
-    input_size=input_size
-)
-
-decoder = TransformerDecoder(
-    d_model=d_model,
-    nhead=nhead,
-    num_decoder_layers=num_decoder_layers,
-    dim_feedforward=dim_feedforward,
-    dropout=0.1,
-    output_size=d_model
-)
-
-# Create model
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
+# Model configuration
+model_config = ModelConfig(
     model_type="transformer",
-    forecasting_strategy="seq2seq",
-    target_len=target_len,
-    output_size=output_size,
-    enc_embbedding=enc_embedding,
-    dec_embedding=dec_embedding,
-    teacher_forcing_ratio=0.7
+    input_size=4,
+    output_size=4,
+    hidden_size=128,
+    dim_feedforward=512,
+    nheads=8,
+    num_encoder_layers=3,
+    num_decoder_layers=3,
+    target_len=96
 )
 
-# Training and inference similar to the LSTM example
+# Training configuration
+training_config = TrainingConfig(
+    num_epochs=100,
+    learning_rate=0.0001,
+    weight_decay=1e-5,
+    patience=15
+)
+
+# Create and train model
+model = TimeSeriesSeq2Seq(
+    model_config=model_config,
+    training_config=training_config
+)
+
+model.train_model(train_loader, val_loader)
 ```
 
 ## Troubleshooting

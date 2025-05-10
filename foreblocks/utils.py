@@ -207,10 +207,12 @@ class Trainer:
                 total_loss += loss.item() * X.size(0)
         return total_loss / len(dataloader.dataset)
 
-    def train(self, train_loader, val_loader=None, callbacks=None):
+    def train(self, train_loader, val_loader=None, callbacks=None, epochs=None):
         from tqdm import tqdm
         self._init_tracking()
         num_epochs = self.config['num_epochs']
+        if epochs is not None:
+            num_epochs = epochs
 
         for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
             self.current_epoch = epoch
@@ -331,8 +333,10 @@ class Trainer:
             print(f"  {k.upper():<5} = {v:.6f}")
 
         return metrics
-
-    def plot_prediction(self, X_val: torch.Tensor, y_val: torch.Tensor, full_series: Optional[torch.Tensor] = None, offset: int = 0):
+    
+    def plot_prediction(self, X_val: torch.Tensor, y_val: torch.Tensor, 
+                    full_series: Optional[torch.Tensor] = None, offset: int = 0, 
+                    figsize: Tuple[int, int] = (12, 8), show: bool = False) -> plt.Figure:
         """
         Plot predicted sequence over the validation data, aligned to form a full series forecast.
         
@@ -341,42 +345,59 @@ class Trainer:
             y_val: Tensor of shape [N, target_len, output_size]
             full_series: (Optional) Original full time series for reference
             offset: (Optional) Index offset for where the validation data starts in the full series
+            figsize: (Optional) Figure size as (width, height) in inches
+            show: (Optional) Whether to display the plot with plt.show()
+            
+        Returns:
+            matplotlib Figure object for further customization or saving
         """
         self.model.eval()
         X_val = X_val.to(self.device)
         y_val = y_val.to(self.device)
-
         target_len = y_val.shape[1]
         output_size = y_val.shape[2]
+        
         forecast = torch.zeros((X_val.shape[0] + target_len - 1, output_size), device=self.device)
         count = torch.zeros_like(forecast)
-
+        
         with torch.no_grad():
             for i in range(X_val.shape[0]):
                 x = X_val[i].unsqueeze(0)  # [1, seq_len, input_size]
                 pred = self.model(x).squeeze(0)  # [target_len, output_size]
                 forecast[i:i + target_len] += pred
                 count[i:i + target_len] += 1
-
+        
         forecast = (forecast / count).squeeze().cpu().numpy()
-
-
+        
+        # Create figure and axes
+        fig, ax = plt.subplots(figsize=figsize)
+        
         if full_series is not None:
             full_series = full_series.squeeze().cpu().numpy()
             forecast_start = offset + X_val.shape[1]
-            plt.plot(np.arange(len(full_series)), full_series, label="Original", alpha=0.5)
-            plt.plot(np.arange(forecast_start, forecast_start + len(forecast)), forecast, label="Forecast", color="orange")
-            plt.axvline(x=forecast_start, color="gray", linestyle="--", label="Forecast Start")
+            
+            ax.plot(np.arange(len(full_series)), full_series, label="Original", alpha=0.5)
+            ax.plot(np.arange(forecast_start, forecast_start + len(forecast)), 
+                    forecast, label="Forecast", color="orange")
+            ax.axvline(x=forecast_start, color="gray", linestyle="--", label="Forecast Start")
+            
+            ax.set_title("Full Series with Forecast")
         else:
-            plt.plot(forecast, label="Forecast", color="orange")
-
-        plt.title("Validation Prediction")
-        plt.xlabel("Time Step")
-        plt.ylabel("Value")
-        plt.legend()
-        plt.grid(True)
+            ax.plot(forecast, label="Forecast", color="orange")
+            ax.set_title("Validation Prediction")
+        
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Value")
+        ax.legend()
+        ax.grid(True)
+        
         plt.tight_layout()
-        plt.show()
+        
+        # Only show if requested
+        if show:
+            plt.show()
+        
+        return fig
 
     def _compute_metrics(self, prediction: Union[np.ndarray, torch.Tensor],
                         target: Union[np.ndarray, torch.Tensor]) -> Dict[str, float]:
