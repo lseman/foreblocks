@@ -282,7 +282,7 @@ model_config = ModelConfig(
 
 # Create attention module
 attention = AttentionLayer(
-    method="general",
+    method="dot",
     encoder_hidden_size=64,
     decoder_hidden_size=64
 )

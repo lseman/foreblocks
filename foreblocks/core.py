@@ -127,7 +127,7 @@ class ForecastingModel(nn.Module):
         
         # Output layers
         self._setup_output_layers()
-        
+
     def _validate_initialization(self, strategy, model_type):
         """Validate the input parameters."""
         if strategy not in self.VALID_STRATEGIES:
@@ -355,92 +355,52 @@ class ForecastingModel(nn.Module):
     
     def _forward_transformer_seq2seq(self, src, targets, epoch):
         """
-        Forward pass for transformer-based sequence-to-sequence forecasting.
-        
-        Args:
-            src: Preprocessed source sequence [batch_size, seq_len, features]
-            targets: Target sequence for teacher forcing
-            epoch: Current epoch for scheduled sampling
-            
-        Returns:
-            Predicted sequence [batch_size, target_len, output_size]
+        Unified transformer forward pass using autoregressive decoding.
+        Replaces inputs with ground truth at each step if teacher forcing is enabled.
         """
-        batch_size, src_seq_len, _ = src.shape
+        batch_size, _, _ = src.shape
         device = src.device
-        
-        # Encode the source
+
         enc_out = self.enc_embedding(src)
         enc_out = self.encoder(enc_out)
-        
-        if self.training and targets is not None:
-            # Determine whether to use teacher forcing
-            teacher_force_ratio = self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn else self.teacher_forcing_ratio
-            use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-            
-            if use_teacher_forcing:
-                # Teacher forcing approach
-                return self._transformer_teacher_forcing(src, targets, enc_out, device)
-            else:
-                # Autoregressive approach (no teacher forcing)
-                return self._transformer_autoregressive(src, enc_out, device)
-        else:
-            # Inference mode - always autoregressive
-            return self._transformer_autoregressive(src, enc_out, device)
-    
-    def _transformer_teacher_forcing(self, src, targets, enc_out, device):
-        """Transformer forward pass with teacher forcing."""
-        # Pad targets if output_size < input_size
-        if self.output_size != self.input_size:
-            pad_size = self.input_size - self.output_size
-            padding = torch.zeros(targets.size(0), targets.size(1), pad_size, device=targets.device)
-            targets_padded = torch.cat([targets, padding], dim=-1)
-        else:
-            targets_padded = targets
-        
-        # Concatenate context with targets
-        x_dec = torch.cat([src[:, -self.label_len:, :], targets_padded], dim=1)
-        
-        # Create causal mask for transformer decoder
-        tgt_mask = self._generate_square_subsequent_mask(x_dec.size(1)).to(device)
-        
-        # Run through decoder
-        dec_out = self.dec_embedding(x_dec)
-        output = self.decoder(dec_out, enc_out, tgt_mask=tgt_mask)
-        output = self.output_layer(output)
-        
-        # Return only the prediction portion
-        return output[:, -self.pred_len:, :]
-    
-    def _transformer_autoregressive(self, src, enc_out, device):
-        """Transformer forward pass in autoregressive mode."""
+
+        # Setup decoder input
+        x_dec_so_far = src[:, -self.label_len:, :]  # Context
+
         preds = []
-        x_dec_so_far = src[:, -self.label_len:, :]  # [B, label_len, input_size]
-        
-        # Generate predictions one step at a time
-        for step in range(self.pred_len):
-            # Create causal mask for current sequence
+        teacher_forcing = False
+        if self.training and targets is not None:
+            teacher_force_ratio = self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn else self.teacher_forcing_ratio
+            teacher_forcing = torch.rand(1).item() < teacher_force_ratio
+
+        for t in range(self.pred_len):
+            # Mask for decoder
             tgt_mask = self._generate_square_subsequent_mask(x_dec_so_far.size(1)).to(device)
-            
-            # Run through decoder
-            dec_embed = self.dec_embedding(x_dec_so_far)  # [B, T, d_model]
+
+            # Embed and decode
+            dec_embed = self.dec_embedding(x_dec_so_far)
             out = self.decoder(dec_embed, enc_out, tgt_mask=tgt_mask)
-            pred_t = out[:, -1:, :]  # [B, 1, d_model]
-            pred_t = self.output_layer(pred_t)  # [B, 1, output_size]
+            pred_t = self.output_layer(out[:, -1:, :])  # Only use last step
             preds.append(pred_t)
-            
-            # Pad prediction to match input size if needed
+
+            # Prepare next decoder input
+            if teacher_forcing and targets is not None:
+                next_input = targets[:, t:t+1, :]
+            else:
+                next_input = pred_t
+
+            # Pad if needed
             if self.output_size != self.input_size:
                 pad_size = self.input_size - self.output_size
-                padding = torch.zeros(pred_t.size(0), 1, pad_size, device=pred_t.device)
-                pred_t_padded = torch.cat([pred_t, padding], dim=-1)
-            else:
-                pred_t_padded = pred_t
-            
-            # Add to decoder sequence for next step
-            x_dec_so_far = torch.cat([x_dec_so_far, pred_t_padded], dim=1)
-        
+                padding = torch.zeros(next_input.size(0), 1, pad_size, device=device)
+                next_input = torch.cat([next_input, padding], dim=-1)
+
+            # Append to decoder input
+            x_dec_so_far = torch.cat([x_dec_so_far, next_input], dim=1)
+
         return torch.cat(preds, dim=1)
-    
+
+
     def _forward_autoregressive(self, src, targets, epoch):
         """
         Forward pass for autoregressive forecasting.
@@ -572,3 +532,17 @@ class ForecastingModel(nn.Module):
     def get_kl(self):
         """Get the KL divergence term if using VAE."""
         return getattr(self, "_kl", None)
+
+    def attribute_forward(self, src):
+        """
+        Captum-compatible forward function.
+        Used for computing attribution with respect to the input.
+        Args:
+            src: Input sequence tensor [B, T, D]
+        Returns:
+            output: Forecasted sequence [B, T', D']
+        """
+        #self.eval()
+        src = src.requires_grad_()
+        out = self.forward(src)
+        return out
