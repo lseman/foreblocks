@@ -1,17 +1,17 @@
-# Standard library
+# Standard Library
 import copy
 import importlib
 import math
 import time
 import warnings
 
-# Scientific computing and data manipulation
+# Scientific Computing and Visualization
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 
-# Machine learning and preprocessing
+# Machine Learning and Preprocessing
 from sklearn.ensemble import IsolationForest
 from sklearn.impute import KNNImputer
 from sklearn.model_selection import train_test_split
@@ -24,23 +24,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import autocast, GradScaler
 
-# Typing
-from typing import Dict, List, Optional, Tuple, Union
-
-# EWT
+# Empirical Wavelet Transform
 import ewtpy
 from ewtpy import EWT1D
 
-import numpy as np
-import pandas as pd
-import torch
-import warnings
-from sklearn.preprocessing import StandardScaler
-from sklearn.impute import KNNImputer
-from sklearn.neighbors import LocalOutlierFactor
-from scipy.signal import savgol_filter
-import matplotlib.pyplot as plt
-from typing import Tuple, List, Optional, Union, Any
+# Typing
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 class TimeSeriesPreprocessor:

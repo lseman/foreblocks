@@ -110,3 +110,71 @@ class N_BEATS(nn.Module):
         forecast = self.forecast_basis(theta)
         
         return backcast, forecast
+
+import torch
+import torch.nn as nn
+import torch.fft
+
+class TimesBlock(nn.Module):
+    def __init__(self, d_model: int, k_periods: int = 3, conv_channels: int = 64):
+        super().__init__()
+        self.k = k_periods
+        self.d_model = d_model
+
+        self.conv_bank = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(d_model, conv_channels, kernel_size=(3, 3), padding=1),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool2d((None, None)),
+                nn.Conv2d(conv_channels, d_model, kernel_size=1)
+            ) for _ in range(k_periods)
+        ])
+
+    def forward(self, x):
+        """
+        Args:
+            x: Tensor of shape [B, T, C]
+        Returns:
+            Tensor of shape [B, T, C]
+        """
+        B, T, C = x.shape
+        assert C == self.d_model, f"Expected input dim {self.d_model}, got {C}"
+
+        # FFT over time
+        fft_vals = torch.fft.fft(x, dim=1)
+        amp = fft_vals.abs().mean(dim=2)  # [B, T]
+
+        # Get dominant frequencies (indices)
+        topk_freqs = torch.topk(amp[:, 1:T // 2], self.k, dim=1).indices + 1  # Avoid DC at index 0
+
+        outputs = []
+        periods = (T // topk_freqs).int()  # Shape [B, k]
+
+        for i in range(self.k):
+            freq = topk_freqs[:, i]
+            period = periods[:, i].max().item()  # Max period across batch
+            T_pad = (period - T % period) % period
+            padded = F.pad(x, (0, 0, 0, T_pad))  # [B, T+pad, C]
+            T_new = T + T_pad
+
+            # Reshape: [B, T_new // period, period, C] -> [B, C, #periods, period]
+            reshaped = padded.reshape(B, T_new // period, period, C).permute(0, 3, 1, 2)
+            conv_out = self.conv_bank[i](reshaped)
+
+            # Restore original shape [B, T_new, C] -> [B, T, C]
+            out = conv_out.permute(0, 2, 3, 1).reshape(B, T_new, C)[:, :T, :]
+            outputs.append(out)
+
+        # Fuse using softmax weights based on amplitudes
+        weights = torch.softmax(amp.gather(1, topk_freqs), dim=1)  # [B, k]
+        fused = sum(w.unsqueeze(-1).unsqueeze(-1) * o for w, o in zip(weights.permute(1, 0), outputs))  # [B, T, C]
+        return fused
+    
+class TimesBlockPreprocessor(nn.Module):
+    def __init__(self, d_model=64, k_periods=3, conv_channels=64):
+        super().__init__()
+        self.times_block = TimesBlock(d_model=d_model, k_periods=k_periods, conv_channels=conv_channels)
+
+    def forward(self, x):
+        # Input: [B, T, C]
+        return self.times_block(x)

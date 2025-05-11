@@ -24,7 +24,7 @@ from .multiscale import MultiScaleTemporalConv
 from .ode import NeuralODE
 
 # Preprocessing blocks
-from .famous import N_BEATS
+from .famous import N_BEATS, TimesBlock, TimesBlockPreprocessor
 
 # Mamba blocks
 from .mamba import MambaBlock
@@ -53,7 +53,7 @@ __all__ = [
     'NeuralODE',
     
     # Preprocessing blocks
-    'N_BEATS',
+    'N_BEATS', 'TimesBlock', 'TimesBlockPreprocessor'
     
     # Mamba blocks
     'MambaBlock',

@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from .aux import *
 from .enc_dec import *
+from .transformer import *
 from .att import *
 import torch
 import torch.nn as nn
@@ -281,7 +282,55 @@ class ForecastingModel(nn.Module):
                 decoder_input = decoder_output.unsqueeze(1)
                 
         return self.output_postprocessor(outputs)
-    
+
+    def _forward_transformer_seq2seq(self, src, targets, epoch):
+        """
+        Unified transformer forward pass using autoregressive decoding.
+        Replaces inputs with ground truth at each step if teacher forcing is enabled.
+        """
+        batch_size, _, _ = src.shape
+        device = src.device
+
+        enc_out = self.enc_embedding(src)
+        enc_out = self.encoder(enc_out)
+
+        # Setup decoder input
+        x_dec_so_far = src[:, -self.label_len:, :]  # Context
+
+        preds = []
+        teacher_forcing = False
+        if self.training and targets is not None:
+            teacher_force_ratio = self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn else self.teacher_forcing_ratio
+            teacher_forcing = torch.rand(1).item() < teacher_force_ratio
+
+        for t in range(self.pred_len):
+            # Mask for decoder
+            tgt_mask = self._generate_square_subsequent_mask(x_dec_so_far.size(1)).to(device)
+
+            # Embed and decode
+            dec_embed = self.dec_embedding(x_dec_so_far)
+            out = self.decoder(dec_embed, enc_out, tgt_mask=tgt_mask)
+            pred_t = self.output_layer(out[:, -1:, :])  # Only use last step
+            preds.append(pred_t)
+
+            # Prepare next decoder input
+            if teacher_forcing and targets is not None:
+                next_input = targets[:, t:t+1, :]
+            else:
+                next_input = pred_t
+
+            # Pad if needed
+            if self.output_size != self.input_size:
+                pad_size = self.input_size - self.output_size
+                padding = torch.zeros(next_input.size(0), 1, pad_size, device=device)
+                next_input = torch.cat([next_input, padding], dim=-1)
+
+            # Append to decoder input
+            x_dec_so_far = torch.cat([x_dec_so_far, next_input], dim=1)
+
+        return torch.cat(preds, dim=1)
+
+
     def _forward_seq2seq_multi(self, src, targets, epoch):
         """
         Forward pass for multi-encoder-decoder sequence-to-sequence forecasting.
@@ -352,54 +401,6 @@ class ForecastingModel(nn.Module):
         outputs = self.decoder_aggregator(stacked).squeeze(1)
         
         return self.output_postprocessor(outputs)
-    
-    def _forward_transformer_seq2seq(self, src, targets, epoch):
-        """
-        Unified transformer forward pass using autoregressive decoding.
-        Replaces inputs with ground truth at each step if teacher forcing is enabled.
-        """
-        batch_size, _, _ = src.shape
-        device = src.device
-
-        enc_out = self.enc_embedding(src)
-        enc_out = self.encoder(enc_out)
-
-        # Setup decoder input
-        x_dec_so_far = src[:, -self.label_len:, :]  # Context
-
-        preds = []
-        teacher_forcing = False
-        if self.training and targets is not None:
-            teacher_force_ratio = self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn else self.teacher_forcing_ratio
-            teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-
-        for t in range(self.pred_len):
-            # Mask for decoder
-            tgt_mask = self._generate_square_subsequent_mask(x_dec_so_far.size(1)).to(device)
-
-            # Embed and decode
-            dec_embed = self.dec_embedding(x_dec_so_far)
-            out = self.decoder(dec_embed, enc_out, tgt_mask=tgt_mask)
-            pred_t = self.output_layer(out[:, -1:, :])  # Only use last step
-            preds.append(pred_t)
-
-            # Prepare next decoder input
-            if teacher_forcing and targets is not None:
-                next_input = targets[:, t:t+1, :]
-            else:
-                next_input = pred_t
-
-            # Pad if needed
-            if self.output_size != self.input_size:
-                pad_size = self.input_size - self.output_size
-                padding = torch.zeros(next_input.size(0), 1, pad_size, device=device)
-                next_input = torch.cat([next_input, padding], dim=-1)
-
-            # Append to decoder input
-            x_dec_so_far = torch.cat([x_dec_so_far, next_input], dim=1)
-
-        return torch.cat(preds, dim=1)
-
 
     def _forward_autoregressive(self, src, targets, epoch):
         """

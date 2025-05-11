@@ -1,15 +1,14 @@
 # Import main components to make them available at the package level
 from .core import ForecastingModel
 from .enc_dec import (
-    LSTMEncoder, 
+    LSTMEncoder,
     LSTMDecoder,
     GRUEncoder,
     GRUDecoder,
-    TransformerEncoder,
-    TransformerDecoder,
     VariationalEncoderWrapper,
-    LatentConditionedDecoder
+    LatentConditionedDecoder,
 )
+from .transformer import TransformerEncoder, TransformerDecoder
 from .att import AttentionLayer
 from .preprocessing import TimeSeriesPreprocessor
 from .utils import TimeSeriesDataset, create_dataloaders, Trainer
@@ -27,7 +26,7 @@ __all__ = [
     "LSTMEncoder",
     "LSTMDecoder",
     "GRUEncoder",
-    "GRUDecoder", 
+    "GRUDecoder",
     "TransformerEncoder",
     "TransformerDecoder",
     "VariationalEncoderWrapper",
@@ -40,5 +39,5 @@ __all__ = [
     "TimeSeriesSeq2Seq",
     "ModelConfig",
     "TrainingConfig",
-    'blocks',
+    "blocks",
 ]

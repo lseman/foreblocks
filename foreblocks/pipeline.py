@@ -12,9 +12,9 @@ from .core import ForecastingModel
 from .enc_dec import (
     LSTMEncoder, LSTMDecoder,
     GRUEncoder, GRUDecoder,
-    TransformerEncoder, TransformerDecoder,
     VariationalEncoderWrapper, LatentConditionedDecoder,
 )
+from .transformer import TransformerEncoder, TransformerDecoder
 from .att import AttentionLayer
 
 from .utils import Trainer  # Your existing Trainer implementation
