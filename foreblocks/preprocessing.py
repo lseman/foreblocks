@@ -264,6 +264,9 @@ class TimeSeriesPreprocessor:
         if self.apply_imputation:
             processed = self._impute_missing(processed)
             self._plot_comparison(data, processed, "After Imputation", time_stamps)
+        # check if processed contains nan
+        if np.any(np.isnan(processed)):
+            raise ValueError("Imputation failed, data still contains NaN values.")
         
         # Remove outliers if needed
         if self.remove_outliers:
@@ -279,6 +282,9 @@ class TimeSeriesPreprocessor:
 
             self._plot_comparison(processed, cleaned, "After Outlier Removal", time_stamps)
             processed = cleaned
+
+        if np.any(np.isnan(processed)):
+            raise ValueError("Imputation failed, data still contains NaN values.")
         
         # Apply EWT and detrending if needed
         if self.apply_ewt:
@@ -414,65 +420,72 @@ class TimeSeriesPreprocessor:
             predictions = np.exp(predictions) - self.log_offset
         
         return predictions
-        
     def _remove_outliers(self, data_col: np.ndarray) -> np.ndarray:
         """
         Remove outliers from a data column using the specified method.
+        Replaces detected outliers with the column median to avoid NaNs.
         Always returns shape (N,)
         """
         method = self.outlier_method
         threshold = self.outlier_threshold
-        x = data_col.flatten()  # shape: (N,)
+        x = data_col.flatten().astype(np.float64)  # ensure float
+
+        if x.size == 0 or np.isnan(x).all():
+            return x  # nothing to do
+
+        def replace_with_median(mask):
+            median = np.nanmedian(x[~mask]) if np.any(~mask) else 0.0
+            return np.where(mask, median, x)
 
         if method == "iqr":
             Q1, Q3 = np.percentile(x, [25, 75])
-            IQR = Q3 - Q1
+            IQR = Q3 - Q1 + 1e-8
             outlier_mask = (x < Q1 - threshold * IQR) | (x > Q3 + threshold * IQR)
-            x[outlier_mask] = np.nan
-            return x
+            return replace_with_median(outlier_mask)
 
         elif method == "zscore":
             mean, std = np.mean(x), np.std(x) + 1e-8
-            outlier_mask = np.abs((x - mean) / std) > threshold
-            x[outlier_mask] = np.nan
-            return x
+            z = np.abs((x - mean) / std)
+            outlier_mask = z > threshold
+            return replace_with_median(outlier_mask)
 
         elif method == "mad":
             med = np.median(x)
             mad = np.median(np.abs(x - med)) + 1e-6
-            outlier_mask = np.abs((x - med) / mad) > threshold * 1.4826
-            x[outlier_mask] = np.nan
-            return x
+            modified_z = np.abs((x - med) / mad) * 1.4826
+            outlier_mask = modified_z > threshold
+            return replace_with_median(outlier_mask)
 
         elif method == "quantile":
             low, high = np.percentile(x, [threshold * 100, 100 - threshold * 100])
             outlier_mask = (x < low) | (x > high)
-            x[outlier_mask] = np.nan
-            return x
+            return replace_with_median(outlier_mask)
 
         elif method == "isolation_forest":
             from sklearn.ensemble import IsolationForest
             pred = IsolationForest(contamination=threshold).fit_predict(x.reshape(-1, 1))
-            return np.where(pred == 1, x, np.nan)
+            outlier_mask = pred != 1
+            return replace_with_median(outlier_mask)
 
         elif method == "lof":
             from sklearn.neighbors import LocalOutlierFactor
             pred = LocalOutlierFactor(n_neighbors=20, contamination=threshold).fit_predict(x.reshape(-1, 1))
-            return np.where(pred == 1, x, np.nan)
+            outlier_mask = pred != 1
+            return replace_with_median(outlier_mask)
 
         elif method == "ecod":
             try:
                 from pyod.models.ecod import ECOD
                 model = ECOD()
                 pred = model.fit(x.reshape(-1, 1)).predict(x.reshape(-1, 1))
-                return np.where(pred == 0, x, np.nan)
+                outlier_mask = pred == 1
+                return replace_with_median(outlier_mask)
             except ImportError:
                 warnings.warn("pyod not installed. Falling back to IQR.")
                 Q1, Q3 = np.percentile(x, [25, 75])
-                IQR = Q3 - Q1
+                IQR = Q3 - Q1 + 1e-8
                 outlier_mask = (x < Q1 - threshold * IQR) | (x > Q3 + threshold * IQR)
-                x[outlier_mask] = np.nan
-                return x
+                return replace_with_median(outlier_mask)
 
         raise ValueError(f"Unsupported outlier method: {method}")
 
