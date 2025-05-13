@@ -267,10 +267,16 @@ class TimeSeriesPreprocessor:
         
         # Remove outliers if needed
         if self.remove_outliers:
-            cleaned = np.stack([
-                self._remove_outliers(processed[:, i]).ravel() 
-                for i in range(processed.shape[1])
-            ], axis=1)
+            cleaned_cols = []
+            for i in range(processed.shape[1]):
+                col = processed[:, i]
+                cleaned = self._remove_outliers(col)
+                if cleaned.shape != col.shape:
+                    raise ValueError(f"Outlier method returned shape {cleaned.shape} but expected {col.shape} for feature {i}")
+                cleaned_cols.append(cleaned)
+
+            cleaned = np.stack(cleaned_cols, axis=1)
+
             self._plot_comparison(processed, cleaned, "After Outlier Removal", time_stamps)
             processed = cleaned
         
@@ -330,7 +336,7 @@ class TimeSeriesPreprocessor:
                 
             for i in range(processed.shape[1]):
                 try:
-                    from PyEWT import EWT1D
+                    from ewtpy import EWT1D
                     ewt, _, _ = EWT1D(processed[:, i], N=len(self.ewt_boundaries[i]), 
                                      detect="given_bounds", boundaries=self.ewt_boundaries[i])
                     
@@ -408,59 +414,66 @@ class TimeSeriesPreprocessor:
             predictions = np.exp(predictions) - self.log_offset
         
         return predictions
-
+        
     def _remove_outliers(self, data_col: np.ndarray) -> np.ndarray:
         """
         Remove outliers from a data column using the specified method.
-        
-        Args:
-            data_col: Data column
-            
-        Returns:
-            Cleaned data column
+        Always returns shape (N,)
         """
         method = self.outlier_method
         threshold = self.outlier_threshold
-        x = data_col.reshape(-1, 1)
-        
+        x = data_col.flatten()  # shape: (N,)
+
         if method == "iqr":
-            Q1, Q3 = np.percentile(x, [25, 75], axis=0)
+            Q1, Q3 = np.percentile(x, [25, 75])
             IQR = Q3 - Q1
-            return np.clip(x, Q1 - threshold * IQR, Q3 + threshold * IQR)
-            
+            outlier_mask = (x < Q1 - threshold * IQR) | (x > Q3 + threshold * IQR)
+            x[outlier_mask] = np.nan
+            return x
+
         elif method == "zscore":
-            z = (x - x.mean()) / x.std()
-            return np.clip(x, x.mean() - threshold * x.std(), x.mean() + threshold * x.std())
-            
+            mean, std = np.mean(x), np.std(x) + 1e-8
+            outlier_mask = np.abs((x - mean) / std) > threshold
+            x[outlier_mask] = np.nan
+            return x
+
         elif method == "mad":
             med = np.median(x)
-            mad = np.median(np.abs(x - med))
-            return np.where(np.abs((x - med) / (mad + 1e-6)) <= threshold * 1.4826, x, med)
-            
+            mad = np.median(np.abs(x - med)) + 1e-6
+            outlier_mask = np.abs((x - med) / mad) > threshold * 1.4826
+            x[outlier_mask] = np.nan
+            return x
+
         elif method == "quantile":
             low, high = np.percentile(x, [threshold * 100, 100 - threshold * 100])
-            return np.clip(x, low, high)
-            
+            outlier_mask = (x < low) | (x > high)
+            x[outlier_mask] = np.nan
+            return x
+
         elif method == "isolation_forest":
             from sklearn.ensemble import IsolationForest
-            pred = IsolationForest(contamination=threshold).fit_predict(x)
+            pred = IsolationForest(contamination=threshold).fit_predict(x.reshape(-1, 1))
             return np.where(pred == 1, x, np.nan)
-            
+
         elif method == "lof":
-            pred = LocalOutlierFactor(n_neighbors=20, contamination=threshold).fit_predict(x)
+            from sklearn.neighbors import LocalOutlierFactor
+            pred = LocalOutlierFactor(n_neighbors=20, contamination=threshold).fit_predict(x.reshape(-1, 1))
             return np.where(pred == 1, x, np.nan)
-            
+
         elif method == "ecod":
             try:
                 from pyod.models.ecod import ECOD
-                pred = ECOD().fit(x).predict(x)
+                model = ECOD()
+                pred = model.fit(x.reshape(-1, 1)).predict(x.reshape(-1, 1))
                 return np.where(pred == 0, x, np.nan)
             except ImportError:
-                warnings.warn("pyod not installed. Using IQR instead.")
-                Q1, Q3 = np.percentile(x, [25, 75], axis=0)
+                warnings.warn("pyod not installed. Falling back to IQR.")
+                Q1, Q3 = np.percentile(x, [25, 75])
                 IQR = Q3 - Q1
-                return np.clip(x, Q1 - threshold * IQR, Q3 + threshold * IQR)
-        
+                outlier_mask = (x < Q1 - threshold * IQR) | (x > Q3 + threshold * IQR)
+                x[outlier_mask] = np.nan
+                return x
+
         raise ValueError(f"Unsupported outlier method: {method}")
 
     def _impute_missing(self, data: np.ndarray) -> np.ndarray:
@@ -529,7 +542,7 @@ class TimeSeriesPreprocessor:
             Transformed data
         """
         try:
-            from PyEWT import EWT1D
+            from ewtpy import EWT1D
         except ImportError:
             warnings.warn("PyEWT not installed. Skipping EWT.")
             return data
@@ -620,28 +633,35 @@ class TimeSeriesPreprocessor:
                         title: str = "Preprocessing Comparison", time_stamps=None) -> None:
         """
         Plot a comparison between original and processed data.
-        
-        Args:
-            original: Original data
-            cleaned: Processed data
-            title: Plot title
-            time_stamps: Optional timestamps for x-axis
         """
         original = np.atleast_2d(original)
         cleaned = np.atleast_2d(cleaned)
         
-        if original.shape[0] == 1: 
+        # Ensure shape is (n_samples, n_features)
+        if original.shape[0] == 1:
             original = original.T
-        if cleaned.shape[0] == 1: 
+        elif original.shape[1] == 1 and original.shape[0] > 1:
+            pass  # Already correct
+        elif original.shape[0] != cleaned.shape[0]:
+            # Try to reshape as (n_samples, n_features) if flattened
+            raise ValueError(f"Original shape {original.shape} does not match cleaned shape {cleaned.shape}")
+
+        if cleaned.shape[0] == 1:
             cleaned = cleaned.T
-            
-        fig, axs = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+        if original.shape != cleaned.shape:
+            raise ValueError(f"Shape mismatch after processing: original {original.shape}, cleaned {cleaned.shape}")
+        
         x = time_stamps if time_stamps is not None else np.arange(original.shape[0])
+        if len(x) != original.shape[0]:
+            raise ValueError(f"Length of x ({len(x)}) does not match number of samples ({original.shape[0]})")
+
+        fig, axs = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
         
         for i in range(original.shape[1]):
             axs[0].plot(x, original[:, i], label=f"Feature {i}")
             axs[1].plot(x, cleaned[:, i], label=f"Feature {i}")
-            
+
         axs[0].set_title("Original")
         axs[1].set_title("Cleaned")
         axs[0].legend()
@@ -651,6 +671,7 @@ class TimeSeriesPreprocessor:
         fig.suptitle(title)
         plt.tight_layout()
         plt.show()
+
 
     def get_ewt_components(self) -> Optional[List]:
         """Get the EWT components if EWT was applied."""
