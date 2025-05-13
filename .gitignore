@@ -1,1 +1,6 @@
 __pycache__/
+.venv/
+flash-attention/
+examples/test.ipynb
+examples/rodrigo.ipynb
+examples/df_demmand_without_category_2025_05_13.csv

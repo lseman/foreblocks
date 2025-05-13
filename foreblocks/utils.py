@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
+from typing import List, Tuple
 
 from .vsgd import *
 
@@ -333,12 +334,13 @@ class Trainer:
             print(f"  {k.upper():<5} = {v:.6f}")
 
         return metrics
-    
-    def plot_prediction(self, X_val: torch.Tensor, y_val: torch.Tensor, 
-                    full_series: Optional[torch.Tensor] = None, offset: int = 0, 
-                    figsize: Tuple[int, int] = (12, 8), show: bool = False) -> plt.Figure:
+
+    def plot_prediction(self, X_val: torch.Tensor, y_val: torch.Tensor,
+                        full_series: Optional[torch.Tensor] = None, offset: int = 0,
+                        figsize: Tuple[int, int] = (12, 4), show: bool = False) -> plt.Figure:
         """
         Plot predicted sequence over the validation data, aligned to form a full series forecast.
+        Creates one subplot for each feature in the last dimension.
         
         Args:
             X_val: Tensor of shape [N, seq_len, input_size]
@@ -347,7 +349,7 @@ class Trainer:
             offset: (Optional) Index offset for where the validation data starts in the full series
             figsize: (Optional) Figure size as (width, height) in inches
             show: (Optional) Whether to display the plot with plt.show()
-            
+        
         Returns:
             matplotlib Figure object for further customization or saving
         """
@@ -356,7 +358,6 @@ class Trainer:
         y_val = y_val.to(self.device)
         target_len = y_val.shape[1]
         output_size = y_val.shape[2]
-        
         forecast = torch.zeros((X_val.shape[0] + target_len - 1, output_size), device=self.device)
         count = torch.zeros_like(forecast)
         
@@ -367,29 +368,69 @@ class Trainer:
                 forecast[i:i + target_len] += pred
                 count[i:i + target_len] += 1
         
-        forecast = (forecast / count).squeeze().cpu().numpy()
+        forecast = (forecast / count).cpu().numpy()  # No squeeze to keep the output dimension
         
-        # Create figure and axes
-        fig, ax = plt.subplots(figsize=figsize)
-        
+        # Handle 3D full_series
         if full_series is not None:
-            full_series = full_series.squeeze().cpu().numpy()
+            full_series = full_series.cpu().numpy()
+            # If full_series is 3D, we'll create one subplot per feature in the last dimension
+            last_dim_size = full_series.shape[-1] if len(full_series.shape) > 1 else 1
+            
+            # Create figure with subplots (one row per feature in the last dimension)
+            fig, axes = plt.subplots(last_dim_size, 1, figsize=(figsize[0], figsize[1] * last_dim_size), sharex=True)
+            
+            # If there's only one feature, axes won't be an array, so make it one for consistency
+            if last_dim_size == 1:
+                axes = [axes]
+            
             forecast_start = offset + X_val.shape[1]
             
-            ax.plot(np.arange(len(full_series)), full_series, label="Original", alpha=0.5)
-            ax.plot(np.arange(forecast_start, forecast_start + len(forecast)), 
-                    forecast, label="Forecast", color="orange")
-            ax.axvline(x=forecast_start, color="gray", linestyle="--", label="Forecast Start")
+            for i in range(last_dim_size):
+                # For each feature in the last dimension
+                if len(full_series.shape) == 3:  # 3D case: [time, feature1, feature2]
+                    # Select all time steps, but only the current feature from the last dimension
+                    feature_series = full_series[:, 0, i]  # Taking first element from middle dimension as an example
+                elif len(full_series.shape) == 2:  # 2D case: [time, feature]
+                    feature_series = full_series[:, i]
+                else:  # 1D case
+                    feature_series = full_series
+                
+                axes[i].plot(np.arange(len(feature_series)), feature_series, 
+                            label=f"Original (Feature {i})", alpha=0.5)
+                
+                # Handle forecast for this feature
+                if forecast.ndim > 1:
+                    feature_forecast = forecast[:, i]
+                else:
+                    feature_forecast = forecast
+                    
+                axes[i].plot(np.arange(forecast_start, forecast_start + len(feature_forecast)),
+                            feature_forecast, label=f"Forecast (Feature {i})", color="orange")
+                axes[i].axvline(x=forecast_start, color="gray", linestyle="--", label="Forecast Start")
+                axes[i].set_title(f"Feature {i}: Full Series with Forecast")
+                axes[i].legend()
+                axes[i].grid(True)
             
-            ax.set_title("Full Series with Forecast")
+            # Set common labels
+            plt.xlabel("Time Step")
+            axes[last_dim_size // 2].set_ylabel("Value")  # Put y-label in the middle subplot
+            
         else:
-            ax.plot(forecast, label="Forecast", color="orange")
+            # No full_series provided, just plot the forecast
+            fig, ax = plt.subplots(figsize=figsize)
+            
+            # If forecast is multi-dimensional, plot each feature
+            if forecast.ndim > 1:
+                for i in range(forecast.shape[1]):
+                    ax.plot(forecast[:, i], label=f"Forecast (Feature {i})")
+            else:
+                ax.plot(forecast, label="Forecast", color="orange")
+                
             ax.set_title("Validation Prediction")
-        
-        ax.set_xlabel("Time Step")
-        ax.set_ylabel("Value")
-        ax.legend()
-        ax.grid(True)
+            ax.set_xlabel("Time Step")
+            ax.set_ylabel("Value")
+            ax.legend()
+            ax.grid(True)
         
         plt.tight_layout()
         

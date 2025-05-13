@@ -1,43 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import math
-import numpy as np
-from typing import Optional, List, Tuple, Union
-
-
-# === Fourier Neural Operator (FNO1D) ===
-class FNO1D(nn.Module):
-    def __init__(self, in_channels, out_channels, modes=16):
-        super().__init__()
-        self.modes = modes
-        self.fc1 = nn.Linear(in_channels, out_channels)
-        self.fc2 = nn.Linear(out_channels, out_channels)
-        self.activation = nn.GELU()
-        self.weight_real = nn.Parameter(torch.randn(out_channels, out_channels, modes))
-        self.weight_imag = nn.Parameter(torch.randn(out_channels, out_channels, modes))
-
-    def compl_mul1d_real(self, a_r, a_i, b_r, b_i):
-        return (
-            torch.einsum("bcm,ocm->bom", a_r, b_r) - torch.einsum("bcm,ocm->bom", a_i, b_i),
-            torch.einsum("bcm,ocm->bom", a_r, b_i) + torch.einsum("bcm,ocm->bom", a_i, b_r)
-        )
-
-    def forward(self, x):
-        x = self.activation(self.fc1(x)).permute(0, 2, 1)
-        x_ft = torch.fft.rfft(x, dim=-1)
-        r, i = x_ft.real, x_ft.imag
-        used_modes = min(self.modes, r.shape[-1])
-        r, i = r[:, :, :used_modes], i[:, :, :used_modes]
-        r_out, i_out = self.compl_mul1d_real(r, i, self.weight_real[:, :, :used_modes], self.weight_imag[:, :, :used_modes])
-        out_ft = torch.zeros(x.shape[0], self.fc2.out_features, r.shape[-1], dtype=torch.cfloat, device=x.device)
-        out_ft[:, :, :used_modes] = torch.complex(r_out, i_out)
-        x = torch.fft.irfft(out_ft, n=x.shape[-1], dim=-1).permute(0, 2, 1)
-        return self.activation(self.fc2(x))
-    
-# === Fourier Features Module ===
-import torch
-import torch.nn as nn
 import math
 from typing import Optional
 
@@ -47,6 +9,135 @@ import torch.nn.functional as F
 import math
 import numpy as np
 from typing import Optional, Tuple, Union
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
+class SpectralConv1D(nn.Module):
+    def __init__(self, in_channels, out_channels, modes):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.modes = modes
+
+        scale = 1 / math.sqrt(in_channels)
+        self.weight_real = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes))
+        self.weight_imag = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes))
+
+    def forward(self, x):
+        B, C, L = x.shape
+        x_ft = torch.fft.rfft(x, dim=-1)
+        L_ft = x_ft.shape[-1]
+        modes = min(self.modes, L_ft)
+
+        x_r = x_ft[:, :, :modes].real
+        x_i = x_ft[:, :, :modes].imag
+        w_r = self.weight_real[:, :, :modes]
+        w_i = self.weight_imag[:, :, :modes]
+
+        out_r = torch.einsum('bcm,com->bom', x_r, w_r) - torch.einsum('bcm,com->bom', x_i, w_i)
+        out_i = torch.einsum('bcm,com->bom', x_r, w_i) + torch.einsum('bcm,com->bom', x_i, w_r)
+
+        out_ft = torch.zeros(B, self.out_channels, L_ft, device=x.device, dtype=torch.cfloat)
+        out_ft[:, :, :modes] = torch.complex(out_r, out_i)
+
+        x_out = torch.fft.irfft(out_ft, n=L, dim=-1)
+        return x_out.permute(0, 2, 1)
+
+class FNO1DLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, modes):
+        super().__init__()
+        self.spectral = SpectralConv1D(in_channels, out_channels, modes)
+
+        # Align residual channels if needed
+        if in_channels != out_channels:
+            self.residual_proj = nn.Conv1d(in_channels, out_channels, kernel_size=1)
+        else:
+            self.residual_proj = nn.Identity()
+
+        self.norm = nn.LayerNorm(out_channels)
+        self.act = nn.GELU()
+
+    def forward(self, x):
+        # x: [B, L, C_in]
+        residual = x
+        x = x.permute(0, 2, 1)  # [B, C_in, L]
+        x = self.spectral(x)  # [B, L, C_out]
+
+        # Residual path (after projecting if needed)
+        residual = self.residual_proj(residual.permute(0, 2, 1)).permute(0, 2, 1)
+        x = x + residual  # [B, L, C_out]
+        x = self.act(self.norm(x))
+        return x
+
+
+def get_frequency_modes(seq_len, modes=64, mode_select_method='random'):
+    """
+    get modes on frequency domain:
+    'random' means sampling randomly;
+    'else' means sampling the lowest modes;
+    """
+    modes = min(modes, seq_len // 2)
+    if mode_select_method == 'random':
+        index = list(range(0, seq_len // 2))
+        np.random.shuffle(index)
+        index = index[:modes]
+    else:
+        index = list(range(0, modes))
+    index.sort()
+    return index
+
+
+class FourierBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, seq_len, modes=16, mode_select_method='random'):
+        super().__init__()
+        print('FourierBlock (real-valued weights, AMP-compatible) initialized.')
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.seq_len = seq_len
+        self.index = get_frequency_modes(seq_len, modes, mode_select_method)
+        self.modes = len(self.index)
+
+        scale = 1 / math.sqrt(in_channels * out_channels)
+
+        # Use real-valued weights for both real and imaginary parts
+        self.weight_real = nn.Parameter(scale * torch.randn(in_channels, out_channels, self.modes))
+        self.weight_imag = nn.Parameter(scale * torch.randn(in_channels, out_channels, self.modes))
+
+    def forward(self, x):
+        # x: [B, L, C]
+        B, L, C = x.shape
+        x = x.permute(0, 2, 1)  # [B, C, L]
+        x_ft = torch.fft.rfft(x, dim=-1)  # [B, C, L//2+1], complex
+
+        # Prepare output FFT buffer
+        out_ft = torch.zeros(B, self.out_channels, x_ft.shape[-1], device=x.device, dtype=torch.cfloat)
+
+        # Apply real-valued linear transformation in frequency domain
+        for i, freq_idx in enumerate(self.index):
+            if freq_idx >= x_ft.shape[-1]:
+                continue
+
+            xr = x_ft[:, :, freq_idx].real  # [B, in_channels]
+            xi = x_ft[:, :, freq_idx].imag  # [B, in_channels]
+
+            wr = self.weight_real[:, :, i]  # [in_channels, out_channels]
+            wi = self.weight_imag[:, :, i]  # [in_channels, out_channels]
+
+            # Re(Y) = Xr*Wr - Xi*Wi
+            # Im(Y) = Xr*Wi + Xi*Wr
+            real_part = torch.einsum('bi,io->bo', xr, wr) - torch.einsum('bi,io->bo', xi, wi)
+            imag_part = torch.einsum('bi,io->bo', xr, wi) + torch.einsum('bi,io->bo', xi, wr)
+
+            out_ft[:, :, freq_idx] = torch.complex(real_part, imag_part)
+
+        # Inverse FFT
+        x_out = torch.fft.irfft(out_ft, n=L, dim=-1)  # [B, out_channels, L]
+        return x_out.permute(0, 2, 1)  # [B, L, out_channels]
+
 
 
 class FourierFeatures(nn.Module):
@@ -280,11 +371,6 @@ class FourierFeatures(nn.Module):
         output = self.projection(combined)
         
         return output
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
 
 class AdaptiveFourierFeatures(nn.Module):
     def __init__(

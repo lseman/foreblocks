@@ -544,6 +544,7 @@ class TimeSeriesPreprocessor:
             signal = data[:, i]
             ewt, _, bounds = EWT1D(signal, N=self.ewt_bands)
             self.ewt_components.append(ewt)
+            print(f"→ EWT bands for feature {i}: {bounds}")
             self.ewt_boundaries.append(bounds)
             
             if self.detrend:

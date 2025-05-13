@@ -9,10 +9,10 @@ blocks specifically designed for time series forecasting and analysis.
 from .simple import GRU
 
 # Fourier-based blocks
-from .fourier import FourierFeatures, AdaptiveFourierFeatures
+from .fourier import FourierFeatures, AdaptiveFourierFeatures, FNO1DLayer
 
 # Attention-based blocks
-from .attention import HierarchicalAttention
+from .attention import HierarchicalAttention, AutoCorrelationBlock, AutoCorrelationPreprocessor
 
 # Graph-based blocks
 from .graph import SGConv
@@ -38,10 +38,10 @@ __all__ = [
     
     'NHA',
     # Fourier-based blocks
-    'FourierFeatures', 'AdaptiveFourierFeatures',
+    'FourierFeatures', 'AdaptiveFourierFeatures', 'FNO1DLayer',
     
     # Attention-based blocks
-    'HierarchicalAttention',
+    'HierarchicalAttention', 'AutoCorrelationBlock', 'AutoCorrelationPreprocessor'
     
     # Graph-based blocks
     'SGConv',

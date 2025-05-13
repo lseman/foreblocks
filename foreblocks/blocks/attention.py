@@ -228,3 +228,55 @@ class HierarchicalAttention(nn.Module):
         output = self.output_proj(level_outputs[0])
         
         return output
+class AutoCorrelationBlock(nn.Module):
+    def __init__(self, d_model, factor=1, dropout=0.1):
+        super().__init__()
+        self.factor = factor
+        self.projection = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def autocorrelation(self, query, key):
+        # Ensure float32 for FFT compatibility
+        query = query.float()
+        key = key.float()
+
+        B, T, D = query.shape
+
+        # FFT over time
+        q_fft = torch.fft.rfft(query, dim=1)
+        k_fft = torch.fft.rfft(key, dim=1)
+        corr_freq = q_fft * torch.conj(k_fft)
+        corr_time = torch.fft.irfft(corr_freq, n=T, dim=1)  # [B, T, D]
+        corr = corr_time.mean(dim=-1)  # [B, T]
+
+        # Top-k delays (lags)
+        topk = min(self.factor * int(math.log2(T)), T)
+        _, delays = torch.topk(corr, topk, dim=1)  # [B, K]
+
+        # Vectorized batched shifting
+        out = torch.zeros_like(key)
+        for i in range(topk):
+            shift_i = delays[:, i]  # [B]
+            shifted = torch.stack([
+                torch.roll(key[b], shifts=-shift_i[b].item(), dims=0)
+                for b in range(B)
+            ], dim=0)  # [B, T, D]
+            out += shifted
+
+        return out / topk
+
+    def forward(self, x):
+        # x: [B, T, D]
+        q = k = self.projection(x)
+        v = x
+        context = self.autocorrelation(q, k)
+        return self.dropout(context + v)
+
+
+class AutoCorrelationPreprocessor(nn.Module):
+    def __init__(self, d_model=1, factor=1, dropout=0.1):
+        super().__init__()
+        self.block = AutoCorrelationBlock(d_model, factor=factor, dropout=dropout)
+
+    def forward(self, x):
+        return self.block(x)
