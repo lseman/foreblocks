@@ -15,7 +15,7 @@ from .fourier import FourierFeatures, AdaptiveFourierFeatures, FNO1DLayer
 from .attention import HierarchicalAttention, AutoCorrelationBlock, AutoCorrelationPreprocessor
 
 # Graph-based blocks
-from .graph import SGConv
+from .graph import SGConv, AdaptiveGraphConv, GraphConvFactory, GraphConvProcessor, SimpleStemGNNProcessor
 
 # Multiscale processing blocks
 from .multiscale import MultiScaleTemporalConv
@@ -41,10 +41,11 @@ __all__ = [
     'FourierFeatures', 'AdaptiveFourierFeatures', 'FNO1DLayer',
     
     # Attention-based blocks
-    'HierarchicalAttention', 'AutoCorrelationBlock', 'AutoCorrelationPreprocessor'
+    'HierarchicalAttention', 'AutoCorrelationBlock', 'AutoCorrelationPreprocessor',
     
     # Graph-based blocks
-    'SGConv',
+    'SGConv', 'AdaptiveGraphConv', 'GraphConvFactory', 'GraphConvProcessor',
+    'SimpleStemGNNProcessor',
     
     # Multiscale processing blocks
     'MultiScaleTemporalConv',

@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import autocast, GradScaler
-
+from torch import Tensor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
@@ -48,7 +48,7 @@ class LSTMEncoder(EncoderBase):
             batch_first=True
         )
 
-    def forward(self, x, hidden=None):
+    def forward(self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         outputs, hidden = self.lstm(x, hidden)
         return outputs, hidden
 
@@ -67,7 +67,7 @@ class LSTMDecoder(DecoderBase):
         )
         self.output_layer = nn.Linear(hidden_size, output_size)
 
-    def forward(self, x, hidden=None):
+    def forward(self, x: torch.Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         if x.dim() == 2:
             x = x.unsqueeze(1)
         lstm_out, hidden = self.lstm(x, hidden)

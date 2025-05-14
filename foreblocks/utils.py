@@ -153,15 +153,22 @@ class Trainer:
         return None
 
     def _forward_pass(self, X, y):
-        return self.model(X, y)
+        return self.model(X, y, self.current_epoch)
 
     def _compute_loss(self, outputs, targets):
         loss = self.criterion(outputs, targets)
-        if self.config["l1_regularization"] > 0:
-            l1 = sum(torch.sum(torch.abs(p)) for p in self.model.parameters())
-            loss += self.config["l1_regularization"] * l1
+
+        # L1 regularization
+        l1_weight = self.config.get("l1_regularization", 0.0)
+        if l1_weight > 0:
+            l1 = sum(torch.sum(torch.abs(p)) for p in self.model.parameters() if p.requires_grad)
+            loss += l1_weight * l1
+
+        # KL divergence (e.g., for VAEs)
         if hasattr(self.model, 'kl_divergence'):
-            loss += self.config["kl_weight"] * self.model.kl_divergence()
+            kl_weight = self.config.get("kl_weight", 1.0)
+            loss += kl_weight * self.model.kl_divergence()
+
         return loss
 
     def _step_optimizer(self, loss, batch_idx, total_batches):
@@ -301,32 +308,30 @@ class Trainer:
         X_val = X_val.to(self.device)
         y_val = y_val.to(self.device)
 
-        target_len = y_val.shape[1]
-        output_size = y_val.shape[2]
-        forecast = torch.zeros((X_val.shape[0] + target_len - 1, output_size), device=self.device)
+        N, target_len, output_size = y_val.shape
+        forecast = torch.zeros((N + target_len - 1, output_size), device=self.device)
         count = torch.zeros_like(forecast)
 
         with torch.no_grad():
-            for i in range(X_val.shape[0]):
+            for i in range(N):
                 x = X_val[i].unsqueeze(0)  # [1, seq_len, input_size]
                 pred = self.model(x).squeeze(0)  # [target_len, output_size]
                 forecast[i:i + target_len] += pred
                 count[i:i + target_len] += 1
 
-        forecast = (forecast / count).squeeze()
-        
+        forecast = forecast / torch.clamp(count, min=1.0)
+
         # Reconstruct ground truth for comparison
         aligned_truth = torch.zeros_like(forecast)
         truth_count = torch.zeros_like(forecast)
 
-        y_val = y_val.squeeze()
-        for i in range(y_val.shape[0]):
+        for i in range(N):
             aligned_truth[i:i + target_len] += y_val[i]
             truth_count[i:i + target_len] += 1
 
         aligned_truth = aligned_truth / torch.clamp(truth_count, min=1.0)
 
-        # Compute metrics using existing helper
+        # Compute metrics per feature then average
         metrics = self._compute_metrics(forecast, aligned_truth)
 
         print("\nValidation Forecast Error Metrics:")
@@ -443,23 +448,21 @@ class Trainer:
     def _compute_metrics(self, prediction: Union[np.ndarray, torch.Tensor],
                         target: Union[np.ndarray, torch.Tensor]) -> Dict[str, float]:
         """
-        Compute error metrics between prediction and target:
-        MSE, RMSE, MAE.
-
-        Args:
-            prediction: Forecasted values as NumPy array or Torch tensor
-            target: Ground truth values as NumPy array or Torch tensor
-
-        Returns:
-            Dictionary with keys 'mse', 'rmse', and 'mae'
+        Compute per-feature error metrics between prediction and target:
+        MSE, RMSE, MAE. Returns overall mean across features.
         """
         if isinstance(prediction, torch.Tensor):
             prediction = prediction.detach().cpu().numpy()
         if isinstance(target, torch.Tensor):
             target = target.detach().cpu().numpy()
 
-        mse = np.mean((prediction - target) ** 2)
-        rmse = np.sqrt(mse)
-        mae = np.mean(np.abs(prediction - target))
+        # shape: [T, output_size] or [T, F]
+        mse_per_feat = np.mean((prediction - target) ** 2, axis=0)
+        rmse_per_feat = np.sqrt(mse_per_feat)
+        mae_per_feat = np.mean(np.abs(prediction - target), axis=0)
 
-        return {"mse": mse, "rmse": rmse, "mae": mae}
+        return {
+            "mse": float(np.mean(mse_per_feat)),
+            "rmse": float(np.mean(rmse_per_feat)),
+            "mae": float(np.mean(mae_per_feat))
+        }
