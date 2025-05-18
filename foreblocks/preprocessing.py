@@ -1,23 +1,47 @@
+# ============================
 # Standard Library
-from concurrent.futures import ProcessPoolExecutor, as_completed
+# ============================
 import copy
 import math
 import time
 import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
-import torch
-# Scientific Computing and Visualization
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+# ============================
+# External Libraries - Core
+# ============================
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import torch
+from joblib import Parallel, delayed
+from numba import njit, prange
+
+# ============================
+# Scientific Computing & ML
+# ============================
 from scipy.signal import savgol_filter, wiener
 from sklearn.ensemble import IsolationForest
 from sklearn.impute import KNNImputer
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
 from statsmodels.nonparametric.smoothers_lowess import lowess
-import statsmodels as sm
-# Optional imports
+from statsmodels.tsa.stattools import pacf
+import statsmodels.api as sm
+from scipy.stats import skew, kurtosis, entropy
+from scipy.signal import welch, find_peaks
+from statsmodels.tsa.stattools import adfuller, acf, pacf
+
+# ============================
+# Visualization
+# ============================
+import matplotlib.pyplot as plt
+
+from .pre.outlier import _remove_outliers
+
+# ============================
+# Optional Imports
+# ============================
 try:
     from pykalman import KalmanFilter
 except ImportError:
@@ -28,249 +52,196 @@ try:
 except ImportError:
     EMD = None
 
-from statsmodels.tsa.stattools import pacf
+# ============================
+# Internal Imports
+# ============================
+from .pre.filters import *
+from .pre.outlier import *
+from .pre.ewt import *
+from .pre.outlier import _remove_outliers_parallel
+
+from tqdm import tqdm
 
 
-from numba import njit, prange
+FILTER_METHODS = {
+    "savgol": lambda self, d, k: adaptive_savgol_filter(d, window=self.filter_window, polyorder=self.filter_polyorder),
+    "kalman": lambda self, d, k: kalman_filter(d),
+    "lowess": lambda self, d, k: lowess_filter(d, frac=k.get("frac", 0.05)),
+    "wiener": lambda self, d, k: wiener_filter(d, mysize=k.get("mysize", 15)),
+    "emd": lambda self, d, k: emd_filter(d, keep_ratio=k.get("keep_ratio", 0.5)),
+    "none": lambda self, d, k: d,
+}
 
-@njit(parallel=True)
-def fast_zscore_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
-    """
-    Numba-accelerated Z-score outlier removal.
-    """
-    mean = np.nanmean(x)
-    std = np.nanstd(x) + 1e-8
-    n = x.shape[0]
-    result = np.copy(x)
-    for i in prange(n):
-        if not np.isnan(x[i]):
-            z = abs((x[i] - mean) / std)
-            if z > threshold:
-                result[i] = np.nan
-    return result
-
-@njit(parallel=True)
-def fast_iqr_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
-    """
-    Numba-accelerated IQR outlier removal.
-    """
-    q1 = np.percentile(x[~np.isnan(x)], 25)
-    q3 = np.percentile(x[~np.isnan(x)], 75)
-    iqr = q3 - q1 + 1e-8
-    lower = q1 - threshold * iqr
-    upper = q3 + threshold * iqr
-    n = x.shape[0]
-    result = np.copy(x)
-    for i in prange(n):
-        if not np.isnan(x[i]) and (x[i] < lower or x[i] > upper):
-            result[i] = np.nan
-    return result
-
-
-def pacf_decay(series: np.ndarray, threshold: float = 0.2, max_lag: int = 20) -> int:
-    """
-    Returns number of lags where PACF exceeds the threshold.
-    """
-    x = series[~np.isnan(series)]
-    if len(x) < max_lag:
-        return 0
-    pacf_vals = pacf(x, nlags=max_lag, method="yw")[1:]  # 'yw' is valid
-    return np.sum(np.abs(pacf_vals) > threshold)
-
+def apply_log_transform(data: np.ndarray, log_flags: List[bool]) -> Tuple[np.ndarray, np.ndarray]:
+    offsets = np.array([
+        max(0.0, -np.nanmin(data[:, i]) + 1.0) if log_flags[i] else 0.0
+        for i in range(data.shape[1])
+    ])
+    transformed = np.column_stack([
+        np.log(data[:, i] + offsets[i]) if log_flags[i] else data[:, i]
+        for i in range(data.shape[1])
+    ])
+    return transformed, offsets
 
 # Set consistent matplotlib styling
 def set_plot_style():
-    plt.rcParams.update({
-        "figure.figsize": (18, 9),
-        "figure.facecolor": "white",
-        "figure.dpi": 100,
-        "axes.facecolor": "white",
-        "axes.edgecolor": "#333333",
-        "axes.labelcolor": "#333333",
-        "axes.labelsize": 14,
-        "axes.titlesize": 16,
-        "axes.titleweight": "bold",
-        "axes.grid": True,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "xtick.color": "#333333",
-        "ytick.color": "#333333",
-        "xtick.labelsize": 12,
-        "ytick.labelsize": 12,
-        "grid.color": "#dddddd",
-        "grid.linestyle": "--",
-        "grid.linewidth": 0.5,
-        "legend.frameon": True,
-        "legend.framealpha": 0.9,
-        "legend.facecolor": "white",
-        "legend.edgecolor": "#cccccc",
-        "legend.fontsize": 12,
-        "legend.loc": "upper right",
-        "lines.linewidth": 1.8,
-        "lines.markersize": 6,
-        "font.family": "DejaVu Sans",
-        "savefig.facecolor": "white",
-        "savefig.edgecolor": "white",
-        "savefig.dpi": 150,
-    })
+    plt.rcParams.update(
+        {
+            "figure.figsize": (18, 9),
+            "figure.facecolor": "white",
+            "figure.dpi": 100,
+            "axes.facecolor": "white",
+            "axes.edgecolor": "#333333",
+            "axes.labelcolor": "#333333",
+            "axes.labelsize": 14,
+            "axes.titlesize": 16,
+            "axes.titleweight": "bold",
+            "axes.grid": True,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "xtick.color": "#333333",
+            "ytick.color": "#333333",
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "grid.color": "#dddddd",
+            "grid.linestyle": "--",
+            "grid.linewidth": 0.5,
+            "legend.frameon": True,
+            "legend.framealpha": 0.9,
+            "legend.facecolor": "white",
+            "legend.edgecolor": "#cccccc",
+            "legend.fontsize": 12,
+            "legend.loc": "upper right",
+            "lines.linewidth": 1.8,
+            "lines.markersize": 6,
+            "font.family": "DejaVu Sans",
+            "savefig.facecolor": "white",
+            "savefig.edgecolor": "white",
+            "savefig.dpi": 150,
+        }
+    )
 
 
-# Filter functions
-def adaptive_savgol_filter(data: np.ndarray, window: int = 15, polyorder: int = 2) -> np.ndarray:
-    """Apply adaptive Savitzky-Golay filter to the data."""
-    filtered = np.copy(data)
-    T, F = data.shape
+import numpy as np
+import pandas as pd
+from scipy.stats import skew, kurtosis, entropy
+from scipy.signal import welch, find_peaks
+from statsmodels.tsa.stattools import adfuller, acf, pacf
+from tqdm import tqdm
+import warnings
 
-    for i in range(F):
-        x = data[:, i]
-        mask = ~np.isnan(x)
-        if np.sum(mask) < polyorder + 2:
-            continue
+def compute_basic_stats(data):
+    valid_mask = ~np.isnan(data)
+    coverage = np.mean(valid_mask, axis=0)
+    means = np.nanmean(data, axis=0)
+    stds = np.nanstd(data, axis=0)
+    skews = skew(data, nan_policy="omit")
+    kurts = kurtosis(data, nan_policy="omit")
+    return coverage, means, stds, skews, kurts
 
-        x_valid = x[mask]
-        volatility = np.std(x_valid)
-        base = window
-        factor = np.clip(volatility / (np.mean(np.abs(x_valid)) + 1e-8), 0.5, 2.0)
-        adaptive_window = int(base * factor)
-        adaptive_window = max(polyorder + 2, adaptive_window)
-        if adaptive_window % 2 == 0:
-            adaptive_window += 1
-
+def detect_stationarity(data, D):
+    pvals = []
+    for i in range(D):
+        clean = data[:, i][~np.isnan(data[:, i])]
         try:
-            filtered_values = savgol_filter(x_valid, adaptive_window, polyorder)
-            filtered[mask, i] = filtered_values
+            pval = adfuller(clean)[1] if len(clean) > 10 else 1.0
         except Exception:
+            pval = 1.0
+        pvals.append(pval)
+    return pvals
+
+def detect_seasonality(data, D):
+    seasonal_flags, detected_periods = [], []
+    for i in range(D):
+        clean = data[:, i][~np.isnan(data[:, i])]
+        if len(clean) < 10:
+            seasonal_flags.append(False)
+            detected_periods.append(None)
             continue
-
-    return filtered
-
-
-def kalman_filter(data: np.ndarray) -> np.ndarray:
-    """Apply Kalman filter to the data."""
-    if KalmanFilter is None:
-        raise ImportError("pykalman not installed")
-
-    filtered = np.copy(data)
-    T, F = data.shape
-    for i in range(F):
-        x = data[:, i]
-        mask = ~np.isnan(x)
-        if np.sum(mask) < 10:
+        norm = (clean - np.mean(clean)) / (np.std(clean) + 1e-8)
+        freqs, psd = welch(norm, nperseg=min(256, len(norm)))
+        peaks, _ = find_peaks(psd, height=0.1 * np.max(psd))
+        if len(peaks) == 0:
+            seasonal_flags.append(False)
+            detected_periods.append(None)
             continue
-
-        kf = KalmanFilter(initial_state_mean=0, n_dim_obs=1)
+        peak_freq = freqs[peaks[np.argmax(psd[peaks])]]
+        period = int(round(1.0 / peak_freq)) if peak_freq > 0 else None
         try:
-            kf = kf.em(x[mask], n_iter=5)
-            smoothed, _ = kf.smooth(x[mask])
-            filtered[mask, i] = smoothed.flatten()
+            acf_vals = acf(norm, nlags=min(100, len(norm) // 2))
+            acf_peaks, _ = find_peaks(acf_vals, height=0.2)
+            strength = np.max(acf_vals[acf_peaks]) if len(acf_peaks) > 0 else 0
+            is_seasonal = strength > 0.3
         except Exception:
+            is_seasonal = False
+        seasonal_flags.append(is_seasonal)
+        detected_periods.append(period if is_seasonal else None)
+    return seasonal_flags, detected_periods
+
+def analyze_signal_quality(data, D):
+    flatness_scores, snr_scores = [], []
+    for i in range(D):
+        clean = data[:, i][~np.isnan(data[:, i])]
+        if len(clean) < 10:
+            flatness_scores.append(1.0)
+            snr_scores.append(0.0)
             continue
-
-    return filtered
-
-
-def lowess_filter(data: np.ndarray, frac: float = 0.05) -> np.ndarray:
-    """Apply LOWESS filter to the data."""
-    T, F = data.shape
-    filtered = np.full_like(data, np.nan)
-    for i in range(F):
-        x = data[:, i]
-        mask = ~np.isnan(x)
-        if np.sum(mask) > 10:
-            smoothed = lowess(x[mask], np.arange(T)[mask], frac=frac, return_sorted=False)
-            filtered[mask, i] = smoothed
-    return filtered
-
-
-def wiener_filter(data: np.ndarray, mysize: int = 15) -> np.ndarray:
-    """Apply Wiener filter to the data."""
-    return np.column_stack([
-        wiener(data[:, i]) if not np.isnan(data[:, i]).all() else data[:, i]
-        for i in range(data.shape[1])
-    ])
-
-
-def emd_filter(data: np.ndarray, keep_ratio: float = 0.5) -> np.ndarray:
-    """Apply Empirical Mode Decomposition filter to the data."""
-    if EMD is None:
-        raise ImportError("PyEMD not installed")
-
-    T, F = data.shape
-    filtered = np.copy(data)
-    for i in range(F):
-        x = data[:, i]
-        if np.isnan(x).any():
+        norm = (clean - np.mean(clean)) / (np.std(clean) + 1e-8)
+        spec = np.abs(np.fft.rfft(norm))**2
+        spec = spec[1:len(spec) // 2]
+        if len(spec) == 0:
+            flatness_scores.append(1.0)
+            snr_scores.append(0.0)
             continue
-        imfs = EMD().emd(x)
-        keep = int(len(imfs) * keep_ratio)
-        filtered[:, i] = np.sum(imfs[:keep], axis=0)
-    return filtered
+        flat = np.exp(np.mean(np.log(spec + 1e-8))) / (np.mean(spec) + 1e-8)
+        snr = np.max(spec) / (np.mean(spec) + 1e-8)
+        flatness_scores.append(flat)
+        snr_scores.append(snr)
+    return flatness_scores, snr_scores
 
-
-def _remove_outliers(data_col: np.ndarray, method: str, threshold: float) -> np.ndarray:
-    """
-    Remove outliers from a data column using the specified method.
-    Replaces detected outliers with np.nan.
-    Always returns shape (N,)
-    """
-    x = data_col.flatten().astype(np.float64)  # ensure float
-
-    if x.size == 0 or np.isnan(x).all():
-        return x  # nothing to do
-
-    def mask_to_nan(mask):
-        return np.where(mask, np.nan, x)
-
-    if method == "zscore":
-        return fast_zscore_outlier_removal(x, threshold)
-
-    elif method == "iqr":
-        return fast_iqr_outlier_removal(x, threshold)
-
-    elif method == "mad":
-        med = np.median(x)
-        mad = np.median(np.abs(x - med)) + 1e-6
-        modified_z = np.abs((x - med) / mad) * 1.4826
-        outlier_mask = modified_z > threshold
-        return mask_to_nan(outlier_mask)
-
-    elif method == "quantile":
-        low, high = np.percentile(x, [threshold * 100, 100 - threshold * 100])
-        outlier_mask = (x < low) | (x > high)
-        return mask_to_nan(outlier_mask)
-
-    elif method == "isolation_forest":
-        pred = IsolationForest(contamination=threshold).fit_predict(x.reshape(-1, 1))
-        outlier_mask = pred != 1
-        return mask_to_nan(outlier_mask)
-
-    elif method == "lof":
-        pred = LocalOutlierFactor(n_neighbors=20, contamination=threshold).fit_predict(x.reshape(-1, 1))
-        outlier_mask = pred != 1
-        return mask_to_nan(outlier_mask)
-
-    elif method == "ecod":
+def score_pacf(data, D):
+    pacf_scores = []
+    for i in range(D):
+        clean = data[:, i][~np.isnan(data[:, i])]
+        if len(clean) < 30:
+            pacf_scores.append(0)
+            continue
         try:
-            from pyod.models.ecod import ECOD
-            model = ECOD()
-            pred = model.fit(x.reshape(-1, 1)).predict(x.reshape(-1, 1))
-            outlier_mask = pred == 1
-            return mask_to_nan(outlier_mask)
-        except ImportError:
-            warnings.warn("pyod not installed. Falling back to IQR.")
-            Q1, Q3 = np.percentile(x, [25, 75])
-            IQR = Q3 - Q1 + 1e-8
-            outlier_mask = (x < Q1 - threshold * IQR) | (x > Q3 + threshold * IQR)
-            return mask_to_nan(outlier_mask)
+            pacf_vals = pacf(clean, nlags=min(20, len(clean) // 3), method="ols")
+            score = np.sum(np.abs(pacf_vals[1:]) > 0.2)
+        except Exception:
+            score = 0
+        pacf_scores.append(score)
+    return pacf_scores
 
-    raise ValueError(f"Unsupported outlier method: {method}")
+def estimate_ewt_bands(data, D):
+    band_estimates = []
+    for i in range(D):
+        clean = data[:, i][~np.isnan(data[:, i])]
+        if len(clean) < 20:
+            band_estimates.append(3)
+            continue
+        hist, _ = np.histogram(clean, bins=20, density=True)
+        hist += 1e-10
+        hist /= np.sum(hist)
+        ent = entropy(hist)
+        band_estimates.append(int(np.clip(ent * 2, 2, 10)))
+    return band_estimates
 
-
-def _remove_outliers_wrapper(args):
-    """Wrapper function for parallel outlier removal."""
-    i, col, method, threshold = args
-    cleaned = _remove_outliers(col, method, threshold)
-    return i, cleaned
+def summarize_configuration(params):
+    from tabulate import tabulate
+    print("\n" + tabulate([
+        ["Dataset Dimensions", params['dimensions']],
+        ["Missing Values", f"{params['missing_rate']:.2%}"],
+        ["Stationarity", "Non-stationary" if params['detrend'] else "Stationary"],
+        ["Seasonality", "Present" if params['seasonal'] else "Not detected"],
+        ["Transformation", "Log (selective)" if params['log_transform'] else "None"],
+        ["Signal Processing", params['filter_method'] if params['apply_filter'] else "None"],
+        ["Imputation", params['impute_method'] or "None"],
+        ["Outlier Detection", params['outlier_method']],
+        ["Outlier Threshold", f"{params['outlier_threshold']:.2f}"],
+        ["Decomposition", f"{params['ewt_bands']} bands"],
+    ], headers=["Parameter", "Configuration"], tablefmt="pretty"))
 
 
 class TimeSeriesPreprocessor:
@@ -285,6 +256,7 @@ class TimeSeriesPreprocessor:
     - Time feature generation
     - Missing value imputation with multiple strategies
     """
+
     def __init__(
         self,
         normalize=True,
@@ -306,10 +278,11 @@ class TimeSeriesPreprocessor:
         self_tune=False,
         generate_time_features=False,
         apply_imputation=False,
+        epochs = 200,
     ):
         """
         Initialize the TimeSeriesPreprocessor with the specified parameters.
-        
+
         Args:
             normalize: Whether to normalize data using StandardScaler
             differencing: Whether to apply differencing for stationarity
@@ -351,7 +324,8 @@ class TimeSeriesPreprocessor:
         self.self_tune = self_tune
         self.generate_time_features = generate_time_features
         self.apply_imputation = apply_imputation
-        
+        self.epochs = epochs
+
         # Fitted parameters (initialized as None)
         self.scaler = None
         self.log_offset = None
@@ -361,603 +335,518 @@ class TimeSeriesPreprocessor:
         self.ewt_boundaries = None
         self.log_transform_flags = None
         self.filter_method = "savgol"  # Default filter method
-        
+
+        self.available_methods = {
+            "ecod": True,
+            "tranad": True,
+            "isolation_forest": True,
+            "lof": True,
+            "zscore": True,
+            "mad": True,
+            "quantile": True,
+            "iqr": True,
+        }
+
         # Set matplotlib style
         set_plot_style()
+            
+    def _parallel_outlier_clean(self, data: np.ndarray) -> np.ndarray:
+        if self.outlier_method in {"tranad", "isolation_forest", "ecod", "lof"}:
+            # Whole-matrix method — skip per-column parallelism
+            cleaned = _remove_outliers(data, self.outlier_method, self.outlier_threshold,
+                                    seq_len=self.horizon, epochs=self.epochs)
+            return cleaned
+        else:
+            # Per-column parallel strategy
+            n_features = data.shape[1]
+            cleaned_cols = Parallel(n_jobs=-1)(
+                delayed(_remove_outliers_parallel)(i, data[:, i], self.outlier_method, self.outlier_threshold)
+                for i in tqdm(range(n_features), desc="Removing outliers")
+            )
+            cleaned_cols.sort(key=lambda tup: tup[0])
+            return np.stack([col for _, col in cleaned_cols], axis=1)
 
-    def auto_configure(self, data: np.ndarray) -> None:
-        """
-        Automatically configure preprocessing parameters based on data statistics.
-        
-        Args:
-            data: Input time series data
-        """
+
+    def _inverse_log_transform(self, data: np.ndarray) -> np.ndarray:
+        for i, flag in enumerate(self.log_transform_flags):
+            if flag and i < data.shape[1]:
+                data[:, i] = np.exp(data[:, i]) - self.log_offset[i]
+        return data
+
+    def auto_configure(self, data: np.ndarray, verbose=True) -> None:
         if not self.self_tune:
             return
-            
-        from scipy.stats import skew, entropy
 
-        print("\n📊 [Self-Tuning Preprocessing Configuration]")
+        print("\n📊 [Self-Tuning Configuration]")
+        T, D = data.shape
+        coverage, means, stds, skews, kurts = compute_basic_stats(data)
+        missing_rate = 1.0 - np.mean(coverage)
 
-        # Basic statistics
-        mean_vals = np.nanmean(data, axis=0)
-        std_vals = np.nanstd(data, axis=0)
-        missing_rate = np.mean(np.isnan(data))
-
-        # Feature quality check
-        feature_coverage = np.mean(~np.isnan(data), axis=0)
-        low_quality_flags = (feature_coverage < 0.5) | (std_vals < 1e-6)
-        print(f"→ Feature Quality (coverage < 50% or near-zero std): {low_quality_flags.tolist()}")
-
-        # Log transform suggestion based on skew
-        skews = skew(data, nan_policy='omit')
-        self.log_transform_flags = (np.abs(skews) > 1).tolist()
-        print(f"→ Skewness per feature: {np.round(skews, 3)}")
-        print(f"→ Log transform (per feature): {self.log_transform_flags}")
+        self.log_transform_flags = (np.abs(skews) > 1.0).tolist()
         self.log_transform = any(self.log_transform_flags)
+        low_quality = (coverage < 0.5) | (stds < 1e-6)
 
-        # Detrending via ADF test
-        try:
-            from statsmodels.tsa.stattools import adfuller
-            pvals = [
-                adfuller(data[:, i][~np.isnan(data[:, i])])[1] if np.sum(~np.isnan(data[:, i])) > 10 else 1.0
-                for i in range(data.shape[1])
-            ]
-            self.detrend = any(p > 0.05 for p in pvals)
-            print(f"→ ADF p-values: {np.round(pvals, 4)} → Detrend? {'✅' if self.detrend else '❌'}")
-        except ImportError:
-            print("→ ADF test skipped (statsmodels not installed)")
+        print(f"→ Low quality features: {low_quality.sum()}/{D}")
+        print(f"→ Log transform features: {sum(self.log_transform_flags)}/{D}")
 
-        # Period estimation for STL
-        def estimate_period(series, min_period=2, max_period=100):
-            from scipy.fft import fft
-            x = series[~np.isnan(series)]
-            if len(x) < max_period:
-                return None
-            spectrum = np.abs(fft(x - np.mean(x)))
-            spectrum[:min_period] = 0
-            peak = np.argmax(spectrum[min_period:max_period]) + min_period
-            return peak
+        # === Stationarity
+        pvals = detect_stationarity(data, D)
+        self.detrend = any(p > 0.05 for p in pvals)
 
-        try:
-            from statsmodels.tsa.seasonal import STL
-            periods = [estimate_period(data[:, i]) or 24 for i in range(data.shape[1])]
-            seasonal_flags = []
-            for i in range(data.shape[1]):
-                try:
-                    res = STL(data[:, i], period=periods[i], robust=True).fit()
-                    seasonal_flags.append(res.seasonal.std() > 0.1 * res.trend.std())
-                except Exception:
-                    seasonal_flags.append(False)
-            print(f"→ Estimated periods: {periods}")
-            print(f"→ Seasonality flags (STL): {seasonal_flags}")
-        except ImportError:
-            print("→ STL skipped (statsmodels not installed)")
+        print(f"→ Non-stationary features: {sum(p > 0.05 for p in pvals)}/{D} → Detrend: {'✅' if self.detrend else '❌'}")
 
-        # Spectral flatness for filtering
-        def spectral_flatness(x):
-            from scipy.fft import fft
-            x = x[~np.isnan(x)]
-            if len(x) < 10:
-                return 1.0
-            psd = np.abs(fft(x))**2
-            psd = psd[1:len(psd)//2]
-            return np.exp(np.mean(np.log(psd + 1e-8))) / (np.mean(psd) + 1e-8)
+        # === Seasonality
+        seasonal_flags, detected_periods = detect_seasonality(data, D)
+        self.seasonal = any(seasonal_flags)
+        print(f"→ Seasonal features: {sum(seasonal_flags)}/{D} → Seasonality: {'✅' if self.seasonal else '❌'}")
+        if self.seasonal:
+            print(f"→ Detected periods: {[p for p in detected_periods if p]}")
 
-        # Compute average flatness across features
-        flatness_scores = [spectral_flatness(data[:, i]) for i in range(data.shape[1])]
-        avg_flatness = np.mean(flatness_scores)
-        self.apply_filter = avg_flatness < 0.5
-        print(f"→ Spectral Flatness: {np.round(flatness_scores, 3)} → Filter? {'✅' if self.apply_filter else '❌'}")
+        # === Signal Quality
+        flatness_scores, snr_scores = analyze_signal_quality(data, D)
+        avg_flatness, avg_snr = np.mean(flatness_scores), np.mean(snr_scores)
+        self.apply_filter = avg_flatness < 0.6 or avg_snr > 5.0
 
-        # Compute sequence length
-        T = data.shape[0]
-
-        # Decision logic for filter method
-        if avg_flatness > 0.7 and missing_rate > 0.05:
-            self.filter_method = "kalman"      # robust to noise + NaNs
-        elif avg_flatness < 0.5 and T > 500:
-            self.filter_method = "savgol"      # clean signal, efficient
-        elif avg_flatness < 0.5 and T <= 500:
-            self.filter_method = "lowess"      # small series, nonlinear
-        elif avg_flatness >= 0.5 and T > 1000:
-            self.filter_method = "wiener"      # stationary noise, long series
+        if missing_rate > 0.2:
+            self.filter_method = "kalman"
+        elif avg_flatness < 0.4 and T > 500:
+            self.filter_method = "savgol"
+        elif avg_flatness < 0.5:
+            self.filter_method = "lowess"
+        elif avg_flatness >= 0.5 and T > 50:
+            self.filter_method = "wiener"
         else:
             self.filter_method = "none"
-            
-        print(f"→ Avg spectral flatness: {avg_flatness:.3f} → Filter method: {self.filter_method}")
+            self.apply_filter = False
 
-        autocorr_scores = [pacf_decay(data[:, i]) for i in range(data.shape[1])]
-        print(f"→ PACF decay avg: {np.mean(autocorr_scores):.2f}, Missing rate: {missing_rate:.3f} → Impute: {self.impute_method or 'None'}")
+        print(f"→ Signal quality: Flatness={avg_flatness:.2f}, SNR={avg_snr:.2f} → Filter: {self.filter_method}")
 
+        # === PACF
+        pacf_scores = score_pacf(data, D)
+        temporal_score = np.mean(pacf_scores)
+
+        # === Imputation
         if missing_rate == 0:
             self.impute_method = None
-        elif np.mean(autocorr_scores) > 3:
-            self.impute_method = "interpolate"
+        elif missing_rate < 0.05:
+            self.impute_method = "interpolate" if temporal_score > 2 else "mean"
         elif missing_rate < 0.15:
             self.impute_method = "knn"
-        else:
+        elif missing_rate < 0.3:
+            self.impute_method = "interpolate" if temporal_score > 3 else "ffill"
+        elif missing_rate < 0.5:
             self.impute_method = "iterative"
-        print(f"→ Autocorr decay avg: {np.mean(autocorr_scores):.2f}, Missing rate: {missing_rate:.3f} → Impute: {self.impute_method or 'None'}")
+        else:
+            self.impute_method = "bfill"
 
-        # EWT band estimation
-        band_suggestions = []
-        for i in range(data.shape[1]):
-            valid_data = data[:, i][~np.isnan(data[:, i])]
-            if len(valid_data) > 0:
-                hist, _ = np.histogram(valid_data, bins=20, density=True)
-                band_suggestions.append(int(np.clip(entropy(hist) * 1.5, 2, 10)))
-        if band_suggestions:
-            self.ewt_bands = int(np.round(np.mean(band_suggestions)))
-            print(f"→ EWT bands (entropy-based): {self.ewt_bands}")
+        print(f"→ Temporal structure: {temporal_score:.2f}, Missing rate: {missing_rate:.3f} → Impute: {self.impute_method or 'None'}")
 
-        from scipy.stats import kurtosis
+        # === EWT Bands
+        bands = estimate_ewt_bands(data, D)
+        self.ewt_bands = int(np.round(np.mean(bands)))
+        print(f"→ Wavelet decomposition bands: {self.ewt_bands}")
 
-        def _select_outlier_method(data: np.ndarray, skews: np.ndarray, missing_rate: float) -> str:
-            T, F = data.shape
-            extreme_flags = []
-            multimodal_flags = []
+        # === Outlier Method
+        extreme_mask = np.abs(data - means) > 6 * stds
+        extreme_ratio = np.nanmean(np.any(extreme_mask, axis=0))
+        heavy_tails = np.nanmean(kurts > 5)
+        high_skew = np.nanmean(np.abs(skews) > 2.5)
+        dimensionality_ratio = D / T
 
-            for i in range(F):
-                col = data[:, i][~np.isnan(data[:, i])]
-                if len(col) < 10:
-                    continue
-                # Check for extreme outliers (> 6 std deviations)
-                std = np.std(col)
-                extreme_flags.append(np.any(np.abs(col - np.mean(col)) > 6 * std))
+        scores = {}
 
-                # Kurtosis: high => heavy tails
-                k = kurtosis(col)
-                multimodal_flags.append(k > 5)
+        # === Heuristic-based scoring
+        scores["ecod"] = 2.0 if self.available_methods.get("ecod") else 0
+        scores["tranad"] = 2.5 if self.available_methods.get("tranad") and avg_snr > 5 else 0
+        scores["isolation_forest"] = 1.5 if T > 3000 and missing_rate < 0.1 else 0
+        scores["lof"] = 1.0 if D > 5 and dimensionality_ratio > 0.01 else 0
+        scores["zscore"] = 1.0 if high_skew > 0.4 or extreme_ratio > 0.2 else 0
+        scores["mad"] = 1.2 if heavy_tails > 0.3 and high_skew > 0.3 else 0
+        scores["quantile"] = 0.8 if D <= 5 and T < 1000 else 0
+        scores["iqr"] = 0.5  # fallback
 
-            extreme_ratio = np.mean(extreme_flags)
-            heavy_tail_ratio = np.mean(multimodal_flags)
-            high_skew_ratio = np.mean(np.abs(skews) > 2.5)
+        # === Optional: Dynamic penalty/boost
+        if avg_flatness < 0.3:
+            scores["tranad"] += 0.5
+        if np.mean(kurts) > 10:
+            scores["mad"] += 0.5
 
-            if T > 2000 and missing_rate < 0.1:
-                return "ecod"
-            elif extreme_ratio > 0.2 or high_skew_ratio > 0.3:
-                return "zscore"
-            elif heavy_tail_ratio > 0.3:
-                return "mad"
-            else:
-                return "iqr"
-        self.outlier_method = _select_outlier_method(data, skews, missing_rate)
+        # Select method with highest score
+        self.outlier_method = max(scores, key=scores.get)
 
-        # Summary table
-        try:
-            from tabulate import tabulate
-            print(tabulate([
-                ["Shape", data.shape],
-                ["Detrend", self.detrend],
-                ["Log Transform (any)", any(self.log_transform_flags)],
-                ["Imputation", self.impute_method],
-                ["EWT Bands", self.ewt_bands],
-                ["Filter?", self.apply_filter],
-                ["Outlier Method", self.outlier_method],
-                ["Filter Method", self.filter_method],
-            ], headers=["Config", "Value"], tablefmt="pretty"))
-        except ImportError:
-            pass
+        print(f"→ Outlier detection method: {self.outlier_method}")
+
+        def adaptive_threshold(skew: float, kurt: float) -> float:
+            # More tolerance if heavy-tailed or skewed
+            return 3.5 + min(1.5, 0.5 * np.abs(skew)) + 0.2 * max(0, kurt - 3)
+
+        self.outlier_threshold = adaptive_threshold(np.mean(skews), np.mean(kurts))
+        print(f"→ Outlier threshold: {self.outlier_threshold:.2f}")
+        if verbose:
+            summarize_configuration({
+                "dimensions": f"{T} × {D}",
+                "missing_rate": missing_rate,
+                "detrend": self.detrend,
+                "seasonal": self.seasonal,
+                "log_transform": self.log_transform,
+                "filter_method": self.filter_method,
+                "apply_filter": self.apply_filter,
+                "impute_method": self.impute_method,
+                "outlier_method": self.outlier_method,
+                "outlier_threshold": self.outlier_threshold,
+                "ewt_bands": self.ewt_bands
+            })
 
         print("✅ Self-tuning configuration complete.\n")
 
-    def fit_transform(self, data: np.ndarray, time_stamps=None, feats=None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+    def fit_transform(
+        self, data: np.ndarray, time_stamps=None, feats=None
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Preprocess input data and return (X, y, full_processed_data).
-        
-        Args:
-            data: Input time series data of shape [samples, features]
-            time_stamps: Optional timestamps for the data
-            feats: Optional subset of features to use for target
-            
-        Returns:
-            X: Input sequences of shape [num_sequences, window_size, features]
-            y: Target sequences of shape [num_sequences, horizon, target_features]
-            processed: Full processed data of shape [samples, features]
+        Preprocess input time series data and return preprocessed X, y, and full processed data.
         """
-        # If processed is tensor, convert to numpy
+        # 1. Tensor → NumPy
         if isinstance(data, torch.Tensor):
             data = data.cpu().numpy()
-        
         processed = data.copy()
-        
-        # Auto-configure preprocessing parameters if requested
+
+        # 2. Auto-configuration
         self.auto_configure(processed)
-                
-        # Impute missing values if needed
+
+        # 3. Imputation
         if self.apply_imputation:
             processed = self._impute_missing(processed)
             self._plot_comparison(data, processed, "After Imputation", time_stamps)
-            
-        # Check if processed contains nan
+
         if np.any(np.isnan(processed)):
-            raise ValueError("Imputation failed, data still contains NaN values.")
+            raise ValueError("NaNs remain after imputation.")
 
-        # Apply log transform if needed
-        if hasattr(self, 'log_transform_flags') and any(self.log_transform_flags):
-            self.log_offset = np.zeros(processed.shape[1], dtype=np.float64)
+        # 4. Log Transformation
+        if hasattr(self, "log_transform_flags") and any(self.log_transform_flags):
+            processed, self.log_offset = apply_log_transform(processed, self.log_transform_flags)
 
-            for i, flag in enumerate(self.log_transform_flags):
-                if flag:
-                    col = processed[:, i]
-                    min_val = np.nanmin(col)
-                    offset = np.abs(min_val) + 1.0 if min_val <= 0 else 0.0
-                    self.log_offset[i] = offset
-
-                    # Apply log transform safely with offset
-                    processed[:, i] = np.log(col + offset)
-
-        # Remove outliers if requested
+        # 5. Outlier Removal (parallelized)
         if self.remove_outliers:
-            n_features = processed.shape[1]
-            method = self.outlier_method
-            threshold = self.outlier_threshold
+            #method, threshold = self.outlier_method, self.outlier_threshold
+            processed = self._parallel_outlier_clean(processed)
+            self._plot_comparison(data, processed, "After Outlier Removal", time_stamps)
 
-            args_list = [(i, processed[:, i], method, threshold) for i in range(n_features)]
-            cleaned_cols = [None] * n_features
+            # Post-outlier imputation
+            if np.any(np.isnan(processed)):
+                processed = self._impute_missing(processed)
 
-            with ProcessPoolExecutor() as executor:
-                futures = [executor.submit(_remove_outliers_wrapper, args) for args in args_list]
-                for future in as_completed(futures):
-                    i, cleaned = future.result()
-                    if cleaned.shape != processed[:, i].shape:
-                        raise ValueError(f"Outlier method returned shape {cleaned.shape} but expected {processed[:, i].shape} for feature {i}")
-                    cleaned_cols[i] = cleaned
-
-            cleaned = np.stack(cleaned_cols, axis=1)
-            self._plot_comparison(processed, cleaned, "After Outlier Removal", time_stamps)
-            processed = cleaned
-
-            
-        # Check if processed contains nan after outlier removal
-        if np.any(np.isnan(processed)):
-            # call impute_missing again
-            processed = self._impute_missing(processed)
-        
-        # Apply EWT and detrending if needed
+        # 6. EWT + Detrending
         if self.apply_ewt:
             processed = self._apply_ewt_and_detrend(processed, time_stamps)
-        
-        # Apply filtering if needed
+
+        # 7. Filtering
         if self.apply_filter:
             filtered = self._apply_filter(processed, method=self.filter_method)
-            self._plot_comparison(processed, filtered, f"After {self.filter_method.capitalize()} Filtering", time_stamps)
+            self._plot_comparison(
+                processed,
+                filtered,
+                f"After {self.filter_method.capitalize()} Filtering",
+                time_stamps,
+            )
             processed = filtered
-        
-        # Apply differencing if needed
+
+        # 8. Differencing
         if self.differencing:
             self.diff_values = processed[0:1].copy()
-            processed[1:] = np.diff(processed, axis=0)
-            processed[0] = 0
-        
-        # Normalize if needed
+            processed = np.vstack(
+                [np.zeros_like(processed[0]), np.diff(processed, axis=0)]
+            )
+
+        # 9. Normalization
         if self.normalize:
             self.scaler = StandardScaler()
             processed = self.scaler.fit_transform(processed)
-        
-        # Generate time features if requested
+
+        # 10. Timestamp features
         if time_stamps is not None and self.generate_time_features:
             time_feats = self._generate_time_features(time_stamps)
             processed = np.concatenate((processed, time_feats), axis=1)
-        
-        # Create sequences and return
+
+        # 11. Sequence generation
         X, y = self._create_sequences(processed, feats)
         return X, y, processed
 
     def transform(self, data: np.ndarray, time_stamps=None) -> np.ndarray:
         """
-        Apply the same transformation as in fit_transform but without fitting.
-        
-        Args:
-            data: Input time series data
-            time_stamps: Optional timestamps for the data
-            
-        Returns:
-            X: Input sequences
+        Apply the same transformation as in fit_transform but without refitting.
         """
-        if self.normalize and self.scaler is None:
-            raise ValueError("Scaler not fitted. Call fit_transform first.")
-        
+        if isinstance(data, torch.Tensor):
+            data = data.cpu().numpy()
         processed = data.copy()
-        
-        # Apply log transform if needed
-        if hasattr(self, 'log_transform_flags') and any(self.log_transform_flags):
-            for i, flag in enumerate(self.log_transform_flags):
-                if flag:
-                    processed[:, i] = np.log(processed[:, i] + self.log_offset[i])
-        
-        # Apply EWT if needed
-        if self.apply_ewt:
-            if self.ewt_boundaries is None:
-                raise ValueError("EWT not fitted. Call fit_transform first.")
-                
-            for i in range(processed.shape[1]):
-                try:
-                    from ewtpy import EWT1D
-                    ewt, _, _ = EWT1D(processed[:, i], N=len(self.ewt_boundaries[i]), 
-                                     detect="given_bounds", boundaries=self.ewt_boundaries[i])
-                    
-                    # Apply detrending if needed
-                    if self.detrend:
-                        processed[:, i] -= ewt[:, self.trend_imf_idx]
-                except ImportError:
-                    warnings.warn("PyEWT not installed. Skipping EWT.")
-                    break
-        
-        # Apply filtering if needed
+
+        # Log transform
+        if self.log_transform and self.log_offset is not None:
+            processed, _ = apply_log_transform(processed, self.log_transform_flags)
+
+        # Filtering
         if self.apply_filter:
             processed = self._apply_filter(processed, method=self.filter_method)
-        
-        # Apply differencing if needed
+
+        # Differencing
         if self.differencing:
-            processed[1:] = np.diff(processed, axis=0)
-            processed[0] = 0
-        
-        # Apply normalization if needed
-        if self.normalize:
+            processed = np.vstack([
+                np.zeros_like(processed[0]),
+                np.diff(processed, axis=0)
+            ])
+
+        # Detrending via EWT
+        if self.apply_ewt:
+            for i in range(processed.shape[1]):
+                if self.ewt_boundaries and i < len(self.ewt_boundaries):
+                    from ewtpy import EWT1D
+                    ewt, _, _ = EWT1D(
+                        processed[:, i],
+                        N=len(self.ewt_boundaries[i]),
+                        detect="given_bounds",
+                        boundaries=self.ewt_boundaries[i],
+                    )
+                    if self.detrend:
+                        processed[:, i] -= ewt[:, self.trend_imf_idx]
+
+        # Normalization
+        if self.normalize and self.scaler:
             processed = self.scaler.transform(processed)
-        
-        # Generate time features if requested
+
+        # Timestamp features
         if time_stamps is not None and self.generate_time_features:
             time_feats = self._generate_time_features(time_stamps)
             processed = np.concatenate((processed, time_feats), axis=1)
-        
-        # Create sequences and return
+
         return self._create_sequences(processed)[0]
 
     def inverse_transform(self, predictions: np.ndarray) -> np.ndarray:
         """
         Inverse transform predicted values to the original scale.
-        
-        Args:
-            predictions: Predicted values
-            
-        Returns:
-            Original-scale predictions
         """
-        # Inverse normalization
+        preds = predictions.copy()
+
+        # Step 1: Denormalization
         if self.normalize and self.scaler is not None:
-            predictions = self.scaler.inverse_transform(predictions)
-        
-        # Inverse differencing
+            preds = self.scaler.inverse_transform(preds)
+
+        # Step 2: Inverse differencing
         if self.differencing and self.diff_values is not None:
-            last_value = self.diff_values[-1]
-            result = np.zeros_like(predictions)
-            for i in range(len(predictions)):
-                last_value += predictions[i]
-                result[i] = last_value
-            predictions = result
-        
-        # Add trend back if detrended
+            last_value = self.diff_values[0]
+            restored = np.zeros_like(preds)
+            for t in range(len(preds)):
+                last_value = last_value + preds[t]
+                restored[t] = last_value
+            preds = restored
+
+        # Step 3: Restore trend (if detrended)
         if self.detrend and self.trend_component is not None:
-            n = len(predictions)
-            trend_to_add = np.zeros_like(predictions)
-            
-            for i in range(predictions.shape[1]):
+            n, d = preds.shape
+            trend_to_add = np.zeros_like(preds)
+            for i in range(d):
                 trend = self.trend_component[:, i]
-                
                 if n <= len(trend):
                     trend_to_add[:, i] = trend[:n]
                 else:
-                    # Extrapolate trend for future points
+                    # Linear extrapolation of trend
                     look_back = min(10, len(trend))
                     slope = (trend[-1] - trend[-look_back]) / look_back
-                    
                     for j in range(n):
                         if j < len(trend):
                             trend_to_add[j, i] = trend[j]
                         else:
                             trend_to_add[j, i] = trend[-1] + slope * (j - len(trend) + 1)
-            
-            predictions += trend_to_add
-        
-        # Inverse log transform
-        if hasattr(self, 'log_transform_flags') and any(self.log_transform_flags) and self.log_offset is not None:
-            for i, flag in enumerate(self.log_transform_flags):
-                if flag and i < predictions.shape[1]:
-                    predictions[:, i] = np.exp(predictions[:, i]) - self.log_offset[i]
-        
-        return predictions
+            preds += trend_to_add
+
+        # Step 4: Inverse log transformation
+        if (
+            self.log_transform and
+            self.log_offset is not None and
+            hasattr(self, "log_transform_flags")
+        ):
+            preds = self._inverse_log_transform(preds)
+
+        return preds
+
 
     def _impute_missing(self, data: np.ndarray) -> np.ndarray:
         """
-        Impute missing values in the data.
-        
+        Impute missing values in a state-of-the-art, adaptive and parallelized manner.
+
         Args:
-            data: Input data with potential missing values
-            
+            data: Input time series (T × D) with NaNs
+
         Returns:
-            Data with imputed values
+            Imputed array of same shape
         """
         df = pd.DataFrame(data)
         method = self.impute_method
-        
+
         if method == "auto":
-            filled = df.copy()
-            for col in df.columns:
-                missing_rate = df[col].isna().mean()
+            try:
+                from fancyimpute import IterativeImputer as FancyIter
+            except ImportError:
+                try:
+                    from sklearn.experimental import enable_iterative_imputer  # noqa
+                    from sklearn.impute import IterativeImputer as FancyIter
+                except ImportError:
+                    FancyIter = None
+
+            def impute_column(i, col, window_size=24):
+                series = df[col]
+                missing_rate = series.isna().mean()
+
+                # 1. Low missing rate → interpolate
                 if missing_rate < 0.05:
-                    filled[col] = df[col].interpolate().ffill().bfill()
+                    return i, series.interpolate(method="linear").ffill().bfill().values
+
+                # 2. Moderate → KNN
                 elif missing_rate < 0.2:
-                    filled[col] = KNNImputer(n_neighbors=3).fit_transform(df[[col]]).ravel()
+                    return i, KNNImputer(n_neighbors=3).fit_transform(series.values.reshape(-1, 1)).ravel()
+
+                # 3. High missing → Iterative or fallback
                 else:
                     try:
-                        from fancyimpute import IterativeImputer
-                        filled[col] = IterativeImputer().fit_transform(df[[col]]).ravel()
-                    except ImportError:
-                        filled[col] = df[col].fillna(df[col].mean())
-            return filled.values
-        
+                        if FancyIter is not None:
+                            imputed = FancyIter(random_state=0).fit_transform(series.values.reshape(-1, 1)).ravel()
+                            return i, imputed
+                    except Exception:
+                        pass
+
+                    # Fallback: seasonal or mean fill
+                    seasonal = series.copy()
+                    try:
+                        for t in range(len(series)):
+                            if pd.isna(seasonal.iloc[t]):
+                                seasonal.iloc[t] = series.iloc[t - window_size] if t >= window_size else np.nan
+                        return i, seasonal.fillna(series.mean()).values
+                    except:
+                        return i, series.fillna(series.mean()).values
+
+            results = Parallel(n_jobs=-1)(
+                delayed(impute_column)(i, col, self.window_size)
+                for i, col in enumerate(tqdm(df.columns, desc="Imputing missing values"))
+            )
+
+            results.sort(key=lambda x: x[0])  # sort by column index
+            imputed_matrix = np.column_stack([col for _, col in results])
+            return imputed_matrix
+
+        # === Manual strategies (non-parallel, full-matrix) ===
         if method == "mean":
             return df.fillna(df.mean()).values
-            
         elif method == "interpolate":
-            return df.interpolate().ffill().bfill().values
-            
+            return df.interpolate(method="linear").ffill().bfill().values
         elif method == "ffill":
             return df.ffill().bfill().values
-            
         elif method == "bfill":
             return df.bfill().ffill().values
-            
         elif method == "knn":
             return KNNImputer(n_neighbors=5).fit_transform(df)
-            
         elif method == "iterative":
             try:
-                from fancyimpute import IterativeImputer
-                return IterativeImputer().fit_transform(df)
+                from fancyimpute import IterativeImputer as FancyIter
             except ImportError:
-                warnings.warn("fancyimpute not installed, using mean fallback")
-                return df.fillna(df.mean()).values
-        
+                try:
+                    from sklearn.experimental import enable_iterative_imputer  # noqa
+                    from sklearn.impute import IterativeImputer as FancyIter
+                except ImportError:
+                    raise ImportError("Iterative imputer not available.")
+            return FancyIter(random_state=0).fit_transform(df)
+
         raise ValueError(f"Unsupported imputation method: {method}")
-    
+
+
+
     def _apply_filter(self, data: np.ndarray, method: str = "savgol", **kwargs) -> np.ndarray:
-        """
-        Apply filtering to the data using the specified method.
-        
-        Args:
-            data: Input data to filter
-            method: Filter method (savgol, kalman, lowess, wiener, emd, none)
-            **kwargs: Additional parameters for specific filter methods
-            
-        Returns:
-            Filtered data
-        """
-        method = method.lower()
-        
-        if method == "savgol":
-            window = kwargs.get("window", self.filter_window)
-            polyorder = kwargs.get("polyorder", self.filter_polyorder)
-            return adaptive_savgol_filter(data, window=window, polyorder=polyorder)
-            
-        elif method == "kalman":
-            return kalman_filter(data)
-            
-        elif method == "lowess":
-            frac = kwargs.get("frac", 0.05)
-            return lowess_filter(data, frac=frac)
-            
-        elif method == "wiener":
-            mysize = kwargs.get("mysize", 15)
-            return wiener_filter(data, mysize=mysize)
-            
-        elif method == "emd":
-            keep_ratio = kwargs.get("keep_ratio", 0.5)
-            return emd_filter(data, keep_ratio=keep_ratio)
-            
-        elif method == "none":
-            return data
-            
-        else:
+        if method not in FILTER_METHODS:
             raise ValueError(f"Unknown filter method: {method}")
+        return FILTER_METHODS[method](self, data, kwargs)
 
     def _apply_ewt_and_detrend(self, data: np.ndarray, time_stamps=None) -> np.ndarray:
         """
-        Apply Empirical Wavelet Transform and detrend data.
-        
+        Apply Empirical Wavelet Transform and detrend data using parallel processing.
+
         Args:
             data: Input data
             time_stamps: Optional timestamps
-            
+
         Returns:
             Transformed data
         """
         try:
-            from ewtpy import EWT1D
+            from ewtpy import EWT1D  # Just to ensure the package is present
         except ImportError:
             warnings.warn("PyEWT not installed. Skipping EWT.")
             return data
 
-        from statsmodels.tsa.stattools import arma_order_select_ic
+        # Parallelized EWT + Detrending
+        output, ewt_components, ewt_boundaries, trend_components = (
+            apply_ewt_and_detrend_parallel(
+                data, self.ewt_bands, self.detrend, self.trend_imf_idx
+            )
+        )
 
-        def _select_best_imf_by_aic(self, signal: np.ndarray, imfs: np.ndarray) -> int:
-            """
-            Select the IMF index that best explains the trend using lowest AIC on residual.
-            """
-            aic_scores = []
-            for i in range(imfs.shape[1]):
-                try:
-                    residual = signal - imfs[:, i]
-                    order = arma_order_select_ic(residual, ic='aic', max_ar=2, max_ma=2)['aic_min_order']
-                    model = sm.tsa.ARIMA(residual, order=order).fit()
-                    aic_scores.append(model.aic)
-                except Exception:
-                    aic_scores.append(np.inf)
-            return int(np.argmin(aic_scores))
-
-        self.ewt_components = []
-        self.ewt_boundaries = []
-        
+        self.ewt_components = ewt_components
+        self.ewt_boundaries = ewt_boundaries
         if self.detrend:
-            self.trend_component = np.zeros_like(data)
-            
-        for i in range(data.shape[1]):
-            signal = data[:, i]
-            if np.isnan(signal).any():
-                continue
-                            
-            ewt, _, bounds = EWT1D(signal, N=self.ewt_bands)
-            self.ewt_components.append(ewt)
-            self.ewt_boundaries.append(bounds)
+            self.trend_component = trend_components
 
-            # Select best IMF for detrending
-            if self.detrend:
-                best_idx = _select_best_imf_by_aic(signal, ewt)
-                trend = ewt[:, best_idx]
-                self.trend_component[:, i] = trend
-                data[:, i] = signal - trend
+        return output
 
-        return data
-
-    def _generate_time_features(self, timestamps, freq='h') -> np.ndarray:
+    def _generate_time_features(self, timestamps, freq="h") -> np.ndarray:
         """
         Generate time features from timestamps.
-        
+
         Args:
             timestamps: Array of timestamps
             freq: Frequency of the data ('h' for hourly, etc.)
-            
+
         Returns:
             Time features array
         """
-        df = pd.DataFrame({'ts': pd.to_datetime(timestamps)})
-        df['month'] = df.ts.dt.month / 12.0
-        df['day'] = df.ts.dt.day / 31.0
-        df['weekday'] = df.ts.dt.weekday / 6.0
-        df['hour'] = df.ts.dt.hour / 23.0 if freq.lower() == 'h' else 0.0
-        
-        return df[['month', 'day', 'weekday', 'hour']].values.astype(np.float32)
+        df = pd.DataFrame({"ts": pd.to_datetime(timestamps)})
+        df["month"] = df.ts.dt.month / 12.0
+        df["day"] = df.ts.dt.day / 31.0
+        df["weekday"] = df.ts.dt.weekday / 6.0
+        df["hour"] = df.ts.dt.hour / 23.0 if freq.lower() == "h" else 0.0
 
-    def _create_sequences(self, data: np.ndarray, feats=None) -> Tuple[np.ndarray, np.ndarray]:
+        return df[["month", "day", "weekday", "hour"]].values.astype(np.float32)
+
+    def _create_sequences(
+        self, data: np.ndarray, feats=None
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Create input-output sequences from the data.
-        
+
         Args:
             data: Input data
             feats: Optional subset of features for the target
-            
+
         Returns:
             X: Input sequences
             y: Target sequences
         """
         feats = list(range(data.shape[1])) if feats is None else feats
         X, y = [], []
-        
+
         max_idx = len(data) - self.window_size - self.horizon + 1
-        for i in range(max_idx):
-            X.append(data[i:i+self.window_size])
-            y.append(data[i+self.window_size:i+self.window_size+self.horizon][:, feats])
-            
+        for i in tqdm(range(max_idx), desc="Creating sequences"):
+            X.append(data[i : i + self.window_size])
+            y.append(data[i + self.window_size : i + self.window_size + self.horizon][:, feats])
+
         return np.array(X), np.array(y)
 
-    def _plot_comparison(self, original: np.ndarray, cleaned: np.ndarray, 
-                        title: str = "Preprocessing Comparison", time_stamps=None) -> None:
+    def _plot_comparison(
+        self,
+        original: np.ndarray,
+        cleaned: np.ndarray,
+        title: str = "Preprocessing Comparison",
+        time_stamps=None,
+    ) -> None:
         """
         Plot a comparison between original and processed data.
-        
+
         Args:
             original: Original data
             cleaned: Processed data
@@ -966,7 +855,7 @@ class TimeSeriesPreprocessor:
         """
         original = np.atleast_2d(original)
         cleaned = np.atleast_2d(cleaned)
-        
+
         # Ensure shape is (n_samples, n_features)
         if original.shape[0] == 1:
             original = original.T
@@ -974,20 +863,26 @@ class TimeSeriesPreprocessor:
             pass  # Already correct
         elif original.shape[0] != cleaned.shape[0]:
             # Try to reshape as (n_samples, n_features) if flattened
-            raise ValueError(f"Original shape {original.shape} does not match cleaned shape {cleaned.shape}")
+            raise ValueError(
+                f"Original shape {original.shape} does not match cleaned shape {cleaned.shape}"
+            )
 
         if cleaned.shape[0] == 1:
             cleaned = cleaned.T
 
         if original.shape != cleaned.shape:
-            raise ValueError(f"Shape mismatch after processing: original {original.shape}, cleaned {cleaned.shape}")
-        
+            raise ValueError(
+                f"Shape mismatch after processing: original {original.shape}, cleaned {cleaned.shape}"
+            )
+
         x = time_stamps if time_stamps is not None else np.arange(original.shape[0])
         if len(x) != original.shape[0]:
-            raise ValueError(f"Length of x ({len(x)}) does not match number of samples ({original.shape[0]})")
+            raise ValueError(
+                f"Length of x ({len(x)}) does not match number of samples ({original.shape[0]})"
+            )
 
         fig, axs = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-        
+
         for i in range(original.shape[1]):
             axs[0].plot(x, original[:, i], label=f"Feature {i}")
             axs[1].plot(x, cleaned[:, i], label=f"Feature {i}")
@@ -1005,7 +900,7 @@ class TimeSeriesPreprocessor:
     def get_ewt_components(self) -> Optional[List]:
         """
         Get the EWT components if EWT was applied.
-        
+
         Returns:
             List of EWT components or None
         """
@@ -1014,7 +909,7 @@ class TimeSeriesPreprocessor:
     def get_trend_component(self) -> Optional[np.ndarray]:
         """
         Get the trend component if detrending was applied.
-        
+
         Returns:
             Trend component array or None
         """

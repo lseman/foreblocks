@@ -1,29 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import List, Tuple, Optional, Dict, Literal
 import math
-from typing import List, Dict, Tuple, Optional
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import List, Tuple, Dict
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Tuple
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple, Optional
 import contextlib
+
+# External
+from xformers.ops import memory_efficient_attention
+
 
 
 class LatentCorrelationLayer(nn.Module):
@@ -248,47 +232,128 @@ class LatentCorrelationLayer(nn.Module):
             
         return output, mixed_corr
         
+
 class MessagePassing(nn.Module):
     """
     Generic message passing base class.
-    Designed to work on [B, T, F] inputs with [F, F] feature graphs.
+    Supports xformers-based multi-head attention over the feature dimension.
     """
-    def __init__(
-        self,
-        input_size: int,
-        hidden_dim: int,
-        aggregation: str = "sum"
-    ):
+    def __init__(self, input_size: int, hidden_dim: int, aggregation: str = "sum", num_heads: int = 4):
         super().__init__()
         self.input_size = input_size
         self.hidden_dim = hidden_dim
         self.aggregation = aggregation
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim * num_heads
 
         # Shared node transformation
         self.message_transform = nn.Linear(input_size, hidden_dim)
 
+        # Projections for attention mode
+        if aggregation == "xformers":
+            self.q_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
+            self.k_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
+            self.v_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
+
+    def message(self, h: torch.Tensor) -> torch.Tensor:
+        """
+        Apply shared linear transformation to input features.
+        """
+        return self.message_transform(h)  # [B, T, hidden_dim]
+
     def aggregate(self, messages: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
         """
-        Aggregate messages from neighbors (default: weighted sum).
+        Aggregate messages based on specified strategy.
         messages: [B, T, hidden_dim]
-        graph: [F, F] (correlation/adjacency matrix)
-        returns: [B, T, hidden_dim]
+        graph: [F, F] for sum/mean, or attention bias for xformers
         """
         if self.aggregation == "sum":
-            return torch.einsum("bfh,ij->bfj", messages, graph)
+            return torch.einsum("bth,hg->btg", messages, graph)
+
+        
         elif self.aggregation == "mean":
-            norm = graph.sum(dim=0, keepdim=True).clamp(min=1e-6)
-            return torch.einsum("bfh,ij->bfj", messages, graph / norm)
-        elif self.aggregation == "max":
-            raise NotImplementedError("Max aggregation not supported yet.")
+            B, T, H = messages.shape  # messages: [B, T, hidden]
+            F = graph.shape[0]        # graph: [F, F]
+
+            # STEP 1 — check for existing NaNs early
+            if torch.isnan(messages).any():
+                raise RuntimeError("NaNs detected in messages before aggregation")
+
+            if torch.isnan(graph).any() or torch.isinf(graph).any():
+                raise RuntimeError("NaNs or Infs detected in graph before aggregation")
+
+            # STEP 2 — build identity matrix matching dtype/device
+            identity = torch.eye(F, device=graph.device, dtype=graph.dtype)
+
+            # STEP 3 — clone and fix isolated rows
+            row_sums = graph.sum(dim=1, keepdim=True)
+            isolated = row_sums.squeeze() == 0
+            graph_safe = graph.clone()
+            if isolated.any():
+                graph_safe[isolated, :] = identity[isolated, :]
+
+            # STEP 4 — normalize (row-wise mean)
+            row_sums = graph_safe.sum(dim=1, keepdim=True).clamp(min=1e-6)
+            normalized_graph = graph_safe / row_sums
+
+            # STEP 5 — apply aggregation
+            out = torch.einsum("bth,hg->btg", messages, normalized_graph)
+
+            # STEP 6 — final check
+            if torch.isnan(out).any() or torch.isinf(out).any():
+                # Print only shape + stats for brevity
+                print("NaNs in output despite normalization:")
+                print("→ messages stats:", messages.mean().item(), messages.std().item())
+                print("→ normalized_graph stats:", normalized_graph.mean().item(), normalized_graph.std().item())
+                print("→ out stats:", out.mean().item(), out.std().item())
+                raise RuntimeError("NaNs in aggregation output")
+
+            return out
+
+        elif self.aggregation == "xformers":
+            return self._xformers_aggregate(messages, graph)
+
         else:
             raise ValueError(f"Unsupported aggregation: {self.aggregation}")
 
-    def message(self, h: torch.Tensor) -> torch.Tensor:
-        return self.message_transform(h)  # [B, T, hidden_dim]
+    def _xformers_aggregate(self, messages: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
+        """
+        Apply attention over features per time step, with bias shape [B*T, 12, 4, 4].
+        """
+        B, T, D = messages.shape
+        H = self.num_heads
+        d_head = self.head_dim
+
+        # Flatten [B, T, D] → [B*T, D]
+        x_flat = messages.reshape(B * T, D)
+
+        # Project Q/K/V to [B*T, H, D, d_head]
+        q = self.q_proj(x_flat).reshape(B * T, H, D, d_head)
+        k = self.k_proj(x_flat).reshape(B * T, H, D, d_head)
+        v = self.v_proj(x_flat).reshape(B * T, H, D, d_head)
+
+        # Static bias: [H, H] → [B*T, D, H, H]
+        # Goal: create [12288, 12, 4, 4] with alignment-compatible memory layout
+
+        # Step 1: allocate a larger tensor with last dim padded to 8
+        # Aligned and dtype-matching bias
+
+    
+        # Call xFormers
+        out = memory_efficient_attention(q, k, v)
+        #out = memory_efficient_attention(q, k, v, attn_bias=bias)  # [B*T, H, D, d_head]
+        out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+        #print(f"Xformers out: {out.shape=}")
+        out = out.reshape(B, T, D, -1)
+        # take mean over last dim
+        out = out.mean(dim=-1)                 # [B, T, D]
+
+        return out
+
 
     def forward(self, h: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("Subclass must implement forward pass.")
+
 
 class GraphConv(MessagePassing):
     def __init__(self, input_size, output_size, hidden_dim, aggregation="sum", dropout=0.1):
@@ -338,6 +403,73 @@ class AttGraphConv(MessagePassing):
         h = self.update_fn(combined)
         return self.norm(self.output_proj(h))
 
+from xformers.ops import memory_efficient_attention, AttentionOpBase
+
+from xformers.ops import memory_efficient_attention, AttentionOpBase
+import torch.nn.functional as F
+
+class XFormerAttGraphConv(MessagePassing):
+    def __init__(self, input_size, output_size, hidden_dim, num_heads=4, dropout=0.1):
+        super().__init__(input_size, hidden_dim)
+        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+
+        self.q_proj = nn.Linear(input_size, hidden_dim)
+        self.k_proj = nn.Linear(input_size, hidden_dim)
+        self.v_proj = nn.Linear(input_size, hidden_dim)
+
+        self.update_fn = nn.Sequential(
+            nn.Linear(input_size + hidden_dim, input_size),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+        self.output_proj = nn.Linear(input_size, output_size)
+        self.norm = nn.LayerNorm(output_size)
+
+    def forward(self, x: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, T, F] (input time series)
+        graph: [F, F] (correlation/adjacency matrix over features)
+        """
+        B, T, F = x.shape
+        H, D = self.num_heads, self.head_dim
+
+        # Apply graph as soft attention bias over features
+        # x: [B, T, F] → [B, F, T] (features as "tokens")
+        x_feat = x.transpose(1, 2)  # [B, F, T]
+
+        # Project to Q, K, V
+        q = self.q_proj(x_feat).reshape(B, F, H, D).transpose(1, 2)  # [B, H, F, D]
+        k = self.k_proj(x_feat).reshape(B, F, H, D).transpose(1, 2)  # [B, H, F, D]
+        v = self.v_proj(x_feat).reshape(B, F, H, D).transpose(1, 2)  # [B, H, F, D]
+
+        # Modulate attention scores using graph
+        # graph: [F, F] → [1, 1, F, F] → broadcasted
+        attn_bias = torch.tanh(graph).unsqueeze(0).unsqueeze(0)  # [1, 1, F, F]
+
+        # Use xformers efficient attention
+        out = memory_efficient_attention(q, k, v, attn_bias=attn_bias)  # [B, H, F, D]
+        out = out.transpose(1, 2).reshape(B, F, H * D)  # [B, F, hidden_dim]
+
+        # Bring back to [B, T, hidden_dim]
+        out = out.transpose(1, 2)  # [B, T, hidden_dim]
+
+        # Update with residual information
+        combined = torch.cat([x, out], dim=-1)  # [B, T, in + hidden]
+        updated = self.update_fn(combined)      # [B, T, input_size]
+        return self.norm(self.output_proj(updated))  # [B, T, output_size]
+import torch
+import torch.nn as nn
+from typing import Optional, List, Literal
+from xformers.ops import memory_efficient_attention
+
+# Assume these are defined elsewhere and imported:
+# - LatentCorrelationLayer
+# - GraphConv
+# - AttGraphConv
+# - XFormerAttGraphConv
+# - JumpKnowledge
 
 class LatentGraphNetwork(nn.Module):
     def __init__(
@@ -348,20 +480,21 @@ class LatentGraphNetwork(nn.Module):
         correlation_hidden_size: Optional[int] = None,
         low_rank: bool = True,
         rank: Optional[int] = None,
-        num_passes: int = 2,
+        num_passes: int = 1,
         aggregation: str = 'sum',
         dropout: float = 0.1,
-        edge_threshold: float = 0.01,
         residual: bool = True,
-        strategy: str = 'vanilla'  # or 'attn'
+        strategy: Literal['vanilla', 'attn', 'xformers'] = 'vanilla',
+        jk_mode: Literal['last', 'sum', 'max', 'concat', 'lstm', 'none'] = 'none'
     ):
         super().__init__()
         self.input_size = input_size
         self.output_size = output_size
         self.hidden_size = hidden_size or max(input_size, output_size)
+        self.num_passes = num_passes
         self.residual = residual
 
-        # Correlation learning
+        # Latent correlation layer (data + learnable graph)
         self.correlation_layer = LatentCorrelationLayer(
             input_size=input_size,
             output_size=input_size,
@@ -371,38 +504,119 @@ class LatentGraphNetwork(nn.Module):
             correlation_dropout=dropout
         )
 
-        # Select message passing strategy
+        # Message passing layers
+        self.message_passing_layers = nn.ModuleList([
+            self._create_layer(strategy, input_size, self.hidden_size, aggregation, dropout)
+            for _ in range(num_passes)
+        ])
+
+        self.jk_mode = jk_mode
+        if jk_mode != 'none':
+            # Jump knowledge module
+            self.jump_knowledge = JumpKnowledge(
+                mode=jk_mode,
+                hidden_size=self.input_size,
+                output_size=input_size
+            )
+
+        self.norm = nn.LayerNorm(output_size)
+
+    def _create_layer(
+        self,
+        strategy: str,
+        input_size: int,
+        hidden_size: int,
+        aggregation: str,
+        dropout: float
+    ) -> nn.Module:
         if strategy == 'vanilla':
-            self.message_passing = GraphConv(
+            return GraphConv(
                 input_size=input_size,
-                output_size=self.hidden_size,
-                hidden_dim=self.hidden_size,
+                output_size=hidden_size,
+                hidden_dim=hidden_size,
                 aggregation=aggregation,
                 dropout=dropout
             )
         elif strategy == 'attn':
-            self.message_passing = AttGraphConv(
+            return AttGraphConv(
                 input_size=input_size,
-                output_size=self.hidden_size,
-                hidden_dim=self.hidden_size,
+                output_size=hidden_size,
+                hidden_dim=hidden_size,
+                dropout=dropout
+            )
+        elif strategy == 'xformers':
+            return XFormerAttGraphConv(
+                input_size=input_size,
+                output_size=hidden_size,
+                hidden_dim=hidden_size,
                 dropout=dropout
             )
         else:
-            raise ValueError(f"Unsupported graph conv strategy: {strategy}")
+            raise ValueError(f"Unsupported strategy: {strategy}")
 
-        self.output_proj = (
-            nn.Linear(self.hidden_size, output_size)
-            if self.hidden_size != output_size
-            else nn.Identity()
-        )
-        self.norm = nn.LayerNorm(output_size)
-
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         corr_features, correlation = self.correlation_layer(x)
-        mp_features = self.message_passing(corr_features, correlation)
-        output = self.output_proj(mp_features)
 
-        if self.residual and x.shape[-1] == output.shape[-1]:
-            output = output + x
+        h = corr_features
+        outputs: List[torch.Tensor] = []
 
-        return self.norm(output)
+        for layer in self.message_passing_layers:
+            h = layer(h, correlation)
+            outputs.append(h)
+
+        if self.jk_mode != 'none':
+            jk_out = self.jump_knowledge(outputs)
+
+            if self.residual and x.shape[-1] == jk_out.shape[-1]:
+                jk_out = jk_out + x
+        else:
+            jk_out = h
+            if self.residual and x.shape[-1] == h.shape[-1]:
+                jk_out = h + x
+
+        return jk_out
+    
+class JumpKnowledge(nn.Module):
+    def __init__(
+        self,
+        mode: Literal['last', 'sum', 'max', 'concat', 'lstm'] = 'concat',
+        hidden_size: int = None,
+        output_size: int = None,
+    ):
+        super().__init__()
+        self.mode = mode
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.out_proj = None  # lazy initialization
+
+        if self.mode == 'lstm':
+            assert hidden_size is not None
+            self.lstm = nn.LSTM(hidden_size, hidden_size, batch_first=True)
+            self.out_proj = nn.Identity() if hidden_size == output_size else nn.Linear(hidden_size, output_size)
+
+    def forward(self, xs: List[torch.Tensor]) -> torch.Tensor:
+        if self.mode == 'last':
+            return xs[-1]
+
+        elif self.mode == 'sum':
+            return torch.stack(xs, dim=0).sum(dim=0)
+
+        elif self.mode == 'max':
+            return torch.stack(xs, dim=0).max(dim=0)[0]
+
+        elif self.mode == 'concat':
+            x_cat = torch.cat(xs, dim=-1)  # [B, T, D * num_layers]
+            if self.out_proj is None:
+                input_dim = x_cat.size(-1)
+                self.out_proj = nn.Linear(input_dim, self.output_size).to(x_cat.device)
+            return self.out_proj(x_cat)
+
+        elif self.mode == 'lstm':
+            B, T, D = xs[0].shape
+            x_seq = torch.stack(xs, dim=1).reshape(B * T, len(xs), D)
+            lstm_out, _ = self.lstm(x_seq)
+            final = lstm_out[:, -1, :].reshape(B, T, -1)
+            return self.out_proj(final)
+
+        else:
+            raise ValueError(f"Unsupported JK mode: {self.mode}")

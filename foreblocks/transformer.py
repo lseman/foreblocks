@@ -70,10 +70,11 @@ try:
     HAS_XFORMERS = True
 except ImportError:
     HAS_XFORMERS = False
+from xformers.ops import memory_efficient_attention
 
 class XFormerAttention(nn.Module):
     def __init__(self, d_model, nhead, dropout=0.1, batch_first=True, cross_attention=False,
-                 use_flash_attn=False):
+                 use_flash_attn=False, attention_type="standard", prob_sparse_factor=0.4):
         
         super().__init__()
         assert d_model % nhead == 0, "d_model must be divisible by nhead"
@@ -92,6 +93,74 @@ class XFormerAttention(nn.Module):
         self.dropout_f = nn.Dropout(dropout)
 
         self.use_flash_attn = use_flash_attn and HAS_FLASH_ATTN
+        self.attention_type = attention_type
+        self.prob_sparse_factor = prob_sparse_factor
+   
+    def _prob_sparse_attention(self, q, k, v, attn_mask=None, key_padding_mask=None, is_causal=False, need_weights=False):
+        """
+        Optimized ProbSparse attention with optional xFormers support.
+        """
+        B, H, T_q, D = q.shape
+        _, _, T_k, _ = k.shape
+        scale = math.sqrt(D)
+
+        # === KL divergence for sparsity scores
+        attn_scores_all = torch.matmul(q, k.transpose(-2, -1)) / scale
+        attn_probs = F.softmax(attn_scores_all, dim=-1)
+        uniform = torch.full_like(attn_probs, 1.0 / T_k)
+        kl_div = torch.sum(attn_probs * (torch.log(attn_probs + 1e-10) - torch.log(uniform + 1e-10)), dim=-1)
+
+        # === Select top-u queries
+        u = int(min(self.prob_sparse_factor * math.log(T_k), T_q))
+        topk = torch.topk(kl_div, u, dim=-1).indices  # [B, H, u]
+        q_reduced = torch.gather(q, 2, topk.unsqueeze(-1).expand(-1, -1, -1, D))  # [B, H, u, D]
+
+        # === Optionally use xFormers if possible
+        use_xformers = (
+            not need_weights and attn_mask is None and key_padding_mask is None and
+            hasattr(self, "use_flash_attn") and self.use_flash_attn and
+            q_reduced.shape[2] == k.shape[2]  # Mq == Mk required for xformers
+        )
+
+        if use_xformers:
+            from xformers.ops import memory_efficient_attention
+            out_reduced = memory_efficient_attention(q_reduced, k, v)  # [B, H, u, D]
+            attn_weights = None
+        else:
+            # Compute scores
+            attn_scores = torch.matmul(q_reduced, k.transpose(-2, -1)) / scale  # [B, H, u, T_k]
+
+            if key_padding_mask is not None:
+                attn_scores = attn_scores.masked_fill(key_padding_mask[:, None, None, :], float('-inf'))
+
+            if attn_mask is not None:
+                if attn_mask.dim() == 2:
+                    attn_mask = attn_mask[None, None, :, :]
+                elif attn_mask.dim() == 3:
+                    attn_mask = attn_mask[:, None, :, :]
+                if attn_mask.size(2) == T_q:
+                    attn_mask_reduced = torch.gather(attn_mask, 2, topk.unsqueeze(-1).expand(-1, -1, -1, T_k))
+                    attn_scores = attn_scores.masked_fill(attn_mask_reduced == 0, float('-inf'))
+                else:
+                    attn_scores = attn_scores.masked_fill(attn_mask == 0, float('-inf'))
+
+            attn_scores = torch.nan_to_num(attn_scores, nan=-1e4)
+            attn_scores = torch.clamp(attn_scores, min=-1e4, max=1e4)
+            attn_weights = F.softmax(attn_scores, dim=-1)
+            if self.training and self.dropout > 0.0:
+                attn_weights = F.dropout(attn_weights, p=self.dropout)
+            out_reduced = torch.matmul(attn_weights, v)
+
+        # === Scatter back to full output
+        out = torch.zeros(B, H, T_q, D, device=q.device, dtype=q.dtype)
+        out.scatter_(2, topk.unsqueeze(-1).expand(-1, -1, -1, D), out_reduced)
+
+        # === Final projection
+        out = out.transpose(1, 2).reshape(B, T_q, self.d_model)
+        out = self.out_proj(out)
+
+        return (out, attn_weights if need_weights else None)
+
 
     def forward(
         self, query, key, value,
@@ -110,6 +179,9 @@ class XFormerAttention(nn.Module):
         v = self.v_proj(value).reshape(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
 
         dropout_p = self.dropout if self.training else 0.0
+
+        if self.attention_type == "prob_sparse":
+            return self._prob_sparse_attention(q, k, v, attn_mask, key_padding_mask, is_causal, need_weights)
 
         # Case 1: Use FlashAttention
         if HAS_FLASH_ATTN and attn_mask is None and key_padding_mask is None and not need_weights and self.use_flash_attn:

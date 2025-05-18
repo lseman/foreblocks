@@ -45,6 +45,8 @@ class ForecastingModel(nn.Module):
         hidden_size=64,
         enc_embbedding=None,
         dec_embedding=None,
+        time_feature_embedding_enc: nn.Module = None,
+        time_feature_embedding_dec: nn.Module = None,
     ):
         """
         Initialize the ForecastingModel with specified components and parameters.
@@ -89,6 +91,9 @@ class ForecastingModel(nn.Module):
         self.teacher_forcing_ratio = teacher_forcing_ratio
         self.scheduled_sampling_fn = scheduled_sampling_fn
 
+        self.time_feature_embedding_enc = time_feature_embedding_enc
+        self.time_feature_embedding_dec = time_feature_embedding_dec
+        
         # Input/output processing
         self._setup_preprocessing_modules(
             input_preprocessor,
@@ -175,13 +180,17 @@ class ForecastingModel(nn.Module):
             self.decoder = decoder
 
     def _setup_transformer_components(self, enc_embedding, dec_embedding):
-        """Setup transformer-specific components."""
-        self.enc_embedding = enc_embedding or TimeSeriesEncoder(
-            self.encoder.input_size, self.encoder.hidden_size
-        )
-        self.dec_embedding = dec_embedding or TimeSeriesEncoder(
-            self.encoder.input_size, self.encoder.hidden_size
-        )
+        input_dim = self.encoder.input_size
+        hidden_dim = self.encoder.hidden_size
+        self.enc_embedding = enc_embedding or TimeSeriesEncoder(input_dim, hidden_dim)
+        self.dec_embedding = dec_embedding or TimeSeriesEncoder(input_dim, hidden_dim)
+
+        # Time feature embeddings (e.g., hour-of-day, day-of-week)
+        if self.time_feature_embedding_enc:
+            self.enc_embedding = CombinedEmbedding(self.enc_embedding, self.time_feature_embedding_enc)
+        if self.time_feature_embedding_dec:
+            self.dec_embedding = CombinedEmbedding(self.dec_embedding, self.time_feature_embedding_dec)
+
 
     def _setup_output_layers(self):
         """Setup output projection layers."""
@@ -280,7 +289,9 @@ class ForecastingModel(nn.Module):
 
         # Initialize decoder sequence
         # decoder_input = torch.zeros(batch_size, 1, self.output_size, device=device)
-        decoder_input = self.init_decoder_input_layer(encoder_outputs[:, -1, :]).unsqueeze(1)
+        decoder_input = self.init_decoder_input_layer(
+            encoder_outputs[:, -1, :]
+        ).unsqueeze(1)
 
         outputs = torch.zeros(
             batch_size, self.target_len, self.output_size, device=device
@@ -386,18 +397,20 @@ class ForecastingModel(nn.Module):
 
         # === Encode full input sequence ===
         enc_out = self.enc_embedding(src)  # [B, T_enc, D]
-        enc_out = self.encoder(enc_out)    # [B, T_enc, D]
+        enc_out = self.encoder(enc_out)  # [B, T_enc, D]
 
         # === Create start token sequence for decoder ===
         start_token = src[:, -1:, :]  # e.g. last encoder input (or zeros)
-        dec_input = start_token.expand(batch_size, self.pred_len, -1)  # [B, T_pred, input_size]
+        dec_input = start_token.expand(
+            batch_size, self.pred_len, -1
+        )  # [B, T_pred, input_size]
 
         # === Embed and decode entire prediction range in one shot ===
         dec_embed = self.dec_embedding(dec_input)  # [B, T_pred, D]
-        out = self.decoder(dec_embed, enc_out)     # [B, T_pred, D]
+        out = self.decoder(dec_embed, enc_out)  # [B, T_pred, D]
 
         # === Project to output space ===
-        out = self.output_layer(out)               # [B, T_pred, output_size]
+        out = self.output_layer(out)  # [B, T_pred, output_size]
 
         return out
 
