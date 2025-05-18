@@ -7,7 +7,10 @@ import contextlib
 
 # External
 from xformers.ops import memory_efficient_attention
-
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Tuple
 
 
 class LatentCorrelationLayer(nn.Module):
@@ -23,7 +26,7 @@ class LatentCorrelationLayer(nn.Module):
         rank: Optional[int] = None,
         correlation_dropout: float = 0.0,
         cheb_k: int = 3,
-        eps: float = 1e-8  # Added epsilon parameter for numerical stability
+        eps: float = 1e-8,
     ):
         super().__init__()
         self.input_size = input_size
@@ -32,206 +35,126 @@ class LatentCorrelationLayer(nn.Module):
         self.low_rank = low_rank
         self.rank = rank or max(1, input_size // 4)
         self.use_layer_norm = use_layer_norm
-        self.correlation_dropout = correlation_dropout
-        self.cheb_k = cheb_k
+        self.cheb_k = max(1, cheb_k)
         self.eps = eps
 
-        # Alpha blending - using sigmoid for improved stability
+        # Alpha blending
         if learnable_alpha:
-            # Initialize with logit of init_alpha for better sigmoid behavior
             self.alpha = nn.Parameter(torch.tensor(torch.logit(torch.tensor(init_alpha))))
         else:
-            self.register_buffer('alpha', torch.tensor(init_alpha))
+            self.register_buffer("alpha", torch.tensor(init_alpha))
 
-        # Correlation parameters
+        # Correlation
         if low_rank:
-            # Initialize with scaled random values for better gradient flow
             scale = 1.0 / (self.rank ** 0.5)
             self.corr_factors = nn.Parameter(torch.randn(2, input_size, self.rank) * scale)
         else:
             self.correlation = nn.Parameter(torch.randn(input_size, input_size))
 
-        # Projection layers
+        # Projections
         self.input_proj = nn.Linear(input_size, self.hidden_size)
         self.output_proj = nn.Linear(self.hidden_size, self.output_size)
 
-        # Normalization layers
-        if use_layer_norm:
+        # Normalization
+        if self.use_layer_norm:
             self.layer_norm1 = nn.LayerNorm(input_size)
             self.layer_norm2 = nn.LayerNorm(self.hidden_size)
             self.layer_norm3 = nn.LayerNorm(self.output_size)
 
         # Dropout
         self.dropout = nn.Dropout(correlation_dropout) if correlation_dropout > 0 else nn.Identity()
-        
-        # Chebyshev polynomial coefficients - learnable weights for each order
-        self.cheb_weights = nn.Parameter(torch.ones(cheb_k) / cheb_k)
-        
+
+        # Chebyshev coefficients
+        self.cheb_weights = nn.Parameter(torch.ones(self.cheb_k) / self.cheb_k)
+
         self.reset_parameters()
 
     def reset_parameters(self):
-        """Initialize parameters with numerically stable values"""
         if self.low_rank:
-            # Better orthogonal initialization for low-rank factors
             nn.init.orthogonal_(self.corr_factors[0])
             nn.init.orthogonal_(self.corr_factors[1])
         else:
-            # Initialize correlation matrix to be close to identity
             nn.init.eye_(self.correlation)
             with torch.no_grad():
-                # Small random perturbation
                 self.correlation.data += 0.01 * torch.randn_like(self.correlation)
-                # Ensure symmetry
                 self.correlation.data = 0.5 * (self.correlation.data + self.correlation.data.t())
 
-        # Initialize projection layers
         nn.init.xavier_uniform_(self.input_proj.weight)
         nn.init.zeros_(self.input_proj.bias)
         nn.init.xavier_uniform_(self.output_proj.weight)
         nn.init.zeros_(self.output_proj.bias)
-        
-        # Initialize Chebyshev weights to be normalized
+
         nn.init.constant_(self.cheb_weights, 1.0 / self.cheb_k)
 
     def get_learned_correlation(self) -> torch.Tensor:
-        """Get the learned correlation matrix with symmetry preservation"""
         if self.low_rank:
-            # Low-rank factorization: C = UV^T
             U, V = self.corr_factors[0], self.corr_factors[1]
             corr = torch.matmul(U, V.T)
-            # Ensure symmetry
             corr = 0.5 * (corr + corr.T)
         else:
-            # Full-rank case: ensure symmetry
             corr = 0.5 * (self.correlation + self.correlation.T)
 
-        # Apply tanh to constrain values to [-1, 1]
         corr = torch.tanh(corr)
-        
-        # Apply dropout during training
         return self.dropout(corr) if self.training else corr
 
     def compute_data_correlation(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute correlation from data with improved numerical stability"""
-        # Center the data
         x_centered = x - x.mean(dim=1, keepdim=True)
-        
-        # Reshape for batch correlation computation [B, F, T]
         x_reshaped = x_centered.transpose(1, 2)
-        
-        # Compute norms with epsilon for stability
         norms = torch.norm(x_reshaped, dim=2, keepdim=True).clamp(min=self.eps)
         x_normalized = x_reshaped / norms
-        
-        # Compute batch correlation matrices
         corr_batch = torch.bmm(x_normalized, x_normalized.transpose(1, 2))
-        
-        # Average across batch and clamp to valid correlation range
-        return corr_batch.mean(dim=0).clamp(min=-1.0, max=1.0)
+        return corr_batch.mean(dim=0).clamp(min=-1.0, max=1.0).detach()
 
     def compute_laplacian(self, A: torch.Tensor) -> torch.Tensor:
-        """Compute normalized graph Laplacian with improved stability"""
-        # Create a copy and zero out diagonal (self-loops)
         A = A.clone()
         A.fill_diagonal_(0.0)
-        
-        # Compute degree vector (sum of adjacency matrix rows)
         deg = A.sum(dim=1)
-        
-        # Compute D^{-1/2} with numerical stability
         deg_inv_sqrt = torch.pow(deg.clamp(min=self.eps), -0.5)
         D_inv_sqrt = torch.diag(deg_inv_sqrt)
-        
-        # Compute normalized Laplacian: L = I - D^{-1/2} A D^{-1/2}
-        L = torch.eye(A.size(0), device=A.device) - torch.matmul(
-            torch.matmul(D_inv_sqrt, A), D_inv_sqrt
-        )
-        
-        return L
+        L = torch.eye(A.size(0), device=A.device) - D_inv_sqrt @ A @ D_inv_sqrt
+        return L.clamp(min=-2.0, max=2.0)
 
     def chebyshev_filter(self, x: torch.Tensor, L: torch.Tensor) -> torch.Tensor:
-        """
-        Apply Chebyshev polynomial filtering with learnable weights.
-        x: [B, T, F]
-        L: [F, F] (symmetric Laplacian)
-        """
-        B, T, F = x.shape
-        
-        # Initialize Chebyshev polynomials T_0(L) and T_1(L)
-        Tx_0 = x                   # T_0(L) = I (identity)
-        Tx_1 = torch.matmul(x, L)  # T_1(L) = L
-        
-        # Use softmax for better weight normalization
-        cheb_weights_norm = torch.nn.functional.softmax(self.cheb_weights, dim=0)
-        
-        # Initialize output with weighted first two orders
-        out = cheb_weights_norm[0] * Tx_0 + cheb_weights_norm[1] * Tx_1
-        
-        # Previous two terms for the recurrence relation
-        prev_terms = [Tx_0, Tx_1]
-        
-        # Recurrence relation for higher orders: T_k(L) = 2L·T_{k-1}(L) - T_{k-2}(L)
+        cheb_weights = F.softmax(self.cheb_weights, dim=0)
+
+        Tx_0 = x
+        if self.cheb_k == 1:
+            return cheb_weights[0] * Tx_0
+
+        Tx_1 = torch.matmul(x, L)
+        out = cheb_weights[0] * Tx_0 + cheb_weights[1] * Tx_1
+
         for k in range(2, self.cheb_k):
-            # Apply recurrence with numerical stability
-            Tx_k = 2 * torch.matmul(prev_terms[-1], L) - prev_terms[-2]
-            
-            # Prevent exploding values
-            Tx_k = torch.clamp(Tx_k, min=-1e2, max=1e2)
-            
-            # Add weighted contribution to output
-            out = out + cheb_weights_norm[k] * Tx_k
-            
-            # Update previous terms (only need last two)
-            prev_terms = [prev_terms[-1], Tx_k]
-            
+            Tx_k = 2 * torch.matmul(Tx_1, L) - Tx_0
+            Tx_k = Tx_k.clamp(min=-1e2, max=1e2)
+            out += cheb_weights[k] * Tx_k
+            Tx_0, Tx_1 = Tx_1, Tx_k
+
         return out
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass through the latent correlation layer.
-        x: [B, T, F] - Batch, Time/Sequence, Features
-        returns: [B, T, output_size], [F, F] correlation matrix
-        """
-        # Apply layer normalization if enabled
         if self.use_layer_norm:
             x = self.layer_norm1(x)
 
-        # Compute data-driven and learned correlations
-        data_corr = self.compute_data_correlation(x)
+        raw_data_corr = self.compute_data_correlation(x)
         learned_corr = self.get_learned_correlation()
-
-        # Blend correlations with sigmoid-transformed alpha
         alpha = torch.sigmoid(self.alpha)
-        mixed_corr = alpha * learned_corr + (1 - alpha) * data_corr
-        
-        # Compute graph Laplacian from correlation matrix
-        laplacian = self.compute_laplacian(mixed_corr)
-        
-        # Prevent eigenvalue explosion for numerical stability
-        laplacian = torch.clamp(laplacian, min=-2.0, max=2.0)
+        mixed_corr = alpha * learned_corr + (1 - alpha) * raw_data_corr
 
-        # Apply Chebyshev filtering
+        laplacian = self.compute_laplacian(mixed_corr)
         x_filtered = self.chebyshev_filter(x, laplacian)
-        
-        # Project to higher dimension
         x_proj = self.input_proj(x_filtered)
 
-        # Apply layer normalization if enabled
         if self.use_layer_norm:
             x_proj = self.layer_norm2(x_proj)
 
-        # Apply non-linearity
         x_proj = F.gelu(x_proj)
-        
-        # Project to output dimension
-        output = self.output_proj(x_proj)
+        out = self.output_proj(x_proj)
 
-        # Apply final layer normalization if enabled
         if self.use_layer_norm:
-            output = self.layer_norm3(output)
-            
-        return output, mixed_corr
-        
+            out = self.layer_norm3(out)
+
+        return out, mixed_corr
 
 class MessagePassing(nn.Module):
     """
@@ -249,11 +172,19 @@ class MessagePassing(nn.Module):
         # Shared node transformation
         self.message_transform = nn.Linear(input_size, hidden_dim)
 
+        if self.aggregation == "sage":
+            self.sage_update = nn.Linear(input_size + hidden_dim, hidden_dim)
+
+        if self.aggregation == "sage_lstm":
+            self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True)
+            self.sage_update = nn.Linear(input_size + hidden_dim, hidden_dim)
+
         # Projections for attention mode
         if aggregation == "xformers":
             self.q_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
             self.k_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
             self.v_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
+            self.bias_proj = nn.Linear(input_size, num_heads * num_heads)
 
     def message(self, h: torch.Tensor) -> torch.Tensor:
         """
@@ -261,7 +192,7 @@ class MessagePassing(nn.Module):
         """
         return self.message_transform(h)  # [B, T, hidden_dim]
 
-    def aggregate(self, messages: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
+    def aggregate(self, messages: torch.Tensor, graph: torch.Tensor, self_features: torch.Tensor = None) -> torch.Tensor:
         """
         Aggregate messages based on specified strategy.
         messages: [B, T, hidden_dim]
@@ -270,51 +201,60 @@ class MessagePassing(nn.Module):
         if self.aggregation == "sum":
             return torch.einsum("bth,hg->btg", messages, graph)
 
-        
         elif self.aggregation == "mean":
-            B, T, H = messages.shape  # messages: [B, T, hidden]
-            F = graph.shape[0]        # graph: [F, F]
+            deg = graph.sum(dim=1) + 1e-10  # avoid div by zero
+            norm_graph = graph * (1.0 / deg).unsqueeze(1)
+            return torch.einsum("bth,hg->btg", messages, norm_graph)
+        
+        elif self.aggregation == "max":
+            # Use max pooling over the graph
+            return torch.einsum("bth,hg->btg", messages, graph).max(dim=1)[0]
 
-            # STEP 1 — check for existing NaNs early
-            if torch.isnan(messages).any():
-                raise RuntimeError("NaNs detected in messages before aggregation")
+        elif self.aggregation == "sage":
+            assert self_features is not None, "SAGE requires self node features"
 
-            if torch.isnan(graph).any() or torch.isinf(graph).any():
-                raise RuntimeError("NaNs or Infs detected in graph before aggregation")
+            # Graph aggregation (mean)
+            deg = graph.sum(dim=1) + 1e-10
+            norm_graph = graph * (1.0 / deg).unsqueeze(1)
+            neighbor_agg = torch.einsum("bth,hg->btg", messages, norm_graph)  # [B, T, H]
 
-            # STEP 2 — build identity matrix matching dtype/device
-            identity = torch.eye(F, device=graph.device, dtype=graph.dtype)
+            # Concatenate self features and aggregated neighbor messages
+            concat = torch.cat([self_features, neighbor_agg], dim=-1)  # [B, T, in + H]
+            return self.sage_update(concat)  # [B, T, H]
 
-            # STEP 3 — clone and fix isolated rows
-            row_sums = graph.sum(dim=1, keepdim=True)
-            isolated = row_sums.squeeze() == 0
-            graph_safe = graph.clone()
-            if isolated.any():
-                graph_safe[isolated, :] = identity[isolated, :]
 
-            # STEP 4 — normalize (row-wise mean)
-            row_sums = graph_safe.sum(dim=1, keepdim=True).clamp(min=1e-6)
-            normalized_graph = graph_safe / row_sums
+        elif self.aggregation == "sage_lstm":
+            assert self_features is not None, "SAGE-LSTM requires raw self features"
 
-            # STEP 5 — apply aggregation
-            out = torch.einsum("bth,hg->btg", messages, normalized_graph)
+            # Prepare neighbor messages
+            B, T, H = messages.shape
+            F = graph.shape[0]
 
-            # STEP 6 — final check
-            if torch.isnan(out).any() or torch.isinf(out).any():
-                # Print only shape + stats for brevity
-                print("NaNs in output despite normalization:")
-                print("→ messages stats:", messages.mean().item(), messages.std().item())
-                print("→ normalized_graph stats:", normalized_graph.mean().item(), normalized_graph.std().item())
-                print("→ out stats:", out.mean().item(), out.std().item())
-                raise RuntimeError("NaNs in aggregation output")
+            # [B, T, H] × [F, F] → [B, F, F, H]
+            neighbor_messages = torch.einsum("bth,hg->btg", messages, graph)  # Not order-preserving!
 
-            return out
+            # Expand messages to pass each node's neighbors through LSTM
+            # For proper LSTM aggregation, we need neighbor sequences per node
+            # Here we simulate fixed ordering via top-k or dense ordering
+            # For now, treat all neighbors as a "sequence": [B, F, H]
+            neighbor_sequences = torch.einsum("bth,hg->btg", messages, graph).transpose(1, 2)  # [B, F, T] → [B, F, H]
+
+            # Simulate LSTM over neighbors: assume sequence dim is F
+            lstm_out, _ = self.lstm(neighbor_sequences)  # [B, F, H]
+            neighbor_agg = lstm_out[:, -1, :]  # Final hidden state as aggregation [B, H]
+
+            # Expand to [B, T, H] to match per-node features (broadcasting)
+            neighbor_agg = neighbor_agg.unsqueeze(1).expand(-1, T, -1)
+
+            concat = torch.cat([self_features, neighbor_agg], dim=-1)  # [B, T, in + H]
+            return self.sage_update(concat)
 
         elif self.aggregation == "xformers":
-            return self._xformers_aggregate(messages, graph)
+            return self._xformers_aggregate(messages, graph)  # [B, T, H]
 
         else:
-            raise ValueError(f"Unsupported aggregation: {self.aggregation}")
+            raise ValueError(f"Unsupported aggregation mode: {self.aggregation}")
+
 
     def _xformers_aggregate(self, messages: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
         """
@@ -332,29 +272,33 @@ class MessagePassing(nn.Module):
         k = self.k_proj(x_flat).reshape(B * T, H, D, d_head)
         v = self.v_proj(x_flat).reshape(B * T, H, D, d_head)
 
-        # Static bias: [H, H] → [B*T, D, H, H]
-        # Goal: create [12288, 12, 4, 4] with alignment-compatible memory layout
-
-        # Step 1: allocate a larger tensor with last dim padded to 8
-        # Aligned and dtype-matching bias
-
+        if H > 8:
+            attn_bias = graph.expand(B * T, -1, -1)  # [B*T, F, F]
+            attn_bias = self.bias_proj(attn_bias)  # [B*T, F, num_heads * d_head]
+            # expand to [B*T, num_heads, F, d_head]
+            attn_bias = attn_bias.reshape(B*T, D, H, H)  # [B*T, num_heads, F, d_head]
     
-        # Call xFormers
-        out = memory_efficient_attention(q, k, v)
-        #out = memory_efficient_attention(q, k, v, attn_bias=bias)  # [B*T, H, D, d_head]
-        out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
-        #print(f"Xformers out: {out.shape=}")
-        out = out.reshape(B, T, D, -1)
-        # take mean over last dim
-        out = out.mean(dim=-1)                 # [B, T, D]
+            # Call xFormers without bias for now
+            out = memory_efficient_attention(q, k, v, attn_bias=attn_bias)  # [B*T, H, D, d_head]
+            out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+            out = out.reshape(B, T, D, -1)
+            # take mean over last dim
+            out = out.mean(dim=-1)                 # [B, T, D]
 
-        return out
+            return out
+        else:
+            # Call xFormers without bias for now
+            out = memory_efficient_attention(q, k, v)  # [B*T, H, D, d_head]
+            out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+            out = out.reshape(B, T, D, -1)
+            # take mean over last dim
+            out = out.mean(dim=-1)                 # [B, T, D]
 
-
+            return out
+        
     def forward(self, h: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("Subclass must implement forward pass.")
-
-
+    
 class GraphConv(MessagePassing):
     def __init__(self, input_size, output_size, hidden_dim, aggregation="sum", dropout=0.1):
         super().__init__(input_size, hidden_dim, aggregation)
@@ -373,8 +317,18 @@ class GraphConv(MessagePassing):
         updated = self.update_fn(combined)        # [B, T, in]
         return self.norm(self.output_proj(updated))
 
+class SageLayer(MessagePassing):
+    def __init__(self, input_size, hidden_dim):
+        super().__init__(input_size, hidden_dim, aggregation="sage")
+
+    def forward(self, h: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
+        messages = self.message(h)
+        return self.aggregate(messages, graph, self_features=h)
+
+
 class AttGraphConv(MessagePassing):
-    def __init__(self, input_size, output_size, hidden_dim, num_heads=1, dropout=0.1):
+    def __init__(self, input_size, output_size, hidden_dim, num_heads=4, dropout=0.1):
+        print(f"Using {num_heads} attention heads for AttGraphConv")
         super().__init__(input_size, hidden_dim)
         self.num_heads = num_heads
         self.output_proj = nn.Linear(input_size, output_size)
@@ -409,18 +363,18 @@ from xformers.ops import memory_efficient_attention, AttentionOpBase
 import torch.nn.functional as F
 
 class XFormerAttGraphConv(MessagePassing):
-    def __init__(self, input_size, output_size, hidden_dim, num_heads=4, dropout=0.1):
+    def __init__(self, input_size, output_size, hidden_dim, num_heads=2, dropout=0.1):
         super().__init__(input_size, hidden_dim)
         assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
 
-        self.q_proj = nn.Linear(input_size, hidden_dim)
-        self.k_proj = nn.Linear(input_size, hidden_dim)
-        self.v_proj = nn.Linear(input_size, hidden_dim)
+        self.q_proj = nn.Linear(input_size, input_size * self.head_dim * num_heads)
+        self.k_proj = nn.Linear(input_size, input_size * self.head_dim * num_heads)
+        self.v_proj = nn.Linear(input_size, input_size * self.head_dim * num_heads)
 
         self.update_fn = nn.Sequential(
-            nn.Linear(input_size + hidden_dim, input_size),
+            nn.Linear(input_size + self.head_dim, input_size),
             nn.GELU(),
             nn.Dropout(dropout)
         )
@@ -437,39 +391,25 @@ class XFormerAttGraphConv(MessagePassing):
 
         # Apply graph as soft attention bias over features
         # x: [B, T, F] → [B, F, T] (features as "tokens")
-        x_feat = x.transpose(1, 2)  # [B, F, T]
+        x_feat = x.reshape(B * T, F)
 
         # Project to Q, K, V
-        q = self.q_proj(x_feat).reshape(B, F, H, D).transpose(1, 2)  # [B, H, F, D]
-        k = self.k_proj(x_feat).reshape(B, F, H, D).transpose(1, 2)  # [B, H, F, D]
-        v = self.v_proj(x_feat).reshape(B, F, H, D).transpose(1, 2)  # [B, H, F, D]
-
-        # Modulate attention scores using graph
-        # graph: [F, F] → [1, 1, F, F] → broadcasted
-        attn_bias = torch.tanh(graph).unsqueeze(0).unsqueeze(0)  # [1, 1, F, F]
+        q = self.q_proj(x_feat).reshape(B*T, H, F, D).transpose(1, 2)  # [B, H, F, D]
+        k = self.k_proj(x_feat).reshape(B*T, H, F, D).transpose(1, 2)  # [B, H, F, D]
+        v = self.v_proj(x_feat).reshape(B*T, H, F, D).transpose(1, 2)  # [B, H, F, D]
 
         # Use xformers efficient attention
-        out = memory_efficient_attention(q, k, v, attn_bias=attn_bias)  # [B, H, F, D]
-        out = out.transpose(1, 2).reshape(B, F, H * D)  # [B, F, hidden_dim]
-
-        # Bring back to [B, T, hidden_dim]
-        out = out.transpose(1, 2)  # [B, T, hidden_dim]
-
+        out = memory_efficient_attention(q, k, v)  # [B, H, F, D]
+        out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+        out = out.reshape(B, T, D, -1)
+        # take mean over last dim
+        out = out.mean(dim=-1)                 # [B, T, D]
         # Update with residual information
         combined = torch.cat([x, out], dim=-1)  # [B, T, in + hidden]
         updated = self.update_fn(combined)      # [B, T, input_size]
         return self.norm(self.output_proj(updated))  # [B, T, output_size]
-import torch
-import torch.nn as nn
-from typing import Optional, List, Literal
-from xformers.ops import memory_efficient_attention
 
-# Assume these are defined elsewhere and imported:
-# - LatentCorrelationLayer
-# - GraphConv
-# - AttGraphConv
-# - XFormerAttGraphConv
-# - JumpKnowledge
+
 
 class LatentGraphNetwork(nn.Module):
     def __init__(
@@ -484,7 +424,7 @@ class LatentGraphNetwork(nn.Module):
         aggregation: str = 'sum',
         dropout: float = 0.1,
         residual: bool = True,
-        strategy: Literal['vanilla', 'attn', 'xformers'] = 'vanilla',
+        strategy: Literal['vanilla', 'attn', 'xformers', 'sage', 'gtat'] = 'vanilla',
         jk_mode: Literal['last', 'sum', 'max', 'concat', 'lstm', 'none'] = 'none'
     ):
         super().__init__()
@@ -519,6 +459,10 @@ class LatentGraphNetwork(nn.Module):
                 output_size=input_size
             )
 
+        if strategy == 'gtat':
+            self.gdv_encoder = GDVEncoder(gdv_dim=73, topo_dim=input_size)
+
+
         self.norm = nn.LayerNorm(output_size)
 
     def _create_layer(
@@ -548,9 +492,16 @@ class LatentGraphNetwork(nn.Module):
             return XFormerAttGraphConv(
                 input_size=input_size,
                 output_size=hidden_size,
-                hidden_dim=hidden_size,
+                hidden_dim=16,
                 dropout=dropout
             )
+        elif strategy == 'sage':
+            return SageLayer(
+                input_size=input_size,
+                hidden_dim=hidden_size
+            )
+        elif strategy == 'gtat':
+             return GTATLayerWrapper(input_size, hidden_size, topo_dim=input_size, hidden_dim=hidden_size, dropout=dropout)
         else:
             raise ValueError(f"Unsupported strategy: {strategy}")
 
@@ -560,9 +511,20 @@ class LatentGraphNetwork(nn.Module):
         h = corr_features
         outputs: List[torch.Tensor] = []
 
+        topo_embedding = None
+        if any(isinstance(l, GTATLayerWrapper) for l in self.message_passing_layers):
+            B, T, F = x.shape
+            gdv = compute_mock_gdv(F).to(x.device)
+            gdv = gdv / (gdv.sum(dim=1, keepdim=True) + 1e-6)
+            topo_embedding = self.gdv_encoder(gdv)         # [F, topo_dim]
+            topo_embedding = topo_embedding.unsqueeze(0).expand(B, F, -1).clone()  # ✅ shape [B, F, topo_dim]
+
+
         for layer in self.message_passing_layers:
-            h = layer(h, correlation)
-            outputs.append(h)
+            if isinstance(layer, GTATLayerWrapper):
+                h = layer(h, correlation, topo_embedding)
+            else:
+                h = layer(h, correlation)
 
         if self.jk_mode != 'none':
             jk_out = self.jump_knowledge(outputs)
@@ -620,3 +582,177 @@ class JumpKnowledge(nn.Module):
 
         else:
             raise ValueError(f"Unsupported JK mode: {self.mode}")
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import networkx as nx
+import subprocess
+import tempfile
+import numpy as np
+from typing import Union, Optional
+
+# === GDV via ORCA ===
+def compute_gdv_orca(
+    G: Union[nx.Graph, nx.DiGraph],
+    orca_path: str = "./orca",
+    graphlet_size: int = 5
+) -> np.ndarray:
+    if not isinstance(G, nx.Graph):
+        G = nx.Graph(G)
+
+    with tempfile.NamedTemporaryFile("w", delete=False) as edge_file, \
+         tempfile.NamedTemporaryFile("r", delete=False) as out_file:
+
+        node_map = {n: i for i, n in enumerate(G.nodes())}
+        for u, v in G.edges():
+            edge_file.write(f"{node_map[u]} {node_map[v]}\n")
+        edge_file.flush()
+
+        cmd = [orca_path, str(graphlet_size), edge_file.name, out_file.name]
+        subprocess.run(cmd, check=True)
+
+        out_lines = out_file.readlines()
+        gdv = [list(map(int, line.strip().split())) for line in out_lines]
+
+    return np.array(gdv, dtype=np.float32)
+
+
+def compute_mock_gdv(num_nodes: int, gdv_dim: int = 73) -> torch.Tensor:
+    return torch.randn(num_nodes, gdv_dim)
+
+
+class GDVEncoder(nn.Module):
+    def __init__(self, gdv_dim: int, topo_dim: int):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(gdv_dim, topo_dim),
+            nn.ReLU(),
+            nn.Linear(topo_dim, topo_dim)
+        )
+
+    def forward(self, gdv):
+        return self.proj(gdv)
+
+
+class GTATLayer(nn.Module):
+    def __init__(self, feature_dim, topo_dim, hidden_dim):
+        super().__init__()
+        self.feature_attn = nn.Linear(2 * hidden_dim, 1)
+        self.topo_attn = nn.Linear(2 * hidden_dim, 1)
+
+        self.feature_proj = nn.Linear(feature_dim, hidden_dim)
+        self.topo_proj = nn.Linear(topo_dim, hidden_dim)
+
+    def forward(self, H, T, adj):
+        # H: [B, N, F], T: [B, F, F_t], adj: [F, F] or [B, F, F]
+        B, N, Fdim = H.shape
+        _, Fdim, F_t = T.shape
+
+        if adj.dim() == 2:
+            adj = adj.unsqueeze(0).expand(B, -1, -1)  # [B, F, F]
+
+        # Project features
+        H_proj = self.feature_proj(H)         # [B, N, H]
+        T_proj = self.topo_proj(T)            # [B, F, H]
+
+        Hi = T_proj.unsqueeze(2).expand(B, Fdim, Fdim, -1)
+        Hj = T_proj.unsqueeze(1).expand(B, Fdim, Fdim, -1)
+        topo_input = torch.cat([Hi, Hj], dim=-1)
+        e_topo = F.leaky_relu(self.topo_attn(topo_input)).squeeze(-1)
+        beta = F.softmax(e_topo.masked_fill(adj == 0, -1e4), dim=-1)  # [B, F, F]
+
+        T_out = torch.bmm(beta, T_proj)  # [B, F, H]
+
+        H_out = torch.zeros_like(H_proj)
+        for b in range(B):
+            for t in range(N):
+                Hi = H_proj[b, t].unsqueeze(0).expand(Fdim, -1)
+                Hj = T_out[b]
+                feat_cat = torch.cat([Hi, Hj], dim=-1)  # [F, 2H]
+                e_feat = F.leaky_relu(self.feature_attn(feat_cat)).squeeze(-1)  # [F]
+                alpha = F.softmax(e_feat, dim=-1)  # [F]
+                H_out[b, t] = torch.matmul(alpha, Hj)
+
+        return H_out, T_out
+
+
+class GTATLayerWrapper(nn.Module):
+    def __init__(self, input_size, output_size, topo_dim, hidden_dim, dropout):
+        super().__init__()
+        self.gtat_layer = GTATLayer(input_size, topo_dim, hidden_dim)
+        self.output_proj = nn.Linear(input_size, output_size)
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(output_size)
+
+    def forward(self, x, graph, topo_embedding):
+        h, t = self.gtat_layer(x, topo_embedding, graph)
+        out = self.output_proj(h)
+        return self.norm(self.dropout(out))
+
+
+class GTAT(nn.Module):
+    def __init__(self, in_dim, gdv_dim, topo_dim, hidden_dim, out_dim, num_layers):
+        super().__init__()
+        self.gdv_encoder = GDVEncoder(gdv_dim, topo_dim)
+        self.input_proj = nn.Linear(in_dim, hidden_dim)
+        self.layers = nn.ModuleList([
+            GTATLayer(hidden_dim, topo_dim, hidden_dim)
+            for _ in range(num_layers)
+        ])
+        self.output_proj = nn.Linear(hidden_dim, out_dim)
+
+    def forward(self, H, adj, gdv=None):
+        if gdv is None:
+            gdv = compute_mock_gdv(H.size(0))
+        if isinstance(gdv, np.ndarray):
+            gdv = torch.tensor(gdv, dtype=torch.float32, device=H.device)
+
+        gdv = gdv / (gdv.sum(dim=1, keepdim=True) + 1e-6)
+        T = self.gdv_encoder(gdv)
+        H = self.input_proj(H)
+
+        for layer in self.layers:
+            H, T = layer(H, T, adj)
+
+        return self.output_proj(H)
+
+class GTATIntegrated(nn.Module):
+    def __init__(self,
+                 input_size: int,
+                 output_size: int,
+                 gdv_dim: int = 73,
+                 topo_dim: int = 64,
+                 hidden_size: Optional[int] = None,
+                 num_passes: int = 2,
+                 dropout: float = 0.1):
+        super().__init__()
+        self.hidden_size = hidden_size or max(input_size, output_size)
+        self.input_proj = nn.Linear(input_size, self.hidden_size)
+        self.output_proj = nn.Linear(self.hidden_size, output_size)
+        self.gdv_encoder = GDVEncoder(gdv_dim, topo_dim)
+        self.layers = nn.ModuleList([
+            GTATLayerWrapper(self.hidden_size, self.hidden_size, topo_dim, self.hidden_size, dropout)
+            for _ in range(num_passes)
+        ])
+        self.norm = nn.LayerNorm(output_size)
+
+    def forward(self, x: torch.Tensor, adj: torch.Tensor, gdv: Optional[torch.Tensor] = None):
+        if gdv is None:
+            gdv = compute_mock_gdv(x.size(-1))  # x.shape: [B, T, F]
+        if isinstance(gdv, np.ndarray):
+            gdv = torch.tensor(gdv, dtype=torch.float32, device=x.device)
+
+        gdv = gdv / (gdv.sum(dim=1, keepdim=True) + 1e-6)
+        topo_embedding = self.gdv_encoder(gdv)
+        if topo_embedding.ndim == 2:
+            B, T, F = x.shape
+            topo_embedding = topo_embedding.unsqueeze(0).expand(B, T, -1).clone()  # [B, F, topo_dim]
+        h = self.input_proj(x)
+
+        for layer in self.layers:
+            h = layer(h, adj, topo_embedding)
+
+        return self.norm(self.output_proj(h))
+
