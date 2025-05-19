@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-
+import numpy as np
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 # === Masked Loss Utilities ===
 def masked_mae_cal(inputs, target, mask):
     return torch.sum(torch.abs(inputs - target) * mask) / (torch.sum(mask) + 1e-9)
@@ -254,10 +256,11 @@ class SAITSImputer:
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         self.trainer = SAITSTrainer(self.model, optimizer, device=self.device)
 
-        for epoch in range(self.epochs):
+        # use tqdm
+        for epoch in tqdm(range(self.epochs), desc="Training SAITS"):
             loss = self.trainer.train_epoch(dataloader)
-            print(f"Epoch {epoch+1}/{self.epochs} - Loss: {loss:.4f}")
-
+            if epoch % 25 == 0:
+                print(f"Epoch {epoch+1}/{self.epochs} - Loss: {loss:.4f}")
     def impute(self, series: np.ndarray) -> np.ndarray:
         if series.ndim == 1:
             series = series[:, None]

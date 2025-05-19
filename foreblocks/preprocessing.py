@@ -37,6 +37,8 @@ from statsmodels.tsa.stattools import adfuller, acf, pacf
 # ============================
 import matplotlib.pyplot as plt
 
+from .pre.impute import SAITSImputer
+
 from .pre.outlier import _remove_outliers
 
 # ============================
@@ -425,19 +427,27 @@ class TimeSeriesPreprocessor:
         pacf_scores = score_pacf(data, D)
         temporal_score = np.mean(pacf_scores)
 
-        # === Imputation
+        # === Imputation Strategy (improved)
         if missing_rate == 0:
             self.impute_method = None
         elif missing_rate < 0.05:
+            # Very low missingness — keep it simple
             self.impute_method = "interpolate" if temporal_score > 2 else "mean"
         elif missing_rate < 0.15:
-            self.impute_method = "knn"
+            # Use more structure-aware methods
+            self.impute_method = "knn" if temporal_score < 3 else "interpolate"
         elif missing_rate < 0.3:
-            self.impute_method = "interpolate" if temporal_score > 3 else "ffill"
-        elif missing_rate < 0.5:
-            self.impute_method = "iterative"
+            # Moderate missingness — prefer iterative when data is correlated
+            self.impute_method = "iterative" if temporal_score > 1.5 else "knn"
+        elif missing_rate < 0.6:
+            # Large missingness — iterative is still preferred if correlation supports it
+            self.impute_method = "iterative" if temporal_score > 1.0 else "ffill"
         else:
-            self.impute_method = "bfill"
+            # Very high missingness — fallback to naive filling
+            self.impute_method = "ffill" if temporal_score > 2 else "bfill"
+
+        self.impute_method = "saits"
+
 
         print(f"→ Temporal structure: {temporal_score:.2f}, Missing rate: {missing_rate:.3f} → Impute: {self.impute_method or 'None'}")
 
@@ -682,53 +692,59 @@ class TimeSeriesPreprocessor:
         df = pd.DataFrame(data)
         method = self.impute_method
 
-        if method == "auto":
+        if method == "saits":
             try:
-                from fancyimpute import IterativeImputer as FancyIter
+                saits_model = SAITSImputer(seq_len=self.window_size, epochs=100)
+                saits_model.fit(data)
+                return saits_model.impute(data)
+            except Exception as e:
+                print(f"[ERROR] SAITS imputation failed: {e}")
+                raise
+
+
+        if method == "auto":
+            from sklearn.impute import KNNImputer
+            try:
+                from sklearn.experimental import enable_iterative_imputer  # noqa
+                from sklearn.impute import IterativeImputer as FancyIter
             except ImportError:
-                try:
-                    from sklearn.experimental import enable_iterative_imputer  # noqa
-                    from sklearn.impute import IterativeImputer as FancyIter
-                except ImportError:
-                    FancyIter = None
+                FancyIter = None
 
             def impute_column(i, col, window_size=24):
                 series = df[col]
                 missing_rate = series.isna().mean()
 
-                # 1. Low missing rate → interpolate
-                if missing_rate < 0.05:
-                    return i, series.interpolate(method="linear").ffill().bfill().values
+                try:
+                    # 1. Low missing rate → Interpolation
+                    if missing_rate < 0.05:
+                        filled = series.interpolate(method="linear", limit_direction="both")
+                        return i, filled.ffill().bfill().values
 
-                # 2. Moderate → KNN
-                elif missing_rate < 0.2:
-                    return i, KNNImputer(n_neighbors=3).fit_transform(series.values.reshape(-1, 1)).ravel()
+                    # 2. Moderate → KNN Imputer
+                    elif missing_rate < 0.2:
+                        return i, KNNImputer(n_neighbors=3).fit_transform(series.to_frame()).ravel()
 
-                # 3. High missing → Iterative or fallback
-                else:
-                    try:
-                        if FancyIter is not None:
-                            imputed = FancyIter(random_state=0).fit_transform(series.values.reshape(-1, 1)).ravel()
-                            return i, imputed
-                    except Exception:
-                        pass
+                    # 3. High → IterativeImputer or fallback
+                    elif FancyIter is not None:
+                        imputed = FancyIter(max_iter=10, random_state=0).fit_transform(series.to_frame()).ravel()
+                        return i, imputed
 
-                    # Fallback: seasonal or mean fill
-                    seasonal = series.copy()
-                    try:
-                        for t in range(len(series)):
-                            if pd.isna(seasonal.iloc[t]):
-                                seasonal.iloc[t] = series.iloc[t - window_size] if t >= window_size else np.nan
-                        return i, seasonal.fillna(series.mean()).values
-                    except:
-                        return i, series.fillna(series.mean()).values
+                except Exception as e:
+                    print(f"[WARN] Fallback imputation for column {col}: {e}")
+
+                # Fallback: use lag/seasonality or global mean
+                seasonal = series.copy()
+                for t in range(len(series)):
+                    if pd.isna(seasonal.iloc[t]) and t >= window_size:
+                        seasonal.iloc[t] = series.iloc[t - window_size]
+                return i, seasonal.fillna(series.mean()).values
 
             results = Parallel(n_jobs=-1)(
                 delayed(impute_column)(i, col, self.window_size)
-                for i, col in enumerate(tqdm(df.columns, desc="Imputing missing values"))
+                for i, col in enumerate(tqdm(df.columns, desc="🔧 Imputing Missing Values"))
             )
 
-            results.sort(key=lambda x: x[0])  # sort by column index
+            results.sort(key=lambda x: x[0])
             imputed_matrix = np.column_stack([col for _, col in results])
             return imputed_matrix
 

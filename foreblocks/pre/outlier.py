@@ -25,6 +25,8 @@ from sklearn.preprocessing import StandardScaler
 from typing import Union
 import math
 
+from tqdm import tqdm
+
 # Optional imports
 try:
     from pykalman import KalmanFilter
@@ -384,7 +386,7 @@ class TranADDetector:
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         self.model.train()
-        for epoch in range(self.epochs):
+        for epoch in tqdm(range(self.epochs)):
             total_loss = 0
             for (batch,) in loader:
                 batch = batch.to(self.device)

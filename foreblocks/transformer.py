@@ -74,7 +74,7 @@ from xformers.ops import memory_efficient_attention
 
 class XFormerAttention(nn.Module):
     def __init__(self, d_model, nhead, dropout=0.1, batch_first=True, cross_attention=False,
-                 use_flash_attn=False, attention_type="standard", prob_sparse_factor=0.4):
+                 use_flash_attn=False, attention_type="prob_sparse", prob_sparse_factor=0.4):
         
         super().__init__()
         assert d_model % nhead == 0, "d_model must be divisible by nhead"
@@ -110,8 +110,9 @@ class XFormerAttention(nn.Module):
         uniform = torch.full_like(attn_probs, 1.0 / T_k)
         kl_div = torch.sum(attn_probs * (torch.log(attn_probs + 1e-10) - torch.log(uniform + 1e-10)), dim=-1)
 
-        # === Select top-u queries
+        # === Top-u query selection
         u = int(min(self.prob_sparse_factor * math.log(T_k), T_q))
+        u = max(u, int(0.3 * T_q))  # Enforce minimum coverage (30%)
         topk = torch.topk(kl_div, u, dim=-1).indices  # [B, H, u]
         q_reduced = torch.gather(q, 2, topk.unsqueeze(-1).expand(-1, -1, -1, D))  # [B, H, u, D]
 
@@ -244,9 +245,9 @@ class XFormerAttention(nn.Module):
 
 
 class TransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="gelu"):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="gelu", att_type="prob_sparse"):
         super().__init__()
-        self.self_attn = XFormerAttention(d_model, nhead, dropout=dropout, batch_first=True, use_flash_attn=True)
+        self.self_attn = XFormerAttention(d_model, nhead, dropout=dropout, batch_first=True, use_flash_attn=True, attention_type=att_type)
 
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
@@ -273,10 +274,10 @@ class TransformerEncoderLayer(nn.Module):
         return src
 
 class TransformerDecoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="gelu", informer_like=False):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="gelu", informer_like=False, att_type="prob_sparse"):
         super().__init__()
-        self.self_attn = XFormerAttention(d_model, nhead, dropout=dropout, batch_first=True, use_flash_attn=True)
-        self.multihead_attn = XFormerAttention(d_model, nhead, dropout=dropout, batch_first=True, cross_attention=True)
+        self.self_attn = XFormerAttention(d_model, nhead, dropout=dropout, batch_first=True, use_flash_attn=True, attention_type=att_type)
+        self.multihead_attn = XFormerAttention(d_model, nhead, dropout=dropout, batch_first=True, cross_attention=True, attention_type=att_type)
 
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
@@ -333,7 +334,7 @@ class TransformerDecoderLayer(nn.Module):
 
 class TransformerEncoder(nn.Module):
     def __init__(self, input_size, d_model=128, nhead=8, num_layers=3,
-                 dim_feedforward=2048, dropout=0.1, activation='gelu', hidden_size=None):
+                 dim_feedforward=2048, dropout=0.1, activation='gelu', hidden_size=None, att_type="prob_sparse"):
         super().__init__()
         self.hidden_size = hidden_size if hidden_size is not None else d_model
         self.input_projection = nn.Linear(self.hidden_size, d_model)
@@ -341,7 +342,7 @@ class TransformerEncoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.layers = nn.ModuleList([
-            TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation)
+            TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation, att_type)
             for _ in range(num_layers)
         ])
         self.norm = nn.LayerNorm(d_model)
@@ -359,7 +360,7 @@ class TransformerEncoder(nn.Module):
 
 class TransformerDecoder(nn.Module):
     def __init__(self, input_size, output_size, d_model=128, nhead=8, num_layers=3,
-                 dim_feedforward=2048, dropout=0.1, activation='gelu', hidden_size=None, informer_like=False):
+                 dim_feedforward=2048, dropout=0.1, activation='gelu', hidden_size=None, informer_like=False, att_type="prob_sparse"):
         super().__init__()
         self.hidden_size = hidden_size if hidden_size is not None else d_model
         self.input_projection = nn.Linear(self.hidden_size, d_model)
@@ -367,7 +368,7 @@ class TransformerDecoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.layers = nn.ModuleList([
-            TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, activation, informer_like)
+            TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, activation, informer_like, att_type)
             for _ in range(num_layers)
         ])
         self.norm = nn.LayerNorm(d_model)

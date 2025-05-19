@@ -156,6 +156,8 @@ class LatentCorrelationLayer(nn.Module):
 
         return out, mixed_corr
 
+from flash_attn import flash_attn_qkvpacked_func
+
 class MessagePassing(nn.Module):
     """
     Generic message passing base class.
@@ -185,6 +187,35 @@ class MessagePassing(nn.Module):
             self.k_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
             self.v_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
             self.bias_proj = nn.Linear(input_size, num_heads * num_heads)
+        elif aggregation == "flash":
+            self.q_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
+            self.k_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
+            self.v_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
+
+    def _flash_aggregate(self, messages: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
+        """
+        Use FlashAttention instead of xFormers.
+        """
+        B, T, D = messages.shape
+        H = self.num_heads
+        d_head = self.head_dim
+
+        x_flat = messages.reshape(B * T, D)
+        # [B, T, D] → [B, T, H, d_head] → [B, T, 3, H, d_head]
+        q = self.q_proj(x_flat).reshape(B * T, H, D, d_head)
+        k = self.k_proj(x_flat).reshape(B * T, H, D, d_head)
+        v = self.v_proj(x_flat).reshape(B * T, H, D, d_head)
+
+        # FlashAttention expects [B, T, 3, H, d_head]
+        qkv = torch.stack([q, k, v], dim=2)
+
+        # Apply FlashAttention (no masking for now)
+        out = flash_attn_qkvpacked_func(qkv, causal=False)  # [B, T, H, d_head]
+        out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+        out = out.reshape(B, T, D, -1)
+        out = out.mean(dim=-1)                 # [B, T, D]
+        # Flatten: [B, T, H, d_head] → [B, T, D]
+        return out.reshape(B, T, D)
 
     def message(self, h: torch.Tensor) -> torch.Tensor:
         """
@@ -224,34 +255,18 @@ class MessagePassing(nn.Module):
 
 
         elif self.aggregation == "sage_lstm":
-            assert self_features is not None, "SAGE-LSTM requires raw self features"
-
-            # Prepare neighbor messages
-            B, T, H = messages.shape
-            F = graph.shape[0]
-
-            # [B, T, H] × [F, F] → [B, F, F, H]
-            neighbor_messages = torch.einsum("bth,hg->btg", messages, graph)  # Not order-preserving!
-
-            # Expand messages to pass each node's neighbors through LSTM
-            # For proper LSTM aggregation, we need neighbor sequences per node
-            # Here we simulate fixed ordering via top-k or dense ordering
-            # For now, treat all neighbors as a "sequence": [B, F, H]
-            neighbor_sequences = torch.einsum("bth,hg->btg", messages, graph).transpose(1, 2)  # [B, F, T] → [B, F, H]
-
-            # Simulate LSTM over neighbors: assume sequence dim is F
-            lstm_out, _ = self.lstm(neighbor_sequences)  # [B, F, H]
-            neighbor_agg = lstm_out[:, -1, :]  # Final hidden state as aggregation [B, H]
-
-            # Expand to [B, T, H] to match per-node features (broadcasting)
-            neighbor_agg = neighbor_agg.unsqueeze(1).expand(-1, T, -1)
-
-            concat = torch.cat([self_features, neighbor_agg], dim=-1)  # [B, T, in + H]
+            assert self_features is not None
+            neighbor_sequences = torch.einsum("bth,hg->btg", messages, graph).transpose(1, 2)
+            lstm_out, _ = self.lstm(neighbor_sequences)
+            neighbor_agg, _ = torch.max(lstm_out, dim=1)
+            neighbor_agg = neighbor_agg.unsqueeze(1).expand(-1, messages.size(1), -1)
+            concat = torch.cat([self_features, neighbor_agg], dim=-1)
             return self.sage_update(concat)
 
         elif self.aggregation == "xformers":
             return self._xformers_aggregate(messages, graph)  # [B, T, H]
-
+        elif self.aggregation == "flash":
+            return self._flash_aggregate(messages, graph)
         else:
             raise ValueError(f"Unsupported aggregation mode: {self.aggregation}")
 
@@ -272,33 +287,22 @@ class MessagePassing(nn.Module):
         k = self.k_proj(x_flat).reshape(B * T, H, D, d_head)
         v = self.v_proj(x_flat).reshape(B * T, H, D, d_head)
 
-        if H > 8:
-            attn_bias = graph.expand(B * T, -1, -1)  # [B*T, F, F]
-            attn_bias = self.bias_proj(attn_bias)  # [B*T, F, num_heads * d_head]
-            # expand to [B*T, num_heads, F, d_head]
-            attn_bias = attn_bias.reshape(B*T, D, H, H)  # [B*T, num_heads, F, d_head]
+        # Call xFormers without bias for now
+        out = memory_efficient_attention(q, k, v)  # [B*T, H, D, d_head]
+        out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+        out = out.reshape(B, T, D, -1)
+        # take mean over last dim
+        out = out.mean(dim=-1)                 # [B, T, D]
+
+        return out
     
-            # Call xFormers without bias for now
-            out = memory_efficient_attention(q, k, v, attn_bias=attn_bias)  # [B*T, H, D, d_head]
-            out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
-            out = out.reshape(B, T, D, -1)
-            # take mean over last dim
-            out = out.mean(dim=-1)                 # [B, T, D]
-
-            return out
-        else:
-            # Call xFormers without bias for now
-            out = memory_efficient_attention(q, k, v)  # [B*T, H, D, d_head]
-            out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
-            out = out.reshape(B, T, D, -1)
-            # take mean over last dim
-            out = out.mean(dim=-1)                 # [B, T, D]
-
-            return out
-        
     def forward(self, h: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("Subclass must implement forward pass.")
     
+    def update(self, x, agg):
+        combined = torch.cat([x, agg], dim=-1)
+        return self.norm(self.output_proj(self.update_fn(combined)))
+
 class GraphConv(MessagePassing):
     def __init__(self, input_size, output_size, hidden_dim, aggregation="sum", dropout=0.1):
         super().__init__(input_size, hidden_dim, aggregation)
@@ -313,18 +317,11 @@ class GraphConv(MessagePassing):
     def forward(self, x, graph):
         msg = self.message(x)                     # [B, T, hidden]
         agg = self.aggregate(msg, graph)          # [B, T, hidden]
-        combined = torch.cat([x, agg], dim=-1)    # [B, T, in+hidden]
-        updated = self.update_fn(combined)        # [B, T, in]
-        return self.norm(self.output_proj(updated))
+        return self.update(x, agg)                    # [B, T, output_size]
 
-class SageLayer(MessagePassing):
+class SageLayer(GraphConv):
     def __init__(self, input_size, hidden_dim):
-        super().__init__(input_size, hidden_dim, aggregation="sage")
-
-    def forward(self, h: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
-        messages = self.message(h)
-        return self.aggregate(messages, graph, self_features=h)
-
+        super().__init__(input_size, input_size, hidden_dim, aggregation="sage")
 
 class AttGraphConv(MessagePassing):
     def __init__(self, input_size, output_size, hidden_dim, num_heads=4, dropout=0.1):
@@ -356,11 +353,6 @@ class AttGraphConv(MessagePassing):
         combined = torch.cat([x, agg], dim=-1)
         h = self.update_fn(combined)
         return self.norm(self.output_proj(h))
-
-from xformers.ops import memory_efficient_attention, AttentionOpBase
-
-from xformers.ops import memory_efficient_attention, AttentionOpBase
-import torch.nn.functional as F
 
 class XFormerAttGraphConv(MessagePassing):
     def __init__(self, input_size, output_size, hidden_dim, num_heads=2, dropout=0.1):
