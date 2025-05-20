@@ -12,6 +12,67 @@ def masked_mae_cal(inputs, target, mask):
 def masked_mse_cal(inputs, target, mask):
     return torch.sum(torch.square(inputs - target) * mask) / (torch.sum(mask) + 1e-9)
 
+import numpy as np
+
+def rolling_window_impute(series: np.ndarray, model_class, window_size=48, stride=24, model_kwargs=None):
+    """
+    Rolling horizon imputation using overlapping windows and a pluggable model class.
+
+    Args:
+        series: np.ndarray of shape (T, D) with NaNs.
+        model_class: Imputer class with .fit() and .impute() methods (e.g. SAITSImputer).
+        window_size: Length of each window (rolling horizon).
+        stride: Step between consecutive windows.
+        model_kwargs: Optional dict of kwargs passed to model_class constructor.
+
+    Returns:
+        Imputed np.ndarray of shape (T, D).
+    """
+    if series.ndim == 1:
+        series = series[:, None]
+    T, D = series.shape
+
+    recon = np.zeros((T, D), dtype=np.float32)
+    counts = np.zeros((T, D), dtype=np.float32)
+
+    model_kwargs = model_kwargs or {}
+
+    for start in range(0, T - window_size + 1, stride):
+        end = start + window_size
+        window = series[start:end]
+
+        model = model_class(seq_len=window_size, **model_kwargs)
+        try:
+            model.fit(window)
+            imputed_window = model.impute(window)
+        except Exception as e:
+            print(f"[WARN] Imputation failed at window {start}:{end} - {e}")
+            imputed_window = np.nan_to_num(window)
+
+        recon[start:end] += imputed_window
+        counts[start:end] += 1
+
+    # Handle last window if not covered
+    if end < T:
+        start = T - window_size
+        window = series[start:T]
+        model = model_class(seq_len=window_size, **model_kwargs)
+        try:
+            model.fit(window)
+            imputed_window = model.impute(window)
+        except Exception as e:
+            print(f"[WARN] Final window imputation failed - {e}")
+            imputed_window = np.nan_to_num(window)
+        recon[start:T] += imputed_window[-(T - start):]
+        counts[start:T] += 1
+
+    # Normalize overlapping reconstructions
+    counts[counts == 0] = 1e-9
+    result = recon / counts
+
+    # Fill original values
+    return np.where(np.isnan(series), result, series)
+
 # === Positional Encoding ===
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, n_position=1000):

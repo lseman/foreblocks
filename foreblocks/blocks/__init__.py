@@ -32,6 +32,7 @@ from .mamba import MambaBlock
 # NHA
 from .nha import NHA
 
+
 __all__ = [
     # Simple blocks
     'GRU',
@@ -57,4 +58,5 @@ __all__ = [
     
     # Mamba blocks
     'MambaBlock',
+
 ]

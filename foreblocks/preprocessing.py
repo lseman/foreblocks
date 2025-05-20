@@ -280,7 +280,7 @@ class TimeSeriesPreprocessor:
         self_tune=False,
         generate_time_features=False,
         apply_imputation=False,
-        epochs = 200,
+        epochs = 500,
     ):
         """
         Initialize the TimeSeriesPreprocessor with the specified parameters.
@@ -694,7 +694,7 @@ class TimeSeriesPreprocessor:
 
         if method == "saits":
             try:
-                saits_model = SAITSImputer(seq_len=self.window_size, epochs=100)
+                saits_model = SAITSImputer(seq_len=self.window_size, epochs=500)
                 saits_model.fit(data)
                 return saits_model.impute(data)
             except Exception as e:
