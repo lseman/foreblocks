@@ -69,6 +69,31 @@ def init_transformer_weights(module, d_model: Optional[int] = None):
                 torch.nn.init.zeros_(w.bias)
 
 
+class AdaptiveRMSNorm(nn.Module):
+    """Adaptive RMSNorm with learnable scaling and optional bias"""
+
+    def __init__(self, d_model, eps=1e-5, use_bias=False):
+        super().__init__()
+        self.eps = eps
+        self.alpha = nn.Parameter(torch.ones(d_model))  # Learnable scale
+        self.use_bias = use_bias
+        if use_bias:
+            self.beta = nn.Parameter(torch.zeros(d_model))
+
+    def forward(self, x):
+        # RMS norm: no mean subtraction
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+        out = self.alpha * (x / rms)
+        if self.use_bias:
+            out += self.beta
+        return out
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(d_model={self.alpha.shape[0]}, eps={self.eps})"
+        )
+
+
 class AdaptiveLayerNorm(nn.Module):
     """Adaptive LayerNorm with learnable scaling and optional bias"""
 
@@ -106,7 +131,7 @@ class TransformerEncoderLayer(nn.Module):
         freq_att=False,
         freq_modes=16,
         seq_len=None,
-        use_adaptive_ln=True,
+        use_adaptive_ln="rms",
         use_moe=False,
         num_experts=5,
         top_k=5,
@@ -140,7 +165,11 @@ class TransformerEncoderLayer(nn.Module):
             expert_dropout=0.1,
         )
 
-        norm_cls = AdaptiveLayerNorm if use_adaptive_ln else nn.LayerNorm
+        norm_cls = nn.LayerNorm(d_model, eps=layer_norm_eps)
+        if use_adaptive_ln == "rms":
+            norm_cls = AdaptiveRMSNorm
+        elif use_adaptive_ln == "layer":
+            norm_cls = AdaptiveLayerNorm
         self.norm1 = norm_cls(d_model, eps=layer_norm_eps)
         self.norm2 = norm_cls(d_model, eps=layer_norm_eps)
 
@@ -213,7 +242,7 @@ class TransformerDecoderLayer(nn.Module):
         use_flash_attn=True,
         layer_norm_eps=1e-5,
         norm_strategy="pre_norm",
-        use_adaptive_ln=True,
+        use_adaptive_ln="rms",
         use_moe=False,
         num_experts=10,
         top_k=5,
@@ -257,7 +286,11 @@ class TransformerDecoderLayer(nn.Module):
             expert_dropout=0.1,
         )
 
-        norm_cls = AdaptiveLayerNorm if use_adaptive_ln else nn.LayerNorm
+        norm_cls = nn.LayerNorm(d_model, eps=layer_norm_eps)
+        if use_adaptive_ln == "rms":
+            norm_cls = AdaptiveRMSNorm
+        elif use_adaptive_ln == "layer":
+            norm_cls = AdaptiveLayerNorm
         self.norm1 = norm_cls(d_model, eps=layer_norm_eps)
         self.norm2 = norm_cls(d_model, eps=layer_norm_eps)
         self.norm3 = norm_cls(d_model, eps=layer_norm_eps)
@@ -390,7 +423,7 @@ class TransformerEncoder(nn.Module):
         use_swiglu: bool = True,
         use_flash_attn: bool = True,
         use_moe: bool = False,
-        use_adaptive_ln: bool = True,
+        use_adaptive_ln: str = "rms",
     ):
         super().__init__()
 
@@ -459,7 +492,7 @@ class TransformerEncoder(nn.Module):
         src = self.input_projection(src)
 
         # Add positional encoding
-        src = self.pos_encoder(src)
+        # src = self.pos_encoder(src)
 
         # Apply dropout
         src = self.dropout(src)
@@ -520,7 +553,7 @@ class TransformerDecoder(nn.Module):
         use_swiglu: bool = True,
         use_flash_attn: bool = True,
         use_moe: bool = False,
-        use_adaptive_ln: bool = True,
+        use_adaptive_ln: str = "rms",
     ):
         super().__init__()
 
@@ -610,7 +643,7 @@ class TransformerDecoder(nn.Module):
         tgt = self.input_projection(tgt)
 
         # Add positional encoding
-        tgt = self.pos_encoder(tgt)
+        # tgt = self.pos_encoder(tgt)
 
         # Apply dropout
         tgt = self.dropout(tgt)

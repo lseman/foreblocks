@@ -117,7 +117,6 @@ class XFormerAttention(nn.Module):
         self._attention_strategy = self.attention_strategy_factory.get(
             self.attention_type, self.attention_strategy_factory["default"]
         )()
-        print("Using attention strategy:", self.attention_type)
 
         self.optimized_strategy = OptimizedAttentionStrategy()
 
@@ -131,14 +130,6 @@ class XFormerAttention(nn.Module):
         bsz, tgt_len = query.size(0), query.size(1)
         src_len = key.size(1)
 
-        # Check for NaN in inputs
-        if (
-            torch.isnan(query).any()
-            or torch.isnan(key).any()
-            or torch.isnan(value).any()
-        ):
-            raise RuntimeError("NaN detected in query/key/value inputs")
-
         if key is value and key is query:
             q, k, v = self.qkv_proj(query).chunk(3, dim=-1)
         else:
@@ -149,20 +140,6 @@ class XFormerAttention(nn.Module):
         q = q.view(bsz, tgt_len, self.nhead, self.head_dim).transpose(1, 2)
         k = k.view(bsz, src_len, self.nhead, self.head_dim).transpose(1, 2)
         v = v.view(bsz, src_len, self.nhead, self.head_dim).transpose(1, 2)
-
-        if self.debug:
-            print(
-                f"[DEBUG] Q stats: mean={q.mean().item():.5f}, std={q.std().item():.5f}"
-            )
-            print(
-                f"[DEBUG] K stats: mean={k.mean().item():.5f}, std={k.std().item():.5f}"
-            )
-            print(
-                f"[DEBUG] V stats: mean={v.mean().item():.5f}, std={v.std().item():.5f}"
-            )
-
-        if torch.isnan(q).any() or torch.isnan(k).any() or torch.isnan(v).any():
-            raise RuntimeError("NaN detected in Q/K/V after projection")
 
         return q, k, v, bsz, tgt_len, src_len
 
@@ -349,12 +326,6 @@ class StandardAttentionStrategy(AttentionStrategy):
 
         attn_weights = F.softmax(attn_scores, dim=-1)
 
-        if torch.isnan(attn_scores).any():
-            raise RuntimeError("NaN in attention scores before softmax")
-
-        if torch.isnan(attn_weights).any():
-            raise RuntimeError("NaN in attention weights after softmax")
-
         if dropout_p > 0.0 and training:
             attn_weights = F.dropout(attn_weights, p=dropout_p)
 
@@ -373,20 +344,6 @@ class ProbSparseAttentionStrategy(AttentionStrategy):
         print("[Attention] ProbSparseAttentionStrategy")
         self.prob_sparse_factor = prob_sparse_factor
         self.debug = debug
-
-    def _safe_check(self, tensor, name="tensor"):
-        if torch.isnan(tensor).any():
-            print(f"[NaN] Detected in {name}")
-            return False
-        if torch.isinf(tensor).any():
-            print(f"[Inf] Detected in {name}")
-            return False
-        if tensor.abs().max() > 1e5:
-            print(
-                f"[Exploding] Detected in {name}, max={tensor.abs().max().item():.2f}"
-            )
-            return False
-        return True
 
     def compute_attention(
         self,
@@ -424,9 +381,6 @@ class ProbSparseAttentionStrategy(AttentionStrategy):
         q_scaled = q * scaling
         attn_approx = torch.matmul(q_scaled, k.transpose(-2, -1))  # [B, H, T_q, T_k]
 
-        if not self._safe_check(attn_approx, "KL attention approximation"):
-            raise RuntimeError("NaN in approximate attention scores")
-
         attn_approx = attn_approx.clamp(min=-50, max=50)
         attn_approx = attn_approx - attn_approx.max(dim=-1, keepdim=True).values
         attn_approx_sm = F.softmax(attn_approx, dim=-1)
@@ -436,9 +390,6 @@ class ProbSparseAttentionStrategy(AttentionStrategy):
             attn_approx_sm * (torch.log(attn_approx_sm + 1e-10) + log_uniform),
             dim=-1,  # [B, H, T_q]
         )
-
-        if torch.isnan(kl_score).any():
-            raise RuntimeError("NaN in KL divergence scores")
 
         # === Top-u query selection ===
         topk_indices = torch.topk(kl_score, u, dim=-1).indices  # [B, H, u]
@@ -489,8 +440,6 @@ class ProbSparseAttentionStrategy(AttentionStrategy):
                 attn_scores = attn_scores.masked_fill(attn_mask == 0, float("-inf"))
 
         attn_weights = F.softmax(attn_scores, dim=-1)
-        if torch.isnan(attn_weights).any():
-            raise RuntimeError("NaN in attention weights (ProbSparse)")
 
         if dropout_p > 0.0 and training:
             attn_weights = F.dropout(attn_weights, p=dropout_p, training=True)
@@ -500,9 +449,6 @@ class ProbSparseAttentionStrategy(AttentionStrategy):
         # === Compute output ===
         output_reduced = torch.matmul(attn_weights, v)  # [B, H, u, D]
 
-        if not self._safe_check(output_reduced, "output_reduced"):
-            raise RuntimeError("NaN in output_reduced")
-
         # === Scatter back into full Q-sized tensor ===
         output_full = torch.zeros_like(q)  # [B, H, T_q, D]
         output_full.scatter_(2, topk_indices_expanded, output_reduced)
@@ -511,13 +457,48 @@ class ProbSparseAttentionStrategy(AttentionStrategy):
 
 
 class OptimizedAttentionStrategy(AttentionStrategy):
-    """Optimized attention strategy using FlashAttention, PyTorch SDP, or xFormers."""
+    """
+    Optimized attention strategy using FlashAttention, PyTorch SDP, or xFormers.
+    Automatically detects backend availability and imports only once.
+    """
 
     def __init__(self, debug=False):
-        self.flash_attn_func_import = None
-        self.xformers_ops = None
         self.debug = debug
-        print("[Attention] OptimizedAttentionStrategy")
+
+        # FlashAttention
+        try:
+            from flash_attn import flash_attn_func
+
+            self.flash_attn_func_import = flash_attn_func
+            self.flash_available = True
+        except ImportError:
+            try:
+                from flash_attn.flash_attn_interface import flash_attn_func
+
+                self.flash_attn_func_import = flash_attn_func
+                self.flash_available = True
+            except ImportError:
+                self.flash_attn_func_import = None
+                self.flash_available = False
+
+        # xFormers
+        try:
+            import xformers.ops as xops
+
+            self.xformers_ops = xops
+            self.xformers_available = True
+        except ImportError:
+            self.xformers_ops = None
+            self.xformers_available = False
+
+        # PyTorch Scaled Dot Product Attention
+        self.sdp_available = hasattr(F, "scaled_dot_product_attention")
+
+        if self.debug:
+            print(
+                f"[Attention Init] flash-attn: {self.flash_available}, "
+                f"xformers: {self.xformers_available}, SDP: {self.sdp_available}"
+            )
 
     def _safe_check(self, tensor, name="tensor"):
         if torch.isnan(tensor).any():
@@ -534,11 +515,17 @@ class OptimizedAttentionStrategy(AttentionStrategy):
     def _try_flash_attn(self, q, k, v, dropout_p, is_causal, cross_attention, training):
         try:
             if self.flash_attn_func_import is None:
-                try:
-                    from flash_attn import flash_attn_func
-                except ImportError:
-                    from flash_attn.flash_attn_interface import flash_attn_func
-                self.flash_attn_func_import = flash_attn_func
+                return None
+
+            # Ensure dtype is fp16 or bf16
+            if q.dtype not in (torch.float16, torch.bfloat16):
+                if self.debug:
+                    print(
+                        f"[FlashAttention] Converting dtype from {q.dtype} to float16"
+                    )
+                q = q.to(dtype=torch.float16)
+                k = k.to(dtype=torch.float16)
+                v = v.to(dtype=torch.float16)
 
             q, k, v = [x.contiguous() for x in (q, k, v)]
             out = self.flash_attn_func_import(
@@ -548,9 +535,7 @@ class OptimizedAttentionStrategy(AttentionStrategy):
                 dropout_p=dropout_p if training else 0.0,
                 causal=is_causal and not cross_attention,
             )
-            if not self._safe_check(out, "FlashAttention output"):
-                return None
-            return out
+            return out if self._safe_check(out, "FlashAttention output") else None
         except Exception as e:
             if self.debug:
                 print(f"[FlashAttention] Error: {type(e).__name__}: {e}")
@@ -565,9 +550,7 @@ class OptimizedAttentionStrategy(AttentionStrategy):
                 dropout_p=dropout_p if training else 0.0,
                 is_causal=is_causal and not cross_attention,
             )
-            if not self._safe_check(out, "SDP output"):
-                return None
-            return out
+            return out if self._safe_check(out, "SDP output") else None
         except Exception as e:
             if self.debug:
                 print(f"[SDP] Error: {type(e).__name__}: {e}")
@@ -576,10 +559,7 @@ class OptimizedAttentionStrategy(AttentionStrategy):
     def _try_xformers(self, q, k, v, dropout_p, is_causal, cross_attention, training):
         try:
             if self.xformers_ops is None:
-                import xformers.ops as xops
-
-                self.xformers_ops = xops
-
+                return None
             bias = (
                 None
                 if not is_causal or cross_attention
@@ -588,9 +568,7 @@ class OptimizedAttentionStrategy(AttentionStrategy):
             out = self.xformers_ops.memory_efficient_attention(
                 q, k, v, attn_bias=bias, p=dropout_p if training else 0.0
             )
-            if not self._safe_check(out, "xFormers output"):
-                return None
-            return out
+            return out if self._safe_check(out, "xFormers output") else None
         except Exception as e:
             if self.debug:
                 print(f"[xFormers] Error: {type(e).__name__}: {e}")
@@ -610,11 +588,10 @@ class OptimizedAttentionStrategy(AttentionStrategy):
         cross_attention=False,
         d_model=None,
         scaling=None,
-        flash_attention=False,
-        has_sdp=False,
-        has_xformers=False,
+        flash_attention=None,
+        has_sdp=None,
+        has_xformers=None,
     ):
-        # Guard: fallback if masks or weights are needed
         if need_weights or attn_mask is not None or key_padding_mask is not None:
             if self.debug:
                 print(
@@ -622,7 +599,6 @@ class OptimizedAttentionStrategy(AttentionStrategy):
                 )
             return None
 
-        # Validate inputs
         if not all(
             [
                 self._safe_check(q, "q"),
@@ -630,10 +606,16 @@ class OptimizedAttentionStrategy(AttentionStrategy):
                 self._safe_check(v, "v"),
             ]
         ):
-            print("[OptimizedAttention] Skipping optimized due to invalid input.")
+            if self.debug:
+                print("[OptimizedAttention] Invalid input detected. Fallback.")
             return None
 
-        # Try backends in order of preference
+        flash_attention = (
+            self.flash_available if flash_attention is None else flash_attention
+        )
+        has_sdp = self.sdp_available if has_sdp is None else has_sdp
+        has_xformers = self.xformers_available if has_xformers is None else has_xformers
+
         if flash_attention:
             out = self._try_flash_attn(
                 q, k, v, dropout_p, is_causal, cross_attention, training
@@ -655,7 +637,6 @@ class OptimizedAttentionStrategy(AttentionStrategy):
             if out is not None:
                 return out, None
 
-        # Final fallback
         if self.debug:
             print("[OptimizedAttention] No optimized backend succeeded. Falling back.")
         return None

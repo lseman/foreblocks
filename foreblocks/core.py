@@ -93,7 +93,7 @@ class ForecastingModel(nn.Module):
 
         self.time_feature_embedding_enc = time_feature_embedding_enc
         self.time_feature_embedding_dec = time_feature_embedding_dec
-        
+
         # Input/output processing
         self._setup_preprocessing_modules(
             input_preprocessor,
@@ -187,10 +187,13 @@ class ForecastingModel(nn.Module):
 
         # Time feature embeddings (e.g., hour-of-day, day-of-week)
         if self.time_feature_embedding_enc:
-            self.enc_embedding = CombinedEmbedding(self.enc_embedding, self.time_feature_embedding_enc)
+            self.enc_embedding = CombinedEmbedding(
+                self.enc_embedding, self.time_feature_embedding_enc
+            )
         if self.time_feature_embedding_dec:
-            self.dec_embedding = CombinedEmbedding(self.dec_embedding, self.time_feature_embedding_dec)
-
+            self.dec_embedding = CombinedEmbedding(
+                self.dec_embedding, self.time_feature_embedding_dec
+            )
 
     def _setup_output_layers(self):
         """Setup output projection layers."""

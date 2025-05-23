@@ -172,32 +172,17 @@ class _StandardFeedForwardBlock(nn.Module):
             u = self.w1(x)
             v = self.w2(x)
 
-            if torch.isnan(u).any():
-                raise RuntimeError("NaN detected in w1(x)")
-            if torch.isnan(v).any():
-                raise RuntimeError("NaN detected in w2(x)")
-
             u_clamped = u.clamp(-30, 30)
             v_clamped = v.clamp(-30, 30)
 
             silu_u = F.silu(u_clamped)
 
-            if torch.isnan(silu_u).any():
-                raise RuntimeError("NaN detected in silu(w1(x))")
-
             z = silu_u * v_clamped
-
-            if torch.isnan(z).any():
-                raise RuntimeError("NaN detected after silu(w1(x)) * w2(x)")
 
             out = self.w3(z)
 
-            if torch.isnan(out).any():
-                raise RuntimeError("NaN detected in w3 output")
         else:
             out = self.linear2(self.dropout(self.activation(self.linear1(x))))
-            if torch.isnan(out).any():
-                raise RuntimeError("NaN detected in GELU/Linear FFN")
 
         return out
 
