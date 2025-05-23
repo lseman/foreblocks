@@ -436,7 +436,7 @@ class TransformerEncoder(nn.Module):
         self.is_transformer = True
 
         # Input projection and embedding
-        self.input_projection = nn.Linear(self.hidden_size, d_model)
+        self.input_projection = nn.Linear(self.input_size, d_model)
 
         # Positional encoding
         self.pos_encoder = PositionalEncoding(
@@ -492,7 +492,7 @@ class TransformerEncoder(nn.Module):
         src = self.input_projection(src)
 
         # Add positional encoding
-        # src = self.pos_encoder(src)
+        src = self.pos_encoder(src)
 
         # Apply dropout
         src = self.dropout(src)
@@ -565,7 +565,7 @@ class TransformerDecoder(nn.Module):
         self.is_transformer = True
 
         # Input projection
-        self.input_projection = nn.Linear(self.hidden_size, d_model)
+        self.input_projection = nn.Linear(input_size, d_model)
 
         # Positional encoding
         self.pos_encoder = PositionalEncoding(
@@ -643,7 +643,7 @@ class TransformerDecoder(nn.Module):
         tgt = self.input_projection(tgt)
 
         # Add positional encoding
-        # tgt = self.pos_encoder(tgt)
+        tgt = self.pos_encoder(tgt)
 
         # Apply dropout
         tgt = self.dropout(tgt)

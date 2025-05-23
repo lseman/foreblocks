@@ -120,10 +120,6 @@ class ForecastingModel(nn.Module):
         self.use_attention = attention_module is not None
         self.attention_module = attention_module
 
-        # Transformer-specific setup
-        if model_type == "transformer" or model_type == "informer-like":
-            self._setup_transformer_components(enc_embbedding, dec_embedding)
-
         self.init_decoder_input_layer = nn.Linear(self.hidden_size, self.output_size)
         # Output layers
         self._setup_output_layers()
@@ -178,22 +174,6 @@ class ForecastingModel(nn.Module):
         else:
             self.encoder = encoder
             self.decoder = decoder
-
-    def _setup_transformer_components(self, enc_embedding, dec_embedding):
-        input_dim = self.encoder.input_size
-        hidden_dim = self.encoder.hidden_size
-        self.enc_embedding = enc_embedding or TimeSeriesEncoder(input_dim, hidden_dim)
-        self.dec_embedding = dec_embedding or TimeSeriesEncoder(input_dim, hidden_dim)
-
-        # Time feature embeddings (e.g., hour-of-day, day-of-week)
-        if self.time_feature_embedding_enc:
-            self.enc_embedding = CombinedEmbedding(
-                self.enc_embedding, self.time_feature_embedding_enc
-            )
-        if self.time_feature_embedding_dec:
-            self.dec_embedding = CombinedEmbedding(
-                self.dec_embedding, self.time_feature_embedding_dec
-            )
 
     def _setup_output_layers(self):
         """Setup output projection layers."""
@@ -345,8 +325,7 @@ class ForecastingModel(nn.Module):
         batch_size, _, _ = src.shape
         device = src.device
 
-        enc_out = self.enc_embedding(src)
-        enc_out = self.encoder(enc_out)
+        enc_out = self.encoder(src)
 
         # Setup decoder input
         x_dec_so_far = src[:, -self.label_len :, :]  # Context
@@ -368,8 +347,7 @@ class ForecastingModel(nn.Module):
             )
 
             # Embed and decode
-            dec_embed = self.dec_embedding(x_dec_so_far)
-            out = self.decoder(dec_embed, enc_out, tgt_mask=tgt_mask)
+            out = self.decoder(x_dec_so_far, enc_out, tgt_mask=tgt_mask)
             pred_t = self.output_layer(out[:, -1:, :])  # Only use last step
             preds.append(pred_t)
 
@@ -399,8 +377,8 @@ class ForecastingModel(nn.Module):
         device = src.device
 
         # === Encode full input sequence ===
-        enc_out = self.enc_embedding(src)  # [B, T_enc, D]
-        enc_out = self.encoder(enc_out)  # [B, T_enc, D]
+        # enc_out = self.enc_embedding(src)  # [B, T_enc, D]
+        enc_out = self.encoder(src)  # [B, T_enc, D]
 
         # === Create start token sequence for decoder ===
         start_token = src[:, -1:, :]  # e.g. last encoder input (or zeros)
@@ -409,8 +387,8 @@ class ForecastingModel(nn.Module):
         )  # [B, T_pred, input_size]
 
         # === Embed and decode entire prediction range in one shot ===
-        dec_embed = self.dec_embedding(dec_input)  # [B, T_pred, D]
-        out = self.decoder(dec_embed, enc_out)  # [B, T_pred, D]
+        # dec_embed = self.dec_embedding(dec_input)  # [B, T_pred, D]
+        out = self.decoder(dec_input, enc_out)  # [B, T_pred, D]
 
         # === Project to output space ===
         out = self.output_layer(out)  # [B, T_pred, output_size]
