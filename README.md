@@ -1,120 +1,105 @@
-# ForeBlocks: Modular Seq2Seq Library
+# ForeBlocks: Modular Time Series Forecasting Library
 
 ![Data Flow Diagram](logo.svg)
 
-ForeBlocks is a flexible, modular deep learning framework for time series forecasting built on PyTorch. It offers various neural network architectures and forecasting strategies to tackle complex time series prediction problems.
+**ForeBlocks** is a flexible, modular deep learning framework for time series forecasting built on PyTorch. It provides various neural network architectures and forecasting strategies to tackle complex time series prediction problems with an intuitive, research-friendly API.
 
-## Table of Contents
+🔗 **[GitHub Repository](https://github.com/lseman/foreblocks)**
 
-- [Installation](#installation)
-- [Key Features](#key-features)
-- [Quick Start](#quick-start)
-- [Architecture Overview](#architecture-overview)
-- [Forecasting Models](#forecasting-models)
-- [Advanced Usage](#advanced-usage)
-- [Documentation](#documentation)
-- [Examples](#examples)
-- [Troubleshooting](#troubleshooting)
+---
 
-## Installation
+## 🚀 Quick Start
 
 ```bash
+# Installation
 git clone https://github.com/lseman/foreblocks
 cd foreblocks
 pip install -e .
 ```
-
-## Key Features
-
-- **Multiple Forecasting Strategies**: Seq2Seq, Autoregressive, and Direct approaches  
-- **Modular Architecture**: Easily customize and extend components  
-- **Advanced Models**: LSTM, GRU, Transformer, and VAE-based architectures  
-- **State-of-the-Art Preprocessing**: Adaptive data preprocessing with automatic configuration  
-- **Attention Mechanisms**: Various attention modules for improved performance  
-- **Multi-Feature Support**: Specialized architectures for multivariate time series  
-- **Training Utilities**: Built-in trainer with callbacks, metrics, and visualizations  
-- **Transparent API**: Intuitive interface with extensive documentation  
-
-## Quick Start
 
 ```python
 from foreblocks import TimeSeriesSeq2Seq, ModelConfig, TrainingConfig
 import torch
 import pandas as pd
 
-# Load your time series data
+# Load and prepare data
 data = pd.read_csv('your_data.csv')
 X = data.values
 
-# Create model configuration
+# Configure model
 model_config = ModelConfig(
     model_type="lstm",
     input_size=X.shape[1],
     output_size=1,
     hidden_size=64,
-    target_len=24,  # Forecast horizon
+    target_len=24,  # Forecast 24 steps ahead
     teacher_forcing_ratio=0.5
 )
 
-# Create training configuration
-training_config = TrainingConfig(
-    num_epochs=100,
-    learning_rate=0.001,
-    patience=10
-)
+# Initialize and train
+model = TimeSeriesSeq2Seq(model_config=model_config)
+X_train, y_train, _ = model.preprocess(X, self_tune=True)
 
-# Initialize model
-model = TimeSeriesSeq2Seq(
-    model_config=model_config,
-    training_config=training_config,
-    device="cuda" if torch.cuda.is_available() else "cpu"
-)
-
-# Preprocess data with automatic configuration
-X_train, y_train, processed_data = model.preprocess(X, self_tune=True)
-
-# Convert to DataLoader
+# Create DataLoader and train
 from torch.utils.data import TensorDataset, DataLoader
-train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), 
-                            torch.tensor(y_train, dtype=torch.float32))
+train_dataset = TensorDataset(
+    torch.tensor(X_train, dtype=torch.float32),
+    torch.tensor(y_train, dtype=torch.float32)
+)
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
-# Train the model
 history = model.train_model(train_loader)
-
-# Make predictions
-with torch.no_grad():
-    predictions = model.predict(X_test)
-
-# Visualize results
-model.plot_prediction(X_test, y_test)
+predictions = model.predict(X_test)
 ```
 
-## Architecture Overview
+---
 
-ForeBlocks follows a modular design pattern with these key components:
+## ✨ Key Features
 
-1. **Core Components**:
-   - `ForecastingModel`: The main model class integrating encoders, decoders, and forecasting strategies
-   - `TimeSeriesSeq2Seq`: High-level interface for building and training forecasting models
+| Feature | Description |
+|---------|-------------|
+| **🔧 Multiple Strategies** | Seq2Seq, Autoregressive, and Direct forecasting approaches |
+| **🧩 Modular Design** | Easily customize and extend components |
+| **🤖 Advanced Models** | LSTM, GRU, Transformer, and VAE-based architectures |
+| **⚡ Smart Preprocessing** | Adaptive data preprocessing with automatic configuration |
+| **🎯 Attention Mechanisms** | Various attention modules for improved performance |
+| **📊 Multi-Feature Support** | Specialized architectures for multivariate time series |
+| **📈 Training Utilities** | Built-in trainer with callbacks, metrics, and visualizations |
+| **🔍 Transparent API** | Intuitive interface with extensive documentation |
 
-2. **Neural Network Modules**:
-   - Encoders: LSTM, GRU, Transformer encoders
-   - Decoders: Corresponding decoder architectures
-   - Attention: Various attention mechanisms
+---
 
-3. **Preprocessing Pipeline**:
-   - `TimeSeriesPreprocessor`: Advanced data preparation with automatic feature detection
+## 🏗️ Architecture Overview
 
-4. **Training Utilities**:
-   - `Trainer`: Manages training, evaluation, and visualization
-   - Metrics: MAE, RMSE, MAPE, and other forecasting metrics
+ForeBlocks follows a clean, modular design:
 
-## Forecasting Models
+```
+┌─────────────────────┐
+│   TimeSeriesSeq2Seq │  ← High-level Interface
+├─────────────────────┤
+│  ForecastingModel   │  ← Core Model Class
+├─────────────────────┤
+│ Encoders & Decoders │  ← Neural Network Modules
+├─────────────────────┤
+│    Preprocessing    │  ← Data Pipeline
+├─────────────────────┤
+│   Training Utils    │  ← Trainer & Metrics
+└─────────────────────┘
+```
 
-### Sequence-to-Sequence (Seq2Seq)
+### Core Components
 
-The default and most versatile approach, using an encoder-decoder architecture with optional attention:
+- **`TimeSeriesSeq2Seq`**: High-level interface for building and training models
+- **`ForecastingModel`**: Main model class integrating encoders, decoders, and strategies
+- **`TimeSeriesPreprocessor`**: Advanced data preparation with automatic feature detection
+- **`Trainer`**: Manages training, evaluation, and visualization
+
+---
+
+## 🎯 Forecasting Models
+
+### 1. Sequence-to-Sequence (Default)
+*Best for: Most time series problems*
 
 ```python
 model_config = ModelConfig(
@@ -129,9 +114,8 @@ model_config = ModelConfig(
 )
 ```
 
-### Autoregressive Models
-
-Generate predictions recursively, feeding each output back as input:
+### 2. Autoregressive
+*Best for: When each prediction depends on previous predictions*
 
 ```python
 model_config = ModelConfig(
@@ -144,9 +128,8 @@ model_config = ModelConfig(
 )
 ```
 
-### Direct Forecasting Models
-
-Predict all future steps at once:
+### 3. Direct Multi-Step
+*Best for: Independent multi-step predictions*
 
 ```python
 model_config = ModelConfig(
@@ -159,9 +142,8 @@ model_config = ModelConfig(
 )
 ```
 
-### Transformer-based Models
-
-Leverage self-attention for capturing long-range dependencies:
+### 4. Transformer-based
+*Best for: Long sequences with complex dependencies*
 
 ```python
 model_config = ModelConfig(
@@ -178,16 +160,17 @@ model_config = ModelConfig(
 )
 ```
 
-## Advanced Usage
+---
+
+## 🔧 Advanced Features
 
 ### Multi-Encoder-Decoder Architecture
-
-Process different features with separate encoders and decoders:
+Process different features with separate encoders:
 
 ```python
 model_config = ModelConfig(
     multi_encoder_decoder=True,
-    input_size=5,  # 5 features
+    input_size=5,  # 5 different features
     output_size=1,
     hidden_size=64,
     model_type="lstm",
@@ -196,8 +179,7 @@ model_config = ModelConfig(
 ```
 
 ### Attention Mechanisms
-
-Add attention for improved performance:
+Improve performance with attention:
 
 ```python
 from foreblocks.attention import AttentionLayer
@@ -215,9 +197,8 @@ model = TimeSeriesSeq2Seq(
 )
 ```
 
-### Customizing Preprocessing
-
-Fine-tune the preprocessing pipeline:
+### Custom Preprocessing Pipeline
+Fine-tune data preparation:
 
 ```python
 X_train, y_train, processed_data = model.preprocess(
@@ -234,9 +215,8 @@ X_train, y_train, processed_data = model.preprocess(
 )
 ```
 
-### Teacher Forcing and Scheduled Sampling
-
-Control the learning process:
+### Scheduled Sampling
+Control teacher forcing dynamically:
 
 ```python
 def scheduled_sampling_fn(epoch):
@@ -248,28 +228,16 @@ model = TimeSeriesSeq2Seq(
 )
 ```
 
-## Documentation
+---
 
-➡️ [Preprocessing Guide](docs/preprocessor.md)  
-➡️ [Custom Blocks Guide](docs/custom_blocks.md)
+## 📚 Examples
 
-## Examples
-
-We provide various examples for different forecasting scenarios:
-
-### LSTM-based Seq2Seq with Attention
-
+### LSTM with Attention
 ```python
-import torch
+from foreblocks import TimeSeriesSeq2Seq, ModelConfig, AttentionLayer
 import torch.nn as nn
-from foreblocks import (
-    TimeSeriesSeq2Seq, 
-    ModelConfig, 
-    TrainingConfig, 
-    AttentionLayer
-)
 
-# Model configuration
+# Configure model with attention
 model_config = ModelConfig(
     model_type="lstm",
     input_size=3,
@@ -280,37 +248,23 @@ model_config = ModelConfig(
     target_len=24
 )
 
-# Create attention module
 attention = AttentionLayer(
     method="dot",
     encoder_hidden_size=64,
     decoder_hidden_size=64
 )
 
-# Create model
 model = TimeSeriesSeq2Seq(
     model_config=model_config,
     attention_module=attention,
-    output_block=nn.Sequential(
-        nn.Dropout(0.1),
-        nn.ReLU()
-    )
+    output_block=nn.Sequential(nn.Dropout(0.1), nn.ReLU())
 )
-
-# Training (assuming data is prepared)
-model.train_model(train_loader, val_loader)
 ```
 
-### Transformer-based Model
-
+### Transformer Model
 ```python
-from foreblocks import (
-    TimeSeriesSeq2Seq, 
-    ModelConfig, 
-    TrainingConfig
-)
+from foreblocks import TimeSeriesSeq2Seq, ModelConfig, TrainingConfig
 
-# Model configuration
 model_config = ModelConfig(
     model_type="transformer",
     input_size=4,
@@ -323,7 +277,6 @@ model_config = ModelConfig(
     target_len=96
 )
 
-# Training configuration
 training_config = TrainingConfig(
     num_epochs=100,
     learning_rate=0.0001,
@@ -331,54 +284,172 @@ training_config = TrainingConfig(
     patience=15
 )
 
-# Create and train model
 model = TimeSeriesSeq2Seq(
     model_config=model_config,
     training_config=training_config
 )
-
-model.train_model(train_loader, val_loader)
 ```
 
-## Troubleshooting
+---
 
-### Common Issues and Solutions
+## 🔧 Configuration Reference
 
-1. **Dimensionality Mismatch**:
-   If you encounter dimension errors, check that your encoder and decoder have compatible hidden sizes, and that the output_size parameter matches your target dimensions.
+### ModelConfig Parameters
 
-2. **Memory Issues**:
-   For long sequences or large batch sizes, you might encounter memory issues. Try reducing batch size or sequence length, or use gradient accumulation.
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `model_type` | str | Model architecture ("lstm", "gru", "transformer") | "lstm" |
+| `input_size` | int | Number of input features | Required |
+| `output_size` | int | Number of output features | Required |
+| `hidden_size` | int | Hidden layer dimensions | 64 |
+| `target_len` | int | Forecast horizon length | Required |
+| `num_encoder_layers` | int | Number of encoder layers | 1 |
+| `num_decoder_layers` | int | Number of decoder layers | 1 |
+| `teacher_forcing_ratio` | float | Teacher forcing probability | 0.5 |
 
-3. **Poor Performance**:
-   - Try different forecasting strategies
-   - Adjust teacher forcing ratio
-   - Add attention mechanism
-   - Experiment with different architectures (LSTM vs Transformer)
-   - Tune hyperparameters like hidden size and number of layers
+### TrainingConfig Parameters
 
-4. **Slow Training**:
-   If training is slow, consider using a simpler model or reducing the target sequence length. For transformer models, you might need to optimize the d_model and number of layers.
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `num_epochs` | int | Training epochs | 100 |
+| `learning_rate` | float | Learning rate | 0.001 |
+| `batch_size` | int | Batch size | 32 |
+| `patience` | int | Early stopping patience | 10 |
+| `weight_decay` | float | L2 regularization | 0.0 |
 
-5. **Vanishing/Exploding Gradients**:
-   Use techniques like gradient clipping and proper initialization to mitigate these issues.
+---
+
+## 🚨 Troubleshooting
+
+### Common Issues & Solutions
+
+<details>
+<summary><strong>🔴 Dimensionality Mismatch</strong></summary>
+
+**Problem**: Tensor dimension errors during training/inference
+
+**Solution**:
+- Check encoder/decoder `hidden_size` compatibility
+- Verify `output_size` matches target dimensions
+- Ensure input data shape matches `input_size`
 
 ```python
-# Example of gradient clipping
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+# Debug dimensions
+print(f"Input shape: {X.shape}")
+print(f"Model expects: {model_config.input_size} features")
 ```
+</details>
 
-### Tips for Better Performance
+<details>
+<summary><strong>🟡 Memory Issues</strong></summary>
 
-1. **Data Normalization**: Always normalize your input data to improve model convergence.
+**Problem**: CUDA out of memory or system RAM exhaustion
 
-2. **Learning Rate Scheduling**: Use learning rate scheduling to improve convergence.
+**Solutions**:
+- Reduce `batch_size` or sequence length
+- Use gradient accumulation
+- Consider model size reduction
 
-3. **Evaluation Metrics**: Use appropriate metrics for time series forecasting (MAE, RMSE, MAPE).
+```python
+# Gradient accumulation example
+accumulation_steps = 4
+for i, batch in enumerate(train_loader):
+    loss = model(batch) / accumulation_steps
+    loss.backward()
+    if (i + 1) % accumulation_steps == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+```
+</details>
 
-4. **Multi-Step Validation**: Validate on multi-step predictions, not just one-step-ahead forecasts.
+<details>
+<summary><strong>🟠 Poor Performance</strong></summary>
 
-5. **Model Ensembling**: Combine predictions from multiple models for better performance.
+**Problem**: Model not learning or poor predictions
 
-Remember that time series forecasting is challenging, and different problems might require different approaches. Experiment with the various features of the `ForecastingModel` class to find what works best for your specific problem.
+**Solutions**:
+- Try different forecasting strategies
+- Adjust `teacher_forcing_ratio`
+- Add attention mechanisms
+- Experiment with architectures (LSTM vs Transformer)
+- Tune hyperparameters
+
+```python
+# Performance tuning checklist
+model_config = ModelConfig(
+    hidden_size=128,  # Try larger hidden size
+    num_encoder_layers=3,  # Add more layers
+    teacher_forcing_ratio=0.3,  # Reduce teacher forcing
+    # Add dropout, attention, etc.
+)
+```
+</details>
+
+<details>
+<summary><strong>🔵 Training Issues</strong></summary>
+
+**Problem**: Slow convergence or gradient problems
+
+**Solutions**:
+- Use gradient clipping
+- Learning rate scheduling
+- Proper weight initialization
+
+```python
+# Gradient clipping
+import torch.nn.utils as utils
+utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+# Learning rate scheduling
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, patience=5, factor=0.5
+)
+```
+</details>
+
+---
+
+## 💡 Best Practices
+
+### 🎯 Performance Tips
+- **Always normalize** input data for better convergence
+- **Use appropriate metrics** (MAE, RMSE, MAPE) for time series
+- **Validate on multi-step** predictions, not just one-step
+- **Consider model ensembling** for critical applications
+
+### 📊 Data Preparation
+- Handle missing values before feeding to model
+- Consider seasonal decomposition for seasonal data
+- Use the built-in preprocessing with `self_tune=True`
+
+### 🔄 Training Strategy
+- Start with simple models (LSTM) before trying complex ones (Transformer)
+- Use validation sets for hyperparameter tuning
+- Monitor both training and validation metrics
+
+---
+
+## 📖 Documentation
+
+- 📘 [Preprocessing Guide](docs/preprocessor.md)
+- 🛠️ [Custom Blocks Guide](docs/custom_blocks.md)
+- 🔗 [Full Documentation](https://github.com/lseman/foreblocks/docs)
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our [GitHub repository](https://github.com/lseman/foreblocks) for:
+- 🐛 Bug reports
+- 💡 Feature requests
+- 📝 Documentation improvements
+- 🔧 Code contributions
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
