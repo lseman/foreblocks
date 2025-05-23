@@ -47,6 +47,7 @@ class FrequencyAttention(nn.Module):
         if seq_len_q is not None:
             self._init_fft_bases(seq_len_q, seq_len_kv or seq_len_q)
 
+        print("[Attention] FrequencyAttention initialized with modes:", modes)
     def _init_fft_bases(self, len_q, len_kv):
         device = self.frequencies_q.device
         n_fft_q = 2 ** math.ceil(math.log2(len_q))
