@@ -17,6 +17,9 @@ from sklearn.model_selection import train_test_split
 from .embeddings import PositionalEncoding, RotaryEmbedding
 from .transformer_att import XFormerAttention
 
+from .transformer_aux import MoEFeedForward, FeedForwardBlock
+from .fed import FrequencyAttention
+
 
 class TimeSeriesEncoder(nn.Module):
     def __init__(self, input_size, hidden_size, max_len=5000):
@@ -31,10 +34,6 @@ class TimeSeriesEncoder(nn.Module):
         x = self.input_projection(x)  # [B, T, hidden_size]
         x = self.positional_encoding(x)  # [B, T, hidden_size]
         return x
-
-
-from .transformer_aux import MoEFeedForward, FeedForwardBlock
-from .blocks.fed import FrequencyAttention
 
 
 def init_transformer_weights(module, d_model: Optional[int] = None):
@@ -79,6 +78,7 @@ class AdaptiveRMSNorm(nn.Module):
         self.use_bias = use_bias
         if use_bias:
             self.beta = nn.Parameter(torch.zeros(d_model))
+        print("[Normalization] Adaptive RMSNorm")
 
     def forward(self, x):
         # RMS norm: no mean subtraction
@@ -104,6 +104,7 @@ class AdaptiveLayerNorm(nn.Module):
         self.use_bias = use_bias
         if use_bias:
             self.beta = nn.Parameter(torch.zeros(d_model))
+        print("[Normalization] Adaptive LayerNorm")
 
     def forward(self, x):
         out = self.alpha * self.norm(x)
@@ -181,7 +182,7 @@ class TransformerEncoderLayer(nn.Module):
         if self.norm_strategy == "pre_norm":
             # === Pre-norm Self-Attention ===
             normed_src = self.norm1(src)
-            src2, _ = self.self_attn(
+            src2, _, _ = self.self_attn(
                 normed_src,
                 normed_src,
                 normed_src,
@@ -210,7 +211,7 @@ class TransformerEncoderLayer(nn.Module):
 
         else:
             # === Post-norm Self-Attention ===
-            src2, _ = self.self_attn(
+            src2, _, _ = self.self_attn(
                 src,
                 src,
                 src,
@@ -308,19 +309,28 @@ class TransformerDecoderLayer(nn.Module):
         memory_mask=None,
         tgt_key_padding_mask=None,
         memory_key_padding_mask=None,
+        incremental_state=None,
     ):
         is_causal = not self.informer_like
+
+        self_attn_state = (
+            None if incremental_state is None else incremental_state.get("self_attn")
+        )
+        cross_attn_state = (
+            None if incremental_state is None else incremental_state.get("cross_attn")
+        )
 
         if self.norm_strategy == "pre_norm":
             # === Pre-norm Self-Attention ===
             normed_tgt = self.norm1(tgt)
-            tgt2, _ = self.self_attn(
+            tgt2, _, updated_self = self.self_attn(
                 normed_tgt,
                 normed_tgt,
                 normed_tgt,
                 attn_mask=tgt_mask,
                 key_padding_mask=tgt_key_padding_mask,
                 is_causal=is_causal,
+                layer_state=self_attn_state,
             )
             tgt = tgt + self.dropout1(tgt2)
 
@@ -333,12 +343,13 @@ class TransformerDecoderLayer(nn.Module):
             if torch.isnan(memory).any():
                 raise RuntimeError("NaN detected in memory before cross-attention")
 
-            tgt2, _ = self.cross_attn(
+            tgt2, _, updated_cross = self.cross_attn(
                 normed_tgt,
                 memory,
                 memory,
                 attn_mask=memory_mask,
                 key_padding_mask=memory_key_padding_mask,
+                layer_state=cross_attn_state,
             )
             if torch.isnan(tgt2).any():
                 raise RuntimeError(
@@ -361,11 +372,16 @@ class TransformerDecoderLayer(nn.Module):
                 tgt2 = self.feed_forward(normed_tgt)
 
             tgt = tgt + self.dropout3(tgt2)
-            return tgt
+
+            if incremental_state is not None:
+                incremental_state["self_attn"] = updated_self
+                incremental_state["cross_attn"] = updated_cross
+
+            return tgt, incremental_state
 
         else:
             # === Post-norm Self-Attention ===
-            tgt2, _ = self.self_attn(
+            tgt2, _, updated_self = self.self_attn(
                 tgt,
                 tgt,
                 tgt,
@@ -376,7 +392,7 @@ class TransformerDecoderLayer(nn.Module):
             tgt = self.norm1(tgt + self.dropout1(tgt2))
 
             # === Post-norm Cross-Attention ===
-            tgt2, _ = self.cross_attn(
+            tgt2, _, updated_cross = self.cross_attn(
                 tgt,
                 memory,
                 memory,
@@ -391,7 +407,12 @@ class TransformerDecoderLayer(nn.Module):
             else:
                 tgt2 = self.feed_forward(tgt)
             tgt = self.norm3(tgt + self.dropout3(tgt2))
-            return tgt
+
+            if incremental_state is not None:
+                incremental_state["self_attn"] = updated_self
+                incremental_state["cross_attn"] = updated_cross
+
+            return tgt, incremental_state
 
 
 class TransformerEncoder(nn.Module):
@@ -424,8 +445,10 @@ class TransformerEncoder(nn.Module):
         use_flash_attn: bool = True,
         use_moe: bool = False,
         use_adaptive_ln: str = "rms",
+        pos_encoder: Optional[nn.Module] = None,
     ):
         super().__init__()
+        print("[Encoder] Transformer Encoder initialized.")
 
         # Set up model dimensions
         self.hidden_size = hidden_size if hidden_size is not None else d_model
@@ -439,8 +462,12 @@ class TransformerEncoder(nn.Module):
         self.input_projection = nn.Linear(self.input_size, d_model)
 
         # Positional encoding
-        self.pos_encoder = PositionalEncoding(
-            d_model, dropout=dropout, max_len=max_seq_len, scale=pos_encoding_scale
+        self.pos_encoder = (
+            pos_encoder
+            if pos_encoder
+            else PositionalEncoding(
+                d_model, dropout=dropout, max_len=max_seq_len, scale=pos_encoding_scale
+            )
         )
 
         # Dropout for regularization
@@ -468,7 +495,6 @@ class TransformerEncoder(nn.Module):
         )
 
         # Output normalization (for pre-norm architecture)
-        self.norm = nn.LayerNorm(d_model, eps=layer_norm_eps)
         self.apply(init_transformer_weights)
 
     def forward(
@@ -509,16 +535,7 @@ class TransformerEncoder(nn.Module):
                 )
 
         # check for nan
-        if torch.isnan(src).any():
-            raise RuntimeError("NaN detected in encoder output")
-        # Apply final layer normalization
-        if self.norm_strategy == "pre_norm":
-            to_return = self.norm(src)
-            if torch.isnan(to_return).any():
-                raise RuntimeError("NaN detected in encoder output after norm")
-            return to_return
-        else:
-            return src
+        return src
 
 
 class TransformerDecoder(nn.Module):
@@ -554,8 +571,10 @@ class TransformerDecoder(nn.Module):
         use_flash_attn: bool = True,
         use_moe: bool = False,
         use_adaptive_ln: str = "rms",
+        pos_encoder: Optional[nn.Module] = None,
     ):
         super().__init__()
+        print("[Decoder] Transformer Decoder initialized.")
 
         # Set up model dimensions
         self.hidden_size = hidden_size if hidden_size is not None else d_model
@@ -568,8 +587,12 @@ class TransformerDecoder(nn.Module):
         self.input_projection = nn.Linear(input_size, d_model)
 
         # Positional encoding
-        self.pos_encoder = PositionalEncoding(
-            d_model, dropout=dropout, max_len=max_seq_len, scale=pos_encoding_scale
+        self.pos_encoder = (
+            pos_encoder
+            if pos_encoder
+            else PositionalEncoding(
+                d_model, dropout=dropout, max_len=max_seq_len, scale=pos_encoding_scale
+            )
         )
 
         # Dropout for regularization
@@ -596,9 +619,6 @@ class TransformerDecoder(nn.Module):
                 for _ in range(num_layers)
             ]
         )
-
-        # Output normalization and projection
-        self.norm = nn.LayerNorm(d_model, eps=layer_norm_eps)
 
         # Improved output projection
         if output_size == 1:
@@ -655,7 +675,7 @@ class TransformerDecoder(nn.Module):
         # Apply transformer layers with optional gradient checkpointing
         for idx, layer in enumerate(self.layers):
             if self.training and self.use_gradient_checkpointing:
-                tgt = torch.utils.checkpoint.checkpoint(
+                tgt, _ = torch.utils.checkpoint.checkpoint(
                     layer,
                     tgt,
                     memory,
@@ -665,7 +685,7 @@ class TransformerDecoder(nn.Module):
                     memory_key_padding_mask,
                 )
             else:
-                tgt = layer(
+                tgt, _ = layer(
                     tgt,
                     memory,
                     tgt_mask=tgt_mask,
@@ -673,13 +693,6 @@ class TransformerDecoder(nn.Module):
                     tgt_key_padding_mask=tgt_key_padding_mask,
                     memory_key_padding_mask=memory_key_padding_mask,
                 )
-
-        # Apply final layer normalization only if using pre-norm
-        if (
-            self.layers
-            and getattr(self.layers[0], "norm_strategy", "pre_norm") == "pre_norm"
-        ):
-            tgt = self.norm(tgt)
 
         # Project to output size
         return self.dropout(self.output_projection(tgt))
@@ -693,27 +706,17 @@ class TransformerDecoder(nn.Module):
     ) -> Tuple[torch.Tensor, List[dict]]:
         """
         Optimized single-step forward pass for autoregressive generation.
-
-        Args:
-            tgt: The current input token(s) [batch_size, 1, hidden_size]
-            memory: Encoder memory [batch_size, src_len, d_model]
-            incremental_state: Cached state for faster decoding
-            memory_key_padding_mask: Optional padding mask [batch_size, src_len]
-
-        Returns:
-            Tuple of (output, updated_state)
         """
-        # Initialize incremental state if None
         if incremental_state is None:
             incremental_state = [None] * len(self.layers)
 
         # Project input
         tgt = self.input_projection(tgt)
 
-        # For the last position only
+        # Position embedding for the current token
         if tgt.size(1) == 1:
-            pos = incremental_state[0]["position"] if incremental_state[0] else 0
-            pos_enc = self.pos_encoder.pe[:, pos : pos + 1]
+            pos = incremental_state[0].get("position", 0) if incremental_state[0] else 0
+            pos_enc = self.pos_encoder.pe[:, pos : pos + 1]  # safer: getattr fallback
             tgt = tgt + pos_enc
 
             # Update position
@@ -723,29 +726,22 @@ class TransformerDecoder(nn.Module):
                 else:
                     incremental_state[i]["position"] = pos + 1
         else:
-            # Standard positional encoding
             tgt = self.pos_encoder(tgt)
 
-        # Apply dropout
         tgt = self.dropout(tgt)
 
-        # Apply layers with incremental state
+        # Decoder layers (assumes they handle caching if enabled)
         for i, layer in enumerate(self.layers):
-            tgt = layer(
+            tgt, updated_state = layer(
                 tgt,
                 memory,
-                tgt_mask=None,  # Not needed for single step
+                tgt_mask=None,
                 memory_mask=None,
                 tgt_key_padding_mask=None,
                 memory_key_padding_mask=memory_key_padding_mask,
+                incremental_state=incremental_state[i],
             )
-
-        # Apply final normalization conditionally
-        if (
-            self.layers
-            and getattr(self.layers[0], "norm_strategy", "pre_norm") == "pre_norm"
-        ):
-            tgt = self.norm(tgt)
+            incremental_state[i] = updated_state
 
         output = self.output_projection(tgt)
         return output, incremental_state

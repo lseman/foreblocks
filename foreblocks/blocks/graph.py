@@ -40,14 +40,18 @@ class LatentCorrelationLayer(nn.Module):
 
         # Alpha blending
         if learnable_alpha:
-            self.alpha = nn.Parameter(torch.tensor(torch.logit(torch.tensor(init_alpha))))
+            self.alpha = nn.Parameter(
+                torch.tensor(torch.logit(torch.tensor(init_alpha)))
+            )
         else:
             self.register_buffer("alpha", torch.tensor(init_alpha))
 
         # Correlation
         if low_rank:
-            scale = 1.0 / (self.rank ** 0.5)
-            self.corr_factors = nn.Parameter(torch.randn(2, input_size, self.rank) * scale)
+            scale = 1.0 / (self.rank**0.5)
+            self.corr_factors = nn.Parameter(
+                torch.randn(2, input_size, self.rank) * scale
+            )
         else:
             self.correlation = nn.Parameter(torch.randn(input_size, input_size))
 
@@ -62,7 +66,11 @@ class LatentCorrelationLayer(nn.Module):
             self.layer_norm3 = nn.LayerNorm(self.output_size)
 
         # Dropout
-        self.dropout = nn.Dropout(correlation_dropout) if correlation_dropout > 0 else nn.Identity()
+        self.dropout = (
+            nn.Dropout(correlation_dropout)
+            if correlation_dropout > 0
+            else nn.Identity()
+        )
 
         # Chebyshev coefficients
         self.cheb_weights = nn.Parameter(torch.ones(self.cheb_k) / self.cheb_k)
@@ -77,7 +85,9 @@ class LatentCorrelationLayer(nn.Module):
             nn.init.eye_(self.correlation)
             with torch.no_grad():
                 self.correlation.data += 0.01 * torch.randn_like(self.correlation)
-                self.correlation.data = 0.5 * (self.correlation.data + self.correlation.data.t())
+                self.correlation.data = 0.5 * (
+                    self.correlation.data + self.correlation.data.t()
+                )
 
         nn.init.xavier_uniform_(self.input_proj.weight)
         nn.init.zeros_(self.input_proj.bias)
@@ -156,20 +166,41 @@ class LatentCorrelationLayer(nn.Module):
 
         return out, mixed_corr
 
+
 from flash_attn import flash_attn_qkvpacked_func
+
+
+def round_to_supported_head_dim(dim):
+    supported_dims = [16, 32, 64, 128]
+    return min(supported_dims, key=lambda x: abs(x - dim))
+
 
 class MessagePassing(nn.Module):
     """
     Generic message passing base class.
     Supports xformers-based multi-head attention over the feature dimension.
     """
-    def __init__(self, input_size: int, hidden_dim: int, aggregation: str = "sum", num_heads: int = 4):
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_dim: int,
+        aggregation: str = "sum",
+        num_heads: int = 4,
+    ):
         super().__init__()
         self.input_size = input_size
         self.hidden_dim = hidden_dim
         self.aggregation = aggregation
         self.num_heads = num_heads
-        self.head_dim = hidden_dim * num_heads
+        # self.head_dim = hidden_dim * num_heads
+
+        # Your current calculation
+        raw_head_dim = hidden_dim * num_heads
+        self.head_dim = round_to_supported_head_dim(raw_head_dim)
+
+        # Adjust num_heads to maintain similar total dimension
+        # self.num_heads = max(1, (hidden_dim * num_heads) // self.head_dim)
 
         # Shared node transformation
         self.message_transform = nn.Linear(input_size, hidden_dim)
@@ -178,7 +209,9 @@ class MessagePassing(nn.Module):
             self.sage_update = nn.Linear(input_size + hidden_dim, hidden_dim)
 
         if self.aggregation == "sage_lstm":
-            self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True)
+            self.lstm = nn.LSTM(
+                input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True
+            )
             self.sage_update = nn.Linear(input_size + hidden_dim, hidden_dim)
 
         # Projections for attention mode
@@ -192,7 +225,9 @@ class MessagePassing(nn.Module):
             self.k_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
             self.v_proj = nn.Linear(input_size, input_size * num_heads * self.head_dim)
 
-    def _flash_aggregate(self, messages: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
+    def _flash_aggregate(
+        self, messages: torch.Tensor, graph: torch.Tensor
+    ) -> torch.Tensor:
         """
         Use FlashAttention instead of xFormers.
         """
@@ -211,9 +246,9 @@ class MessagePassing(nn.Module):
 
         # Apply FlashAttention (no masking for now)
         out = flash_attn_qkvpacked_func(qkv, causal=False)  # [B, T, H, d_head]
-        out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+        out = out.permute(0, 2, 1, 3)  # [B*T, D_token, H, d_head]
         out = out.reshape(B, T, D, -1)
-        out = out.mean(dim=-1)                 # [B, T, D]
+        out = out.mean(dim=-1)  # [B, T, D]
         # Flatten: [B, T, H, d_head] → [B, T, D]
         return out.reshape(B, T, D)
 
@@ -223,7 +258,12 @@ class MessagePassing(nn.Module):
         """
         return self.message_transform(h)  # [B, T, hidden_dim]
 
-    def aggregate(self, messages: torch.Tensor, graph: torch.Tensor, self_features: torch.Tensor = None) -> torch.Tensor:
+    def aggregate(
+        self,
+        messages: torch.Tensor,
+        graph: torch.Tensor,
+        self_features: torch.Tensor = None,
+    ) -> torch.Tensor:
         """
         Aggregate messages based on specified strategy.
         messages: [B, T, hidden_dim]
@@ -236,7 +276,7 @@ class MessagePassing(nn.Module):
             deg = graph.sum(dim=1) + 1e-10  # avoid div by zero
             norm_graph = graph * (1.0 / deg).unsqueeze(1)
             return torch.einsum("bth,hg->btg", messages, norm_graph)
-        
+
         elif self.aggregation == "max":
             # Use max pooling over the graph
             return torch.einsum("bth,hg->btg", messages, graph).max(dim=1)[0]
@@ -247,16 +287,19 @@ class MessagePassing(nn.Module):
             # Graph aggregation (mean)
             deg = graph.sum(dim=1) + 1e-10
             norm_graph = graph * (1.0 / deg).unsqueeze(1)
-            neighbor_agg = torch.einsum("bth,hg->btg", messages, norm_graph)  # [B, T, H]
+            neighbor_agg = torch.einsum(
+                "bth,hg->btg", messages, norm_graph
+            )  # [B, T, H]
 
             # Concatenate self features and aggregated neighbor messages
             concat = torch.cat([self_features, neighbor_agg], dim=-1)  # [B, T, in + H]
             return self.sage_update(concat)  # [B, T, H]
 
-
         elif self.aggregation == "sage_lstm":
             assert self_features is not None
-            neighbor_sequences = torch.einsum("bth,hg->btg", messages, graph).transpose(1, 2)
+            neighbor_sequences = torch.einsum("bth,hg->btg", messages, graph).transpose(
+                1, 2
+            )
             lstm_out, _ = self.lstm(neighbor_sequences)
             neighbor_agg, _ = torch.max(lstm_out, dim=1)
             neighbor_agg = neighbor_agg.unsqueeze(1).expand(-1, messages.size(1), -1)
@@ -270,8 +313,9 @@ class MessagePassing(nn.Module):
         else:
             raise ValueError(f"Unsupported aggregation mode: {self.aggregation}")
 
-
-    def _xformers_aggregate(self, messages: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
+    def _xformers_aggregate(
+        self, messages: torch.Tensor, graph: torch.Tensor
+    ) -> torch.Tensor:
         """
         Apply attention over features per time step, with bias shape [B*T, 12, 4, 4].
         """
@@ -281,6 +325,7 @@ class MessagePassing(nn.Module):
 
         # Flatten [B, T, D] → [B*T, D]
         x_flat = messages.reshape(B * T, D)
+        # print(f"Xformers aggregate: {x_flat.shape=}, {graph.shape=}")
 
         # Project Q/K/V to [B*T, H, D, d_head]
         q = self.q_proj(x_flat).reshape(B * T, H, D, d_head)
@@ -288,40 +333,52 @@ class MessagePassing(nn.Module):
         v = self.v_proj(x_flat).reshape(B * T, H, D, d_head)
 
         # Call xFormers without bias for now
+        # q = q.contiguous().half()  # or .bfloat16()
+        # k = k.contiguous().half()
+        # v = v.contiguous().half()
+        # print(f"Xformers aggregate: {q.shape=}, {k.shape=}, {v.shape=}")
         out = memory_efficient_attention(q, k, v)  # [B*T, H, D, d_head]
-        out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+        # out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+        out = out.permute(0, 2, 1, 3)  # [B*T, D_token, H, d_head]
         out = out.reshape(B, T, D, -1)
         # take mean over last dim
-        out = out.mean(dim=-1)                 # [B, T, D]
+        out = out.mean(dim=-1)  # [B, T, D]
+        # print(f"Xformers aggregate: {out.shape=}")
 
         return out
-    
+
     def forward(self, h: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("Subclass must implement forward pass.")
-    
+
     def update(self, x, agg):
         combined = torch.cat([x, agg], dim=-1)
         return self.norm(self.output_proj(self.update_fn(combined)))
 
+
 class GraphConv(MessagePassing):
-    def __init__(self, input_size, output_size, hidden_dim, aggregation="sum", dropout=0.1):
+    def __init__(
+        self, input_size, output_size, hidden_dim, aggregation="sum", dropout=0.1
+    ):
         super().__init__(input_size, hidden_dim, aggregation)
         self.update_fn = nn.Sequential(
             nn.Linear(input_size + hidden_dim, input_size),
             nn.GELU(),
-            nn.Dropout(dropout)
+            nn.Dropout(dropout),
         )
         self.output_proj = nn.Linear(input_size, output_size)
         self.norm = nn.LayerNorm(output_size)
 
     def forward(self, x, graph):
-        msg = self.message(x)                     # [B, T, hidden]
-        agg = self.aggregate(msg, graph)          # [B, T, hidden]
-        return self.update(x, agg)                    # [B, T, output_size]
+        msg = self.message(x)  # [B, T, hidden]
+        agg = self.aggregate(msg, graph)  # [B, T, hidden]
+        return self.update(x, agg)  # [B, T, output_size]
+
 
 class SageLayer(GraphConv):
     def __init__(self, input_size, hidden_dim):
         super().__init__(input_size, input_size, hidden_dim, aggregation="sage")
+
 
 class AttGraphConv(MessagePassing):
     def __init__(self, input_size, output_size, hidden_dim, num_heads=4, dropout=0.1):
@@ -334,7 +391,7 @@ class AttGraphConv(MessagePassing):
         self.update_fn = nn.Sequential(
             nn.Linear(input_size + hidden_dim, input_size),
             nn.GELU(),
-            nn.Dropout(dropout)
+            nn.Dropout(dropout),
         )
         self.norm = nn.LayerNorm(output_size)
 
@@ -354,6 +411,7 @@ class AttGraphConv(MessagePassing):
         h = self.update_fn(combined)
         return self.norm(self.output_proj(h))
 
+
 class XFormerAttGraphConv(MessagePassing):
     def __init__(self, input_size, output_size, hidden_dim, num_heads=2, dropout=0.1):
         super().__init__(input_size, hidden_dim)
@@ -368,7 +426,7 @@ class XFormerAttGraphConv(MessagePassing):
         self.update_fn = nn.Sequential(
             nn.Linear(input_size + self.head_dim, input_size),
             nn.GELU(),
-            nn.Dropout(dropout)
+            nn.Dropout(dropout),
         )
         self.output_proj = nn.Linear(input_size, output_size)
         self.norm = nn.LayerNorm(output_size)
@@ -386,21 +444,20 @@ class XFormerAttGraphConv(MessagePassing):
         x_feat = x.reshape(B * T, F)
 
         # Project to Q, K, V
-        q = self.q_proj(x_feat).reshape(B*T, H, F, D).transpose(1, 2)  # [B, H, F, D]
-        k = self.k_proj(x_feat).reshape(B*T, H, F, D).transpose(1, 2)  # [B, H, F, D]
-        v = self.v_proj(x_feat).reshape(B*T, H, F, D).transpose(1, 2)  # [B, H, F, D]
+        q = self.q_proj(x_feat).reshape(B * T, H, F, D).transpose(1, 2)  # [B, H, F, D]
+        k = self.k_proj(x_feat).reshape(B * T, H, F, D).transpose(1, 2)  # [B, H, F, D]
+        v = self.v_proj(x_feat).reshape(B * T, H, F, D).transpose(1, 2)  # [B, H, F, D]
 
         # Use xformers efficient attention
         out = memory_efficient_attention(q, k, v)  # [B, H, F, D]
-        out = out.permute(0, 2, 1, 3)           # [B*T, D_token, H, d_head]
+        out = out.permute(0, 2, 1, 3)  # [B*T, D_token, H, d_head]
         out = out.reshape(B, T, D, -1)
         # take mean over last dim
-        out = out.mean(dim=-1)                 # [B, T, D]
+        out = out.mean(dim=-1)  # [B, T, D]
         # Update with residual information
         combined = torch.cat([x, out], dim=-1)  # [B, T, in + hidden]
-        updated = self.update_fn(combined)      # [B, T, input_size]
+        updated = self.update_fn(combined)  # [B, T, input_size]
         return self.norm(self.output_proj(updated))  # [B, T, output_size]
-
 
 
 class LatentGraphNetwork(nn.Module):
@@ -413,11 +470,11 @@ class LatentGraphNetwork(nn.Module):
         low_rank: bool = True,
         rank: Optional[int] = None,
         num_passes: int = 1,
-        aggregation: str = 'sum',
+        aggregation: str = "sum",
         dropout: float = 0.1,
         residual: bool = True,
-        strategy: Literal['vanilla', 'attn', 'xformers', 'sage', 'gtat'] = 'vanilla',
-        jk_mode: Literal['last', 'sum', 'max', 'concat', 'lstm', 'none'] = 'none'
+        strategy: Literal["vanilla", "attn", "xformers", "sage", "gtat"] = "vanilla",
+        jk_mode: Literal["last", "sum", "max", "concat", "lstm", "none"] = "none",
     ):
         super().__init__()
         self.input_size = input_size
@@ -433,27 +490,28 @@ class LatentGraphNetwork(nn.Module):
             hidden_size=correlation_hidden_size,
             low_rank=low_rank,
             rank=rank,
-            correlation_dropout=dropout
+            correlation_dropout=dropout,
         )
 
         # Message passing layers
-        self.message_passing_layers = nn.ModuleList([
-            self._create_layer(strategy, input_size, self.hidden_size, aggregation, dropout)
-            for _ in range(num_passes)
-        ])
+        self.message_passing_layers = nn.ModuleList(
+            [
+                self._create_layer(
+                    strategy, input_size, self.hidden_size, aggregation, dropout
+                )
+                for _ in range(num_passes)
+            ]
+        )
 
         self.jk_mode = jk_mode
-        if jk_mode != 'none':
+        if jk_mode != "none":
             # Jump knowledge module
             self.jump_knowledge = JumpKnowledge(
-                mode=jk_mode,
-                hidden_size=self.input_size,
-                output_size=input_size
+                mode=jk_mode, hidden_size=self.input_size, output_size=input_size
             )
 
-        if strategy == 'gtat':
+        if strategy == "gtat":
             self.gdv_encoder = GDVEncoder(gdv_dim=73, topo_dim=input_size)
-
 
         self.norm = nn.LayerNorm(output_size)
 
@@ -463,37 +521,40 @@ class LatentGraphNetwork(nn.Module):
         input_size: int,
         hidden_size: int,
         aggregation: str,
-        dropout: float
+        dropout: float,
     ) -> nn.Module:
-        if strategy == 'vanilla':
+        if strategy == "vanilla":
             return GraphConv(
                 input_size=input_size,
                 output_size=hidden_size,
                 hidden_dim=hidden_size,
                 aggregation=aggregation,
-                dropout=dropout
+                dropout=dropout,
             )
-        elif strategy == 'attn':
+        elif strategy == "attn":
             return AttGraphConv(
                 input_size=input_size,
                 output_size=hidden_size,
                 hidden_dim=hidden_size,
-                dropout=dropout
+                dropout=dropout,
             )
-        elif strategy == 'xformers':
+        elif strategy == "xformers":
             return XFormerAttGraphConv(
                 input_size=input_size,
                 output_size=hidden_size,
                 hidden_dim=16,
-                dropout=dropout
+                dropout=dropout,
             )
-        elif strategy == 'sage':
-            return SageLayer(
-                input_size=input_size,
-                hidden_dim=hidden_size
+        elif strategy == "sage":
+            return SageLayer(input_size=input_size, hidden_dim=hidden_size)
+        elif strategy == "gtat":
+            return GTATLayerWrapper(
+                input_size,
+                hidden_size,
+                topo_dim=input_size,
+                hidden_dim=hidden_size,
+                dropout=dropout,
             )
-        elif strategy == 'gtat':
-             return GTATLayerWrapper(input_size, hidden_size, topo_dim=input_size, hidden_dim=hidden_size, dropout=dropout)
         else:
             raise ValueError(f"Unsupported strategy: {strategy}")
 
@@ -508,9 +569,10 @@ class LatentGraphNetwork(nn.Module):
             B, T, F = x.shape
             gdv = compute_mock_gdv(F).to(x.device)
             gdv = gdv / (gdv.sum(dim=1, keepdim=True) + 1e-6)
-            topo_embedding = self.gdv_encoder(gdv)         # [F, topo_dim]
-            topo_embedding = topo_embedding.unsqueeze(0).expand(B, F, -1).clone()  # ✅ shape [B, F, topo_dim]
-
+            topo_embedding = self.gdv_encoder(gdv)  # [F, topo_dim]
+            topo_embedding = (
+                topo_embedding.unsqueeze(0).expand(B, F, -1).clone()
+            )  # ✅ shape [B, F, topo_dim]
 
         for layer in self.message_passing_layers:
             if isinstance(layer, GTATLayerWrapper):
@@ -518,7 +580,7 @@ class LatentGraphNetwork(nn.Module):
             else:
                 h = layer(h, correlation)
 
-        if self.jk_mode != 'none':
+        if self.jk_mode != "none":
             jk_out = self.jump_knowledge(outputs)
 
             if self.residual and x.shape[-1] == jk_out.shape[-1]:
@@ -529,11 +591,12 @@ class LatentGraphNetwork(nn.Module):
                 jk_out = h + x
 
         return jk_out
-    
+
+
 class JumpKnowledge(nn.Module):
     def __init__(
         self,
-        mode: Literal['last', 'sum', 'max', 'concat', 'lstm'] = 'concat',
+        mode: Literal["last", "sum", "max", "concat", "lstm"] = "concat",
         hidden_size: int = None,
         output_size: int = None,
     ):
@@ -543,29 +606,33 @@ class JumpKnowledge(nn.Module):
         self.output_size = output_size
         self.out_proj = None  # lazy initialization
 
-        if self.mode == 'lstm':
+        if self.mode == "lstm":
             assert hidden_size is not None
             self.lstm = nn.LSTM(hidden_size, hidden_size, batch_first=True)
-            self.out_proj = nn.Identity() if hidden_size == output_size else nn.Linear(hidden_size, output_size)
+            self.out_proj = (
+                nn.Identity()
+                if hidden_size == output_size
+                else nn.Linear(hidden_size, output_size)
+            )
 
     def forward(self, xs: List[torch.Tensor]) -> torch.Tensor:
-        if self.mode == 'last':
+        if self.mode == "last":
             return xs[-1]
 
-        elif self.mode == 'sum':
+        elif self.mode == "sum":
             return torch.stack(xs, dim=0).sum(dim=0)
 
-        elif self.mode == 'max':
+        elif self.mode == "max":
             return torch.stack(xs, dim=0).max(dim=0)[0]
 
-        elif self.mode == 'concat':
+        elif self.mode == "concat":
             x_cat = torch.cat(xs, dim=-1)  # [B, T, D * num_layers]
             if self.out_proj is None:
                 input_dim = x_cat.size(-1)
                 self.out_proj = nn.Linear(input_dim, self.output_size).to(x_cat.device)
             return self.out_proj(x_cat)
 
-        elif self.mode == 'lstm':
+        elif self.mode == "lstm":
             B, T, D = xs[0].shape
             x_seq = torch.stack(xs, dim=1).reshape(B * T, len(xs), D)
             lstm_out, _ = self.lstm(x_seq)
@@ -585,17 +652,17 @@ import tempfile
 import numpy as np
 from typing import Union, Optional
 
+
 # === GDV via ORCA ===
 def compute_gdv_orca(
-    G: Union[nx.Graph, nx.DiGraph],
-    orca_path: str = "./orca",
-    graphlet_size: int = 5
+    G: Union[nx.Graph, nx.DiGraph], orca_path: str = "./orca", graphlet_size: int = 5
 ) -> np.ndarray:
     if not isinstance(G, nx.Graph):
         G = nx.Graph(G)
 
-    with tempfile.NamedTemporaryFile("w", delete=False) as edge_file, \
-         tempfile.NamedTemporaryFile("r", delete=False) as out_file:
+    with tempfile.NamedTemporaryFile(
+        "w", delete=False
+    ) as edge_file, tempfile.NamedTemporaryFile("r", delete=False) as out_file:
 
         node_map = {n: i for i, n in enumerate(G.nodes())}
         for u, v in G.edges():
@@ -619,9 +686,7 @@ class GDVEncoder(nn.Module):
     def __init__(self, gdv_dim: int, topo_dim: int):
         super().__init__()
         self.proj = nn.Sequential(
-            nn.Linear(gdv_dim, topo_dim),
-            nn.ReLU(),
-            nn.Linear(topo_dim, topo_dim)
+            nn.Linear(gdv_dim, topo_dim), nn.ReLU(), nn.Linear(topo_dim, topo_dim)
         )
 
     def forward(self, gdv):
@@ -646,8 +711,8 @@ class GTATLayer(nn.Module):
             adj = adj.unsqueeze(0).expand(B, -1, -1)  # [B, F, F]
 
         # Project features
-        H_proj = self.feature_proj(H)         # [B, N, H]
-        T_proj = self.topo_proj(T)            # [B, F, H]
+        H_proj = self.feature_proj(H)  # [B, N, H]
+        T_proj = self.topo_proj(T)  # [B, F, H]
 
         Hi = T_proj.unsqueeze(2).expand(B, Fdim, Fdim, -1)
         Hj = T_proj.unsqueeze(1).expand(B, Fdim, Fdim, -1)
@@ -689,10 +754,9 @@ class GTAT(nn.Module):
         super().__init__()
         self.gdv_encoder = GDVEncoder(gdv_dim, topo_dim)
         self.input_proj = nn.Linear(in_dim, hidden_dim)
-        self.layers = nn.ModuleList([
-            GTATLayer(hidden_dim, topo_dim, hidden_dim)
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [GTATLayer(hidden_dim, topo_dim, hidden_dim) for _ in range(num_layers)]
+        )
         self.output_proj = nn.Linear(hidden_dim, out_dim)
 
     def forward(self, H, adj, gdv=None):
@@ -710,27 +774,40 @@ class GTAT(nn.Module):
 
         return self.output_proj(H)
 
+
 class GTATIntegrated(nn.Module):
-    def __init__(self,
-                 input_size: int,
-                 output_size: int,
-                 gdv_dim: int = 73,
-                 topo_dim: int = 64,
-                 hidden_size: Optional[int] = None,
-                 num_passes: int = 2,
-                 dropout: float = 0.1):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        gdv_dim: int = 73,
+        topo_dim: int = 64,
+        hidden_size: Optional[int] = None,
+        num_passes: int = 2,
+        dropout: float = 0.1,
+    ):
         super().__init__()
         self.hidden_size = hidden_size or max(input_size, output_size)
         self.input_proj = nn.Linear(input_size, self.hidden_size)
         self.output_proj = nn.Linear(self.hidden_size, output_size)
         self.gdv_encoder = GDVEncoder(gdv_dim, topo_dim)
-        self.layers = nn.ModuleList([
-            GTATLayerWrapper(self.hidden_size, self.hidden_size, topo_dim, self.hidden_size, dropout)
-            for _ in range(num_passes)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                GTATLayerWrapper(
+                    self.hidden_size,
+                    self.hidden_size,
+                    topo_dim,
+                    self.hidden_size,
+                    dropout,
+                )
+                for _ in range(num_passes)
+            ]
+        )
         self.norm = nn.LayerNorm(output_size)
 
-    def forward(self, x: torch.Tensor, adj: torch.Tensor, gdv: Optional[torch.Tensor] = None):
+    def forward(
+        self, x: torch.Tensor, adj: torch.Tensor, gdv: Optional[torch.Tensor] = None
+    ):
         if gdv is None:
             gdv = compute_mock_gdv(x.size(-1))  # x.shape: [B, T, F]
         if isinstance(gdv, np.ndarray):
@@ -740,11 +817,12 @@ class GTATIntegrated(nn.Module):
         topo_embedding = self.gdv_encoder(gdv)
         if topo_embedding.ndim == 2:
             B, T, F = x.shape
-            topo_embedding = topo_embedding.unsqueeze(0).expand(B, T, -1).clone()  # [B, F, topo_dim]
+            topo_embedding = (
+                topo_embedding.unsqueeze(0).expand(B, T, -1).clone()
+            )  # [B, F, topo_dim]
         h = self.input_proj(x)
 
         for layer in self.layers:
             h = layer(h, adj, topo_embedding)
 
         return self.norm(self.output_proj(h))
-

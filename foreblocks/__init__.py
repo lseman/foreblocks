@@ -8,7 +8,7 @@ from .enc_dec import (
     VariationalEncoderWrapper,
     LatentConditionedDecoder,
 )
-from .transformer import TransformerEncoder, TransformerDecoder
+from .tf.transformer import TransformerEncoder, TransformerDecoder
 from .att import AttentionLayer
 from .preprocessing import TimeSeriesPreprocessor
 from .utils import TimeSeriesDataset, create_dataloaders, Trainer

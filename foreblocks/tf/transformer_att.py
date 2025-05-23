@@ -15,7 +15,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
 from .embeddings import PositionalEncoding, RotaryEmbedding
-from .blocks.fed import FrequencyAttention
+from .fed import FrequencyAttention, DWTAttention
 
 
 # Helper functions for feature detection
@@ -49,15 +49,6 @@ def _is_torch_sdp_available():
 
 
 class XFormerAttention(nn.Module):
-    """
-    Optimized multi-head attention with support for:
-    - FlashAttention
-    - PyTorch's SDP
-    - xFormers memory-efficient attention
-    - ProbSparse attention
-    - Rotary embeddings
-    """
-
     def __init__(
         self,
         d_model,
@@ -69,94 +60,85 @@ class XFormerAttention(nn.Module):
         prob_sparse_factor=0.4,
         use_rotary=True,
         rotary_dim=None,
-        flash_attention=True,
         use_flash_attn=None,
         freq_modes=16,
         debug=False,
     ):
         super().__init__()
-        assert d_model % nhead == 0, "d_model must be divisible by nhead"
+        assert d_model % nhead == 0
 
         self.d_model = d_model
         self.nhead = nhead
         self.head_dim = d_model // nhead
-        self.dropout_p = dropout
         self.batch_first = batch_first
         self.cross_attention = cross_attention
-        self.scaling = self.head_dim**-0.5
+        self.dropout_p = dropout
         self.debug = debug
 
         self.qkv_proj = nn.Linear(d_model, 3 * d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-        if use_flash_attn is not None:
-            flash_attention = use_flash_attn
-
-        self.flash_attention = flash_attention and _is_flash_attn_available()
-        self.has_sdp = _is_torch_sdp_available()
-        self.has_xformers = _is_xformers_available()
+        self.flash_available = _is_flash_attn_available()
+        self.sdp_available = _is_torch_sdp_available()
+        self.xformers_available = _is_xformers_available()
+        self.use_flash_attn = (
+            use_flash_attn if use_flash_attn is not None else self.flash_available
+        )
 
         self.use_rotary = use_rotary
         self.rotary_dim = rotary_dim or self.head_dim
         self.rotary_emb = RotaryEmbedding(self.rotary_dim) if use_rotary else None
 
-        self.attention_type = attention_type
-        self.attention_strategy_factory = {
-            "default": lambda: StandardAttentionStrategy(),
-            "prob_sparse": lambda: ProbSparseAttentionStrategy(prob_sparse_factor),
-            "frequency": lambda: FrequencyAttention(
+        # Strategy selector
+        if attention_type == "default":
+            self.attention_strategy = StandardAttentionStrategy()
+        elif attention_type == "prob_sparse":
+            self.attention_strategy = ProbSparseAttentionStrategy(prob_sparse_factor)
+        elif attention_type == "frequency":
+            self.attention_strategy = FrequencyAttention(
                 d_model=d_model,
                 n_heads=nhead,
                 dropout=dropout,
                 modes=freq_modes,
                 seq_len_q=None,
                 seq_len_kv=None,
-            ),
-        }
+            )
+        elif attention_type == "dwt":
+            self.attention_strategy = DWTAttention(
+                d_model=d_model,
+                n_heads=nhead,
+                dropout=dropout,
+                modes=freq_modes,
+            )
+        else:
+            raise ValueError(f"Unknown attention_type: {attention_type}")
 
-        self._attention_strategy = self.attention_strategy_factory.get(
-            self.attention_type, self.attention_strategy_factory["default"]
-        )()
-
-        self.optimized_strategy = OptimizedAttentionStrategy()
+        self.optimized_strategy = OptimizedAttentionStrategy(debug=debug)
 
     def _prepare_qkv(self, query, key=None, value=None):
-        if key is None and value is None:
-            key = value = query
+        key = query if key is None else key
+        value = query if value is None else value
 
         if not self.batch_first:
             query, key, value = [x.transpose(0, 1) for x in (query, key, value)]
 
-        bsz, tgt_len = query.size(0), query.size(1)
-        src_len = key.size(1)
+        B, T_q = query.shape[:2]
+        T_kv = key.shape[1]
 
         if key is value and key is query:
             q, k, v = self.qkv_proj(query).chunk(3, dim=-1)
         else:
-            q = self.qkv_proj(query)[..., : self.d_model]
-            k = self.qkv_proj(key)[..., self.d_model : 2 * self.d_model]
-            v = self.qkv_proj(value)[..., 2 * self.d_model :]
+            qkv = self.qkv_proj(query)
+            q = qkv[..., : self.d_model]
+            kv = self.qkv_proj(key)
+            k = kv[..., self.d_model : 2 * self.d_model]
+            v = kv[..., 2 * self.d_model :]
 
-        q = q.view(bsz, tgt_len, self.nhead, self.head_dim).transpose(1, 2)
-        k = k.view(bsz, src_len, self.nhead, self.head_dim).transpose(1, 2)
-        v = v.view(bsz, src_len, self.nhead, self.head_dim).transpose(1, 2)
+        q = q.view(B, T_q, self.nhead, self.head_dim).transpose(1, 2)
+        k = k.view(B, T_kv, self.nhead, self.head_dim).transpose(1, 2)
+        v = v.view(B, T_kv, self.nhead, self.head_dim).transpose(1, 2)
 
-        return q, k, v, bsz, tgt_len, src_len
-
-    def _apply_rotary(self, q, k, position_ids, query):
-        if not self.use_rotary or self.rotary_emb is None:
-            return q, k
-
-        bsz, tgt_len = query.size(0), query.size(1)
-        src_len = k.size(2)
-
-        if position_ids is None:
-            q_pos = torch.arange(tgt_len, device=query.device)
-            k_pos = torch.arange(src_len, device=query.device)
-        else:
-            q_pos, k_pos = position_ids
-
-        return self.rotary_emb(q, k, q_pos=q_pos, k_pos=k_pos)
+        return q, k, v, B, T_q
 
     def forward(
         self,
@@ -168,42 +150,53 @@ class XFormerAttention(nn.Module):
         is_causal=False,
         need_weights=False,
         position_ids=None,
-    ):
-        q, k, v, bsz, tgt_len, src_len = self._prepare_qkv(query, key, value)
+        layer_state: Optional[dict] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]:
+
+        q, k, v, B, T_q = self._prepare_qkv(query, key, value)
+
+        # Handle key/value caching for incremental decoding
+        if layer_state is not None:
+            # Use cached K/V if available
+            past_k = layer_state.get("k")  # [B, nhead, T_prev, head_dim]
+            past_v = layer_state.get("v")
+
+            if past_k is not None and past_v is not None:
+                # Append along time dimension
+                k = torch.cat([past_k, k], dim=2)
+                v = torch.cat([past_v, v], dim=2)
+
+            # Update cache
+            layer_state["k"] = k
+            layer_state["v"] = v
 
         if self.use_rotary:
-            q, k = self._apply_rotary(q, k, position_ids, query)
+            q, k = self.rotary_emb(q, k)
 
-        if attn_mask is None and key_padding_mask is None and not need_weights:
-            fast_out = self.optimized_strategy.compute_attention(
+        # Fast path: optimized attention (Flash/xFormers/SDP)
+        if not any([attn_mask, key_padding_mask, need_weights]):
+            out = self.optimized_strategy.compute_attention(
                 q,
                 k,
                 v,
                 dropout_p=self.dropout_p,
                 training=self.training,
-                cross_attention=self.cross_attention,
-                d_model=self.d_model,
-                scaling=self.scaling,
                 is_causal=is_causal,
-                flash_attention=self.flash_attention,
-                has_sdp=self.has_sdp,
-                has_xformers=self.has_xformers,
+                cross_attention=self.cross_attention,
+                flash_attention=self.use_flash_attn,
+                has_sdp=self.sdp_available,
+                has_xformers=self.xformers_available,
             )
-            if fast_out is not None:
-                out, weights = fast_out
-                if torch.isnan(out).any():
-                    print("[Warning] NaN in optimized attention output — fallback.")
-                else:
-                    out = out.transpose(1, 2).reshape(bsz, tgt_len, self.d_model)
-                    return self.out_proj(out), weights
+            if out is not None:
+                out, weights = out
+                return (
+                    self.out_proj(out.transpose(1, 2).reshape(B, T_q, self.d_model)),
+                    weights,
+                    layer_state,
+                )
 
-        strategy = self._attention_strategy
-        if isinstance(strategy, FrequencyAttention):
-            return strategy(
-                query, key, value, attn_mask, key_padding_mask, is_causal, need_weights
-            )
-
-        out, weights = strategy.compute_attention(
+        # Fallback to manual strategy (Standard/ProbSparse/Frequency)
+        out, weights = self.attention_strategy.compute_attention(
             q,
             k,
             v,
@@ -215,14 +208,11 @@ class XFormerAttention(nn.Module):
             training=self.training,
             cross_attention=self.cross_attention,
             d_model=self.d_model,
-            scaling=self.scaling,
+            scaling=self.head_dim**-0.5,
+            layer_state=layer_state,
         )
-
-        if torch.isnan(out).any():
-            raise RuntimeError("NaN detected in fallback attention output")
-
-        out = out.transpose(1, 2).reshape(bsz, tgt_len, self.d_model)
-        return self.out_proj(out), weights
+        out = out.transpose(1, 2).reshape(B, T_q, self.d_model)
+        return self.out_proj(out), weights, layer_state
 
 
 class AttentionStrategy:
@@ -242,13 +232,12 @@ class AttentionStrategy:
         cross_attention=False,
         d_model=None,
         scaling=None,
-    ):
+        layer_state: Optional[dict] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]:
         raise NotImplementedError("Subclasses must implement compute_attention")
 
 
 class StandardAttentionStrategy(AttentionStrategy):
-    """Optimized standard scaled dot-product attention implementation."""
-
     def __init__(self):
         print("[Attention] StandardAttentionStrategy")
 
@@ -267,17 +256,8 @@ class StandardAttentionStrategy(AttentionStrategy):
         d_model=None,
         scaling=None,
     ):
-        batch_size, _, tgt_len, _ = q.shape
-        src_len = k.size(2)
 
-        # === Fast path with PyTorch fused attention ===
-        if (
-            not need_weights
-            and attn_mask is None
-            and key_padding_mask is None
-            and hasattr(F, "scaled_dot_product_attention")
-        ):
-            print("[Attention] Using PyTorch fused attention")
+        if self._can_use_sdp(attn_mask, key_padding_mask, need_weights):
             return (
                 F.scaled_dot_product_attention(
                     q,
@@ -289,59 +269,61 @@ class StandardAttentionStrategy(AttentionStrategy):
                 None,
             )
 
-        print("[Attention] Using manual attention computation")
+        scores = torch.matmul(q, k.transpose(-2, -1))
+        if scaling:
+            scores *= scaling
 
-        # === Manual attention computation ===
-        attn_scores = torch.matmul(q, k.transpose(-2, -1))
-        if scaling is not None:
-            attn_scores *= scaling
+        scores = self._apply_masks(
+            scores, attn_mask, key_padding_mask, is_causal, cross_attention
+        )
 
-        # Causal mask (only for self-attention)
+        scores = scores.clamp(min=-50, max=50)
+        scores = scores - scores.max(dim=-1, keepdim=True).values  # Stabilize
+
+        weights = F.softmax(scores, dim=-1)
+        if dropout_p > 0 and training:
+            weights = F.dropout(weights, p=dropout_p)
+        weights = weights.clamp(min=1e-9, max=1.0)
+
+        out = torch.matmul(weights, v)
+        return (out, weights if need_weights else None)
+
+    def _can_use_sdp(self, attn_mask, key_padding_mask, need_weights):
+        return (
+            not need_weights
+            and attn_mask is None
+            and key_padding_mask is None
+            and hasattr(F, "scaled_dot_product_attention")
+        )
+
+    def _apply_masks(
+        self, scores, attn_mask, key_padding_mask, is_causal, cross_attention
+    ):
+        B, H, T_q, T_k = scores.shape
+
         if is_causal and not cross_attention:
             causal_mask = torch.ones(
-                tgt_len, src_len, device=q.device, dtype=torch.bool
+                T_q, T_k, device=scores.device, dtype=torch.bool
             ).tril()
-            attn_scores = attn_scores.masked_fill(~causal_mask, float("-inf"))
+            scores = scores.masked_fill(~causal_mask, float("-inf"))
 
-        # Attention mask
         if attn_mask is not None:
-            attn_mask = (
-                attn_mask.unsqueeze(1)
-                if attn_mask.dim() == 3
-                else attn_mask[None, None]
-            )
-            attn_scores = attn_scores.masked_fill(attn_mask == 0, float("-inf"))
+            if attn_mask.dim() == 3:
+                attn_mask = attn_mask.unsqueeze(1)
+            elif attn_mask.dim() == 2:
+                attn_mask = attn_mask[None, None]
+            scores = scores.masked_fill(attn_mask == 0, float("-inf"))
 
-        # Key padding mask
         if key_padding_mask is not None:
-            attn_scores = attn_scores.masked_fill(
+            scores = scores.masked_fill(
                 key_padding_mask[:, None, None, :].to(torch.bool), float("-inf")
             )
 
-        # [NEW] Clamp for sanity (optional, protects against inf)
-        attn_scores = attn_scores.clamp(min=-50, max=50)
-
-        # [NEW] Max-subtraction for numerical stability
-        attn_scores = attn_scores - attn_scores.max(dim=-1, keepdim=True).values
-
-        attn_weights = F.softmax(attn_scores, dim=-1)
-
-        if dropout_p > 0.0 and training:
-            attn_weights = F.dropout(attn_weights, p=dropout_p)
-
-        attn_weights = attn_weights.clamp(min=1e-9, max=1.0)
-
-        # Weighted sum
-        out = torch.matmul(attn_weights, v)
-
-        return (out, attn_weights if need_weights else None)
+        return scores
 
 
 class ProbSparseAttentionStrategy(AttentionStrategy):
-    """ProbSparse attention with KLD-based top-u selection for sparse querying."""
-
     def __init__(self, prob_sparse_factor=0.4, debug=False):
-        print("[Attention] ProbSparseAttentionStrategy")
         self.prob_sparse_factor = prob_sparse_factor
         self.debug = debug
 
@@ -360,100 +342,116 @@ class ProbSparseAttentionStrategy(AttentionStrategy):
         d_model=None,
         scaling=None,
     ):
-        batch_size, num_heads, tgt_len, dim = q.shape
-        src_len = k.size(2)
 
-        # === Compute u ===
-        try:
-            u = max(
-                int(min(self.prob_sparse_factor * math.log(src_len), tgt_len * 0.5)),
-                int(tgt_len * 0.3),
-            )
-        except Exception as e:
-            raise RuntimeError(f"Invalid src_len or tgt_len: {e}")
+        B, H, T_q, D = q.shape
+        T_k = k.size(2)
 
-        if u <= 0:
-            raise ValueError(
-                f"[ProbSparse] Invalid number of top queries selected: u={u}"
-            )
+        u = self._compute_top_u(T_q, T_k)
+        kl_score = self._compute_kl_score(q, k, scaling, T_k)
+        topk_indices = torch.topk(kl_score, u, dim=-1).indices  # [B, H, u]
 
-        # === Compute KL divergence ===
-        q_scaled = q * scaling
-        attn_approx = torch.matmul(q_scaled, k.transpose(-2, -1))  # [B, H, T_q, T_k]
+        q_reduced = self._reduce_queries(q, topk_indices, D)  # [B, H, u, D]
+        scores = torch.matmul(q_reduced, k.transpose(-2, -1)) * scaling
+        scores = scores.clamp(min=-50, max=50)
+        scores -= scores.max(dim=-1, keepdim=True).values
 
-        attn_approx = attn_approx.clamp(min=-50, max=50)
-        attn_approx = attn_approx - attn_approx.max(dim=-1, keepdim=True).values
-        attn_approx_sm = F.softmax(attn_approx, dim=-1)
-
-        log_uniform = math.log(src_len)
-        kl_score = torch.sum(
-            attn_approx_sm * (torch.log(attn_approx_sm + 1e-10) + log_uniform),
-            dim=-1,  # [B, H, T_q]
+        scores = self._apply_masks(
+            scores,
+            topk_indices,
+            attn_mask,
+            key_padding_mask,
+            is_causal,
+            cross_attention,
+            T_k,
         )
 
-        # === Top-u query selection ===
-        topk_indices = torch.topk(kl_score, u, dim=-1).indices  # [B, H, u]
-        if topk_indices.max() >= tgt_len:
-            raise IndexError("Top-k indices out of range")
+        weights = F.softmax(scores, dim=-1)
+        if dropout_p > 0 and training:
+            weights = F.dropout(weights, p=dropout_p)
+        weights = weights.clamp(min=1e-9, max=1.0)
 
-        topk_indices_expanded = topk_indices.unsqueeze(-1).expand(-1, -1, -1, dim)
+        output_reduced = torch.matmul(weights, v)
+        output_full = self._scatter_back(
+            output_reduced, topk_indices, full_shape=q.shape
+        )
 
-        # === Reduce queries ===
-        q_reduced = torch.gather(q, 2, topk_indices_expanded)  # [B, H, u, D]
+        return output_full, weights if need_weights else None
 
-        # === Compute attention scores ===
-        attn_scores = (
-            torch.matmul(q_reduced, k.transpose(-2, -1)) * scaling
-        )  # [B, H, u, T_k]
-        attn_scores = attn_scores.clamp(min=-50, max=50)
-        attn_scores = attn_scores - attn_scores.max(dim=-1, keepdim=True).values
+    def _compute_top_u(self, T_q, T_k):
+        try:
+            u = max(
+                int(min(self.prob_sparse_factor * math.log(T_k), T_q * 0.5)),
+                int(T_q * 0.3),
+            )
+            if u <= 0:
+                raise ValueError
+            return u
+        except:
+            raise RuntimeError(
+                f"[ProbSparse] Invalid top-u computation (T_q={T_q}, T_k={T_k})"
+            )
 
-        # === Causal mask ===
+    def _compute_kl_score(self, q, k, scaling, T_k):
+        q_scaled = q * scaling
+        approx = torch.matmul(q_scaled, k.transpose(-2, -1))
+        approx = approx.clamp(min=-50, max=50)
+        approx -= approx.max(dim=-1, keepdim=True).values
+        sm = F.softmax(approx, dim=-1)
+
+        log_uniform = math.log(T_k)
+        return torch.sum(sm * (torch.log(sm + 1e-10) + log_uniform), dim=-1)
+
+    def _reduce_queries(self, q, topk_indices, D):
+        return torch.gather(q, 2, topk_indices.unsqueeze(-1).expand(-1, -1, -1, D))
+
+    def _scatter_back(self, output_reduced, topk_indices, full_shape):
+        output_full = torch.zeros(full_shape, device=output_reduced.device)
+        output_full.scatter_(
+            2,
+            topk_indices.unsqueeze(-1).expand(-1, -1, -1, full_shape[-1]),
+            output_reduced,
+        )
+
+        return output_full
+
+    def _apply_masks(
+        self,
+        scores,
+        topk_indices,
+        attn_mask,
+        key_padding_mask,
+        is_causal,
+        cross_attention,
+        T_k,
+    ):
+        B, H, u, _ = scores.shape
+
         if is_causal and not cross_attention:
             causal_mask = torch.tril(
-                torch.ones(u, src_len, device=q.device, dtype=torch.bool)
+                torch.ones(u, T_k, device=scores.device, dtype=torch.bool)
             )
-            attn_scores = attn_scores.masked_fill(~causal_mask, float("-inf"))
+            scores = scores.masked_fill(~causal_mask, float("-inf"))
 
-        # === Key padding mask ===
         if key_padding_mask is not None:
-            attn_scores = attn_scores.masked_fill(
+            scores = scores.masked_fill(
                 key_padding_mask[:, None, None, :].to(torch.bool), float("-inf")
             )
 
-        # === Attention mask ===
         if attn_mask is not None:
-            attn_mask = (
-                attn_mask[None, None]
-                if attn_mask.dim() == 2
-                else attn_mask[:, None] if attn_mask.dim() == 3 else attn_mask
-            )
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask[None, None]
+            elif attn_mask.dim() == 3:
+                attn_mask = attn_mask.unsqueeze(1)
 
-            if attn_mask.size(2) == tgt_len:
+            if attn_mask.size(2) == scores.size(2):
                 attn_mask_reduced = torch.gather(
-                    attn_mask, 2, topk_indices.unsqueeze(-1).expand(-1, -1, -1, src_len)
+                    attn_mask, 2, topk_indices.unsqueeze(-1).expand(-1, -1, -1, T_k)
                 )
-                attn_scores = attn_scores.masked_fill(
-                    attn_mask_reduced == 0, float("-inf")
-                )
+                scores = scores.masked_fill(attn_mask_reduced == 0, float("-inf"))
             else:
-                attn_scores = attn_scores.masked_fill(attn_mask == 0, float("-inf"))
+                scores = scores.masked_fill(attn_mask == 0, float("-inf"))
 
-        attn_weights = F.softmax(attn_scores, dim=-1)
-
-        if dropout_p > 0.0 and training:
-            attn_weights = F.dropout(attn_weights, p=dropout_p, training=True)
-
-        attn_weights = attn_weights.clamp(min=1e-9, max=1.0)
-
-        # === Compute output ===
-        output_reduced = torch.matmul(attn_weights, v)  # [B, H, u, D]
-
-        # === Scatter back into full Q-sized tensor ===
-        output_full = torch.zeros_like(q)  # [B, H, T_q, D]
-        output_full.scatter_(2, topk_indices_expanded, output_reduced)
-
-        return output_full, attn_weights if need_weights else None
+        return scores
 
 
 class OptimizedAttentionStrategy(AttentionStrategy):

@@ -7,7 +7,7 @@ import torch.nn as nn
 
 from .aux import *
 from .enc_dec import *
-from .transformer import *
+from .tf.transformer import *
 from .att import *
 import torch
 import torch.nn as nn
@@ -317,20 +317,24 @@ class ForecastingModel(nn.Module):
 
         return self.output_postprocessor(outputs)
 
-    def _forward_transformer_seq2seq(self, src, targets, epoch):
+    def _forward_transformer_seq2seq(self, src, targets=None, epoch=None):
         """
         Unified transformer forward pass using autoregressive decoding.
-        Replaces inputs with ground truth at each step if teacher forcing is enabled.
+        Efficient decoding with optional teacher forcing and caching.
         """
         batch_size, _, _ = src.shape
         device = src.device
 
-        enc_out = self.encoder(src)
+        # Encode input once
+        memory = self.encoder(src)
 
-        # Setup decoder input
-        x_dec_so_far = src[:, -self.label_len :, :]  # Context
+        # Initialize decoder input context
+        x_dec_so_far = src[:, -self.label_len :, :]
+        next_input = x_dec_so_far[:, -1:, :]  # Start with last context step
 
         preds = []
+        incremental_state = None  # One per decoder layer
+
         teacher_forcing = False
         if self.training and targets is not None:
             teacher_force_ratio = (
@@ -341,30 +345,26 @@ class ForecastingModel(nn.Module):
             teacher_forcing = torch.rand(1).item() < teacher_force_ratio
 
         for t in range(self.pred_len):
-            # Mask for decoder
-            tgt_mask = self._generate_square_subsequent_mask(x_dec_so_far.size(1)).to(
-                device
+            # Use optimized single-step decoder
+            out, incremental_state = self.decoder.forward_one_step(
+                tgt=next_input,
+                memory=memory,
+                incremental_state=incremental_state,
             )
-
-            # Embed and decode
-            out = self.decoder(x_dec_so_far, enc_out, tgt_mask=tgt_mask)
-            pred_t = self.output_layer(out[:, -1:, :])  # Only use last step
+            pred_t = self.output_layer(out)  # [B, 1, output_dim]
             preds.append(pred_t)
 
-            # Prepare next decoder input
-            if teacher_forcing and targets is not None:
+            # Choose next input
+            if self.training and teacher_forcing and targets is not None:
                 next_input = targets[:, t : t + 1, :]
             else:
                 next_input = pred_t
 
-            # Pad if needed
+            # Pad if output != input dim
             if self.output_size != self.input_size:
                 pad_size = self.input_size - self.output_size
                 padding = torch.zeros(next_input.size(0), 1, pad_size, device=device)
                 next_input = torch.cat([next_input, padding], dim=-1)
-
-            # Append to decoder input
-            x_dec_so_far = torch.cat([x_dec_so_far, next_input], dim=1)
 
         return torch.cat(preds, dim=1)
 
@@ -377,7 +377,6 @@ class ForecastingModel(nn.Module):
         device = src.device
 
         # === Encode full input sequence ===
-        # enc_out = self.enc_embedding(src)  # [B, T_enc, D]
         enc_out = self.encoder(src)  # [B, T_enc, D]
 
         # === Create start token sequence for decoder ===
@@ -387,7 +386,6 @@ class ForecastingModel(nn.Module):
         )  # [B, T_pred, input_size]
 
         # === Embed and decode entire prediction range in one shot ===
-        # dec_embed = self.dec_embedding(dec_input)  # [B, T_pred, D]
         out = self.decoder(dec_input, enc_out)  # [B, T_pred, D]
 
         # === Project to output space ===

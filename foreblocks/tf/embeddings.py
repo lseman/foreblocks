@@ -56,6 +56,28 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x + self.scale * self.pe[:, : x.size(1)])
 
 
+class InformerTimeEmbedding(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.hour_embed = nn.Embedding(24, d_model)
+        self.weekday_embed = nn.Embedding(7, d_model)
+        self.day_embed = nn.Embedding(32, d_model)
+        self.month_embed = nn.Embedding(13, d_model)
+
+    def forward(self, time_feats):
+        """
+        time_feats: dict of integer tensors of shape [B, T]
+        expected keys: 'hour', 'weekday', 'day', 'month'
+        """
+        embs = (
+            self.hour_embed(time_feats["hour"])
+            + self.weekday_embed(time_feats["weekday"])
+            + self.day_embed(time_feats["day"])
+            + self.month_embed(time_feats["month"])
+        )
+        return embs  # [B, T, d_model]
+
+
 class LearnablePositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super().__init__()

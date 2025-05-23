@@ -1,226 +1,215 @@
 # Transformer Architecture
 
 ## Transformer Encoder Layer (Pre-Norm)
+
 ```
                    Input
                      |
                      v
          +-------------------------+
-         |      LayerNorm 1        |
+         |     AdaptiveNorm 1      |   ← RMSNorm / LayerNorm
          +-------------------------+
                      |
                      v
          +-------------------------+
-         |    Self-Attention       |<------- [Attention Mask]
-         |    (XFormerAttention    |<------- [Padding Mask]
-         |     or FreqAttention)   |
+         |    Self-Attention       |  ← XFormer / Flash / Frequency
          +-------------------------+
                      |
-                     |     +----------------+
-                     +---->|    Dropout     |
-                     |     +----------------+
-                     |              |
-         +-----------+              |
-         |                          v
-         |                   +-----------+
-         |                   |  Residual |
-         |                   +-----------+
-         |                          |
-         |                          v
-         |           +-------------------------+
-         |           |      LayerNorm 2        |
-         |           +-------------------------+
-         |                          |
-         |                          v
-         |           +-------------------------+
-         |           |    Feed-Forward Network |
-         |           |    (SwiGLU or Standard) |
-         |           +-------------------------+
-         |                          |
-         |                          |
-         |                          v
-         |                   +----------------+
-         |                   |    Dropout     |
-         |                   +----------------+
-         |                          |
-         +------------------------->+
-                                    |
-                                    v
-                                  Output
-
-
+         +-------------------------+
+         |        Dropout          |
+         +-------------------------+
+                     |
+         +-----------+-------------+
+                     ↓
+               Residual Add
+                     ↓
+         +-------------------------+
+         |     AdaptiveNorm 2      |
+         +-------------------------+
+                     |
+                     v
+         +-------------------------+
+         |  Feed-Forward Network   |  ← SwiGLU / MoE / MLP
+         +-------------------------+
+                     |
+         +-------------------------+
+         |        Dropout          |
+         +-------------------------+
+                     |
+         +-----------+-------------+
+                     ↓
+               Residual Add
+                     ↓
+                  Output
 ```
+
+---
 
 ## Transformer Decoder Layer (Pre-Norm)
+
 ```
-                   Input (tgt)             Memory (from Encoder)
-                      |                           |
-                      v                           |
-          +-------------------------+             |
-          |      LayerNorm 1        |             |
-          +-------------------------+             |
-                      |                           |
-                      v                           |
-          +-------------------------+             |
-          |     Self-Attention      |<------ [Tgt Mask]
-          |    (XFormerAttention)   |<------ [Padding Mask]
-          +-------------------------+             |
-                      |                           |
-                      |     +----------------+    |
-                      +---->|    Dropout     |    |
-                      |     +----------------+    |
-                      |              |            |
-          +-----------+              |            |
-          |                          v            |
-          |                    +-----------+      |
-          |                    |  Residual |      |
-          |                    +-----------+      |
-          |                          |            |
-          |                          v            |
-          |           +-------------------------+ |
-          |           |      LayerNorm 2        | |
-          |           +-------------------------+ |
-          |                          |            |
-          |                          v            |
-          |           +-------------------------+ |
-          |           |    Cross-Attention      |<+
-          |           |    (XFormerAttention)   |<------ [Memory Mask]
-          |           +-------------------------+<------ [Memory Padding Mask]
-          |                          |
-          |                          |
-          |                          v
-          |                   +----------------+
-          |                   |    Dropout     |
-          |                   +----------------+
-          |                          |
-          +------------------------->+
-                                     |
-                                     v
-                               +-----------+
-                               |  Residual |
-                               +-----------+
-                                     |
-                                     v
-                        +-------------------------+
-                        |      LayerNorm 3        |
-                        +-------------------------+
-                                     |
-                                     v
-                        +-------------------------+
-                        |    Feed-Forward Network |
-                        |    (SwiGLU or Standard) |
-                        +-------------------------+
-                                     |
-                                     v
-                                +----------------+
-                                |    Dropout     |
-                                +----------------+
-                                     |
-                                     v
-                               +-----------+
-                               |  Residual |
-                               +-----------+
-                                     |
-                                     v
-                                   Output
+                   Input (tgt)                Memory (enc_out)
+                      |                             |
+                      v                             |
+          +-------------------------+               |
+          |     AdaptiveNorm 1      |               |
+          +-------------------------+               |
+                      |                             |
+                      v                             |
+          +-------------------------+               |
+          |     Self-Attention      |  ← causal      |
+          +-------------------------+               |
+                      |                             |
+          +-------------------------+               |
+          |        Dropout          |               |
+          +-------------------------+               |
+                      |                             |
+              +-------+-------+                     |
+                      ↓                             |
+                Residual Add                        |
+                      ↓                             |
+          +-------------------------+               |
+          |     AdaptiveNorm 2      |               |
+          +-------------------------+               |
+                      |                             |
+                      v                             |
+          +-------------------------+               |
+          |     Cross-Attention     | <-------------+
+          +-------------------------+
+                      |
+          +-------------------------+
+          |        Dropout          |
+          +-------------------------+
+                      |
+              +-------+-------+
+                      ↓
+                Residual Add
+                      ↓
+          +-------------------------+
+          |     AdaptiveNorm 3      |
+          +-------------------------+
+                      |
+                      v
+          +-------------------------+
+          |  Feed-Forward Network   |  ← SwiGLU / MoE / MLP
+          +-------------------------+
+                      |
+          +-------------------------+
+          |        Dropout          |
+          +-------------------------+
+                      |
+              +-------+-------+
+                      ↓
+                Residual Add
+                      ↓
+                   Output
 ```
 
-## Complete Transformer Architecture
+---
+
+## Complete Transformer Workflow
+
 ```
-                              Input Sequence
-                                    |
-                                    v
-                        +----------------------+
-                        |   Input Projection   |
-                        +----------------------+
-                                    |
-                                    v
-                        +----------------------+
-                        | Positional Encoding  |
-                        +----------------------+
-                                    |
-                                    v
-                        +----------------------+
-                        |       Dropout        |
-                        +----------------------+
-                                    |
-                                    v
-                     +-----------------------------+
-                     |                             |
-                     |    Transformer Encoder      |
-                     |    (Multiple Layers)        |
-                     |                             |
-                     +-----------------------------+
-                                    |
-                                    |          Target Sequence
-                                    |                |
-                                    |                v
-                                    |     +----------------------+
-                                    |     |   Input Projection   |
-                                    |     +----------------------+
-                                    |                |
-                                    |                v
-                                    |     +----------------------+
-                                    |     | Positional Encoding  |
-                                    |     +----------------------+
-                                    |                |
-                                    |                v
-                                    |     +----------------------+
-                                    |     |       Dropout        |
-                                    |     +----------------------+
-                                    |                |
-                                    v                v
-                     +-----------------------------+
-                     |                             |
-                     |    Transformer Decoder      |
-                     |    (Multiple Layers)        |
-                     |                             |
-                     +-----------------------------+
-                                    |
-                                    v
-                        +----------------------+
-                        |   Output Projection  |
-                        +----------------------+
-                                    |
-                                    v
-                             Output Sequence
+                    Input Sequence [B, T_enc, input_size]
+                                |
+                                v
+                  +-------------------------------+
+                  |     Input Projection (Enc)     |
+                  +-------------------------------+
+                                |
+                                v
+                  +-------------------------------+
+                  |     Positional Encoding (Enc)  |
+                  +-------------------------------+
+                                |
+                                v
+                  +-------------------------------+
+                  |            Dropout             |
+                  +-------------------------------+
+                                |
+                                v
+                  +-------------------------------+
+                  |     Transformer Encoder        |
+                  |      (Stacked Layers)          |
+                  +-------------------------------+
+                                |
+                                v
+                    Encoded Memory [B, T_enc, D]
+                                |
+        ┌────────────────────────────────────────────────────────┐
+        │                                                        │
+        ▼                                                        ▼
+  Last Encoder Input (Start Token)                     Target Length: pred_len
+        │                                                        │
+        ▼                                                        ▼
+  +------------------+                                   +------------------+
+  | Replicate Start  |         → dec_input: [B, T_pred, input_size]        |
+  +------------------+                                   +------------------+
+                                |
+                                v
+                  +-------------------------------+
+                  |     Input Projection (Dec)     |
+                  +-------------------------------+
+                                |
+                                v
+                  +-------------------------------+
+                  |     Positional Encoding (Dec)  |
+                  +-------------------------------+
+                                |
+                                v
+                  +-------------------------------+
+                  |            Dropout             |
+                  +-------------------------------+
+                                |
+                                v
+                  +-------------------------------+
+                  |     Transformer Decoder        |
+                  |      (Stacked Layers)          |
+                  +-------------------------------+
+                                |
+                                v
+                  +-------------------------------+
+                  |       Output Projection        |
+                  +-------------------------------+
+                                |
+                                v
+                     Output Sequence [B, T_pred, output_size]
 ```
+
+---
 
 ## Modern Features in Implementation
 
 ```
 ╔══════════════════════════════════════════════╗
-║   Modern Transformer Architecture Features   ║
+║        Modern Transformer Architecture       ║
 ╚══════════════════════════════════════════════╝
 
-┌────────────────────────────────────────────┐
-│ ◆ Normalization Strategy                   │
-│   ├── Pre-Norm (better training stability) │
-│   └── Post-Norm (original transformer)     │
-└────────────────────────────────────────────┘
+Normalization Strategies:
+  • Pre-Norm (default) for stability
+  • Adaptive LayerNorm or Adaptive RMSNorm
 
-┌────────────────────────────────────────────┐
-│ ◆ Feed-Forward Network Options             │
-│   ├── SwiGLU (improved performance)        │
-│   └── Standard MLP with GELU/ReLU          │
-└────────────────────────────────────────────┘
+Feed-Forward Options:
+  • SwiGLU for gated nonlinearity
+  • MoE support with top-k experts and aux loss
+  • Traditional GELU/ReLU MLPs
 
-┌────────────────────────────────────────────┐
-│ ◆ Attention Mechanisms                     │
-│   ├── XFormerAttention (efficient impl)    │
-│   ├── FlashAttention support               │
-│   └── FrequencyAttention (FEDFormer style) │
-└────────────────────────────────────────────┘
+Attention Mechanisms:
+  • Memory-efficient XFormerAttention
+  • FlashAttention for speedup
+  • Frequency Attention (FEDformer-style)
 
-┌────────────────────────────────────────────┐
-│ ◆ Training Optimizations                   │
-│   ├── Gradient checkpointing               │
-│   └── Configurable layer norm epsilon      │
-└────────────────────────────────────────────┘
+Decoder Modes:
+  • Full autoregressive decoding
+  • Informer-style decoding using repeated start token
 
-┌────────────────────────────────────────────┐
-│ ◆ Decoder Features                         │
-│   ├── Incremental/autoregressive decoding  │
-│   └── Informer-style non-autoregressive    │
-└────────────────────────────────────────────┘
+Training Features:
+  • Custom weight init per module
+  • Gradient checkpointing support
+  • LayerNorm epsilon configuration
 ```
+
+---
+
+Let me know if you want this exported to LaTeX diagrams, Mermaid.js, or Plotly/SVG for slide decks or documentation.
+
