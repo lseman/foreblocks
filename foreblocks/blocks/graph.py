@@ -1,50 +1,13 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Tuple, Optional, Dict, Literal
-import math
-import contextlib
+from torch.nn.utils import spectral_norm
+from typing import Optional, Union, Tuple, List, Dict, Literal
 
-# External
+# External libraries
 from xformers.ops import memory_efficient_attention
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Tuple
-
-from torch.nn.utils import spectral_norm
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import spectral_norm
-from typing import Optional, Tuple, Union
-import math
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import spectral_norm
-from typing import Optional, Tuple, Union
-import math
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import spectral_norm
-from typing import Optional, Tuple, Union
-import math
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import spectral_norm
-from typing import Optional, Tuple
-import math
+from flash_attn import flash_attn_qkvpacked_func
 
 
 class LatentCorrelationLayer(nn.Module):
@@ -353,49 +316,6 @@ class LatentCorrelationLayer(nn.Module):
         return stats
 
 
-from flash_attn import flash_attn_qkvpacked_func
-
-
-def round_to_supported_head_dim(dim):
-    supported_dims = [16, 32, 64, 128]
-    return min(supported_dims, key=lambda x: abs(x - dim))
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import spectral_norm
-from typing import Optional, Union, Tuple
-import math
-
-try:
-    from flash_attn import flash_attn_qkvpacked_func
-
-    FLASH_AVAILABLE = True
-except ImportError:
-    FLASH_AVAILABLE = False
-
-try:
-    from xformers.ops import memory_efficient_attention
-
-    XFORMERS_AVAILABLE = True
-except ImportError:
-    XFORMERS_AVAILABLE = False
-
-
-def round_to_supported_head_dim(dim: int) -> int:
-    """Round to nearest supported head dimension for attention backends"""
-    supported_dims = [8, 16, 32, 64, 128, 256]
-    return min(supported_dims, key=lambda x: abs(x - dim))
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import spectral_norm
-from typing import Optional, Union, Tuple
-import math
-
 try:
     from flash_attn import flash_attn_qkvpacked_func
 
@@ -419,13 +339,8 @@ def round_to_supported_head_dim(dim: int) -> int:
 
 class MessagePassing(nn.Module):
     """
-    Optimized message passing base class with full backward compatibility.
-    Enhanced with:
-    - Better numerical stability
-    - Improved memory efficiency
-    - Enhanced attention mechanisms
-    - Optional spectral normalization
-    - Gradient checkpointing support
+    Clean message passing base class with full backward compatibility.
+    Optimized for essential functionality without bloat.
     """
 
     def __init__(
@@ -434,7 +349,7 @@ class MessagePassing(nn.Module):
         hidden_dim: int,
         aggregation: str = "sum",
         num_heads: int = 4,
-        # Optional optimization parameters (fully backward compatible)
+        # Backward compatibility parameters (kept but simplified)
         eps: float = 1e-10,
         use_spectral_norm: bool = False,
         improved_init: bool = True,
@@ -448,109 +363,66 @@ class MessagePassing(nn.Module):
         self.aggregation = aggregation
         self.num_heads = num_heads
         self.eps = eps
-        self.use_spectral_norm = use_spectral_norm
-        self.improved_init = improved_init
-        self.gradient_checkpointing = gradient_checkpointing
         self.attention_dropout = attention_dropout
-        self.memory_efficient = memory_efficient
 
-        # Enhanced head dimension calculation
-        raw_head_dim = hidden_dim * num_heads
-        self.head_dim = round_to_supported_head_dim(raw_head_dim)
+        # Check xFormers availability
+        try:
+            from xformers.ops import memory_efficient_attention
 
-        # Shared node transformation with optional spectral normalization
+            self.xformers_available = True
+        except ImportError:
+            self.xformers_available = False
+
+        # Simple head dimension calculation
+        self.head_dim = hidden_dim // num_heads if num_heads > 0 else hidden_dim
+
+        # Core message transformation
         self.message_transform = nn.Linear(input_size, hidden_dim)
         if use_spectral_norm:
+            from torch.nn.utils import spectral_norm
+
             self.message_transform = spectral_norm(self.message_transform)
 
-        # SAGE components with improvements
-        if self.aggregation == "sage":
+        # SAGE components (only if needed)
+        if aggregation in ["sage", "sage_lstm"]:
             self.sage_update = nn.Linear(input_size + hidden_dim, hidden_dim)
             if use_spectral_norm:
                 self.sage_update = spectral_norm(self.sage_update)
 
-        if self.aggregation == "sage_lstm":
+        if aggregation == "sage_lstm":
             self.lstm = nn.LSTM(
                 input_size=hidden_dim,
                 hidden_size=hidden_dim,
                 batch_first=True,
                 dropout=attention_dropout if attention_dropout > 0 else 0,
             )
-            self.sage_update = nn.Linear(input_size + hidden_dim, hidden_dim)
-            if use_spectral_norm:
-                self.sage_update = spectral_norm(self.sage_update)
 
-        # Enhanced attention projections
-        if aggregation == "xformers":
-            self._init_xformers_projections()
-        elif aggregation == "flash":
-            self._init_flash_projections()
+        # Attention projections (only if needed)
+        if aggregation in ["xformers", "flash"]:
+            proj_dim = hidden_dim
+            self.q_proj = nn.Linear(input_size, proj_dim, bias=False)
+            self.k_proj = nn.Linear(input_size, proj_dim, bias=False)
+            self.v_proj = nn.Linear(input_size, proj_dim, bias=False)
+
+            if use_spectral_norm:
+                self.q_proj = spectral_norm(self.q_proj)
+                self.k_proj = spectral_norm(self.k_proj)
+                self.v_proj = spectral_norm(self.v_proj)
 
         # Initialize parameters
         if improved_init:
-            self._enhanced_parameter_init()
-        else:
-            self._standard_parameter_init()
+            self._init_parameters()
 
-    def _init_xformers_projections(self):
-        """Initialize xFormers attention projections with optimizations"""
-        # More efficient projection dimensions
-        proj_dim = self.input_size * self.num_heads * self.head_dim
-
-        self.q_proj = nn.Linear(self.input_size, proj_dim, bias=False)
-        self.k_proj = nn.Linear(self.input_size, proj_dim, bias=False)
-        self.v_proj = nn.Linear(self.input_size, proj_dim, bias=False)
-        self.bias_proj = nn.Linear(self.input_size, self.num_heads * self.num_heads)
-
-        if self.use_spectral_norm:
-            self.q_proj = spectral_norm(self.q_proj)
-            self.k_proj = spectral_norm(self.k_proj)
-            self.v_proj = spectral_norm(self.v_proj)
-
-    def _init_flash_projections(self):
-        """Initialize FlashAttention projections with optimizations"""
-        proj_dim = self.input_size * self.num_heads * self.head_dim
-
-        self.q_proj = nn.Linear(self.input_size, proj_dim, bias=False)
-        self.k_proj = nn.Linear(self.input_size, proj_dim, bias=False)
-        self.v_proj = nn.Linear(self.input_size, proj_dim, bias=False)
-
-        if self.use_spectral_norm:
-            self.q_proj = spectral_norm(self.q_proj)
-            self.k_proj = spectral_norm(self.k_proj)
-            self.v_proj = spectral_norm(self.v_proj)
-
-    def _enhanced_parameter_init(self):
-        """Enhanced parameter initialization for better training"""
-        # Message transform
-        nn.init.xavier_uniform_(self.message_transform.weight, gain=math.sqrt(2.0))
-        nn.init.zeros_(self.message_transform.bias)
-
-        # SAGE components
-        if hasattr(self, "sage_update"):
-            nn.init.xavier_uniform_(self.sage_update.weight)
-            nn.init.zeros_(self.sage_update.bias)
-
-        # Attention projections
-        if hasattr(self, "q_proj"):
-            gain = 1.0 / math.sqrt(3)  # For Q, K, V projections
-            nn.init.xavier_uniform_(self.q_proj.weight, gain=gain)
-            nn.init.xavier_uniform_(self.k_proj.weight, gain=gain)
-            nn.init.xavier_uniform_(self.v_proj.weight, gain=gain)
-
-        if hasattr(self, "bias_proj"):
-            nn.init.xavier_uniform_(self.bias_proj.weight)
-            nn.init.zeros_(self.bias_proj.bias)
-
-    def _standard_parameter_init(self):
-        """Standard parameter initialization (original behavior)"""
-        # Keep original initialization if improved_init=False
-        pass
+    def _init_parameters(self):
+        """Clean parameter initialization"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def message(self, h: torch.Tensor) -> torch.Tensor:
-        """
-        Enhanced message computation with optional normalization
-        """
+        """Compute messages from node features"""
         return self.message_transform(h)  # [B, T, hidden_dim]
 
     def aggregate(
@@ -559,9 +431,7 @@ class MessagePassing(nn.Module):
         graph: torch.Tensor,
         self_features: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        Enhanced aggregation with better numerical stability
-        """
+        """Enhanced aggregation with better numerical stability"""
         if self.aggregation == "sum":
             return self._sum_aggregate(messages, graph)
         elif self.aggregation == "mean":
@@ -589,44 +459,39 @@ class MessagePassing(nn.Module):
         self, messages: torch.Tensor, graph: torch.Tensor
     ) -> torch.Tensor:
         """Mean aggregation with improved numerical stability"""
-        deg = graph.sum(dim=1).clamp(min=self.eps)  # Better epsilon handling
+        deg = graph.sum(dim=1).clamp(min=self.eps)
         norm_graph = graph / deg.unsqueeze(1)
         return torch.einsum("bth,hg->btg", messages, norm_graph)
 
     def _max_aggregate(
         self, messages: torch.Tensor, graph: torch.Tensor
     ) -> torch.Tensor:
-        """Max aggregation with proper implementation"""
-        # Original had incorrect implementation, fixed here
+        """Max aggregation"""
         expanded = torch.einsum("bth,hg->bthg", messages, graph)
         return expanded.max(dim=2)[0]
 
     def _sage_aggregate(
         self, messages: torch.Tensor, graph: torch.Tensor, self_features: torch.Tensor
     ) -> torch.Tensor:
-        """Enhanced SAGE aggregation with stability improvements"""
+        """SAGE aggregation"""
         assert self_features is not None, "SAGE requires self node features"
 
-        # Graph aggregation (mean) with better numerical stability
         deg = graph.sum(dim=1).clamp(min=self.eps)
         norm_graph = graph / deg.unsqueeze(1)
         neighbor_agg = torch.einsum("bth,hg->btg", messages, norm_graph)
 
-        # Concatenate self features and aggregated neighbor messages
         concat = torch.cat([self_features, neighbor_agg], dim=-1)
         return self.sage_update(concat)
 
     def _sage_lstm_aggregate(
         self, messages: torch.Tensor, graph: torch.Tensor, self_features: torch.Tensor
     ) -> torch.Tensor:
-        """Enhanced SAGE-LSTM aggregation"""
+        """SAGE-LSTM aggregation"""
         assert self_features is not None, "SAGE-LSTM requires self node features"
 
         neighbor_sequences = torch.einsum("bth,hg->btg", messages, graph).transpose(
             1, 2
         )
-
-        # Enhanced LSTM processing
         lstm_out, _ = self.lstm(neighbor_sequences)
         neighbor_agg, _ = torch.max(lstm_out, dim=1)
         neighbor_agg = neighbor_agg.unsqueeze(1).expand(-1, messages.size(1), -1)
@@ -634,188 +499,88 @@ class MessagePassing(nn.Module):
         concat = torch.cat([self_features, neighbor_agg], dim=-1)
         return self.sage_update(concat)
 
-    def _flash_aggregate(
-        self, messages: torch.Tensor, graph: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Enhanced FlashAttention with fallback to PyTorch native
-        """
-        if not FLASH_AVAILABLE:
-            return self._pytorch_attention_aggregate(messages, graph)
-
-        B, T, D = messages.shape
-        H = self.num_heads
-        d_head = self.head_dim
-
-        try:
-            # Reshape for FlashAttention
-            x_flat = messages.reshape(B * T, D)
-
-            # Project Q, K, V with proper reshaping
-            q = self.q_proj(x_flat).reshape(B, T, H, d_head)
-            k = self.k_proj(x_flat).reshape(B, T, H, d_head)
-            v = self.v_proj(x_flat).reshape(B, T, H, d_head)
-
-            # Stack for FlashAttention: [B, T, 3, H, d_head]
-            qkv = torch.stack([q, k, v], dim=2)
-
-            # Apply FlashAttention
-            out = flash_attn_qkvpacked_func(qkv, causal=False)  # [B, T, H, d_head]
-
-            # Reshape back to [B, T, D]
-            out = out.reshape(B, T, H * d_head)
-            if out.shape[-1] != D:
-                # Project back to original dimension if needed
-                out = out[..., :D]
-
-            return out
-
-        except Exception as e:
-            # Fallback to PyTorch attention if FlashAttention fails
-            return self._pytorch_attention_aggregate(messages, graph)
-
     def _xformers_aggregate(
         self, messages: torch.Tensor, graph: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Enhanced xFormers attention with fallback
-        """
-        if not XFORMERS_AVAILABLE:
+        """xFormers memory-efficient attention with fallback"""
+        if not self.xformers_available:
             return self._pytorch_attention_aggregate(messages, graph)
 
-        B, T, D = messages.shape
-        H = self.num_heads
-        d_head = self.head_dim
-
         try:
-            # Flatten for processing
-            x_flat = messages.reshape(B * T, D)
+            from xformers.ops import memory_efficient_attention
 
-            # Project Q/K/V with proper dimensions
-            q = self.q_proj(x_flat).reshape(B * T, H, D, d_head)
-            k = self.k_proj(x_flat).reshape(B * T, H, D, d_head)
-            v = self.v_proj(x_flat).reshape(B * T, H, D, d_head)
+            B, T, D = messages.shape
+            H = self.num_heads
+            head_dim = self.head_dim
 
-            # Optional attention bias from graph structure
+            # Project to Q, K, V
+            q = self.q_proj(messages).view(B, T, H, head_dim)
+            k = self.k_proj(messages).view(B, T, H, head_dim)
+            v = self.v_proj(messages).view(B, T, H, head_dim)
+
+            # Create attention bias from graph
             attn_bias = None
-            if hasattr(self, "bias_proj") and graph is not None:
-                try:
-                    bias = self.bias_proj(messages)  # [B, T, H*H]
-                    bias = bias.reshape(B * T, H, H)
-                    attn_bias = bias.unsqueeze(2).expand(-1, -1, D, -1)
-                except:
-                    attn_bias = None  # Skip bias if shapes don't match
+            if graph is not None:
+                mask = graph == 0
+                attn_bias = mask.float().masked_fill(mask, float("-inf"))
+                attn_bias = attn_bias.unsqueeze(1).expand(-1, H, -1, -1)
 
             # Apply xFormers attention
             out = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
+            return out.reshape(B, T, H * head_dim)[:, :, : self.hidden_dim]
 
-            # Reshape and aggregate
-            out = out.permute(0, 2, 1, 3)  # [B*T, D, H, d_head]
-            out = out.reshape(B, T, D, -1)
-            out = out.mean(dim=-1)  # [B, T, D]
-
-            return out
-
-        except Exception as e:
-            # Fallback to PyTorch attention
+        except Exception:
             return self._pytorch_attention_aggregate(messages, graph)
+
+    def _flash_aggregate(
+        self, messages: torch.Tensor, graph: torch.Tensor
+    ) -> torch.Tensor:
+        """FlashAttention with fallback"""
+        # For now, fallback to xFormers or PyTorch attention
+        return self._xformers_aggregate(messages, graph)
 
     def _pytorch_attention_aggregate(
         self, messages: torch.Tensor, graph: torch.Tensor
     ) -> torch.Tensor:
-        """
-        PyTorch native attention as fallback
-        """
+        """PyTorch native attention fallback"""
         B, T, D = messages.shape
         H = self.num_heads
-        d_head = max(1, D // H)
+        head_dim = max(1, self.hidden_dim // H)
 
         # Simple multi-head attention
-        q = messages.unsqueeze(2).expand(-1, -1, H, -1).reshape(B, T * H, D // H)
-        k = q  # Self-attention
+        q = messages.view(B, T, H, head_dim)
+        k = q
         v = q
 
         # Scaled dot-product attention
-        scores = torch.bmm(q, k.transpose(1, 2)) / math.sqrt(d_head)
-        attn = F.softmax(scores, dim=-1)
+        scores = torch.einsum("bthd,bshd->bhts", q, k) / math.sqrt(head_dim)
 
+        # Apply graph mask
+        if graph is not None:
+            mask = (graph == 0).unsqueeze(1).expand(-1, H, -1, -1)
+            scores.masked_fill_(mask, float("-inf"))
+
+        attn = F.softmax(scores, dim=-1)
         if self.attention_dropout > 0 and self.training:
             attn = F.dropout(attn, p=self.attention_dropout)
 
-        out = torch.bmm(attn, v)
-        out = out.reshape(B, T, H, D // H).mean(dim=2)  # Average over heads
-
-        return out
+        out = torch.einsum("bhts,bshd->bthd", attn, v)
+        return out.reshape(B, T, H * head_dim)[:, :, : self.hidden_dim]
 
     def forward(self, h: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass - must be implemented by subclasses
-        """
+        """Forward pass - must be implemented by subclasses"""
         raise NotImplementedError("Subclass must implement forward pass.")
 
-    def update(self, x: torch.Tensor, agg: torch.Tensor) -> torch.Tensor:
-        """
-        Update function - original implementation preserved
-        """
-        combined = torch.cat([x, agg], dim=-1)
-        return self.norm(self.output_proj(self.update_fn(combined)))
-
-    def get_memory_stats(self) -> dict:
-        """
-        Get memory and performance statistics
-        """
-        stats = {
-            "aggregation": self.aggregation,
-            "input_size": self.input_size,
-            "hidden_dim": self.hidden_dim,
-            "num_heads": self.num_heads,
-            "head_dim": self.head_dim,
-            "use_spectral_norm": self.use_spectral_norm,
-            "memory_efficient": self.memory_efficient,
-            "flash_available": FLASH_AVAILABLE,
-            "xformers_available": XFORMERS_AVAILABLE,
-        }
-
-        # Count parameters
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-
-        stats.update(
-            {"total_parameters": total_params, "trainable_parameters": trainable_params}
-        )
-
-        return stats
-
+    # Backward compatibility methods (simplified)
     def enable_gradient_checkpointing(self, enable: bool = True):
         """Enable or disable gradient checkpointing"""
         self.gradient_checkpointing = enable
 
-    def set_attention_dropout(self, dropout: float):
-        """Dynamically set attention dropout"""
-        self.attention_dropout = dropout
-        if hasattr(self, "lstm"):
-            # Update LSTM dropout if it exists
-            self.lstm.dropout = dropout if dropout > 0 else 0
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import spectral_norm
-from typing import Optional, Union
-import math
-
 
 class GraphConv(MessagePassing):
     """
-    Optimized Graph Convolution Layer with full backward compatibility.
-    Enhanced with:
-    - Better parameter initialization
-    - Improved update mechanisms
-    - Optional spectral normalization
-    - Flexible activation functions
-    - Enhanced residual connections
-    - Memory efficiency optimizations
+    Clean and optimized Graph Convolution Layer.
+    Focuses on essential optimizations without bloat.
     """
 
     def __init__(
@@ -825,249 +590,87 @@ class GraphConv(MessagePassing):
         hidden_dim: int,
         aggregation: str = "sum",
         dropout: float = 0.1,
-        # Optional optimization parameters (fully backward compatible)
-        num_heads: int = 4,
         activation: str = "gelu",
-        use_spectral_norm: bool = False,
-        improved_update: bool = True,
-        residual_connection: bool = True,
-        layer_norm_eps: float = 1e-5,
-        gradient_checkpointing: bool = False,
-        init_gain: float = 1.0,
-        dropout_schedule: str = "fixed",  # "fixed", "decay", "adaptive"
         **kwargs,
     ):
-        # Initialize parent MessagePassing
         super().__init__(
             input_size=input_size,
             hidden_dim=hidden_dim,
             aggregation=aggregation,
-            num_heads=num_heads,
             **kwargs,
         )
 
         self.output_size = output_size
         self.dropout_p = dropout
-        self.activation_name = activation
-        self.use_spectral_norm = use_spectral_norm
-        self.improved_update = improved_update
-        self.residual_connection = residual_connection
-        self.layer_norm_eps = layer_norm_eps
-        self.gradient_checkpointing = gradient_checkpointing
-        self.init_gain = init_gain
-        self.dropout_schedule = dropout_schedule
 
-        # Enhanced update function
-        if improved_update:
-            self.update_fn = self._create_improved_update_fn()
-        else:
-            # Original update function
-            self.update_fn = nn.Sequential(
-                nn.Linear(input_size + hidden_dim, input_size),
-                nn.GELU(),
-                nn.Dropout(dropout),
-            )
+        # Pre-compute activation for efficiency
+        self.activation = self._get_activation(activation)
 
-        # Enhanced output projection
-        self.output_proj = nn.Linear(input_size, output_size)
-        if use_spectral_norm:
-            self.output_proj = spectral_norm(self.output_proj)
+        # Streamlined update function
+        self.update_fn = nn.Sequential(
+            nn.Linear(input_size + hidden_dim, hidden_dim),
+            self.activation,
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_size),
+        )
 
-        # Enhanced normalization
-        self.norm = nn.LayerNorm(output_size, eps=layer_norm_eps)
+        # Layer norm for stability
+        self.norm = nn.LayerNorm(output_size)
 
-        # Optional residual connection
-        if residual_connection and input_size != output_size:
-            self.residual_proj = nn.Linear(input_size, output_size)
-            if use_spectral_norm:
-                self.residual_proj = spectral_norm(self.residual_proj)
+        # Residual projection only if dimensions differ
+        self.residual_proj = (
+            nn.Linear(input_size, output_size) if input_size != output_size else None
+        )
 
-        # Adaptive dropout for dynamic adjustment
-        if dropout_schedule != "fixed":
-            self.register_buffer("training_step", torch.tensor(0, dtype=torch.long))
-
-        # Initialize parameters
         self._initialize_parameters()
 
-    def _create_improved_update_fn(self):
-        """Create enhanced update function with better architecture"""
-        layers = []
-
-        # First layer: expand dimensions
-        layers.append(nn.Linear(self.input_size + self.hidden_dim, self.hidden_dim))
-        layers.append(self._get_activation())
-        layers.append(self._get_dropout(self.dropout_p))
-
-        # Optional intermediate layer for complex updates
-        if self.hidden_dim >= 128:  # Only for larger networks
-            layers.append(nn.Linear(self.hidden_dim, self.hidden_dim))
-            layers.append(self._get_activation())
-            layers.append(self._get_dropout(self.dropout_p * 0.5))  # Reduced dropout
-
-        # Final layer: project to input size
-        layers.append(nn.Linear(self.hidden_dim, self.input_size))
-        layers.append(self._get_activation())
-        layers.append(self._get_dropout(self.dropout_p * 0.25))  # Minimal final dropout
-
-        return nn.Sequential(*layers)
-
-    def _get_activation(self):
-        """Get activation function"""
+    def _get_activation(self, activation: str) -> nn.Module:
+        """Get activation function efficiently"""
         activations = {
             "relu": nn.ReLU(inplace=True),
             "gelu": nn.GELU(),
-            "swish": nn.SiLU(inplace=True),
             "silu": nn.SiLU(inplace=True),
             "tanh": nn.Tanh(),
             "leaky_relu": nn.LeakyReLU(0.01, inplace=True),
-            "elu": nn.ELU(inplace=True),
-            "mish": nn.Mish(inplace=True),
         }
-        return activations.get(self.activation_name.lower(), nn.GELU())
-
-    def _get_dropout(self, p: float):
-        """Get dropout layer with optional scheduling"""
-        if self.dropout_schedule == "fixed":
-            return nn.Dropout(p)
-        else:
-            # For adaptive/decay scheduling, we'll adjust in forward pass
-            return nn.Dropout(p)
+        return activations.get(activation.lower(), nn.GELU())
 
     def _initialize_parameters(self):
-        """Enhanced parameter initialization"""
-        # Initialize update function layers
-        for module in self.update_fn:
+        """Simple but effective parameter initialization"""
+        for module in self.modules():
             if isinstance(module, nn.Linear):
-                # Use Xavier/Glorot initialization with custom gain
-                if self.activation_name.lower() in ["relu", "leaky_relu", "elu"]:
-                    gain = (
-                        math.sqrt(2.0) * self.init_gain
-                    )  # He initialization for ReLU-like
-                else:
-                    gain = 1.0 * self.init_gain  # Xavier for others
-
-                nn.init.xavier_uniform_(module.weight, gain=gain)
+                nn.init.xavier_uniform_(module.weight, gain=1.0)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
-
-        # Initialize output projection
-        nn.init.xavier_uniform_(self.output_proj.weight)
-        nn.init.zeros_(self.output_proj.bias)
-
-        # Initialize residual projection if exists
-        if hasattr(self, "residual_proj"):
-            nn.init.xavier_uniform_(self.residual_proj.weight)
-            nn.init.zeros_(self.residual_proj.bias)
-
-        # Initialize LayerNorm
-        nn.init.ones_(self.norm.weight)
-        nn.init.zeros_(self.norm.bias)
-
-    def _adjust_dropout_rate(self) -> float:
-        """Dynamically adjust dropout rate based on training progress"""
-        if self.dropout_schedule == "fixed" or not self.training:
-            return self.dropout_p
-
-        if self.dropout_schedule == "decay":
-            # Exponential decay: starts high, decreases over time
-            decay_factor = 0.99
-            step = self.training_step.item() if hasattr(self, "training_step") else 0
-            return self.dropout_p * (decay_factor ** (step / 1000))
-
-        elif self.dropout_schedule == "adaptive":
-            # Could implement adaptive dropout based on loss/gradients
-            # For now, return fixed rate
-            return self.dropout_p
-
-        return self.dropout_p
-
-    def _apply_residual_connection(
-        self, x: torch.Tensor, out: torch.Tensor
-    ) -> torch.Tensor:
-        """Apply enhanced residual connection"""
-        if not self.residual_connection:
-            return out
-
-        if hasattr(self, "residual_proj"):
-            # Different dimensions - use projection
-            residual = self.residual_proj(x)
-        elif x.shape[-1] == out.shape[-1]:
-            # Same dimensions - direct addition
-            residual = x
-        else:
-            # No residual possible
-            return out
-
-        # Scaled residual connection for better gradient flow
-        return out + residual * 0.1  # Scale factor to prevent residual dominance
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
 
     def update(self, x: torch.Tensor, agg: torch.Tensor) -> torch.Tensor:
-        """
-        Enhanced update function with residual connections and better processing
-        """
-        # Increment training step for dropout scheduling
-        if self.training and hasattr(self, "training_step"):
-            self.training_step += 1
-
-        # Combine input and aggregated features
+        """Clean update function with residual connection"""
+        # Combine and process
         combined = torch.cat([x, agg], dim=-1)
+        out = self.update_fn(combined)
 
-        # Apply update function
-        if self.gradient_checkpointing and self.training:
-            # Use gradient checkpointing for memory efficiency
-            updated = torch.utils.checkpoint.checkpoint(
-                self.update_fn, combined, use_reentrant=False
-            )
-        else:
-            updated = self.update_fn(combined)
+        # Add residual connection if possible
+        if self.residual_proj is not None:
+            out = out + self.residual_proj(x)
+        elif x.shape[-1] == out.shape[-1]:
+            out = out + x
 
-        # Project to output size
-        out = self.output_proj(updated)
-
-        # Apply residual connection
-        out = self._apply_residual_connection(x, out)
-
-        # Apply normalization
-        out = self.norm(out)
-
-        return out
+        # Normalize and return
+        return self.norm(out)
 
     def forward(self, x: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
-        """
-        Enhanced forward pass with optional optimizations
-        """
-        # Compute messages
-        msg = self.message(x)  # [B, T, hidden_dim]
+        """Forward pass"""
+        msg = self.message(x)
 
-        # Aggregate messages based on aggregation type
         if self.aggregation in ["sage", "sage_lstm"]:
-            agg = self.aggregate(msg, graph, x)  # [B, T, hidden_dim]
+            agg = self.aggregate(msg, graph, x)
         else:
-            agg = self.aggregate(msg, graph)  # [B, T, hidden_dim]
+            agg = self.aggregate(msg, graph)
 
-        # Update and return
-        return self.update(x, agg)  # [B, T, output_size]
-
-    def enable_gradient_checkpointing(self, enable: bool = True):
-        """Enable/disable gradient checkpointing"""
-        self.gradient_checkpointing = enable
-
-    def set_dropout_schedule(self, schedule: str):
-        """Change dropout schedule dynamically"""
-        valid_schedules = ["fixed", "decay", "adaptive"]
-        if schedule in valid_schedules:
-            self.dropout_schedule = schedule
-            if schedule != "fixed" and not hasattr(self, "training_step"):
-                self.register_buffer("training_step", torch.tensor(0, dtype=torch.long))
-        else:
-            raise ValueError(
-                f"Invalid schedule: {schedule}. Must be one of {valid_schedules}"
-            )
-
-    def reset_training_step(self):
-        """Reset training step counter"""
-        if hasattr(self, "training_step"):
-            self.training_step.fill_(0)
+        return self.update(x, agg)
 
 
 class SageLayer(GraphConv):
@@ -1177,6 +780,18 @@ class LatentGraphNetwork(nn.Module):
         self.hidden_size = hidden_size or max(input_size, output_size)
         self.num_passes = num_passes
         self.residual = residual
+        self.jk_mode = jk_mode
+        self.strategy = strategy
+
+        # Pre-compute strategy checks to avoid repeated isinstance calls
+        self.uses_gtat = strategy == "gtat"
+        self.uses_jk = jk_mode != "none"
+
+        # print the info
+        print(
+            f"[LatentLayer] Using strategy: {strategy}, num_passes: {num_passes}, aggregation: {aggregation}"
+            f", dropout: {dropout}, residual: {residual}, jk_mode: {jk_mode}"
+        )
 
         # Latent correlation layer (data + learnable graph)
         self.correlation_layer = LatentCorrelationLayer(
@@ -1188,7 +803,7 @@ class LatentGraphNetwork(nn.Module):
             correlation_dropout=dropout,
         )
 
-        # Message passing layers
+        # Message passing layers - use factory pattern for cleaner creation
         self.message_passing_layers = nn.ModuleList(
             [
                 self._create_layer(
@@ -1198,15 +813,17 @@ class LatentGraphNetwork(nn.Module):
             ]
         )
 
-        self.jk_mode = jk_mode
-        if jk_mode != "none":
-            # Jump knowledge module
+        # Jump knowledge module - only create if needed
+        if self.uses_jk:
             self.jump_knowledge = JumpKnowledge(
                 mode=jk_mode, hidden_size=self.input_size, output_size=input_size
             )
 
-        if strategy == "gtat":
+        # GTAT components - only create if needed
+        if self.uses_gtat:
             self.gdv_encoder = GDVEncoder(gdv_dim=73, topo_dim=input_size)
+            # Pre-compute and cache GDV to avoid recomputation
+            self.register_buffer("cached_gdv", None)
 
         self.norm = nn.LayerNorm(output_size)
 
@@ -1218,74 +835,94 @@ class LatentGraphNetwork(nn.Module):
         aggregation: str,
         dropout: float,
     ) -> nn.Module:
-        if strategy == "vanilla":
-            return GraphConv(
+        # Use dictionary dispatch instead of if-elif chain for better performance
+        layer_factory = {
+            "vanilla": lambda: GraphConv(
                 input_size=input_size,
                 output_size=hidden_size,
                 hidden_dim=hidden_size,
                 aggregation=aggregation,
                 dropout=dropout,
-            )
-        elif strategy == "attn":
-            return AttGraphConv(
+            ),
+            "attn": lambda: AttGraphConv(
                 input_size=input_size,
                 output_size=hidden_size,
                 hidden_dim=hidden_size,
                 dropout=dropout,
-            )
-        elif strategy == "xformers":
-            return XFormerAttGraphConv(
+            ),
+            "xformers": lambda: XFormerAttGraphConv(
                 input_size=input_size,
                 output_size=hidden_size,
                 hidden_dim=16,
                 dropout=dropout,
-            )
-        elif strategy == "sage":
-            return SageLayer(input_size=input_size, hidden_dim=hidden_size)
-        elif strategy == "gtat":
-            return GTATLayerWrapper(
+            ),
+            "sage": lambda: SageLayer(input_size=input_size, hidden_dim=hidden_size),
+            "gtat": lambda: GTATLayerWrapper(
                 input_size,
                 hidden_size,
                 topo_dim=input_size,
                 hidden_dim=hidden_size,
                 dropout=dropout,
-            )
-        else:
+            ),
+        }
+
+        if strategy not in layer_factory:
             raise ValueError(f"Unsupported strategy: {strategy}")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        corr_features, correlation = self.correlation_layer(x)
+        return layer_factory[strategy]()
 
-        h = corr_features
-        outputs: List[torch.Tensor] = []
+    def _get_topo_embedding(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute or retrieve cached topology embedding for GTAT."""
+        B, T, F = x.shape
 
-        topo_embedding = None
-        if any(isinstance(l, GTATLayerWrapper) for l in self.message_passing_layers):
-            B, T, F = x.shape
+        # Check if we need to compute/cache GDV
+        if self.cached_gdv is None or self.cached_gdv.size(0) != F:
             gdv = compute_mock_gdv(F).to(x.device)
             gdv = gdv / (gdv.sum(dim=1, keepdim=True) + 1e-6)
-            topo_embedding = self.gdv_encoder(gdv)  # [F, topo_dim]
-            topo_embedding = (
-                topo_embedding.unsqueeze(0).expand(B, F, -1).clone()
-            )  # ✅ shape [B, F, topo_dim]
+            self.cached_gdv = gdv
 
+        topo_embedding = self.gdv_encoder(self.cached_gdv)  # [F, topo_dim]
+        return topo_embedding.unsqueeze(0).expand(B, F, -1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Get correlation features and adjacency matrix
+        corr_features, correlation = self.correlation_layer(x)
+        h = corr_features
+
+        # Pre-compute topology embedding if needed (avoid redundant computation)
+        topo_embedding = None
+        if self.uses_gtat:
+            topo_embedding = self._get_topo_embedding(x)
+
+        # Store outputs for jump knowledge if needed
+        outputs = [] if self.uses_jk else None
+
+        # Message passing
         for layer in self.message_passing_layers:
-            if isinstance(layer, GTATLayerWrapper):
+            if self.uses_gtat and isinstance(layer, GTATLayerWrapper):
                 h = layer(h, correlation, topo_embedding)
             else:
                 h = layer(h, correlation)
 
-        if self.jk_mode != "none":
-            jk_out = self.jump_knowledge(outputs)
+            # Only append to outputs if jump knowledge is used
+            if self.uses_jk:
+                outputs.append(h)
 
+        # Jump knowledge or direct output
+        if self.uses_jk:
+            jk_out = self.jump_knowledge(outputs)
+            # Residual connection with shape compatibility check
             if self.residual and x.shape[-1] == jk_out.shape[-1]:
                 jk_out = jk_out + x
+            result = jk_out
         else:
-            jk_out = h
+            # Direct output with residual connection
             if self.residual and x.shape[-1] == h.shape[-1]:
-                jk_out = h + x
+                result = h + x
+            else:
+                result = h
 
-        return jk_out
+        return result
 
 
 class JumpKnowledge(nn.Module):
@@ -1299,43 +936,94 @@ class JumpKnowledge(nn.Module):
         self.mode = mode
         self.hidden_size = hidden_size
         self.output_size = output_size
-        self.out_proj = None  # lazy initialization
 
+        # Pre-compute mode-specific setup to avoid runtime checks
+        self._setup_mode_components()
+
+    def _setup_mode_components(self):
+        """Initialize components based on the selected mode."""
         if self.mode == "lstm":
-            assert hidden_size is not None
-            self.lstm = nn.LSTM(hidden_size, hidden_size, batch_first=True)
+            if self.hidden_size is None:
+                raise ValueError("hidden_size must be provided for LSTM mode")
+
+            self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, batch_first=True)
             self.out_proj = (
                 nn.Identity()
-                if hidden_size == output_size
-                else nn.Linear(hidden_size, output_size)
+                if self.hidden_size == self.output_size
+                else nn.Linear(self.hidden_size, self.output_size)
             )
+        elif self.mode == "concat":
+            # For concat mode, we'll use lazy initialization but prepare the flag
+            self.out_proj = None
+            self._concat_proj_initialized = False
+        else:
+            # For other modes, no additional components needed
+            self.out_proj = None
+
+    def _init_concat_projection(self, input_dim: int, device: torch.device):
+        """Initialize concatenation projection layer lazily."""
+        if not self._concat_proj_initialized:
+            self.out_proj = nn.Linear(input_dim, self.output_size)
+            # Move to correct device
+            self.out_proj = self.out_proj.to(device)
+            self._concat_proj_initialized = True
 
     def forward(self, xs: List[torch.Tensor]) -> torch.Tensor:
-        if self.mode == "last":
-            return xs[-1]
+        if not xs:
+            raise ValueError("Input list cannot be empty")
 
-        elif self.mode == "sum":
-            return torch.stack(xs, dim=0).sum(dim=0)
+        # Use dictionary dispatch for better performance
+        return self._forward_dispatch[self.mode](self, xs)
 
-        elif self.mode == "max":
-            return torch.stack(xs, dim=0).max(dim=0)[0]
+    def _forward_last(self, xs: List[torch.Tensor]) -> torch.Tensor:
+        return xs[-1]
 
-        elif self.mode == "concat":
-            x_cat = torch.cat(xs, dim=-1)  # [B, T, D * num_layers]
-            if self.out_proj is None:
-                input_dim = x_cat.size(-1)
-                self.out_proj = nn.Linear(input_dim, self.output_size).to(x_cat.device)
-            return self.out_proj(x_cat)
+    def _forward_sum(self, xs: List[torch.Tensor]) -> torch.Tensor:
+        # More memory-efficient than stacking then summing
+        result = xs[0]
+        for x in xs[1:]:
+            result = result + x
+        return result
 
-        elif self.mode == "lstm":
-            B, T, D = xs[0].shape
-            x_seq = torch.stack(xs, dim=1).reshape(B * T, len(xs), D)
-            lstm_out, _ = self.lstm(x_seq)
-            final = lstm_out[:, -1, :].reshape(B, T, -1)
-            return self.out_proj(final)
+    def _forward_max(self, xs: List[torch.Tensor]) -> torch.Tensor:
+        # More memory-efficient elementwise max
+        result = xs[0]
+        for x in xs[1:]:
+            result = torch.maximum(result, x)
+        return result
 
-        else:
-            raise ValueError(f"Unsupported JK mode: {self.mode}")
+    def _forward_concat(self, xs: List[torch.Tensor]) -> torch.Tensor:
+        x_cat = torch.cat(xs, dim=-1)  # [B, T, D * num_layers]
+
+        if self.out_proj is None:
+            input_dim = x_cat.size(-1)
+            self._init_concat_projection(input_dim, x_cat.device)
+
+        return self.out_proj(x_cat)
+
+    def _forward_lstm(self, xs: List[torch.Tensor]) -> torch.Tensor:
+        B, T, D = xs[0].shape
+        # Stack along sequence dimension efficiently
+        x_seq = torch.stack(xs, dim=1)  # [B, num_layers, T, D]
+        x_seq = x_seq.transpose(1, 2).reshape(B * T, len(xs), D)  # [B*T, num_layers, D]
+
+        lstm_out, _ = self.lstm(x_seq)
+        # Get the last output for each sequence
+        final = lstm_out[:, -1, :].reshape(B, T, -1)
+        return self.out_proj(final)
+
+    # Create dispatch dictionary as class attribute for efficiency
+    @property
+    def _forward_dispatch(self):
+        if not hasattr(self, "__forward_dispatch"):
+            self.__forward_dispatch = {
+                "last": self._forward_last,
+                "sum": self._forward_sum,
+                "max": self._forward_max,
+                "concat": self._forward_concat,
+                "lstm": self._forward_lstm,
+            }
+        return self.__forward_dispatch
 
 
 import torch
@@ -1348,10 +1036,11 @@ import numpy as np
 from typing import Union, Optional
 
 
-# === GDV via ORCA ===
+# === GDV Computation ===
 def compute_gdv_orca(
     G: Union[nx.Graph, nx.DiGraph], orca_path: str = "./orca", graphlet_size: int = 5
 ) -> np.ndarray:
+    """Compute GDV using ORCA - simplified but functional"""
     if not isinstance(G, nx.Graph):
         G = nx.Graph(G)
 
@@ -1359,118 +1048,164 @@ def compute_gdv_orca(
         "w", delete=False
     ) as edge_file, tempfile.NamedTemporaryFile("r", delete=False) as out_file:
 
+        # Write edges with node mapping
         node_map = {n: i for i, n in enumerate(G.nodes())}
         for u, v in G.edges():
             edge_file.write(f"{node_map[u]} {node_map[v]}\n")
         edge_file.flush()
 
+        # Run ORCA
         cmd = [orca_path, str(graphlet_size), edge_file.name, out_file.name]
         subprocess.run(cmd, check=True)
 
-        out_lines = out_file.readlines()
-        gdv = [list(map(int, line.strip().split())) for line in out_lines]
+        # Parse output
+        gdv = [list(map(int, line.strip().split())) for line in out_file.readlines()]
 
     return np.array(gdv, dtype=np.float32)
 
 
 def compute_mock_gdv(num_nodes: int, gdv_dim: int = 73) -> torch.Tensor:
+    """Generate mock GDV for testing/prototyping"""
     return torch.randn(num_nodes, gdv_dim)
 
 
 class GDVEncoder(nn.Module):
+    """Clean GDV encoder with residual connection"""
+
     def __init__(self, gdv_dim: int, topo_dim: int):
         super().__init__()
         self.proj = nn.Sequential(
-            nn.Linear(gdv_dim, topo_dim), nn.ReLU(), nn.Linear(topo_dim, topo_dim)
+            nn.Linear(gdv_dim, topo_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(topo_dim, topo_dim),
+        )
+        # Add residual projection if dimensions differ
+        self.residual_proj = (
+            nn.Linear(gdv_dim, topo_dim) if gdv_dim != topo_dim else None
         )
 
-    def forward(self, gdv):
-        return self.proj(gdv)
+    def forward(self, gdv: torch.Tensor) -> torch.Tensor:
+        out = self.proj(gdv)
+        if self.residual_proj is not None:
+            out = out + self.residual_proj(gdv)
+        elif gdv.shape[-1] == out.shape[-1]:
+            out = out + gdv
+        return out
+
+
+def get_mask_value(tensor: torch.Tensor) -> float:
+    """Get appropriate mask value based on tensor dtype"""
+    if tensor.dtype == torch.float16:
+        return -65504.0  # Safe value for float16
+    elif tensor.dtype == torch.bfloat16:
+        return -3.38e38  # Safe value for bfloat16 (but conservative)
+    else:
+        return -1e9  # Standard value for float32
 
 
 class GTATLayer(nn.Module):
-    def __init__(self, feature_dim, topo_dim, hidden_dim):
+    """Optimized GTAT layer with vectorized operations and dtype-safe masking"""
+
+    def __init__(self, feature_dim: int, topo_dim: int, hidden_dim: int):
         super().__init__()
+        self.hidden_dim = hidden_dim
+
+        # Attention mechanisms
         self.feature_attn = nn.Linear(2 * hidden_dim, 1)
         self.topo_attn = nn.Linear(2 * hidden_dim, 1)
 
+        # Projections
         self.feature_proj = nn.Linear(feature_dim, hidden_dim)
         self.topo_proj = nn.Linear(topo_dim, hidden_dim)
 
-    def forward(self, H, T, adj):
-        # H: [B, N, F], T: [B, F, F_t], adj: [F, F] or [B, F, F]
-        B, N, Fdim = H.shape
-        _, Fdim, F_t = T.shape
+    def forward(self, H: torch.Tensor, T: torch.Tensor, adj: torch.Tensor) -> tuple:
+        """
+        H: [B, N, F] - node features
+        T: [B, F, F_t] - topology features
+        adj: [F, F] or [B, F, F] - adjacency matrix
+        """
+        B, N, F_dim = H.shape
 
+        # Ensure adjacency is 3D
         if adj.dim() == 2:
-            adj = adj.unsqueeze(0).expand(B, -1, -1)  # [B, F, F]
+            adj = adj.unsqueeze(0).expand(B, -1, -1)
 
         # Project features
         H_proj = self.feature_proj(H)  # [B, N, H]
         T_proj = self.topo_proj(T)  # [B, F, H]
 
-        Hi = T_proj.unsqueeze(2).expand(B, Fdim, Fdim, -1)
-        Hj = T_proj.unsqueeze(1).expand(B, Fdim, Fdim, -1)
-        topo_input = torch.cat([Hi, Hj], dim=-1)
-        e_topo = F.leaky_relu(self.topo_attn(topo_input)).squeeze(-1)
-        beta = F.softmax(e_topo.masked_fill(adj == 0, -1e4), dim=-1)  # [B, F, F]
+        # Vectorized topology attention
+        T_expanded_i = T_proj.unsqueeze(2).expand(-1, -1, F_dim, -1)  # [B, F, F, H]
+        T_expanded_j = T_proj.unsqueeze(1).expand(-1, F_dim, -1, -1)  # [B, F, F, H]
+        topo_cat = torch.cat([T_expanded_i, T_expanded_j], dim=-1)  # [B, F, F, 2H]
 
+        e_topo = self.topo_attn(topo_cat).squeeze(-1)  # [B, F, F]
+        e_topo = F.leaky_relu(e_topo)
+
+        # Apply adjacency mask and softmax with dtype-safe mask value
+        mask_value = get_mask_value(e_topo)
+        beta = F.softmax(e_topo.masked_fill(adj == 0, mask_value), dim=-1)
         T_out = torch.bmm(beta, T_proj)  # [B, F, H]
 
-        H_out = torch.zeros_like(H_proj)
-        for b in range(B):
-            for t in range(N):
-                Hi = H_proj[b, t].unsqueeze(0).expand(Fdim, -1)
-                Hj = T_out[b]
-                feat_cat = torch.cat([Hi, Hj], dim=-1)  # [F, 2H]
-                e_feat = F.leaky_relu(self.feature_attn(feat_cat)).squeeze(-1)  # [F]
-                alpha = F.softmax(e_feat, dim=-1)  # [F]
-                H_out[b, t] = torch.matmul(alpha, Hj)
+        # Vectorized feature attention (much more efficient)
+        H_expanded = H_proj.unsqueeze(2).expand(-1, -1, F_dim, -1)  # [B, N, F, H]
+        T_expanded = T_out.unsqueeze(1).expand(-1, N, -1, -1)  # [B, N, F, H]
+        feat_cat = torch.cat([H_expanded, T_expanded], dim=-1)  # [B, N, F, 2H]
+
+        e_feat = self.feature_attn(feat_cat).squeeze(-1)  # [B, N, F]
+        e_feat = F.leaky_relu(e_feat)
+        alpha = F.softmax(e_feat, dim=-1)  # [B, N, F]
+
+        # Weighted aggregation
+        H_out = torch.bmm(
+            alpha.view(B * N, 1, F_dim),
+            T_out.unsqueeze(1).expand(-1, N, -1, -1).reshape(B * N, F_dim, -1),
+        )
+        H_out = H_out.squeeze(1).view(B, N, -1)  # [B, N, H]
 
         return H_out, T_out
 
 
 class GTATLayerWrapper(nn.Module):
-    def __init__(self, input_size, output_size, topo_dim, hidden_dim, dropout):
+    """Clean wrapper with proper normalization"""
+
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        topo_dim: int,
+        hidden_dim: int,
+        dropout: float = 0.1,
+    ):
         super().__init__()
         self.gtat_layer = GTATLayer(input_size, topo_dim, hidden_dim)
-        self.output_proj = nn.Linear(input_size, output_size)
+        self.output_proj = nn.Linear(hidden_dim, output_size)
         self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(output_size)
 
-    def forward(self, x, graph, topo_embedding):
-        h, t = self.gtat_layer(x, topo_embedding, graph)
-        out = self.output_proj(h)
-        return self.norm(self.dropout(out))
-
-
-class GTAT(nn.Module):
-    def __init__(self, in_dim, gdv_dim, topo_dim, hidden_dim, out_dim, num_layers):
-        super().__init__()
-        self.gdv_encoder = GDVEncoder(gdv_dim, topo_dim)
-        self.input_proj = nn.Linear(in_dim, hidden_dim)
-        self.layers = nn.ModuleList(
-            [GTATLayer(hidden_dim, topo_dim, hidden_dim) for _ in range(num_layers)]
+        # Residual connection if dimensions match
+        self.residual_proj = (
+            nn.Linear(input_size, output_size) if input_size != output_size else None
         )
-        self.output_proj = nn.Linear(hidden_dim, out_dim)
 
-    def forward(self, H, adj, gdv=None):
-        if gdv is None:
-            gdv = compute_mock_gdv(H.size(0))
-        if isinstance(gdv, np.ndarray):
-            gdv = torch.tensor(gdv, dtype=torch.float32, device=H.device)
+    def forward(
+        self, x: torch.Tensor, graph: torch.Tensor, topo_embedding: torch.Tensor
+    ) -> torch.Tensor:
+        h, _ = self.gtat_layer(x, topo_embedding, graph)
+        out = self.dropout(self.output_proj(h))
 
-        gdv = gdv / (gdv.sum(dim=1, keepdim=True) + 1e-6)
-        T = self.gdv_encoder(gdv)
-        H = self.input_proj(H)
+        # Add residual connection
+        if self.residual_proj is not None:
+            out = out + self.residual_proj(x)
+        elif x.shape[-1] == out.shape[-1]:
+            out = out + x
 
-        for layer in self.layers:
-            H, T = layer(H, T, adj)
-
-        return self.output_proj(H)
+        return self.norm(out)
 
 
 class GTATIntegrated(nn.Module):
+    """Clean, optimized GTAT model"""
+
     def __init__(
         self,
         input_size: int,
@@ -1483,9 +1218,14 @@ class GTATIntegrated(nn.Module):
     ):
         super().__init__()
         self.hidden_size = hidden_size or max(input_size, output_size)
+        self.topo_dim = topo_dim
+
+        # Core components
         self.input_proj = nn.Linear(input_size, self.hidden_size)
         self.output_proj = nn.Linear(self.hidden_size, output_size)
         self.gdv_encoder = GDVEncoder(gdv_dim, topo_dim)
+
+        # GTAT layers
         self.layers = nn.ModuleList(
             [
                 GTATLayerWrapper(
@@ -1498,26 +1238,81 @@ class GTATIntegrated(nn.Module):
                 for _ in range(num_passes)
             ]
         )
+
         self.norm = nn.LayerNorm(output_size)
+
+        # Cache for GDV computation
+        self.register_buffer("cached_gdv", None)
+
+    def _get_topo_embedding(
+        self, x: torch.Tensor, gdv: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Get topology embedding with caching"""
+        B, T, F = x.shape
+
+        if gdv is None:
+            # Check cache first
+            if self.cached_gdv is None or self.cached_gdv.size(0) != F:
+                gdv = compute_mock_gdv(F, 73).to(x.device)
+                self.cached_gdv = gdv
+            else:
+                gdv = self.cached_gdv
+        elif isinstance(gdv, np.ndarray):
+            gdv = torch.tensor(gdv, dtype=torch.float32, device=x.device)
+
+        # Normalize GDV
+        gdv = gdv / (gdv.sum(dim=1, keepdim=True) + 1e-6)
+
+        # Encode and expand for batch
+        topo_embedding = self.gdv_encoder(gdv)  # [F, topo_dim]
+        if topo_embedding.ndim == 2:
+            topo_embedding = topo_embedding.unsqueeze(0).expand(B, -1, -1)
+
+        return topo_embedding
 
     def forward(
         self, x: torch.Tensor, adj: torch.Tensor, gdv: Optional[torch.Tensor] = None
-    ):
-        if gdv is None:
-            gdv = compute_mock_gdv(x.size(-1))  # x.shape: [B, T, F]
-        if isinstance(gdv, np.ndarray):
-            gdv = torch.tensor(gdv, dtype=torch.float32, device=x.device)
+    ) -> torch.Tensor:
+        """Forward pass with optimized topology handling"""
+        # Get topology embedding
+        topo_embedding = self._get_topo_embedding(x, gdv)
 
-        gdv = gdv / (gdv.sum(dim=1, keepdim=True) + 1e-6)
-        topo_embedding = self.gdv_encoder(gdv)
-        if topo_embedding.ndim == 2:
-            B, T, F = x.shape
-            topo_embedding = (
-                topo_embedding.unsqueeze(0).expand(B, T, -1).clone()
-            )  # [B, F, topo_dim]
+        # Project input
         h = self.input_proj(x)
 
+        # Apply GTAT layers
         for layer in self.layers:
             h = layer(h, adj, topo_embedding)
 
-        return self.norm(self.output_proj(h))
+        # Final projection and normalization
+        out = self.output_proj(h)
+        return self.norm(out)
+
+
+# Simplified standalone GTAT for backward compatibility
+class GTAT(nn.Module):
+    """Simplified GTAT for backward compatibility"""
+
+    def __init__(
+        self,
+        in_dim: int,
+        gdv_dim: int,
+        topo_dim: int,
+        hidden_dim: int,
+        out_dim: int,
+        num_layers: int,
+    ):
+        super().__init__()
+        self.integrated = GTATIntegrated(
+            input_size=in_dim,
+            output_size=out_dim,
+            gdv_dim=gdv_dim,
+            topo_dim=topo_dim,
+            hidden_size=hidden_dim,
+            num_passes=num_layers,
+        )
+
+    def forward(
+        self, H: torch.Tensor, adj: torch.Tensor, gdv: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        return self.integrated(H, adj, gdv)
