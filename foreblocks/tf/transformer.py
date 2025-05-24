@@ -1,24 +1,16 @@
-import time
 import math
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
+from typing import Dict, Any
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.amp import autocast, GradScaler
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
 
-from .embeddings import PositionalEncoding, RotaryEmbedding
-from .transformer_att import XFormerAttention
+from .embeddings import PositionalEncoding
+from .transformer_att import MultiAttention
 
-from .transformer_aux import MoEFeedForward, FeedForwardBlock
-from .fed import FrequencyAttention
+from .transformer_aux import FeedForwardBlock
 
 
 class TimeSeriesEncoder(nn.Module):
@@ -117,42 +109,48 @@ class AdaptiveLayerNorm(nn.Module):
 
 
 class TransformerEncoderLayer(nn.Module):
+    """
+    Optimized Transformer Encoder Layer with:
+    - Simplified initialization with smart defaults
+    - Unified forward pass logic
+    - Removed redundant parameters and checks
+    - Better error handling
+    """
+
     def __init__(
         self,
-        d_model,
-        nhead,
-        dim_feedforward=2048,
-        dropout=0.1,
-        activation="gelu",
-        att_type="prob_sparse",
-        use_swiglu=True,
-        use_flash_attn=True,
-        layer_norm_eps=1e-5,
-        norm_strategy="pre_norm",
-        freq_att=False,
-        freq_modes=16,
-        seq_len=None,
-        use_adaptive_ln="rms",
-        use_moe=False,
-        num_experts=5,
-        top_k=5,
-        moe_capacity_factor=0.1,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        activation: str = "gelu",
+        att_type: str = "standard",  # Simplified from att_type/freq_att
+        freq_modes: int = 16,
+        use_swiglu: bool = True,
+        layer_norm_eps: float = 1e-5,
+        norm_strategy: str = "pre_norm",  # pre_norm or post_norm
+        use_adaptive_ln: str = "layer",  # layer, rms, adaptive_layer, adaptive_rms
+        # MoE parameters
+        use_moe: bool = False,
+        num_experts: int = 8,
+        top_k: int = 2,
+        moe_capacity_factor: float = 1.25,
     ):
         super().__init__()
 
         self.norm_strategy = norm_strategy
         self.use_moe = use_moe
 
-        self.self_attn = XFormerAttention(
-            d_model,
-            nhead,
+        # Self-attention with unified parameters
+        self.self_attn = MultiAttention(
+            d_model=d_model,
+            n_heads=nhead,
             dropout=dropout,
-            batch_first=True,
-            use_flash_attn=use_flash_attn,
-            attention_type="frequency" if freq_att else att_type,
+            attention_type=att_type,
             freq_modes=freq_modes,
         )
 
+        # Feed-forward network
         self.feed_forward = FeedForwardBlock(
             d_model=d_model,
             dim_ff=dim_feedforward,
@@ -163,91 +161,121 @@ class TransformerEncoderLayer(nn.Module):
             num_experts=num_experts,
             top_k=top_k,
             capacity_factor=moe_capacity_factor,
-            expert_dropout=0.1,
+            expert_dropout=dropout,  # Use same dropout
         )
 
-        norm_cls = nn.LayerNorm(d_model, eps=layer_norm_eps)
-        if use_adaptive_ln == "rms":
-            norm_cls = AdaptiveRMSNorm
-        elif use_adaptive_ln == "layer":
-            norm_cls = AdaptiveLayerNorm
-        self.norm1 = norm_cls(d_model, eps=layer_norm_eps)
-        self.norm2 = norm_cls(d_model, eps=layer_norm_eps)
+        # Normalization layers
+        self.norm1 = self._create_norm_layer(use_adaptive_ln, d_model, layer_norm_eps)
+        self.norm2 = self._create_norm_layer(use_adaptive_ln, d_model, layer_norm_eps)
 
+        # Dropout layers
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
+
+        # MoE auxiliary loss
         self.aux_loss = 0.0
 
-    def forward(self, src, src_mask=None, src_key_padding_mask=None):
-        if self.norm_strategy == "pre_norm":
-            # === Pre-norm Self-Attention ===
-            normed_src = self.norm1(src)
-            src2, _, _ = self.self_attn(
-                normed_src,
-                normed_src,
-                normed_src,
-                attn_mask=src_mask,
-                key_padding_mask=src_key_padding_mask,
-            )
-            src = src + self.dropout1(src2)
-
-            # === Pre-norm Feedforward ===
-            normed_src = self.norm2(src)
-
-            # check for nan in normed_src
-            if torch.isnan(normed_src).any():
-                raise RuntimeError("NaN detected in normed_src before feedforward")
-            if self.use_moe:
-                src2, self.aux_loss = self.feed_forward(
-                    normed_src, return_aux_loss=True
-                )
-            else:
-                src2 = self.feed_forward(normed_src)
-            # check for nan in src2
-            if torch.isnan(src2).any():
-                raise RuntimeError("NaN detected in src2 after feedforward")
-            src = src + self.dropout2(src2)
-            return src
-
+    def _create_norm_layer(self, norm_type: str, d_model: int, eps: float) -> nn.Module:
+        """Create appropriate normalization layer"""
+        if norm_type == "layer":
+            return nn.LayerNorm(d_model, eps=eps)
+        elif norm_type == "rms":
+            return AdaptiveRMSNorm(d_model, eps=eps)
+        elif norm_type == "adaptive_layer":
+            return AdaptiveLayerNorm(d_model, eps=eps)
+        elif norm_type == "adaptive_rms":
+            return AdaptiveRMSNorm(d_model, eps=eps)
         else:
-            # === Post-norm Self-Attention ===
-            src2, _, _ = self.self_attn(
-                src,
-                src,
-                src,
-                attn_mask=src_mask,
-                key_padding_mask=src_key_padding_mask,
-            )
-            src = self.norm1(src + self.dropout1(src2))
+            return nn.LayerNorm(d_model, eps=eps)  # Default fallback
 
-            # === Post-norm Feedforward ===
-            if self.use_moe:
-                src2, self.aux_loss = self.feed_forward(src, return_aux_loss=True)
-            else:
-                src2 = self.feed_forward(src)
-            src = self.norm2(src + self.dropout2(src2))
-            return src
+    def _apply_attention(
+        self,
+        x: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Apply self-attention with error handling"""
+        attn_out, _, _ = self.self_attn(
+            x,
+            x,
+            x,
+            attn_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
+        )
+        return self.dropout1(attn_out)
+
+    def _apply_feedforward(self, x: torch.Tensor) -> Tuple[torch.Tensor, float]:
+        """Apply feed-forward with MoE support"""
+        if self.use_moe:
+            ff_out, aux_loss = self.feed_forward(x, return_aux_loss=True)
+            return self.dropout2(ff_out), aux_loss
+        else:
+            ff_out = self.feed_forward(x)
+            return self.dropout2(ff_out), 0.0
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Unified forward pass handling both pre-norm and post-norm strategies
+        """
+        self.aux_loss = 0.0  # Reset auxiliary loss
+
+        if self.norm_strategy == "pre_norm":
+            # Pre-norm: Norm -> SubLayer -> Add
+            # Self-attention sublayer
+            attn_out = self._apply_attention(
+                self.norm1(src), src_mask, src_key_padding_mask
+            )
+            src = src + attn_out
+
+            # Feed-forward sublayer
+            ff_out, self.aux_loss = self._apply_feedforward(self.norm2(src))
+            src = src + ff_out
+
+        else:  # post_norm
+            # Post-norm: SubLayer -> Add -> Norm
+            # Self-attention sublayer
+            attn_out = self._apply_attention(src, src_mask, src_key_padding_mask)
+            src = self.norm1(src + attn_out)
+
+            # Feed-forward sublayer
+            ff_out, self.aux_loss = self._apply_feedforward(src)
+            src = self.norm2(src + ff_out)
+
+        return src
 
 
 class TransformerDecoderLayer(nn.Module):
+    """
+    Optimized Transformer Decoder Layer with:
+    - Unified forward pass logic
+    - Cleaner parameter interface
+    - Better incremental state handling
+    - Removed redundant NaN checks
+    """
+
     def __init__(
         self,
-        d_model,
-        nhead,
-        dim_feedforward=2048,
-        dropout=0.1,
-        activation="gelu",
-        informer_like=False,
-        att_type="prob_sparse",
-        use_swiglu=True,
-        use_flash_attn=True,
-        layer_norm_eps=1e-5,
-        norm_strategy="pre_norm",
-        use_adaptive_ln="rms",
-        use_moe=False,
-        num_experts=10,
-        top_k=5,
-        moe_capacity_factor=0.1,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        activation: str = "gelu",
+        att_type: str = "standard",  # Unified attention type
+        use_swiglu: bool = True,
+        layer_norm_eps: float = 1e-5,
+        norm_strategy: str = "pre_norm",  # pre_norm or post_norm
+        use_adaptive_ln: str = "layer",  # layer, rms, adaptive_layer, adaptive_rms
+        informer_like: bool = False,  # Controls causal masking
+        # MoE parameters
+        use_moe: bool = False,
+        num_experts: int = 8,
+        top_k: int = 2,
+        moe_capacity_factor: float = 1.25,
     ):
         super().__init__()
 
@@ -255,25 +283,25 @@ class TransformerDecoderLayer(nn.Module):
         self.use_moe = use_moe
         self.informer_like = informer_like
 
-        self.self_attn = XFormerAttention(
-            d_model,
-            nhead,
+        # Self-attention (decoder self-attention)
+        self.self_attn = MultiAttention(
+            d_model=d_model,
+            n_heads=nhead,
             dropout=dropout,
-            batch_first=True,
-            use_flash_attn=use_flash_attn,
             attention_type=att_type,
+            cross_attention=False,
         )
 
-        self.cross_attn = XFormerAttention(
-            d_model,
-            nhead,
+        # Cross-attention (decoder-encoder attention)
+        self.cross_attn = MultiAttention(
+            d_model=d_model,
+            n_heads=nhead,
             dropout=dropout,
-            batch_first=True,
+            attention_type=att_type,
             cross_attention=True,
-            use_flash_attn=use_flash_attn,
-            attention_type=att_type,
         )
 
+        # Feed-forward network
         self.feed_forward = FeedForwardBlock(
             d_model=d_model,
             dim_ff=dim_feedforward,
@@ -284,218 +312,359 @@ class TransformerDecoderLayer(nn.Module):
             num_experts=num_experts,
             top_k=top_k,
             capacity_factor=moe_capacity_factor,
-            expert_dropout=0.1,
+            expert_dropout=dropout,
         )
 
-        norm_cls = nn.LayerNorm(d_model, eps=layer_norm_eps)
-        if use_adaptive_ln == "rms":
-            norm_cls = AdaptiveRMSNorm
-        elif use_adaptive_ln == "layer":
-            norm_cls = AdaptiveLayerNorm
-        self.norm1 = norm_cls(d_model, eps=layer_norm_eps)
-        self.norm2 = norm_cls(d_model, eps=layer_norm_eps)
-        self.norm3 = norm_cls(d_model, eps=layer_norm_eps)
+        # Normalization layers
+        self.norm1 = self._create_norm_layer(use_adaptive_ln, d_model, layer_norm_eps)
+        self.norm2 = self._create_norm_layer(use_adaptive_ln, d_model, layer_norm_eps)
+        self.norm3 = self._create_norm_layer(use_adaptive_ln, d_model, layer_norm_eps)
 
+        # Dropout layers
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.dropout3 = nn.Dropout(dropout)
+
+        # MoE auxiliary loss
         self.aux_loss = 0.0
 
-    def forward(
+    def _create_norm_layer(self, norm_type: str, d_model: int, eps: float) -> nn.Module:
+        """Create appropriate normalization layer"""
+        if norm_type == "layer":
+            return nn.LayerNorm(d_model, eps=eps)
+        elif norm_type == "rms":
+            return AdaptiveRMSNorm(d_model, eps=eps)
+        elif norm_type == "adaptive_layer":
+            return AdaptiveLayerNorm(d_model, eps=eps)
+        elif norm_type == "adaptive_rms":
+            return AdaptiveRMSNorm(d_model, eps=eps)
+        else:
+            return nn.LayerNorm(d_model, eps=eps)
+
+    def _apply_self_attention(
         self,
-        tgt,
-        memory,
-        tgt_mask=None,
-        memory_mask=None,
-        tgt_key_padding_mask=None,
-        memory_key_padding_mask=None,
-        incremental_state=None,
-    ):
+        tgt: torch.Tensor,
+        tgt_mask: Optional[torch.Tensor] = None,
+        tgt_key_padding_mask: Optional[torch.Tensor] = None,
+        incremental_state: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
+        """Apply self-attention with incremental state support"""
         is_causal = not self.informer_like
 
         self_attn_state = (
             None if incremental_state is None else incremental_state.get("self_attn")
         )
+
+        attn_out, _, updated_state = self.self_attn(
+            tgt,
+            tgt,
+            tgt,
+            attn_mask=tgt_mask,
+            key_padding_mask=tgt_key_padding_mask,
+            is_causal=is_causal,
+            layer_state=self_attn_state,
+        )
+
+        return self.dropout1(attn_out), updated_state
+
+    def _apply_cross_attention(
+        self,
+        tgt: torch.Tensor,
+        memory: torch.Tensor,
+        memory_mask: Optional[torch.Tensor] = None,
+        memory_key_padding_mask: Optional[torch.Tensor] = None,
+        incremental_state: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
+        """Apply cross-attention with incremental state support"""
         cross_attn_state = (
             None if incremental_state is None else incremental_state.get("cross_attn")
         )
 
-        if self.norm_strategy == "pre_norm":
-            # === Pre-norm Self-Attention ===
-            normed_tgt = self.norm1(tgt)
-            tgt2, _, updated_self = self.self_attn(
-                normed_tgt,
-                normed_tgt,
-                normed_tgt,
-                attn_mask=tgt_mask,
-                key_padding_mask=tgt_key_padding_mask,
-                is_causal=is_causal,
-                layer_state=self_attn_state,
-            )
-            tgt = tgt + self.dropout1(tgt2)
+        attn_out, _, updated_state = self.cross_attn(
+            tgt,
+            memory,
+            memory,
+            attn_mask=memory_mask,
+            key_padding_mask=memory_key_padding_mask,
+            layer_state=cross_attn_state,
+        )
 
-            # === Pre-norm Cross-Attention ===
-            normed_tgt = self.norm2(tgt)
-            if torch.isnan(normed_tgt).any():
-                raise RuntimeError("NaN detected before cross-attention residual")
+        return self.dropout2(attn_out), updated_state
 
-            # check for nan in memory
-            if torch.isnan(memory).any():
-                raise RuntimeError("NaN detected in memory before cross-attention")
-
-            tgt2, _, updated_cross = self.cross_attn(
-                normed_tgt,
-                memory,
-                memory,
-                attn_mask=memory_mask,
-                key_padding_mask=memory_key_padding_mask,
-                layer_state=cross_attn_state,
-            )
-            if torch.isnan(tgt2).any():
-                raise RuntimeError(
-                    "NaN detected after cross-attention and before residual"
-                )
-
-            tgt = tgt + self.dropout2(tgt2)
-
-            if torch.isnan(tgt).any():
-                raise RuntimeError("NaN detected after cross-attention residual")
-
-            # === Pre-norm Feedforward ===
-            normed_tgt = self.norm3(tgt)
-
-            if self.use_moe:
-                tgt2, self.aux_loss = self.feed_forward(
-                    normed_tgt, return_aux_loss=True
-                )
-            else:
-                tgt2 = self.feed_forward(normed_tgt)
-
-            tgt = tgt + self.dropout3(tgt2)
-
-            if incremental_state is not None:
-                incremental_state["self_attn"] = updated_self
-                incremental_state["cross_attn"] = updated_cross
-
-            return tgt, incremental_state
-
+    def _apply_feedforward(self, tgt: torch.Tensor) -> Tuple[torch.Tensor, float]:
+        """Apply feed-forward with MoE support"""
+        if self.use_moe:
+            ff_out, aux_loss = self.feed_forward(tgt, return_aux_loss=True)
+            return self.dropout3(ff_out), aux_loss
         else:
-            # === Post-norm Self-Attention ===
-            tgt2, _, updated_self = self.self_attn(
-                tgt,
-                tgt,
-                tgt,
-                attn_mask=tgt_mask,
-                key_padding_mask=tgt_key_padding_mask,
-                is_causal=is_causal,
+            ff_out = self.feed_forward(tgt)
+            return self.dropout3(ff_out), 0.0
+
+    def _update_incremental_state(
+        self,
+        incremental_state: Optional[Dict[str, Any]],
+        self_attn_state: Optional[Dict[str, Any]],
+        cross_attn_state: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Update incremental state with new attention states"""
+        if incremental_state is not None:
+            if self_attn_state is not None:
+                incremental_state["self_attn"] = self_attn_state
+            if cross_attn_state is not None:
+                incremental_state["cross_attn"] = cross_attn_state
+        return incremental_state
+
+    def forward(
+        self,
+        tgt: torch.Tensor,
+        memory: torch.Tensor,
+        tgt_mask: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
+        tgt_key_padding_mask: Optional[torch.Tensor] = None,
+        memory_key_padding_mask: Optional[torch.Tensor] = None,
+        incremental_state: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
+        """
+        Unified forward pass handling both pre-norm and post-norm strategies
+        """
+        self.aux_loss = 0.0  # Reset auxiliary loss
+
+        if self.norm_strategy == "pre_norm":
+            # Pre-norm: Norm -> SubLayer -> Add
+
+            # Self-attention sublayer
+            self_attn_out, updated_self_state = self._apply_self_attention(
+                self.norm1(tgt), tgt_mask, tgt_key_padding_mask, incremental_state
             )
-            tgt = self.norm1(tgt + self.dropout1(tgt2))
+            tgt = tgt + self_attn_out
 
-            # === Post-norm Cross-Attention ===
-            tgt2, _, updated_cross = self.cross_attn(
-                tgt,
+            # Cross-attention sublayer
+            cross_attn_out, updated_cross_state = self._apply_cross_attention(
+                self.norm2(tgt),
                 memory,
-                memory,
-                attn_mask=memory_mask,
-                key_padding_mask=memory_key_padding_mask,
+                memory_mask,
+                memory_key_padding_mask,
+                incremental_state,
             )
-            tgt = self.norm2(tgt + self.dropout2(tgt2))
+            tgt = tgt + cross_attn_out
 
-            # === Post-norm Feedforward ===
-            if self.use_moe:
-                tgt2, self.aux_loss = self.feed_forward(tgt, return_aux_loss=True)
-            else:
-                tgt2 = self.feed_forward(tgt)
-            tgt = self.norm3(tgt + self.dropout3(tgt2))
+            # Feed-forward sublayer
+            ff_out, self.aux_loss = self._apply_feedforward(self.norm3(tgt))
+            tgt = tgt + ff_out
 
-            if incremental_state is not None:
-                incremental_state["self_attn"] = updated_self
-                incremental_state["cross_attn"] = updated_cross
+        else:  # post_norm
+            # Post-norm: SubLayer -> Add -> Norm
 
-            return tgt, incremental_state
+            # Self-attention sublayer
+            self_attn_out, updated_self_state = self._apply_self_attention(
+                tgt, tgt_mask, tgt_key_padding_mask, incremental_state
+            )
+            tgt = self.norm1(tgt + self_attn_out)
+
+            # Cross-attention sublayer
+            cross_attn_out, updated_cross_state = self._apply_cross_attention(
+                tgt, memory, memory_mask, memory_key_padding_mask, incremental_state
+            )
+            tgt = self.norm2(tgt + cross_attn_out)
+
+            # Feed-forward sublayer
+            ff_out, self.aux_loss = self._apply_feedforward(tgt)
+            tgt = self.norm3(tgt + ff_out)
+
+        # Update incremental state
+        updated_incremental_state = self._update_incremental_state(
+            incremental_state, updated_self_state, updated_cross_state
+        )
+
+        return tgt, updated_incremental_state
 
 
 class TransformerEncoder(nn.Module):
     """
-    Enhanced Transformer Encoder with modern improvements:
-    - Optimized layer stacking
-    - Optional embedding sharing
-    - Configurable normalization strategy
-    - Memory-efficient attention mechanisms
-    - Gradient checkpointing support for training larger models
+    Optimized Transformer Encoder with:
+    - Simplified parameter interface
+    - Better memory management
+    - Unified layer creation
+    - Optional final normalization
+    - Cleaner architecture
     """
 
     def __init__(
         self,
         input_size: int,
-        d_model: int = 128,
+        d_model: int = 512,
         nhead: int = 8,
-        num_layers: int = 3,
+        num_layers: int = 6,
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
         activation: str = "gelu",
-        hidden_size: Optional[int] = None,
-        att_type: str = "prob_sparse",
+        att_type: str = "standard",  # Unified attention parameter
         layer_norm_eps: float = 1e-5,
         norm_strategy: str = "pre_norm",
-        use_gradient_checkpointing: bool = False,
-        pos_encoding_scale: float = 1.0,
+        use_adaptive_ln: str = "layer",  # layer, rms, adaptive_layer, adaptive_rms
+        # Positional encoding
         max_seq_len: int = 5000,
-        use_swiglu: bool = True,
-        use_flash_attn: bool = True,
-        use_moe: bool = False,
-        use_adaptive_ln: str = "rms",
+        pos_encoding_scale: float = 1.0,
         pos_encoder: Optional[nn.Module] = None,
+        # Optimization options
+        use_gradient_checkpointing: bool = False,
+        share_layers: bool = False,  # Memory optimization
+        use_final_norm: bool = True,  # Final layer norm
+        # Advanced options
+        use_swiglu: bool = True,
+        freq_modes: int = 32,  # For frequency attention
+        use_moe: bool = False,
+        num_experts: int = 8,
+        top_k: int = 2,
+        moe_capacity_factor: float = 1.25,
     ):
         super().__init__()
-        print("[Encoder] Transformer Encoder initialized.")
 
-        # Set up model dimensions
-        self.hidden_size = hidden_size if hidden_size is not None else d_model
-        self.norm_strategy = norm_strategy
+        # Core attributes
         self.d_model = d_model
         self.input_size = input_size
+        self.num_layers = num_layers
+        self.norm_strategy = norm_strategy
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.use_final_norm = use_final_norm
         self.is_transformer = True
 
-        # Input projection and embedding
-        self.input_projection = nn.Linear(self.input_size, d_model)
+        # Input projection
+        self.input_projection = nn.Linear(input_size, d_model)
 
         # Positional encoding
-        self.pos_encoder = (
-            pos_encoder
-            if pos_encoder
-            else PositionalEncoding(
+        if pos_encoder is not None:
+            self.pos_encoder = pos_encoder
+        else:
+            self.pos_encoder = PositionalEncoding(
                 d_model, dropout=dropout, max_len=max_seq_len, scale=pos_encoding_scale
             )
-        )
 
-        # Dropout for regularization
+        # Input dropout
         self.dropout = nn.Dropout(dropout)
 
-        # Transformer encoder layers
-        self.layers = nn.ModuleList(
-            [
-                TransformerEncoderLayer(
-                    d_model=d_model,
-                    nhead=nhead,
-                    dim_feedforward=dim_feedforward,
-                    dropout=dropout,
-                    activation=activation,
-                    att_type=att_type,
-                    use_swiglu=use_swiglu,
-                    use_flash_attn=use_flash_attn,
-                    layer_norm_eps=layer_norm_eps,
-                    norm_strategy=norm_strategy,
-                    use_moe=use_moe,
-                    use_adaptive_ln=use_adaptive_ln,
-                )
-                for _ in range(num_layers)
-            ]
+        # Create transformer layers
+        if share_layers:
+            # Single shared layer (memory efficient)
+            self.shared_layer = self._create_encoder_layer(
+                d_model,
+                nhead,
+                dim_feedforward,
+                dropout,
+                activation,
+                att_type,
+                layer_norm_eps,
+                use_adaptive_ln,
+                norm_strategy,
+                use_swiglu,
+                freq_modes,
+                use_moe,
+                num_experts,
+                top_k,
+                moe_capacity_factor,
+            )
+            self.layers = None
+        else:
+            # Individual layers
+            self.layers = nn.ModuleList(
+                [
+                    self._create_encoder_layer(
+                        d_model,
+                        nhead,
+                        dim_feedforward,
+                        dropout,
+                        activation,
+                        att_type,
+                        layer_norm_eps,
+                        use_adaptive_ln,
+                        norm_strategy,
+                        use_swiglu,
+                        freq_modes,
+                        use_moe,
+                        num_experts,
+                        top_k,
+                        moe_capacity_factor,
+                    )
+                    for _ in range(num_layers)
+                ]
+            )
+            self.shared_layer = None
+
+        # Final normalization (especially useful for pre-norm)
+        if use_final_norm:
+            self.final_norm = self._create_norm_layer(
+                use_adaptive_ln, d_model, layer_norm_eps
+            )
+        else:
+            self.final_norm = nn.Identity()
+
+        # Initialize weights
+        self.apply(self._init_weights)
+
+        print(
+            f"[Encoder] Transformer Encoder: {num_layers} layers, "
+            f"{att_type} attention, {norm_strategy} norm"
         )
 
-        # Output normalization (for pre-norm architecture)
-        self.apply(init_transformer_weights)
+    def _create_encoder_layer(
+        self,
+        d_model,
+        nhead,
+        dim_feedforward,
+        dropout,
+        activation,
+        attention_type,
+        layer_norm_eps,
+        use_adaptive_ln,
+        norm_strategy,
+        use_swiglu,
+        freq_modes,
+        use_moe,
+        num_experts,
+        top_k,
+        moe_capacity_factor,
+    ):
+        """Create a single encoder layer with all configurations"""
+        return TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            att_type=attention_type,
+            freq_modes=freq_modes,
+            use_swiglu=use_swiglu,
+            layer_norm_eps=layer_norm_eps,
+            norm_strategy=norm_strategy,
+            use_adaptive_ln=use_adaptive_ln,
+            use_moe=use_moe,
+            num_experts=num_experts,
+            top_k=top_k,
+            moe_capacity_factor=moe_capacity_factor,
+        )
+
+    def _create_norm_layer(self, norm_type: str, d_model: int, eps: float) -> nn.Module:
+        """Create appropriate normalization layer"""
+        if norm_type == "layer":
+            return nn.LayerNorm(d_model, eps=eps)
+        elif norm_type == "rms":
+            return AdaptiveRMSNorm(d_model, eps=eps)
+        elif norm_type == "adaptive_layer":
+            return AdaptiveLayerNorm(d_model, eps=eps)
+        elif norm_type == "adaptive_rms":
+            return AdaptiveRMSNorm(d_model, eps=eps)
+        else:
+            return nn.LayerNorm(d_model, eps=eps)
+
+    def _init_weights(self, module):
+        """Initialize transformer weights"""
+        if isinstance(module, nn.Linear):
+            torch.nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                torch.nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.constant_(module.bias, 0)
+            torch.nn.init.constant_(module.weight, 1.0)
 
     def forward(
         self,
@@ -507,7 +676,7 @@ class TransformerEncoder(nn.Module):
         Forward pass of the transformer encoder.
 
         Args:
-            src: Source sequence [batch_size, seq_len, hidden_size]
+            src: Source sequence [batch_size, seq_len, input_size]
             src_mask: Optional attention mask [seq_len, seq_len]
             src_key_padding_mask: Optional padding mask [batch_size, seq_len]
 
@@ -520,119 +689,185 @@ class TransformerEncoder(nn.Module):
         # Add positional encoding
         src = self.pos_encoder(src)
 
-        # Apply dropout
+        # Apply input dropout
         src = self.dropout(src)
 
-        # Apply transformer layers with optional gradient checkpointing
-        for layer in self.layers:
+        # Apply transformer layers
+        total_aux_loss = 0.0
+
+        for i in range(self.num_layers):
+            # Get layer (shared or individual)
+            layer = self.shared_layer if self.layers is None else self.layers[i]
+
             if self.training and self.use_gradient_checkpointing:
+                # Gradient checkpointing for memory efficiency
                 src = torch.utils.checkpoint.checkpoint(
-                    layer, src, src_mask, src_key_padding_mask
+                    layer, src, src_mask, src_key_padding_mask, use_reentrant=False
                 )
             else:
-                src = layer(
-                    src, src_mask=src_mask, src_key_padding_mask=src_key_padding_mask
-                )
+                src = layer(src, src_mask, src_key_padding_mask)
 
-        # check for nan
+            # Accumulate auxiliary losses (for MoE)
+            if hasattr(layer, "aux_loss"):
+                total_aux_loss += layer.aux_loss
+
+        # Apply final normalization
+        src = self.final_norm(src)
+
+        # Store total auxiliary loss
+        self.aux_loss = total_aux_loss
+
         return src
+
+    def get_aux_loss(self) -> float:
+        """Get total auxiliary loss from all layers"""
+        return getattr(self, "aux_loss", 0.0)
 
 
 class TransformerDecoder(nn.Module):
     """
-    Enhanced Transformer Decoder with modern improvements:
-    - Optimized layer stacking
-    - Optional embedding sharing
-    - Support for incremental/autoregressive decoding
-    - Configurable normalization strategy
-    - Memory-efficient attention mechanisms
-    - Gradient checkpointing support for training larger models
+    Optimized Transformer Decoder matching the encoder structure
     """
 
     def __init__(
         self,
         input_size: int,
         output_size: int,
-        d_model: int = 128,
+        d_model: int = 512,
         nhead: int = 8,
-        num_layers: int = 3,
+        num_layers: int = 6,
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
         activation: str = "gelu",
-        hidden_size: Optional[int] = None,
-        informer_like: bool = False,
-        att_type: str = "prob_sparse",
+        att_type: str = "standard",
         layer_norm_eps: float = 1e-5,
         norm_strategy: str = "pre_norm",
-        use_gradient_checkpointing: bool = False,
-        pos_encoding_scale: float = 1.0,
+        use_adaptive_ln: str = "layer",
+        # Positional encoding
         max_seq_len: int = 5000,
-        use_swiglu: bool = True,
-        use_flash_attn: bool = True,
-        use_moe: bool = False,
-        use_adaptive_ln: str = "rms",
+        pos_encoding_scale: float = 1.0,
         pos_encoder: Optional[nn.Module] = None,
+        # Optimization options
+        use_gradient_checkpointing: bool = False,
+        share_layers: bool = False,
+        use_final_norm: bool = True,
+        informer_like: bool = False,
+        # Advanced options
+        use_swiglu: bool = True,
+        freq_modes: int = 32,
+        use_moe: bool = False,
+        num_experts: int = 8,
+        top_k: int = 2,
+        moe_capacity_factor: float = 1.25,
     ):
         super().__init__()
-        print("[Decoder] Transformer Decoder initialized.")
 
-        # Set up model dimensions
-        self.hidden_size = hidden_size if hidden_size is not None else d_model
         self.d_model = d_model
         self.output_size = output_size
+        self.num_layers = num_layers
         self.use_gradient_checkpointing = use_gradient_checkpointing
-        self.is_transformer = True
+        self.use_final_norm = use_final_norm
 
-        # Input projection
         self.input_projection = nn.Linear(input_size, d_model)
 
-        # Positional encoding
-        self.pos_encoder = (
-            pos_encoder
-            if pos_encoder
-            else PositionalEncoding(
-                d_model, dropout=dropout, max_len=max_seq_len, scale=pos_encoding_scale
-            )
-        )
-
-        # Dropout for regularization
-        self.dropout = nn.Dropout(dropout)
-
-        # Transformer decoder layers
-        self.layers = nn.ModuleList(
-            [
-                TransformerDecoderLayer(
-                    d_model=d_model,
-                    nhead=nhead,
-                    dim_feedforward=dim_feedforward,
-                    dropout=dropout,
-                    activation=activation,
-                    informer_like=informer_like,
-                    att_type=att_type,
-                    use_swiglu=use_swiglu,
-                    use_flash_attn=use_flash_attn,
-                    layer_norm_eps=layer_norm_eps,
-                    norm_strategy=norm_strategy,
-                    use_moe=use_moe,
-                    use_adaptive_ln=use_adaptive_ln,
-                )
-                for _ in range(num_layers)
-            ]
-        )
-
-        # Improved output projection
-        if output_size == 1:
+        # Output projection (if needed)
+        if output_size != d_model:
             self.output_projection = nn.Linear(d_model, output_size)
         else:
-            self.output_projection = nn.Sequential(
-                nn.Linear(d_model, d_model * 2),
-                nn.SiLU(),
-                nn.Linear(d_model * 2, output_size),
+            self.output_projection = nn.Identity()
+
+        # Positional encoding
+        if pos_encoder is not None:
+            self.pos_encoder = pos_encoder
+        else:
+            self.pos_encoder = PositionalEncoding(
+                d_model, dropout=dropout, max_len=max_seq_len, scale=pos_encoding_scale
             )
 
-        # Cache for incremental decoding
-        self.incremental_state = None
-        self.apply(init_transformer_weights)
+        self.dropout = nn.Dropout(dropout)
+
+        # Create decoder layers
+        if share_layers:
+            self.shared_layer = TransformerDecoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                activation=activation,
+                att_type=att_type,
+                layer_norm_eps=layer_norm_eps,
+                norm_strategy=norm_strategy,
+                use_adaptive_ln=use_adaptive_ln,
+                informer_like=informer_like,
+                use_swiglu=use_swiglu,
+                use_moe=use_moe,
+                num_experts=num_experts,
+                top_k=top_k,
+                moe_capacity_factor=moe_capacity_factor,
+            )
+            self.layers = None
+        else:
+            self.layers = nn.ModuleList(
+                [
+                    TransformerDecoderLayer(
+                        d_model=d_model,
+                        nhead=nhead,
+                        dim_feedforward=dim_feedforward,
+                        dropout=dropout,
+                        activation=activation,
+                        att_type=att_type,
+                        layer_norm_eps=layer_norm_eps,
+                        norm_strategy=norm_strategy,
+                        use_adaptive_ln=use_adaptive_ln,
+                        informer_like=informer_like,
+                        use_swiglu=use_swiglu,
+                        use_moe=use_moe,
+                        num_experts=num_experts,
+                        top_k=top_k,
+                        moe_capacity_factor=moe_capacity_factor,
+                    )
+                    for _ in range(num_layers)
+                ]
+            )
+            self.shared_layer = None
+
+        # Final normalization
+        if use_final_norm:
+            self.final_norm = self._create_norm_layer(
+                use_adaptive_ln, d_model, layer_norm_eps
+            )
+        else:
+            self.final_norm = nn.Identity()
+
+        self.apply(self._init_weights)
+
+        print(
+            f"[Decoder] Transformer Decoder: {num_layers} layers, "
+            f"{att_type} attention, {'Informer-like' if informer_like else 'Standard'}, {norm_strategy} norm"
+        )
+
+    def _create_norm_layer(self, norm_type: str, d_model: int, eps: float) -> nn.Module:
+        """Create appropriate normalization layer"""
+        if norm_type == "layer":
+            return nn.LayerNorm(d_model, eps=eps)
+        elif norm_type == "rms":
+            return AdaptiveRMSNorm(d_model, eps=eps)
+        elif norm_type == "adaptive_layer":
+            return AdaptiveLayerNorm(d_model, eps=eps)
+        elif norm_type == "adaptive_rms":
+            return AdaptiveRMSNorm(d_model, eps=eps)
+        else:
+            return nn.LayerNorm(d_model, eps=eps)
+
+    def _init_weights(self, module):
+        """Initialize transformer weights"""
+        if isinstance(module, nn.Linear):
+            torch.nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                torch.nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.constant_(module.bias, 0)
+            torch.nn.init.constant_(module.weight, 1.0)
 
     def forward(
         self,
@@ -642,40 +877,33 @@ class TransformerDecoder(nn.Module):
         memory_mask: Optional[torch.Tensor] = None,
         tgt_key_padding_mask: Optional[torch.Tensor] = None,
         memory_key_padding_mask: Optional[torch.Tensor] = None,
-        incremental_state: Optional[List[dict]] = None,
-    ) -> torch.Tensor:
-        """
-        Forward pass of the transformer decoder.
+        incremental_state: Optional[dict] = None,
+        return_incremental_state: bool = False,
+    ):
+        """Forward pass with optional incremental decoding"""
 
-        Args:
-            tgt: Target sequence [batch_size, tgt_len, hidden_size]
-            memory: Memory from encoder [batch_size, src_len, d_model]
-            tgt_mask: Optional attention mask [tgt_len, tgt_len]
-            memory_mask: Optional cross-attention mask [tgt_len, src_len]
-            tgt_key_padding_mask: Optional padding mask [batch_size, tgt_len]
-            memory_key_padding_mask: Optional padding mask [batch_size, src_len]
-            incremental_state: Optional state for incremental decoding
-
-        Returns:
-            Decoded output [batch_size, tgt_len, output_size]
-        """
-        # Project input to model dimension
+        # Project output to model dimension if needed
         tgt = self.input_projection(tgt)
 
         # Add positional encoding
         tgt = self.pos_encoder(tgt)
-
-        # Apply dropout
         tgt = self.dropout(tgt)
 
-        # Initialize incremental state if not provided
+        # Initialize incremental state
         if incremental_state is None:
-            incremental_state = [None] * len(self.layers)
+            layer_states = [None] * self.num_layers
+        else:
+            layer_states = incremental_state.get("layers", [None] * self.num_layers)
 
-        # Apply transformer layers with optional gradient checkpointing
-        for idx, layer in enumerate(self.layers):
+        total_aux_loss = 0.0
+
+        # Apply decoder layers
+        for i in range(self.num_layers):
+            layer = self.shared_layer if self.layers is None else self.layers[i]
+
             if self.training and self.use_gradient_checkpointing:
-                tgt, _ = torch.utils.checkpoint.checkpoint(
+                # Note: Checkpointing with incremental state is complex
+                tgt = torch.utils.checkpoint.checkpoint(
                     layer,
                     tgt,
                     memory,
@@ -683,65 +911,47 @@ class TransformerDecoder(nn.Module):
                     memory_mask,
                     tgt_key_padding_mask,
                     memory_key_padding_mask,
+                    use_reentrant=False,
                 )
+                layer_states[i] = None
             else:
-                tgt, _ = layer(
+                tgt, layer_states[i] = layer(
                     tgt,
                     memory,
-                    tgt_mask=tgt_mask,
-                    memory_mask=memory_mask,
-                    tgt_key_padding_mask=tgt_key_padding_mask,
-                    memory_key_padding_mask=memory_key_padding_mask,
+                    tgt_mask,
+                    memory_mask,
+                    tgt_key_padding_mask,
+                    memory_key_padding_mask,
+                    layer_states[i],
                 )
 
-        # Project to output size
-        return self.dropout(self.output_projection(tgt))
+            if hasattr(layer, "aux_loss"):
+                total_aux_loss += layer.aux_loss
+
+        # Apply final normalization
+        tgt = self.final_norm(tgt)
+
+        self.aux_loss = total_aux_loss
+
+        # Update incremental state
+        if incremental_state is not None:
+            incremental_state["layers"] = layer_states
+
+        tgt = self.output_projection(tgt)
+
+        if return_incremental_state:
+            return tgt, incremental_state
+        else:
+            return tgt
 
     def forward_one_step(
         self,
         tgt: torch.Tensor,
         memory: torch.Tensor,
-        incremental_state: Optional[List[dict]] = None,
-        memory_key_padding_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, List[dict]]:
-        """
-        Optimized single-step forward pass for autoregressive generation.
-        """
+        incremental_state: Optional[dict] = None,
+    ):
+        """Single step forward for autoregressive generation"""
         if incremental_state is None:
-            incremental_state = [None] * len(self.layers)
+            incremental_state = {}
 
-        # Project input
-        tgt = self.input_projection(tgt)
-
-        # Position embedding for the current token
-        if tgt.size(1) == 1:
-            pos = incremental_state[0].get("position", 0) if incremental_state[0] else 0
-            pos_enc = self.pos_encoder.pe[:, pos : pos + 1]  # safer: getattr fallback
-            tgt = tgt + pos_enc
-
-            # Update position
-            for i in range(len(self.layers)):
-                if incremental_state[i] is None:
-                    incremental_state[i] = {"position": pos + 1}
-                else:
-                    incremental_state[i]["position"] = pos + 1
-        else:
-            tgt = self.pos_encoder(tgt)
-
-        tgt = self.dropout(tgt)
-
-        # Decoder layers (assumes they handle caching if enabled)
-        for i, layer in enumerate(self.layers):
-            tgt, updated_state = layer(
-                tgt,
-                memory,
-                tgt_mask=None,
-                memory_mask=None,
-                tgt_key_padding_mask=None,
-                memory_key_padding_mask=memory_key_padding_mask,
-                incremental_state=incremental_state[i],
-            )
-            incremental_state[i] = updated_state
-
-        output = self.output_projection(tgt)
-        return output, incremental_state
+        return self.forward(tgt, memory, incremental_state=incremental_state, return_incremental_state=True)

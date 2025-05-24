@@ -1,23 +1,13 @@
-# Standard library
 import copy
-
-# PyTorch
 import torch
 import torch.nn as nn
-
-from .aux import *
-from .enc_dec import *
-from .tf.transformer import *
-from .att import *
-import torch
-import torch.nn as nn
-import copy
+from typing import Optional, Tuple, Callable, Union
 
 
 class ForecastingModel(nn.Module):
     """
-    A flexible sequence-to-sequence forecasting model supporting multiple architectures
-    and forecasting strategies including seq2seq, autoregressive, and transformer approaches.
+    Unified forecasting model supporting multiple architectures and strategies.
+    Simplified version maintaining all original functionality.
     """
 
     VALID_STRATEGIES = ["seq2seq", "autoregressive", "direct", "transformer_seq2seq"]
@@ -25,148 +15,98 @@ class ForecastingModel(nn.Module):
 
     def __init__(
         self,
-        encoder=None,
-        decoder=None,
-        target_len=5,
-        forecasting_strategy="seq2seq",
-        input_preprocessor=None,
-        output_postprocessor=None,
-        attention_module=None,
-        teacher_forcing_ratio=0.5,
-        scheduled_sampling_fn=None,
-        output_size=None,
-        output_block=None,
-        input_normalization=None,
-        output_normalization=None,
-        model_type="lstm",
-        input_skip_connection=False,
-        multi_encoder_decoder=False,
-        input_processor_output_size=16,
-        hidden_size=64,
-        enc_embbedding=None,
-        dec_embedding=None,
+        encoder: nn.Module = None,
+        decoder: nn.Module = None,
+        target_len: int = 5,
+        forecasting_strategy: str = "seq2seq",
+        model_type: str = "lstm",
+        # Processing modules
+        input_preprocessor: nn.Module = None,
+        output_postprocessor: nn.Module = None,
+        input_normalization: nn.Module = None,
+        output_normalization: nn.Module = None,
+        output_block: nn.Module = None,
+        # Architecture options
+        attention_module: nn.Module = None,
+        output_size: int = None,
+        hidden_size: int = 64,
+        input_skip_connection: bool = False,
+        # Multi-encoder setup
+        multi_encoder_decoder: bool = False,
+        input_processor_output_size: int = 16,
+        # Training parameters
+        teacher_forcing_ratio: float = 0.5,
+        scheduled_sampling_fn: Callable = None,
+        # Time embeddings
         time_feature_embedding_enc: nn.Module = None,
         time_feature_embedding_dec: nn.Module = None,
     ):
-        """
-        Initialize the ForecastingModel with specified components and parameters.
-
-        Args:
-            encoder: Neural network module for encoding input sequences
-            decoder: Neural network module for decoding and generating predictions
-            target_len: Length of prediction sequence to generate
-            forecasting_strategy: Strategy for forecasting ("seq2seq", "autoregressive", "direct", "transformer_seq2seq")
-            input_preprocessor: Module for preprocessing input data
-            output_postprocessor: Module for postprocessing output predictions
-            attention_module: Optional attention mechanism
-            teacher_forcing_ratio: Ratio for applying teacher forcing during training
-            scheduled_sampling_fn: Function that returns teacher forcing ratio based on epoch
-            output_size: Size of output features (if None, inferred from decoder)
-            output_block: Additional processing block for outputs
-            input_normalization: Normalization for inputs
-            output_normalization: Normalization for outputs
-            model_type: Type of base model architecture ("lstm" or "transformer")
-            input_skip_connection: Whether to use skip connection for inputs
-            multi_encoder_decoder: Whether to use multiple encoder-decoders
-            input_processor_output_size: Output size for input processor with multi encoder-decoder
-            hidden_size: Size of hidden representations
-            enc_embbedding: Embedding module for encoder (transformer)
-            dec_embedding: Embedding module for decoder (transformer)
-        """
         super().__init__()
 
         # Validate inputs
-        self._validate_initialization(forecasting_strategy, model_type)
+        if forecasting_strategy not in self.VALID_STRATEGIES:
+            raise ValueError(
+                f"Invalid strategy: {forecasting_strategy}. Valid: {self.VALID_STRATEGIES}"
+            )
+        if model_type not in self.VALID_MODEL_TYPES:
+            raise ValueError(
+                f"Invalid model type: {model_type}. Valid: {self.VALID_MODEL_TYPES}"
+            )
 
-        # Store all parameters first to ensure they're available to all methods
+        # Core parameters
         self.strategy = forecasting_strategy
         self.model_type = model_type
         self.target_len = target_len
-        self.pred_len = self.target_len  # For compatibility
+        self.pred_len = target_len  # Compatibility
         self.hidden_size = hidden_size
         self.multi_encoder_decoder = multi_encoder_decoder
-        self.output_size = output_size  # Store this early to make it available
 
         # Training parameters
         self.teacher_forcing_ratio = teacher_forcing_ratio
         self.scheduled_sampling_fn = scheduled_sampling_fn
 
-        self.time_feature_embedding_enc = time_feature_embedding_enc
-        self.time_feature_embedding_dec = time_feature_embedding_dec
-
-        # Input/output processing
-        self._setup_preprocessing_modules(
-            input_preprocessor,
-            output_postprocessor,
-            input_normalization,
-            output_normalization,
-            output_block,
-        )
-        self.input_skip_connection = input_skip_connection
-
-        # Model architecture setup
-        self._setup_encoder_decoder(
-            encoder, decoder, multi_encoder_decoder, input_processor_output_size
-        )
-
-        # Feature dimensions
-        self.input_size = encoder.input_size if encoder else None
-        # Update output_size if it wasn't provided explicitly
-        if self.output_size is None:
-            self.output_size = decoder.output_size if decoder else None
-        self.label_len = decoder.output_size if decoder else None
-
-        # Attention setup
-        self.use_attention = attention_module is not None
-        self.attention_module = attention_module
-
-        self.init_decoder_input_layer = nn.Linear(self.hidden_size, self.output_size)
-        # Output layers
-        self._setup_output_layers()
-
-    def _validate_initialization(self, strategy, model_type):
-        """Validate the input parameters."""
-        if strategy not in self.VALID_STRATEGIES:
-            raise ValueError(
-                f"Unsupported strategy: {strategy}. Valid options: {self.VALID_STRATEGIES}"
-            )
-
-        if model_type not in self.VALID_MODEL_TYPES:
-            raise ValueError(
-                f"Unsupported model type: {model_type}. Valid options: {self.VALID_MODEL_TYPES}"
-            )
-
-    def _setup_preprocessing_modules(
-        self,
-        input_preprocessor,
-        output_postprocessor,
-        input_normalization,
-        output_normalization,
-        output_block,
-    ):
-        """Setup input/output processing modules."""
+        # Setup processing modules
         self.input_preprocessor = input_preprocessor or nn.Identity()
         self.output_postprocessor = output_postprocessor or nn.Identity()
         self.input_normalization = input_normalization or nn.Identity()
         self.output_normalization = output_normalization or nn.Identity()
         self.output_block = output_block or nn.Identity()
+        self.input_skip_connection = input_skip_connection
 
-    def _setup_encoder_decoder(
-        self, encoder, decoder, multi_encoder_decoder, input_processor_output_size
-    ):
-        """Setup encoder and decoder architecture."""
-        if multi_encoder_decoder:
+        # Time embeddings
+        self.time_feature_embedding_enc = time_feature_embedding_enc
+        self.time_feature_embedding_dec = time_feature_embedding_dec
+
+        # Setup encoder/decoder
+        self._setup_architecture(encoder, decoder, input_processor_output_size)
+
+        # Infer sizes
+        self.input_size = getattr(encoder, "input_size", None) if encoder else None
+        self.output_size = (
+            output_size or getattr(decoder, "output_size", None) if decoder else None
+        )
+        self.label_len = getattr(decoder, "output_size", None) if decoder else None
+
+        # Attention
+        self.use_attention = attention_module is not None
+        self.attention_module = attention_module
+
+        # Setup output layers
+        self._setup_output_layers()
+
+        # Initialize decoder input projection
+        if encoder and self.output_size:
+            encoder_dim = getattr(encoder, "hidden_size", self.hidden_size)
+            self.init_decoder_input_layer = nn.Linear(encoder_dim, self.output_size)
+
+    def _setup_architecture(self, encoder, decoder, input_processor_output_size):
+        """Setup encoder/decoder architecture (single or multi)"""
+        if self.multi_encoder_decoder:
             self.encoder = nn.ModuleList(
-                [
-                    self._clone_module(encoder)
-                    for _ in range(input_processor_output_size)
-                ]
+                [copy.deepcopy(encoder) for _ in range(input_processor_output_size)]
             )
             self.decoder = nn.ModuleList(
-                [
-                    self._clone_module(decoder)
-                    for _ in range(input_processor_output_size)
-                ]
+                [copy.deepcopy(decoder) for _ in range(input_processor_output_size)]
             )
             self.decoder_aggregator = nn.Linear(
                 input_processor_output_size, 1, bias=False
@@ -176,373 +116,331 @@ class ForecastingModel(nn.Module):
             self.decoder = decoder
 
     def _setup_output_layers(self):
-        """Setup output projection layers."""
-        if self.use_attention and hasattr(self, "decoder") and self.decoder:
-            if not isinstance(self.decoder, nn.ModuleList):
-                self.output_layer = nn.Linear(
-                    self.decoder.output_size + self.encoder.hidden_size,
-                    self.output_size,
-                )
-            else:
-                # For multi-encoder-decoder with attention
-                self.output_layer = nn.Linear(
-                    self.decoder[0].output_size + self.encoder[0].hidden_size,
-                    self.output_size,
-                )
-        elif (
-            hasattr(self, "decoder")
-            and self.decoder
-            and not isinstance(self.decoder, nn.ModuleList)
-        ):
-            self.output_layer = nn.Linear(self.decoder.output_size, self.output_size)
-        else:
+        """Setup output projection layers"""
+        if not self.encoder or not self.decoder:
             self.output_layer = nn.Identity()
+            self.project_output = nn.Identity()
+            return
 
-        if hasattr(self, "input_size") and self.input_size:
+        # Handle multi-encoder case
+        if isinstance(self.encoder, nn.ModuleList):
+            encoder_hidden = getattr(self.encoder[0], "hidden_size", self.hidden_size)
+            decoder_output = getattr(self.decoder[0], "output_size", self.output_size)
+        else:
+            encoder_hidden = getattr(self.encoder, "hidden_size", self.hidden_size)
+            decoder_output = getattr(self.decoder, "output_size", self.output_size)
+
+        # Output layer (with or without attention)
+        if self.use_attention:
+            self.output_layer = nn.Linear(
+                decoder_output + encoder_hidden, self.output_size
+            )
+        else:
+            self.output_layer = nn.Linear(decoder_output, self.output_size)
+
+        # Project output if needed
+        if self.input_size and self.input_size != self.output_size:
             self.project_output = nn.Linear(self.input_size, self.output_size)
+        else:
+            self.project_output = nn.Identity()
 
-    def _clone_module(self, module):
-        """Create a deep copy of a module."""
-        return copy.deepcopy(module)
-
-    def forward(self, src, targets=None, epoch=None):
-        """
-        Forward pass for the forecasting model.
-
-        Args:
-            src: Source sequence [batch_size, seq_len, features]
-            targets: Target sequence for teacher forcing [batch_size, target_len, features]
-            epoch: Current training epoch (for scheduled sampling)
-
-        Returns:
-            Forecasted sequence [batch_size, target_len, output_size]
-        """
-        # Process input
+    def forward(
+        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+    ) -> torch.Tensor:
+        """Main forward pass - routes to appropriate strategy"""
+        # Preprocess input
         processed_src = self._preprocess_input(src)
 
-        # Call appropriate forward method based on strategy
+        # Route to strategy
         if self.strategy == "direct":
             return self._forward_direct(processed_src)
-        elif self.strategy in ["seq2seq", "transformer_seq2seq"]:
-            if self.model_type == "informer-like":
-                return self._forward_transformer_informer(processed_src, targets, epoch)
-            if self.model_type == "transformer":
-                return self._forward_transformer_seq2seq(processed_src, targets, epoch)
-            elif self.multi_encoder_decoder:
-                return self._forward_seq2seq_multi(processed_src, targets, epoch)
-            else:
-                return self._forward_seq2seq(processed_src, targets, epoch)
         elif self.strategy == "autoregressive":
             return self._forward_autoregressive(processed_src, targets, epoch)
+        elif self.strategy in ["seq2seq", "transformer_seq2seq"]:
+            return self._forward_seq2seq_unified(processed_src, targets, epoch)
         else:
-            raise ValueError(f"Unsupported strategy: {self.strategy}")
+            raise ValueError(f"Unknown strategy: {self.strategy}")
 
-    def _preprocess_input(self, src):
-        """Apply preprocessing to input sequence."""
+    def _preprocess_input(self, src: torch.Tensor) -> torch.Tensor:
+        """Apply input preprocessing"""
+        processed = self.input_preprocessor(src)
         if self.input_skip_connection:
-            return self.input_normalization(self.input_preprocessor(src) + src)
-        else:
-            return self.input_normalization(self.input_preprocessor(src))
+            processed = processed + src
+        return self.input_normalization(processed)
 
-    def _forward_seq2seq(self, src, targets, epoch):
-        """
-        Forward pass for standard sequence-to-sequence forecasting.
-
-        Args:
-            src: Preprocessed source sequence [batch_size, seq_len, features]
-            targets: Target sequence for teacher forcing
-            epoch: Current epoch for scheduled sampling
-
-        Returns:
-            Predicted sequence [batch_size, target_len, output_size]
-        """
-        batch_size, _, _ = src.shape
-        device = src.device
-
-        # Encode the input sequence
-        encoder_outputs, encoder_hidden = self.encoder(src)
-
-        # Ensure proper shape for encoder outputs
-        if encoder_outputs.dim() == 3 and encoder_outputs.shape[1] != src.shape[1]:
-            encoder_outputs = encoder_outputs.transpose(0, 1)
-
-        # Handle VAE latent representations if present
-        decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
-        self._kl = kl_div  # Store KL divergence for potential VAE loss
-
-        # Initialize decoder sequence
-        # decoder_input = torch.zeros(batch_size, 1, self.output_size, device=device)
-        decoder_input = self.init_decoder_input_layer(
-            encoder_outputs[:, -1, :]
-        ).unsqueeze(1)
-
-        outputs = torch.zeros(
-            batch_size, self.target_len, self.output_size, device=device
-        )
-
-        # Generate sequence step by step
-        for t in range(self.target_len):
-            # Decode one step
-            decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden)
-
-            # Apply attention if configured
-            if self.use_attention:
-                context, _ = self.attention_module(decoder_hidden, encoder_outputs)
-                decoder_output = self.output_layer(
-                    torch.cat((decoder_output, context), dim=-1)
-                )
-            else:
-                decoder_output = self.output_layer(decoder_output)
-
-            # Apply output transformations
-            decoder_output = self.output_block(decoder_output)
-            decoder_output = self.output_normalization(decoder_output)
-            outputs[:, t : t + 1] = decoder_output.unsqueeze(1)
-
-            # Determine next input (teacher forcing or own prediction)
-            if targets is not None:
-                teacher_force_ratio = (
-                    self.scheduled_sampling_fn(epoch)
-                    if self.scheduled_sampling_fn
-                    else self.teacher_forcing_ratio
-                )
-                use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-                decoder_input = (
-                    targets[:, t : t + 1]
-                    if use_teacher_forcing
-                    else decoder_output.unsqueeze(1)
-                )
-            else:
-                decoder_input = decoder_output.unsqueeze(1)
-
-        return self.output_postprocessor(outputs)
-
-    def _forward_transformer_seq2seq(self, src, targets=None, epoch=None):
-        """
-        Unified transformer forward pass using autoregressive decoding.
-        Efficient decoding with optional teacher forcing and caching.
-        """
-        batch_size, _, _ = src.shape
-        device = src.device
-
-        # Encode input once
-        memory = self.encoder(src)
-
-        # Initialize decoder input context
-        x_dec_so_far = src[:, -self.label_len :, :]
-        next_input = x_dec_so_far[:, -1:, :]  # Start with last context step
-
-        preds = []
-        incremental_state = None  # One per decoder layer
-
-        teacher_forcing = False
-        if self.training and targets is not None:
-            teacher_force_ratio = (
-                self.scheduled_sampling_fn(epoch)
-                if self.scheduled_sampling_fn
-                else self.teacher_forcing_ratio
-            )
-            teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-
-        for t in range(self.pred_len):
-            # Use optimized single-step decoder
-            out, incremental_state = self.decoder.forward_one_step(
-                tgt=next_input,
-                memory=memory,
-                incremental_state=incremental_state,
-            )
-            pred_t = self.output_layer(out)  # [B, 1, output_dim]
-            preds.append(pred_t)
-
-            # Choose next input
-            if self.training and teacher_forcing and targets is not None:
-                next_input = targets[:, t : t + 1, :]
-            else:
-                next_input = pred_t
-
-            # Pad if output != input dim
-            if self.output_size != self.input_size:
-                pad_size = self.input_size - self.output_size
-                padding = torch.zeros(next_input.size(0), 1, pad_size, device=device)
-                next_input = torch.cat([next_input, padding], dim=-1)
-
-        return torch.cat(preds, dim=1)
-
-    def _forward_transformer_informer(self, src, targets=None, epoch=None):
-        """
-        Informer-style forward pass: no autoregressive decoding.
-        Uses a start token to initialize the decoder and predicts all steps in parallel.
-        """
-        batch_size, _, _ = src.shape
-        device = src.device
-
-        # === Encode full input sequence ===
-        enc_out = self.encoder(src)  # [B, T_enc, D]
-
-        # === Create start token sequence for decoder ===
-        start_token = src[:, -1:, :]  # e.g. last encoder input (or zeros)
-        dec_input = start_token.expand(
-            batch_size, self.pred_len, -1
-        )  # [B, T_pred, input_size]
-
-        # === Embed and decode entire prediction range in one shot ===
-        out = self.decoder(dec_input, enc_out)  # [B, T_pred, D]
-
-        # === Project to output space ===
-        out = self.output_layer(out)  # [B, T_pred, output_size]
-
-        return out
-
-    def _forward_seq2seq_multi(self, src, targets, epoch):
-        """
-        Forward pass for multi-encoder-decoder sequence-to-sequence forecasting.
-
-        Args:
-            src: Preprocessed source sequence [batch_size, seq_len, features]
-            targets: Target sequence for teacher forcing
-            epoch: Current epoch for scheduled sampling
-
-        Returns:
-            Predicted sequence [batch_size, target_len, output_size]
-        """
-        batch_size, seq_len, input_size = src.shape
-        device = src.device
-
-        # Each feature gets its own encoder-decoder
-        decoder_outputs_list = []
-        for i in range(input_size):
-            # Extract single feature and process it
-            x_i = src[:, :, i].unsqueeze(-1)  # [B, T, 1]
-            encoder_i = self.encoder[i]
-            decoder_i = self.decoder[i]
-
-            # Encode the input
-            encoder_outputs, encoder_hidden = encoder_i(x_i)
-
-            # Ensure proper shape for encoder outputs
-            if encoder_outputs.dim() == 3 and encoder_outputs.shape[1] != seq_len:
-                encoder_outputs = encoder_outputs.transpose(0, 1)
-
-            # Handle VAE latent representations if present
-            decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
-            self._kl = kl_div  # Store KL divergence for potential VAE loss
-
-            # Initialize decoder sequence for this feature
-            decoder_input = torch.zeros(batch_size, 1, self.output_size, device=device)
-            feature_outputs = torch.zeros(
-                batch_size, self.target_len, self.output_size, device=device
-            )
-
-            # Generate sequence step by step for this feature
-            for t in range(self.target_len):
-                decoder_output, decoder_hidden = decoder_i(
-                    decoder_input, decoder_hidden
-                )
-
-                # Apply attention if configured
-                if self.use_attention:
-                    query = self._get_attention_query(decoder_output, decoder_hidden)
-                    context, _ = self.attention_module(query, encoder_outputs)
-                    decoder_output = self.output_layer(
-                        torch.cat((decoder_output, context), dim=-1)
-                    )
-                else:
-                    decoder_output = self.output_layer(decoder_output)
-
-                # Apply output transformations
-                decoder_output = self.output_block(decoder_output)
-                decoder_output = self.output_normalization(decoder_output)
-                feature_outputs[:, t : t + 1] = decoder_output.unsqueeze(1)
-
-                # Determine next input (teacher forcing or own prediction)
-                if targets is not None:
-                    teacher_force_ratio = (
-                        self.scheduled_sampling_fn(epoch)
-                        if self.scheduled_sampling_fn
-                        else self.teacher_forcing_ratio
-                    )
-                    use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-                    decoder_input = (
-                        targets[:, t : t + 1]
-                        if use_teacher_forcing
-                        else decoder_output.unsqueeze(1)
-                    )
-                else:
-                    decoder_input = decoder_output.unsqueeze(1)
-
-            decoder_outputs_list.append(feature_outputs)  # [B, T, output_size]
-
-        # Aggregate outputs from all features
-        stacked = (
-            torch.stack(decoder_outputs_list, dim=0).permute(1, 2, 0, 3).squeeze(3)
-        )
-        outputs = self.decoder_aggregator(stacked).squeeze(1)
-
-        return self.output_postprocessor(outputs)
-
-    def _forward_autoregressive(self, src, targets, epoch):
-        """
-        Forward pass for autoregressive forecasting.
-
-        Args:
-            src: Preprocessed source sequence [batch_size, seq_len, features]
-            targets: Target sequence for teacher forcing
-            epoch: Current epoch for scheduled sampling
-
-        Returns:
-            Predicted sequence [batch_size, target_len, output_size]
-        """
-        batch_size, _, _ = src.shape
-        decoder_input = src[:, -1:, :]  # Use last time step as initial input
-        outputs = []
-
-        # Generate sequence autoregressively
-        for t in range(self.target_len):
-            decoder_output = self.decoder(decoder_input)
-            decoder_output = self.output_normalization(decoder_output)
-            outputs.append(decoder_output)
-
-            # Determine next input (teacher forcing or own prediction)
-            if targets is not None:
-                teacher_force_ratio = (
-                    self.scheduled_sampling_fn(epoch)
-                    if self.scheduled_sampling_fn
-                    else self.teacher_forcing_ratio
-                )
-                use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-                decoder_input = (
-                    targets[:, t : t + 1] if use_teacher_forcing else decoder_output
-                )
-            else:
-                decoder_input = decoder_output
-
-        return self.output_postprocessor(torch.cat(outputs, dim=1))
-
-    def _forward_direct(self, src):
-        """
-        Forward pass for direct forecasting (single-step prediction).
-
-        Args:
-            src: Preprocessed source sequence
-
-        Returns:
-            Predicted sequence
-        """
+    def _forward_direct(self, src: torch.Tensor) -> torch.Tensor:
+        """Direct forecasting - single forward pass"""
         output = self.decoder(src)
         output = self.output_normalization(output)
         return self.output_postprocessor(output)
 
-    def _process_encoder_hidden(self, encoder_hidden):
-        """
-        Process encoder hidden state, handling VAE style encoders and bidirectional encoders.
+    def _forward_autoregressive(
+        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+    ) -> torch.Tensor:
+        """Autoregressive forecasting"""
+        decoder_input = src[:, -1:, :]  # Start with last timestep
+        outputs = []
 
-        Args:
-            encoder_hidden: Hidden state from encoder
+        for t in range(self.target_len):
+            output = self.decoder(decoder_input)
+            output = self.output_normalization(output)
+            outputs.append(output)
 
-        Returns:
-            tuple: (processed_hidden, kl_divergence)
-        """
-        # Check if this is a VAE style encoder with (z, mu, logvar)
+            # Next input: teacher forcing or prediction
+            decoder_input = self._get_next_input(output, targets, t, epoch)
+
+        return self.output_postprocessor(torch.cat(outputs, dim=1))
+
+    def _forward_seq2seq_unified(
+        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+    ) -> torch.Tensor:
+        """Unified seq2seq forward for all model types"""
+        if self.multi_encoder_decoder:
+            return self._forward_multi_encoder_decoder(src, targets, epoch)
+
+        # Route by model type
+        if self.model_type == "informer-like":
+            return self._forward_informer_style(src, targets, epoch)
+        elif self.model_type == "transformer":
+            return self._forward_transformer_style(src, targets, epoch)
+        else:  # LSTM/RNN style
+            return self._forward_rnn_style(src, targets, epoch)
+
+    def _forward_rnn_style(self, src, targets=None, epoch=None):
+        """Fixed RNN/LSTM seq2seq with proper output accumulation"""
+        batch_size = src.size(0)
+        device = src.device
+        
+        # Encode
+        encoder_outputs, encoder_hidden = self.encoder(src)
+        
+        # Process encoder hidden state
+        decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
+        self._kl = kl_div
+        
+        # Initialize decoder input
+        if hasattr(self, 'init_decoder_input_layer'):
+            decoder_input = self.init_decoder_input_layer(
+                encoder_outputs[:, -1, :]
+            ).unsqueeze(1)  # [B, 1, output_size]
+        else:
+            decoder_input = torch.zeros(batch_size, 1, self.output_size, device=device)
+        
+        # PRE-ALLOCATE output tensor (like original)
+        outputs = torch.zeros(
+            batch_size, self.target_len, self.output_size, device=device
+        )
+        
+        # Decode step by step
+        for t in range(self.target_len):
+            # Decode one step
+            decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden)
+            
+            # Apply attention if configured
+            if self.use_attention:
+                context, _ = self.attention_module(decoder_hidden, encoder_outputs)
+                decoder_output = self.output_layer(
+                    torch.cat([decoder_output, context], dim=-1)
+                )
+            else:
+                decoder_output = self.output_layer(decoder_output)
+            
+            # Post-process
+            decoder_output = self.output_block(decoder_output)
+            decoder_output = self.output_normalization(decoder_output)
+            
+            # CRITICAL FIX: Proper assignment to output tensor
+            if len(decoder_output.shape) == 2:  # [B, output_size]
+                outputs[:, t, :] = decoder_output
+            else:  # [B, 1, output_size]
+                outputs[:, t, :] = decoder_output.squeeze(1)
+            
+            # Next input with proper shape handling
+            if targets is not None:
+                teacher_force_ratio = (
+                    self.scheduled_sampling_fn(epoch)
+                    if self.scheduled_sampling_fn
+                    else self.teacher_forcing_ratio
+                )
+                use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
+                
+                if use_teacher_forcing:
+                    decoder_input = targets[:, t:t+1, :]  # [B, 1, input_size]
+                else:
+                    # Ensure decoder_output has right shape for next input
+                    if len(decoder_output.shape) == 2:
+                        decoder_input = decoder_output.unsqueeze(1)  # [B, 1, output_size]
+                    else:
+                        decoder_input = decoder_output  # Already [B, 1, output_size]
+            else:
+                if len(decoder_output.shape) == 2:
+                    decoder_input = decoder_output.unsqueeze(1)
+                else:
+                    decoder_input = decoder_output
+        
+        return self.output_postprocessor(outputs)
+
+
+    def _forward_transformer_style(
+        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+    ) -> torch.Tensor:
+        """Transformer with autoregressive decoding"""
+        batch_size = src.size(0)
+        device = src.device
+
+        # Encode
+        memory = self.encoder(src)
+
+        # Initialize
+        next_input = src[:, -self.label_len :, :][:, -1:, :]  # Last timestep
+        outputs = []
+        incremental_state = None
+
+        # Check teacher forcing
+        use_teacher_forcing = self._should_use_teacher_forcing(targets, epoch)
+
+        # Decode autoregressively
+        for t in range(self.pred_len):
+            # Single step decode
+            if hasattr(self.decoder, "forward_one_step"):
+                out, incremental_state = self.decoder.forward_one_step(
+                    tgt=next_input, memory=memory, incremental_state=incremental_state
+                )
+            else:
+                out = self.decoder(next_input, memory)
+
+            pred_t = self.output_layer(out)
+            outputs.append(pred_t)
+
+            # Next input
+            if use_teacher_forcing and targets is not None:
+                next_input = targets[:, t : t + 1, :]
+            else:
+                next_input = pred_t
+                # Pad if dimensions don't match
+                if self.output_size != self.input_size:
+                    pad_size = self.input_size - self.output_size
+                    padding = torch.zeros(batch_size, 1, pad_size, device=device)
+                    next_input = torch.cat([next_input, padding], dim=-1)
+
+        return torch.cat(outputs, dim=1)
+
+    def _forward_informer_style(
+        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+    ) -> torch.Tensor:
+        """Informer-style parallel decoding"""
+        batch_size = src.size(0)
+
+        # Encode
+        enc_out = self.encoder(src)
+
+        # Create decoder input (start token repeated)
+        start_token = src[:, -1:, :]
+        dec_input = start_token.expand(batch_size, self.pred_len, -1)
+
+        # Decode all at once
+        out = self.decoder(dec_input, enc_out)
+        out = self.output_layer(out)
+
+        return out
+
+    def _forward_multi_encoder_decoder(
+        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+    ) -> torch.Tensor:
+        """Multi encoder-decoder for each input feature"""
+        batch_size, seq_len, input_size = src.shape
+        feature_outputs = []
+
+        for i in range(input_size):
+            # Process each feature separately
+            feature_input = src[:, :, i : i + 1]  # [B, T, 1]
+
+            # Use dedicated encoder/decoder
+            encoder_outputs, encoder_hidden = self.encoder[i](feature_input)
+            decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
+            self._kl = kl_div
+
+            # Initialize decoder
+            decoder_input = torch.zeros(
+                batch_size, 1, self.output_size, device=src.device
+            )
+            outputs = []
+
+            # Decode for this feature
+            for t in range(self.target_len):
+                decoder_output, decoder_hidden = self.decoder[i](
+                    decoder_input, decoder_hidden
+                )
+
+                if self.use_attention:
+                    query = self._get_attention_query(decoder_output, decoder_hidden)
+                    context, _ = self.attention_module(query, encoder_outputs)
+                    decoder_output = self.output_layer(
+                        torch.cat([decoder_output, context], dim=-1)
+                    )
+                else:
+                    decoder_output = self.output_layer(decoder_output)
+
+                decoder_output = self.output_block(decoder_output)
+                decoder_output = self.output_normalization(decoder_output)
+                outputs.append(decoder_output)
+
+                decoder_input = self._get_next_input(decoder_output, targets, t, epoch)
+
+            feature_outputs.append(torch.cat(outputs, dim=1))
+
+        # Aggregate features
+        stacked = torch.stack(
+            feature_outputs, dim=-1
+        )  # [B, T, output_size, num_features]
+        aggregated = self.decoder_aggregator(stacked).squeeze(-1)  # [B, T, output_size]
+
+        return self.output_postprocessor(aggregated)
+
+    def _get_next_input(
+        self,
+        current_output: torch.Tensor,
+        targets: torch.Tensor = None,
+        step: int = 0,
+        epoch: int = None,
+    ) -> torch.Tensor:
+        """Determine next decoder input (teacher forcing or prediction)"""
+        if targets is None or not self.training:
+            return (
+                current_output.unsqueeze(1)
+                if current_output.dim() == 2
+                else current_output
+            )
+
+        # Teacher forcing decision
+        if self._should_use_teacher_forcing(targets, epoch):
+            return targets[:, step : step + 1, :]
+        else:
+            return (
+                current_output.unsqueeze(1)
+                if current_output.dim() == 2
+                else current_output
+            )
+
+    def _should_use_teacher_forcing(
+        self, targets: torch.Tensor = None, epoch: int = None
+    ) -> bool:
+        """Determine if teacher forcing should be used"""
+        if not self.training or targets is None:
+            return False
+
+        ratio = (
+            self.scheduled_sampling_fn(epoch)
+            if self.scheduled_sampling_fn and epoch is not None
+            else self.teacher_forcing_ratio
+        )
+        return torch.rand(1).item() < ratio
+
+    def _process_encoder_hidden(
+        self, encoder_hidden
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Process encoder hidden state, handling VAE and bidirectional cases"""
+        # VAE case: (z, mu, logvar)
         if isinstance(encoder_hidden, tuple) and len(encoder_hidden) == 3:
             z, mu, logvar = encoder_hidden
             kl_div = (
@@ -550,59 +448,33 @@ class ForecastingModel(nn.Module):
             )
             return (z,), kl_div
 
-        # Otherwise, prepare regular hidden state
+        # Regular case
         return self._prepare_decoder_hidden(encoder_hidden), None
 
     def _prepare_decoder_hidden(self, encoder_hidden):
-        """
-        Prepare encoder hidden state for decoder, handling LSTM and bidirectional cases.
+        """Prepare encoder hidden for decoder (handle LSTM/bidirectional)"""
+        if not hasattr(self.encoder, "bidirectional") or not self.encoder.bidirectional:
+            return encoder_hidden
 
-        Args:
-            encoder_hidden: Hidden state from encoder
-
-        Returns:
-            Processed hidden state ready for decoder
-        """
-        # Handle LSTM case (hidden, cell)
-        if isinstance(encoder_hidden, tuple):
+        # Handle bidirectional case
+        if isinstance(encoder_hidden, tuple):  # LSTM
             h_n, c_n = encoder_hidden
-            if hasattr(self.encoder, "bidirectional") and self.encoder.bidirectional:
-                if self.encoder.num_layers != self.decoder.num_layers:
-                    h_n = h_n[-self.decoder.num_layers :]
-                    c_n = c_n[-self.decoder.num_layers :]
-                if h_n.size(0) % 2 == 0:
-                    h_n = h_n.view(
-                        self.encoder.num_layers, 2, -1, self.encoder.hidden_size
-                    ).sum(dim=1)
-                    c_n = c_n.view(
-                        self.encoder.num_layers, 2, -1, self.encoder.hidden_size
-                    ).sum(dim=1)
-                return (h_n, c_n)
-            return encoder_hidden
-        # Handle GRU/RNN case (just hidden)
-        else:
-            h_n = encoder_hidden
-            if hasattr(self.encoder, "bidirectional") and self.encoder.bidirectional:
-                if self.encoder.num_layers != self.decoder.num_layers:
-                    h_n = h_n[-self.decoder.num_layers :]
-                if h_n.size(0) % 2 == 0:
-                    h_n = h_n.view(
-                        self.encoder.num_layers, 2, -1, self.encoder.hidden_size
-                    ).sum(dim=1)
-                return h_n
-            return encoder_hidden
+            h_n = self._combine_bidirectional(h_n)
+            c_n = self._combine_bidirectional(c_n)
+            return (h_n, c_n)
+        else:  # GRU/RNN
+            return self._combine_bidirectional(encoder_hidden)
+
+    def _combine_bidirectional(self, hidden):
+        """Combine bidirectional hidden states"""
+        if hidden.size(0) % 2 == 0:
+            # Reshape and sum forward/backward
+            num_layers = hidden.size(0) // 2
+            hidden = hidden.view(num_layers, 2, -1, hidden.size(-1)).sum(dim=1)
+        return hidden
 
     def _get_attention_query(self, decoder_output, decoder_hidden):
-        """
-        Extract query vector for attention mechanism.
-
-        Args:
-            decoder_output: Output from decoder step
-            decoder_hidden: Hidden state from decoder
-
-        Returns:
-            Query vector for attention
-        """
+        """Extract attention query from decoder state"""
         if hasattr(self.decoder, "is_transformer") and self.decoder.is_transformer:
             return decoder_hidden.permute(1, 0, 2)
         else:
@@ -612,34 +484,18 @@ class ForecastingModel(nn.Module):
                 else decoder_hidden[-1]
             )
 
-    def _generate_square_subsequent_mask(self, sz):
-        """
-        Generate a square mask for the transformer decoder to prevent attending to future time steps.
+    # Utility methods
+    def get_kl(self) -> Optional[torch.Tensor]:
+        """Get KL divergence for VAE loss"""
+        return getattr(self, "_kl", None)
 
-        Args:
-            sz: Size of the square mask
+    def attribute_forward(self, src: torch.Tensor) -> torch.Tensor:
+        """Captum-compatible forward for attribution analysis"""
+        src = src.requires_grad_()
+        return self.forward(src)
 
-        Returns:
-            Causal mask tensor
-        """
+    def _generate_square_subsequent_mask(self, sz: int) -> torch.Tensor:
+        """Generate causal mask for transformer decoder"""
         mask = torch.triu(torch.full((sz, sz), float("-inf")), diagonal=1)
         mask.fill_diagonal_(0)
         return mask
-
-    def get_kl(self):
-        """Get the KL divergence term if using VAE."""
-        return getattr(self, "_kl", None)
-
-    def attribute_forward(self, src):
-        """
-        Captum-compatible forward function.
-        Used for computing attribution with respect to the input.
-        Args:
-            src: Input sequence tensor [B, T, D]
-        Returns:
-            output: Forecasted sequence [B, T', D']
-        """
-        # self.eval()
-        src = src.requires_grad_()
-        out = self.forward(src)
-        return out

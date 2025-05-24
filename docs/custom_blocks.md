@@ -1,272 +1,464 @@
-# ForeBlocks Architecture and Custom Blocks
+# ForeBlocks Architecture & Custom Blocks Guide
 
-## Overview
+**A comprehensive guide to understanding and customizing ForeBlocks' modular architecture**
 
-The `ForecastingModel` class provides a flexible architecture for time series forecasting that supports multiple strategies and customizable processing blocks. This document explains the key components and how they interact with each other.
+---
 
-## Architecture Design Philosophy
+## 🏗️ Design Philosophy
 
-ForeBlocks is designed around these core principles:
+ForeBlocks is built on four core principles:
 
-1. **Modularity**: All components can be replaced or customized
-2. **Transparency**: Clear data flow between components
-3. **Flexibility**: Multiple forecasting strategies supported in a unified framework
-4. **Extensibility**: Easy to add new components and architectures
+| Principle | Description |
+|-----------|-------------|
+| **🧩 Modularity** | All components can be replaced or customized independently |
+| **🔍 Transparency** | Clear, traceable data flow between all components |
+| **🔄 Flexibility** | Multiple forecasting strategies in a unified framework |
+| **📈 Extensibility** | Easy addition of new components and architectures |
 
-## Custom Processing Blocks
+---
 
-The ForecastingModel uses several custom processing blocks that can be configured or replaced:
+## 🔧 Custom Processing Blocks
 
-| Block | Description |
-|-------|-------------|
-| `input_preprocessor` | Custom neural network module for transforming input features |
-| `input_normalization` | Standardizes or normalizes input data |
-| `output_normalization` | Normalizes the decoder outputs |
-| `output_block` | Additional transformations applied to decoder outputs before normalization |
-| `output_postprocessor` | Final transformation applied to the model predictions |
-| `input_skip_connection` | When True, adds the original input to the preprocessed input |
+ForeBlocks uses a pipeline of customizable processing blocks that transform data at different stages:
 
-## Data Flow Architecture
+### 📋 Block Overview
 
-The data flows through the ForeBlocks as follows:
+| Block | Stage | Purpose | Default |
+|-------|-------|---------|---------|
+| `input_preprocessor` | Pre-Encoder | Transform input features (e.g., CNN, FFT) | `nn.Identity()` |
+| `input_normalization` | Pre-Encoder | Standardize input data | `nn.Identity()` |
+| `input_skip_connection` | Pre-Encoder | Add residual connection | `False` |
+| `output_block` | Post-Decoder | Additional output transformations | `nn.Identity()` |
+| `output_normalization` | Post-Decoder | Normalize decoder outputs | `nn.Identity()` |
+| `output_postprocessor` | Final | Final prediction transformations | `nn.Identity()` |
 
-![Data Flow Diagram](forecasting_model.png)
+---
 
-## Detailed Explanation of Custom Blocks
+## 🌊 Data Flow Architecture
+
+```
+Input Data
+    ↓
+┌─────────────────────┐
+│ input_preprocessor  │ ← Feature extraction/transformation
+└─────────────────────┘
+    ↓
+┌─────────────────────┐
+│ input_skip_connection│ ← Add residual (optional)
+│ (original + processed)│
+└─────────────────────┘
+    ↓
+┌─────────────────────┐
+│ input_normalization │ ← Standardize inputs
+└─────────────────────┘
+    ↓
+┌─────────────────────┐
+│     ENCODER         │ ← Core neural network
+└─────────────────────┘
+    ↓
+┌─────────────────────┐
+│     DECODER         │ ← Generate predictions
+└─────────────────────┘
+    ↓
+┌─────────────────────┐
+│   output_block      │ ← Additional transformations
+└─────────────────────┘
+    ↓
+┌─────────────────────┐
+│ output_normalization│ ← Normalize outputs
+└─────────────────────┘
+    ↓
+┌─────────────────────┐
+│output_postprocessor │ ← Final constraints/scaling
+└─────────────────────┘
+    ↓
+Final Predictions
+```
+
+---
+
+## 📝 Detailed Block Explanations
 
 ### Input Processing Flow
 
-1. **input_preprocessor**:
-   - A neural network module transforming input features before the encoder
-   - Examples: convolutional layers, fully connected layers, or specialized time series preprocessing
-   - Purpose: Feature extraction or transformation to create better representations
+#### 1. **input_preprocessor**
+- **Purpose**: Transform input features before the encoder
+- **Examples**: Convolutional layers, fully connected layers, specialized time series preprocessing
+- **Use Cases**: Feature extraction, dimensionality reduction, frequency domain analysis
 
-2. **input_skip_connection**:
-   - When True, adds the original input to the preprocessed input (preprocessed + original)
-   - Similar to residual connections in deep networks
-   - Helps with gradient flow and preserves original information
-   - Especially useful when the preprocessor might lose some important original features
+#### 2. **input_skip_connection**
+- **Purpose**: Add residual connection (preprocessed + original)
+- **Benefits**: Preserves original information, improves gradient flow
+- **When to use**: When preprocessor might lose important original features
+- **Implementation**: `preprocessed_input + original_input`
 
-3. **input_normalization**:
-   - Standardizes input data to make training more stable
-   - Typically a standardization (zero mean, unit variance) or min-max scaling (0-1)
-   - Applied after preprocessing and skip connection
-   - This helps the model converge faster and prevents numerical issues
+#### 3. **input_normalization**
+- **Purpose**: Standardize input data for stable training
+- **Types**: Standardization (zero mean, unit variance) or min-max scaling (0-1)
+- **Benefits**: Faster convergence, prevents numerical issues
+- **Applied**: After preprocessing and skip connection
 
 ### Output Processing Flow
 
-1. **output_block**:
-   - Applied to the decoder output before normalization
-   - Can include activation functions, dropout, etc.
-   - Purpose: Additional transformation of decoder outputs
+#### 1. **output_block**
+- **Purpose**: Additional transformations before normalization
+- **Examples**: Activation functions, dropout, custom transformations
+- **Applied**: To decoder output before normalization
 
-2. **output_normalization**:
-   - Standardizes the outputs from the decoder/output layer
-   - Similar to input normalization, but for outputs
-   - Helps stabilize training when the output range varies
+#### 2. **output_normalization**
+- **Purpose**: Standardize decoder outputs
+- **Benefits**: Stabilizes training with varying output ranges
+- **Similar to**: Input normalization but for outputs
 
-3. **output_postprocessor**:
-   - Final transformation applied to the forecasting results
-   - Can be used for specific post-processing needs like quantization, constraint application, etc.
-   - Applied after all other processing steps
-   - Example use: converting normalized outputs back to original scale
+#### 3. **output_postprocessor**
+- **Purpose**: Final transformation of forecasting results
+- **Examples**: Scaling back to original range, applying constraints, quantization
+- **Applied**: After all other processing steps
 
-## Forecasting Strategies
+---
 
-The architecture accommodates different forecasting strategies:
+## 🎯 Forecasting Strategies
 
-### 1. seq2seq (Sequence-to-Sequence)
-- Uses full encoder-decoder architecture
-- All preprocessing and postprocessing blocks are used
-- Can include attention mechanism between encoder and decoder
-- Sequential generation of outputs, one step at a time
+### 1. **Seq2Seq** (Default)
+*🎯 Best for: Most time series problems with complex patterns*
+
+**Flow**: Full encoder-decoder with step-by-step generation
 
 ```python
-# Example seq2seq implementation
 def _forward_seq2seq(self, src, targets, epoch):
-    # Encode input sequence
+    """Standard sequence-to-sequence forecasting with step-by-step generation."""
+    batch_size, _, _ = src.shape
+    device = src.device
+
+    # 1. Encode the input sequence
     encoder_outputs, encoder_hidden = self.encoder(src)
-    
-    # Initialize decoder
-    decoder_hidden = self._prepare_decoder_hidden(encoder_hidden)
-    decoder_input = torch.zeros(batch_size, 1, self.output_size, device=device)
+
+    # 2. Handle VAE and bidirectional encoders
+    decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
+    self._kl = kl_div  # Store for potential VAE loss
+
+    # 3. Initialize decoder with learned projection from encoder
+    decoder_input = self.init_decoder_input_layer(
+        encoder_outputs[:, -1, :]
+    ).unsqueeze(1)
+
     outputs = torch.zeros(batch_size, self.target_len, self.output_size, device=device)
-    
-    # Generate sequence step by step
+
+    # 4. Generate sequence step by step
     for t in range(self.target_len):
         decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden)
-        
-        # Apply attention if used
+
+        # Apply attention if configured
         if self.use_attention:
-            query = self._get_attention_query(decoder_output, decoder_hidden)
-            context, _ = self.attention_module(query, encoder_outputs)
-            decoder_output = self.output_layer(torch.cat((decoder_output, context), dim=-1))
+            context, _ = self.attention_module(decoder_hidden, encoder_outputs)
+            decoder_output = self.output_layer(
+                torch.cat((decoder_output, context), dim=-1)
+            )
         else:
             decoder_output = self.output_layer(decoder_output)
-        
-        # Apply output transformations
+
+        # Apply processing blocks
         decoder_output = self.output_block(decoder_output)
         decoder_output = self.output_normalization(decoder_output)
         outputs[:, t:t+1] = decoder_output.unsqueeze(1)
-        
-        # Teacher forcing
+
+        # Teacher forcing decision
         if targets is not None:
-            use_tf = torch.rand(1).item() < self.teacher_forcing_ratio
-            decoder_input = targets[:, t:t+1] if use_tf else decoder_output.unsqueeze(1)
+            teacher_force_ratio = (
+                self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn
+                else self.teacher_forcing_ratio
+            )
+            use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
+            decoder_input = (
+                targets[:, t:t+1] if use_teacher_forcing
+                else decoder_output.unsqueeze(1)
+            )
         else:
             decoder_input = decoder_output.unsqueeze(1)
-    
-    # Apply postprocessing and return
+
     return self.output_postprocessor(outputs)
 ```
 
-### 2. autoregressive
-- Uses decoder only (encoder is bypassed)
-- Input and output processing still apply
-- Each output is fed back as input for the next prediction
+**Key Features**:
+- ✅ Smart decoder initialization from encoder outputs
+- ✅ VAE-compatible with automatic KL divergence handling
+- ✅ Bidirectional encoder support
+- ✅ Scheduled sampling support
+- ✅ Uses all processing blocks
+- ✅ Supports attention mechanisms
+
+---
+
+### 2. **Autoregressive**
+*🎯 Best for: Sequential dependencies where each prediction affects the next*
+
+**Flow**: Decoder-only with feedback loop
 
 ```python
-# Example autoregressive implementation
 def _forward_autoregressive(self, src, targets, epoch):
+    """Autoregressive forecasting with feedback loop."""
     batch_size, _, _ = src.shape
-    # Start with last time step of input
-    decoder_input = src[:, -1:, :]
+    decoder_input = src[:, -1:, :]  # Use last time step as initial input
     outputs = []
-    
-    # Generate predictions sequentially
+
+    # Generate sequence autoregressively
     for t in range(self.target_len):
         decoder_output = self.decoder(decoder_input)
         decoder_output = self.output_normalization(decoder_output)
         outputs.append(decoder_output)
-        
-        # Teacher forcing or use previous prediction
+
+        # Determine next input (teacher forcing or own prediction)
         if targets is not None:
-            use_tf = torch.rand(1).item() < self.teacher_forcing_ratio
-            decoder_input = targets[:, t:t+1] if use_tf else decoder_output
+            teacher_force_ratio = (
+                self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn
+                else self.teacher_forcing_ratio
+            )
+            use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
+            decoder_input = (
+                targets[:, t:t+1] if use_teacher_forcing else decoder_output
+            )
         else:
             decoder_input = decoder_output
-    
-    # Concatenate all outputs and apply postprocessing
+
     return self.output_postprocessor(torch.cat(outputs, dim=1))
 ```
 
-### 3. direct
-- Simplest approach, uses decoder to predict all future steps at once
-- Still utilizes the normalization and post-processing components
-- No sequential dependencies in the prediction
+**Key Features**:
+- ⚡ Faster than seq2seq (no encoder)
+- 🔄 Each prediction feeds into the next
+- 📉 Good for trend continuation
+- 🎯 Uses output processing blocks
+
+---
+
+### 3. **Direct Multi-Step**
+*🎯 Best for: Independent predictions across time steps*
+
+**Flow**: Single forward pass generates all predictions
 
 ```python
-# Example direct implementation
 def _forward_direct(self, src):
-    # Generate all outputs at once
+    """Direct forecasting - single-step prediction of all future values."""
     output = self.decoder(src)
     output = self.output_normalization(output)
     return self.output_postprocessor(output)
 ```
 
-### 4. transformer_seq2seq
-- Uses a transformer architecture with self-attention mechanisms
-- Handles sequential generation with causal masking in the decoder
-- Supports both teacher forcing and autoregressive modes
+**Key Features**:
+- ⚡ Fastest approach
+- 🎯 No error accumulation
+- 🔧 Simple architecture
+- ✅ Uses normalization and postprocessing
+
+---
+
+### 4. **Transformer Seq2Seq**
+*🎯 Best for: Long sequences with complex attention patterns*
+
+**Flow**: Transformer architecture with efficient caching
 
 ```python
-# Simplified transformer_seq2seq implementation
-def _forward_transformer_seq2seq(self, src, targets, epoch):
-    # Encode source sequence
-    enc_out = self.enc_embedding(src)
-    enc_out = self.encoder(enc_out)
-    
+def _forward_transformer_seq2seq(self, src, targets=None, epoch=None):
+    """Efficient transformer decoding with optional teacher forcing and caching."""
+    batch_size, _, _ = src.shape
+    device = src.device
+
+    # Encode input once
+    memory = self.encoder(src)
+
+    # Initialize context and state
+    x_dec_so_far = src[:, -self.label_len:, :]
+    next_input = x_dec_so_far[:, -1:, :]  # Start with last context step
+
+    preds = []
+    incremental_state = None  # For efficient caching
+
+    # Teacher forcing decision
+    teacher_forcing = False
     if self.training and targets is not None:
-        # Determine whether to use teacher forcing
-        use_tf = torch.rand(1).item() < self.teacher_forcing_ratio
-        
-        if use_tf:
-            # Teacher forcing approach
-            x_dec = torch.cat([src[:, -self.label_len:, :], targets_padded], dim=1)
-            tgt_mask = self._generate_square_subsequent_mask(x_dec.size(1))
-            dec_out = self.dec_embedding(x_dec)
-            output = self.decoder(dec_out, enc_out, tgt_mask=tgt_mask)
-            return output[:, -self.pred_len:, :]
+        teacher_force_ratio = (
+            self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn
+            else self.teacher_forcing_ratio
+        )
+        teacher_forcing = torch.rand(1).item() < teacher_force_ratio
+
+    # Generate predictions step by step
+    for t in range(self.pred_len):
+        # Use optimized single-step decoder with caching
+        out, incremental_state = self.decoder.forward_one_step(
+            tgt=next_input,
+            memory=memory,
+            incremental_state=incremental_state,
+        )
+        pred_t = self.output_layer(out)  # [B, 1, output_dim]
+        preds.append(pred_t)
+
+        # Choose next input
+        if self.training and teacher_forcing and targets is not None:
+            next_input = targets[:, t:t+1, :]
         else:
-            # Autoregressive generation
-            preds = []
-            x_dec_so_far = src[:, -self.label_len:, :]
-            
-            for step in range(self.pred_len):
-                tgt_mask = self._generate_square_subsequent_mask(x_dec_so_far.size(1))
-                dec_embed = self.dec_embedding(x_dec_so_far)
-                out = self.decoder(dec_embed, enc_out, tgt_mask=tgt_mask)
-                pred_t = self.output_layer(out[:, -1:, :])
-                preds.append(pred_t)
-                x_dec_so_far = torch.cat([x_dec_so_far, pred_t_padded], dim=1)
-                
-            return torch.cat(preds, dim=1)
-    else:
-        # Inference mode - always autoregressive
-        # Similar to the autoregressive branch above
-        return self._generate_autoregressive_predictions(src, enc_out)
+            next_input = pred_t
+
+        # Handle dimension mismatch between input and output
+        if self.output_size != self.input_size:
+            pad_size = self.input_size - self.output_size
+            padding = torch.zeros(next_input.size(0), 1, pad_size, device=device)
+            next_input = torch.cat([next_input, padding], dim=-1)
+
+    return torch.cat(preds, dim=1)
 ```
 
-## Multi-Encoder-Decoder Architecture
+**Key Features**:
+- ⚡ Incremental state caching for efficiency
+- 🔧 Automatic dimension handling
+- 🎯 Single-step optimized decoder calls
+- 🧠 Self-attention mechanisms
+- 📏 Handles long sequences well
 
-When `multi_encoder_decoder=True`, the model creates a separate encoder-decoder pair for each input feature:
+---
 
-1. Each feature gets its own encoder and decoder
-2. All decoders produce forecasts for their respective features
-3. The `decoder_aggregator` combines these individual forecasts into a final prediction
+### 5. **Informer-Style**
+*🎯 Best for: Parallel computation and long-range predictions*
 
-This approach can capture feature-specific patterns better than a single encoder-decoder.
+**Flow**: Parallel prediction without autoregressive generation
 
 ```python
-# Multi-encoder-decoder implementation
+def _forward_transformer_informer(self, src, targets=None, epoch=None):
+    """Informer-style: parallel prediction of all future steps."""
+    batch_size, _, _ = src.shape
+    device = src.device
+
+    # Encode full input sequence
+    enc_out = self.encoder(src)  # [B, T_enc, D]
+
+    # Create start token sequence for decoder
+    start_token = src[:, -1:, :]  # Last encoder input as start
+    dec_input = start_token.expand(batch_size, self.pred_len, -1)  # [B, T_pred, input_size]
+
+    # Decode entire prediction range in one shot
+    out = self.decoder(dec_input, enc_out)  # [B, T_pred, D]
+
+    # Project to output space
+    out = self.output_layer(out)  # [B, T_pred, output_size]
+
+    return out
+```
+
+**Key Features**:
+- ⚡ Fastest approach - no sequential generation
+- 🎯 No error accumulation
+- 📊 Suitable for long-range predictions
+- 🔄 No sequential bottlenecks
+
+---
+
+## 🔀 Multi-Encoder-Decoder Architecture
+
+When `multi_encoder_decoder=True`, the model creates separate encoder-decoder pairs for each input feature:
+
+### 🔄 Architecture Flow
+
+```
+Feature 1 → Encoder 1 → Decoder 1 → Output 1
+Feature 2 → Encoder 2 → Decoder 2 → Output 2     } → Aggregator → Final Output
+Feature 3 → Encoder 3 → Decoder 3 → Output 3
+...
+Feature N → Encoder N → Decoder N → Output N
+```
+
+### 💻 Implementation
+
+```python
 def _forward_seq2seq_multi(self, src, targets, epoch):
+    """Multi-encoder-decoder sequence-to-sequence forecasting."""
     batch_size, seq_len, input_size = src.shape
     device = src.device
-    
-    # List to store outputs from all feature-specific decoder pairs
+
+    # Each feature gets its own encoder-decoder
     decoder_outputs_list = []
-    
-    # Process each input feature separately
     for i in range(input_size):
-        # Extract single feature
+        # Extract single feature and process it
         x_i = src[:, :, i].unsqueeze(-1)  # [B, T, 1]
         encoder_i = self.encoder[i]
         decoder_i = self.decoder[i]
-        
-        # Encode single feature
+
+        # Encode the input
         encoder_outputs, encoder_hidden = encoder_i(x_i)
-        decoder_hidden = self._prepare_decoder_hidden(encoder_hidden)
-        
-        # Feature-specific decoding
+
+        # Handle VAE latent representations if present
+        decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
+        self._kl = kl_div  # Store KL divergence for potential VAE loss
+
+        # Initialize decoder sequence for this feature
         decoder_input = torch.zeros(batch_size, 1, self.output_size, device=device)
-        feature_outputs = torch.zeros(batch_size, self.target_len, self.output_size, device=device)
-        
-        # Generate predictions for this feature
+        feature_outputs = torch.zeros(
+            batch_size, self.target_len, self.output_size, device=device
+        )
+
+        # Generate sequence step by step for this feature
         for t in range(self.target_len):
-            # Similar to seq2seq but with feature-specific encoder/decoder
-            decoder_output, decoder_hidden = decoder_i(decoder_input, decoder_hidden)
-            # ... apply attention, output layer, normalization ...
+            decoder_output, decoder_hidden = decoder_i(
+                decoder_input, decoder_hidden
+            )
+
+            # Apply attention if configured
+            if self.use_attention:
+                query = self._get_attention_query(decoder_output, decoder_hidden)
+                context, _ = self.attention_module(query, encoder_outputs)
+                decoder_output = self.output_layer(
+                    torch.cat((decoder_output, context), dim=-1)
+                )
+            else:
+                decoder_output = self.output_layer(decoder_output)
+
+            # Apply output transformations
+            decoder_output = self.output_block(decoder_output)
+            decoder_output = self.output_normalization(decoder_output)
             feature_outputs[:, t:t+1] = decoder_output.unsqueeze(1)
-            # ... teacher forcing logic ...
-        
-        # Store outputs from this feature's decoder
-        decoder_outputs_list.append(feature_outputs)
-    
-    # Aggregate predictions from all features
-    stacked = torch.stack(decoder_outputs_list, dim=0).permute(1, 2, 0, 3).squeeze(3)
+
+            # Teacher forcing logic
+            if targets is not None:
+                teacher_force_ratio = (
+                    self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn
+                    else self.teacher_forcing_ratio
+                )
+                use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
+                decoder_input = (
+                    targets[:, t:t+1] if use_teacher_forcing
+                    else decoder_output.unsqueeze(1)
+                )
+            else:
+                decoder_input = decoder_output.unsqueeze(1)
+
+        decoder_outputs_list.append(feature_outputs)  # [B, T, output_size]
+
+    # Aggregate outputs from all features
+    stacked = (
+        torch.stack(decoder_outputs_list, dim=0).permute(1, 2, 0, 3).squeeze(3)
+    )
     outputs = self.decoder_aggregator(stacked).squeeze(1)
-    
-    # Apply postprocessing and return
+
     return self.output_postprocessor(outputs)
 ```
 
-## Attention Mechanisms
+**Benefits**:
+- 🎯 Feature-specific pattern learning
+- 🔧 Better handling of heterogeneous features
+- 📊 Improved performance on multivariate data
 
-The framework supports various attention mechanisms to help the model focus on relevant parts of the input sequence:
+---
 
-1. **General Attention**: Computes a weighted sum of encoder outputs based on their relevance to the current decoder state
-2. **Dot Product Attention**: Uses dot product between query and key for computing attention scores
-3. **Additive Attention**: Uses a feed-forward network to compute attention scores
+## 🧠 Attention Mechanisms
+
+### Types Available
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| **Dot Product** | `query ⋅ key` attention scores | Fast, general purpose |
+| **General** | Learned weight matrix attention | More flexible |
+| **Additive** | Feed-forward network scoring | Complex relationships |
+
+### 💻 Implementation
 
 ```python
 # Attention usage in sequence generation
@@ -276,106 +468,221 @@ if self.use_attention:
     decoder_output = self.output_layer(torch.cat((decoder_output, context), dim=-1))
 ```
 
-## Implementation Notes
+**Integration**: Works seamlessly with all forecasting strategies except direct mode.
 
-1. **Default Blocks**: If not specified, each block defaults to `nn.Identity()`, which passes the input through unchanged.
+---
 
-2. **Skip Connection**: If `input_skip_connection=True`, the original input is added to the preprocessed input. This is common in deep networks to improve gradient flow.
+## 🛠️ Custom Block Examples
 
-3. **Model Type**: The parameter `model_type` ("lstm", "gru", "transformer") determines architecture details and how certain functions behave.
-
-4. **Teacher Forcing**: During training, `teacher_forcing_ratio` controls how often to use ground truth as input to the decoder instead of previous predictions.
-
-5. **Scheduled Sampling**: The `scheduled_sampling_fn` can be used to gradually decrease the teacher forcing ratio during training, helping the model become more robust to its own errors.
-
-## Custom Implementation Examples
-
-### Input Preprocessing with CNN
+### 1. **CNN Input Preprocessor**
+*For extracting local patterns from time series*
 
 ```python
 class CNNPreprocessor(nn.Module):
-    def __init__(self, input_size, hidden_size):
-        super(CNNPreprocessor, self).__init__()
-        self.conv1 = nn.Conv1d(input_size, hidden_size, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv1d(hidden_size, hidden_size, kernel_size=3, padding=1)
+    def __init__(self, input_size, hidden_size, kernel_size=3):
+        super().__init__()
+        self.conv1 = nn.Conv1d(input_size, hidden_size, kernel_size, padding=1)
+        self.conv2 = nn.Conv1d(hidden_size, hidden_size, kernel_size, padding=1)
         self.relu = nn.ReLU()
-    
+        self.dropout = nn.Dropout(0.1)
+
     def forward(self, x):
         # x shape: [batch_size, seq_len, input_size]
         x = x.transpose(1, 2)  # [batch_size, input_size, seq_len]
         x = self.relu(self.conv1(x))
+        x = self.dropout(x)
         x = self.relu(self.conv2(x))
         return x.transpose(1, 2)  # [batch_size, seq_len, hidden_size]
 
-# Usage with ModelConfig and TimeSeriesSeq2Seq
-model_config = ModelConfig(
-    model_type="lstm",
-    input_size=input_size,
-    output_size=output_size,
-    hidden_size=hidden_size
-)
-
+# Usage
 model = TimeSeriesSeq2Seq(
     model_config=model_config,
-    input_preprocessor=CNNPreprocessor(input_size, hidden_size),
-    input_skip_connection=True
+    input_preprocessor=CNNPreprocessor(input_size=5, hidden_size=64),
+    input_skip_connection=True  # Preserve original features
 )
 ```
 
-### Custom Output Postprocessor
+### 2. **Fourier Feature Preprocessor**
+*For capturing frequency domain patterns*
+
+```python
+class FourierPreprocessor(nn.Module):
+    def __init__(self, input_size, num_frequencies=10):
+        super().__init__()
+        self.num_frequencies = num_frequencies
+        self.frequencies = nn.Parameter(torch.randn(num_frequencies) * 0.1)
+
+    def forward(self, x):
+        # x shape: [batch_size, seq_len, input_size]
+        batch_size, seq_len, input_size = x.shape
+
+        # Create time indices
+        t = torch.arange(seq_len, device=x.device).float().unsqueeze(-1)
+
+        # Generate fourier features
+        fourier_features = []
+        for freq in self.frequencies:
+            fourier_features.append(torch.sin(2 * torch.pi * freq * t))
+            fourier_features.append(torch.cos(2 * torch.pi * freq * t))
+
+        # Concatenate and expand to match batch size
+        fourier = torch.cat(fourier_features, dim=-1)
+        fourier = fourier.expand(batch_size, -1, -1)
+
+        # Combine with original features
+        return torch.cat([x, fourier], dim=-1)
+
+# Usage
+model = TimeSeriesSeq2Seq(
+    model_config=model_config,
+    input_preprocessor=FourierPreprocessor(input_size=3, num_frequencies=5)
+)
+```
+
+### 3. **Constrained Output Postprocessor**
+*For applying constraints to predictions*
 
 ```python
 class ConstrainedOutputPostprocessor(nn.Module):
-    def __init__(self, min_value=0, max_value=100):
-        super(ConstrainedOutputPostprocessor, self).__init__()
+    def __init__(self, min_value=0, max_value=100, apply_sigmoid=False):
+        super().__init__()
         self.min_value = min_value
         self.max_value = max_value
-    
-    def forward(self, x):
-        # Constrain outputs to specified range
-        return torch.clamp(x, min=self.min_value, max=self.max_value)
+        self.apply_sigmoid = apply_sigmoid
 
-# Usage with TimeSeriesSeq2Seq
+    def forward(self, x):
+        if self.apply_sigmoid:
+            x = torch.sigmoid(x)
+            return x * (self.max_value - self.min_value) + self.min_value
+        else:
+            return torch.clamp(x, min=self.min_value, max=self.max_value)
+
+# Usage
 model = TimeSeriesSeq2Seq(
     model_config=model_config,
     output_postprocessor=ConstrainedOutputPostprocessor(min_value=0, max_value=100)
 )
 ```
 
-### Using Output Normalization
+### 4. **Advanced Output Block**
+*With dropout and activation functions*
 
 ```python
-# Standardize outputs with Batch Normalization
+class AdvancedOutputBlock(nn.Module):
+    def __init__(self, hidden_size, dropout=0.1):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Dropout(dropout),
+            nn.Tanh()
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+
+# Usage
 model = TimeSeriesSeq2Seq(
     model_config=model_config,
-    output_normalization=nn.BatchNorm1d(output_size)
+    output_block=AdvancedOutputBlock(hidden_size=64, dropout=0.1)
 )
 ```
 
-### Custom Fourier Feature Encoder
+### 5. **VAE-Compatible Processing**
+*The architecture supports VAE-style encoders with KL divergence*
 
 ```python
-from foreblocks.modules import FourierFeatures
+# The ForecastingModel automatically handles VAE encoders
+# that return (z, mu, logvar) tuples
+class VAEEncoder(nn.Module):
+    def forward(self, x):
+        # ... encoding logic ...
+        return z, mu, logvar  # Model will automatically handle this
 
-# Create a Fourier feature preprocessor
-fourier_preprocessor = FourierFeatures(
-    input_size=3,
-    output_size=64,
-    num_frequencies=10,
-    use_gaussian=True,
-    scale=10.0
-)
-
-# Use it as input preprocessor
-model = TimeSeriesSeq2Seq(
-    model_config=model_config,
-    input_preprocessor=fourier_preprocessor
-)
+# Access KL divergence for loss computation
+model = TimeSeriesSeq2Seq(model_config=model_config)
+outputs = model(src, targets)
+kl_loss = model.forecasting_model.get_kl()  # Returns KL divergence if available
 ```
 
-## Integration with TimeSeriesSeq2Seq
+---
 
-The high-level `TimeSeriesSeq2Seq` class integrates the `ForecastingModel` with configuration objects and training utilities:
+## 🔄 Core Architecture Implementation
+
+### ForecastingModel Class Structure
+
+The `ForecastingModel` is the core class that orchestrates all components:
+
+```python
+class ForecastingModel(nn.Module):
+    """
+    A flexible sequence-to-sequence forecasting model supporting multiple architectures
+    and forecasting strategies including seq2seq, autoregressive, and transformer approaches.
+    """
+
+    VALID_STRATEGIES = ["seq2seq", "autoregressive", "direct", "transformer_seq2seq"]
+    VALID_MODEL_TYPES = ["lstm", "transformer", "informer-like"]
+
+    def __init__(self,
+                 encoder=None,
+                 decoder=None,
+                 target_len=5,
+                 forecasting_strategy="seq2seq",
+                 input_preprocessor=None,
+                 output_postprocessor=None,
+                 attention_module=None,
+                 teacher_forcing_ratio=0.5,
+                 scheduled_sampling_fn=None,
+                 # ... additional parameters
+                ):
+        # Validation and setup logic
+        self._validate_initialization(forecasting_strategy, model_type)
+        self._setup_preprocessing_modules(...)
+        self._setup_encoder_decoder(...)
+        self._setup_output_layers()
+```
+
+### Key Setup Methods
+
+#### Multi-Encoder-Decoder Setup
+```python
+def _setup_encoder_decoder(self, encoder, decoder, multi_encoder_decoder, input_processor_output_size):
+    """Setup encoder and decoder architecture."""
+    if multi_encoder_decoder:
+        self.encoder = nn.ModuleList([
+            self._clone_module(encoder)
+            for _ in range(input_processor_output_size)
+        ])
+        self.decoder = nn.ModuleList([
+            self._clone_module(decoder)
+            for _ in range(input_processor_output_size)
+        ])
+        self.decoder_aggregator = nn.Linear(input_processor_output_size, 1, bias=False)
+    else:
+        self.encoder = encoder
+        self.decoder = decoder
+```
+
+#### VAE Encoder Support
+```python
+def _process_encoder_hidden(self, encoder_hidden):
+    """Process encoder hidden state, handling VAE and bidirectional encoders."""
+    # Check if this is a VAE style encoder with (z, mu, logvar)
+    if isinstance(encoder_hidden, tuple) and len(encoder_hidden) == 3:
+        z, mu, logvar = encoder_hidden
+        kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / mu.size(0)
+        return (z,), kl_div
+
+    # Otherwise, prepare regular hidden state
+    return self._prepare_decoder_hidden(encoder_hidden), None
+```
+
+---
+
+## 🎛️ Configuration Integration
+
+### Integration with TimeSeriesSeq2Seq
 
 ```python
 # Define configurations using dataclasses
@@ -386,7 +693,8 @@ model_config = ModelConfig(
     hidden_size=64,
     target_len=24,
     strategy="seq2seq",
-    teacher_forcing_ratio=0.5
+    teacher_forcing_ratio=0.5,
+    multi_encoder_decoder=False
 )
 
 training_config = TrainingConfig(
@@ -401,6 +709,8 @@ model = TimeSeriesSeq2Seq(
     training_config=training_config,
     input_preprocessor=custom_preprocessor,
     attention_module=attention_layer,
+    output_postprocessor=custom_postprocessor,
+    input_skip_connection=True,
     device="cuda"
 )
 
@@ -408,6 +718,67 @@ model = TimeSeriesSeq2Seq(
 model.train_model(train_loader, val_loader)
 ```
 
-## Conclusion
+### Supported Model Types & Strategies
 
-The ForecastingModel's architecture provides a flexible framework for implementing different time series forecasting approaches with customizable processing blocks. This design makes it easy to experiment with various model configurations while maintaining a consistent interface.
+| Model Type | Strategies | Key Features |
+|------------|------------|--------------|
+| `lstm` | `seq2seq`, `autoregressive`, `direct` | LSTM-based encoder-decoder |
+| `transformer` | `transformer_seq2seq` | Self-attention with efficient caching |
+| `informer-like` | `transformer_seq2seq` | Parallel prediction, no autoregression |
+
+---
+
+## 💡 Implementation Notes & Best Practices
+
+### 🔧 Key Implementation Details
+
+1. **Default Blocks**: If not specified, each block defaults to `nn.Identity()` (pass-through)
+2. **Skip Connection**: When `input_skip_connection=True`, original input is added to preprocessed input
+3. **Model Type**: Determines architecture details and behavior of certain functions
+4. **Teacher Forcing**: `teacher_forcing_ratio` controls ground truth usage during training
+5. **Scheduled Sampling**: `scheduled_sampling_fn` can gradually decrease teacher forcing ratio
+
+### 🎯 Strategy Selection Guide
+
+| Use Case | Recommended Strategy | Rationale |
+|----------|---------------------|-----------|
+| **Short sequences (< 50 steps)** | `seq2seq` | Best balance of performance and complexity |
+| **Long sequences (> 100 steps)** | `transformer_seq2seq` | Handles long-range dependencies |
+| **Real-time inference** | `direct` | Fastest single-pass prediction |
+| **Strong sequential dependencies** | `autoregressive` | Each step informs the next |
+| **Parallel computation preferred** | `informer-like` | No sequential bottlenecks |
+
+### 🛠️ Customization Tips
+
+1. **Always use `input_skip_connection=True`** when adding input preprocessing
+2. **For VAE models**, access KL divergence with `model.forecasting_model.get_kl()`
+3. **For transformer models**, decoder supports efficient incremental decoding
+4. **Multi-encoder-decoder** works best when features have different patterns
+5. **Scheduled sampling** helps bridge training-inference gap
+
+---
+
+## 🚀 Performance Optimizations
+
+The core implementation includes several optimizations:
+
+- **Incremental State Caching**: Transformer decoders cache attention states
+- **Smart Initialization**: Decoder input initialized from encoder output
+- **Automatic Dimension Handling**: Padding/projection for mismatched dimensions
+- **Efficient Memory Usage**: Reuses tensors where possible
+- **Flexible Architecture**: Supports both sequential and parallel generation
+- **VAE Integration**: Automatic KL divergence computation and handling
+- **Bidirectional Support**: Smart handling of bidirectional encoder outputs
+
+---
+
+## 🎓 Conclusion
+
+The ForecastingModel's architecture provides a robust, flexible framework for implementing different time series forecasting approaches with fully customizable processing blocks. This modular design makes it easy to experiment with various model configurations while maintaining a consistent, high-performance interface that scales from simple LSTM models to complex transformer architectures with advanced features like VAE integration and multi-encoder processing.
+
+**Key Strengths**:
+- 🔧 **Modular Design**: Every component can be customized
+- 🎯 **Multiple Strategies**: Five different forecasting approaches
+- 🧠 **Advanced Features**: VAE, attention, multi-encoder support
+- ⚡ **Optimized Performance**: Efficient implementations with caching
+- 📈 **Easy Extension**: Simple to add new components and strategies
