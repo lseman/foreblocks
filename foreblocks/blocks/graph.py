@@ -361,6 +361,7 @@ class MessagePassing(nn.Module):
         self.input_size = input_size
         self.hidden_dim = hidden_dim
         self.aggregation = aggregation
+        num_heads = round_to_supported_head_dim(num_heads)
         self.num_heads = num_heads
         self.eps = eps
         self.attention_dropout = attention_dropout
@@ -374,7 +375,8 @@ class MessagePassing(nn.Module):
             self.xformers_available = False
 
         # Simple head dimension calculation
-        self.head_dim = hidden_dim // num_heads if num_heads > 0 else hidden_dim
+        self.head_dim = round_to_supported_head_dim(hidden_dim)
+        print(f"Using {num_heads} attention heads with head dimension {self.head_dim}")
 
         # Core message transformation
         self.message_transform = nn.Linear(input_size, hidden_dim)
@@ -399,7 +401,7 @@ class MessagePassing(nn.Module):
 
         # Attention projections (only if needed)
         if aggregation in ["xformers", "flash"]:
-            proj_dim = hidden_dim
+            proj_dim = self.head_dim * num_heads
             self.q_proj = nn.Linear(input_size, proj_dim, bias=False)
             self.k_proj = nn.Linear(input_size, proj_dim, bias=False)
             self.v_proj = nn.Linear(input_size, proj_dim, bias=False)
@@ -409,6 +411,7 @@ class MessagePassing(nn.Module):
                 self.k_proj = spectral_norm(self.k_proj)
                 self.v_proj = spectral_norm(self.v_proj)
 
+            self.bias_proj = nn.Linear(input_size, proj_dim, bias=False)
         # Initialize parameters
         if improved_init:
             self._init_parameters()
@@ -458,10 +461,14 @@ class MessagePassing(nn.Module):
     def _mean_aggregate(
         self, messages: torch.Tensor, graph: torch.Tensor
     ) -> torch.Tensor:
-        """Mean aggregation with improved numerical stability"""
-        deg = graph.sum(dim=1).clamp(min=self.eps)
-        norm_graph = graph / deg.unsqueeze(1)
-        return torch.einsum("bth,hg->btg", messages, norm_graph)
+        """Mean aggregation with safe division"""
+        deg = graph.sum(dim=1, keepdim=True).clamp(min=self.eps)
+
+        # Use safe division to prevent NaN creation
+        norm_graph = torch.where(deg > self.eps, graph / deg, torch.zeros_like(graph))
+
+        result = messages @ norm_graph
+        return result
 
     def _max_aggregate(
         self, messages: torch.Tensor, graph: torch.Tensor
@@ -510,6 +517,7 @@ class MessagePassing(nn.Module):
             from xformers.ops import memory_efficient_attention
 
             B, T, D = messages.shape
+            # print(messages.shape)
             H = self.num_heads
             head_dim = self.head_dim
 
@@ -521,9 +529,22 @@ class MessagePassing(nn.Module):
             # Create attention bias from graph
             attn_bias = None
             if graph is not None:
-                mask = graph == 0
-                attn_bias = mask.float().masked_fill(mask, float("-inf"))
-                attn_bias = attn_bias.unsqueeze(1).expand(-1, H, -1, -1)
+                # Option 1: Project messages to bias space
+                bias_proj = torch.nn.Linear(
+                    D, T, device=messages.device, dtype=messages.dtype
+                )
+                attn_logits = bias_proj(messages)  # Shape: (B, T, T)
+
+                # Apply graph mask
+                mask = (
+                    graph == 0
+                    if graph.shape[-2:] == (T, T)
+                    else torch.zeros(B, T, T, device=messages.device, dtype=torch.bool)
+                )
+                attn_bias = attn_logits.masked_fill(mask, float("-inf"))
+
+                # Expand for all heads: (B, T, T) -> (B, H, T, T)
+                attn_bias = attn_bias.unsqueeze(1).expand(B, H, T, T)
 
             # Apply xFormers attention
             out = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
