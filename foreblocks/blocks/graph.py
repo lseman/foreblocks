@@ -1,13 +1,15 @@
 import math
+from typing import List, Literal, Optional, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
-from typing import Optional, Union, Tuple, List, Dict, Literal
 
 # External libraries
 from xformers.ops import memory_efficient_attention
-from flash_attn import flash_attn_qkvpacked_func
+
+# from flash_attn import flash_attn_qkvpacked_func
 
 
 class LatentCorrelationLayer(nn.Module):
@@ -1047,14 +1049,14 @@ class JumpKnowledge(nn.Module):
         return self.__forward_dispatch
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import networkx as nx
 import subprocess
 import tempfile
+from typing import Optional
+
+import networkx as nx
 import numpy as np
-from typing import Union, Optional
+import torch
+import torch.nn as nn
 
 
 # === GDV Computation ===
@@ -1065,10 +1067,10 @@ def compute_gdv_orca(
     if not isinstance(G, nx.Graph):
         G = nx.Graph(G)
 
-    with tempfile.NamedTemporaryFile(
-        "w", delete=False
-    ) as edge_file, tempfile.NamedTemporaryFile("r", delete=False) as out_file:
-
+    with (
+        tempfile.NamedTemporaryFile("w", delete=False) as edge_file,
+        tempfile.NamedTemporaryFile("r", delete=False) as out_file,
+    ):
         # Write edges with node mapping
         node_map = {n: i for i, n in enumerate(G.nodes())}
         for u, v in G.edges():

@@ -1,19 +1,14 @@
 import contextlib
-import time
 import copy
-import warnings
-from typing import Dict, List, Optional, Tuple, Any, Union, Callable
-
+from typing import Dict, Optional, Tuple, Any, Union, Callable
 import numpy as np
 import matplotlib.pyplot as plt
-
 import torch
 import torch.nn as nn
 from torch.amp import autocast, GradScaler
-from torch.utils.data import DataLoader
-from typing import List, Tuple
-
-from .vsgd import *
+from ..third_party.vsgd import *
+import wandb
+from tqdm import tqdm
 
 
 class TimeSeriesDataset(torch.utils.data.Dataset):
@@ -86,7 +81,6 @@ class Trainer:
         use_wandb: bool = False,
         wandb_config: Optional[Dict[str, Any]] = None,
     ):
-
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.use_wandb = use_wandb
@@ -103,8 +97,6 @@ class Trainer:
         self._init_tracking()
 
         if self.use_wandb:
-            import wandb
-
             wandb.init(**(wandb_config or {}))
             wandb.watch(self.model, log="all", log_freq=100)
 
@@ -173,8 +165,8 @@ class Trainer:
             )
         return None
 
-    def _forward_pass(self, X, y):
-        return self.model(X, y, self.current_epoch)
+    def _forward_pass(self, X, y, time_feat=None):
+        return self.model(X, y, time_feat, self.current_epoch)
 
     def _compute_loss(self, outputs, targets):
         loss = self.criterion(outputs, targets)
@@ -223,12 +215,14 @@ class Trainer:
     def train_epoch(self, dataloader, callbacks=None):
         self.model.train()
         total_loss = 0.0
-        for batch_idx, (X, y) in enumerate(dataloader):
+        for batch_idx, (X, y, time_feat) in enumerate(dataloader):
             X, y = X.to(self.device), y.to(self.device)
+            if time_feat is not None:
+                time_feat = time_feat.to(self.device)
             with (
                 autocast("cuda") if self.config["use_amp"] else contextlib.nullcontext()
             ):
-                outputs = self._forward_pass(X, y)
+                outputs = self._forward_pass(X, y, time_feat)
                 loss = self._compute_loss(outputs, y)
             self._step_optimizer(loss, batch_idx, len(dataloader))
             total_loss += loss.item()
@@ -251,8 +245,6 @@ class Trainer:
         return total_loss / len(dataloader.dataset)
 
     def train(self, train_loader, val_loader=None, callbacks=None, epochs=None):
-        from tqdm import tqdm
-
         self._init_tracking()
         num_epochs = self.config["num_epochs"]
         if epochs is not None:
@@ -277,8 +269,6 @@ class Trainer:
             self.history["learning_rates"].append(current_lr)
 
             if self.use_wandb:
-                import wandb
-
                 wandb.log(
                     {
                         "epoch": epoch + 1,

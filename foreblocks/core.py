@@ -1,7 +1,7 @@
 import copy
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Callable, Union
+from typing import Optional, Tuple, Callable
 
 
 class ForecastingModel(nn.Module):
@@ -145,7 +145,11 @@ class ForecastingModel(nn.Module):
             self.project_output = nn.Identity()
 
     def forward(
-        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor = None,
+        time_features: torch.Tensor = None,
+        epoch: int = None,
     ) -> torch.Tensor:
         """Main forward pass - routes to appropriate strategy"""
         # Preprocess input
@@ -157,7 +161,9 @@ class ForecastingModel(nn.Module):
         elif self.strategy == "autoregressive":
             return self._forward_autoregressive(processed_src, targets, epoch)
         elif self.strategy in ["seq2seq", "transformer_seq2seq"]:
-            return self._forward_seq2seq_unified(processed_src, targets, epoch)
+            return self._forward_seq2seq_unified(
+                processed_src, targets, time_features, epoch
+            )
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
@@ -192,7 +198,11 @@ class ForecastingModel(nn.Module):
         return self.output_postprocessor(torch.cat(outputs, dim=1))
 
     def _forward_seq2seq_unified(
-        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor = None,
+        time_features: torch.Tensor = None,
+        epoch: int = None,
     ) -> torch.Tensor:
         """Unified seq2seq forward for all model types"""
         if self.multi_encoder_decoder:
@@ -200,7 +210,7 @@ class ForecastingModel(nn.Module):
 
         # Route by model type
         if self.model_type == "informer-like":
-            return self._forward_informer_style(src, targets, epoch)
+            return self._forward_informer_style(src, targets, time_features, epoch)
         elif self.model_type == "transformer":
             return self._forward_transformer_style(src, targets, epoch)
         else:  # LSTM/RNN style
@@ -210,32 +220,32 @@ class ForecastingModel(nn.Module):
         """Fixed RNN/LSTM seq2seq with proper output accumulation"""
         batch_size = src.size(0)
         device = src.device
-        
+
         # Encode
         encoder_outputs, encoder_hidden = self.encoder(src)
-        
+
         # Process encoder hidden state
         decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
         self._kl = kl_div
-        
+
         # Initialize decoder input
-        if hasattr(self, 'init_decoder_input_layer'):
+        if hasattr(self, "init_decoder_input_layer"):
             decoder_input = self.init_decoder_input_layer(
                 encoder_outputs[:, -1, :]
             ).unsqueeze(1)  # [B, 1, output_size]
         else:
             decoder_input = torch.zeros(batch_size, 1, self.output_size, device=device)
-        
+
         # PRE-ALLOCATE output tensor (like original)
         outputs = torch.zeros(
             batch_size, self.target_len, self.output_size, device=device
         )
-        
+
         # Decode step by step
         for t in range(self.target_len):
             # Decode one step
             decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden)
-            
+
             # Apply attention if configured
             if self.use_attention:
                 context, _ = self.attention_module(decoder_hidden, encoder_outputs)
@@ -244,17 +254,17 @@ class ForecastingModel(nn.Module):
                 )
             else:
                 decoder_output = self.output_layer(decoder_output)
-            
+
             # Post-process
             decoder_output = self.output_block(decoder_output)
             decoder_output = self.output_normalization(decoder_output)
-            
+
             # CRITICAL FIX: Proper assignment to output tensor
             if len(decoder_output.shape) == 2:  # [B, output_size]
                 outputs[:, t, :] = decoder_output
             else:  # [B, 1, output_size]
                 outputs[:, t, :] = decoder_output.squeeze(1)
-            
+
             # Next input with proper shape handling
             if targets is not None:
                 teacher_force_ratio = (
@@ -263,13 +273,15 @@ class ForecastingModel(nn.Module):
                     else self.teacher_forcing_ratio
                 )
                 use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-                
+
                 if use_teacher_forcing:
-                    decoder_input = targets[:, t:t+1, :]  # [B, 1, input_size]
+                    decoder_input = targets[:, t : t + 1, :]  # [B, 1, input_size]
                 else:
                     # Ensure decoder_output has right shape for next input
                     if len(decoder_output.shape) == 2:
-                        decoder_input = decoder_output.unsqueeze(1)  # [B, 1, output_size]
+                        decoder_input = decoder_output.unsqueeze(
+                            1
+                        )  # [B, 1, output_size]
                     else:
                         decoder_input = decoder_output  # Already [B, 1, output_size]
             else:
@@ -277,9 +289,8 @@ class ForecastingModel(nn.Module):
                     decoder_input = decoder_output.unsqueeze(1)
                 else:
                     decoder_input = decoder_output
-        
-        return self.output_postprocessor(outputs)
 
+        return self.output_postprocessor(outputs)
 
     def _forward_transformer_style(
         self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
@@ -326,13 +337,16 @@ class ForecastingModel(nn.Module):
         return torch.cat(outputs, dim=1)
 
     def _forward_informer_style(
-        self, src: torch.Tensor, targets: torch.Tensor = None, epoch: int = None
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor = None,
+        time_features: torch.Tensor = None,
+        epoch: int = None,
     ) -> torch.Tensor:
         """Informer-style parallel decoding"""
         batch_size = src.size(0)
-
         # Encode
-        enc_out = self.encoder(src)
+        enc_out = self.encoder(src, time_features=time_features)
 
         # Create decoder input (start token repeated)
         start_token = src[:, -1:, :]

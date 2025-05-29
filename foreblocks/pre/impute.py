@@ -5,16 +5,20 @@ import math
 import numpy as np
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+
 # === Masked Loss Utilities ===
 def masked_mae_cal(inputs, target, mask):
     return torch.sum(torch.abs(inputs - target) * mask) / (torch.sum(mask) + 1e-9)
 
+
 def masked_mse_cal(inputs, target, mask):
     return torch.sum(torch.square(inputs - target) * mask) / (torch.sum(mask) + 1e-9)
 
-import numpy as np
 
-def rolling_window_impute(series: np.ndarray, model_class, window_size=48, stride=24, model_kwargs=None):
+def rolling_window_impute(
+    series: np.ndarray, model_class, window_size=48, stride=24, model_kwargs=None
+):
     """
     Rolling horizon imputation using overlapping windows and a pluggable model class.
 
@@ -63,7 +67,7 @@ def rolling_window_impute(series: np.ndarray, model_class, window_size=48, strid
         except Exception as e:
             print(f"[WARN] Final window imputation failed - {e}")
             imputed_window = np.nan_to_num(window)
-        recon[start:T] += imputed_window[-(T - start):]
+        recon[start:T] += imputed_window[-(T - start) :]
         counts[start:T] += 1
 
     # Normalize overlapping reconstructions
@@ -73,25 +77,31 @@ def rolling_window_impute(series: np.ndarray, model_class, window_size=48, strid
     # Fill original values
     return np.where(np.isnan(series), result, series)
 
+
 # === Positional Encoding ===
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, n_position=1000):
         super().__init__()
         pe = torch.zeros(n_position, d_model)
         position = torch.arange(0, n_position, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer("pe", pe.unsqueeze(0))
 
     def forward(self, x):
-        return x + self.pe[:, :x.size(1)]
+        return x + self.pe[:, : x.size(1)]
+
 
 # === Encoder Layer ===
 class EncoderLayer(nn.Module):
     def __init__(self, d_model, d_inner, n_head, dropout):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout=dropout, batch_first=True)
+        self.self_attn = nn.MultiheadAttention(
+            d_model, n_head, dropout=dropout, batch_first=True
+        )
         self.layer_norm1 = nn.LayerNorm(d_model)
         self.layer_norm2 = nn.LayerNorm(d_model)
         self.ff = nn.Sequential(
@@ -108,11 +118,23 @@ class EncoderLayer(nn.Module):
         x = self.layer_norm2(x + ff_output)
         return x, attn_weights
 
+
 # === SAITS Main Model ===
 class SAITS(nn.Module):
-    def __init__(self, input_size, seq_len, d_model=64, d_inner=128, n_head=4,
-                 n_groups=2, n_group_inner_layers=1, dropout=0.1,
-                 param_sharing_strategy='between_group', input_with_mask=True, MIT=False):
+    def __init__(
+        self,
+        input_size,
+        seq_len,
+        d_model=64,
+        d_inner=128,
+        n_head=4,
+        n_groups=2,
+        n_group_inner_layers=1,
+        dropout=0.1,
+        param_sharing_strategy="between_group",
+        input_with_mask=True,
+        MIT=False,
+    ):
         super().__init__()
         self.seq_len = seq_len
         self.input_with_mask = input_with_mask
@@ -131,21 +153,29 @@ class SAITS(nn.Module):
         self.pos_enc = PositionalEncoding(d_model, n_position=seq_len)
 
         def build_layers():
-            return nn.ModuleList([EncoderLayer(d_model, d_inner, n_head, dropout)
-                                   for _ in range(n_group_inner_layers)])
+            return nn.ModuleList(
+                [
+                    EncoderLayer(d_model, d_inner, n_head, dropout)
+                    for _ in range(n_group_inner_layers)
+                ]
+            )
 
-        if param_sharing_strategy == 'between_group':
+        if param_sharing_strategy == "between_group":
             self.encoder_block1 = build_layers()
             self.encoder_block2 = build_layers()
         else:
-            self.encoder_block1 = nn.ModuleList([build_layers()[0] for _ in range(n_groups)])
-            self.encoder_block2 = nn.ModuleList([build_layers()[0] for _ in range(n_groups)])
+            self.encoder_block1 = nn.ModuleList(
+                [build_layers()[0] for _ in range(n_groups)]
+            )
+            self.encoder_block2 = nn.ModuleList(
+                [build_layers()[0] for _ in range(n_groups)]
+            )
 
         self.dropout = nn.Dropout(dropout)
 
     def _run_block(self, x, layer_stack):
         attn_weights = None
-        if self.param_sharing_strategy == 'between_group':
+        if self.param_sharing_strategy == "between_group":
             for layer in layer_stack:
                 x, attn_weights = layer(x)
         else:
@@ -155,14 +185,18 @@ class SAITS(nn.Module):
         return x, attn_weights
 
     def impute(self, X, masks):
-        input_first = torch.cat([X * masks, masks], dim=2) if self.input_with_mask else X
+        input_first = (
+            torch.cat([X * masks, masks], dim=2) if self.input_with_mask else X
+        )
         input_first = self.embedding_1(input_first)
         enc_output = self.dropout(self.pos_enc(input_first))
         enc_output, _ = self._run_block(enc_output, self.encoder_block1)
         X_tilde_1 = self.reduce_dim_z(enc_output)
         X_prime = masks * X + (1 - masks) * X_tilde_1
 
-        input_second = torch.cat([X_prime, masks], dim=2) if self.input_with_mask else X_prime
+        input_second = (
+            torch.cat([X_prime, masks], dim=2) if self.input_with_mask else X_prime
+        )
         input_second = self.embedding_2(input_second)
         enc_output = self.dropout(self.pos_enc(input_second))
         enc_output, attn_weights = self._run_block(enc_output, self.encoder_block2)
@@ -181,10 +215,10 @@ class SAITS(nn.Module):
 
         return X_c, [X_tilde_1, X_tilde_2, X_tilde_3]
 
-    def forward(self, inputs, stage='train'):
-        X, masks = inputs['X'], inputs['missing_mask']
-        X_holdout = inputs.get('X_holdout')
-        indicating_mask = inputs.get('indicating_mask')
+    def forward(self, inputs, stage="train"):
+        X, masks = inputs["X"], inputs["missing_mask"]
+        X_holdout = inputs.get("X_holdout")
+        indicating_mask = inputs.get("indicating_mask")
 
         imputed_data, [X_tilde_1, X_tilde_2, X_tilde_3] = self.impute(X, masks)
 
@@ -194,7 +228,7 @@ class SAITS(nn.Module):
         recon_loss += final_mae
         recon_loss /= 3
 
-        if (self.MIT or stage == 'val') and stage != 'test':
+        if (self.MIT or stage == "val") and stage != "test":
             imput_mae = masked_mae_cal(X_tilde_3, X_holdout, indicating_mask)
         else:
             imput_mae = torch.tensor(0.0)
@@ -206,11 +240,11 @@ class SAITS(nn.Module):
             "reconstruction_MAE": final_mae,
             "imputation_MAE": imput_mae,
         }
-    
+
 
 # === SAITSTrainer ===
 class SAITSTrainer:
-    def __init__(self, model: SAITS, optimizer, device='cuda'):
+    def __init__(self, model: SAITS, optimizer, device="cuda"):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.device = device
@@ -220,8 +254,8 @@ class SAITSTrainer:
         epoch_loss = 0
         for batch in dataloader:
             batch = {k: v.to(self.device) for k, v in batch.items()}
-            output = self.model(batch, stage='train')
-            loss = output['reconstruction_loss']
+            output = self.model(batch, stage="train")
+            loss = output["reconstruction_loss"]
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -234,8 +268,8 @@ class SAITSTrainer:
             losses = []
             for batch in dataloader:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
-                output = self.model(batch, stage='val')
-                losses.append(output['imputation_MAE'].item())
+                output = self.model(batch, stage="val")
+                losses.append(output["imputation_MAE"].item())
         return np.mean(losses)
 
     def predict(self, dataloader):
@@ -244,17 +278,29 @@ class SAITSTrainer:
         with torch.no_grad():
             for batch in dataloader:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
-                output = self.model(batch, stage='test')
-                all_imputations.append(output['imputed_data'].cpu())
+                output = self.model(batch, stage="test")
+                all_imputations.append(output["imputed_data"].cpu())
         return torch.cat(all_imputations, dim=0)
 
 
 # === SAITSImputer Wrapper ===
 class SAITSImputer:
-    def __init__(self, seq_len=24, epochs=20, batch_size=64, learning_rate=1e-3,
-                 d_model=64, d_inner=128, n_head=4, n_groups=2, n_group_inner_layers=1,
-                 dropout=0.1, param_sharing_strategy='between_group', input_with_mask=True,
-                 device='cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(
+        self,
+        seq_len=24,
+        epochs=20,
+        batch_size=64,
+        learning_rate=1e-3,
+        d_model=64,
+        d_inner=128,
+        n_head=4,
+        n_groups=2,
+        n_group_inner_layers=1,
+        dropout=0.1,
+        param_sharing_strategy="between_group",
+        input_with_mask=True,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+    ):
         self.seq_len = seq_len
         self.epochs = epochs
         self.batch_size = batch_size
@@ -277,7 +323,7 @@ class SAITSImputer:
         T, D = data.shape
         windows = []
         for i in range(T - self.seq_len + 1):
-            windows.append(data[i:i + self.seq_len])
+            windows.append(data[i : i + self.seq_len])
         return np.stack(windows)
 
     def _create_masks(self, data):
@@ -296,22 +342,36 @@ class SAITSImputer:
         X = torch.tensor(np.nan_to_num(data), dtype=torch.float32)
         mask = torch.tensor(masks, dtype=torch.float32)
 
-        dataset = [{
-            'X': X[i],
-            'missing_mask': mask[i],
-            'X_holdout': X[i],
-            'indicating_mask': 1.0 - mask[i],
-        } for i in range(len(X))]
+        dataset = [
+            {
+                "X": X[i],
+                "missing_mask": mask[i],
+                "X_holdout": X[i],
+                "indicating_mask": 1.0 - mask[i],
+            }
+            for i in range(len(X))
+        ]
 
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, collate_fn=lambda x: {
-            key: torch.stack([d[key] for d in x]) for key in x[0]
-        })
+        dataloader = DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            collate_fn=lambda x: {
+                key: torch.stack([d[key] for d in x]) for key in x[0]
+            },
+        )
 
         self.model = SAITS(
-            input_size=self.input_size, seq_len=self.seq_len, d_model=self.d_model,
-            d_inner=self.d_inner, n_head=self.n_head, n_groups=self.n_groups,
-            n_group_inner_layers=self.n_group_inner_layers, dropout=self.dropout,
-            param_sharing_strategy=self.param_sharing_strategy, input_with_mask=self.input_with_mask
+            input_size=self.input_size,
+            seq_len=self.seq_len,
+            d_model=self.d_model,
+            d_inner=self.d_inner,
+            n_head=self.n_head,
+            n_groups=self.n_groups,
+            n_group_inner_layers=self.n_group_inner_layers,
+            dropout=self.dropout,
+            param_sharing_strategy=self.param_sharing_strategy,
+            input_with_mask=self.input_with_mask,
         ).to(self.device)
 
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
@@ -321,7 +381,8 @@ class SAITSImputer:
         for epoch in tqdm(range(self.epochs), desc="Training SAITS"):
             loss = self.trainer.train_epoch(dataloader)
             if epoch % 25 == 0:
-                print(f"Epoch {epoch+1}/{self.epochs} - Loss: {loss:.4f}")
+                print(f"Epoch {epoch + 1}/{self.epochs} - Loss: {loss:.4f}")
+
     def impute(self, series: np.ndarray) -> np.ndarray:
         if series.ndim == 1:
             series = series[:, None]
@@ -332,16 +393,24 @@ class SAITSImputer:
         X = torch.tensor(np.nan_to_num(data), dtype=torch.float32)
         mask = torch.tensor(masks, dtype=torch.float32)
 
-        dataset = [{
-            'X': X[i],
-            'missing_mask': mask[i],
-            'X_holdout': X[i],
-            'indicating_mask': 1.0 - mask[i],
-        } for i in range(len(X))]
+        dataset = [
+            {
+                "X": X[i],
+                "missing_mask": mask[i],
+                "X_holdout": X[i],
+                "indicating_mask": 1.0 - mask[i],
+            }
+            for i in range(len(X))
+        ]
 
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=lambda x: {
-            key: torch.stack([d[key] for d in x]) for key in x[0]
-        })
+        dataloader = DataLoader(
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=lambda x: {
+                key: torch.stack([d[key] for d in x]) for key in x[0]
+            },
+        )
 
         imputed_tensor = self.trainer.predict(dataloader).numpy()
 
@@ -351,8 +420,8 @@ class SAITSImputer:
         counts = np.zeros((T, D))
 
         for i in range(len(imputed_tensor)):
-            recon[i:i + self.seq_len] += imputed_tensor[i]
-            counts[i:i + self.seq_len] += 1
+            recon[i : i + self.seq_len] += imputed_tensor[i]
+            counts[i : i + self.seq_len] += 1
 
         counts[counts == 0] = 1e-9
         imputed = recon / counts

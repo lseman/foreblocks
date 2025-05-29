@@ -1,29 +1,17 @@
 # Standard Library
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import copy
 import math
-import time
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
-from joblib import Parallel, delayed
+from typing import Union
 import torch
 
 # Scientific Computing and Visualization
 import numpy as np
-import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
-from statsmodels.nonparametric.smoothers_lowess import lowess
-import statsmodels as sm
 
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from sklearn.preprocessing import StandardScaler
-from typing import Union
-import math
 
 from tqdm import tqdm
 
@@ -44,10 +32,6 @@ from numba import njit, prange
 def _remove_outliers_parallel(index, col, method, threshold):
     cleaned = _remove_outliers_wrapper((index, col, method, threshold))
     return cleaned
-
-
-from numba import njit
-import numpy as np
 
 
 @njit
@@ -243,9 +227,11 @@ def _remove_outliers_wrapper(args):
     cleaned = _remove_outliers(col, method, threshold)
     return i, cleaned
 
+
 ###########################################################################
 # TranAD
 ###########################################################################
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=1000):

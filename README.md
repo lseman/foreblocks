@@ -69,6 +69,18 @@ predictions = model.predict(X_test)
 
 ---
 
+
+## 📖 Documentation
+
+- 📘 [Preprocessing Guide](docs/preprocessor.md)
+- 🛠️ [Custom Blocks Guide](docs/custom_blocks.md)
+- 🔗 [Full Documentation](https://github.com/lseman/foreblocks/docs)
+- [Fourier Blocks](docs/fourier.md)
+- [Wavelet Blocks](docs/wavelet.md)
+
+
+---
+
 ## 🏗️ Architecture Overview
 
 ForeBlocks follows a clean, modular design:
@@ -426,14 +438,6 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
 - Start with simple models (LSTM) before trying complex ones (Transformer)
 - Use validation sets for hyperparameter tuning
 - Monitor both training and validation metrics
-
----
-
-## 📖 Documentation
-
-- 📘 [Preprocessing Guide](docs/preprocessor.md)
-- 🛠️ [Custom Blocks Guide](docs/custom_blocks.md)
-- 🔗 [Full Documentation](https://github.com/lseman/foreblocks/docs)
 
 ---
 

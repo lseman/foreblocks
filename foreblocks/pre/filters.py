@@ -1,24 +1,11 @@
 # Standard Library
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import copy
-import math
-import time
-import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Tuple
 from joblib import Parallel, delayed
-import torch
 
 # Scientific Computing and Visualization
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter, wiener
-from sklearn.ensemble import IsolationForest
-from sklearn.impute import KNNImputer
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.preprocessing import StandardScaler
 from statsmodels.nonparametric.smoothers_lowess import lowess
-import statsmodels as sm
 
 # Optional imports
 try:
@@ -124,7 +111,6 @@ def emd_filter(data: np.ndarray, keep_ratio: float = 0.5) -> np.ndarray:
     return filtered
 
 
-from scipy.signal import savgol_filter
 
 
 def _adaptive_savgol_column(

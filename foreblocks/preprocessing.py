@@ -1,12 +1,8 @@
 # ============================
 # Standard Library
 # ============================
-import copy
-import math
-import time
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import List, Optional, Tuple
 
 # ============================
 # External Libraries - Core
@@ -15,22 +11,16 @@ import numpy as np
 import pandas as pd
 import torch
 from joblib import Parallel, delayed
-from numba import njit, prange
 
 # ============================
 # Scientific Computing & ML
 # ============================
-from scipy.signal import savgol_filter, wiener
-from sklearn.ensemble import IsolationForest
 from sklearn.impute import KNNImputer
-from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
-from statsmodels.nonparametric.smoothers_lowess import lowess
 from statsmodels.tsa.stattools import pacf
-import statsmodels.api as sm
 from scipy.stats import skew, kurtosis, entropy
 from scipy.signal import welch, find_peaks
-from statsmodels.tsa.stattools import adfuller, acf, pacf
+from statsmodels.tsa.stattools import adfuller, acf
 
 # ============================
 # Visualization
@@ -64,9 +54,10 @@ from .pre.outlier import _remove_outliers_parallel
 
 from tqdm import tqdm
 
-
 FILTER_METHODS = {
-    "savgol": lambda self, d, k: adaptive_savgol_filter(d, window=self.filter_window, polyorder=self.filter_polyorder),
+    "savgol": lambda self, d, k: adaptive_savgol_filter(
+        d, window=self.filter_window, polyorder=self.filter_polyorder
+    ),
     "kalman": lambda self, d, k: kalman_filter(d),
     "lowess": lambda self, d, k: lowess_filter(d, frac=k.get("frac", 0.05)),
     "wiener": lambda self, d, k: wiener_filter(d, mysize=k.get("mysize", 15)),
@@ -74,16 +65,24 @@ FILTER_METHODS = {
     "none": lambda self, d, k: d,
 }
 
-def apply_log_transform(data: np.ndarray, log_flags: List[bool]) -> Tuple[np.ndarray, np.ndarray]:
-    offsets = np.array([
-        max(0.0, -np.nanmin(data[:, i]) + 1.0) if log_flags[i] else 0.0
-        for i in range(data.shape[1])
-    ])
-    transformed = np.column_stack([
-        np.log(data[:, i] + offsets[i]) if log_flags[i] else data[:, i]
-        for i in range(data.shape[1])
-    ])
+
+def apply_log_transform(
+    data: np.ndarray, log_flags: List[bool]
+) -> Tuple[np.ndarray, np.ndarray]:
+    offsets = np.array(
+        [
+            max(0.0, -np.nanmin(data[:, i]) + 1.0) if log_flags[i] else 0.0
+            for i in range(data.shape[1])
+        ]
+    )
+    transformed = np.column_stack(
+        [
+            np.log(data[:, i] + offsets[i]) if log_flags[i] else data[:, i]
+            for i in range(data.shape[1])
+        ]
+    )
     return transformed, offsets
+
 
 # Set consistent matplotlib styling
 def set_plot_style():
@@ -124,14 +123,6 @@ def set_plot_style():
     )
 
 
-import numpy as np
-import pandas as pd
-from scipy.stats import skew, kurtosis, entropy
-from scipy.signal import welch, find_peaks
-from statsmodels.tsa.stattools import adfuller, acf, pacf
-from tqdm import tqdm
-import warnings
-
 def compute_basic_stats(data):
     valid_mask = ~np.isnan(data)
     coverage = np.mean(valid_mask, axis=0)
@@ -140,6 +131,7 @@ def compute_basic_stats(data):
     skews = skew(data, nan_policy="omit")
     kurts = kurtosis(data, nan_policy="omit")
     return coverage, means, stds, skews, kurts
+
 
 def detect_stationarity(data, D):
     pvals = []
@@ -151,6 +143,7 @@ def detect_stationarity(data, D):
             pval = 1.0
         pvals.append(pval)
     return pvals
+
 
 def detect_seasonality(data, D):
     seasonal_flags, detected_periods = [], []
@@ -180,6 +173,7 @@ def detect_seasonality(data, D):
         detected_periods.append(period if is_seasonal else None)
     return seasonal_flags, detected_periods
 
+
 def analyze_signal_quality(data, D):
     flatness_scores, snr_scores = [], []
     for i in range(D):
@@ -189,8 +183,8 @@ def analyze_signal_quality(data, D):
             snr_scores.append(0.0)
             continue
         norm = (clean - np.mean(clean)) / (np.std(clean) + 1e-8)
-        spec = np.abs(np.fft.rfft(norm))**2
-        spec = spec[1:len(spec) // 2]
+        spec = np.abs(np.fft.rfft(norm)) ** 2
+        spec = spec[1 : len(spec) // 2]
         if len(spec) == 0:
             flatness_scores.append(1.0)
             snr_scores.append(0.0)
@@ -200,6 +194,7 @@ def analyze_signal_quality(data, D):
         flatness_scores.append(flat)
         snr_scores.append(snr)
     return flatness_scores, snr_scores
+
 
 def score_pacf(data, D):
     pacf_scores = []
@@ -216,6 +211,7 @@ def score_pacf(data, D):
         pacf_scores.append(score)
     return pacf_scores
 
+
 def estimate_ewt_bands(data, D):
     band_estimates = []
     for i in range(D):
@@ -230,20 +226,36 @@ def estimate_ewt_bands(data, D):
         band_estimates.append(int(np.clip(ent * 2, 2, 10)))
     return band_estimates
 
+
 def summarize_configuration(params):
-    from tabulate import tabulate
-    print("\n" + tabulate([
-        ["Dataset Dimensions", params['dimensions']],
-        ["Missing Values", f"{params['missing_rate']:.2%}"],
-        ["Stationarity", "Non-stationary" if params['detrend'] else "Stationary"],
-        ["Seasonality", "Present" if params['seasonal'] else "Not detected"],
-        ["Transformation", "Log (selective)" if params['log_transform'] else "None"],
-        ["Signal Processing", params['filter_method'] if params['apply_filter'] else "None"],
-        ["Imputation", params['impute_method'] or "None"],
-        ["Outlier Detection", params['outlier_method']],
-        ["Outlier Threshold", f"{params['outlier_threshold']:.2f}"],
-        ["Decomposition", f"{params['ewt_bands']} bands"],
-    ], headers=["Parameter", "Configuration"], tablefmt="pretty"))
+    print(
+        "\n"
+        + tabulate(
+            [
+                ["Dataset Dimensions", params["dimensions"]],
+                ["Missing Values", f"{params['missing_rate']:.2%}"],
+                [
+                    "Stationarity",
+                    "Non-stationary" if params["detrend"] else "Stationary",
+                ],
+                ["Seasonality", "Present" if params["seasonal"] else "Not detected"],
+                [
+                    "Transformation",
+                    "Log (selective)" if params["log_transform"] else "None",
+                ],
+                [
+                    "Signal Processing",
+                    params["filter_method"] if params["apply_filter"] else "None",
+                ],
+                ["Imputation", params["impute_method"] or "None"],
+                ["Outlier Detection", params["outlier_method"]],
+                ["Outlier Threshold", f"{params['outlier_threshold']:.2f}"],
+                ["Decomposition", f"{params['ewt_bands']} bands"],
+            ],
+            headers=["Parameter", "Configuration"],
+            tablefmt="pretty",
+        )
+    )
 
 
 class TimeSeriesPreprocessor:
@@ -280,7 +292,7 @@ class TimeSeriesPreprocessor:
         self_tune=False,
         generate_time_features=False,
         apply_imputation=False,
-        epochs = 500,
+        epochs=500,
     ):
         """
         Initialize the TimeSeriesPreprocessor with the specified parameters.
@@ -351,23 +363,29 @@ class TimeSeriesPreprocessor:
 
         # Set matplotlib style
         set_plot_style()
-            
+
     def _parallel_outlier_clean(self, data: np.ndarray) -> np.ndarray:
         if self.outlier_method in {"tranad", "isolation_forest", "ecod", "lof"}:
             # Whole-matrix method — skip per-column parallelism
-            cleaned = _remove_outliers(data, self.outlier_method, self.outlier_threshold,
-                                    seq_len=self.horizon, epochs=self.epochs)
+            cleaned = _remove_outliers(
+                data,
+                self.outlier_method,
+                self.outlier_threshold,
+                seq_len=self.horizon,
+                epochs=self.epochs,
+            )
             return cleaned
         else:
             # Per-column parallel strategy
             n_features = data.shape[1]
             cleaned_cols = Parallel(n_jobs=-1)(
-                delayed(_remove_outliers_parallel)(i, data[:, i], self.outlier_method, self.outlier_threshold)
+                delayed(_remove_outliers_parallel)(
+                    i, data[:, i], self.outlier_method, self.outlier_threshold
+                )
                 for i in tqdm(range(n_features), desc="Removing outliers")
             )
             cleaned_cols.sort(key=lambda tup: tup[0])
             return np.stack([col for _, col in cleaned_cols], axis=1)
-
 
     def _inverse_log_transform(self, data: np.ndarray) -> np.ndarray:
         for i, flag in enumerate(self.log_transform_flags):
@@ -395,12 +413,16 @@ class TimeSeriesPreprocessor:
         pvals = detect_stationarity(data, D)
         self.detrend = any(p > 0.05 for p in pvals)
 
-        print(f"→ Non-stationary features: {sum(p > 0.05 for p in pvals)}/{D} → Detrend: {'✅' if self.detrend else '❌'}")
+        print(
+            f"→ Non-stationary features: {sum(p > 0.05 for p in pvals)}/{D} → Detrend: {'✅' if self.detrend else '❌'}"
+        )
 
         # === Seasonality
         seasonal_flags, detected_periods = detect_seasonality(data, D)
         self.seasonal = any(seasonal_flags)
-        print(f"→ Seasonal features: {sum(seasonal_flags)}/{D} → Seasonality: {'✅' if self.seasonal else '❌'}")
+        print(
+            f"→ Seasonal features: {sum(seasonal_flags)}/{D} → Seasonality: {'✅' if self.seasonal else '❌'}"
+        )
         if self.seasonal:
             print(f"→ Detected periods: {[p for p in detected_periods if p]}")
 
@@ -421,7 +443,9 @@ class TimeSeriesPreprocessor:
             self.filter_method = "none"
             self.apply_filter = False
 
-        print(f"→ Signal quality: Flatness={avg_flatness:.2f}, SNR={avg_snr:.2f} → Filter: {self.filter_method}")
+        print(
+            f"→ Signal quality: Flatness={avg_flatness:.2f}, SNR={avg_snr:.2f} → Filter: {self.filter_method}"
+        )
 
         # === PACF
         pacf_scores = score_pacf(data, D)
@@ -448,8 +472,9 @@ class TimeSeriesPreprocessor:
 
         self.impute_method = "saits"
 
-
-        print(f"→ Temporal structure: {temporal_score:.2f}, Missing rate: {missing_rate:.3f} → Impute: {self.impute_method or 'None'}")
+        print(
+            f"→ Temporal structure: {temporal_score:.2f}, Missing rate: {missing_rate:.3f} → Impute: {self.impute_method or 'None'}"
+        )
 
         # === EWT Bands
         bands = estimate_ewt_bands(data, D)
@@ -467,7 +492,9 @@ class TimeSeriesPreprocessor:
 
         # === Heuristic-based scoring
         scores["ecod"] = 2.0 if self.available_methods.get("ecod") else 0
-        scores["tranad"] = 2.5 if self.available_methods.get("tranad") and avg_snr > 5 else 0
+        scores["tranad"] = (
+            2.5 if self.available_methods.get("tranad") and avg_snr > 5 else 0
+        )
         scores["isolation_forest"] = 1.5 if T > 3000 and missing_rate < 0.1 else 0
         scores["lof"] = 1.0 if D > 5 and dimensionality_ratio > 0.01 else 0
         scores["zscore"] = 1.0 if high_skew > 0.4 or extreme_ratio > 0.2 else 0
@@ -493,22 +520,23 @@ class TimeSeriesPreprocessor:
         self.outlier_threshold = adaptive_threshold(np.mean(skews), np.mean(kurts))
         print(f"→ Outlier threshold: {self.outlier_threshold:.2f}")
         if verbose:
-            summarize_configuration({
-                "dimensions": f"{T} × {D}",
-                "missing_rate": missing_rate,
-                "detrend": self.detrend,
-                "seasonal": self.seasonal,
-                "log_transform": self.log_transform,
-                "filter_method": self.filter_method,
-                "apply_filter": self.apply_filter,
-                "impute_method": self.impute_method,
-                "outlier_method": self.outlier_method,
-                "outlier_threshold": self.outlier_threshold,
-                "ewt_bands": self.ewt_bands
-            })
+            summarize_configuration(
+                {
+                    "dimensions": f"{T} × {D}",
+                    "missing_rate": missing_rate,
+                    "detrend": self.detrend,
+                    "seasonal": self.seasonal,
+                    "log_transform": self.log_transform,
+                    "filter_method": self.filter_method,
+                    "apply_filter": self.apply_filter,
+                    "impute_method": self.impute_method,
+                    "outlier_method": self.outlier_method,
+                    "outlier_threshold": self.outlier_threshold,
+                    "ewt_bands": self.ewt_bands,
+                }
+            )
 
         print("✅ Self-tuning configuration complete.\n")
-
 
     def fit_transform(
         self, data: np.ndarray, time_stamps=None, feats=None
@@ -534,11 +562,13 @@ class TimeSeriesPreprocessor:
 
         # 4. Log Transformation
         if hasattr(self, "log_transform_flags") and any(self.log_transform_flags):
-            processed, self.log_offset = apply_log_transform(processed, self.log_transform_flags)
+            processed, self.log_offset = apply_log_transform(
+                processed, self.log_transform_flags
+            )
 
         # 5. Outlier Removal (parallelized)
         if self.remove_outliers:
-            #method, threshold = self.outlier_method, self.outlier_threshold
+            # method, threshold = self.outlier_method, self.outlier_threshold
             processed = self._parallel_outlier_clean(processed)
             self._plot_comparison(data, processed, "After Outlier Removal", time_stamps)
 
@@ -573,14 +603,14 @@ class TimeSeriesPreprocessor:
             self.scaler = StandardScaler()
             processed = self.scaler.fit_transform(processed)
 
+        time_feates = None
         # 10. Timestamp features
         if time_stamps is not None and self.generate_time_features:
             time_feats = self._generate_time_features(time_stamps)
-            processed = np.concatenate((processed, time_feats), axis=1)
 
         # 11. Sequence generation
-        X, y = self._create_sequences(processed, feats)
-        return X, y, processed
+        X, y, time_f = self._create_sequences(processed, feats, time_feats)
+        return X, y, processed, time_f
 
     def transform(self, data: np.ndarray, time_stamps=None) -> np.ndarray:
         """
@@ -600,16 +630,14 @@ class TimeSeriesPreprocessor:
 
         # Differencing
         if self.differencing:
-            processed = np.vstack([
-                np.zeros_like(processed[0]),
-                np.diff(processed, axis=0)
-            ])
+            processed = np.vstack(
+                [np.zeros_like(processed[0]), np.diff(processed, axis=0)]
+            )
 
         # Detrending via EWT
         if self.apply_ewt:
             for i in range(processed.shape[1]):
                 if self.ewt_boundaries and i < len(self.ewt_boundaries):
-                    from ewtpy import EWT1D
                     ewt, _, _ = EWT1D(
                         processed[:, i],
                         N=len(self.ewt_boundaries[i]),
@@ -665,19 +693,20 @@ class TimeSeriesPreprocessor:
                         if j < len(trend):
                             trend_to_add[j, i] = trend[j]
                         else:
-                            trend_to_add[j, i] = trend[-1] + slope * (j - len(trend) + 1)
+                            trend_to_add[j, i] = trend[-1] + slope * (
+                                j - len(trend) + 1
+                            )
             preds += trend_to_add
 
         # Step 4: Inverse log transformation
         if (
-            self.log_transform and
-            self.log_offset is not None and
-            hasattr(self, "log_transform_flags")
+            self.log_transform
+            and self.log_offset is not None
+            and hasattr(self, "log_transform_flags")
         ):
             preds = self._inverse_log_transform(preds)
 
         return preds
-
 
     def _impute_missing(self, data: np.ndarray) -> np.ndarray:
         """
@@ -701,12 +730,9 @@ class TimeSeriesPreprocessor:
                 print(f"[ERROR] SAITS imputation failed: {e}")
                 raise
 
-
         if method == "auto":
-            from sklearn.impute import KNNImputer
             try:
-                from sklearn.experimental import enable_iterative_imputer  # noqa
-                from sklearn.impute import IterativeImputer as FancyIter
+                from fancyimpute import IterativeImputer as FancyIter
             except ImportError:
                 FancyIter = None
 
@@ -717,16 +743,27 @@ class TimeSeriesPreprocessor:
                 try:
                     # 1. Low missing rate → Interpolation
                     if missing_rate < 0.05:
-                        filled = series.interpolate(method="linear", limit_direction="both")
+                        filled = series.interpolate(
+                            method="linear", limit_direction="both"
+                        )
                         return i, filled.ffill().bfill().values
 
                     # 2. Moderate → KNN Imputer
                     elif missing_rate < 0.2:
-                        return i, KNNImputer(n_neighbors=3).fit_transform(series.to_frame()).ravel()
+                        return (
+                            i,
+                            KNNImputer(n_neighbors=3)
+                            .fit_transform(series.to_frame())
+                            .ravel(),
+                        )
 
                     # 3. High → IterativeImputer or fallback
                     elif FancyIter is not None:
-                        imputed = FancyIter(max_iter=10, random_state=0).fit_transform(series.to_frame()).ravel()
+                        imputed = (
+                            FancyIter(max_iter=10, random_state=0)
+                            .fit_transform(series.to_frame())
+                            .ravel()
+                        )
                         return i, imputed
 
                 except Exception as e:
@@ -741,7 +778,9 @@ class TimeSeriesPreprocessor:
 
             results = Parallel(n_jobs=-1)(
                 delayed(impute_column)(i, col, self.window_size)
-                for i, col in enumerate(tqdm(df.columns, desc="🔧 Imputing Missing Values"))
+                for i, col in enumerate(
+                    tqdm(df.columns, desc="🔧 Imputing Missing Values")
+                )
             )
 
             results.sort(key=lambda x: x[0])
@@ -764,7 +803,7 @@ class TimeSeriesPreprocessor:
                 from fancyimpute import IterativeImputer as FancyIter
             except ImportError:
                 try:
-                    from sklearn.experimental import enable_iterative_imputer  # noqa
+                    from sklearn.experimental import enable_iterative_imputer
                     from sklearn.impute import IterativeImputer as FancyIter
                 except ImportError:
                     raise ImportError("Iterative imputer not available.")
@@ -772,9 +811,9 @@ class TimeSeriesPreprocessor:
 
         raise ValueError(f"Unsupported imputation method: {method}")
 
-
-
-    def _apply_filter(self, data: np.ndarray, method: str = "savgol", **kwargs) -> np.ndarray:
+    def _apply_filter(
+        self, data: np.ndarray, method: str = "savgol", **kwargs
+    ) -> np.ndarray:
         if method not in FILTER_METHODS:
             raise ValueError(f"Unknown filter method: {method}")
         return FILTER_METHODS[method](self, data, kwargs)
@@ -791,7 +830,7 @@ class TimeSeriesPreprocessor:
             Transformed data
         """
         try:
-            from ewtpy import EWT1D  # Just to ensure the package is present
+            from pyeewt import EWT1D
         except ImportError:
             warnings.warn("PyEWT not installed. Skipping EWT.")
             return data
@@ -830,7 +869,7 @@ class TimeSeriesPreprocessor:
         return df[["month", "day", "weekday", "hour"]].values.astype(np.float32)
 
     def _create_sequences(
-        self, data: np.ndarray, feats=None
+        self, data: np.ndarray, feats=None, time_feats=None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Create input-output sequences from the data.
@@ -844,14 +883,21 @@ class TimeSeriesPreprocessor:
             y: Target sequences
         """
         feats = list(range(data.shape[1])) if feats is None else feats
-        X, y = [], []
+        X, y, time_f = [], [], []
 
         max_idx = len(data) - self.window_size - self.horizon + 1
         for i in tqdm(range(max_idx), desc="Creating sequences"):
             X.append(data[i : i + self.window_size])
-            y.append(data[i + self.window_size : i + self.window_size + self.horizon][:, feats])
+            time_f.append(
+                time_feats[i : i + self.window_size] if time_feats is not None else None
+            )
+            y.append(
+                data[i + self.window_size : i + self.window_size + self.horizon][
+                    :, feats
+                ]
+            )
 
-        return np.array(X), np.array(y)
+        return np.array(X), np.array(y), np.array(time_f)
 
     def _plot_comparison(
         self,

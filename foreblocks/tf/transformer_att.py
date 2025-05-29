@@ -134,7 +134,6 @@ class MultiAttention(nn.Module):
         need_weights: bool = False,
         layer_state: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Dict[str, torch.Tensor]]]:
-
         # Handle self-attention
         if key is None:
             key = query
@@ -184,7 +183,6 @@ class MultiAttention(nn.Module):
         need_weights: bool,
         layer_state: Optional[Dict[str, torch.Tensor]],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Dict[str, torch.Tensor]]]:
-
         B, T_q, _ = query.shape
         _, T_k, _ = key.shape
 

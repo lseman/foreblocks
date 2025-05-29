@@ -1,43 +1,27 @@
 # ============================
 # Standard Library
 # ============================
-import copy
-import math
-import time
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # ============================
 # External Libraries - Core
 # ============================
 import numpy as np
-import pandas as pd
-import torch
 from joblib import Parallel, delayed
-from numba import njit, prange
 
 # ============================
 # Scientific Computing & ML
 # ============================
-from scipy.signal import savgol_filter, wiener
-from sklearn.ensemble import IsolationForest
-from sklearn.impute import KNNImputer
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.preprocessing import StandardScaler
-from statsmodels.nonparametric.smoothers_lowess import lowess
-from statsmodels.tsa.stattools import pacf
 import statsmodels.api as sm
 
 # ============================
 # Visualization
 # ============================
-import matplotlib.pyplot as plt
+
 
 # --- Parallel EWT + Detrend ---
 def _select_best_imf_by_aic(signal: np.ndarray, imfs: np.ndarray) -> int:
     from statsmodels.tsa.stattools import arma_order_select_ic
-    import statsmodels.api as sm
     from statsmodels.tools.sm_exceptions import ConvergenceWarning
     import warnings
 
@@ -73,7 +57,6 @@ def _select_best_imf_by_aic(signal: np.ndarray, imfs: np.ndarray) -> int:
 
 def _ewt_detrend_column(i, signal, ewt_bands, detrend, trend_idx, auto_trend):
     from ewtpy import EWT1D
-    import warnings
 
     if np.isnan(signal).any():
         return i, signal, None, None, None
@@ -119,4 +102,3 @@ def apply_ewt_and_detrend_parallel(
             trend_components[:, i] = trend
 
     return output, ewt_components, ewt_boundaries, trend_components
-

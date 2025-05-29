@@ -1,15 +1,11 @@
 import math
-
-from typing import List, Optional, Tuple
-from typing import Dict, Any
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
-
 from .embeddings import PositionalEncoding
 from .transformer_att import MultiAttention
-
 from .transformer_aux import FeedForwardBlock
 
 
@@ -479,6 +475,9 @@ class TransformerDecoderLayer(nn.Module):
         return tgt, updated_incremental_state
 
 
+from .embeddings import InformerTimeEmbedding
+
+
 class TransformerEncoder(nn.Module):
     """
     Optimized Transformer Encoder with:
@@ -539,6 +538,9 @@ class TransformerEncoder(nn.Module):
             self.pos_encoder = PositionalEncoding(
                 d_model, dropout=dropout, max_len=max_seq_len, scale=pos_encoding_scale
             )
+
+        # Time features for attention (if provided)
+        self.time_encoder = InformerTimeEmbedding(d_model)
 
         # Input dropout
         self.dropout = nn.Dropout(dropout)
@@ -671,6 +673,7 @@ class TransformerEncoder(nn.Module):
         src: torch.Tensor,
         src_mask: Optional[torch.Tensor] = None,
         src_key_padding_mask: Optional[torch.Tensor] = None,
+        time_features: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Forward pass of the transformer encoder.
@@ -688,6 +691,11 @@ class TransformerEncoder(nn.Module):
 
         # Add positional encoding
         src = self.pos_encoder(src)
+
+        if time_features is not None:
+            # Add time features for attention
+            time_features = self.time_encoder(time_features)
+            src = src + time_features
 
         # Apply input dropout
         src = self.dropout(src)
@@ -954,4 +962,9 @@ class TransformerDecoder(nn.Module):
         if incremental_state is None:
             incremental_state = {}
 
-        return self.forward(tgt, memory, incremental_state=incremental_state, return_incremental_state=True)
+        return self.forward(
+            tgt,
+            memory,
+            incremental_state=incremental_state,
+            return_incremental_state=True,
+        )

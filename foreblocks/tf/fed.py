@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-import numpy as np
 from typing import Optional, Tuple
 
 
@@ -174,7 +173,6 @@ class FrequencyAttention(nn.Module):
         is_causal: bool = False,
         need_weights: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-
         # Handle self-attention case
         if key is None:
             key = query
@@ -335,7 +333,6 @@ class DWTAttention(nn.Module):
         is_causal: bool = False,
         need_weights: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-
         if key is None:
             key = query
         if value is None:

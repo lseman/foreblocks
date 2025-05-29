@@ -1,5 +1,5 @@
 # Core typing and system
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Tuple
 
 # Torch
 import torch
@@ -18,7 +18,6 @@ from .enc_dec import (
     LatentConditionedDecoder,
 )
 from .tf.transformer import TransformerEncoder, TransformerDecoder
-from .att import AttentionLayer
 
 from .utils import Trainer  # Your existing Trainer implementation
 from .aux import (
@@ -388,4 +387,3 @@ class TimeSeriesSeq2Seq:
 
         # Load state dict
         self.model.load_state_dict(checkpoint["model_state_dict"])
-

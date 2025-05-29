@@ -1,18 +1,9 @@
-import time
-import math
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
-from typing import Dict, List, Optional, Tuple, Union
-
+from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp import autocast, GradScaler
 from torch import Tensor
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
+
 
 class EncoderBase(nn.Module):
     def __init__(self):
@@ -21,6 +12,7 @@ class EncoderBase(nn.Module):
     def forward(self, x, hidden=None):
         raise NotImplementedError("Subclasses must implement forward method")
 
+
 class DecoderBase(nn.Module):
     def __init__(self):
         super(DecoderBase, self).__init__()
@@ -28,12 +20,16 @@ class DecoderBase(nn.Module):
     def forward(self, x, hidden=None):
         raise NotImplementedError("Subclasses must implement forward method")
 
+
 ################################################
 # LSTM
 ################################################
 
+
 class LSTMEncoder(EncoderBase):
-    def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False):
+    def __init__(
+        self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False
+    ):
         super(LSTMEncoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -45,12 +41,15 @@ class LSTMEncoder(EncoderBase):
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
             bidirectional=bidirectional,
-            batch_first=True
+            batch_first=True,
         )
 
-    def forward(self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+    def forward(
+        self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None
+    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         outputs, hidden = self.lstm(x, hidden)
         return outputs, hidden
+
 
 class LSTMDecoder(DecoderBase):
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, dropout=0.0):
@@ -63,23 +62,29 @@ class LSTMDecoder(DecoderBase):
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
-            batch_first=True
+            batch_first=True,
         )
         self.output_layer = nn.Linear(hidden_size, output_size)
 
-    def forward(self, x: torch.Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+    def forward(
+        self, x: torch.Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None
+    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         if x.dim() == 2:
             x = x.unsqueeze(1)
         lstm_out, hidden = self.lstm(x, hidden)
         output = self.output_layer(lstm_out.squeeze(1))
         return output, hidden
 
+
 ###################################################
 # GRU
 ###################################################
 
+
 class GRUEncoder(EncoderBase):
-    def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False):
+    def __init__(
+        self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False
+    ):
         super(GRUEncoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -91,7 +96,7 @@ class GRUEncoder(EncoderBase):
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
             bidirectional=bidirectional,
-            batch_first=True
+            batch_first=True,
         )
 
     def forward(self, x, hidden=None):
@@ -110,7 +115,7 @@ class GRUDecoder(DecoderBase):
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
-            batch_first=True
+            batch_first=True,
         )
         self.output_layer = nn.Linear(hidden_size, output_size)
 
@@ -121,7 +126,9 @@ class GRUDecoder(DecoderBase):
         output = self.output_layer(gru_out.squeeze(1))
         return output, hidden
 
+
 ###############
+
 
 # === Variational Encoder Wrapper ===
 class VariationalEncoderWrapper(nn.Module):
@@ -152,14 +159,25 @@ class VariationalEncoderWrapper(nn.Module):
 
         return encoder_outputs, (z, mu, logvar)
 
-    
+
 # === Latent-aware Decoder Wrapper ===
 class LatentConditionedDecoder(nn.Module):
-    def __init__(self, base_decoder: nn.Module, latent_dim: int, hidden_size: int, num_layers: int = 1, rnn_type='lstm'):
+    def __init__(
+        self,
+        base_decoder: nn.Module,
+        latent_dim: int,
+        hidden_size: int,
+        num_layers: int = 1,
+        rnn_type="lstm",
+    ):
         super().__init__()
         self.base_decoder = base_decoder
         self.latent_to_hidden = nn.Linear(latent_dim, hidden_size * num_layers)
-        self.latent_to_cell = nn.Linear(latent_dim, hidden_size * num_layers) if rnn_type == 'lstm' else None
+        self.latent_to_cell = (
+            nn.Linear(latent_dim, hidden_size * num_layers)
+            if rnn_type == "lstm"
+            else None
+        )
 
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -171,13 +189,18 @@ class LatentConditionedDecoder(nn.Module):
             latent = latent[-1]
 
         batch_size = latent.size(0)
-        h0 = self.latent_to_hidden(latent).view(self.num_layers, batch_size, self.hidden_size)
+        h0 = self.latent_to_hidden(latent).view(
+            self.num_layers, batch_size, self.hidden_size
+        )
 
-        if self.rnn_type == 'lstm':
-            c0 = self.latent_to_cell(latent).view(self.num_layers, batch_size, self.hidden_size)
+        if self.rnn_type == "lstm":
+            c0 = self.latent_to_cell(latent).view(
+                self.num_layers, batch_size, self.hidden_size
+            )
             return self.base_decoder(x, (h0, c0))
         else:
             return self.base_decoder(x, h0)
+
 
 def compute_kl_divergence(mu, logvar):
     """
@@ -185,10 +208,11 @@ def compute_kl_divergence(mu, logvar):
     """
     return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / mu.size(0)
 
+
 def vae_loss_function(recon_x, target, mu, logvar):
     """
     VAE loss = reconstruction loss + KL divergence
     """
-    recon_loss = F.mse_loss(recon_x, target, reduction='mean')
+    recon_loss = F.mse_loss(recon_x, target, reduction="mean")
     kl = compute_kl_divergence(mu, logvar)
     return recon_loss + kl, recon_loss, kl
