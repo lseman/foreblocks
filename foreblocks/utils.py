@@ -1,14 +1,16 @@
 import contextlib
 import copy
-from typing import Dict, Optional, Tuple, Any, Union, Callable
-import numpy as np
+from typing import Any, Callable, Dict, Optional, Tuple, Union
+
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.amp import autocast, GradScaler
-from ..third_party.vsgd import *
 import wandb
+from torch.amp import GradScaler, autocast
 from tqdm import tqdm
+
+from .third_party.vsgd import *
 
 
 class TimeSeriesDataset(torch.utils.data.Dataset):
@@ -166,10 +168,22 @@ class Trainer:
         return None
 
     def _forward_pass(self, X, y, time_feat=None):
-        return self.model(X, y, time_feat, self.current_epoch)
+        result = self.model(X, y, time_feat, self.current_epoch)
+        if isinstance(result, tuple):
+            outputs, aux = result
+        else:
+            outputs, aux = result, {}
+        return outputs, aux
 
-    def _compute_loss(self, outputs, targets):
+    def _compute_loss(
+        self, outputs, targets, aux: Optional[Dict[str, torch.Tensor]] = None
+    ):
         loss = self.criterion(outputs, targets)
+
+        # Add auxiliary loss if present
+        if aux is not None and "aux_loss" in aux:
+            aux_weight = self.config.get("aux_loss_weight", 0.01)
+            loss += aux_weight * aux["aux_loss"]
 
         # L1 regularization
         l1_weight = self.config.get("l1_regularization", 0.0)
@@ -222,8 +236,8 @@ class Trainer:
             with (
                 autocast("cuda") if self.config["use_amp"] else contextlib.nullcontext()
             ):
-                outputs = self._forward_pass(X, y, time_feat)
-                loss = self._compute_loss(outputs, y)
+                outputs, aux = self._forward_pass(X, y, time_feat)
+                loss = self._compute_loss(outputs, y, aux)
             self._step_optimizer(loss, batch_idx, len(dataloader))
             total_loss += loss.item()
         return total_loss / len(dataloader)
@@ -239,7 +253,11 @@ class Trainer:
                     if self.config["use_amp"]
                     else contextlib.nullcontext()
                 ):
-                    outputs = self.model(X)
+                    result = self.model(X)
+                    if isinstance(result, tuple):
+                        outputs, _ = result
+                    else:
+                        outputs = result
                     loss = self.criterion(outputs, y)
                 total_loss += loss.item() * X.size(0)
         return total_loss / len(dataloader.dataset)
@@ -356,7 +374,13 @@ class Trainer:
 
                 # ✅ AMP inference context
                 with torch.amp.autocast("cuda", dtype=torch.float16):
-                    pred = self.model(x).squeeze(0)  # [target_len, output_size]
+                    output = self.model(x)
+                    if isinstance(output, tuple):
+                        pred, _ = output  # ignore aux loss during inference
+                    else:
+                        pred = output
+
+                    pred = pred.squeeze(0)  # [target_len, output_size]
 
                 forecast[i : i + target_len] += pred
                 count[i : i + target_len] += 1
@@ -445,7 +469,13 @@ class Trainer:
             for i in range(X_val.shape[0]):
                 x = X_val[i].unsqueeze(0)  # [1, seq_len, input_size]
                 with torch.amp.autocast("cuda", dtype=torch.float16):
-                    pred = self.model(x).squeeze(0)  # [target_len, output_size]
+                    output = self.model(x)
+                    if isinstance(output, tuple):
+                        pred, _ = output  # ignore aux loss during inference
+                    else:
+                        pred = output
+
+                    pred = pred.squeeze(0)  # [target_len, output_size]
 
                 forecast[i : i + target_len] += pred
 

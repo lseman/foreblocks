@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
-
 # External libraries
 from xformers.ops import memory_efficient_attention
 
@@ -378,7 +377,7 @@ class MessagePassing(nn.Module):
 
         # Simple head dimension calculation
         self.head_dim = round_to_supported_head_dim(hidden_dim)
-        print(f"Using {num_heads} attention heads with head dimension {self.head_dim}")
+        # print(f"Using {num_heads} attention heads with head dimension {self.head_dim}")
 
         # Core message transformation
         self.message_transform = nn.Linear(input_size, hidden_dim)

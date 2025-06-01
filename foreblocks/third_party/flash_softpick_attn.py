@@ -10,12 +10,8 @@ import torch
 import triton
 import triton.language as tl
 from einops import rearrange, reduce
-
-# from fla.ops.common.utils import prepare_chunk_indices
-# from fla.ops.utils.op import exp, log
-# from fla.utils import autocast_custom_bwd, autocast_custom_fwd, check_shared_mem, contiguous
-
 from triton.language import exp, log
+
 
 def prepare_lens(offsets: torch.LongTensor) -> torch.LongTensor:
     return offsets[1:] - offsets[:-1]
@@ -26,23 +22,25 @@ def prepare_sequence_ids(position_ids: torch.LongTensor) -> torch.LongTensor:
 
 
 def prepare_chunk_indices(
-    offsets: torch.LongTensor,
-    chunk_size: int
+    offsets: torch.LongTensor, chunk_size: int
 ) -> torch.LongTensor:
-    indices = torch.cat([torch.arange(n) for n in triton.cdiv(prepare_lens(offsets), chunk_size).tolist()])
+    indices = torch.cat(
+        [
+            torch.arange(n)
+            for n in triton.cdiv(prepare_lens(offsets), chunk_size).tolist()
+        ]
+    )
     return torch.stack([prepare_sequence_ids(indices), indices], 1).to(offsets)
 
 
-@triton.heuristics({
-    'USE_OFFSETS': lambda args: args['offsets'] is not None
-})
+@triton.heuristics({"USE_OFFSETS": lambda args: args["offsets"] is not None})
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
-        for num_warps in [1, 2, 4] # + ([8] if check_shared_mem('hopper') else [])
+        for num_warps in [1, 2, 4]  # + ([8] if check_shared_mem('hopper') else [])
         for num_stages in [2, 3, 4, 5]
     ],
-    key=['B', 'H', 'G', 'K', 'V', 'BK', 'BV'],
+    key=["B", "H", "G", "K", "V", "BK", "BV"],
 )
 @triton.jit
 def parallel_softpick_attn_fwd_kernel(
@@ -65,23 +63,38 @@ def parallel_softpick_attn_fwd_kernel(
     BS: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    USE_OFFSETS: tl.constexpr
+    USE_OFFSETS: tl.constexpr,
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_hq = i_bh // HQ, i_bh % HQ
     i_h = i_hq // G
 
     if USE_OFFSETS:
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(
+            indices + i_t * 2 + 1
+        ).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(
+            tl.int32
+        )
         T = eos - bos
     else:
         i_n = i_b
         bos, eos = i_n * T, i_n * T + T
 
-    p_q = tl.make_block_ptr(q + (bos * HQ + i_hq) * K, (T, K), (HQ*K, 1), (i_t * BT, 0), (BT, BK), (1, 0))
-    p_o = tl.make_block_ptr(o + (bos * HQ + i_hq) * V, (T, V), (HQ*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_lse = tl.make_block_ptr(lse + bos * HQ + i_hq, (T,), (HQ,), (i_t * BT,), (BT,), (0,))
+    p_q = tl.make_block_ptr(
+        q + (bos * HQ + i_hq) * K, (T, K), (HQ * K, 1), (i_t * BT, 0), (BT, BK), (1, 0)
+    )
+    p_o = tl.make_block_ptr(
+        o + (bos * HQ + i_hq) * V,
+        (T, V),
+        (HQ * V, 1),
+        (i_t * BT, i_v * BV),
+        (BT, BV),
+        (1, 0),
+    )
+    p_lse = tl.make_block_ptr(
+        lse + bos * HQ + i_hq, (T,), (HQ,), (i_t * BT,), (BT,), (0,)
+    )
 
     # the Q block is kept in the shared memory throughout the whole kernel
     # [BT, BK]
@@ -90,11 +103,20 @@ def parallel_softpick_attn_fwd_kernel(
     # [BT, BV]
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
 
-    b_m = tl.full([BT], float('-inf'), dtype=tl.float32)
+    b_m = tl.full([BT], float("-inf"), dtype=tl.float32)
     b_acc = tl.zeros([BT], dtype=tl.float32)
     for i_s in range(0, i_t * BT, BS):
-        p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (K, T), (1, H*K), (0, i_s), (BK, BS), (0, 1))
-        p_v = tl.make_block_ptr(v + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_s, i_v * BV), (BS, BV), (1, 0))
+        p_k = tl.make_block_ptr(
+            k + (bos * H + i_h) * K, (K, T), (1, H * K), (0, i_s), (BK, BS), (0, 1)
+        )
+        p_v = tl.make_block_ptr(
+            v + (bos * H + i_h) * V,
+            (T, V),
+            (H * V, 1),
+            (i_s, i_v * BV),
+            (BS, BV),
+            (1, 0),
+        )
         # [BK, BS]
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BS, BV]
@@ -119,8 +141,17 @@ def parallel_softpick_attn_fwd_kernel(
     # [BT]
     o_q = i_t * BT + tl.arange(0, BT)
     for i_s in range(i_t * BT, min((i_t + 1) * BT, T), BS):
-        p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (K, T), (1, H*K), (0, i_s), (BK, BS), (0, 1))
-        p_v = tl.make_block_ptr(v + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_s, i_v * BV), (BS, BV), (1, 0))
+        p_k = tl.make_block_ptr(
+            k + (bos * H + i_h) * K, (K, T), (1, H * K), (0, i_s), (BK, BS), (0, 1)
+        )
+        p_v = tl.make_block_ptr(
+            v + (bos * H + i_h) * V,
+            (T, V),
+            (H * V, 1),
+            (i_s, i_v * BV),
+            (BS, BV),
+            (1, 0),
+        )
 
         # [BS]
         o_k = i_s + tl.arange(0, BS)
@@ -130,7 +161,7 @@ def parallel_softpick_attn_fwd_kernel(
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BT, BS]
         b_s = tl.dot(b_q, b_k)
-        b_s = tl.where(o_q[:, None] >= o_k[None, :], b_s, float('-inf'))
+        b_s = tl.where(o_q[:, None] >= o_k[None, :], b_s, float("-inf"))
 
         # [BT]
         b_m, b_mp = tl.maximum(b_m, tl.max(b_s, 1)), b_m
@@ -146,7 +177,7 @@ def parallel_softpick_attn_fwd_kernel(
         b_o = b_o * b_r[:, None] + tl.dot(b_p_r.to(b_q.dtype), b_v)
 
         b_mp = b_m
-    b_acc += 1e-6 # harcoded epsilon... sorry
+    b_acc += 1e-6  # harcoded epsilon... sorry
     b_o = b_o / b_acc[:, None]
     b_m += log(b_acc)
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
@@ -155,11 +186,7 @@ def parallel_softpick_attn_fwd_kernel(
 
 @triton.jit
 def parallel_softpick_attn_bwd_kernel_preprocess(
-    o,
-    do,
-    delta,
-    B: tl.constexpr,
-    V: tl.constexpr
+    o, do, delta, B: tl.constexpr, V: tl.constexpr
 ):
     i_n = tl.program_id(0)
     o_d = tl.arange(0, B)
@@ -172,18 +199,16 @@ def parallel_softpick_attn_bwd_kernel_preprocess(
     tl.store(delta + i_n, b_delta.to(delta.dtype.element_ty))
 
 
-@triton.heuristics({
-    'USE_OFFSETS': lambda args: args['offsets'] is not None
-})
+@triton.heuristics({"USE_OFFSETS": lambda args: args["offsets"] is not None})
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
-        for num_warps in [1, 2, 4] # + ([8] if check_shared_mem('hopper') else [])
+        for num_warps in [1, 2, 4]  # + ([8] if check_shared_mem('hopper') else [])
         for num_stages in [2, 3, 4, 5]
     ],
-    key=['B', 'H', 'G', 'K', 'V', 'BK', 'BV'],
+    key=["B", "H", "G", "K", "V", "BK", "BV"],
 )
-@triton.jit(do_not_specialize=['T'])
+@triton.jit(do_not_specialize=["T"])
 def parallel_softpick_attn_bwd_kernel_dq(
     q,
     k,
@@ -206,25 +231,44 @@ def parallel_softpick_attn_bwd_kernel_dq(
     BS: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    USE_OFFSETS: tl.constexpr
+    USE_OFFSETS: tl.constexpr,
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_hq = i_bh // HQ, i_bh % HQ
     i_h = i_hq // G
 
     if USE_OFFSETS:
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(
+            indices + i_t * 2 + 1
+        ).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(
+            tl.int32
+        )
         T = eos - bos
     else:
         i_n = i_b
         bos, eos = i_n * T, i_n * T + T
 
-    p_q = tl.make_block_ptr(q + (bos * HQ + i_hq) * K, (T, K), (HQ*K, 1), (i_t * BT, 0), (BT, BK), (1, 0))
-    p_dq = tl.make_block_ptr(dq + (bos * HQ + i_hq) * K, (T, K), (HQ*K, 1), (i_t * BT, 0), (BT, BK), (1, 0))
-    p_do = tl.make_block_ptr(do + (bos * HQ + i_hq) * V, (T, V), (HQ*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_lse = tl.make_block_ptr(lse + bos * HQ + i_hq, (T,), (HQ,), (i_t * BT,), (BT,), (0,))
-    p_delta = tl.make_block_ptr(delta + bos * HQ + i_hq, (T,), (HQ,), (i_t * BT,), (BT,), (0,))
+    p_q = tl.make_block_ptr(
+        q + (bos * HQ + i_hq) * K, (T, K), (HQ * K, 1), (i_t * BT, 0), (BT, BK), (1, 0)
+    )
+    p_dq = tl.make_block_ptr(
+        dq + (bos * HQ + i_hq) * K, (T, K), (HQ * K, 1), (i_t * BT, 0), (BT, BK), (1, 0)
+    )
+    p_do = tl.make_block_ptr(
+        do + (bos * HQ + i_hq) * V,
+        (T, V),
+        (HQ * V, 1),
+        (i_t * BT, i_v * BV),
+        (BT, BV),
+        (1, 0),
+    )
+    p_lse = tl.make_block_ptr(
+        lse + bos * HQ + i_hq, (T,), (HQ,), (i_t * BT,), (BT,), (0,)
+    )
+    p_delta = tl.make_block_ptr(
+        delta + bos * HQ + i_hq, (T,), (HQ,), (i_t * BT,), (BT,), (0,)
+    )
 
     # [BT, BK]
     b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -238,8 +282,17 @@ def parallel_softpick_attn_bwd_kernel_dq(
     # [BT, BK]
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
     for i_s in range(0, i_t * BT, BS):
-        p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (K, T), (1, H*K), (0, i_s), (BK, BS), (0, 1))
-        p_v = tl.make_block_ptr(v + (bos * H + i_h) * V, (V, T), (1, H*V), (i_v * BV, i_s), (BV, BS), (0, 1))
+        p_k = tl.make_block_ptr(
+            k + (bos * H + i_h) * K, (K, T), (1, H * K), (0, i_s), (BK, BS), (0, 1)
+        )
+        p_v = tl.make_block_ptr(
+            v + (bos * H + i_h) * V,
+            (V, T),
+            (1, H * V),
+            (i_v * BV, i_s),
+            (BV, BS),
+            (0, 1),
+        )
         # [BK, BS]
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BV, BS]
@@ -261,8 +314,17 @@ def parallel_softpick_attn_bwd_kernel_dq(
     # [BT]
     o_q = i_t * BT + tl.arange(0, BT)
     for i_s in range(i_t * BT, min((i_t + 1) * BT, T), BS):
-        p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (K, T), (1, H*K), (0, i_s), (BK, BS), (0, 1))
-        p_v = tl.make_block_ptr(v + (bos * H + i_h) * V, (V, T), (1, H*V), (i_v * BV, i_s), (BV, BS), (0, 1))
+        p_k = tl.make_block_ptr(
+            k + (bos * H + i_h) * K, (K, T), (1, H * K), (0, i_s), (BK, BS), (0, 1)
+        )
+        p_v = tl.make_block_ptr(
+            v + (bos * H + i_h) * V,
+            (V, T),
+            (1, H * V),
+            (i_v * BV, i_s),
+            (BV, BS),
+            (0, 1),
+        )
         # [BS]
         o_k = i_s + tl.arange(0, BS)
         # [BK, BS]
@@ -289,18 +351,16 @@ def parallel_softpick_attn_bwd_kernel_dq(
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.heuristics({
-    'USE_OFFSETS': lambda args: args['offsets'] is not None
-})
+@triton.heuristics({"USE_OFFSETS": lambda args: args["offsets"] is not None})
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
-        for num_warps in [1, 2, 4] # + ([8] if check_shared_mem('hopper') else [])
+        for num_warps in [1, 2, 4]  # + ([8] if check_shared_mem('hopper') else [])
         for num_stages in [2, 3, 4, 5]
     ],
-    key=['B', 'H', 'G', 'K', 'V', 'BK', 'BV'],
+    key=["B", "H", "G", "K", "V", "BK", "BV"],
 )
-@triton.jit(do_not_specialize=['T'])
+@triton.jit(do_not_specialize=["T"])
 def parallel_softpick_attn_bwd_kernel_dkv(
     q,
     k,
@@ -324,24 +384,46 @@ def parallel_softpick_attn_bwd_kernel_dkv(
     BS: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    USE_OFFSETS: tl.constexpr
+    USE_OFFSETS: tl.constexpr,
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_hq = i_bh // HQ, i_bh % HQ
     i_h = i_hq // G
 
     if USE_OFFSETS:
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(
+            indices + i_t * 2 + 1
+        ).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(
+            tl.int32
+        )
         T = eos - bos
     else:
         i_n = i_b
         bos, eos = i_n * T, i_n * T + T
 
-    p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BT, BK), (1, 0))
-    p_v = tl.make_block_ptr(v + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_dk = tl.make_block_ptr(dk + (bos * HQ + i_hq) * K, (T, K), (HQ*K, 1), (i_t * BT, 0), (BT, BK), (1, 0))
-    p_dv = tl.make_block_ptr(dv + (bos * HQ + i_hq) * V, (T, V), (HQ*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_k = tl.make_block_ptr(
+        k + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BT, BK), (1, 0)
+    )
+    p_v = tl.make_block_ptr(
+        v + (bos * H + i_h) * V,
+        (T, V),
+        (H * V, 1),
+        (i_t * BT, i_v * BV),
+        (BT, BV),
+        (1, 0),
+    )
+    p_dk = tl.make_block_ptr(
+        dk + (bos * HQ + i_hq) * K, (T, K), (HQ * K, 1), (i_t * BT, 0), (BT, BK), (1, 0)
+    )
+    p_dv = tl.make_block_ptr(
+        dv + (bos * HQ + i_hq) * V,
+        (T, V),
+        (HQ * V, 1),
+        (i_t * BT, i_v * BV),
+        (BT, BV),
+        (1, 0),
+    )
 
     # [BT, BK]
     b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -352,10 +434,23 @@ def parallel_softpick_attn_bwd_kernel_dkv(
 
     o_k = i_t * BT + tl.arange(0, BT)
     for i_s in range(i_t * BT, min((i_t + 1) * BT, T), BS):
-        p_q = tl.make_block_ptr(q + (bos * HQ + i_hq) * K, (T, K), (HQ*K, 1), (i_s, 0), (BS, BK), (1, 0))
-        p_do = tl.make_block_ptr(do + (bos * HQ + i_hq) * V, (T, V), (HQ*V, 1), (i_s, i_v * BV), (BS, BV), (1, 0))
-        p_lse = tl.make_block_ptr(lse + bos * HQ + i_hq, (T,), (HQ,), (i_s,), (BS,), (0,))
-        p_delta = tl.make_block_ptr(delta + bos * HQ + i_hq, (T,), (HQ,), (i_s,), (BS,), (0,))
+        p_q = tl.make_block_ptr(
+            q + (bos * HQ + i_hq) * K, (T, K), (HQ * K, 1), (i_s, 0), (BS, BK), (1, 0)
+        )
+        p_do = tl.make_block_ptr(
+            do + (bos * HQ + i_hq) * V,
+            (T, V),
+            (HQ * V, 1),
+            (i_s, i_v * BV),
+            (BS, BV),
+            (1, 0),
+        )
+        p_lse = tl.make_block_ptr(
+            lse + bos * HQ + i_hq, (T,), (HQ,), (i_s,), (BS,), (0,)
+        )
+        p_delta = tl.make_block_ptr(
+            delta + bos * HQ + i_hq, (T,), (HQ,), (i_s,), (BS,), (0,)
+        )
 
         # [BS]
         o_q = i_s + tl.arange(0, BS)
@@ -386,10 +481,23 @@ def parallel_softpick_attn_bwd_kernel_dkv(
         b_dk += tl.dot(b_ds.to(b_q.dtype), b_q)
 
     for i_s in range((i_t + 1) * BT, tl.cdiv(T, BS) * BS, BS):
-        p_q = tl.make_block_ptr(q + (bos * HQ + i_hq) * K, (T, K), (HQ*K, 1), (i_s, 0), (BS, BK), (1, 0))
-        p_do = tl.make_block_ptr(do + (bos * HQ + i_hq) * V, (T, V), (HQ*V, 1), (i_s, i_v * BV), (BS, BV), (1, 0))
-        p_lse = tl.make_block_ptr(lse + bos * HQ + i_hq, (T,), (HQ,), (i_s,), (BS,), (0,))
-        p_delta = tl.make_block_ptr(delta + bos * HQ + i_hq, (T,), (HQ,), (i_s,), (BS,), (0,))
+        p_q = tl.make_block_ptr(
+            q + (bos * HQ + i_hq) * K, (T, K), (HQ * K, 1), (i_s, 0), (BS, BK), (1, 0)
+        )
+        p_do = tl.make_block_ptr(
+            do + (bos * HQ + i_hq) * V,
+            (T, V),
+            (HQ * V, 1),
+            (i_s, i_v * BV),
+            (BS, BV),
+            (1, 0),
+        )
+        p_lse = tl.make_block_ptr(
+            lse + bos * HQ + i_hq, (T,), (HQ,), (i_s,), (BS,), (0,)
+        )
+        p_delta = tl.make_block_ptr(
+            delta + bos * HQ + i_hq, (T,), (HQ,), (i_s,), (BS,), (0,)
+        )
 
         # [BS]
         o_q = i_s + tl.arange(0, BS)
@@ -479,10 +587,7 @@ def parallel_softpick_attn_fwd(
     return o, lse
 
 
-def parallel_softpick_attn_bwd_preprocess(
-    o: torch.Tensor,
-    do: torch.Tensor
-):
+def parallel_softpick_attn_bwd_preprocess(o: torch.Tensor, do: torch.Tensor):
     V = o.shape[-1]
     delta = torch.empty_like(o[..., 0], dtype=torch.float32)
     parallel_softpick_attn_bwd_kernel_preprocess[(delta.numel(),)](
@@ -512,7 +617,7 @@ def parallel_softpick_attn_bwd(
     G = HQ // H
     BT = chunk_size
     BS = max(16, triton.next_power_of_2(T))
-    BS = min(16, BS) # min(32, BS) if check_shared_mem('ampere') else min(16, BS)
+    BS = min(16, BS)  # min(32, BS) if check_shared_mem('ampere') else min(16, BS)
     BK = max(16, triton.next_power_of_2(K))
     BV = max(16, triton.next_power_of_2(V))
     NV = triton.cdiv(V, BV)
@@ -520,9 +625,15 @@ def parallel_softpick_attn_bwd(
 
     delta = parallel_softpick_attn_bwd_preprocess(o, do)
 
-    dq = torch.empty(B, T, HQ, K, dtype=k.dtype if H == HQ else torch.float, device=q.device)
-    dk = torch.empty(B, T, HQ, K, dtype=k.dtype if H == HQ else torch.float, device=q.device)
-    dv = torch.empty(B, T, HQ, V, dtype=v.dtype if H == HQ else torch.float, device=q.device)
+    dq = torch.empty(
+        B, T, HQ, K, dtype=k.dtype if H == HQ else torch.float, device=q.device
+    )
+    dk = torch.empty(
+        B, T, HQ, K, dtype=k.dtype if H == HQ else torch.float, device=q.device
+    )
+    dv = torch.empty(
+        B, T, HQ, V, dtype=v.dtype if H == HQ else torch.float, device=q.device
+    )
     grid = (NV, NT, B * HQ)
     parallel_softpick_attn_bwd_kernel_dq[grid](
         q=q,
@@ -545,7 +656,7 @@ def parallel_softpick_attn_bwd(
         BT=BT,
         BS=BS,
         BK=BK,
-        BV=BV
+        BV=BV,
     )
     parallel_softpick_attn_bwd_kernel_dkv[grid](
         q=q,
@@ -569,10 +680,10 @@ def parallel_softpick_attn_bwd(
         BT=BT,
         BS=BS,
         BK=BK,
-        BV=BV
+        BV=BV,
     )
-    dk = reduce(dk, 'b t (h g) k -> b t h k', g=G, reduction='sum')
-    dv = reduce(dv, 'b t (h g) v -> b t h v', g=G, reduction='sum')
+    dk = reduce(dk, "b t (h g) k -> b t h k", g=G, reduction="sum")
+    dv = reduce(dv, "b t (h g) v -> b t h v", g=G, reduction="sum")
     return dq, dk, dv
 
 
@@ -590,7 +701,9 @@ class ParallelSoftpickAttentionFunction(torch.autograd.Function):
         # for example, if the passed `offsets` is [0, 100, 356] and `chunk_size` is 64,
         # then there are 2 and 4 chunks in the 1st and 2nd sequences respectively, and `indices` will be
         # [[0, 0], [0, 1], [1, 0], [1, 1], [1, 2], [1, 3]]
-        indices = prepare_chunk_indices(offsets, chunk_size) if offsets is not None else None
+        indices = (
+            prepare_chunk_indices(offsets, chunk_size) if offsets is not None else None
+        )
 
         o, lse = parallel_softpick_attn_fwd(
             q=q,
@@ -599,7 +712,7 @@ class ParallelSoftpickAttentionFunction(torch.autograd.Function):
             scale=scale,
             chunk_size=chunk_size,
             offsets=offsets,
-            indices=indices
+            indices=indices,
         )
         ctx.save_for_backward(q, k, v, o, lse)
         ctx.chunk_size = chunk_size
@@ -623,9 +736,21 @@ class ParallelSoftpickAttentionFunction(torch.autograd.Function):
             scale=ctx.scale,
             chunk_size=ctx.chunk_size,
             offsets=ctx.offsets,
-            indices=ctx.indices
+            indices=ctx.indices,
         )
-        return dq.to(q), dk.to(k), dv.to(v), None, None, None, None, None, None, None, None
+        return (
+            dq.to(q),
+            dk.to(k),
+            dv.to(v),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
 def parallel_softpick_attn(
@@ -634,7 +759,7 @@ def parallel_softpick_attn(
     v: torch.Tensor,
     scale: Optional[float] = None,
     cu_seqlens: Optional[torch.LongTensor] = None,
-    head_first: bool = False
+    head_first: bool = False,
 ) -> torch.Tensor:
     r"""
     Args:
@@ -663,8 +788,9 @@ def parallel_softpick_attn(
     if cu_seqlens is not None:
         assert q.shape[0] == 1, "batch size must be 1 when cu_seqlens are provided"
     if head_first:
-        q, k, v = map(lambda x: rearrange(x, 'b h t d -> b t h d'), (q, k, v))
+        q, k, v = map(lambda x: rearrange(x, "b h t d -> b t h d"), (q, k, v))
     o = ParallelSoftpickAttentionFunction.apply(q, k, v, scale, cu_seqlens)
     if head_first:
-        o = rearrange(o, 'b t h d -> b h t d')
+        o = rearrange(o, "b t h d -> b h t d")
     return o
+
