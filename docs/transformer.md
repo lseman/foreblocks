@@ -1,215 +1,353 @@
-# Transformer Architecture
+# Advanced Transformer Architecture
 
-## Transformer Encoder Layer (Pre-Norm)
+## Overview
+
+This implementation features a modern, highly configurable transformer architecture with state-of-the-art components including Mixture of Experts (MoE), advanced attention mechanisms, adaptive normalization, and optimized feedforward networks.
+
+## Core Architecture Components
+
+### BaseTransformerLayer Structure
 
 ```
-                   Input
-                     |
-                     v
-         +-------------------------+
-         |     AdaptiveNorm 1      |   ← RMSNorm / LayerNorm
-         +-------------------------+
-                     |
-                     v
-         +-------------------------+
-         |    Self-Attention       |  ← XFormer / Flash / Frequency
-         +-------------------------+
-                     |
-         +-------------------------+
-         |        Dropout          |
-         +-------------------------+
-                     |
-         +-----------+-------------+
-                     ↓
-               Residual Add
-                     ↓
-         +-------------------------+
-         |     AdaptiveNorm 2      |
-         +-------------------------+
-                     |
-                     v
-         +-------------------------+
-         |  Feed-Forward Network   |  ← SwiGLU / MoE / MLP
-         +-------------------------+
-                     |
-         +-------------------------+
-         |        Dropout          |
-         +-------------------------+
-                     |
-         +-----------+-------------+
-                     ↓
-               Residual Add
-                     ↓
-                  Output
+BaseTransformerLayer
+├── Normalization Strategy (Pre-norm/Post-norm)
+├── Feedforward Block (Standard/MoE)
+├── Dropout & Residual Connections
+└── Auxiliary Loss Management
+```
+
+**Key Features:**
+- **Pre-norm vs Post-norm**: Configurable normalization placement for training stability
+- **Adaptive Normalization**: Supports LayerNorm, RMSNorm, and custom adaptive variants
+- **MoE Integration**: Optional Mixture of Experts for conditional computation
+- **Memory Optimization**: Reduced allocations in feedforward passes
+
+---
+
+## Transformer Encoder Layer (Pre-Norm Architecture)
+
+```
+                    Input [B, T, D]
+                          |
+                          |
+                    +-----+-----+
+                    | Norm 1    |  ← RMSNorm/LayerNorm/AdaptiveNorm
+                    +-----------+
+                          |
+         +----------------+----------------+
+         |                |                |
+         |          +-----+-----+          |
+         |          |Multi-Attn |          |  ← Standard/XFormer/Flash/Frequency
+         |          |  n_heads  |          |
+         |          +-----------+          |
+         |                |                |
+         |          +-----+-----+          |
+         |          |  Dropout  |          |
+         |          +-----------+          |
+         |                |                |
+         +----------------+----------------+
+                          |
+                    Residual Add
+                          |
+                    +-----+-----+
+                    | Norm 2    |
+                    +-----------+
+                          |
+         +----------------+----------------+
+         |                |                |
+         |          +-----+-----+          |
+         |          |Feed-Fwd   |          |  ← SwiGLU/MoE/Standard MLP
+         |          |Block      |          |
+         |          |MoE(opt)   |          |
+         |          +-----------+          |
+         |                |                |
+         |          +-----+-----+          |
+         |          |  Dropout  |          |
+         |          +-----------+          |
+         |                |                |
+         +----------------+----------------+
+                          |
+                    Residual Add
+                          |
+                    Output [B, T, D]
 ```
 
 ---
 
-## Transformer Decoder Layer (Pre-Norm)
+## Transformer Decoder Layer (Cross-Attention Architecture)
 
 ```
-                   Input (tgt)                Memory (enc_out)
-                      |                             |
-                      v                             |
-          +-------------------------+               |
-          |     AdaptiveNorm 1      |               |
-          +-------------------------+               |
-                      |                             |
-                      v                             |
-          +-------------------------+               |
-          |     Self-Attention      |  ← causal      |
-          +-------------------------+               |
-                      |                             |
-          +-------------------------+               |
-          |        Dropout          |               |
-          +-------------------------+               |
-                      |                             |
-              +-------+-------+                     |
-                      ↓                             |
-                Residual Add                        |
-                      ↓                             |
-          +-------------------------+               |
-          |     AdaptiveNorm 2      |               |
-          +-------------------------+               |
-                      |                             |
-                      v                             |
-          +-------------------------+               |
-          |     Cross-Attention     | <-------------+
-          +-------------------------+
-                      |
-          +-------------------------+
-          |        Dropout          |
-          +-------------------------+
-                      |
-              +-------+-------+
-                      ↓
-                Residual Add
-                      ↓
-          +-------------------------+
-          |     AdaptiveNorm 3      |
-          +-------------------------+
-                      |
-                      v
-          +-------------------------+
-          |  Feed-Forward Network   |  ← SwiGLU / MoE / MLP
-          +-------------------------+
-                      |
-          +-------------------------+
-          |        Dropout          |
-          +-------------------------+
-                      |
-              +-------+-------+
-                      ↓
-                Residual Add
-                      ↓
-                   Output
+        Input (tgt) [B, T_tgt, D]           Memory (enc_out) [B, T_enc, D]
+                  |                                     |
+                  |                                     |
+            +-----+-----+                               |
+            | Norm 1    |                               |
+            +-----------+                               |
+                  |                                     |
+ +----------------+----------------+                    |
+ |                |                |                    |
+ |          +-----+-----+          |                    |
+ |          |Self-Attn  |          |  ← Causal masking  |
+ |          |is_causal  |          |                    |
+ |          |incr.state |          |                    |
+ |          +-----------+          |                    |
+ |                |                |                    |
+ +----------------+----------------+                    |
+                  |                                     |
+            Residual Add                                 |
+                  |                                     |
+            +-----+-----+                               |
+            | Norm 2    |                               |
+            +-----------+                               |
+                  |                                     |
+ +----------------+----------------+                    |
+ |                |                |                    |
+ |          +-----+-----+          |                    |
+ |          |Cross-Attn |<---------+--------------------+
+ |          |Q:decoder  |          |
+ |          |K,V:encoder|          |
+ |          +-----------+          |
+ |                |                |
+ +----------------+----------------+
+                  |
+            Residual Add
+                  |
+            +-----+-----+
+            | Norm 3    |
+            +-----------+
+                  |
+ +----------------+----------------+
+ |                |                |
+ |          +-----+-----+          |
+ |          |Feed-Fwd   |          |  ← SwiGLU/MoE
+ |          |Block      |          |
+ |          |MoE(opt)   |          |
+ |          +-----------+          |
+ |                |                |
+ +----------------+----------------+
+                  |
+            Residual Add
+                  |
+            Output [B, T_tgt, D]
 ```
 
 ---
 
-## Complete Transformer Workflow
+## Complete Transformer Pipeline
+
+### Time Series Encoder-Decoder Workflow
 
 ```
-                    Input Sequence [B, T_enc, input_size]
-                                |
-                                v
-                  +-------------------------------+
-                  |     Input Projection (Enc)     |
-                  +-------------------------------+
-                                |
-                                v
-                  +-------------------------------+
-                  |     Positional Encoding (Enc)  |
-                  +-------------------------------+
-                                |
-                                v
-                  +-------------------------------+
-                  |            Dropout             |
-                  +-------------------------------+
-                                |
-                                v
-                  +-------------------------------+
-                  |     Transformer Encoder        |
-                  |      (Stacked Layers)          |
-                  +-------------------------------+
-                                |
-                                v
-                    Encoded Memory [B, T_enc, D]
-                                |
-        ┌────────────────────────────────────────────────────────┐
-        │                                                        │
-        ▼                                                        ▼
-  Last Encoder Input (Start Token)                     Target Length: pred_len
-        │                                                        │
-        ▼                                                        ▼
-  +------------------+                                   +------------------+
-  | Replicate Start  |         → dec_input: [B, T_pred, input_size]        |
-  +------------------+                                   +------------------+
-                                |
-                                v
-                  +-------------------------------+
-                  |     Input Projection (Dec)     |
-                  +-------------------------------+
-                                |
-                                v
-                  +-------------------------------+
-                  |     Positional Encoding (Dec)  |
-                  +-------------------------------+
-                                |
-                                v
-                  +-------------------------------+
-                  |            Dropout             |
-                  +-------------------------------+
-                                |
-                                v
-                  +-------------------------------+
-                  |     Transformer Decoder        |
-                  |      (Stacked Layers)          |
-                  +-------------------------------+
-                                |
-                                v
-                  +-------------------------------+
-                  |       Output Projection        |
-                  +-------------------------------+
-                                |
-                                v
-                     Output Sequence [B, T_pred, output_size]
-```
-
----
-
-## Modern Features in Implementation
-
-```
-╔══════════════════════════════════════════════╗
-║        Modern Transformer Architecture       ║
-╚══════════════════════════════════════════════╝
-
-Normalization Strategies:
-  • Pre-Norm (default) for stability
-  • Adaptive LayerNorm or Adaptive RMSNorm
-
-Feed-Forward Options:
-  • SwiGLU for gated nonlinearity
-  • MoE support with top-k experts and aux loss
-  • Traditional GELU/ReLU MLPs
-
-Attention Mechanisms:
-  • Memory-efficient XFormerAttention
-  • FlashAttention for speedup
-  • Frequency Attention (FEDformer-style)
-
-Decoder Modes:
-  • Full autoregressive decoding
-  • Informer-style decoding using repeated start token
-
-Training Features:
-  • Custom weight init per module
-  • Gradient checkpointing support
-  • LayerNorm epsilon configuration
+Input Time Series [B, T_enc, input_size]
+         |
+         v
+┌─────────────────────────────────────┐
+│        Input Processing             │
+│  • Linear projection → d_model      │
+│  • Positional encoding             │
+│  • Time feature embedding          │
+│  • Dropout (training)              │
+└─────────────────────────────────────┘
+         |
+         v
+┌─────────────────────────────────────┐
+│      Transformer Encoder            │
+│  ┌─────────────────────────────────┐│
+│  │  Layer 1: Self-Attention +     ││
+│  │           Feedforward           ││
+│  └─────────────────────────────────┘│
+│  ┌─────────────────────────────────┐│
+│  │  Layer 2: Self-Attention +     ││
+│  │           Feedforward           ││
+│  └─────────────────────────────────┘│
+│               ...                   │
+│  ┌─────────────────────────────────┐│
+│  │  Layer N: Self-Attention +     ││
+│  │           Feedforward           ││
+│  └─────────────────────────────────┘│
+└─────────────────────────────────────┘
+         |
+         v
+   Memory [B, T_enc, d_model]
+         |
+┌────────┴─────────────────────────────┐
+│                                      │
+│  Decoder Input Generation            │
+│  • Start token (last encoder input) │
+│  • Replicate for prediction length  │
+│                                      │
+└──────────────────────────────────────┘
+         |
+         v
+┌─────────────────────────────────────┐
+│        Decoder Processing           │
+│  • Input projection → d_model       │
+│  • Positional encoding             │
+│  • Dropout (training)              │
+└─────────────────────────────────────┘
+         |
+         v
+┌─────────────────────────────────────┐
+│      Transformer Decoder            │
+│  ┌─────────────────────────────────┐│
+│  │  Layer 1: Self-Attn +          ││
+│  │           Cross-Attn +          ││
+│  │           Feedforward           ││
+│  └─────────────────────────────────┘│
+│               ...                   │
+│  ┌─────────────────────────────────┐│
+│  │  Layer N: Self-Attn +          ││
+│  │           Cross-Attn +          ││
+│  │           Feedforward           ││
+│  └─────────────────────────────────┘│
+└─────────────────────────────────────┘
+         |
+         v
+┌─────────────────────────────────────┐
+│       Final Processing              │
+│  • Final normalization (optional)  │
+│  • Output projection               │
+└─────────────────────────────────────┘
+         |
+         v
+  Predictions [B, T_pred, output_size]
 ```
 
 ---
 
-Let me know if you want this exported to LaTeX diagrams, Mermaid.js, or Plotly/SVG for slide decks or documentation.
+## Advanced Feature Matrix
+
+### Attention Mechanisms
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `standard` | Traditional scaled dot-product | General purpose |
+| `xformer` | Memory-efficient attention | Large sequences |
+| `flash` | FlashAttention implementation | Speed optimization |
+| `frequency` | Frequency domain attention | Time series patterns |
+
+### Normalization Options
+| Type | Description | Benefits |
+|------|-------------|----------|
+| `layer` | Standard LayerNorm | Stable, well-tested |
+| `rms` | Root Mean Square LayerNorm | Faster, similar performance |
+| `adaptive` | Learnable normalization | Task-specific adaptation |
+
+### Feedforward Configurations
+| Component | Options | Impact |
+|-----------|---------|--------|
+| **Activation** | `gelu`, `relu`, `swish` | Nonlinearity choice |
+| **Gating** | SwiGLU (default) | Improved expressivity |
+| **Scaling** | Standard MLP or MoE | Conditional computation |
+| **Experts** | MoE with top-k routing | Sparse expert activation |
+
+
+---
+
+## Incremental Decoding (Inference Optimization)
+
+```
+Inference State Management:
+
+Time Step t=1:
++---------------+    +---------------+
+| Input:[B,1,D] | -> | Self-Attn KV  |
+| Token 1       |    | Cache:[B,1,D] |
++---------------+    +---------------+
+
+Time Step t=2:
++---------------+    +---------------+
+| Input:[B,1,D] | -> | Self-Attn KV  |
+| Token 2       |    | Cache:[B,2,D] |
++---------------+    +---------------+
+
+Time Step t=T:
++---------------+    +---------------+
+| Input:[B,1,D] | -> | Self-Attn KV  |
+| Token T       |    | Cache:[B,T,D] |
++---------------+    +---------------+
+
+Incremental State Structure:
+{
+  "layers": [
+    {  # Layer 0
+      "self_attn": {"key": Tensor, "value": Tensor},
+      "cross_attn": {"key": Tensor, "value": Tensor}
+    },
+    ...  # Additional layers
+  ]
+}
+```
+
+---
+
+## Configuration Examples
+
+### High-Performance Time Series Model
+```python
+encoder = TransformerEncoder(
+    input_size=7,                    # Number of features
+    d_model=512,                    # Model dimension
+    nhead=8,                        # Attention heads
+    num_layers=6,                   # Encoder depth
+    att_type="xformer",            # Memory-efficient attention
+    use_swiglu=True,               # Gated activation
+    norm_strategy="pre_norm",       # Stable training
+    use_adaptive_ln="rms",         # Faster normalization
+    use_gradient_checkpointing=True # Memory efficiency
+)
+```
+
+### Large-Scale Configuration
+```python
+decoder = TransformerDecoder(
+    input_size=7,
+    output_size=1,
+    d_model=1024,
+    num_layers=12,
+    nhead=16,                      # More attention heads
+    dim_feedforward=4096,          # Larger feedforward
+    use_gradient_checkpointing=True
+)
+```
+
+### Inference-Optimized Setup
+```python
+model = TransformerDecoder(
+    input_size=10,
+    output_size=5,
+    share_layers=True,             # Parameter sharing
+    use_final_norm=False,          # Skip final norm
+    use_gradient_checkpointing=False  # Full speed inference
+)
+
+# Incremental generation
+incremental_state = {}
+for step in range(pred_length):
+    output, incremental_state = model.forward_one_step(
+        tgt=current_input,
+        memory=encoder_output,
+        incremental_state=incremental_state
+    )
+```
+
+---
+
+## Performance Optimizations
+
+### Memory Efficiency
+- **Gradient Checkpointing**: Trade computation for memory
+- **Shared Layers**: Reduce parameter count
+- **Incremental Decoding**: Cache attention states
+- **Pre-norm Architecture**: Stable training with lower precision
+
+### Computational Efficiency
+- **XFormer Attention**: O(n) memory complexity
+- **SwiGLU Gating**: Better parameter efficiency
+- **MoE Sparsity**: Conditional computation when enabled
+- **Adaptive Normalization**: Faster than LayerNorm
+
+### Training Stability
+- **Pre-normalization**: Gradient flow improvement
+- **Custom Weight Initialization**: Layer-specific strategies
+- **Dropout Strategies**: Training vs inference modes
 

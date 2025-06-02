@@ -1,14 +1,29 @@
 import math
+import subprocess
+import tempfile
 from typing import List, Literal, Optional, Tuple, Union
 
+import networkx as nx
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
-# External libraries
-from xformers.ops import memory_efficient_attention
 
 # from flash_attn import flash_attn_qkvpacked_func
+try:
+    from flash_attn import flash_attn_qkvpacked_func
+
+    FLASH_AVAILABLE = True
+except ImportError:
+    FLASH_AVAILABLE = False
+
+try:
+    from xformers.ops import memory_efficient_attention
+
+    XFORMERS_AVAILABLE = True
+except ImportError:
+    XFORMERS_AVAILABLE = False
 
 
 class LatentCorrelationLayer(nn.Module):
@@ -296,51 +311,11 @@ class LatentCorrelationLayer(nn.Module):
         else:
             return self._forward_impl(x)
 
-    def get_correlation_stats(self) -> dict:
-        """Return correlation statistics for monitoring"""
-        stats = {}
-
-        if hasattr(self, "correlation"):
-            corr = self.correlation.detach()
-            stats["learned_corr_mean"] = corr.mean().item()
-            stats["learned_corr_std"] = corr.std().item()
-            stats["learned_corr_max"] = corr.max().item()
-            stats["learned_corr_min"] = corr.min().item()
-
-        if hasattr(self, "alpha"):
-            stats["alpha"] = torch.sigmoid(self.alpha).item()
-
-        if hasattr(self, "cheb_weights"):
-            weights = F.softmax(self.cheb_weights / self.cheb_temp, dim=0)
-            stats["cheb_weights"] = weights.detach().cpu().numpy().tolist()
-
-        return stats
-
-
-try:
-    from flash_attn import flash_attn_qkvpacked_func
-
-    FLASH_AVAILABLE = True
-except ImportError:
-    FLASH_AVAILABLE = False
-
-try:
-    from xformers.ops import memory_efficient_attention
-
-    XFORMERS_AVAILABLE = True
-except ImportError:
-    XFORMERS_AVAILABLE = False
-
 
 def round_to_supported_head_dim(dim: int) -> int:
     """Round to nearest supported head dimension for attention backends"""
     supported_dims = [8, 16, 32, 64, 128, 256]
     return min(supported_dims, key=lambda x: abs(x - dim))
-
-
-def round_to_supported_head_dim(num_heads: int) -> int:
-    """Utility function to round to supported head dimensions"""
-    return max(1, num_heads)
 
 
 class MessagePassing(nn.Module):
@@ -1207,16 +1182,6 @@ class JumpKnowledge(nn.Module):
     def extra_repr(self) -> str:
         """String representation for debugging."""
         return f"mode={self.mode}, hidden_size={self.hidden_size}, output_size={self.output_size}"
-
-
-import subprocess
-import tempfile
-from typing import Optional
-
-import networkx as nx
-import numpy as np
-import torch
-import torch.nn as nn
 
 
 # === GDV Computation ===
