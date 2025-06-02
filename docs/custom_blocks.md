@@ -37,42 +37,51 @@ ForeBlocks uses a pipeline of customizable processing blocks that transform data
 ## 🌊 Data Flow Architecture
 
 ```
-Input Data
-    ↓
-┌─────────────────────┐
-│ input_preprocessor  │ ← Feature extraction/transformation
-└─────────────────────┘
-    ↓
-┌─────────────────────┐
-│ input_skip_connection│ ← Add residual (optional)
-│ (original + processed)│
-└─────────────────────┘
-    ↓
-┌─────────────────────┐
-│ input_normalization │ ← Standardize inputs
-└─────────────────────┘
-    ↓
-┌─────────────────────┐
-│     ENCODER         │ ← Core neural network
-└─────────────────────┘
-    ↓
-┌─────────────────────┐
-│     DECODER         │ ← Generate predictions
-└─────────────────────┘
-    ↓
-┌─────────────────────┐
-│   output_block      │ ← Additional transformations
-└─────────────────────┘
-    ↓
-┌─────────────────────┐
-│ output_normalization│ ← Normalize outputs
-└─────────────────────┘
-    ↓
-┌─────────────────────┐
-│output_postprocessor │ ← Final constraints/scaling
-└─────────────────────┘
-    ↓
-Final Predictions
+                    Input Data
+                        |
+                        v
+        +---------------------------+
+        |    input_preprocessor     |  <- Feature extraction/transformation
+        +---------------------------+
+                        |
+                        v
+        +---------------------------+
+        |  input_skip_connection    |  <- Add residual (optional)
+        |  (original + processed)   |
+        +---------------------------+
+                        |
+                        v
+        +---------------------------+
+        |   input_normalization     |  <- Standardize inputs
+        +---------------------------+
+                        |
+                        v
+        +---------------------------+
+        |         ENCODER           |  <- Core neural network
+        +---------------------------+
+                        |
+                        v
+        +---------------------------+
+        |         DECODER           |  <- Generate predictions
+        +---------------------------+
+                        |
+                        v
+        +---------------------------+
+        |       output_block        |  <- Additional transformations
+        +---------------------------+
+                        |
+                        v
+        +---------------------------+
+        |   output_normalization    |  <- Normalize outputs
+        +---------------------------+
+                        |
+                        v
+        +---------------------------+
+        |   output_postprocessor    |  <- Final constraints/scaling
+        +---------------------------+
+                        |
+                        v
+                 Final Predictions
 ```
 
 ---
@@ -359,11 +368,15 @@ When `multi_encoder_decoder=True`, the model creates separate encoder-decoder pa
 ### 🔄 Architecture Flow
 
 ```
-Feature 1 → Encoder 1 → Decoder 1 → Output 1
-Feature 2 → Encoder 2 → Decoder 2 → Output 2     } → Aggregator → Final Output
-Feature 3 → Encoder 3 → Decoder 3 → Output 3
-...
-Feature N → Encoder N → Decoder N → Output N
+Feature 1 ---> Encoder 1 ---> Decoder 1 ---> Output 1
+                                                |
+Feature 2 ---> Encoder 2 ---> Decoder 2 ---> Output 2
+                                                |
+Feature 3 ---> Encoder 3 ---> Decoder 3 ---> Output 3  }---> Aggregator ---> Final Output
+                                                |
+    ...            ...           ...          ...
+                                                |
+Feature N ---> Encoder N ---> Decoder N ---> Output N
 ```
 
 ### 💻 Implementation

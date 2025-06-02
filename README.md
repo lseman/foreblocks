@@ -74,10 +74,9 @@ predictions = model.predict(X_test)
 
 - 📘 [Preprocessing Guide](docs/preprocessor.md)
 - 🛠️ [Custom Blocks Guide](docs/custom_blocks.md)
-- 🔗 [Full Documentation](https://github.com/lseman/foreblocks/docs)
+- [Transformer Blocks](docs/transformer.md)
 - [Fourier Blocks](docs/fourier.md)
 - [Wavelet Blocks](docs/wavelet.md)
-
 
 ---
 
