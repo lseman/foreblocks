@@ -169,73 +169,49 @@ class AutoCorrelation(nn.Module):
         self.scale = scale
         self.mask_flag = mask_flag
         self.output_attention = output_attention
-        self.dropout = nn.Dropout(attention_dropout)
 
-    def time_delay_agg_inference(self, values, corr):
+    def time_delay_agg(self, values: torch.Tensor, corr: torch.Tensor) -> torch.Tensor:
         """
-        Vectorized training-phase time delay aggregation.
+        Vectorized time delay aggregation using batched gather.
         values: [B, H, D, L]
-        corr: [B, L, H, D]
+        corr:   [B, L, H, D]
         """
         B, H, D, L = values.shape
-
+        device = values.device
         top_k = max(1, min(int(self.factor * math.log(L)), L))
+
+        # Average correlation over head and feature dimensions
         mean_corr = corr.mean(dim=2).mean(dim=2)  # [B, L]
         global_mean = mean_corr.mean(dim=0)  # [L]
-        topk_indices = torch.topk(global_mean, top_k, dim=0).indices  # [top_k]
+        topk = torch.topk(global_mean, top_k, dim=0).indices  # [top_k]
 
         # [B, top_k]
-        weights = mean_corr[:, topk_indices]
+        weights = mean_corr[:, topk]
         soft_weights = torch.softmax(weights, dim=-1)  # [B, top_k]
 
-        # Create rolled values [top_k, B, H, D, L]
-        rolled = torch.stack(
-            [
-                torch.roll(values, shifts=-int(shift.item()), dims=-1)
-                for shift in topk_indices
-            ],
-            dim=0,
-        )
+        # Create index tensor for gathering
+        base = torch.arange(L, device=device)  # [L]
+        shifts = topk.view(-1, 1)  # [top_k, 1]
+        indices = (base[None, :] - shifts) % L  # [top_k, L]
 
-        # Weight shape [top_k, B, H, D, L]
-        soft_weights = (
-            soft_weights.transpose(0, 1).unsqueeze(2).unsqueeze(3).unsqueeze(4)
+        # Expand to shape [B, H, D, top_k, L] for batched gather
+        values_exp = values.unsqueeze(3).expand(
+            B, H, D, top_k, L
+        )  # [B, H, D, top_k, L]
+        gather_idx = indices.view(1, 1, 1, top_k, L).expand(
+            B, H, D, top_k, L
+        )  # [B, H, D, top_k, L]
+
+        # Gather values with shifted indices
+        rolled = torch.gather(
+            values_exp, dim=-1, index=gather_idx
+        )  # [B, H, D, top_k, L]
+
+        # Apply weights
+        soft_weights = soft_weights.transpose(0, 1).view(
+            top_k, B, 1, 1, 1
         )  # [top_k, B, 1, 1, 1]
-        weighted = rolled * soft_weights  # broadcasting
-
-        return weighted.sum(dim=0)  # [B, H, D, L]
-
-    def time_delay_agg_training(self, values, corr):
-        """
-        Vectorized training-phase time delay aggregation.
-        values: [B, H, D, L]
-        corr: [B, L, H, D]
-        """
-        B, H, D, L = values.shape
-
-        top_k = max(1, min(int(self.factor * math.log(L)), L))
-        mean_corr = corr.mean(dim=2).mean(dim=2)  # [B, L]
-        global_mean = mean_corr.mean(dim=0)  # [L]
-        topk_indices = torch.topk(global_mean, top_k, dim=0).indices  # [top_k]
-
-        # [B, top_k]
-        weights = mean_corr[:, topk_indices]
-        soft_weights = torch.softmax(weights, dim=-1)  # [B, top_k]
-
-        # Create rolled values [top_k, B, H, D, L]
-        rolled = torch.stack(
-            [
-                torch.roll(values, shifts=-int(shift.item()), dims=-1)
-                for shift in topk_indices
-            ],
-            dim=0,
-        )
-
-        # Weight shape [top_k, B, H, D, L]
-        soft_weights = (
-            soft_weights.transpose(0, 1).unsqueeze(2).unsqueeze(3).unsqueeze(4)
-        )  # [top_k, B, 1, 1, 1]
-        weighted = rolled * soft_weights  # broadcasting
+        weighted = rolled.permute(3, 0, 1, 2, 4) * soft_weights  # [top_k, B, H, D, L]
 
         return weighted.sum(dim=0)  # [B, H, D, L]
 
@@ -299,10 +275,7 @@ class AutoCorrelation(nn.Module):
         # Convert values to [B, H, D, L] for aggregation
         values_perm = values.permute(0, 2, 3, 1).contiguous()
 
-        if self.training:
-            V = self.time_delay_agg_training(values_perm, corr)
-        else:
-            V = self.time_delay_agg_inference(values_perm, corr)
+        V = self.time_delay_agg(values_perm, corr)
 
         # Convert back to [B, L, H, D]
         V = V.permute(0, 3, 1, 2).contiguous()

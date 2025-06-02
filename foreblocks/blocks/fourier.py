@@ -13,12 +13,10 @@ class SpectralConv1D(nn.Module):
         self.out_channels = out_channels
         self.modes = modes
 
-        scale = 1 / math.sqrt(in_channels)
-        self.weight_real = nn.Parameter(
-            scale * torch.randn(in_channels, out_channels, modes)
-        )
-        self.weight_imag = nn.Parameter(
-            scale * torch.randn(in_channels, out_channels, modes)
+        # Optimized: Use complex weights directly for better efficiency
+        scale = 1 / math.sqrt(in_channels * out_channels)
+        self.weights = nn.Parameter(
+            scale * torch.randn(in_channels, out_channels, modes, dtype=torch.cfloat)
         )
 
     def forward(self, x):
@@ -27,22 +25,17 @@ class SpectralConv1D(nn.Module):
         L_ft = x_ft.shape[-1]
         modes = min(self.modes, L_ft)
 
-        x_r = x_ft[:, :, :modes].real
-        x_i = x_ft[:, :, :modes].imag
-        w_r = self.weight_real[:, :, :modes]
-        w_i = self.weight_imag[:, :, :modes]
-
-        out_r = torch.einsum("bcm,com->bom", x_r, w_r) - torch.einsum(
-            "bcm,com->bom", x_i, w_i
-        )
-        out_i = torch.einsum("bcm,com->bom", x_r, w_i) + torch.einsum(
-            "bcm,com->bom", x_i, w_r
+        # Optimized: Vectorized complex multiplication
+        x_ft_trunc = x_ft[:, :, :modes]  # [B, C, modes]
+        out_ft_trunc = torch.einsum(
+            "bcm,com->bom", x_ft_trunc, self.weights[:, :, :modes]
         )
 
+        # Reconstruct full spectrum
         out_ft = torch.zeros(
             B, self.out_channels, L_ft, device=x.device, dtype=torch.cfloat
         )
-        out_ft[:, :, :modes] = torch.complex(out_r, out_i)
+        out_ft[:, :, :modes] = out_ft_trunc
 
         x_out = torch.fft.irfft(out_ft, n=L, dim=-1)
         return x_out.permute(0, 2, 1)
@@ -97,7 +90,7 @@ class FourierBlock(nn.Module):
         self, in_channels, out_channels, seq_len, modes=16, mode_select_method="random"
     ):
         super().__init__()
-        print("FourierBlock (real-valued weights, AMP-compatible) initialized.")
+        print("FourierBlock (optimized, AMP-compatible) initialized.")
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -105,9 +98,10 @@ class FourierBlock(nn.Module):
         self.index = get_frequency_modes(seq_len, modes, mode_select_method)
         self.modes = len(self.index)
 
+        # Optimized: Better initialization scale
         scale = 1 / math.sqrt(in_channels * out_channels)
 
-        # Use real-valued weights for both real and imaginary parts
+        # Use real-valued weights for AMP compatibility
         self.weight_real = nn.Parameter(
             scale * torch.randn(in_channels, out_channels, self.modes)
         )
@@ -126,27 +120,36 @@ class FourierBlock(nn.Module):
             B, self.out_channels, x_ft.shape[-1], device=x.device, dtype=torch.cfloat
         )
 
-        # Apply real-valued linear transformation in frequency domain
-        for i, freq_idx in enumerate(self.index):
-            if freq_idx >= x_ft.shape[-1]:
-                continue
+        # Optimized: Vectorized frequency processing
+        if self.modes > 0:
+            # Extract valid frequency indices
+            valid_indices = [i for i in self.index if i < x_ft.shape[-1]]
+            if valid_indices:
+                # Batch process all valid frequencies
+                freq_indices = torch.tensor(valid_indices, device=x.device)
+                mode_indices = torch.arange(len(valid_indices), device=x.device)
 
-            xr = x_ft[:, :, freq_idx].real  # [B, in_channels]
-            xi = x_ft[:, :, freq_idx].imag  # [B, in_channels]
+                # Extract frequency components for all valid indices
+                x_freq = x_ft[:, :, freq_indices]  # [B, in_channels, num_valid_freqs]
+                xr = x_freq.real
+                xi = x_freq.imag
 
-            wr = self.weight_real[:, :, i]  # [in_channels, out_channels]
-            wi = self.weight_imag[:, :, i]  # [in_channels, out_channels]
+                # Get corresponding weights
+                wr = self.weight_real[
+                    :, :, mode_indices
+                ]  # [in_channels, out_channels, num_valid_freqs]
+                wi = self.weight_imag[:, :, mode_indices]
 
-            # Re(Y) = Xr*Wr - Xi*Wi
-            # Im(Y) = Xr*Wi + Xi*Wr
-            real_part = torch.einsum("bi,io->bo", xr, wr) - torch.einsum(
-                "bi,io->bo", xi, wi
-            )
-            imag_part = torch.einsum("bi,io->bo", xr, wi) + torch.einsum(
-                "bi,io->bo", xi, wr
-            )
+                # Vectorized complex multiplication: (xr + j*xi) * (wr + j*wi)
+                real_part = torch.einsum("bcf,cof->bof", xr, wr) - torch.einsum(
+                    "bcf,cof->bof", xi, wi
+                )
+                imag_part = torch.einsum("bcf,cof->bof", xr, wi) + torch.einsum(
+                    "bcf,cof->bof", xi, wr
+                )
 
-            out_ft[:, :, freq_idx] = torch.complex(real_part, imag_part)
+                # Assign results back
+                out_ft[:, :, freq_indices] = torch.complex(real_part, imag_part)
 
         # Inverse FFT
         x_out = torch.fft.irfft(out_ft, n=L, dim=-1)  # [B, out_channels, L]
@@ -156,15 +159,7 @@ class FourierBlock(nn.Module):
 class FourierFeatures(nn.Module):
     """
     Enhanced Fourier Features module for time series encoding.
-
-    This module projects time series onto learned frequency components,
-    capturing periodic patterns at different frequencies. Improvements include:
-    - Better initialization of frequencies
-    - Layer normalization for stability
-    - Support for multiple positional encoding styles
-    - Device-safe implementation
-    - Auto-scale frequencies based on sequence length
-    - Adjustable projector architecture
+    Optimized version with better memory efficiency and numerical stability.
     """
 
     def __init__(
@@ -183,24 +178,6 @@ class FourierFeatures(nn.Module):
         time_dim: int = 1,
         activation: str = "silu",
     ):
-        """
-        Initialize the enhanced FourierFeatures module.
-
-        Args:
-            input_size: Number of features in input
-            output_size: Dimension of output features
-            num_frequencies: Number of frequency components to learn
-            learnable: Whether frequencies are learnable parameters
-            use_phase: Include learnable phase shifts
-            use_gaussian: Use random Gaussian frequencies (Rahimi & Recht style)
-            freq_init: Initialization method ("linear", "log", "geometric", "random")
-            freq_scale: Scale factor for frequency initialization
-            use_layernorm: Apply layer normalization to stabilize training
-            dropout: Dropout rate for projection layers
-            projector_layers: Number of layers in projection MLP
-            time_dim: Dimension along which time flows (0, 1, or 2)
-            activation: Activation function ("relu", "gelu", "silu", "tanh")
-        """
         super().__init__()
         self.input_size = input_size
         self.output_size = output_size
@@ -211,38 +188,29 @@ class FourierFeatures(nn.Module):
         self.use_layernorm = use_layernorm
         self.time_dim = time_dim
 
-        # Initialize frequency components
+        # Optimized frequency initialization
         if use_gaussian:
-            # Gaussian random Fourier features (Rahimi & Recht)
+            # Better scaling for Gaussian random features
             self.freq_matrix = nn.Parameter(
-                torch.randn(input_size, num_frequencies) * freq_scale * 0.1,
+                torch.randn(input_size, num_frequencies)
+                * freq_scale
+                / math.sqrt(input_size),
                 requires_grad=learnable,
             )
         else:
-            # Initialize frequencies based on specified method
+            # Optimized frequency initialization with better numerical properties
             if freq_init == "linear":
-                # Linear spacing (good for data with regular sampling)
                 freqs = torch.linspace(1.0, freq_scale, num_frequencies)
             elif freq_init == "log":
-                # Log spacing (better for capturing patterns across scales)
-                freqs = torch.exp(
-                    torch.linspace(0, math.log(freq_scale), num_frequencies)
-                )
+                # Log spacing often works better for natural signals
+                freqs = torch.logspace(0, math.log10(freq_scale), num_frequencies)
             elif freq_init == "geometric":
-                # Geometric spacing (similar to log, but different distribution)
-                freqs = torch.tensor(
-                    [
-                        freq_scale ** (i / (num_frequencies - 1))
-                        for i in range(num_frequencies)
-                    ]
-                )
+                freqs = freq_scale ** torch.linspace(0, 1, num_frequencies)
             elif freq_init == "random":
-                # Uniformly random (more diverse frequency coverage)
                 freqs = torch.rand(num_frequencies) * freq_scale
             else:
                 raise ValueError(f"Unknown freq_init: {freq_init}")
 
-            # Use the same frequencies for all input dimensions
             self.freq_matrix = nn.Parameter(
                 freqs.repeat(input_size, 1), requires_grad=learnable
             )
@@ -258,13 +226,13 @@ class FourierFeatures(nn.Module):
         # Pre-compute Fourier feature dimensionality
         self.fourier_dim = 2 * input_size * num_frequencies
 
-        # Layer normalization
+        # Optimized normalization
         if use_layernorm:
             self.layer_norm = nn.LayerNorm(self.fourier_dim)
         else:
             self.layer_norm = nn.Identity()
 
-        # Create projection MLP with the specified number of layers
+        # Optimized projection layers
         if projector_layers == 1:
             self.projection = nn.Sequential(
                 nn.Linear(input_size + self.fourier_dim, output_size),
@@ -272,21 +240,19 @@ class FourierFeatures(nn.Module):
                 nn.Dropout(dropout),
             )
         else:
+            # Better intermediate dimension sizing
+            hidden_dim = max(output_size, (input_size + self.fourier_dim) // 2)
             layers = []
-            # Input layer
-            layers.append(nn.Linear(input_size + self.fourier_dim, output_size * 2))
+            layers.append(nn.Linear(input_size + self.fourier_dim, hidden_dim))
             layers.append(self._get_activation(activation))
             layers.append(nn.Dropout(dropout))
 
-            # Hidden layers
             for _ in range(projector_layers - 2):
-                layers.append(nn.Linear(output_size * 2, output_size * 2))
+                layers.append(nn.Linear(hidden_dim, hidden_dim))
                 layers.append(self._get_activation(activation))
                 layers.append(nn.Dropout(dropout))
 
-            # Output layer
-            layers.append(nn.Linear(output_size * 2, output_size))
-
+            layers.append(nn.Linear(hidden_dim, output_size))
             self.projection = nn.Sequential(*layers)
 
     def _get_activation(self, activation: str) -> nn.Module:
@@ -300,35 +266,22 @@ class FourierFeatures(nn.Module):
         return activations.get(activation.lower(), nn.SiLU())
 
     def _normalize_time(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Generate normalized time indices based on sequence length.
-
-        Args:
-            x: Input tensor [batch, seq_len, input_size]
-
-        Returns:
-            Normalized time tensor suitable for frequency computation
-        """
+        """Generate normalized time indices based on sequence length."""
         batch, seq_len, _ = x.shape
         device = x.device
 
         # Create linear time sequence from 0 to 1
         time = torch.linspace(0, 1, seq_len, device=device)
 
-        # Reshape based on time_dim
+        # Optimized broadcasting
         if self.time_dim == 0:
-            # Time flows along batch dimension (unusual, but supported)
-            time = time.unsqueeze(1).unsqueeze(2)  # [seq_len, 1, 1]
-            time = time.expand(
-                -1, batch, self.input_size
-            )  # [seq_len, batch, input_size]
-            time = time.permute(1, 0, 2)  # [batch, seq_len, input_size]
+            time = (
+                time.view(seq_len, 1, 1)
+                .expand(-1, batch, self.input_size)
+                .permute(1, 0, 2)
+            )
         else:
-            # Default: time flows along sequence dimension
-            time = time.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1]
-            time = time.expand(
-                batch, -1, self.input_size
-            )  # [batch, seq_len, input_size]
+            time = time.view(1, seq_len, 1).expand(batch, -1, self.input_size)
 
         return time
 
@@ -337,59 +290,44 @@ class FourierFeatures(nn.Module):
     ) -> torch.Tensor:
         """
         Apply Fourier feature encoding to the input.
-
-        Args:
-            x: Input tensor [batch, seq_len, input_size]
-            time: Optional explicit time tensor
-
-        Returns:
-            Encoded features [batch, seq_len, output_size]
+        Optimized for memory efficiency and numerical stability.
         """
         batch, seq_len, in_dim = x.shape
         device = x.device
 
-        assert in_dim == self.input_size, (
-            f"Expected input_size={self.input_size}, got {in_dim}"
-        )
+        assert (
+            in_dim == self.input_size
+        ), f"Expected input_size={self.input_size}, got {in_dim}"
 
-        # Ensure parameters are on the correct device
-        freq_matrix = self.freq_matrix.to(device)
-
-        # Get time indices (either provided or generated)
+        # Get time indices
         if time is None:
             time = self._normalize_time(x)
 
-        # Add time dimension for broadcasting with frequencies
-        time = time.unsqueeze(-1)  # [batch, seq_len, input_size, 1]
+        # Optimized vectorized computation
+        # Reshape for broadcasting: time [B, L, D, 1], freq [1, 1, D, F]
+        time_exp = time.unsqueeze(-1)  # [B, L, D, 1]
+        freq_exp = self.freq_matrix.unsqueeze(0).unsqueeze(0)  # [1, 1, D, F]
 
-        # Apply frequency modulation
-        # Reshape freq_matrix for broadcasting: [1, 1, input_size, num_frequencies]
-        freqs = freq_matrix.unsqueeze(0).unsqueeze(0)
+        # Compute angles
+        signal = 2 * math.pi * time_exp * freq_exp
 
-        # Compute time * frequency: [batch, seq_len, input_size, num_frequencies]
-        signal = 2 * math.pi * time * freqs
-
-        # Add phase shift if used
+        # Add phase if used
         if self.phase is not None:
-            phase = self.phase.to(device)
-            signal = signal + phase.unsqueeze(0).unsqueeze(0)
+            signal = signal + self.phase.unsqueeze(0).unsqueeze(0)
 
-        # Apply sinusoidal encoding
+        # Optimized: Compute sin and cos simultaneously
         sin_feat = torch.sin(signal)
         cos_feat = torch.cos(signal)
 
-        # Combine and reshape: [batch, seq_len, input_size * 2 * num_frequencies]
-        fourier_encoded = torch.cat([sin_feat, cos_feat], dim=-1)
-        fourier_encoded = fourier_encoded.flatten(start_dim=2)
+        # Flatten and concatenate: [B, L, 2*D*F]
+        fourier_encoded = torch.cat([sin_feat, cos_feat], dim=-1).flatten(start_dim=2)
 
-        # Apply layer normalization if enabled
+        # Apply normalization
         if self.use_layernorm:
             fourier_encoded = self.layer_norm(fourier_encoded)
 
-        # Concatenate with original features
+        # Concatenate with original features and project
         combined = torch.cat([x, fourier_encoded], dim=-1)
-
-        # Apply projection MLP
         output = self.projection(combined)
 
         return output
@@ -414,104 +352,113 @@ class AdaptiveFourierFeatures(nn.Module):
         self.num_frequencies = num_frequencies
         self.use_phase = use_phase
 
-        # Frequency matrix
+        # Optimized frequency initialization
         if use_gaussian:
+            scale = 1.0 / math.sqrt(input_size)
             self.freq_matrix = nn.Parameter(
-                torch.randn(input_size, num_frequencies) * 10.0
+                torch.randn(input_size, num_frequencies) * scale * 10.0
             )
         else:
-            freqs = torch.linspace(1.0, 10.0, num_frequencies)
+            # Better frequency distribution
+            freqs = torch.logspace(0, math.log10(10.0), num_frequencies)
             self.freq_matrix = nn.Parameter(
                 freqs.repeat(input_size, 1), requires_grad=learnable
             )
 
         # Optional learnable phase
         self.phase = (
-            nn.Parameter(torch.randn(input_size, num_frequencies))
+            nn.Parameter(torch.zeros(input_size, num_frequencies))
             if use_phase
             else None
         )
 
-        # Frequency scaling
+        # Learnable frequency scaling
         self.freq_scale = nn.Parameter(torch.ones(input_size, num_frequencies))
 
-        # Attention projections
+        # Optimized attention with proper dimensions
         self.query_proj = nn.Linear(input_size, attention_dim)
         self.key_proj = nn.Linear(1, attention_dim)
         self.value_proj = nn.Linear(1, attention_dim)
+
+        # Use scaled dot-product attention for efficiency
         self.attn = nn.MultiheadAttention(
-            embed_dim=attention_dim, num_heads=freq_attention_heads, batch_first=True
+            embed_dim=attention_dim,
+            num_heads=freq_attention_heads,
+            batch_first=True,
+            dropout=dropout,
         )
+
         self.dropout = nn.Dropout(dropout)
 
-        # Final projection
+        # Optimized final projection with gating
+        fourier_dim = 2 * input_size * num_frequencies
         self.gate = nn.Sequential(
-            nn.Linear(input_size + 2 * input_size * num_frequencies, output_size),
+            nn.Linear(input_size + fourier_dim, output_size),
             nn.Sigmoid(),
         )
         self.projection = nn.Sequential(
-            nn.Linear(input_size + 2 * input_size * num_frequencies, output_size),
+            nn.Linear(input_size + fourier_dim, output_size),
             nn.SiLU(),
         )
 
-        self.attn_weights_log = None  # Placeholder for attention weights
+        self.attn_weights_log = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch, seq_len, in_dim = x.shape
         device = x.device
         assert in_dim == self.input_size
 
-        # Time indices
-        time = (
-            torch.linspace(0, 1, seq_len, device=device).unsqueeze(0).unsqueeze(-1)
-        )  # [1, seq_len, 1]
-        time = time.expand(batch, -1, in_dim)  # [batch, seq_len, input_size]
+        # Optimized time generation
+        time = torch.linspace(0, 1, seq_len, device=device)
+        time = time.view(1, seq_len, 1).expand(batch, -1, in_dim)
 
-        queries = self.query_proj(x)  # [batch, seq_len, attn_dim]
+        # Pre-compute attention components
+        queries = self.query_proj(x)  # [B, L, attn_dim]
 
+        # Process all dimensions efficiently
         fourier_features_list = []
 
         for i in range(in_dim):
-            freqs_i = self.freq_matrix[i] * self.freq_scale[i]  # [num_freq]
+            # Get frequency parameters for dimension i
+            freqs_i = self.freq_matrix[i] * self.freq_scale[i]
             phases_i = (
                 self.phase[i] if self.phase is not None else torch.zeros_like(freqs_i)
             )
-            time_i = time[:, :, i].unsqueeze(-1)  # [batch, seq_len, 1]
+            time_i = time[:, :, i : i + 1]  # [B, L, 1]
 
-            # Signal = 2pi * freq * time + phase
+            # Compute signal
             signal = 2 * math.pi * time_i * freqs_i.view(1, 1, -1) + phases_i.view(
                 1, 1, -1
-            )  # [B, T, F]
+            )
             sin_features = torch.sin(signal)
             cos_features = torch.cos(signal)
 
-            # Prepare keys and values
-            freq_embeds = freqs_i.view(-1, 1)  # [F, 1]
-            keys = self.key_proj(freq_embeds)  # [F, attn_dim]
-            values = self.value_proj(freq_embeds)  # [F, attn_dim]
-            keys = keys.unsqueeze(0).expand(batch, -1, -1)  # [B, F, attn_dim]
-            values = values.unsqueeze(0).expand(batch, -1, -1)  # [B, F, attn_dim]
+            # Attention over frequencies
+            freq_embeds = freqs_i.view(-1, 1)
+            keys = self.key_proj(freq_embeds).unsqueeze(0).expand(batch, -1, -1)
+            values = self.value_proj(freq_embeds).unsqueeze(0).expand(batch, -1, -1)
 
-            # Multihead attention
-            attn_out, attn_weights = self.attn(
-                queries, keys, values
-            )  # attn_weights: [B, T, F]
-            attn_weights = self.dropout(attn_weights)  # ✅ CORRECT
+            # Apply attention
+            attn_out, attn_weights = self.attn(queries, keys, values)
+            attn_weights = self.dropout(attn_weights)
 
-            # Weighted sinusoidal features
+            # Weight the sinusoidal features
             sin_weighted = sin_features * attn_weights
             cos_weighted = cos_features * attn_weights
-            combined = torch.cat([sin_weighted, cos_weighted], dim=-1)  # [B, T, 2F]
+            combined = torch.cat([sin_weighted, cos_weighted], dim=-1)
 
             fourier_features_list.append(combined)
 
-        fourier_features = torch.cat(
-            fourier_features_list, dim=2
-        )  # [B, T, input_size * 2 * num_freq]
-        combined_input = torch.cat(
-            [x, fourier_features], dim=2
-        )  # [B, T, input_size + enriched]
+        # Combine all Fourier features
+        fourier_features = torch.cat(fourier_features_list, dim=2)
+        combined_input = torch.cat([x, fourier_features], dim=2)
 
-        gated = self.gate(combined_input) * self.projection(combined_input)
+        # Gated output
+        gate_weights = self.gate(combined_input)
+        projection_out = self.projection(combined_input)
+        gated_out = gate_weights * projection_out
+
+        # Store attention weights for analysis
         self.attn_weights_log = attn_weights
-        return x + gated
+
+        return x + gated_out

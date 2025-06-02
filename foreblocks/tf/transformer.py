@@ -76,7 +76,10 @@ class BaseTransformerLayer(nn.Module):
             x = F.dropout(x, p=self.dropout_p, training=True)
         return residual + x
 
+    # Pre-norm (correct): LayerNorm(x) → FF → Dropout → Residual
+    # Post-norm (incorrect): x → FF → Dropout → Residual → LayerNorm
     def forward_feedforward(self, x: torch.Tensor, training: bool) -> torch.Tensor:
+        """Optimized feedforward with reduced memory allocations"""
         residual = x
         x_normed = self.norm_layers[-1](x) if self._is_pre_norm else x
 
@@ -85,13 +88,16 @@ class BaseTransformerLayer(nn.Module):
             self.aux_loss = aux_loss
         else:
             ff_out = self.feed_forward(x_normed)
-            self.aux_loss = 0.0
+            # Avoid repeated assignment to 0.0
+            if self.aux_loss != 0.0:
+                self.aux_loss = 0.0
 
-        return (
-            self.apply_dropout_residual(ff_out, residual, training)
-            if self._is_pre_norm
-            else ff_out
-        )
+        if self._is_pre_norm:
+            return self.apply_dropout_residual(ff_out, residual, training)
+        else:
+            # Post-norm: apply dropout + residual, then normalization
+            ff_with_residual = self.apply_dropout_residual(ff_out, residual, training)
+            return self.norm_layers[-1](ff_with_residual)
 
 
 class TransformerEncoderLayer(BaseTransformerLayer):
@@ -168,9 +174,11 @@ class TransformerEncoderLayer(BaseTransformerLayer):
             attn_out, _, _ = self.self_attn(
                 src, src, src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask
             )
-            src = self.norm_layers[0](
-                residual + F.dropout(attn_out, p=self.dropout_p, training=training)
+            # Use helper method for consistency
+            src_with_residual = self.apply_dropout_residual(
+                attn_out, residual, training
             )
+            src = self.norm_layers[0](src_with_residual)
             src = self.forward_feedforward(src, training)
 
         return src
@@ -244,7 +252,6 @@ class TransformerDecoderLayer(BaseTransformerLayer):
         memory_key_padding_mask: Optional[torch.Tensor] = None,
         incremental_state: Optional[dict] = None,
     ) -> Tuple[torch.Tensor, Optional[dict]]:
-
         training = self.training
         self_attn_state = (
             None if incremental_state is None else incremental_state.get("self_attn")
@@ -281,8 +288,8 @@ class TransformerDecoderLayer(BaseTransformerLayer):
             )
             tgt = self.apply_dropout_residual(cross_attn_out, residual, training)
             tgt = self.forward_feedforward(tgt, training)
-
         else:
+            # Self-attention
             self_attn_out, _, updated_self_state = self.self_attn(
                 tgt,
                 tgt,
@@ -292,10 +299,13 @@ class TransformerDecoderLayer(BaseTransformerLayer):
                 is_causal=self._is_causal,
                 layer_state=self_attn_state,
             )
-            tgt = self.norm_layers[0](
-                tgt + F.dropout(self_attn_out, p=self.dropout_p, training=training)
+            # Use helper method for consistency
+            tgt_with_residual = self.apply_dropout_residual(
+                self_attn_out, tgt, training
             )
+            tgt = self.norm_layers[0](tgt_with_residual)
 
+            # Cross-attention
             cross_attn_out, _, updated_cross_state = self.cross_attn(
                 tgt,
                 memory,
@@ -304,9 +314,11 @@ class TransformerDecoderLayer(BaseTransformerLayer):
                 key_padding_mask=memory_key_padding_mask,
                 layer_state=cross_attn_state,
             )
-            tgt = self.norm_layers[1](
-                tgt + F.dropout(cross_attn_out, p=self.dropout_p, training=training)
+            # Use helper method for consistency
+            tgt_with_residual = self.apply_dropout_residual(
+                cross_attn_out, tgt, training
             )
+            tgt = self.norm_layers[1](tgt_with_residual)
 
             tgt = self.forward_feedforward(tgt, training)
 
@@ -357,6 +369,7 @@ class BaseTransformer(nn.Module, ABC):
         self._use_final_norm = use_final_norm
         self._needs_dropout = dropout > 0.0
         self.dropout_p = dropout
+        self.aux_loss = 0.0
 
         # Common layer arguments
         self.layer_args = (
@@ -414,15 +427,23 @@ class BaseTransformer(nn.Module, ABC):
         """Create a transformer layer. Must be implemented by subclasses."""
         pass
 
-    def _init_weights(self, module):
-        """Initialize module weights."""
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
-        elif isinstance(module, nn.LayerNorm):
-            nn.init.constant_(module.bias, 0)
-            nn.init.constant_(module.weight, 1.0)
+    def _init_weights(self, module: nn.Module):
+        """Optimized and extensible Transformer weight initialization."""
+        for m in module.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                if hasattr(m, "padding_idx") and m.padding_idx is not None:
+                    with torch.no_grad():
+                        m.weight[m.padding_idx].zero_()
 
     def _apply_input_processing(self, x, additional_features=None):
         """Apply input projection, positional encoding, and optional features."""

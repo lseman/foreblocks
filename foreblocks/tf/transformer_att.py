@@ -369,11 +369,9 @@ class MultiAttention(nn.Module):
     def _try_optimized_attention(
         self, q, k, v, is_causal, need_weights, attn_mask, key_padding_mask
     ):
-        """Try to use optimized backends if possible"""
         if need_weights or attn_mask is not None or key_padding_mask is not None:
             return None
 
-        # Try Flash Attention
         if self.backends["flash"]:
             try:
                 from flash_attn import flash_attn_func
@@ -389,7 +387,6 @@ class MultiAttention(nn.Module):
             except Exception:
                 pass
 
-        # Try PyTorch SDP
         if self.backends["sdp"]:
             try:
                 return F.scaled_dot_product_attention(
@@ -402,7 +399,6 @@ class MultiAttention(nn.Module):
             except Exception:
                 pass
 
-        # Try xFormers
         if self.backends["xformers"]:
             try:
                 import xformers.ops as xops
@@ -423,20 +419,15 @@ class MultiAttention(nn.Module):
     def _standard_attention(
         self, q, k, v, attn_mask, key_padding_mask, is_causal, need_weights
     ):
-        """Standard scaled dot-product attention with optimized backend fallback"""
-
-        # Try optimized backends first
         optimized_out = self._try_optimized_attention(
             q, k, v, is_causal, need_weights, attn_mask, key_padding_mask
         )
         if optimized_out is not None:
             return optimized_out, None
 
-        # Manual implementation
         scale = 1.0 / math.sqrt(self.head_dim)
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale
 
-        # Apply masks
         B, H, T_q, T_k = scores.shape
 
         if is_causal and not self.cross_attention:
@@ -455,7 +446,6 @@ class MultiAttention(nn.Module):
                 key_padding_mask.view(B, 1, 1, T_k), float("-inf")
             )
 
-        # Softmax and dropout
         weights = F.softmax(scores, dim=-1)
         if self.dropout_p > 0 and self.training:
             weights = F.dropout(weights, p=self.dropout_p)
@@ -464,104 +454,40 @@ class MultiAttention(nn.Module):
         return out, weights if need_weights else None
 
     def _prob_sparse_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        attn_mask: torch.Tensor = None,
-        key_padding_mask: torch.Tensor = None,
-        is_causal: bool = False,
-        prob_sparse_factor: float = 5.0,
-        dropout_p: float = 0.0,
-        need_weights: bool = False,
-        cross_attention: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """
-        Optimized ProbSparse attention (Informer-style) with vectorized logic.
-
-        Args:
-            q: [B, H, T_q, D]
-            k: [B, H, T_k, D]
-            v: [B, H, T_k, D]
-            attn_mask: optional attention mask [T_q, T_k] or [B, H, T_q, T_k]
-            key_padding_mask: [B, T_k] mask
-            is_causal: whether to apply causal masking
-            prob_sparse_factor: controls number of top queries sampled
-            dropout_p: attention dropout
-            need_weights: whether to return attention weights
-            cross_attention: disable causal masking on cross-attention
-
-        Returns:
-            output: [B, H, T_q, D]
-            attn_weights: [B, H, T_q, T_k] or None
-        """
+        self, q, k, v, attn_mask, key_padding_mask, is_causal, need_weights
+    ):
         B, H, T_q, D = q.shape
         T_k = k.size(2)
         scale = 1.0 / math.sqrt(D)
 
-        # Compute number of top queries u
-        u = min(T_q, max(int(prob_sparse_factor * math.log(T_k)), int(0.3 * T_q)))
-
-        if u >= T_q * 0.9:
-            # Fallback to full attention (basic scaled dot-product)
-            scores = torch.matmul(q * scale, k.transpose(-2, -1))  # [B, H, T_q, T_k]
-
-            if is_causal and not cross_attention:
-                causal_mask = torch.tril(torch.ones(T_q, T_k, device=q.device)).bool()
-                scores = scores.masked_fill(~causal_mask, float("-inf"))
-
-            if attn_mask is not None:
-                if attn_mask.dim() == 2:
-                    scores = scores.masked_fill(attn_mask == 0, float("-inf"))
-                else:
-                    scores = scores.masked_fill(attn_mask == 0, float("-inf"))
-
-            if key_padding_mask is not None:
-                scores = scores.masked_fill(
-                    key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
-                )
-
-            attn_weights = F.softmax(scores, dim=-1)
-            if dropout_p > 0.0 and q.requires_grad:
-                attn_weights = F.dropout(attn_weights, p=dropout_p)
-            output = torch.matmul(attn_weights, v)
-            return output, attn_weights if need_weights else None
-
-        # --- ProbSparse attention ---
-        sample_k = max(1, min(int(self.prob_sparse_factor * T_k), T_k))  # Fix 1
+        sample_k = max(1, min(int(self.prob_sparse_factor * T_k), T_k))
         sample_indices = torch.randperm(T_k, device=k.device)[:sample_k]
-        k_sample = k[:, :, sample_indices, :]  # [B, H, sample_k, D]
+        k_sample = k[:, :, sample_indices, :]
 
-        scores_sample = torch.matmul(
-            q * scale, k_sample.transpose(-2, -1)
-        )  # [B, H, T_q, sample_k]
-        sparsity_score = scores_sample.max(dim=-1)[0] - scores_sample.mean(
-            dim=-1
-        )  # [B, H, T_q]
+        scores_sample = torch.matmul(q * scale, k_sample.transpose(-2, -1))
+        sparsity_score = scores_sample.max(dim=-1)[0] - scores_sample.mean(dim=-1)
 
-        u = max(1, min(int(self.prob_sparse_factor * math.log(T_k)), T_q))  # Fix 2
+        u = max(1, min(int(self.prob_sparse_factor * math.log(T_k)), T_q))
+        _, top_indices = torch.topk(sparsity_score, k=u, dim=-1)
+        top_q = torch.gather(q, 2, top_indices.unsqueeze(-1).expand(-1, -1, -1, D))
 
-        # Select top-u queries with highest sparsity
-        _, top_indices = torch.topk(sparsity_score, k=u, dim=-1)  # [B, H, u]
-        top_q = torch.gather(
-            q, 2, top_indices.unsqueeze(-1).expand(-1, -1, -1, D)
-        )  # [B, H, u, D]
+        attn_scores = torch.matmul(top_q * scale, k.transpose(-2, -1))
 
-        # Compute attention for selected top queries
-        attn_scores = torch.matmul(top_q * scale, k.transpose(-2, -1))  # [B, H, u, T_k]
-
-        if is_causal and not cross_attention:
-            q_pos = top_indices.unsqueeze(-1)  # [B, H, u, 1]
+        if is_causal and not self.cross_attention:
+            q_pos = top_indices.unsqueeze(-1)
             k_pos = torch.arange(T_k, device=q.device).view(1, 1, 1, T_k)
-            causal_mask = q_pos >= k_pos  # [B, H, u, T_k]
+            causal_mask = q_pos >= k_pos
             attn_scores = attn_scores.masked_fill(~causal_mask, float("-inf"))
 
-        if attn_mask is not None and attn_mask.dim() == 2:
-            selected_attn_mask = (
-                attn_mask.unsqueeze(0).unsqueeze(0).expand(B, H, T_q, T_k)
-            )
+        if attn_mask is not None:
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)
+            elif attn_mask.dim() == 3:
+                attn_mask = attn_mask.unsqueeze(1)
             selected_attn_mask = torch.gather(
-                selected_attn_mask, 2, top_indices.unsqueeze(-1).expand(-1, -1, -1, T_k)
+                attn_mask.expand(B, H, T_q, T_k),
+                2,
+                top_indices.unsqueeze(-1).expand(-1, -1, -1, T_k),
             )
             attn_scores = attn_scores.masked_fill(
                 selected_attn_mask == 0, float("-inf")
@@ -572,26 +498,32 @@ class MultiAttention(nn.Module):
                 key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
             )
 
-        # Stable softmax
         attn_scores = attn_scores - attn_scores.max(dim=-1, keepdim=True)[0]
         attn_weights = F.softmax(attn_scores, dim=-1)
-        if dropout_p > 0.0 and q.requires_grad:
-            attn_weights = F.dropout(attn_weights, p=dropout_p)
+        if self.dropout_p > 0.0 and q.requires_grad:
+            attn_weights = F.dropout(attn_weights, p=self.dropout_p)
 
-        top_out = torch.matmul(attn_weights, v)  # [B, H, u, D]
+        top_out = torch.matmul(attn_weights, v)
 
-        # Scatter result back to full sequence
         output = torch.zeros_like(q)
         output.scatter_(2, top_indices.unsqueeze(-1).expand(-1, -1, -1, D), top_out)
 
-        # Fill non-selected queries with mean of all values
         if u < T_q:
             mask = torch.zeros(B, H, T_q, dtype=torch.bool, device=q.device)
             mask.scatter_(2, top_indices, True)
             mean_v = v.mean(dim=2, keepdim=True).expand(B, H, T_q, D)
             output = torch.where(mask.unsqueeze(-1), output, mean_v)
 
-        return output, attn_weights if need_weights else None
+        if need_weights:
+            full_weights = torch.zeros(
+                B, H, T_q, T_k, device=q.device, dtype=attn_weights.dtype
+            )
+            full_weights.scatter_(
+                2, top_indices.unsqueeze(-1).expand(-1, -1, -1, T_k), attn_weights
+            )
+            attn_weights = full_weights
+
+        return output, attn_weights
 
     def reset_cache(self):
         """Reset any internal caches (useful for inference)"""
