@@ -36,9 +36,7 @@ ForeBlocks uses a pipeline of customizable processing blocks that transform data
 
 ## 🌊 Data Flow Architecture
 
-```
 ![Data Flow Diagram](imgs/foreblocks_model.png)
-```
 
 ---
 

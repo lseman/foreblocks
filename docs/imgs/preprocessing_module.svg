@@ -1,0 +1,1083 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="1227.4668"
+   height="595.97906"
+   version="1.1"
+   id="svg96"
+   sodipodi:docname="preprocessing_module-2.svg"
+   inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
+   inkscape:export-filename="preprocessing_module.png"
+   inkscape:export-xdpi="96"
+   inkscape:export-ydpi="96"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview96"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.80765342"
+     inkscape:cx="587.50448"
+     inkscape:cy="383.828"
+     inkscape:window-width="1800"
+     inkscape:window-height="1025"
+     inkscape:window-x="0"
+     inkscape:window-y="44"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg96" />
+  <defs
+     id="defs1">
+    <!-- Simple arrow marker -->
+    <marker
+       id="arrowhead"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto">
+      <polygon
+         points="0,7 0,0 10,3.5 "
+         fill="#374151"
+         id="polygon1" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <!-- Title -->
+  <!-- Raw Input Data -->
+  <rect
+     x="0.5"
+     y="0.5"
+     width="1226.4668"
+     height="594.97906"
+     fill="#f0f9ff"
+     stroke="#93c5fd"
+     stroke-width="9.4853"
+     rx="55.748493"
+     stroke-dasharray="8, 4"
+     id="rect55-8"
+     style="opacity:1;fill:#fff9ff;fill-opacity:1;stroke-width:1;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0" />
+  <rect
+     x="143.86925"
+     y="28.929203"
+     width="120"
+     height="60"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="10"
+     id="rect2" />
+  <text
+     x="193.86925"
+     y="51.929203"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text3">📊 Raw Data</text>
+  <text
+     x="201.86925"
+     y="66.929207"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#78350f"
+     id="text4">Outliers, Missing</text>
+  <text
+     x="203.86925"
+     y="80.929207"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#78350f"
+     id="text5">Noise, Trends</text>
+  <!-- Self-Tuning Analysis -->
+  <rect
+     x="313.88962"
+     y="8.9495554"
+     width="166.64601"
+     height="99.959297"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="2.0407"
+     rx="10.415376"
+     id="rect5" />
+  <text
+     x="389.86926"
+     y="28.929203"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text6">🤖 Auto-configuration Analysis</text>
+  <!-- Analysis components -->
+  <rect
+     x="325.86926"
+     y="38.929203"
+     width="140"
+     height="15"
+     fill="#f0f9ff"
+     stroke="#0891b2"
+     stroke-width="1"
+     rx="3"
+     id="rect6" />
+  <text
+     x="395.86926"
+     y="50.929203"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#0c4a6e"
+     id="text7">Stationarity Test (ADF)</text>
+  <rect
+     x="325.86926"
+     y="58.929203"
+     width="140"
+     height="15"
+     fill="#f0f9ff"
+     stroke="#0891b2"
+     stroke-width="1"
+     rx="3"
+     id="rect7" />
+  <text
+     x="395.86926"
+     y="70.929207"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#0c4a6e"
+     id="text8">Seasonality Detection</text>
+  <rect
+     x="325.86926"
+     y="78.929207"
+     width="140"
+     height="15"
+     fill="#f0f9ff"
+     stroke="#0891b2"
+     stroke-width="1"
+     rx="3"
+     id="rect8" />
+  <text
+     x="395.86926"
+     y="90.929207"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#0c4a6e"
+     id="text9">Signal Quality (SNR)</text>
+  <!-- Arrow from input to analysis -->
+  <path
+     d="m 268.86925,58.929204 h 40"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path9" />
+  <!-- Processing Pipeline -->
+  <g
+     transform="translate(143.86925,148.9292)"
+     id="g37">
+    <!-- Step 1: Outlier Detection -->
+    <rect
+       x="0"
+       y="0"
+       width="140"
+       height="80"
+       fill="#dbeafe"
+       stroke="#93c5fd"
+       stroke-width="2"
+       rx="8"
+       id="rect9" />
+    <text
+       x="70"
+       y="20"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="11px"
+       font-weight="bold"
+       fill="#1e40af"
+       id="text10">🎯 Outlier Detection</text>
+    <text
+       x="10"
+       y="35"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text11">• ECOD (parameter-free)</text>
+    <text
+       x="10"
+       y="47"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text12">• TranAD (transformer)</text>
+    <text
+       x="10"
+       y="59"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text13">• Isolation Forest</text>
+    <text
+       x="10"
+       y="71"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text14">• IQR, Z-score, MAD</text>
+    <!-- Step 2: Missing Value Imputation -->
+    <rect
+       x="170"
+       y="0"
+       width="140"
+       height="80"
+       fill="#dbeafe"
+       stroke="#93c5fd"
+       stroke-width="2"
+       rx="8"
+       id="rect14" />
+    <text
+       x="240"
+       y="20"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="11px"
+       font-weight="bold"
+       fill="#1e40af"
+       id="text15">🔧 Value Imputation</text>
+    <text
+       x="180"
+       y="35"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text16">• SAITS (self-attention)</text>
+    <text
+       x="180"
+       y="47"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text17">• KNN Imputation</text>
+    <text
+       x="180"
+       y="59"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text18">• Iterative Imputation</text>
+    <text
+       x="180"
+       y="71"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text19">• Interpolation</text>
+    <!-- Step 3: Signal Decomposition -->
+    <rect
+       x="340"
+       y="0"
+       width="140"
+       height="80"
+       fill="#e9d5ff"
+       stroke="#c4b5fd"
+       stroke-width="2"
+       rx="8"
+       id="rect19" />
+    <text
+       x="410"
+       y="20"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="11px"
+       font-weight="bold"
+       fill="#581c87"
+       id="text20">📡 EWT Decomposition</text>
+    <text
+       x="350"
+       y="35"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text21">• Empirical Wavelet</text>
+    <text
+       x="350"
+       y="47"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text22">• Trend separation</text>
+    <text
+       x="350"
+       y="59"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text23">• Seasonal components</text>
+    <text
+       x="350"
+       y="71"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text24">• Auto-band determination</text>
+    <!-- Step 4: Filtering -->
+    <rect
+       x="510"
+       y="0"
+       width="140"
+       height="80"
+       fill="#e9d5ff"
+       stroke="#c4b5fd"
+       stroke-width="2"
+       rx="8"
+       id="rect24" />
+    <text
+       x="580"
+       y="20"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="11px"
+       font-weight="bold"
+       fill="#581c87"
+       id="text25">🔍 Adaptive Filtering</text>
+    <text
+       x="520"
+       y="35"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text26">• Savitzky-Golay</text>
+    <text
+       x="520"
+       y="47"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text27">• Kalman Filter</text>
+    <text
+       x="520"
+       y="59"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text28">• LOWESS</text>
+    <text
+       x="520"
+       y="71"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text29">• Wiener Filter</text>
+    <!-- Step 5: Transformations -->
+    <rect
+       x="680"
+       y="0"
+       width="140"
+       height="80"
+       fill="#d1fae5"
+       stroke="#86efac"
+       stroke-width="2"
+       rx="8"
+       id="rect29" />
+    <text
+       x="750"
+       y="20"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="11px"
+       font-weight="bold"
+       fill="#065f46"
+       id="text30">⚡ Transformations</text>
+    <text
+       x="690"
+       y="35"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text31">• Log Transform</text>
+    <text
+       x="690"
+       y="47"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text32">• Differencing</text>
+    <text
+       x="690"
+       y="59"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text33">• Normalization</text>
+    <text
+       x="690"
+       y="71"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#374151"
+       id="text34">• Temporal features</text>
+    <!-- Arrows between steps -->
+    <path
+       d="m 145,40 h 20"
+       stroke="#374151"
+       stroke-width="2"
+       fill="none"
+       marker-end="url(#arrowhead)"
+       id="path34" />
+    <path
+       d="m 315,40 h 20"
+       stroke="#374151"
+       stroke-width="2"
+       fill="none"
+       marker-end="url(#arrowhead)"
+       id="path35" />
+    <path
+       d="m 485,40 h 20"
+       stroke="#374151"
+       stroke-width="2"
+       fill="none"
+       marker-end="url(#arrowhead)"
+       id="path36" />
+    <path
+       d="m 655,40 h 20"
+       stroke="#374151"
+       stroke-width="2"
+       fill="none"
+       marker-end="url(#arrowhead)"
+       id="path37" />
+  </g>
+  <!-- Arrow from analysis to pipeline -->
+  <path
+     d="m 393.86925,113.9292 v 30"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path38" />
+  <!-- Configuration Output -->
+  <rect
+     x="525.8692"
+     y="8.929204"
+     width="200"
+     height="100"
+     fill="#f0fdf4"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="10"
+     id="rect38" />
+  <text
+     x="625.8692"
+     y="28.929203"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text38">📋 Optimized Configuration</text>
+  <text
+     x="535.8692"
+     y="48.929203"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text39">✅ Detrend: True (7/10 non-stationary)</text>
+  <text
+     x="535.8692"
+     y="60.929203"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text40">✅ Seasonality detected: [24, 168h]</text>
+  <text
+     x="535.8692"
+     y="72.929207"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text41">✅ Outlier method: ECOD (SNR=12.3)</text>
+  <text
+     x="535.8692"
+     y="84.929207"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text42">✅ Imputation: KNN (missing=8.5%)</text>
+  <text
+     x="535.8692"
+     y="96.929207"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text43">✅ Filter: Savgol (quality=0.45)</text>
+  <!-- Arrow from analysis to config -->
+  <path
+     d="m 490.86925,58.929204 h 30"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path43" />
+  <!-- Window Generation -->
+  <rect
+     x="493.86926"
+     y="268.9292"
+     width="300"
+     height="60"
+     fill="#e9d5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="10"
+     id="rect43" />
+  <text
+     x="643.8692"
+     y="288.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text44">🪟 Sliding Window Generation</text>
+  <text
+     x="643.8692"
+     y="303.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#6b21a8"
+     id="text45">Window Size: 48h → Horizon: 24h</text>
+  <text
+     x="643.8692"
+     y="318.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text46">X: [batch, window, features] | y: [batch, horizon, targets]</text>
+  <!-- Arrow from pipeline to windowing -->
+  <path
+     d="m 643.86925,233.9292 v 30"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path46" />
+  <!-- Final Output -->
+  <rect
+     x="243.86925"
+     y="368.9292"
+     width="800"
+     height="80"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="10"
+     id="rect46" />
+  <text
+     x="643.8692"
+     y="388.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text47">📤 Processed Data for Training</text>
+  <!-- Output components -->
+  <rect
+     x="263.86923"
+     y="398.9292"
+     width="180"
+     height="40"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="1"
+     rx="5"
+     id="rect47" />
+  <text
+     x="353.86926"
+     y="418.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#92400e"
+     font-weight="bold"
+     id="text48">X_train</text>
+  <text
+     x="353.86926"
+     y="431.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#78350f"
+     id="text49">[N, window, features]</text>
+  <rect
+     x="463.86926"
+     y="398.9292"
+     width="180"
+     height="40"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="1"
+     rx="5"
+     id="rect49" />
+  <text
+     x="553.8692"
+     y="418.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#92400e"
+     font-weight="bold"
+     id="text50">y_train</text>
+  <text
+     x="553.8692"
+     y="431.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#78350f"
+     id="text51">[N, horizon, targets]</text>
+  <rect
+     x="663.8692"
+     y="398.9292"
+     width="180"
+     height="40"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="1"
+     rx="5"
+     id="rect51" />
+  <text
+     x="753.8692"
+     y="418.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#92400e"
+     font-weight="bold"
+     id="text52">processed_data</text>
+  <text
+     x="753.8692"
+     y="431.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#78350f"
+     id="text53">[T, features]</text>
+  <rect
+     x="863.8692"
+     y="398.9292"
+     width="160"
+     height="40"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="1"
+     rx="5"
+     id="rect53" />
+  <text
+     x="943.8692"
+     y="418.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#92400e"
+     font-weight="bold"
+     id="text54">metadata</text>
+  <text
+     x="943.8692"
+     y="431.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#78350f"
+     id="text55">Scalers, Config</text>
+  <!-- Arrow from windowing to output -->
+  <path
+     d="m 643.86925,333.9292 v 30"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path55" />
+  <!-- Side panels -->
+  <!-- Left panel - Method Selection Logic -->
+  <rect
+     x="8.88027"
+     y="255.77423"
+     width="220"
+     height="150"
+     fill="#f0f9ff"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="10"
+     stroke-dasharray="8, 4"
+     id="rect55" />
+  <text
+     x="118.88027"
+     y="275.77423"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text56">🧠 Selection Logic</text>
+  <text
+     x="18.88027"
+     y="295.77423"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     font-weight="bold"
+     id="text57">Imputation:</text>
+  <text
+     x="18.88027"
+     y="308.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text58">• &lt;5% missing → Interpolation</text>
+  <text
+     x="18.88027"
+     y="320.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text59">• 5-20% → KNN</text>
+  <text
+     x="18.88027"
+     y="332.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text60">• &gt;20% → SAITS</text>
+  <text
+     x="18.88027"
+     y="350.77423"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     font-weight="bold"
+     id="text61">Outliers:</text>
+  <text
+     x="18.88027"
+     y="363.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text62">• High SNR → TranAD</text>
+  <text
+     x="18.88027"
+     y="375.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text63">• General → ECOD</text>
+  <text
+     x="18.88027"
+     y="387.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text64">• Gaussian → Z-score</text>
+  <!-- Right panel - Performance Features -->
+  <rect
+     x="995.96228"
+     y="180.61348"
+     width="220"
+     height="150"
+     fill="#faf5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="10"
+     stroke-dasharray="8, 4"
+     id="rect64" />
+  <text
+     x="1105.9624"
+     y="200.61348"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text65">⚡ Features</text>
+  <text
+     x="1005.9623"
+     y="220.61349"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     font-weight="bold"
+     id="text66">Performance:</text>
+  <text
+     x="1005.9623"
+     y="233.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text67">• Parallel processing</text>
+  <text
+     x="1005.9623"
+     y="245.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text68">• Auto-optimization</text>
+  <text
+     x="1005.9623"
+     y="257.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text69">• Intelligent caching</text>
+  <text
+     x="1005.9623"
+     y="275.61349"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     font-weight="bold"
+     id="text70">Visualization:</text>
+  <text
+     x="1005.9623"
+     y="288.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text71">• Before/after comparison</text>
+  <text
+     x="1005.9623"
+     y="300.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text72">• EWT components</text>
+  <text
+     x="1005.9623"
+     y="312.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text73">• Quality metrics</text>
+  <!-- Bottom statistics -->
+  <rect
+     x="343.86926"
+     y="488.9292"
+     width="600"
+     height="100"
+     fill="#f1f5f9"
+     stroke="#cbd5e1"
+     stroke-width="1"
+     rx="8"
+     id="rect73" />
+  <text
+     x="643.8692"
+     y="508.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#1f2937"
+     id="text74">📊 Example Auto-Configuration</text>
+  <text
+     x="363.86926"
+     y="528.9292"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text75">📈 Dataset: 2000 samples, 10 features | Missing: 8.5% | Outliers: 3.2%</text>
+  <text
+     x="363.86926"
+     y="543.9292"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text76">🔍 Analysis: Non-stationary (70%), Seasonal (80%), SNR=12.3dB</text>
+  <text
+     x="363.86926"
+     y="558.9292"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text77">⚙️ Config: ECOD outliers | KNN imputation | Savgol filter | EWT(6 bands)</text>
+  <text
+     x="363.86926"
+     y="573.9292"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text78">📤 Output: X(1952,48,10) | y(1952,24,1) | Time: 2.3s</text>
+  <text
+     x="18.88027"
+     y="363.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text79">• High SNR → TranAD</text>
+  <text
+     x="18.88027"
+     y="375.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text80">• General → ECOD</text>
+  <text
+     x="18.88027"
+     y="387.77423"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text81">• Gaussian → Z-score</text>
+  <!-- Right panel - Performance Features -->
+  <rect
+     x="995.96228"
+     y="180.61348"
+     width="220"
+     height="150"
+     fill="#faf5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="10"
+     stroke-dasharray="8, 4"
+     id="rect81" />
+  <text
+     x="1105.9624"
+     y="200.61348"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text82">⚡ Features</text>
+  <text
+     x="1005.9623"
+     y="220.61349"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     font-weight="bold"
+     id="text83">Performance:</text>
+  <text
+     x="1005.9623"
+     y="233.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text84">• Parallel processing</text>
+  <text
+     x="1005.9623"
+     y="245.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text85">• Auto-optimization</text>
+  <text
+     x="1005.9623"
+     y="257.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text86">• Intelligent caching</text>
+  <text
+     x="1005.9623"
+     y="275.61349"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     font-weight="bold"
+     id="text87">Visualization:</text>
+  <text
+     x="1005.9623"
+     y="288.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text88">• Before/after comparison</text>
+  <text
+     x="1005.9623"
+     y="300.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text89">• EWT components</text>
+  <text
+     x="1005.9623"
+     y="312.61349"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text90">• Quality metrics</text>
+  <!-- Bottom statistics -->
+  <rect
+     x="343.86926"
+     y="488.9292"
+     width="600"
+     height="100"
+     fill="#f1f5f9"
+     stroke="#cbd5e1"
+     stroke-width="1"
+     rx="8"
+     id="rect90" />
+  <text
+     x="643.8692"
+     y="508.9292"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#1f2937"
+     id="text91">📊 Example Auto-Configuration</text>
+  <text
+     x="363.86926"
+     y="528.9292"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text92">📈 Dataset: 2000 samples, 10 features | Missing: 8.5% | Outliers: 3.2%</text>
+  <text
+     x="363.86926"
+     y="543.9292"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text93">🔍 Analysis: Non-stationary (70%), Seasonal (80%), SNR=12.3dB</text>
+  <text
+     x="363.86926"
+     y="558.9292"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text94">⚙️ Config: ECOD outliers | KNN imputation | Savgol filter | EWT(6 bands)</text>
+  <text
+     x="363.86926"
+     y="573.9292"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text95">📤 Output: X(1952,48,10) | y(1952,24,1) | Time: 2.3s</text>
+  <!-- Connecting lines -->
+  <path
+     d="m 229.86281,334.72614 c 20,0 129.64329,-12.52915 156.30996,-105.86248"
+     stroke="#93c5fd"
+     stroke-width="1.5"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.6"
+     id="path95"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 995.10542,261.80778 c -20,0 -81.68742,59.74511 -108.35409,-33.58822"
+     stroke="#c4b5fd"
+     stroke-width="1.5"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.6"
+     id="path96"
+     sodipodi:nodetypes="cc" />
+</svg>
