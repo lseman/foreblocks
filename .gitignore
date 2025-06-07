@@ -12,3 +12,9 @@ examples/rodrigo.py
 examples/time.pkl
 foreblocks/teste.ipynb
 .ipynb_checkpoints/
+
+*.egg-info/
+build/
+dist/
+*.egg
+release.sh

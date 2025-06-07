@@ -77,6 +77,7 @@ predictions = model.predict(X_test)
 - [Transformer Blocks](docs/transformer.md)
 - [Fourier Blocks](docs/fourier.md)
 - [Wavelet Blocks](docs/wavelet.md)
+- [DARTS Module](docs/darts.md)
 
 ---
 
