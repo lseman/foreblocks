@@ -22,6 +22,8 @@
 
 The `TimeSeriesPreprocessor` class provides **comprehensive, intelligent preprocessing** for time series data using advanced statistical analysis and machine learning techniques. It automatically detects data characteristics and applies appropriate transformations to maximize forecasting model performance.
 
+![Preprocessor](imgs/preprocessing_module.png)
+
 ### Why TimeSeriesPreprocessor?
 
 - **🤖 Self-Tuning**: Automatically configures preprocessing based on data statistics

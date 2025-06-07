@@ -37,51 +37,7 @@ ForeBlocks uses a pipeline of customizable processing blocks that transform data
 ## 🌊 Data Flow Architecture
 
 ```
-                    Input Data
-                        |
-                        v
-        +---------------------------+
-        |    input_preprocessor     |  <- Feature extraction/transformation
-        +---------------------------+
-                        |
-                        v
-        +---------------------------+
-        |  input_skip_connection    |  <- Add residual (optional)
-        |  (original + processed)   |
-        +---------------------------+
-                        |
-                        v
-        +---------------------------+
-        |   input_normalization     |  <- Standardize inputs
-        +---------------------------+
-                        |
-                        v
-        +---------------------------+
-        |         ENCODER           |  <- Core neural network
-        +---------------------------+
-                        |
-                        v
-        +---------------------------+
-        |         DECODER           |  <- Generate predictions
-        +---------------------------+
-                        |
-                        v
-        +---------------------------+
-        |       output_block        |  <- Additional transformations
-        +---------------------------+
-                        |
-                        v
-        +---------------------------+
-        |   output_normalization    |  <- Normalize outputs
-        +---------------------------+
-                        |
-                        v
-        +---------------------------+
-        |   output_postprocessor    |  <- Final constraints/scaling
-        +---------------------------+
-                        |
-                        v
-                 Final Predictions
+![Data Flow Diagram](imgs/foreblocks_model.png)
 ```
 
 ---
