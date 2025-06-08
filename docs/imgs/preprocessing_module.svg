@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg
-   width="1227.4668"
-   height="595.97906"
+   width="1224.9037"
+   height="597.76227"
    version="1.1"
    id="svg96"
    sodipodi:docname="preprocessing_module-2.svg"
@@ -22,9 +22,9 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="0.80765342"
-     inkscape:cx="587.50448"
-     inkscape:cy="383.828"
+     inkscape:zoom="0.62003814"
+     inkscape:cx="433.03788"
+     inkscape:cy="96.768241"
      inkscape:window-width="1800"
      inkscape:window-height="1025"
      inkscape:window-x="0"
@@ -42,7 +42,7 @@
        refY="3.5"
        orient="auto">
       <polygon
-         points="0,7 0,0 10,3.5 "
+         points="0,0 10,3.5 0,7 "
          fill="#374151"
          id="polygon1" />
     </marker>
@@ -51,20 +51,18 @@
   <!-- Title -->
   <!-- Raw Input Data -->
   <rect
+     width="1223.9037"
+     height="596.76227"
+     fill="#f8fafc"
+     stroke="#e2e8f0"
+     stroke-width="0.852302"
+     id="rect1"
      x="0.5"
      y="0.5"
-     width="1226.4668"
-     height="594.97906"
-     fill="#f0f9ff"
-     stroke="#93c5fd"
-     stroke-width="9.4853"
-     rx="55.748493"
-     stroke-dasharray="8, 4"
-     id="rect55-8"
-     style="opacity:1;fill:#fff9ff;fill-opacity:1;stroke-width:1;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0" />
+     style="stroke-width:1;stroke-linejoin:round;stroke-dasharray:none" />
   <rect
-     x="143.86925"
-     y="28.929203"
+     x="121.8059"
+     y="29.267319"
      width="120"
      height="60"
      fill="#fed7aa"
@@ -73,8 +71,8 @@
      rx="10"
      id="rect2" />
   <text
-     x="193.86925"
-     y="51.929203"
+     x="171.80591"
+     y="52.267319"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="12px"
@@ -82,16 +80,16 @@
      fill="#92400e"
      id="text3">📊 Raw Data</text>
   <text
-     x="201.86925"
-     y="66.929207"
+     x="179.80591"
+     y="67.267319"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#78350f"
      id="text4">Outliers, Missing</text>
   <text
-     x="203.86925"
-     y="80.929207"
+     x="181.80591"
+     y="81.267319"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
@@ -99,18 +97,18 @@
      id="text5">Noise, Trends</text>
   <!-- Self-Tuning Analysis -->
   <rect
-     x="313.88962"
-     y="8.9495554"
-     width="166.64601"
-     height="99.959297"
+     x="293.0209"
+     y="9.3895235"
+     width="201.98782"
+     height="99.755592"
      fill="#cffafe"
      stroke="#67e8f9"
-     stroke-width="2.0407"
-     rx="10.415376"
+     stroke-width="2.24441"
+     rx="12.624239"
      id="rect5" />
   <text
-     x="389.86926"
-     y="28.929203"
+     x="387.80591"
+     y="29.267319"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="12px"
@@ -119,8 +117,8 @@
      id="text6">🤖 Auto-configuration Analysis</text>
   <!-- Analysis components -->
   <rect
-     x="325.86926"
-     y="38.929203"
+     x="323.80591"
+     y="39.267319"
      width="140"
      height="15"
      fill="#f0f9ff"
@@ -129,16 +127,16 @@
      rx="3"
      id="rect6" />
   <text
-     x="395.86926"
-     y="50.929203"
+     x="393.80591"
+     y="51.267319"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#0c4a6e"
      id="text7">Stationarity Test (ADF)</text>
   <rect
-     x="325.86926"
-     y="58.929203"
+     x="323.80591"
+     y="59.267319"
      width="140"
      height="15"
      fill="#f0f9ff"
@@ -147,16 +145,16 @@
      rx="3"
      id="rect7" />
   <text
-     x="395.86926"
-     y="70.929207"
+     x="393.80591"
+     y="71.267319"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#0c4a6e"
      id="text8">Seasonality Detection</text>
   <rect
-     x="325.86926"
-     y="78.929207"
+     x="323.80591"
+     y="79.267319"
      width="140"
      height="15"
      fill="#f0f9ff"
@@ -165,8 +163,8 @@
      rx="3"
      id="rect8" />
   <text
-     x="395.86926"
-     y="90.929207"
+     x="393.80591"
+     y="91.267319"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="8px"
@@ -174,7 +172,7 @@
      id="text9">Signal Quality (SNR)</text>
   <!-- Arrow from input to analysis -->
   <path
-     d="m 268.86925,58.929204 h 40"
+     d="m 246.8059,59.267319 h 40"
      stroke="#374151"
      stroke-width="2"
      fill="none"
@@ -182,7 +180,7 @@
      id="path9" />
   <!-- Processing Pipeline -->
   <g
-     transform="translate(143.86925,148.9292)"
+     transform="translate(141.8059,149.26732)"
      id="g37">
     <!-- Step 1: Outlier Detection -->
     <rect
@@ -456,7 +454,7 @@
   </g>
   <!-- Arrow from analysis to pipeline -->
   <path
-     d="m 393.86925,113.9292 v 30"
+     d="m 391.8059,114.26732 v 30"
      stroke="#374151"
      stroke-width="2"
      fill="none"
@@ -464,8 +462,8 @@
      id="path38" />
   <!-- Configuration Output -->
   <rect
-     x="525.8692"
-     y="8.929204"
+     x="537.80585"
+     y="9.2673187"
      width="200"
      height="100"
      fill="#f0fdf4"
@@ -474,8 +472,8 @@
      rx="10"
      id="rect38" />
   <text
-     x="625.8692"
-     y="28.929203"
+     x="637.80585"
+     y="29.267319"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="12px"
@@ -483,43 +481,43 @@
      fill="#065f46"
      id="text38">📋 Optimized Configuration</text>
   <text
-     x="535.8692"
-     y="48.929203"
+     x="547.80585"
+     y="49.267319"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text39">✅ Detrend: True (7/10 non-stationary)</text>
   <text
-     x="535.8692"
-     y="60.929203"
+     x="547.80585"
+     y="61.267319"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text40">✅ Seasonality detected: [24, 168h]</text>
   <text
-     x="535.8692"
-     y="72.929207"
+     x="547.80585"
+     y="73.267319"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text41">✅ Outlier method: ECOD (SNR=12.3)</text>
   <text
-     x="535.8692"
-     y="84.929207"
+     x="547.80585"
+     y="85.267319"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text42">✅ Imputation: KNN (missing=8.5%)</text>
   <text
-     x="535.8692"
-     y="96.929207"
+     x="547.80585"
+     y="97.267319"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text43">✅ Filter: Savgol (quality=0.45)</text>
   <!-- Arrow from analysis to config -->
   <path
-     d="m 490.86925,58.929204 h 30"
+     d="m 502.8059,59.267319 h 30"
      stroke="#374151"
      stroke-width="2"
      fill="none"
@@ -527,8 +525,8 @@
      id="path43" />
   <!-- Window Generation -->
   <rect
-     x="493.86926"
-     y="268.9292"
+     x="491.80591"
+     y="269.2673"
      width="300"
      height="60"
      fill="#e9d5ff"
@@ -537,8 +535,8 @@
      rx="10"
      id="rect43" />
   <text
-     x="643.8692"
-     y="288.9292"
+     x="641.80585"
+     y="289.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="12px"
@@ -546,16 +544,16 @@
      fill="#581c87"
      id="text44">🪟 Sliding Window Generation</text>
   <text
-     x="643.8692"
-     y="303.9292"
+     x="641.80585"
+     y="304.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#6b21a8"
      id="text45">Window Size: 48h → Horizon: 24h</text>
   <text
-     x="643.8692"
-     y="318.9292"
+     x="641.80585"
+     y="319.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
@@ -563,7 +561,7 @@
      id="text46">X: [batch, window, features] | y: [batch, horizon, targets]</text>
   <!-- Arrow from pipeline to windowing -->
   <path
-     d="m 643.86925,233.9292 v 30"
+     d="m 641.8059,234.26732 v 30"
      stroke="#374151"
      stroke-width="2"
      fill="none"
@@ -571,8 +569,8 @@
      id="path46" />
   <!-- Final Output -->
   <rect
-     x="243.86925"
-     y="368.9292"
+     x="241.80591"
+     y="369.2673"
      width="800"
      height="80"
      fill="#fed7aa"
@@ -581,8 +579,8 @@
      rx="10"
      id="rect46" />
   <text
-     x="643.8692"
-     y="388.9292"
+     x="641.80585"
+     y="389.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="14px"
@@ -591,8 +589,8 @@
      id="text47">📤 Processed Data for Training</text>
   <!-- Output components -->
   <rect
-     x="263.86923"
-     y="398.9292"
+     x="261.80588"
+     y="399.2673"
      width="180"
      height="40"
      fill="#fef3c7"
@@ -601,8 +599,8 @@
      rx="5"
      id="rect47" />
   <text
-     x="353.86926"
-     y="418.9292"
+     x="351.80591"
+     y="419.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -610,16 +608,16 @@
      font-weight="bold"
      id="text48">X_train</text>
   <text
-     x="353.86926"
-     y="431.9292"
+     x="351.80591"
+     y="432.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#78350f"
      id="text49">[N, window, features]</text>
   <rect
-     x="463.86926"
-     y="398.9292"
+     x="461.80591"
+     y="399.2673"
      width="180"
      height="40"
      fill="#fef3c7"
@@ -628,8 +626,8 @@
      rx="5"
      id="rect49" />
   <text
-     x="553.8692"
-     y="418.9292"
+     x="551.80585"
+     y="419.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -637,16 +635,16 @@
      font-weight="bold"
      id="text50">y_train</text>
   <text
-     x="553.8692"
-     y="431.9292"
+     x="551.80585"
+     y="432.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#78350f"
      id="text51">[N, horizon, targets]</text>
   <rect
-     x="663.8692"
-     y="398.9292"
+     x="661.80585"
+     y="399.2673"
      width="180"
      height="40"
      fill="#fef3c7"
@@ -655,8 +653,8 @@
      rx="5"
      id="rect51" />
   <text
-     x="753.8692"
-     y="418.9292"
+     x="751.80585"
+     y="419.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -664,16 +662,16 @@
      font-weight="bold"
      id="text52">processed_data</text>
   <text
-     x="753.8692"
-     y="431.9292"
+     x="751.80585"
+     y="432.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#78350f"
      id="text53">[T, features]</text>
   <rect
-     x="863.8692"
-     y="398.9292"
+     x="861.80585"
+     y="399.2673"
      width="160"
      height="40"
      fill="#fef3c7"
@@ -682,8 +680,8 @@
      rx="5"
      id="rect53" />
   <text
-     x="943.8692"
-     y="418.9292"
+     x="941.80585"
+     y="419.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -691,8 +689,8 @@
      font-weight="bold"
      id="text54">metadata</text>
   <text
-     x="943.8692"
-     y="431.9292"
+     x="941.80585"
+     y="432.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="8px"
@@ -700,7 +698,7 @@
      id="text55">Scalers, Config</text>
   <!-- Arrow from windowing to output -->
   <path
-     d="m 643.86925,333.9292 v 30"
+     d="m 641.8059,334.26732 v 30"
      stroke="#374151"
      stroke-width="2"
      fill="none"
@@ -709,8 +707,8 @@
   <!-- Side panels -->
   <!-- Left panel - Method Selection Logic -->
   <rect
-     x="8.88027"
-     y="255.77423"
+     x="6.8169241"
+     y="256.11234"
      width="220"
      height="150"
      fill="#f0f9ff"
@@ -720,8 +718,8 @@
      stroke-dasharray="8, 4"
      id="rect55" />
   <text
-     x="118.88027"
-     y="275.77423"
+     x="116.81693"
+     y="276.11234"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="11px"
@@ -729,67 +727,67 @@
      fill="#1e40af"
      id="text56">🧠 Selection Logic</text>
   <text
-     x="18.88027"
-     y="295.77423"
+     x="16.816923"
+     y="296.11234"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      font-weight="bold"
      id="text57">Imputation:</text>
   <text
-     x="18.88027"
-     y="308.77423"
+     x="16.816923"
+     y="309.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text58">• &lt;5% missing → Interpolation</text>
   <text
-     x="18.88027"
-     y="320.77423"
+     x="16.816923"
+     y="321.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text59">• 5-20% → KNN</text>
   <text
-     x="18.88027"
-     y="332.77423"
+     x="16.816923"
+     y="333.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text60">• &gt;20% → SAITS</text>
   <text
-     x="18.88027"
-     y="350.77423"
+     x="16.816923"
+     y="351.11234"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      font-weight="bold"
      id="text61">Outliers:</text>
   <text
-     x="18.88027"
-     y="363.77423"
+     x="16.816923"
+     y="364.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text62">• High SNR → TranAD</text>
   <text
-     x="18.88027"
-     y="375.77423"
+     x="16.816923"
+     y="376.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text63">• General → ECOD</text>
   <text
-     x="18.88027"
-     y="387.77423"
+     x="16.816923"
+     y="388.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text64">• Gaussian → Z-score</text>
   <!-- Right panel - Performance Features -->
   <rect
-     x="995.96228"
-     y="180.61348"
+     x="993.89893"
+     y="180.9516"
      width="220"
      height="150"
      fill="#faf5ff"
@@ -799,8 +797,8 @@
      stroke-dasharray="8, 4"
      id="rect64" />
   <text
-     x="1105.9624"
-     y="200.61348"
+     x="1103.899"
+     y="200.9516"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="11px"
@@ -808,67 +806,67 @@
      fill="#581c87"
      id="text65">⚡ Features</text>
   <text
-     x="1005.9623"
-     y="220.61349"
+     x="1003.8989"
+     y="220.95161"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      font-weight="bold"
      id="text66">Performance:</text>
   <text
-     x="1005.9623"
-     y="233.61349"
+     x="1003.8989"
+     y="233.95161"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text67">• Parallel processing</text>
   <text
-     x="1005.9623"
-     y="245.61349"
+     x="1003.8989"
+     y="245.95161"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text68">• Auto-optimization</text>
   <text
-     x="1005.9623"
-     y="257.61349"
+     x="1003.8989"
+     y="257.9516"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text69">• Intelligent caching</text>
   <text
-     x="1005.9623"
-     y="275.61349"
+     x="1003.8989"
+     y="275.9516"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      font-weight="bold"
      id="text70">Visualization:</text>
   <text
-     x="1005.9623"
-     y="288.61349"
+     x="1003.8989"
+     y="288.9516"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text71">• Before/after comparison</text>
   <text
-     x="1005.9623"
-     y="300.61349"
+     x="1003.8989"
+     y="300.9516"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text72">• EWT components</text>
   <text
-     x="1005.9623"
-     y="312.61349"
+     x="1003.8989"
+     y="312.9516"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text73">• Quality metrics</text>
   <!-- Bottom statistics -->
   <rect
-     x="343.86926"
-     y="488.9292"
+     x="341.80591"
+     y="489.2673"
      width="600"
      height="100"
      fill="#f1f5f9"
@@ -877,8 +875,8 @@
      rx="8"
      id="rect73" />
   <text
-     x="643.8692"
-     y="508.9292"
+     x="641.80585"
+     y="509.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="12px"
@@ -886,58 +884,58 @@
      fill="#1f2937"
      id="text74">📊 Example Auto-Configuration</text>
   <text
-     x="363.86926"
-     y="528.9292"
+     x="361.80591"
+     y="529.26733"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      id="text75">📈 Dataset: 2000 samples, 10 features | Missing: 8.5% | Outliers: 3.2%</text>
   <text
-     x="363.86926"
-     y="543.9292"
+     x="361.80591"
+     y="544.26733"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      id="text76">🔍 Analysis: Non-stationary (70%), Seasonal (80%), SNR=12.3dB</text>
   <text
-     x="363.86926"
-     y="558.9292"
+     x="361.80591"
+     y="559.26733"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      id="text77">⚙️ Config: ECOD outliers | KNN imputation | Savgol filter | EWT(6 bands)</text>
   <text
-     x="363.86926"
-     y="573.9292"
+     x="361.80591"
+     y="574.26733"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      id="text78">📤 Output: X(1952,48,10) | y(1952,24,1) | Time: 2.3s</text>
   <text
-     x="18.88027"
-     y="363.77423"
+     x="16.816923"
+     y="364.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text79">• High SNR → TranAD</text>
   <text
-     x="18.88027"
-     y="375.77423"
+     x="16.816923"
+     y="376.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text80">• General → ECOD</text>
   <text
-     x="18.88027"
-     y="387.77423"
+     x="16.816923"
+     y="388.11234"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text81">• Gaussian → Z-score</text>
   <!-- Right panel - Performance Features -->
   <rect
-     x="995.96228"
-     y="180.61348"
+     x="993.89893"
+     y="180.9516"
      width="220"
      height="150"
      fill="#faf5ff"
@@ -947,8 +945,8 @@
      stroke-dasharray="8, 4"
      id="rect81" />
   <text
-     x="1105.9624"
-     y="200.61348"
+     x="1103.899"
+     y="200.9516"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="11px"
@@ -956,67 +954,67 @@
      fill="#581c87"
      id="text82">⚡ Features</text>
   <text
-     x="1005.9623"
-     y="220.61349"
+     x="1003.8989"
+     y="220.95161"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      font-weight="bold"
      id="text83">Performance:</text>
   <text
-     x="1005.9623"
-     y="233.61349"
+     x="1003.8989"
+     y="233.95161"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text84">• Parallel processing</text>
   <text
-     x="1005.9623"
-     y="245.61349"
+     x="1003.8989"
+     y="245.95161"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text85">• Auto-optimization</text>
   <text
-     x="1005.9623"
-     y="257.61349"
+     x="1003.8989"
+     y="257.9516"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text86">• Intelligent caching</text>
   <text
-     x="1005.9623"
-     y="275.61349"
+     x="1003.8989"
+     y="275.9516"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      font-weight="bold"
      id="text87">Visualization:</text>
   <text
-     x="1005.9623"
-     y="288.61349"
+     x="1003.8989"
+     y="288.9516"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text88">• Before/after comparison</text>
   <text
-     x="1005.9623"
-     y="300.61349"
+     x="1003.8989"
+     y="300.9516"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text89">• EWT components</text>
   <text
-     x="1005.9623"
-     y="312.61349"
+     x="1003.8989"
+     y="312.9516"
      font-family="Arial, sans-serif"
      font-size="8px"
      fill="#374151"
      id="text90">• Quality metrics</text>
   <!-- Bottom statistics -->
   <rect
-     x="343.86926"
-     y="488.9292"
+     x="341.80591"
+     y="489.2673"
      width="600"
      height="100"
      fill="#f1f5f9"
@@ -1025,8 +1023,8 @@
      rx="8"
      id="rect90" />
   <text
-     x="643.8692"
-     y="508.9292"
+     x="641.80585"
+     y="509.2673"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="12px"
@@ -1034,36 +1032,36 @@
      fill="#1f2937"
      id="text91">📊 Example Auto-Configuration</text>
   <text
-     x="363.86926"
-     y="528.9292"
+     x="361.80591"
+     y="529.26733"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      id="text92">📈 Dataset: 2000 samples, 10 features | Missing: 8.5% | Outliers: 3.2%</text>
   <text
-     x="363.86926"
-     y="543.9292"
+     x="361.80591"
+     y="544.26733"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      id="text93">🔍 Analysis: Non-stationary (70%), Seasonal (80%), SNR=12.3dB</text>
   <text
-     x="363.86926"
-     y="558.9292"
+     x="361.80591"
+     y="559.26733"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      id="text94">⚙️ Config: ECOD outliers | KNN imputation | Savgol filter | EWT(6 bands)</text>
   <text
-     x="363.86926"
-     y="573.9292"
+     x="361.80591"
+     y="574.26733"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#374151"
      id="text95">📤 Output: X(1952,48,10) | y(1952,24,1) | Time: 2.3s</text>
   <!-- Connecting lines -->
   <path
-     d="m 229.86281,334.72614 c 20,0 129.64329,-12.52915 156.30996,-105.86248"
+     d="m 227.79946,335.06426 c 20,0 129.64329,-12.52915 156.30996,-105.86248"
      stroke="#93c5fd"
      stroke-width="1.5"
      fill="none"
@@ -1072,7 +1070,7 @@
      id="path95"
      sodipodi:nodetypes="cc" />
   <path
-     d="m 995.10542,261.80778 c -20,0 -81.68742,59.74511 -108.35409,-33.58822"
+     d="m 993.04207,262.1459 c -20,0 -81.68742,59.74511 -108.35409,-33.58822"
      stroke="#c4b5fd"
      stroke-width="1.5"
      fill="none"

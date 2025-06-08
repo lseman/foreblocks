@@ -1,0 +1,919 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="871.54089"
+   height="791.80969"
+   version="1.1"
+   id="svg58"
+   sodipodi:docname="foreblocks_inkscape_compatible.svg"
+   inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
+   inkscape:export-filename="foreblocks_inkscape_compatible.png"
+   inkscape:export-xdpi="96"
+   inkscape:export-ydpi="96"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview58"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.81737925"
+     inkscape:cx="432.47978"
+     inkscape:cy="380.48433"
+     inkscape:window-width="1800"
+     inkscape:window-height="1025"
+     inkscape:window-x="0"
+     inkscape:window-y="44"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg58" />
+  <defs
+     id="defs1">
+    <!-- Simple arrow marker -->
+    <marker
+       id="arrowhead"
+       markerWidth="12"
+       markerHeight="8"
+       refX="11"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="12,4 0,8 0,0 "
+         fill="#374151"
+         id="polygon1" />
+    </marker>
+    <marker
+       id="arrowhead-3"
+       markerWidth="12"
+       markerHeight="8"
+       refX="11"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="0,8 0,0 12,4 "
+         fill="#374151"
+         id="polygon1-1" />
+    </marker>
+    <marker
+       id="arrowhead-37"
+       markerWidth="12"
+       markerHeight="8"
+       refX="11"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="0,8 0,0 12,4 "
+         fill="#374151"
+         id="polygon1-18" />
+    </marker>
+    <marker
+       id="arrowhead-8"
+       markerWidth="12"
+       markerHeight="8"
+       refX="11"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="0,8 0,0 12,4 "
+         fill="#374151"
+         id="polygon1-0" />
+    </marker>
+    <marker
+       id="arrowhead-5"
+       markerWidth="12"
+       markerHeight="8"
+       refX="11"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="0,8 0,0 12,4 "
+         fill="#374151"
+         id="polygon1-7" />
+    </marker>
+    <marker
+       id="arrowhead-6"
+       markerWidth="12"
+       markerHeight="8"
+       refX="11"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="0,8 0,0 12,4 "
+         fill="#374151"
+         id="polygon1-78" />
+    </marker>
+    <marker
+       id="arrowhead-7"
+       markerWidth="12"
+       markerHeight="8"
+       refX="11"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="0,8 0,0 12,4 "
+         fill="#374151"
+         id="polygon1-3" />
+    </marker>
+    <marker
+       id="arrowhead-4"
+       markerWidth="12"
+       markerHeight="8"
+       refX="11"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="0,8 0,0 12,4 "
+         fill="#374151"
+         id="polygon1-8" />
+    </marker>
+  </defs>
+  <!-- Background with simple pattern -->
+  <rect
+     x="0.48566601"
+     y="0.48566601"
+     width="870.56958"
+     height="790.83838"
+     fill="#f0f9ff"
+     stroke="#93c5fd"
+     stroke-width="9.4853"
+     rx="39.57135"
+     stroke-dasharray="8, 4"
+     id="rect55-8"
+     style="fill:#fff9ff;fill-opacity:1;stroke-width:0.971332;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0" />
+  <path
+     d="m 434.06252,222.77517 v 8.57051"
+     stroke="#374151"
+     stroke-width="1.60348"
+     fill="none"
+     marker-end="url(#arrowhead-37)"
+     id="path4-9"
+     style="marker-end:url(#arrowhead-37)" />
+  <path
+     d="m 434.06252,291.60377 v 8.57051"
+     stroke="#374151"
+     stroke-width="1.60348"
+     fill="none"
+     marker-end="url(#arrowhead-8)"
+     id="path4-4"
+     style="marker-end:url(#arrowhead-8)" />
+  <path
+     d="m 434.06252,446.99742 v 8.57051"
+     stroke="#374151"
+     stroke-width="1.60348"
+     fill="none"
+     marker-end="url(#arrowhead-5)"
+     id="path4-00"
+     style="marker-end:url(#arrowhead-5)" />
+  <path
+     d="m 434.06252,517.95303 v 8.57051"
+     stroke="#374151"
+     stroke-width="1.60348"
+     fill="none"
+     marker-end="url(#arrowhead-6)"
+     id="path4-06"
+     style="marker-end:url(#arrowhead-6)" />
+  <path
+     d="m 434.06252,582.30229 v 8.57051"
+     stroke="#374151"
+     stroke-width="1.60348"
+     fill="none"
+     marker-end="url(#arrowhead-7)"
+     id="path4-43"
+     style="marker-end:url(#arrowhead-7)" />
+  <path
+     d="m 434.06252,652.50328 v 8.57051"
+     stroke="#374151"
+     stroke-width="1.60348"
+     fill="none"
+     marker-end="url(#arrowhead-4)"
+     id="path4-7"
+     style="marker-end:url(#arrowhead-4)" />
+  <!-- Title -->
+  <!-- Main pipeline -->
+  <g
+     transform="translate(234.06252,11.056657)"
+     id="g24">
+    <!-- Input Data -->
+    <rect
+       x="100"
+       y="0"
+       width="200"
+       height="50"
+       fill="#fed7aa"
+       stroke="#fdba74"
+       stroke-width="2"
+       rx="25"
+       id="rect2" />
+    <text
+       x="200"
+       y="25"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="14px"
+       font-weight="bold"
+       fill="#92400e"
+       id="text3">📊 Input Data</text>
+    <text
+       x="200"
+       y="40"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="10px"
+       fill="#78350f"
+       id="text4">Time Series y₁, y₂, ..., yₜ</text>
+    <!-- Arrow -->
+    <path
+       d="m 200,66.796754 v 8.570503"
+       stroke="#374151"
+       stroke-width="1.60348"
+       fill="none"
+       marker-end="url(#arrowhead)"
+       id="path4" />
+    <path
+       d="m 200,147.61802 v 8.57051"
+       stroke="#374151"
+       stroke-width="1.60348"
+       fill="none"
+       marker-end="url(#arrowhead-3)"
+       id="path4-0"
+       style="marker-end:url(#arrowhead-3)" />
+    <!-- Input Preprocessor -->
+    <rect
+       x="75"
+       y="90"
+       width="250"
+       height="45"
+       fill="#dbeafe"
+       stroke="#93c5fd"
+       stroke-width="2"
+       rx="10"
+       id="rect4" />
+    <text
+       x="200"
+       y="110"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="12px"
+       font-weight="bold"
+       fill="#1e40af"
+       id="text5">⚙️ Input Preprocessor</text>
+    <text
+       x="200"
+       y="125"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="9px"
+       fill="#1e3a8a"
+       id="text6">Feature extraction • Scaling • Outlier detection</text>
+    <!-- Skip Connection -->
+    <rect
+       x="75"
+       y="160"
+       width="250"
+       height="40"
+       fill="#cffafe"
+       stroke="#67e8f9"
+       stroke-width="2"
+       rx="10"
+       id="rect6" />
+    <text
+       x="200"
+       y="180"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="12px"
+       font-weight="bold"
+       fill="#0c4a6e"
+       id="text7">🔄 Input Skip Connection</text>
+    <text
+       x="200"
+       y="192"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="9px"
+       fill="#164e63"
+       id="text8">Residual: original + processed</text>
+    <!-- Skip connection arrow -->
+    <path
+       d="m 60,112 q -30,0 -30,68 0,0 40,0"
+       stroke="#0891b2"
+       stroke-width="2"
+       fill="none"
+       stroke-dasharray="5, 5"
+       marker-end="url(#arrowhead)"
+       id="path8" />
+    <!-- Input Normalization -->
+    <rect
+       x="75"
+       y="225"
+       width="250"
+       height="40"
+       fill="#cffafe"
+       stroke="#67e8f9"
+       stroke-width="2"
+       rx="10"
+       id="rect9" />
+    <text
+       x="200"
+       y="245"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="12px"
+       font-weight="bold"
+       fill="#0c4a6e"
+       id="text9">📐 Input Normalization</text>
+    <text
+       x="200"
+       y="257"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="9px"
+       fill="#164e63"
+       id="text10">Standardization • Layer Norm • Batch Norm</text>
+    <!-- Core Models Section -->
+    <rect
+       x="50"
+       y="300"
+       width="300"
+       height="120"
+       fill="#e9d5ff"
+       stroke="#c4b5fd"
+       stroke-width="3"
+       rx="15"
+       id="rect10" />
+    <text
+       x="200"
+       y="320"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="14px"
+       font-weight="bold"
+       fill="#581c87"
+       id="text11">🧠 CORE NEURAL NETWORKS</text>
+    <!-- Encoder -->
+    <rect
+       x="65"
+       y="330"
+       width="125"
+       height="35"
+       fill="#f3e8ff"
+       stroke="#a855f7"
+       stroke-width="1"
+       rx="8"
+       id="rect11" />
+    <text
+       x="127.5"
+       y="350"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="11px"
+       font-weight="bold"
+       fill="#581c87"
+       id="text12">ENCODER</text>
+    <text
+       x="127.5"
+       y="360"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#6b21a8"
+       id="text13">LSTM • GRU • Transformer</text>
+    <!-- Decoder -->
+    <rect
+       x="210"
+       y="330"
+       width="125"
+       height="35"
+       fill="#f3e8ff"
+       stroke="#a855f7"
+       stroke-width="1"
+       rx="8"
+       id="rect13" />
+    <text
+       x="272.5"
+       y="350"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="11px"
+       font-weight="bold"
+       fill="#581c87"
+       id="text14">DECODER</text>
+    <text
+       x="272.5"
+       y="360"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="8px"
+       fill="#6b21a8"
+       id="text15">Seq2Seq • Autoregressive • Direct</text>
+    <!-- Attention Module -->
+    <rect
+       x="110"
+       y="375"
+       width="180"
+       height="30"
+       fill="#ede9fe"
+       stroke="#a855f7"
+       stroke-width="1"
+       rx="8"
+       id="rect15" />
+    <text
+       x="200"
+       y="395"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="10px"
+       font-weight="bold"
+       fill="#581c87"
+       id="text16">✨ Attention Mechanism (Optional)</text>
+    <!-- Output Block -->
+    <rect
+       x="75"
+       y="455"
+       width="250"
+       height="40"
+       fill="#d1fae5"
+       stroke="#86efac"
+       stroke-width="2"
+       rx="10"
+       id="rect16" />
+    <text
+       x="200"
+       y="475"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="12px"
+       font-weight="bold"
+       fill="#065f46"
+       id="text17">🎯 Output Block</text>
+    <text
+       x="200"
+       y="487"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="9px"
+       fill="#047857"
+       id="text18">Linear layers • Dropout • Activation functions</text>
+    <!-- Output Normalization -->
+    <rect
+       x="75"
+       y="520"
+       width="250"
+       height="40"
+       fill="#d1fae5"
+       stroke="#86efac"
+       stroke-width="2"
+       rx="10"
+       id="rect18" />
+    <text
+       x="200"
+       y="540"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="12px"
+       font-weight="bold"
+       fill="#065f46"
+       id="text19">📏 Output Normalization</text>
+    <text
+       x="200"
+       y="552"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="9px"
+       fill="#047857"
+       id="text20">Denormalization • Scaling back to original range</text>
+    <!-- Output Postprocessor -->
+    <rect
+       x="75"
+       y="585"
+       width="250"
+       height="40"
+       fill="#d1fae5"
+       stroke="#86efac"
+       stroke-width="2"
+       rx="10"
+       id="rect20" />
+    <text
+       x="200"
+       y="605"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="12px"
+       font-weight="bold"
+       fill="#065f46"
+       id="text21">🔧 Output Postprocessor</text>
+    <text
+       x="200"
+       y="617"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="9px"
+       fill="#047857"
+       id="text22">Constraints • Clipping • Domain-specific transformations</text>
+    <!-- Final Predictions -->
+    <rect
+       x="100"
+       y="660"
+       width="200"
+       height="50"
+       fill="#fed7aa"
+       stroke="#fdba74"
+       stroke-width="2"
+       rx="25"
+       id="rect22" />
+    <text
+       x="200"
+       y="680"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="14px"
+       font-weight="bold"
+       fill="#92400e"
+       id="text23">📈 Final Predictions</text>
+    <text
+       x="200"
+       y="695"
+       text-anchor="middle"
+       font-family="Arial, sans-serif"
+       font-size="10px"
+       fill="#78350f"
+       id="text24">ŷₜ₊₁, ŷₜ₊₂, ..., ŷₜ₊ₕ</text>
+  </g>
+  <!-- Left panel - Input Processing -->
+  <rect
+     x="14.062516"
+     y="131.05666"
+     width="200"
+     height="250"
+     fill="#f0f9ff"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="10"
+     stroke-dasharray="8, 4"
+     id="rect24" />
+  <text
+     x="114.06252"
+     y="151.05666"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text25">Input Processing</text>
+  <text
+     x="114.06252"
+     y="166.05666"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#1e3a8a"
+     id="text26">Modular Components:</text>
+  <text
+     x="24.062515"
+     y="186.05666"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text27">• Missing value imputation</text>
+  <text
+     x="24.062515"
+     y="201.05666"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text28">• Seasonal decomposition</text>
+  <text
+     x="24.062515"
+     y="216.05666"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text29">• Feature engineering</text>
+  <text
+     x="24.062515"
+     y="231.05666"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text30">• Differencing</text>
+  <text
+     x="24.062515"
+     y="246.05666"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text31">• Window sliding</text>
+  <text
+     x="24.062515"
+     y="261.05667"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text32">• Multi-scale decomposition</text>
+  <rect
+     x="24.062515"
+     y="281.05667"
+     width="160"
+     height="25"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="1"
+     rx="5"
+     id="rect32" />
+  <text
+     x="104.06252"
+     y="298.05667"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#1e40af"
+     font-weight="bold"
+     id="text33">Custom Preprocessor</text>
+  <rect
+     x="24.062515"
+     y="311.05667"
+     width="160"
+     height="25"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="1"
+     rx="5"
+     id="rect33" />
+  <text
+     x="104.06252"
+     y="328.05667"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#0c4a6e"
+     font-weight="bold"
+     id="text34">Skip Connections</text>
+  <rect
+     x="24.062515"
+     y="341.05667"
+     width="160"
+     height="25"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="1"
+     rx="5"
+     id="rect34" />
+  <text
+     x="104.06252"
+     y="358.05667"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#0c4a6e"
+     font-weight="bold"
+     id="text35">Normalization Layers</text>
+  <!-- Right panel - Model Architectures -->
+  <rect
+     x="654.0625"
+     y="131.05666"
+     width="200"
+     height="350"
+     fill="#faf5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="10"
+     stroke-dasharray="8, 4"
+     id="rect35" />
+  <text
+     x="754.0625"
+     y="151.05666"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text36">Model Architectures</text>
+  <text
+     x="754.0625"
+     y="166.05666"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#6b21a8"
+     id="text37">Interchangeable Modules:</text>
+  <!-- LSTM Block -->
+  <rect
+     x="664.0625"
+     y="181.05666"
+     width="180"
+     height="60"
+     fill="#f3e8ff"
+     stroke="#c4b5fd"
+     stroke-width="1"
+     rx="8"
+     id="rect37" />
+  <text
+     x="754.0625"
+     y="201.05666"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text38">🔄 LSTM Networks</text>
+  <text
+     x="674.0625"
+     y="216.05666"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text39">• Bidirectional LSTM</text>
+  <text
+     x="674.0625"
+     y="226.05666"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text40">• Stacked architectures</text>
+  <text
+     x="674.0625"
+     y="236.05666"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text41">• Residual connections</text>
+  <!-- GRU Block -->
+  <rect
+     x="664.0625"
+     y="251.05666"
+     width="180"
+     height="60"
+     fill="#f3e8ff"
+     stroke="#c4b5fd"
+     stroke-width="1"
+     rx="8"
+     id="rect41" />
+  <text
+     x="754.0625"
+     y="271.05667"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text42">⚡ GRU Networks</text>
+  <text
+     x="674.0625"
+     y="286.05667"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text43">• Lightweight alternative</text>
+  <text
+     x="674.0625"
+     y="296.05667"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text44">• Faster training</text>
+  <text
+     x="674.0625"
+     y="306.05667"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text45">• Similar performance</text>
+  <!-- Transformer Block -->
+  <rect
+     x="664.0625"
+     y="321.05667"
+     width="180"
+     height="60"
+     fill="#f3e8ff"
+     stroke="#c4b5fd"
+     stroke-width="1"
+     rx="8"
+     id="rect45" />
+  <text
+     x="754.0625"
+     y="341.05667"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text46">🎯 Transformers</text>
+  <text
+     x="674.0625"
+     y="356.05667"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text47">• Multi-head attention</text>
+  <text
+     x="674.0625"
+     y="366.05667"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text48">• Positional encoding</text>
+  <text
+     x="674.0625"
+     y="376.05667"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text49">• Long-range dependencies</text>
+  <!-- Attention Module -->
+  <rect
+     x="664.0625"
+     y="391.05667"
+     width="180"
+     height="50"
+     fill="#ede9fe"
+     stroke="#c4b5fd"
+     stroke-width="1"
+     rx="8"
+     id="rect49" />
+  <text
+     x="754.0625"
+     y="411.05667"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text50">✨ Attention Mechanisms</text>
+  <text
+     x="674.0625"
+     y="426.05667"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text51">• Temporal attention</text>
+  <text
+     x="674.0625"
+     y="436.05667"
+     font-family="Arial, sans-serif"
+     font-size="8px"
+     fill="#374151"
+     id="text52">• Self-attention</text>
+  <!-- Bottom panel - Strategies -->
+  <rect
+     x="182.96202"
+     y="736.0813"
+     width="500"
+     height="40"
+     fill="#f0fdf4"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="10"
+     stroke-dasharray="8, 4"
+     id="rect52" />
+  <text
+     x="432.96204"
+     y="751.0813"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text53">Forecasting Strategies</text>
+  <text
+     x="212.96202"
+     y="766.0813"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text54">Seq2Seq with Teacher Forcing</text>
+  <text
+     x="382.96204"
+     y="766.0813"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text55">Autoregressive</text>
+  <text
+     x="512.96204"
+     y="766.0813"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text56">Direct Multi-step</text>
+  <!-- Connecting lines -->
+  <path
+     d="m 212.95102,271.43463 q 30,0 50,30"
+     stroke="#93c5fd"
+     stroke-width="2"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.6"
+     id="path56" />
+  <path
+     d="m 604.06252,311.05666 q 30,0 50,0"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.6"
+     id="path57" />
+</svg>
