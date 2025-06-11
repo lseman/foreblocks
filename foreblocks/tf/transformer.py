@@ -64,6 +64,7 @@ class BaseTransformerLayer(nn.Module):
 
         # Normalization layers (created dynamically in subclasses)
         self.norm_layers = nn.ModuleList()
+        self.aux_loss = 0.0  # For MoE auxiliary loss
 
     def create_norm(self, d_model: int, use_adaptive_ln: str, eps: float) -> nn.Module:
         return create_norm_layer(use_adaptive_ln, d_model, eps)
@@ -357,7 +358,7 @@ class BaseTransformer(nn.Module, ABC):
         num_experts: int = 8,
         top_k: int = 2,
         moe_capacity_factor: float = 1.25,
-        **kwargs  # For subclass-specific parameters
+        **kwargs,  # For subclass-specific parameters
     ):
         super().__init__()
 

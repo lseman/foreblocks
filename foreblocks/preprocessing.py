@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 # ============================
 import numpy as np
 import pandas as pd
+from tabulate import tabulate
 import torch
 from joblib import Parallel, delayed
 

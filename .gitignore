@@ -18,3 +18,11 @@ build/
 dist/
 *.egg
 release.sh
+mamba/
+df_demmand_without_category_2025_05_13.csv
+*.pkl
+pygit
+teste.ipynb
+test.ipynb
+teste2.ipynb
+examples/rodrigo2.py

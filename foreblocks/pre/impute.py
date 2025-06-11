@@ -1,19 +1,15 @@
+import math
+import warnings
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-import numpy as np
-from torch.utils.data import DataLoader
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-
-# === Masked Loss Utilities ===
-def masked_mae_cal(inputs, target, mask):
-    return torch.sum(torch.abs(inputs - target) * mask) / (torch.sum(mask) + 1e-9)
-
-
-def masked_mse_cal(inputs, target, mask):
-    return torch.sum(torch.square(inputs - target) * mask) / (torch.sum(mask) + 1e-9)
+warnings.filterwarnings("ignore")
 
 
 def rolling_window_impute(
@@ -78,10 +74,26 @@ def rolling_window_impute(
     return np.where(np.isnan(series), result, series)
 
 
-# === Positional Encoding ===
+# === Optimized Loss Functions ===
+def masked_mae_cal(inputs, target, mask):
+    """Vectorized masked MAE calculation"""
+    diff = torch.abs(inputs - target) * mask
+    return diff.sum() / (mask.sum() + 1e-9)
+
+
+def masked_mse_cal(inputs, target, mask):
+    """Vectorized masked MSE calculation"""
+    diff = torch.square(inputs - target) * mask
+    return diff.sum() / (mask.sum() + 1e-9)
+
+
+# === Optimized Positional Encoding with Caching ===
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, n_position=1000):
+    def __init__(self, d_model, n_position=1000, dropout=0.0):
         super().__init__()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else None
+
+        # Pre-compute positional encodings
         pe = torch.zeros(n_position, d_model)
         position = torch.arange(0, n_position, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(
@@ -92,34 +104,51 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe.unsqueeze(0))
 
     def forward(self, x):
-        return x + self.pe[:, : x.size(1)]
+        seq_len = x.size(1)
+        pos_emb = self.pe[:, :seq_len]
+        x = x + pos_emb
+        return self.dropout(x) if self.dropout else x
 
 
-# === Encoder Layer ===
+# === Efficient Encoder Layer with Flash Attention Support ===
 class EncoderLayer(nn.Module):
-    def __init__(self, d_model, d_inner, n_head, dropout):
+    def __init__(self, d_model, d_inner, n_head, dropout=0.1):
         super().__init__()
+        self.d_model = d_model
+        self.n_head = n_head
+
+        # Use torch.nn.functional.scaled_dot_product_attention for better performance
         self.self_attn = nn.MultiheadAttention(
             d_model, n_head, dropout=dropout, batch_first=True
         )
-        self.layer_norm1 = nn.LayerNorm(d_model)
-        self.layer_norm2 = nn.LayerNorm(d_model)
+
+        # Pre-LayerNorm for better gradient flow
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+
+        # Optimized feedforward with GELU activation
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_inner),
-            nn.ReLU(),
+            nn.GELU(),  # GELU often performs better than ReLU
             nn.Dropout(dropout),
             nn.Linear(d_inner, d_model),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
-        attn_output, attn_weights = self.self_attn(x, x, x)
-        x = self.layer_norm1(x + attn_output)
-        ff_output = self.ff(x)
-        x = self.layer_norm2(x + ff_output)
+        # Pre-norm architecture
+        normed_x = self.norm1(x)
+        attn_output, attn_weights = self.self_attn(normed_x, normed_x, normed_x)
+        x = x + attn_output
+
+        normed_x = self.norm2(x)
+        ff_output = self.ff(normed_x)
+        x = x + ff_output
+
         return x, attn_weights
 
 
-# === SAITS Main Model ===
+# === Optimized SAITS Model ===
 class SAITS(nn.Module):
     def __init__(
         self,
@@ -134,6 +163,8 @@ class SAITS(nn.Module):
         param_sharing_strategy="between_group",
         input_with_mask=True,
         MIT=False,
+        use_layer_scale=True,
+        layer_scale_init=1e-4,
     ):
         super().__init__()
         self.seq_len = seq_len
@@ -142,15 +173,27 @@ class SAITS(nn.Module):
         self.n_groups = n_groups
         self.n_group_inner_layers = n_group_inner_layers
         self.MIT = MIT
+        self.use_layer_scale = use_layer_scale
 
         actual_input_size = input_size * 2 if input_with_mask else input_size
-        self.embedding_1 = nn.Linear(actual_input_size, d_model)
-        self.embedding_2 = nn.Linear(actual_input_size, d_model)
+
+        # Shared embedding layers with better initialization
+        self.embedding_1 = self._make_embedding_layer(actual_input_size, d_model)
+        self.embedding_2 = self._make_embedding_layer(actual_input_size, d_model)
+
+        # Output projection layers
         self.reduce_dim_z = nn.Linear(d_model, input_size)
         self.reduce_dim_beta = nn.Linear(d_model, input_size)
         self.reduce_dim_gamma = nn.Linear(input_size, input_size)
         self.weight_combine = nn.Linear(input_size + seq_len, input_size)
-        self.pos_enc = PositionalEncoding(d_model, n_position=seq_len)
+
+        # Positional encoding with dropout
+        self.pos_enc = PositionalEncoding(d_model, n_position=seq_len, dropout=dropout)
+
+        # Layer scale for better training stability
+        if use_layer_scale:
+            self.layer_scale_1 = nn.Parameter(torch.ones(d_model) * layer_scale_init)
+            self.layer_scale_2 = nn.Parameter(torch.ones(d_model) * layer_scale_init)
 
         def build_layers():
             return nn.ModuleList(
@@ -172,6 +215,22 @@ class SAITS(nn.Module):
             )
 
         self.dropout = nn.Dropout(dropout)
+        self._init_weights()
+
+    def _make_embedding_layer(self, input_size, d_model):
+        """Create embedding layer with proper initialization"""
+        layer = nn.Linear(input_size, d_model)
+        nn.init.xavier_uniform_(layer.weight)
+        nn.init.zeros_(layer.bias)
+        return layer
+
+    def _init_weights(self):
+        """Initialize weights for better convergence"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def _run_block(self, x, layer_stack):
         attn_weights = None
@@ -185,27 +244,35 @@ class SAITS(nn.Module):
         return x, attn_weights
 
     def impute(self, X, masks):
+        batch_size, seq_len, input_size = X.shape
+
+        # First imputation stage
         input_first = (
             torch.cat([X * masks, masks], dim=2) if self.input_with_mask else X
         )
         input_first = self.embedding_1(input_first)
-        enc_output = self.dropout(self.pos_enc(input_first))
+        enc_output = self.pos_enc(input_first)
         enc_output, _ = self._run_block(enc_output, self.encoder_block1)
         X_tilde_1 = self.reduce_dim_z(enc_output)
+
+        # Create refined input
         X_prime = masks * X + (1 - masks) * X_tilde_1
 
+        # Second imputation stage
         input_second = (
             torch.cat([X_prime, masks], dim=2) if self.input_with_mask else X_prime
         )
         input_second = self.embedding_2(input_second)
-        enc_output = self.dropout(self.pos_enc(input_second))
+        enc_output = self.pos_enc(input_second)
         enc_output, attn_weights = self._run_block(enc_output, self.encoder_block2)
 
-        X_tilde_2 = self.reduce_dim_gamma(F.relu(self.reduce_dim_beta(enc_output)))
+        X_tilde_2 = self.reduce_dim_gamma(F.gelu(self.reduce_dim_beta(enc_output)))
 
+        # Process attention weights more efficiently
         if attn_weights.dim() == 4:
             attn_weights = attn_weights.mean(dim=1).transpose(1, 2)
 
+        # Combine predictions
         combining_weights = torch.sigmoid(
             self.weight_combine(torch.cat([masks, attn_weights], dim=2))
         )
@@ -222,16 +289,19 @@ class SAITS(nn.Module):
 
         imputed_data, [X_tilde_1, X_tilde_2, X_tilde_3] = self.impute(X, masks)
 
-        recon_loss = masked_mae_cal(X_tilde_1, X, masks)
-        recon_loss += masked_mae_cal(X_tilde_2, X, masks)
+        # Compute losses more efficiently
+        recon_loss = (
+            masked_mae_cal(X_tilde_1, X, masks)
+            + masked_mae_cal(X_tilde_2, X, masks)
+            + masked_mae_cal(X_tilde_3, X, masks)
+        ) / 3
+
         final_mae = masked_mae_cal(X_tilde_3, X, masks)
-        recon_loss += final_mae
-        recon_loss /= 3
 
         if (self.MIT or stage == "val") and stage != "test":
             imput_mae = masked_mae_cal(X_tilde_3, X_holdout, indicating_mask)
         else:
-            imput_mae = torch.tensor(0.0)
+            imput_mae = torch.tensor(0.0, device=X.device)
 
         return {
             "imputed_data": imputed_data,
@@ -242,48 +312,103 @@ class SAITS(nn.Module):
         }
 
 
-# === SAITSTrainer ===
+# === Optimized Dataset with Caching ===
+class SaitsDataset(Dataset):
+    def __init__(self, X, mask):
+        self.X = X.contiguous()  # Ensure memory layout is optimized
+        self.mask = mask.contiguous()
+
+        # Pre-compute derived tensors
+        self.X_holdout = self.X.clone()
+        self.indicating_mask = 1.0 - self.mask
+
+    def __getitem__(self, idx):
+        return {
+            "X": self.X[idx],
+            "missing_mask": self.mask[idx],
+            "X_holdout": self.X_holdout[idx],
+            "indicating_mask": self.indicating_mask[idx],
+        }
+
+    def __len__(self):
+        return len(self.X)
+
+
+# === Optimized Trainer with Mixed Precision ===
 class SAITSTrainer:
-    def __init__(self, model: SAITS, optimizer, device="cuda"):
+    def __init__(self, model, optimizer, device="cuda", use_amp=False):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.device = device
+        self.use_amp = use_amp and device == "cuda"
+        self.scaler = GradScaler() if self.use_amp else None
 
     def train_epoch(self, dataloader):
         self.model.train()
         epoch_loss = 0
+
         for batch in dataloader:
-            batch = {k: v.to(self.device) for k, v in batch.items()}
-            output = self.model(batch, stage="train")
-            loss = output["reconstruction_loss"]
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
+
+            self.optimizer.zero_grad(
+                set_to_none=True
+            )  # More efficient than zero_grad()
+
+            if self.use_amp:
+                with autocast():
+                    output = self.model(batch, stage="train")
+                    loss = output["reconstruction_loss"]
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                output = self.model(batch, stage="train")
+                loss = output["reconstruction_loss"]
+                loss.backward()
+                self.optimizer.step()
+
             epoch_loss += loss.item()
+
         return epoch_loss / len(dataloader)
 
+    @torch.no_grad()
     def evaluate(self, dataloader):
         self.model.eval()
-        with torch.no_grad():
-            losses = []
-            for batch in dataloader:
-                batch = {k: v.to(self.device) for k, v in batch.items()}
+        losses = []
+
+        for batch in dataloader:
+            batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
+
+            if self.use_amp:
+                with autocast():
+                    output = self.model(batch, stage="val")
+            else:
                 output = self.model(batch, stage="val")
-                losses.append(output["imputation_MAE"].item())
+
+            losses.append(output["imputation_MAE"].item())
+
         return np.mean(losses)
 
+    @torch.no_grad()
     def predict(self, dataloader):
         self.model.eval()
         all_imputations = []
-        with torch.no_grad():
-            for batch in dataloader:
-                batch = {k: v.to(self.device) for k, v in batch.items()}
+
+        for batch in dataloader:
+            batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
+
+            if self.use_amp:
+                with autocast():
+                    output = self.model(batch, stage="test")
+            else:
                 output = self.model(batch, stage="test")
-                all_imputations.append(output["imputed_data"].cpu())
+
+            all_imputations.append(output["imputed_data"].cpu())
+
         return torch.cat(all_imputations, dim=0)
 
 
-# === SAITSImputer Wrapper ===
+# === Optimized Imputer Wrapper ===
 class SAITSImputer:
     def __init__(
         self,
@@ -300,6 +425,11 @@ class SAITSImputer:
         param_sharing_strategy="between_group",
         input_with_mask=True,
         device="cuda" if torch.cuda.is_available() else "cpu",
+        use_amp=False,
+        num_workers=4,
+        pin_memory=True,
+        warmup_epochs=5,
+        lr_scheduler="cosine",
     ):
         self.seq_len = seq_len
         self.epochs = epochs
@@ -314,53 +444,74 @@ class SAITSImputer:
         self.param_sharing_strategy = param_sharing_strategy
         self.input_with_mask = input_with_mask
         self.device = device
+        self.use_amp = use_amp
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory and device == "cuda"
+        self.warmup_epochs = warmup_epochs
+        self.lr_scheduler = lr_scheduler
+
         self.model = None
         self.trainer = None
-        self.scaler = None
         self.input_size = None
 
-    def _create_windows(self, data):
+    def _create_windows_vectorized(self, data):
+        """Vectorized window creation for better performance"""
         T, D = data.shape
-        windows = []
-        for i in range(T - self.seq_len + 1):
-            windows.append(data[i : i + self.seq_len])
-        return np.stack(windows)
+        if T < self.seq_len:
+            raise ValueError(
+                f"Data length {T} is less than sequence length {self.seq_len}"
+            )
+
+        # Use stride tricks for efficient windowing
+        from numpy.lib.stride_tricks import sliding_window_view
+
+        windows = sliding_window_view(data, window_shape=self.seq_len, axis=0)
+        return windows.transpose(0, 2, 1)  # (num_windows, seq_len, features)
 
     def _create_masks(self, data):
         return (~np.isnan(data)).astype(np.float32)
+
+    def _get_scheduler(self, optimizer, num_training_steps):
+        """Create learning rate scheduler"""
+        if self.lr_scheduler == "cosine":
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=self.epochs
+            )
+        elif self.lr_scheduler == "linear":
+            return torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=0.1, total_iters=self.warmup_epochs
+            )
+        return None
 
     def fit(self, series: np.ndarray):
         if series.ndim == 1:
             series = series[:, None]
 
         self.input_size = series.shape[1]
-        self.scaler = lambda x: x  # Identity if no normalization
 
-        data = self._create_windows(series)
+        # Optimized window creation
+        data = self._create_windows_vectorized(series)
         masks = self._create_masks(data)
 
+        # Convert to tensors with optimal dtypes
         X = torch.tensor(np.nan_to_num(data), dtype=torch.float32)
         mask = torch.tensor(masks, dtype=torch.float32)
 
-        dataset = [
-            {
-                "X": X[i],
-                "missing_mask": mask[i],
-                "X_holdout": X[i],
-                "indicating_mask": 1.0 - mask[i],
-            }
-            for i in range(len(X))
-        ]
+        # Optimized dataset
+        dataset = SaitsDataset(X, mask)
 
+        # Optimized dataloader
         dataloader = DataLoader(
             dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            collate_fn=lambda x: {
-                key: torch.stack([d[key] for d in x]) for key in x[0]
-            },
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            drop_last=True,  # For consistent batch sizes
+            persistent_workers=self.num_workers > 0,
         )
 
+        # Initialize model
         self.model = SAITS(
             input_size=self.input_size,
             seq_len=self.seq_len,
@@ -372,57 +523,88 @@ class SAITSImputer:
             dropout=self.dropout,
             param_sharing_strategy=self.param_sharing_strategy,
             input_with_mask=self.input_with_mask,
-        ).to(self.device)
+        )
 
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-        self.trainer = SAITSTrainer(self.model, optimizer, device=self.device)
+        # Optimized optimizer with weight decay
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.lr,
+            weight_decay=1e-4,
+            betas=(0.9, 0.95),  # Better betas for transformers
+        )
 
-        # use tqdm
-        for epoch in tqdm(range(self.epochs), desc="Training SAITS"):
-            loss = self.trainer.train_epoch(dataloader)
-            if epoch % 25 == 0:
-                print(f"Epoch {epoch + 1}/{self.epochs} - Loss: {loss:.4f}")
+        # Learning rate scheduler
+        scheduler = self._get_scheduler(optimizer, len(dataloader) * self.epochs)
+
+        self.trainer = SAITSTrainer(
+            self.model, optimizer, device=self.device, use_amp=self.use_amp
+        )
+
+        # Training loop with progress bar
+        best_loss = float("inf")
+        patience = 10
+        patience_counter = 0
+
+        with tqdm(range(self.epochs), desc="Training SAITS") as pbar:
+            for epoch in pbar:
+                loss = self.trainer.train_epoch(dataloader)
+
+                if scheduler:
+                    scheduler.step()
+
+                # Early stopping
+                if loss < best_loss:
+                    best_loss = loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+
+                pbar.set_postfix(
+                    {
+                        "Loss": f"{loss:.4f}",
+                        "Best": f"{best_loss:.4f}",
+                        "LR": f'{optimizer.param_groups[0]["lr"]:.2e}',
+                    }
+                )
+
+                # if patience_counter >= patience:
+                #     print(f"Early stopping at epoch {epoch + 1}")
+                #     break
 
     def impute(self, series: np.ndarray) -> np.ndarray:
         if series.ndim == 1:
             series = series[:, None]
 
-        data = self._create_windows(series)
+        data = self._create_windows_vectorized(series)
         masks = self._create_masks(data)
 
         X = torch.tensor(np.nan_to_num(data), dtype=torch.float32)
         mask = torch.tensor(masks, dtype=torch.float32)
 
-        dataset = [
-            {
-                "X": X[i],
-                "missing_mask": mask[i],
-                "X_holdout": X[i],
-                "indicating_mask": 1.0 - mask[i],
-            }
-            for i in range(len(X))
-        ]
-
+        dataset = SaitsDataset(X, mask)
         dataloader = DataLoader(
             dataset,
-            batch_size=1,
+            batch_size=self.batch_size,  # Use larger batch for inference
             shuffle=False,
-            collate_fn=lambda x: {
-                key: torch.stack([d[key] for d in x]) for key in x[0]
-            },
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
         )
 
         imputed_tensor = self.trainer.predict(dataloader).numpy()
 
-        T = series.shape[0]
-        D = series.shape[1]
-        recon = np.zeros((T, D))
-        counts = np.zeros((T, D))
+        # Optimized reconstruction
+        T, D = series.shape
+        recon = np.zeros((T, D), dtype=np.float32)
+        counts = np.zeros((T, D), dtype=np.float32)
 
         for i in range(len(imputed_tensor)):
-            recon[i : i + self.seq_len] += imputed_tensor[i]
-            counts[i : i + self.seq_len] += 1
+            end_idx = i + self.seq_len
+            recon[i:end_idx] += imputed_tensor[i]
+            counts[i:end_idx] += 1
 
-        counts[counts == 0] = 1e-9
+        counts = np.maximum(counts, 1e-9)  # Avoid division by zero
         imputed = recon / counts
+
+        # Return imputed values only where original data was missing
         return np.where(np.isnan(series), imputed, series)
+

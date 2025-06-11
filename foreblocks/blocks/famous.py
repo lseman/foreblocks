@@ -1,6 +1,7 @@
 from typing import Tuple
 
 import torch
+import torch.fft
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -110,12 +111,6 @@ class N_BEATS(nn.Module):
         forecast = self.forecast_basis(theta)
 
         return backcast, forecast
-
-
-import torch
-import torch.fft
-import torch.nn as nn
-import torch.nn.functional as F
 
 
 class TimesBlock(nn.Module):

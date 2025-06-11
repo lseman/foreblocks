@@ -268,53 +268,62 @@ class Trainer:
         if epochs is not None:
             num_epochs = epochs
 
-        for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
-            self.current_epoch = epoch
-            train_loss = self.train_epoch(train_loader, callbacks)
-            self.history["train_losses"].append(train_loss)
-            if (epoch + 1) % 50 == 0:
-                print(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}", end="")
-                if val_loss is not None:
-                    print(f", Val Loss = {val_loss:.4f}")
-                else:
-                    print("")
-            val_loss = None
-            if val_loader:
-                val_loss = self.evaluate(val_loader)
-                self.history["val_losses"].append(val_loss)
+        with tqdm(range(num_epochs), desc="Training", unit="epoch") as pbar:
+            for epoch in pbar:
+                self.current_epoch = epoch
+                train_loss = self.train_epoch(train_loader, callbacks)
+                self.history["train_losses"].append(train_loss)
+                # if (epoch + 1) % 50 == 0:
+                #     print(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}", end="")
+                #     if val_loss is not None:
+                #         print(f", Val Loss = {val_loss:.4f}")
+                #     else:
+                #         print("")
+                val_loss = None
+                if val_loader:
+                    val_loss = self.evaluate(val_loader)
+                    self.history["val_losses"].append(val_loss)
 
-            current_lr = self.optimizer.param_groups[0]["lr"]
-            self.history["learning_rates"].append(current_lr)
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                self.history["learning_rates"].append(current_lr)
 
-            if self.use_wandb:
-                wandb.log(
+                if self.use_wandb:
+                    wandb.log(
+                        {
+                            "epoch": epoch + 1,
+                            "train_loss": train_loss,
+                            "val_loss": val_loss,
+                            "learning_rate": current_lr,
+                        }
+                    )
+
+                if val_loader:
+                    if val_loss + self.config["min_delta"] < self.best_val_loss:
+                        self.best_val_loss = val_loss
+                        self.epochs_without_improvement = 0
+                        self.best_model_state = copy.deepcopy(self.model.state_dict())
+                        if self.config["save_model_path"]:
+                            self.save(self.config["save_model_path"])
+                    else:
+                        self.epochs_without_improvement += 1
+
+                    if self.epochs_without_improvement >= self.config["patience"]:
+                        print("Early stopping triggered.")
+                        break
+
+                pbar.set_postfix(
                     {
-                        "epoch": epoch + 1,
                         "train_loss": train_loss,
-                        "val_loss": val_loss,
-                        "learning_rate": current_lr,
+                        "val_loss": val_loss if val_loader else "N/A",
+                        "lr": current_lr,
                     }
                 )
 
-            if val_loader:
-                if val_loss + self.config["min_delta"] < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    self.epochs_without_improvement = 0
-                    self.best_model_state = copy.deepcopy(self.model.state_dict())
-                    if self.config["save_model_path"]:
-                        self.save(self.config["save_model_path"])
-                else:
-                    self.epochs_without_improvement += 1
+                if self.scheduler:
+                    self.scheduler.step(val_loss if val_loader else train_loss)
 
-                if self.epochs_without_improvement >= self.config["patience"]:
-                    print("Early stopping triggered.")
-                    break
-
-            if self.scheduler:
-                self.scheduler.step(val_loss if val_loader else train_loss)
-
-        if self.best_model_state:
-            self.model.load_state_dict(self.best_model_state)
+            if self.best_model_state:
+                self.model.load_state_dict(self.best_model_state)
 
         return self.history
 
@@ -349,6 +358,62 @@ class Trainer:
         plt.tight_layout()
         plt.show()
 
+    def _batched_forecast(self, X_val: torch.Tensor, batch_size: int = 256):
+        """
+        Generate batched forecasts aligned for time series evaluation or plotting.
+
+        Returns:
+            forecast: Tensor of shape [T + target_len - 1, output_size]
+        """
+        self.model.eval()
+        X_val = X_val.to(self.device)
+        N = X_val.shape[0]
+
+        # Run a dummy forward pass to determine output shape
+        with torch.no_grad():
+            dummy_out = self.model(X_val[0:1])
+            if isinstance(dummy_out, tuple):
+                dummy_out = dummy_out[0]
+            if dummy_out.dim() == 3:
+                output_len, output_size = dummy_out.shape[1], dummy_out.shape[2]
+            elif dummy_out.dim() == 2:
+                output_len, output_size = 1, dummy_out.shape[1]
+            else:
+                output_len, output_size = 1, dummy_out.shape[0]
+
+        forecast = torch.zeros(N + output_len - 1, output_size, device=self.device)
+        count = torch.zeros_like(forecast)
+
+        with torch.no_grad():
+            for i in range(0, N, batch_size):
+                batch = X_val[i : i + batch_size]
+                with autocast("cuda", dtype=torch.float16):
+                    outputs = self.model(batch)
+                    if isinstance(outputs, tuple):
+                        outputs = outputs[0]
+
+                    for j in range(outputs.shape[0]):
+                        pred = outputs[j]  # shape: [T, D], [1, D], or [D]
+                        start = i + j
+                        if pred.dim() == 3:  # [1, T, D]
+                            pred = pred.squeeze(0)
+                        if pred.dim() == 2:
+                            if pred.shape[0] == 1:
+                                forecast[start] += pred.squeeze(0)
+                                count[start] += 1
+                            else:
+                                forecast[start : start + pred.shape[0]] += pred
+                                count[start : start + pred.shape[0]] += 1
+                        elif pred.dim() == 1:
+                            forecast[start] += pred
+                            count[start] += 1
+                        else:
+                            raise ValueError(
+                                f"Unexpected prediction shape: {pred.shape}"
+                            )
+
+        return forecast / count.clamp(min=1.0)
+
     def metrics(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Dict[str, float]:
         """
         Compute error metrics (MSE, RMSE, MAE) over the full validation set prediction.
@@ -365,27 +430,7 @@ class Trainer:
         y_val = y_val.to(self.device)
 
         N, target_len, output_size = y_val.shape
-        forecast = torch.zeros((N + target_len - 1, output_size), device=self.device)
-        count = torch.zeros_like(forecast)
-
-        with torch.no_grad():
-            for i in range(N):
-                x = X_val[i].unsqueeze(0)  # [1, seq_len, input_size]
-
-                # ✅ AMP inference context
-                with torch.amp.autocast("cuda", dtype=torch.float16):
-                    output = self.model(x)
-                    if isinstance(output, tuple):
-                        pred, _ = output  # ignore aux loss during inference
-                    else:
-                        pred = output
-
-                    pred = pred.squeeze(0)  # [target_len, output_size]
-
-                forecast[i : i + target_len] += pred
-                count[i : i + target_len] += 1
-
-        forecast = forecast / torch.clamp(count, min=1.0)
+        forecast = self._batched_forecast(X_val)  # shape [T, D]
 
         # Reconstruct ground truth for comparison
         aligned_truth = torch.zeros_like(forecast)
@@ -460,28 +505,7 @@ class Trainer:
         y_val = y_val.to(self.device)
         target_len = y_val.shape[1]
         output_size = y_val.shape[2]
-        forecast = torch.zeros(
-            (X_val.shape[0] + target_len - 1, output_size), device=self.device
-        )
-        count = torch.zeros_like(forecast)
-
-        with torch.no_grad():
-            for i in range(X_val.shape[0]):
-                x = X_val[i].unsqueeze(0)  # [1, seq_len, input_size]
-                with torch.amp.autocast("cuda", dtype=torch.float16):
-                    output = self.model(x)
-                    if isinstance(output, tuple):
-                        pred, _ = output  # ignore aux loss during inference
-                    else:
-                        pred = output
-
-                    pred = pred.squeeze(0)  # [target_len, output_size]
-
-                forecast[i : i + target_len] += pred
-
-                count[i : i + target_len] += 1
-
-        forecast = (forecast / count).cpu().numpy()  # shape: [time, output_size]
+        forecast = self._batched_forecast(X_val).cpu().numpy()
 
         # If full_series is provided
         if full_series is not None:

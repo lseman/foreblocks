@@ -1,16 +1,17 @@
 # ForeBlocks DARTS: Neural Architecture Search for Time Series
 
-**ForeBlocks DARTS** is an advanced Neural Architecture Search (NAS) module that automatically discovers optimal neural network architectures for time series forecasting. It combines DARTS (Differentiable Architecture Search) with zero-cost metrics for efficient architecture evaluation.
+**ForeBlocks DARTS** is an advanced Neural Architecture Search (NAS) module that automatically discovers optimal neural network architectures for time series forecasting. It combines DARTS (Differentiable Architecture Search) with zero-cost metrics for efficient architecture evaluation using a comprehensive `DARTSTrainer` class.
 
 ---
 
 ## 🎯 Overview
 
-This module implements a multi-fidelity architecture search strategy that:
+This module implements a multi-fidelity architecture search strategy through the `DARTSTrainer` class that:
 - **Generates** diverse neural architectures automatically
 - **Evaluates** architectures using zero-cost metrics (no training required)
 - **Optimizes** promising candidates with differentiable search
 - **Derives** final high-performance architectures
+- **Visualizes** architecture evolution and final structures
 
 ### Key Features
 
@@ -22,40 +23,54 @@ This module implements a multi-fidelity architecture search strategy that:
 | **⚡ Efficient Screening** | Evaluate 100+ architectures in minutes |
 | **🎯 Automated Discovery** | No manual architecture engineering required |
 | **📊 Comprehensive Metrics** | 10+ zero-cost indicators for architecture quality |
+| **🎨 Architecture Visualization** | Beautiful diagrams of discovered architectures |
+| **📈 Training Progress Tracking** | Comprehensive training history and progress visualization |
 
 ---
 
 ## 🚀 Quick Start
 
 ```python
-from foreblocks.darts import multi_fidelity_darts_search
+from foreblocks.darts import DARTSTrainer
 import torch
+
+# Initialize the DARTS trainer
+trainer = DARTSTrainer(
+    input_dim=5,                    # Number of input features
+    hidden_dims=[32, 64, 128],      # Hidden layer sizes to explore
+    forecast_horizon=24,            # Steps to predict ahead
+    seq_length=48,                  # Input sequence length
+    device="cuda"                   # Training device
+)
 
 # Your data loaders
 train_loader = ...  # Your training DataLoader
 val_loader = ...    # Your validation DataLoader
 test_loader = ...   # Your test DataLoader
 
-# Run architecture search
-results = multi_fidelity_darts_search(
-    input_dim=5,                    # Number of input features
-    hidden_dims=[32, 64, 128],      # Hidden layer sizes to explore
-    forecast_horizon=24,            # Steps to predict ahead
-    seq_length=48,                  # Input sequence length
+# Run multi-fidelity architecture search
+results = trainer.multi_fidelity_search(
     train_loader=train_loader,
     val_loader=val_loader,
     test_loader=test_loader,
     num_candidates=20,              # Architectures to evaluate
-    full_train_epochs=50           # Final training epochs
+    search_epochs=30,               # DARTS training epochs
+    final_epochs=100,               # Final model training epochs
+    top_k=5                         # Top candidates to train with DARTS
 )
 
 # Get the best discovered architecture
 best_model = results['final_model']
+
+# Save the best model
+trainer.save_best_model("my_best_model.pth")
 ```
 
 ---
 
 ## 📖 Architecture Search Process
+
+The `DARTSTrainer` implements a comprehensive 5-phase search process:
 
 ### Phase 1: Candidate Generation
 The search begins by generating diverse neural architectures from our comprehensive operation library:
@@ -80,34 +95,81 @@ operations = [
 Each candidate is evaluated using multiple metrics **without training**:
 
 ```python
-metrics = evaluate_zero_cost_metrics(model, val_loader, device)
+# Evaluate with zero-cost metrics
+metrics = trainer.evaluate_zero_cost_metrics(
+    model=candidate_model,
+    dataloader=val_loader,
+    max_samples=32,
+    num_batches=2
+)
 # Returns: synflow, naswot, grasp, fisher, jacob_cov, etc.
 ```
 
-### Phase 3: DARTS Optimization
+### Phase 3: Top Candidate Selection
+Candidates are ranked by their zero-cost scores and the top-k are selected for DARTS training.
+
+### Phase 4: DARTS Optimization
 Top candidates undergo differentiable architecture search:
 
 ```python
-results = train_darts_model(
+search_results = trainer.train_darts_model(
     model=candidate_model,
     train_loader=train_loader,
     val_loader=val_loader,
     epochs=30,
     arch_learning_rate=3e-4,
-    model_learning_rate=1e-3
+    model_learning_rate=1e-3,
+    use_swa=True  # Stochastic Weight Averaging
 )
 ```
 
-### Phase 4: Final Training
+### Phase 5: Final Training
 The best architecture is derived and trained extensively:
 
 ```python
-final_results = train_final_model(
+final_results = trainer.train_final_model(
     model=derived_model,
     train_loader=train_loader,
     val_loader=val_loader,
     test_loader=test_loader,
-    epochs=100
+    epochs=100,
+    use_onecycle=True,  # OneCycle learning rate scheduler
+    swa_start_ratio=0.33  # Start SWA at 33% of training
+)
+```
+
+---
+
+## 🎨 Visualization Features
+
+### Architecture Visualization
+Automatically generate beautiful architecture diagrams:
+
+```python
+# Visualize candidate architectures
+for i, candidate in enumerate(top_candidates):
+    trainer.plot_architecture(
+        candidate=candidate,
+        save_path=f"candidate_{i+1}_architecture.png"
+    )
+```
+
+### Training Progress Visualization
+Track and visualize training progress:
+
+```python
+# Plot training curves
+trainer._plot_training_curve(
+    train_losses=final_results['train_losses'],
+    val_losses=final_results['val_losses'],
+    title="Final Model Training Progress",
+    save_path='final_model_training.png'
+)
+
+# Plot alpha parameter evolution during DARTS search
+trainer.plot_alpha_evolution(
+    alpha_values=search_results['alpha_values'],
+    save_path="alpha_evolution.png"
 )
 ```
 
@@ -132,61 +194,75 @@ The module uses 10+ zero-cost metrics to evaluate architecture quality:
 | **Param_Count** | Parameter efficiency | Model complexity |
 | **FLOPs** | Computational cost | Inference efficiency |
 
-### Metric Aggregation
-
-Metrics are combined using learned weights:
+### Metric Configuration
 
 ```python
-# Dataset-specific weights (automatically applied)
-weights = {
-    "synflow": 0.3,
-    "naswot": 0.25,
-    "grasp": 0.2,
-    "fisher": 0.25,
-    # ... other metrics
-}
+# Configure zero-cost evaluation
+trainer = DARTSTrainer(
+    input_dim=10,
+    hidden_dims=[64, 128],
+    forecast_horizon=24,
+    seq_length=48
+)
 
-aggregate_score = sum(metric_value * weight for metric, weight in weights.items())
+# Custom evaluation parameters
+metrics = trainer.evaluate_zero_cost_metrics(
+    model=model,
+    dataloader=val_loader,
+    max_samples=64,    # More samples for stable estimates
+    num_batches=3      # Multiple batches for averaging
+)
 ```
 
 ---
 
-## ⚙️ Configuration Options
+## ⚙️ DARTSTrainer Configuration
 
-### Basic Configuration
+### Initialization Parameters
 
 ```python
-# Simple search configuration
-results = multi_fidelity_darts_search(
-    input_dim=3,
-    hidden_dims=[64],
-    forecast_horizon=12,
-    seq_length=24,
-    num_candidates=10,
-    full_train_epochs=30
+trainer = DARTSTrainer(
+    input_dim=3,                    # Input feature dimension
+    hidden_dims=[32, 64, 128],      # Hidden dimensions to explore
+    forecast_horizon=12,            # Forecast steps
+    seq_length=24,                  # Input sequence length
+    device="cuda",                  # Training device
+    all_ops=None                    # Custom operation list (optional)
 )
 ```
 
-### Advanced Configuration
+### Multi-Fidelity Search Configuration
 
 ```python
-# Comprehensive search with custom parameters
-results = multi_fidelity_darts_search(
-    input_dim=10,                   # Input features
-    hidden_dims=[32, 64, 128, 256], # Multiple model sizes
-    forecast_horizon=48,            # Long-term forecasting
-    seq_length=96,                  # Long input sequences
+# Basic search configuration
+results = trainer.multi_fidelity_search(
+    train_loader=train_loader,
+    val_loader=val_loader,
+    test_loader=test_loader,
+    num_candidates=10,              # Number of architectures to generate
+    search_epochs=20,               # DARTS training epochs
+    final_epochs=50,                # Final model training epochs
+    top_k=3                         # Top candidates for DARTS training
+)
+
+# Advanced search configuration
+results = trainer.multi_fidelity_search(
+    train_loader=train_loader,
+    val_loader=val_loader,
+    test_loader=test_loader,
     num_candidates=50,              # Extensive search
-    full_train_epochs=100,          # Thorough training
-    device="cuda"                   # GPU acceleration
+    search_epochs=50,               # Longer DARTS training
+    final_epochs=200,               # Thorough final training
+    max_samples=64,                 # More samples for zero-cost metrics
+    top_k=10                        # More candidates for DARTS
 )
 ```
 
 ### DARTS Training Configuration
 
 ```python
-# Fine-tune DARTS training process
-train_results = train_darts_model(
+# Custom DARTS training
+search_results = trainer.train_darts_model(
     model=model,
     train_loader=train_loader,
     val_loader=val_loader,
@@ -196,10 +272,28 @@ train_results = train_darts_model(
     arch_weight_decay=1e-3,         # Architecture regularization
     model_weight_decay=1e-4,        # Model regularization
     patience=10,                    # Early stopping patience
-    tau_max=1.0,                    # Gumbel-Softmax temperature
-    tau_min=0.1,
     loss_type="huber",              # Loss function
     use_swa=True                    # Stochastic Weight Averaging
+)
+```
+
+### Final Model Training Configuration
+
+```python
+# Comprehensive final training
+final_results = trainer.train_final_model(
+    model=model,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    test_loader=test_loader,
+    epochs=100,
+    learning_rate=1e-3,
+    weight_decay=1e-5,
+    patience=15,
+    loss_type="huber",
+    use_onecycle=True,              # OneCycle LR scheduler
+    swa_start_ratio=0.33,           # SWA starting point
+    grad_clip_norm=1.0              # Gradient clipping
 )
 ```
 
@@ -215,21 +309,36 @@ results = {
     'candidates': [...],               # All evaluated architectures
     'top_candidates': [...],           # Top performers from zero-cost
     'trained_candidates': [...],       # DARTS-optimized models
-    'best_candidate': {...}            # Selected best architecture
+    'best_candidate': {...},           # Selected best architecture
+    'final_results': {...},            # Final training results
+    'search_config': {...}             # Search configuration
 }
 ```
 
-### Candidate Information
+### Training Results Structure
 
 ```python
-candidate = {
-    'model': model,                    # PyTorch model
-    'metrics': {...},                  # Zero-cost metric values
-    'score': 0.85,                     # Aggregate score
-    'selected_ops': [...],             # Operations in architecture
-    'hidden_dim': 64,                  # Hidden layer size
-    'num_cells': 2,                    # Number of DARTS cells
-    'num_nodes': 3                     # Nodes per cell
+training_results = {
+    'model': model,                    # Trained model
+    'train_losses': [...],             # Training loss history
+    'val_losses': [...],               # Validation loss history
+    'alpha_values': [...],             # Architecture parameter evolution
+    'best_val_loss': 0.123,            # Best validation loss
+    'training_time': 123.45,           # Training time in seconds
+    'final_metrics': {...},            # Comprehensive metrics
+    'training_info': {...}             # Training metadata
+}
+```
+
+### Final Metrics
+
+```python
+final_metrics = {
+    'mse': 0.001234,                   # Mean Squared Error
+    'rmse': 0.035123,                  # Root Mean Squared Error
+    'mae': 0.028456,                   # Mean Absolute Error
+    'mape': 2.34,                      # Mean Absolute Percentage Error
+    'r2_score': 0.9876                 # R² Score
 }
 ```
 
@@ -237,116 +346,78 @@ candidate = {
 
 ## 🎯 Advanced Features
 
-### Custom Operation Sets
-
-Define your own operation pool:
+### Training History and Monitoring
 
 ```python
-# Custom operations for domain-specific problems
+# Get comprehensive search summary
+search_summary = trainer.get_search_summary()
+print(search_summary)
+
+# Get training session summary
+training_summary = trainer.get_training_summary()
+print(training_summary)
+
+# Access search history
+for i, search in enumerate(trainer.search_history):
+    print(f"Search {i+1}: RMSE = {search['final_results']['final_metrics']['rmse']:.6f}")
+```
+
+### Model Persistence
+
+```python
+# Save the best model
+trainer.save_best_model("my_best_darts_model.pth")
+
+# Load a saved model
+checkpoint = trainer.load_model("my_best_darts_model.pth", model_class=TimeSeriesDARTS)
+```
+
+### Custom Operation Sets
+
+```python
+# Define custom operations
 custom_ops = [
     "Identity",
     "Attention",
     "Wavelet",
-    "CustomTimeOp"  # Your custom operation
+    "GRN",
+    "Fourier"
 ]
 
-# Use in architecture generation
-model = TimeSeriesDARTS(
-    input_dim=input_dim,
-    selected_ops=custom_ops,
-    # ... other parameters
+# Initialize trainer with custom operations
+trainer = DARTSTrainer(
+    input_dim=5,
+    hidden_dims=[64, 128],
+    forecast_horizon=24,
+    seq_length=48,
+    all_ops=custom_ops
 )
 ```
 
-### Operation Expansion
-
-Intelligently expand operation sets based on performance:
+### Loss Function Selection
 
 ```python
-# Analyze what operations work well
-op_importance = [
-    ("Attention", 0.95),
-    ("Wavelet", 0.87),
-    ("GRN", 0.82)
-]
+# Available loss functions
+loss_functions = ["huber", "mse", "mae", "smooth_l1"]
 
-# Expand based on categories and complementary ops
-expanded_ops = expand_operations(
-    initial_ops=["Identity", "Attention"],
-    op_importance=op_importance,
-    top_k=3,
-    max_ops=8
-)
-```
-
-### Metric Weight Adaptation
-
-Learn optimal metric weights from your data:
-
-```python
-# Track performance across architectures
-metrics_history = track_nas_performance(
-    metrics_history={},
-    arch_name="arch_1",
-    metrics=computed_metrics
+# Configure in training methods
+search_results = trainer.train_darts_model(
+    model=model,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    loss_type="huber"  # Robust to outliers
 )
 
-# Adapt weights based on actual performance correlation
-optimal_weights = adapt_metric_weights(
-    metrics_history=metrics_history,
-    val_accuracies={"arch_1": 0.95, "arch_2": 0.87},
-    epochs=10,
-    lr=0.01
+final_results = trainer.train_final_model(
+    model=model,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    test_loader=test_loader,
+    loss_type="mse"    # Standard regression loss
 )
 ```
 
 ---
-
-## 🔍 Zero-Cost Metric Details
-
-### SynFlow
-Measures synaptic flow preservation through the network:
-
-```python
-def compute_synflow(model, inputs):
-    # Set parameters to absolute values
-    # Compute gradient flow
-    # Return flow preservation score
-```
-
-### NASWOT (Neural Architecture Search Without Training)
-Evaluates activation diversity:
-
-```python
-def compute_naswot(model, inputs):
-    # Capture layer activations
-    # Compute binary activation matrices
-    # Calculate matrix ranks
-```
-
-### GraSP (Gradient Signal Preservation)
-Measures gradient flow quality:
-
-```python
-def compute_grasp(model, inputs, targets):
-    # Compute first and second-order gradients
-    # Analyze gradient preservation
-    # Handle transformer architectures
-```
-
-### Transformer-Aware Processing
-Special handling for attention-based models:
-
-```python
-# Detects transformer architectures automatically
-if is_transformer_model(model):
-    score = compute_grasp_transformer_aware(model, inputs, targets)
-else:
-    score = compute_grasp(model, inputs, targets)
-```
-
----
-
 
 ## 🧩 Neural Building Blocks
 
@@ -382,33 +453,6 @@ ForeBlocks DARTS includes a comprehensive library of neural operations specifica
 | **ResidualMLP** | MLP with skip connections | Non-linear feature mapping |
 | **Identity** | Simple projection or skip connection | Preserving input information |
 
-### Operation Characteristics
-
-```python
-# Example: Creating a custom operation mix
-custom_ops = [
-    "Identity",      # Always include for stability
-    "Attention",     # For long-range dependencies
-    "Wavelet",       # For multi-scale analysis
-    "GRN",          # For complex transformations
-    "Fourier"       # For frequency patterns
-]
-
-model = TimeSeriesDARTS(
-    input_dim=5,
-    selected_ops=custom_ops,
-    # ... other parameters
-)
-```
-
-### Smart Design Features
-
-- **Dimension Consistency**: All operations output to the same latent dimension
-- **GPU Optimization**: Efficient implementations with memory-safe operations
-- **Fallback Mechanisms**: Robust alternatives for complex dependencies
-- **Progressive Complexity**: Can start with simple ops and expand based on performance
-
-
 ---
 
 ## 🚨 Troubleshooting
@@ -424,13 +468,20 @@ model = TimeSeriesDARTS(
 - Reduce `num_candidates`
 - Use smaller `hidden_dims`
 - Decrease batch size in data loaders
-- Enable gradient checkpointing
+- Reduce `max_samples` in zero-cost evaluation
 
 ```python
 # Memory-efficient configuration
-results = multi_fidelity_darts_search(
-    num_candidates=10,              # Reduced candidates
+trainer = DARTSTrainer(
+    input_dim=3,
     hidden_dims=[32, 64],           # Smaller models
+    forecast_horizon=12,
+    seq_length=24
+)
+
+results = trainer.multi_fidelity_search(
+    num_candidates=10,              # Reduced candidates
+    max_samples=16,                 # Fewer samples
     # Use smaller batch sizes in your loaders
 )
 ```
@@ -445,16 +496,20 @@ results = multi_fidelity_darts_search(
 - Check model architecture compatibility
 - Ensure proper input/target shapes
 - Verify device consistency
+- Reduce batch size for evaluation
 
 ```python
 # Debug zero-cost metrics
-metrics = evaluate_zero_cost_metrics(
-    model=model,
-    dataloader=val_loader,
-    device=device,
-    num_batches=1,              # Start with single batch
-    batch_size=4                # Small batch for debugging
-)
+try:
+    metrics = trainer.evaluate_zero_cost_metrics(
+        model=model,
+        dataloader=val_loader,
+        max_samples=16,             # Start small
+        num_batches=1               # Single batch for debugging
+    )
+    print(f"Metrics computed successfully: {metrics['aggregate_score']}")
+except Exception as e:
+    print(f"Zero-cost evaluation failed: {e}")
 ```
 </details>
 
@@ -465,16 +520,17 @@ metrics = evaluate_zero_cost_metrics(
 
 **Solutions**:
 - Increase `num_candidates`
+- Use more `search_epochs`
 - Expand operation pool
-- Adjust zero-cost metric weights
-- Use more training epochs
+- Increase `top_k` for more DARTS training
 
 ```python
 # Enhanced search configuration
-results = multi_fidelity_darts_search(
+results = trainer.multi_fidelity_search(
     num_candidates=30,              # More exploration
-    full_train_epochs=100,          # Longer training
-    # Custom metric weights
+    search_epochs=50,               # Longer DARTS training
+    final_epochs=150,               # Longer final training
+    top_k=8                         # More candidates for DARTS
 )
 ```
 </details>
@@ -486,47 +542,67 @@ results = multi_fidelity_darts_search(
 ### Efficient Search Strategy
 - Start with 10-20 candidates for initial exploration
 - Use multiple `hidden_dims` to explore model sizes
-- Enable mixed precision training (`autocast`)
+- Enable mixed precision training (automatic in the trainer)
 - Use Stochastic Weight Averaging for final models
 
 ### Zero-Cost Metric Optimization
 - Evaluate on representative validation batches
-- Use multiple batches for stable metric estimates
-- Consider dataset-specific metric weights
+- Use multiple batches (`num_batches=2-3`) for stable estimates
+- Increase `max_samples` for better metric reliability
 - Monitor correlation between metrics and actual performance
 
 ### Memory Management
-- Use gradient checkpointing for large models
+- Use gradient checkpointing for large models (built into trainer)
 - Clear GPU cache between evaluations
 - Process candidates in smaller batches
-- Use CPU for metric computation when needed
+- Reduce batch sizes if memory issues persist
+
+### Training Optimization
+- Use OneCycle learning rate scheduler for faster convergence
+- Enable SWA for better generalization
+- Use appropriate gradient clipping
+- Monitor training with progress bars and logging
 
 ---
 
 ## 🔬 Research Extensions
 
 ### Custom Metrics
-Add domain-specific zero-cost metrics:
+Add domain-specific zero-cost metrics by extending the evaluation:
 
 ```python
-def compute_custom_metric(model, inputs, targets):
-    """Your custom architecture evaluation metric"""
-    # Implement your metric logic
-    return score
+# Extend the trainer's evaluation method
+class CustomDARTSTrainer(DARTSTrainer):
+    def evaluate_zero_cost_metrics(self, model, dataloader, **kwargs):
+        # Get standard metrics
+        metrics = super().evaluate_zero_cost_metrics(model, dataloader, **kwargs)
 
-# Add to evaluation pipeline
-metrics["custom_metric"] = compute_custom_metric(model, inputs, targets)
+        # Add your custom metric
+        custom_score = your_custom_metric(model, dataloader)
+        metrics['custom_metric'] = custom_score
+
+        # Recompute aggregate score with your metric
+        weights = {'custom_metric': 0.2, 'synflow': 0.2, 'naswot': 0.2, ...}
+        metrics['aggregate_score'] = sum(
+            metrics.get(metric, 0) * weight
+            for metric, weight in weights.items()
+        )
+
+        return metrics
 ```
 
 ### Multi-Objective Search
 Optimize for multiple objectives:
 
 ```python
-# Weight accuracy vs efficiency
-weights = {
-    "performance_metrics": 0.7,
-    "efficiency_metrics": 0.3
-}
+# Custom scoring that balances performance and efficiency
+class MultiObjectiveDARTSTrainer(DARTSTrainer):
+    def _score_candidate(self, metrics):
+        performance_score = metrics['aggregate_score']
+        efficiency_score = 1.0 / (metrics.get('param_count', 1e6) + 1e-6)
+
+        # Weighted combination
+        return 0.7 * performance_score + 0.3 * efficiency_score
 ```
 
 ### Progressive Search
@@ -534,12 +610,25 @@ Implement progressive architecture refinement:
 
 ```python
 # Stage 1: Coarse search
-initial_results = multi_fidelity_darts_search(num_candidates=50, epochs=20)
+trainer = DARTSTrainer(input_dim=5, hidden_dims=[32, 64], ...)
+initial_results = trainer.multi_fidelity_search(
+    num_candidates=50,
+    search_epochs=20,
+    final_epochs=50
+)
 
-# Stage 2: Refine best candidates
-refined_results = multi_fidelity_darts_search(
-    initial_architectures=initial_results['top_candidates'],
-    epochs=100
+# Stage 2: Refine best architecture
+best_arch_config = initial_results['best_candidate']['candidate']
+refined_trainer = DARTSTrainer(
+    input_dim=5,
+    hidden_dims=[best_arch_config['hidden_dim']],
+    all_ops=best_arch_config['selected_ops']
+)
+
+refined_results = refined_trainer.multi_fidelity_search(
+    num_candidates=20,
+    search_epochs=50,
+    final_epochs=150
 )
 ```
 
@@ -565,6 +654,7 @@ Contributions are welcome! Areas for improvement:
 - 📊 Enhanced visualization tools
 - ⚡ Performance optimizations
 - 📝 Documentation improvements
+- 🎨 Better architecture visualization
 
 ---
 

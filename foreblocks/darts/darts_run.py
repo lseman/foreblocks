@@ -1,2386 +1,1407 @@
 # ─── Standard Library ─────────────────────────────────────────────
-import contextlib
 import copy
 import random
-import re
 import time
-import types
-from collections import defaultdict
+from typing import Dict, List, Optional, Tuple, Any
 
 # ─── Third-Party Libraries ────────────────────────────────────────
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd  # (only include if used later)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
-from darts import *
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from torch.cuda.amp import GradScaler, autocast
-from torch.distributions import Normal
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from torch.amp import GradScaler, autocast
+from tqdm import tqdm
+import matplotlib.patches as patches
+
+# ─── Local Imports ─────────────────────────────────────────────────
+from .darts import *
+from .darts_metrics import *
+
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch, Rectangle
+from matplotlib.lines import Line2D
+import numpy as np
 
 
-# Context manager to disable CuDNN temporarily
-@contextlib.contextmanager
-def disable_cudnn():
+import logging
+
+# Optional: configure a custom logger
+logger = logging.getLogger("NASLogger")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter(fmt="%(message)s")
+handler.setFormatter(formatter)
+if not logger.handlers:
+    logger.addHandler(handler)
+
+class DARTSTrainer:
     """
-    Context manager to temporarily disable CuDNN for RNN operations
+    Comprehensive DARTS trainer with search, training, and evaluation capabilities.
+    
+    This class encapsulates the entire DARTS workflow:
+    - Architecture search with zero-cost metrics
+    - DARTS training with mixed operations
+    - Final model training with fixed architecture
+    - Multi-fidelity search strategies
     """
-    prev_flag = torch.backends.cudnn.enabled
-    torch.backends.cudnn.enabled = False
-    try:
-        yield
-    finally:
-        torch.backends.cudnn.enabled = prev_flag
-
-
-def compute_jacob_cov(model, inputs, n_samples=10):
-    """
-    Compute Jacobian Covariance score - measures the diversity of features
-    With CuDNN handling for RNNs and Transformers
-    """
-    try:
-        # Always force model to training mode for RNN backward pass compatibility
-        was_training = model.training
-        model.train()
-
-        # Get a sample of inputs if batch is large
-        if inputs.size(0) > n_samples:
-            indices = torch.randperm(inputs.size(0))[:n_samples]
-            inputs_sample = inputs[indices]
-        else:
-            inputs_sample = inputs
-
-        batch_size = inputs_sample.size(0)
-
-        # Ensure input requires gradient
-        inputs_sample = inputs_sample.detach().clone().requires_grad_(True)
-
-        # Disable CuDNN temporarily for backward compatibility
-        with disable_cudnn():
-            # Get model output
-            outputs = model(inputs_sample)
-
-        # Handle different output formats
-        if isinstance(outputs, tuple):
-            outputs = outputs[0]
-
-        # For regression tasks, handle 1D outputs
-        if outputs.dim() == 1:
-            outputs = outputs.unsqueeze(1)
-
-        output_size = outputs.size(1) if outputs.dim() > 1 else 1
-        input_size = inputs_sample.view(batch_size, -1).size(1)
-
-        # Prepare container for jacobian
-        jacob = torch.zeros(
-            batch_size, output_size, input_size, device=inputs_sample.device
+    
+    def __init__(
+        self,
+        input_dim: int = 3,
+        hidden_dims: List[int] = [32, 64, 128],
+        forecast_horizon: int = 6,
+        seq_length: int = 12,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        all_ops: Optional[List[str]] = None
+    ):
+        """
+        Initialize DARTS trainer.
+        
+        Args:
+            input_dim: Input feature dimension
+            hidden_dims: List of possible hidden dimensions
+            forecast_horizon: Number of steps to forecast
+            seq_length: Input sequence length
+            device: Training device
+            all_ops: List of operations to search over
+        """
+        self.input_dim = input_dim
+        self.hidden_dims = hidden_dims
+        self.forecast_horizon = forecast_horizon
+        self.seq_length = seq_length
+        self.device = device
+        
+        self.all_ops = all_ops or [
+            "Identity", "TimeConv", "GRN", "Wavelet", "Fourier", 
+            "Attention", "TCN", "ResidualMLP", "ConvMixer"
+        ]
+        
+        # Training history
+        self.search_history = []
+        self.training_history = []
+        
+        print(f"🚀 DARTSTrainer initialized on {device}")
+        print(f"   Input dim: {input_dim}, Forecast horizon: {forecast_horizon}")
+        print(f"   Available operations: {len(self.all_ops)}")
+    
+    def _get_loss_function(self, loss_type: str):
+        """Get loss function by name."""
+        loss_functions = {
+            "huber": lambda p, t: F.huber_loss(p, t, delta=0.1),
+            "mse": F.mse_loss,
+            "mae": F.l1_loss,
+            "smooth_l1": F.smooth_l1_loss
+        }
+        return loss_functions.get(loss_type, loss_functions["huber"])
+    
+    def _create_progress_bar(self, iterable, desc: str, leave: bool = True, **kwargs):
+        """Create standardized progress bar."""
+        # Set default unit if not provided
+        if 'unit' not in kwargs:
+            kwargs['unit'] = 'batch'
+        return tqdm(iterable, desc=desc, leave=leave, **kwargs)
+    
+    def _evaluate_model(self, model: nn.Module, dataloader, loss_type: str = "huber") -> float:
+        """Evaluate model on given dataloader."""
+        model.eval()
+        loss_fn = self._get_loss_function(loss_type)
+        total_loss = 0.0
+        
+        with torch.no_grad():
+            for batch_x, batch_y, *_ in dataloader:
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                preds = model(batch_x)
+                total_loss += loss_fn(preds, batch_y).item()
+        
+        return total_loss / len(dataloader)
+    
+    def _compute_metrics(self, preds: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
+        """Compute comprehensive regression metrics."""
+        mse = np.mean((preds - targets) ** 2)
+        rmse = np.sqrt(mse)
+        mae = np.mean(np.abs(preds - targets))
+        mape = np.mean(np.abs((preds - targets) / (np.abs(targets) + 1e-8))) * 100
+        
+        # R² score
+        ss_res = np.sum((targets - preds) ** 2)
+        ss_tot = np.sum((targets - np.mean(targets)) ** 2)
+        r2_score = 1 - (ss_res / (ss_tot + 1e-8))
+        
+        return {
+            "mse": mse,
+            "rmse": rmse,
+            "mae": mae,
+            "mape": mape,
+            "r2_score": r2_score
+        }
+    
+    def _plot_training_curve(self, train_losses: List[float], val_losses: List[float], 
+                           title: str = "Training Progress", save_path: str = None):
+        """Plot and save training curves."""
+        plt.figure(figsize=(10, 6))
+        epochs = range(1, len(train_losses) + 1)
+        
+        plt.plot(epochs, train_losses, 'b-', linewidth=2, label='Train Loss', alpha=0.8)
+        plt.plot(epochs, val_losses, 'r-', linewidth=2, label='Validation Loss', alpha=0.8)
+        
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.title(title, fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, linestyle='--', alpha=0.7)
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"📊 Training curve saved to {save_path}")
+        
+        plt.close()
+    
+    def evaluate_zero_cost_metrics(self, model: nn.Module, dataloader, 
+                                 max_samples: int = 32, num_batches: int = 2) -> Dict[str, Any]:
+        """Evaluate model using zero-cost metrics."""
+        def create_custom_config(max_samples: int = 32, max_outputs: int = 10,
+                                timeout_seconds: float = 30.0, 
+                                enable_mixed_precision: bool = False) -> Config:
+            return Config(max_samples=max_samples, max_outputs=max_outputs)
+        
+        config = create_custom_config(
+            max_samples=max_samples, max_outputs=10, 
+            timeout_seconds=30.0, enable_mixed_precision=True
         )
-
-        # Compute Jacobian matrix row by row
-        for i in range(min(output_size, 10)):  # Limit to 10 outputs for efficiency
-            model.zero_grad()
-            inputs_sample.grad = None
-
-            # Select output
-            if outputs.dim() > 1:
-                out = outputs[:, i].sum()
-            else:
-                out = outputs.sum()
-
-            # Compute gradient
-            out.backward(retain_graph=(i < output_size - 1))
-
-            # Extract input gradient (Jacobian row)
-            if inputs_sample.grad is not None:
-                for j in range(batch_size):
-                    jacob[j, i] = inputs_sample.grad[j].flatten()
-            else:
-                # If grad is None, there's a computational issue
-                print("Warning: inputs_sample.grad is None")
-                continue
-
-        # Clean up
-        inputs_sample.requires_grad_(False)
-        model.zero_grad()
-
-        # Compute Jacobian covariance and score
-        cov_score = 0
-        for j in range(batch_size):
-            J = jacob[j]
-            # Filter out zero rows
-            mask = J.abs().sum(dim=1) > 0
-            if mask.sum() > 1:  # Need at least 2 non-zero rows
-                J_filtered = J[mask]
-                # Compute covariance matrix
-                JJ = J_filtered @ J_filtered.t()
-
-                # Get eigenvalues
+        
+        nas_evaluator = ZeroCostNAS(config=config)
+        results = nas_evaluator.evaluate_model(
+            model, dataloader, self.device, num_batches=num_batches
+        )
+        
+        return results
+    
+    def train_darts_model(
+        self,
+        model: nn.Module,
+        train_loader,
+        val_loader,
+        epochs: int = 50,
+        arch_learning_rate: float = 3e-4,
+        model_learning_rate: float = 1e-3,
+        arch_weight_decay: float = 1e-3,
+        model_weight_decay: float = 1e-4,
+        patience: int = 10,
+        loss_type: str = "huber",
+        use_swa: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Train DARTS model with architecture search.
+        
+        Args:
+            model: DARTS model with mixed operations
+            train_loader: Training data loader
+            val_loader: Validation data loader
+            epochs: Number of training epochs
+            arch_learning_rate: Learning rate for architecture parameters
+            model_learning_rate: Learning rate for model parameters
+            arch_weight_decay: Weight decay for architecture optimizer
+            model_weight_decay: Weight decay for model optimizer
+            patience: Early stopping patience
+            loss_type: Loss function type
+            use_swa: Whether to use Stochastic Weight Averaging
+            
+        Returns:
+            Dictionary containing training results
+        """
+        model = model.to(self.device)
+        
+        # Separate architecture and model parameters
+        arch_params = [edge.alphas for cell in model.cells for edge in cell.edges]
+        model_params = [p for n, p in model.named_parameters() if "alphas" not in n]
+        
+        # Optimizers and schedulers
+        arch_optimizer = torch.optim.Adam(
+            arch_params, lr=arch_learning_rate, 
+            betas=(0.5, 0.999), weight_decay=arch_weight_decay
+        )
+        model_optimizer = torch.optim.AdamW(
+            model_params, lr=model_learning_rate, weight_decay=model_weight_decay
+        )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model_optimizer, T_max=epochs)
+        
+        # SWA setup
+        swa_model = None
+        swa_start = epochs // 2 if use_swa else None
+        if use_swa:
+            swa_model = torch.optim.swa_utils.AveragedModel(model).to(self.device)
+        
+        # Training setup
+        scaler = GradScaler()
+        val_iter = iter(val_loader)
+        loss_fn = self._get_loss_function(loss_type)
+        
+        # Training state
+        best_val_loss, patience_counter, best_state = float("inf"), 0, None
+        train_losses, val_losses, alpha_values = [], [], []
+        
+        print(f"🔍 Training DARTS model for {epochs} epochs")
+        print(f"   Architecture LR: {arch_learning_rate}, Model LR: {model_learning_rate}")
+        print(f"   Loss function: {loss_type}, SWA: {'enabled' if use_swa else 'disabled'}")
+        print("-" * 60)
+        
+        start_time = time.time()
+        epoch_pbar = self._create_progress_bar(range(epochs), "DARTS Training", unit="epoch")
+        
+        for epoch in epoch_pbar:
+            model.train()
+            epoch_train_loss = 0.0
+            num_batches = len(train_loader)
+            
+            # Track alpha evolution
+            current_alphas = [
+                (i, j, F.softmax(edge.alphas, dim=-1).detach().cpu().numpy())
+                for i, cell in enumerate(model.cells)
+                for j, edge in enumerate(cell.edges)
+            ]
+            alpha_values.append(current_alphas)
+            
+            # Architecture parameter update (skip first epoch)
+            if epoch >= 1:
                 try:
-                    eigs = torch.linalg.eigvalsh(
-                        JJ + 1e-6 * torch.eye(JJ.size(0), device=JJ.device)
-                    )
-                    # Keep positive eigenvalues
-                    eigs = eigs[eigs > 1e-6]
-                    if len(eigs) > 0:
-                        eigs_norm = eigs / eigs.sum()
-                        # Entropy as diversity measure
-                        entropy = -torch.sum(eigs_norm * torch.log(eigs_norm + 1e-10))
-                        cov_score += entropy.item()
-                except Exception as e:
-                    print(f"  SVD computation error in Jacob_Cov: {str(e)}")
-                    continue
-
-        score = cov_score / max(batch_size, 1)
-
-        # Restore original training state
-        if not was_training:
-            model.eval()
-
-        return float(score)
-    except Exception as e:
-        print(f"Jacob_Cov computation error details: {e}")
-        # Return a default value rather than 0 to distinguish from valid computations
-        return -1.0  # Use a sentinel value to indicate error
-
-
-@contextlib.contextmanager
-def disable_efficient_attention():
-    """
-    Context manager to disable PyTorch 2.0+ efficient attention implementation
-    and fall back to the standard implementation that supports backward passes
-    """
-    # Store original functions that we'll patch
-    original_sdpa = None
-    original_flash = None
-
-    # Check if we're using PyTorch 2.0+
-    has_torch2_attention = hasattr(F, "scaled_dot_product_attention")
-
-    if has_torch2_attention:
-        # Save the original function
-        original_sdpa = F.scaled_dot_product_attention
-
-        # Define a replacement that uses standard attention
-        def manual_sdpa(
-            query,
-            key,
-            value,
-            attn_mask=None,
-            dropout_p=0.0,
-            is_causal=False,
-            scale=None,
-        ):
-            # Standard implementation of scaled dot-product attention
-            if scale is None:
-                scale = 1.0 / (query.size(-1) ** 0.5)
-
-            # Calculate attention scores
-            attn_weight = torch.matmul(query, key.transpose(-2, -1)) * scale
-
-            # Apply mask if provided
-            if attn_mask is not None:
-                attn_weight = attn_weight + attn_mask
-            elif is_causal:
-                # Create causal mask
-                seq_len = query.size(-2)
-                causal_mask = torch.triu(
-                    torch.ones(seq_len, seq_len, device=query.device, dtype=torch.bool),
-                    diagonal=1,
-                )
-                attn_weight = attn_weight.masked_fill(causal_mask, float("-inf"))
-
-            # Apply softmax
-            attn_weight = F.softmax(attn_weight, dim=-1)
-
-            # Apply dropout
-            if dropout_p > 0.0:
-                attn_weight = F.dropout(attn_weight, p=dropout_p)
-
-            # Calculate output
-            output = torch.matmul(attn_weight, value)
-            return output
-
-        # Replace the function
-        F.scaled_dot_product_attention = manual_sdpa
-
-    # Check if torch._C._nn has flash attention
-    has_flash_attention = hasattr(torch._C._nn, "flash_attention")
-    if has_flash_attention:
-        # Save the original function
-        original_flash = torch._C._nn.flash_attention
-
-        # Replace it with a function that raises an error
-        def disabled_flash(*args, **kwargs):
-            raise NotImplementedError("Flash attention has been temporarily disabled")
-
-        torch._C._nn.flash_attention = disabled_flash
-
-    try:
-        yield
-    finally:
-        # Restore original functions
-        if has_torch2_attention and original_sdpa is not None:
-            F.scaled_dot_product_attention = original_sdpa
-
-        if has_flash_attention and original_flash is not None:
-            torch._C._nn.flash_attention = original_flash
-
-
-def compute_grasp_transformer_aware(model, inputs, targets):
-    """
-    GraSP metric (Gradient Signal Preservation) with special handling for transformers
-    that use scaled dot-product attention
-    """
-    try:
-        # Save model's training state
-        was_training = model.training
-        model.train()  # Set to train mode for gradient computation
-
-        # Always make copies of inputs/targets to avoid modifying originals
-        inputs = inputs.clone().detach()
-        targets = targets.clone().detach()
-
-        # Handle data type properly based on task
-        if targets.dtype == torch.long:
-            # Classification task - use CrossEntropyLoss
-            criterion = nn.CrossEntropyLoss()
-            # Make sure targets are long type
-            targets = targets.long()
-        else:
-            # Regression task - use MSELoss
-            criterion = nn.MSELoss()
-            # Make sure targets are float type
-            targets = targets.float()
-
-        # Find all attention modules to handle them specially
-        attention_modules = []
-
-        def find_attention_modules(module, prefix=""):
-            for name, child in module.named_children():
-                child_path = f"{prefix}.{name}" if prefix else name
-                # Look for attention modules by name pattern
-                if re.search(r"(attention|attn|self_attn)", name.lower()):
-                    attention_modules.append((child_path, child))
-                # Recursively search in child modules
-                find_attention_modules(child, child_path)
-
-        find_attention_modules(model)
-
-        # Disable efficient attention implementation
-        with disable_efficient_attention():
-            # First forward pass
-            outputs = model(inputs)
-
-            # Handle potential shape mismatches depending on task type
-            if targets.dtype == torch.long:
-                # For classification - ensure outputs and targets have correct shapes
-                if outputs.dim() > 2:
-                    if outputs.dim() == 3:  # [batch, seq_len, num_classes]
-                        # For sequence models, use the last token prediction
-                        outputs = outputs[:, -1]
-                    else:
-                        outputs = outputs.view(outputs.size(0), -1)
-
-                if targets.dim() > 1 and targets.size(1) == 1:
-                    targets = targets.squeeze(1)
-
-                loss = criterion(outputs, targets)
-            else:
-                # For regression - ensure outputs match target shape
-                if outputs.shape != targets.shape:
-                    # Try to reshape outputs to match targets
-                    if outputs.dim() == 1 and targets.dim() == 2:
-                        outputs = outputs.unsqueeze(1)
-                    elif outputs.dim() == 2 and targets.dim() == 1:
-                        targets = targets.unsqueeze(1)
-                    elif outputs.dim() == 3:  # [batch, seq_len, features]
-                        # Use last prediction or mean
-                        outputs = outputs[:, -1]
-
-                loss = criterion(outputs, targets)
-
-            # Use a loop to accumulate gradients without using create_graph
-            # This avoids double backward which can cause issues
-            all_grads = []
-
-            # First pass - get first-order gradients
-            model.zero_grad()
-            loss.backward(retain_graph=True)
-
-            # Store gradients
-            for name, param in model.named_parameters():
-                if param.requires_grad and param.grad is not None:
-                    # Store a copy of the gradients
-                    all_grads.append((name, param.grad.clone()))
-
-            # Compute GraSP score directly without second backward
-            score = 0
-            for name, grad in all_grads:
-                param = dict(model.named_parameters())[name]
-                # Use parameter values and gradients to approximate score
-                score += (param * grad).sum().item()
-
-        model.zero_grad()
-
-        # Restore original training state
-        if not was_training:
-            model.eval()
-
-        return float(abs(score))
-    except Exception as e:
-        print(f"GraSP computation error details: {e}")
-        return -1.0  # Use sentinel value to indicate error
-
-
-def is_transformer_model(model):
-    """
-    Detect if a model is transformer-based by looking for attention modules
-    """
-    # Common transformer module names
-    transformer_patterns = [
-        r"(self_attention|mha|multihead|attention|attn)",
-        r"(transformer|mhsa)",
-        r"(cross_attention)",
-    ]
-
-    # Check model structure
-    found = False
-    for name, _ in model.named_modules():
-        for pattern in transformer_patterns:
-            if re.search(pattern, name.lower()):
-                found = True
-                break
-        if found:
-            break
-
-    return found
-
-
-def compute_grasp_robust(model, inputs, targets):
-    """
-    Wrapper function that chooses the appropriate GraSP implementation
-    based on model architecture
-    """
-    # Check if we're dealing with a transformer-based model
-    if is_transformer_model(model):
-        print("Detected transformer model - using specialized GraSP implementation")
-        return compute_grasp_transformer_aware(model, inputs, targets)
-    else:
-        # For non-transformer models, use the standard implementation
-        # but with CuDNN disabled
-        with disable_cudnn():
-            try:
-                return compute_grasp(model, inputs, targets)
-            except Exception as e:
-                print(f"Standard GraSP failed, falling back to transformer-aware: {e}")
-                return compute_grasp_transformer_aware(model, inputs, targets)
-
-
-# Original compute_grasp and disable_cudnn from previous code
-@contextlib.contextmanager
-def disable_cudnn():
-    """
-    Context manager to temporarily disable CuDNN for RNN operations
-    """
-    prev_flag = torch.backends.cudnn.enabled
-    torch.backends.cudnn.enabled = False
-    try:
-        yield
-    finally:
-        torch.backends.cudnn.enabled = prev_flag
-
-
-def compute_grasp(model, inputs, targets):
-    """
-    GraSP metric (Gradient Signal Preservation)
-    With CuDNN handling for RNNs
-    """
-    try:
-        # Save model's training state
-        was_training = model.training
-        model.train()  # Set to train mode for gradient computation
-
-        # Always make copies of inputs/targets to avoid modifying originals
-        inputs = inputs.clone().detach()
-        targets = targets.clone().detach()
-
-        # Handle data type properly based on task
-        if targets.dtype == torch.long:
-            # Classification task - use CrossEntropyLoss
-            criterion = nn.CrossEntropyLoss()
-            # Make sure targets are long type
-            targets = targets.long()
-        else:
-            # Regression task - use MSELoss
-            criterion = nn.MSELoss()
-            # Make sure targets are float type
-            targets = targets.float()
-
-        # First forward pass
-        outputs = model(inputs)
-
-        # Handle potential shape mismatches depending on task type
-        if targets.dtype == torch.long:
-            # For classification - ensure outputs and targets have correct shapes
-            if outputs.dim() > 2:
-                outputs = outputs.view(outputs.size(0), -1)
-            if targets.dim() > 1 and targets.size(1) == 1:
-                targets = targets.squeeze(1)
-            loss = criterion(outputs, targets)
-        else:
-            # For regression - ensure outputs match target shape
-            if outputs.shape != targets.shape:
-                # Try to reshape outputs to match targets
-                if outputs.dim() == 1 and targets.dim() == 2:
-                    outputs = outputs.unsqueeze(1)
-                elif outputs.dim() == 2 and targets.dim() == 1:
-                    targets = targets.unsqueeze(1)
-            loss = criterion(outputs, targets)
-
-        # Compute gradients with allow_unused=True to handle unused parameters
-        grads = torch.autograd.grad(
-            loss,
-            [p for p in model.parameters() if p.requires_grad],
-            create_graph=True,
-            allow_unused=True,
-        )
-
-        # Filter out None values from unused parameters
-        grads = [g for g in grads if g is not None]
-
-        if not grads:
-            print("No gradients available - check model setup")
-            return 0.0
-
-        # Compute sum of gradients squared (gradient magnitude)
-        grad_square = 0
-        for grad in grads:
-            grad_square += grad.pow(2).sum()
-
-        # Second backward pass to get Hessian information
-        grad_square.backward()
-
-        # GraSP score combines gradient and Hessian information
-        score = 0
-        for p in model.parameters():
-            if p.grad is not None and p.requires_grad:
-                score += (p * p.grad).sum().item()
-
-        model.zero_grad()
-
-        # Restore original training state
-        if not was_training:
-            model.eval()
-
-        return float(abs(score))
-    except Exception as e:
-        print(f"GraSP computation error details: {e}")
-        return -1.0  # Use sentinel value to indicate error
-
-
-def compute_fisher(model, inputs, targets):
-    """
-    Compute Fisher Information score
-    With fixes for 3D outputs and CuDNN handling for RNNs
-    """
-    try:
-        # Save model's training state
-        was_training = model.training
-        model.eval()  # Set to eval mode for consistent behavior
-
-        # Ensure inputs and targets have the right types
-        inputs = inputs.clone().detach()
-        targets = targets.clone().detach()
-
-        # Get model outputs with CuDNN disabled for RNNs
-        with disable_cudnn():
-            outputs = model(inputs)
-
-        # Handle different output formats
-        if isinstance(outputs, tuple):
-            outputs = outputs[0]
-
-        # Handle 3D outputs (sequence models often output [batch_size, seq_len, features])
-        if outputs.dim() == 3:
-            # Take average over sequence dimension or last prediction
-            outputs = outputs[:, -1, :]  # Use last timestep
-            # Alternatively: outputs = outputs.mean(dim=1)  # Average over sequence
-
-        # Create proper probability distribution based on task type
-        if targets.dtype == torch.long:
-            # Classification task - use softmax to get probabilities
-            if outputs.dim() <= 1:
-                # If 1D output, assume binary classification and use sigmoid
-                prob_dist = torch.sigmoid(outputs).unsqueeze(1)
-                prob_dist = torch.cat([1 - prob_dist, prob_dist], dim=1)
-            else:
-                # Multi-class classification
-                prob_dist = F.softmax(outputs, dim=1)
-        else:
-            # Regression task - convert to probability distribution
-            mean = outputs
-            if mean.dim() == 1:
-                mean = mean.unsqueeze(1)  # Ensure 2D
-
-            # Create 2D distribution (mean, variance)
-            prob_dist = torch.cat([mean, torch.ones_like(mean) * 0.01], dim=1)
-
-        # Verification step
-        if prob_dist.dim() not in [1, 2]:
-            raise ValueError(f"prob_dist must be 1 or 2 dim, got {prob_dist.dim()}")
-
-        # Compute log probabilities
-        if prob_dist.dim() == 1:
-            log_probs = torch.log(prob_dist + 1e-8)
-        else:
-            # Use negative log likelihood for 2D distribution
-            if targets.dim() == 1 and prob_dist.dim() == 2:
-                target_indices = targets.long().view(-1, 1)
-                if target_indices.max() < prob_dist.size(1):
-                    probs = torch.gather(prob_dist, 1, target_indices)
-                else:
-                    # If targets don't match distribution shape, use mean prob
-                    probs = prob_dist.mean(dim=1, keepdim=True)
-            else:
-                # For regression, use all probabilities
-                probs = prob_dist.mean(dim=1, keepdim=True)
-
-            log_probs = torch.log(probs + 1e-8).squeeze()
-
-        # Compute Fisher Information score
-        fisher_score = 0
-        batch_size = inputs.size(0)
-
-        model.train()  # Temporarily set to train for gradient computation
-
-        # Disable CuDNN for backward compatibility
-        with disable_cudnn():
-            # Iterate through examples in batch
-            for i in range(min(batch_size, 10)):  # Limit to 10 examples for efficiency
-                model.zero_grad()
-                # Get gradients for this example
-                if log_probs.dim() == 0:  # Single scalar
-                    log_prob = log_probs
-                else:
-                    log_prob = log_probs[i]
-
-                log_prob.backward(retain_graph=(i < batch_size - 1))
-
-                # Accumulate Fisher Information
-                for p in model.parameters():
-                    if p.grad is not None:
-                        fisher_score += p.grad.pow(2).sum().item()
-
-        # Normalize by batch size
-        fisher_score /= min(batch_size, 10)
-
-        model.zero_grad()
-
-        # Restore original training state
-        if not was_training:
-            model.eval()
-
-        return float(fisher_score)
-    except Exception as e:
-        print(f"[Fisher] Error: {e}")
-        return -1.0  # Use sentinel value to indicate error
-
-
-def evaluate_zero_cost_metrics(
-    model,
-    dataloader,
-    device,
-    num_batches=3,
-    batch_size=4,
-    dataset_name=None,
-    custom_weights=None,
-):
-    """
-    Memory-efficient evaluation of zero-cost NAS metrics with improved reliability.
-
-    Args:
-        model: PyTorch model to evaluate
-        dataloader: DataLoader containing the dataset
-        device: Device to run evaluation on
-        num_batches: Number of batches to evaluate for improved stability
-        batch_size: Batch size to use for each evaluation
-        dataset_name: Name of dataset for using preset weights
-        custom_weights: Optional dictionary of custom weights for metrics
-
-    Returns:
-        Dictionary of metrics and aggregate score
-    """
-    # Get multiple batches for more reliable evaluation
-    batches = []
-    dataloader_iter = iter(dataloader)
-    for _ in range(min(num_batches, len(dataloader))):
-        try:
-            batch = next(dataloader_iter)
-            batches.append(batch)
-        except StopIteration:
-            break
-
-    if not batches:
-        raise ValueError("No batches available in dataloader")
-
-    # Track metric computation time
-    timing = {}
-
-    # Compute metrics across multiple batches
-    metrics_list = []
-    for batch_idx, batch in enumerate(batches):
-        # Handle different batch formats
-        if isinstance(batch, (list, tuple)):
-            if len(batch) >= 2:
-                batch_x, batch_y = batch[0], batch[1]
-            else:
-                batch_x = batch[0]
-                batch_y = torch.zeros(
-                    batch_x.size(0), device=device
-                )  # Dummy labels if not provided
-        else:
-            batch_x = batch
-            batch_y = torch.zeros(
-                batch_x.size(0), device=device
-            )  # Dummy labels if not provided
-
-        # Use subset of batch for efficiency
-        batch_x = batch_x[:batch_size].to(device)
-        batch_y = batch_y[:batch_size].to(device)
-
-        print(f"Computing metrics for batch {batch_idx+1}/{len(batches)}")
-        batch_metrics = compute_batch_metrics(model, batch_x, batch_y, timing)
-        metrics_list.append(batch_metrics)
-
-    # Aggregate metrics across batches
-    aggregated_metrics = {}
-    for key in metrics_list[0].keys():
-        values = [m[key] for m in metrics_list if key in m]
-        if values:
-            # Use median for robustness against outliers
-            aggregated_metrics[key] = float(np.median(values))
-
-    # Print timing information
-    print("\nMetric computation times:")
-    for metric, time_taken in timing.items():
-        avg_time = time_taken / num_batches
-        print(f"  {metric}: {avg_time:.4f} seconds per batch")
-
-    # Add aggregate score
-    agg_score = aggregate_metrics(aggregated_metrics, custom_weights, dataset_name)
-    aggregated_metrics["aggregate_score"] = agg_score
-
-    return aggregated_metrics
-
-
-def compute_batch_metrics(model, inputs, targets, timing):
-    """Compute all metrics for a single batch."""
-    metrics = {}
-
-    # === METRIC COMPUTATION WITH EXCEPTION HANDLING AND TIMING ===
-
-    # SYNFLOW
-    start_time = time.time()
-    try:
-        metrics["synflow"] = compute_synflow(model, inputs)
-    except Exception as e:
-        print(f"[Synflow] Error: {e}")
-        metrics["synflow"] = 0.0
-    timing["synflow"] = timing.get("synflow", 0) + (time.time() - start_time)
-
-    # PARAMETER COUNT
-    start_time = time.time()
-    try:
-        metrics["param_count"] = count_params(model)
-    except Exception as e:
-        print(f"[Param Count] Error: {e}")
-        metrics["param_count"] = 0.0
-    timing["param_count"] = timing.get("param_count", 0) + (time.time() - start_time)
-
-    # NASWOT
-    start_time = time.time()
-    try:
-        metrics["naswot"] = compute_naswot(model, inputs)
-    except Exception as e:
-        print(f"[NASWOT] Error: {e}")
-        metrics["naswot"] = 0.0
-    timing["naswot"] = timing.get("naswot", 0) + (time.time() - start_time)
-
-    # SENSITIVITY
-    start_time = time.time()
-    try:
-        metrics["sensitivity"] = compute_sensitivity(model, inputs)
-    except Exception as e:
-        print(f"[Sensitivity] Error: {e}")
-        metrics["sensitivity"] = 0.0
-    timing["sensitivity"] = timing.get("sensitivity", 0) + (time.time() - start_time)
-
-    # WEIGHT CONDITIONING
-    start_time = time.time()
-    try:
-        metrics["weight_cond"] = compute_weight_conditioning(model)
-    except Exception as e:
-        print(f"[Conditioning] Error: {e}")
-        metrics["weight_cond"] = 1.0
-    timing["weight_cond"] = timing.get("weight_cond", 0) + (time.time() - start_time)
-
-    # FISHER INFORMATION
-    start_time = time.time()
-    try:
-        metrics["fisher"] = compute_fisher(model, inputs, targets)
-    except Exception as e:
-        print(f"[Fisher] Error: {e}")
-        metrics["fisher"] = 0.0
-    timing["fisher"] = timing.get("fisher", 0) + (time.time() - start_time)
-
-    # GRASP
-    start_time = time.time()
-    try:
-        metrics["grasp"] = compute_grasp_robust(model, inputs, targets)
-    except Exception as e:
-        print(f"[GraSP] Error: {e}")
-        metrics["grasp"] = 0.0
-    timing["grasp"] = timing.get("grasp", 0) + (time.time() - start_time)
-
-    # SNIP
-    start_time = time.time()
-    try:
-        metrics["snip"] = compute_snip(model, inputs, targets)
-    except Exception as e:
-        print(f"[SNIP] Error: {e}")
-        metrics["snip"] = 0.0
-    timing["snip"] = timing.get("snip", 0) + (time.time() - start_time)
-
-    # JACOB COV
-    start_time = time.time()
-    try:
-        metrics["jacob_cov"] = compute_jacob_cov(model, inputs)
-    except Exception as e:
-        print(f"[Jacob_Cov] Error: {e}")
-        metrics["jacob_cov"] = 0.0
-    timing["jacob_cov"] = timing.get("jacob_cov", 0) + (time.time() - start_time)
-
-    # FLOPs count (computational complexity)
-    start_time = time.time()
-    try:
-        metrics["flops"] = estimate_flops(model, inputs)
-    except Exception as e:
-        print(f"[FLOPs] Error: {e}")
-        metrics["flops"] = 0.0
-    timing["flops"] = timing.get("flops", 0) + (time.time() - start_time)
-
-    return metrics
-
-
-def aggregate_metrics(metrics, custom_weights=None, dataset_name=None):
-    """
-    Aggregate metrics with learned or predefined weights based on dataset.
-
-    Args:
-        metrics: Dict of computed metrics
-        custom_weights: Optional custom weights
-        dataset_name: Name of dataset to use preset weights
-    """
-    # Dataset-specific weights based on prior meta-analysis
-    dataset_weights = {
-        "cifar10": {
-            "synflow": 0.35,
-            "param_count": -0.05,
-            "naswot": 0.25,
-            "sensitivity": 0.2,
-            "weight_cond": -0.15,
-            "fisher": 0.3,
-            "grasp": 0.2,
-            "snip": 0.25,
-            "jacob_cov": 0.15,
-            "flops": -0.1,
-        },
-        "imagenet": {
-            "synflow": 0.3,
-            "param_count": -0.15,
-            "naswot": 0.2,
-            "sensitivity": 0.15,
-            "weight_cond": -0.1,
-            "fisher": 0.25,
-            "grasp": 0.25,
-            "snip": 0.2,
-            "jacob_cov": 0.1,
-            "flops": -0.15,
-        },
-        # Default weights for custom datasets
-        "default": {
-            "synflow": 0.3,
-            "param_count": -0.1,
-            "naswot": 0.3,
-            "sensitivity": 0.2,
-            "weight_cond": -0.1,
-            "fisher": 0.25,
-            "grasp": 0.2,
-            "snip": 0.2,
-            "jacob_cov": 0.1,
-            "flops": -0.1,
-        },
-    }
-
-    # Use provided weights, dataset-specific weights, or defaults
-    if custom_weights is not None:
-        active_weights = custom_weights
-    elif dataset_name is not None and dataset_name in dataset_weights:
-        active_weights = dataset_weights[dataset_name]
-    else:
-        active_weights = dataset_weights["default"]
-
-    # Print the weights being used
-    print("\nMetric weights:")
-    for k, v in active_weights.items():
-        if k in metrics:
-            print(f"  {k}: {v}")
-
-    # Normalize all metrics to comparable scale
-    norm_metrics = {}
-    for k, v in metrics.items():
-        if k not in active_weights:
-            continue
-
-        if v != 0:
-            # Apply appropriate normalization based on metric distribution
-            if k in ["synflow", "param_count", "flops"]:
-                # Log normalization for metrics with large ranges
-                norm_metrics[k] = float(torch.log1p(torch.tensor(abs(v))).item())
-            elif k in ["weight_cond"]:
-                # Bounded metrics
-                norm_metrics[k] = min(v, 100) / 100  # Cap at reasonable value
-            else:
-                # Other metrics
-                norm_metrics[k] = float(v)
-        else:
-            norm_metrics[k] = 0.0
-
-    # Calculate aggregate score from normalized metrics
-    available_metrics = set(norm_metrics.keys()) & set(active_weights.keys())
-    if not available_metrics:
-        return 0.0
-
-    agg_score = sum(norm_metrics[k] * active_weights[k] for k in available_metrics)
-    return float(agg_score)
-
-
-def detect_correlations(metrics_history, threshold=0.85):
-    """
-    Detect highly correlated metrics to avoid redundancy.
-
-    Args:
-        metrics_history: Dictionary with lists of metric values over multiple evaluations
-        threshold: Correlation threshold above which metrics are considered redundant
-
-    Returns:
-        List of pairs of correlated metrics (to potentially downweight one)
-    """
-    # Calculate correlation matrix
-    metric_names = list(metrics_history.keys())
-    correlated_pairs = []
-
-    # Need at least 2 data points for correlation
-    if len(next(iter(metrics_history.values()))) < 2:
-        return []
-
-    # Convert to numpy arrays
-    arrays = {k: np.array(v) for k, v in metrics_history.items()}
-
-    # Calculate correlations
-    for i, m1 in enumerate(metric_names):
-        for j, m2 in enumerate(metric_names):
-            if i < j:  # Check each pair only once
-                if len(arrays[m1]) > 1 and len(arrays[m2]) > 1:
-                    # Handle constant values which would cause division by zero
-                    if np.std(arrays[m1]) == 0 or np.std(arrays[m2]) == 0:
-                        continue
-
-                    corr = np.corrcoef(arrays[m1], arrays[m2])[0, 1]
-                    if abs(corr) > threshold:
-                        correlated_pairs.append((m1, m2))
-
-    return correlated_pairs
-
-
-# === INDIVIDUAL METRIC IMPLEMENTATIONS ===
-
-
-def compute_synflow(model, inputs):
-    """
-    Compute SynFlow score (Tanaka et al., 2020)
-    Synaptic Flow: Network pruning that maximizes sensitivity flow
-    """
-    model.train()
-    # Save original state
-    original_state = {n: p.data.clone() for n, p in model.named_parameters()}
-
-    # Set all parameters to their absolute values
-    for p in model.parameters():
-        if p.requires_grad:
-            p.data = p.data.abs()
-
-    # Forward pass with dummy input
-    dummy_input = torch.ones_like(inputs, requires_grad=True)
-    output = model(dummy_input).sum()
-
-    # Compute gradients
-    output.backward()
-
-    # Calculate score as sum of parameter-gradient products
-    score = sum(
-        (p * p.grad).sum().item()
-        for p in model.parameters()
-        if p.grad is not None and p.requires_grad
-    )
-
-    # Restore original parameters
-    for name, p in model.named_parameters():
-        if name in original_state:
-            p.data = original_state[name]
-
-    # Zero all gradients
-    model.zero_grad()
-
-    return score
-
-
-def count_params(model):
-    """Count number of trainable parameters in the model."""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-def compute_naswot(model, inputs):
-    """
-    Compute NASWOT score (Mellor et al., 2021)
-    Neural Architecture Search without Training
-    """
-    model.eval()
-    activations = {}
-
-    # Register forward hooks to capture activations
-    def hook(m, inp, out):
-        if isinstance(out, tuple):
-            activations[m] = out[0]
-        else:
-            activations[m] = out
-
-    hooks = []
-    for name, m in model.named_modules():
-        if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)):
-            hooks.append(m.register_forward_hook(hook))
-
-    # Forward pass without gradient
-    with torch.no_grad():
-        _ = model(inputs)
-
-    # Calculate NASWOT score
-    score = 0
-    for layer, act in activations.items():
-        # Reshape activations
-        act = act.reshape(act.size(0), -1)
-
-        # Get binary activations (0/1 based on activation value)
-        binary_act = (act > 0).float()
-
-        # Calculate K matrix
-        K = binary_act @ binary_act.t()
-
-        # Add matrix rank to score
-        try:
-            score += torch.linalg.matrix_rank(K).item()
-        except:
-            # Fallback if SVD fails
-            try:
-                score += torch.matrix_rank(K).item()
-            except:
-                pass
-
-    # Remove hooks
-    for h in hooks:
-        h.remove()
-
-    return float(score)
-
-
-def compute_sensitivity(model, inputs):
-    """
-    Compute sensitivity score: how sensitive the model is to input perturbations.
-    Higher sensitivity might indicate better feature extraction capability.
-    """
-    model.train()
-    model.zero_grad()
-
-    # Forward pass
-    inputs.requires_grad_(True)
-    output = model(inputs)
-
-    # Random target for gradient computation
-    target = torch.randn_like(output)
-    loss = F.mse_loss(output, target)
-    loss.backward()
-
-    # Compute input gradient magnitude
-    input_grad = inputs.grad
-    if input_grad is not None:
-        input_grad_norm = (
-            input_grad.norm(p=2, dim=tuple(range(1, input_grad.dim()))).mean().item()
-        )
-    else:
-        input_grad_norm = 0.0
-
-    # Compute parameter gradient magnitude
-    param_grad_sum = sum(
-        p.grad.abs().sum().item()
-        for p in model.parameters()
-        if p.grad is not None and p.requires_grad
-    )
-    param_count = sum(
-        p.numel() for p in model.parameters() if p.grad is not None and p.requires_grad
-    )
-
-    # Combine input and parameter sensitivity
-    param_sensitivity = param_grad_sum / max(param_count, 1)
-
-    # Reset gradients and input requires_grad
-    model.zero_grad()
-    inputs.requires_grad_(False)
-
-    return float(param_sensitivity + input_grad_norm)
-
-
-def compute_weight_conditioning(model):
-    """
-    Compute average condition number of weight matrices.
-    High condition numbers may indicate poor optimization landscape.
-    """
-    conds = []
-    for name, p in model.named_parameters():
-        if "weight" in name and p.dim() >= 2 and p.requires_grad:
-            # Reshape to 2D matrix
-            W = p.view(p.size(0), -1)
-
-            # Skip if matrix too small
-            if min(W.size(0), W.size(1)) <= 1:
-                continue
-
-            try:
-                # Compute SVD
-                U, S, V = torch.linalg.svd(W, full_matrices=False)
-
-                # Calculate condition number (ratio of largest/smallest singular value)
-                if S[0] > 0 and S[-1] > 0:
-                    cond = (S[0] / S[-1]).item()
-                    conds.append(cond)
-            except:
-                continue
-
-    if not conds:
-        return 1.0  # Default if no condition numbers could be computed
-
-    return float(sum(conds) / len(conds))
-
-
-def compute_snip(model, inputs, targets):
-    """
-    SNIP metric (Lee et al., 2018)
-    Single-shot Network Pruning based on connection sensitivity
-    """
-    criterion = nn.CrossEntropyLoss() if targets.dim() == 1 else nn.MSELoss()
-    model.train()
-    model.zero_grad()
-
-    # Forward pass
-    outputs = model(inputs)
-    loss = criterion(outputs, targets)
-    loss.backward()
-
-    # Calculate connection sensitivity
-    snip_score = 0
-    for name, p in model.named_parameters():
-        if p.grad is not None and "weight" in name:
-            snip_score += (p.grad * p).abs().sum().item()
-
-    model.zero_grad()
-    return float(snip_score)
-
-
-def estimate_flops(model, inputs):
-    """
-    Estimate computational complexity (FLOPs) for the model.
-
-    Note: This is a simplified FLOP counter that works for common layer types.
-    For more accurate counts, consider using libraries like fvcore or ptflops.
-    """
-
-    # Define FLOP counters for different layer types
-    def conv_flops(layer, input_shape, output_shape):
-        batch_size = input_shape[0]
-        in_channels = input_shape[1] if len(input_shape) > 1 else 1
-        out_channels = output_shape[1] if len(output_shape) > 1 else output_shape[0]
-
-        # Extract kernel size and other parameters based on layer dimension
-        if isinstance(layer, nn.Conv1d):
-            kernel_size = layer.kernel_size[0]
-            output_size = output_shape[2]
-        elif isinstance(layer, nn.Conv2d):
-            kernel_size = layer.kernel_size[0] * layer.kernel_size[1]
-            output_size = output_shape[2] * output_shape[3]
-        elif isinstance(layer, nn.Conv3d):
-            kernel_size = (
-                layer.kernel_size[0] * layer.kernel_size[1] * layer.kernel_size[2]
-            )
-            output_size = output_shape[2] * output_shape[3] * output_shape[4]
-        else:
-            return 0
-
-        # Compute MACs
-        mac_count = (
-            batch_size
-            * out_channels
-            * output_size
-            * (in_channels // layer.groups * kernel_size)
-        )
-        # FLOPs = 2 * MACs (multiply-add)
-        return mac_count * 2
-
-    def linear_flops(layer, input_shape, output_shape):
-        batch_size = input_shape[0]
-        in_features = layer.in_features
-        out_features = layer.out_features
-
-        # Compute MACs
-        mac_count = batch_size * in_features * out_features
-        # FLOPs = 2 * MACs (multiply-add)
-        return mac_count * 2
-
-    # Track total FLOPs
-    total_flops = 0
-
-    # Register hooks to capture input/output shapes
-    shapes = {}
-    flops_per_module = {}
-
-    def save_input_output_shape(name):
-        def hook(module, input, output):
-            input_shape = input[0].shape
-            output_shape = (
-                output.shape if not isinstance(output, tuple) else output[0].shape
-            )
-            shapes[name] = (input_shape, output_shape)
-
-            # Calculate FLOPs based on module type
-            if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                flops = conv_flops(module, input_shape, output_shape)
-            elif isinstance(module, nn.Linear):
-                flops = linear_flops(module, input_shape, output_shape)
-            else:
-                flops = 0
-
-            flops_per_module[name] = flops
-
-        return hook
-
-    # Register hooks
-    hooks = []
-    for name, module in model.named_modules():
-        if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)):
-            hooks.append(module.register_forward_hook(save_input_output_shape(name)))
-
-    # Forward pass to calculate shapes
-    with torch.no_grad():
-        _ = model(inputs)
-
-    # Remove hooks
-    for hook in hooks:
-        hook.remove()
-
-    # Sum FLOPs
-    total_flops = sum(flops_per_module.values())
-
-    return total_flops
-
-
-# Function to track performance across architectures
-def track_nas_performance(metrics_history, arch_name, metrics):
-    """
-    Track performance metrics across different architectures.
-    Useful for meta-learning optimal weights.
-
-    Args:
-        metrics_history: Dictionary of historical metrics by architecture
-        arch_name: Name of the current architecture
-        metrics: Metrics for the current architecture
-    """
-    if arch_name not in metrics_history:
-        metrics_history[arch_name] = {}
-
-    # Store metrics
-    for k, v in metrics.items():
-        if k not in metrics_history[arch_name]:
-            metrics_history[arch_name][k] = []
-        metrics_history[arch_name][k].append(v)
-
-    return metrics_history
-
-
-# Function to adapt metric weights based on correlation with actual performance
-def adapt_metric_weights(metrics_history, val_accuracies, epochs=10, lr=0.01):
-    """
-    Adapt metric weights based on correlation with validation performance.
-
-    Args:
-        metrics_history: Dictionary of metrics by architecture
-        val_accuracies: Dictionary of validation accuracies by architecture
-        epochs: Number of optimization epochs
-        lr: Learning rate for weight adaptation
-
-    Returns:
-        Dictionary of optimized weights
-    """
-    # Extract features and target
-    arch_names = list(val_accuracies.keys())
-
-    if not arch_names:
-        print("No architecture data available for weight adaptation")
-        return None
-
-    # Prepare feature matrix
-    metric_names = set()
-    for arch in arch_names:
-        if arch in metrics_history:
-            metric_names.update(metrics_history[arch].keys())
-
-    metric_names = list(metric_names)
-
-    # Filter out architectures with missing metrics
-    valid_archs = []
-    for arch in arch_names:
-        if arch in metrics_history and all(
-            m in metrics_history[arch] for m in metric_names
-        ):
-            valid_archs.append(arch)
-
-    if not valid_archs:
-        print("No architectures with complete metrics found")
-        return None
-
-    # Build feature matrix and target vector
-    X = []
-    y = []
-
-    for arch in valid_archs:
-        # Get metrics for this architecture
-        arch_metrics = []
-        for metric in metric_names:
-            value = np.mean(metrics_history[arch][metric])
-            arch_metrics.append(value)
-
-        X.append(arch_metrics)
-        y.append(val_accuracies[arch])
-
-    X = np.array(X)
-    y = np.array(y)
-
-    # Normalize features
-    X_mean = np.mean(X, axis=0)
-    X_std = np.std(X, axis=0) + 1e-8
-    X_norm = (X - X_mean) / X_std
-
-    # Initialize weights
-    weights = np.zeros(len(metric_names))
-
-    # Simple gradient descent to optimize weights
-    for epoch in range(epochs):
-        # Predictions
-        pred = X_norm @ weights
-
-        # Loss (MSE)
-        loss = np.mean((pred - y) ** 2)
-
-        # Gradient
-        grad = 2 * X_norm.T @ (pred - y) / len(y)
-
-        # Update weights
-        weights -= lr * grad
-
-        if epoch % (epochs // 5) == 0:
-            print(f"Epoch {epoch}, Loss: {loss:.6f}")
-
-    # Convert to dictionary
-    optimal_weights = {}
-    for i, metric in enumerate(metric_names):
-        optimal_weights[metric] = float(weights[i])
-
-    # Normalize weights to reasonable magnitude
-    total = sum(abs(w) for w in optimal_weights.values())
-    if total > 0:
-        for k in optimal_weights:
-            optimal_weights[k] /= total
-
-    return optimal_weights
-
-
-########################################################
-# end zero cost
-##########################################################
-
-
-def gumbel_softmax(logits, tau=1.0, hard=False, dim=-1):
-    gumbels = -torch.log(-torch.log(torch.rand_like(logits) + 1e-20) + 1e-20)
-    y = (logits + gumbels) / tau
-    y_soft = F.softmax(y, dim=dim)
-
-    if hard:
-        index = y_soft.argmax(dim=dim, keepdim=True)
-        y_hard = torch.zeros_like(logits).scatter_(dim, index, 1.0)
-        return (y_hard - y_soft).detach() + y_soft
-    return y_soft
-
-
-def train_darts_model(
-    model,
-    train_loader,
-    val_loader,
-    epochs=50,
-    arch_learning_rate=3e-4,
-    model_learning_rate=1e-3,
-    arch_weight_decay=1e-3,
-    model_weight_decay=1e-4,
-    patience=10,
-    tau_max=1.0,
-    tau_min=0.1,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    enable_logging=False,
-    loss_type="huber",
-    use_swa=False,
-):
-    """
-    Enhanced training process for DARTS with fixed device handling for SWA
-    """
-    # Ensure model is on the correct device
-    model = model.to(device)
-
-    # Collect architecture parameters
-    arch_params = []
-    for cell in model.cells:
-        for edge in cell.edges:
-            arch_params.append(edge.alphas)
-
-    # Optimizers
-    arch_optimizer = torch.optim.Adam(
-        arch_params,
-        lr=arch_learning_rate,
-        betas=(0.5, 0.999),
-        weight_decay=arch_weight_decay,
-    )
-
-    # Collect model parameters (excluding architecture parameters)
-    model_params = []
-    for name, param in model.named_parameters():
-        if "alphas" not in name:
-            model_params.append(param)
-
-    model_optimizer = torch.optim.AdamW(
-        model_params, lr=model_learning_rate, weight_decay=model_weight_decay
-    )
-
-    # Stochastic Weight Averaging - explicitly set device
-    if use_swa:
-        swa_model = torch.optim.swa_utils.AveragedModel(model)
-        # Ensure SWA model is on the same device
-        swa_model = swa_model.to(device)
-        swa_start = epochs // 2
-
-    # Learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        model_optimizer, T_max=epochs
-    )
-
-    # Mixed precision
-    scaler = GradScaler()
-
-    # Training state
-    best_val_loss = float("inf")
-    patience_counter = 0
-    best_model_state = None
-    train_losses = []
-    val_losses = []
-    alpha_values = []
-
-    # Temperature annealing for Gumbel-Softmax
-    tau_schedule = np.linspace(tau_max, tau_min, epochs)
-
-    # Loss function
-    def calculate_loss(preds, targets):
-        if loss_type == "huber":
-            return F.huber_loss(preds, targets, delta=0.1)
-        elif loss_type == "mse":
-            return F.mse_loss(preds, targets)
-        elif loss_type == "mae":
-            return F.l1_loss(preds, targets)
-        else:
-            return F.mse_loss(preds, targets)  # Default to MSE
-
-    # Training loop
-    for epoch in range(epochs):
-        model.train()
-        train_loss = 0.0
-
-        # Current temperature for Gumbel-Softmax
-        tau = tau_schedule[epoch]
-
-        # Track alpha values
-        current_alphas = []
-        for cell_idx, cell in enumerate(model.cells):
-            for edge_idx, edge in enumerate(cell.edges):
-                # Use current temperature
-                weights = F.softmax(edge.alphas, dim=-1).detach().cpu().numpy()
-                current_alphas.append((cell_idx, edge_idx, weights))
-        alpha_values.append(current_alphas)
-
-        # 1. Update architecture parameters (alphas)
-        if epoch >= 1:  # Skip first epoch
-            try:
-                val_batch = next(iter(val_loader))
-                val_x, val_y = val_batch[0].to(device), val_batch[1].to(device)
-
+                    val_batch = next(val_iter)
+                except StopIteration:
+                    val_iter = iter(val_loader)
+                    val_batch = next(val_iter)
+                
+                val_x, val_y = val_batch[0].to(self.device).float(), val_batch[1].to(self.device)
+                
                 arch_optimizer.zero_grad()
-
-                # Forward pass - handle potential mixed precision issues
-                val_x = val_x.float()  # Ensure float32 for arch update
                 val_preds = model(val_x)
-                val_loss = calculate_loss(val_preds, val_y)
-
-                # Entropy regularization for arch params
-                entropy_loss = 0.0
-                for cell in model.cells:
-                    for edge in cell.edges:
-                        probs = F.softmax(edge.alphas, dim=-1)
-                        entropy = -torch.sum(probs * torch.log(probs + 1e-10))
-                        entropy_loss += entropy
-
-                total_val_loss = val_loss - 0.01 * entropy_loss
-
-                # Standard backprop without scaler for architecture update
-                total_val_loss.backward()
+                
+                # Architecture loss with entropy regularization
+                arch_loss = loss_fn(val_preds, val_y)
+                entropy_reg = sum(
+                    -torch.sum(F.softmax(edge.alphas, dim=-1) * F.log_softmax(edge.alphas, dim=-1))
+                    for cell in model.cells for edge in cell.edges
+                )
+                total_arch_loss = arch_loss - 0.01 * entropy_reg
+                total_arch_loss.backward()
                 arch_optimizer.step()
-
-            except StopIteration:
-                print("Validation loader exhausted during architecture update")
-
-        # 2. Update model weights
-        for batch_idx, (batch_x, batch_y, *_) in enumerate(train_loader):
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-
-            model_optimizer.zero_grad()
-
-            # Handle mixed precision carefully
-            with autocast(enabled=True):  # Explicitly enable
-                # Force input to float32 for consistent operation with any ops
-                # that might not support half precision
-                batch_x_float = batch_x.float()
-                preds = model(batch_x_float)
-                loss = calculate_loss(preds, batch_y)
-
-            # Scale loss and backprop
-            scaler.scale(loss).backward()
-
-            # Gradient clipping before optimizer step
-            scaler.unscale_(model_optimizer)
-            torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
-
-            scaler.step(model_optimizer)
-            scaler.update()
-
-            train_loss += loss.item()
-
-            # Print progress
-            if batch_idx % 10 == 0:
-                print(
-                    f"Epoch {epoch+1}/{epochs} | Batch {batch_idx}/{len(train_loader)} | Loss: {loss.item():.4f}"
-                )
-
-        # Update learning rate
-        scheduler.step()
-
-        # Validation phase
-        model.eval()
-        val_loss = 0.0
-
-        with torch.no_grad():
-            for batch_x, batch_y, *_ in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-
-                # Ensure float32 for validation
-                batch_x_float = batch_x.float()
-                preds = model(batch_x_float)
-                loss = calculate_loss(preds, batch_y)
-
-                val_loss += loss.item()
-
-        # Calculate average losses
-        train_loss /= len(train_loader)
-        val_loss /= len(val_loader)
-
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-
-        # Print epoch summary
-        print(
-            f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}"
-        )
-
-        # Check for improvement and early stopping
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-
-            # Store best model on CPU to avoid device mismatch later
-            best_model_state = {
-                k: v.detach().clone() for k, v in model.state_dict().items()
-            }
-
-            # Update SWA model if applicable
-            if use_swa and epoch >= swa_start:
-                swa_model.update_parameters(model)
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                print(f"Early stopping triggered at epoch {epoch+1}")
-                break
-
-    # Finalize SWA model if used
-    if use_swa and epoch >= swa_start:
-        print("Updating batch normalization statistics for SWA model...")
-
-        # Create a custom loader just for updating batch norm on device
-        def fix_device_dataloader():
-            for batch_x, batch_y, *_ in train_loader:
-                # Ensure batch is on the correct device and type
-                yield batch_x.to(device).float(), batch_y.to(device)
-
-        # Custom function to update batch norm statistics
-        def update_bn_stats(loader, model, device=device):
-            model.train()
-            with torch.no_grad():
-                for batch_x, _ in loader:
-                    # Ensure all tensors are on the same device
-                    if batch_x.device != device:
-                        batch_x = batch_x.to(device)
-
-                    # Forward pass to update BN statistics
-                    model(batch_x)
-
-        # Update batch norm statistics with custom function
-        try:
-            # First try PyTorch's implementation with our fixed dataloader
-            torch.optim.swa_utils.update_bn(
-                fix_device_dataloader(), swa_model, device=device
+            
+            # Model weight updates
+            batch_pbar = self._create_progress_bar(
+                enumerate(train_loader), 
+                f"Epoch {epoch+1:3d}", 
+                leave=False,
+                total=num_batches
             )
-        except Exception as e:
-            print(f"Error using standard update_bn: {e}")
-            print("Using custom batch norm update function...")
-            # Fall back to our custom implementation
-            update_bn_stats(fix_device_dataloader(), swa_model, device)
-
-        # Evaluate SWA model
-        swa_model.eval()
-        swa_val_loss = 0.0
-
-        with torch.no_grad():
-            for batch_x, batch_y, *_ in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                batch_x_float = batch_x.float()
-                swa_preds = swa_model(batch_x_float)
-                loss = calculate_loss(swa_preds, batch_y)
-                swa_val_loss += loss.item()
-
-        swa_val_loss /= len(val_loader)
-        print(
-            f"Final SWA val loss: {swa_val_loss:.4f} vs Best non-SWA: {best_val_loss:.4f}"
-        )
-
-        if swa_val_loss < best_val_loss:
-            print("SWA model performs better, using it as final model")
-            best_model_state = {
-                k: v.detach().clone() for k, v in swa_model.state_dict().items()
-            }
-            best_val_loss = swa_val_loss
-
-    # Load best model (ensure it's on the right device)
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
-        model = model.to(device)  # Ensure model is on the right device
-
-    # Final model evaluation
-    # print mse, rmse, mae, r2
-    # Calculate metrics
-    all_preds = []
-    all_targets = []
-    with torch.no_grad():
-        for batch_x, batch_y, *_ in val_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            batch_x_float = batch_x.float()
-            preds = model(batch_x_float)
-            all_preds.append(preds.cpu().numpy())
-            all_targets.append(batch_y.cpu().numpy())
-    all_preds = np.concatenate(all_preds, axis=0)
-    all_targets = np.concatenate(all_targets, axis=0)
-    y_pred_flat = all_preds.reshape(-1)
-    y_true_flat = all_targets.reshape(-1)
-    mse = mean_squared_error(y_true_flat, y_pred_flat)
-    rmse = np.sqrt(mse)
-    mae = mean_absolute_error(y_true_flat, y_pred_flat)
-    print(f"Final Model Performance:")
-    print(f"Test Loss: {best_val_loss:.6f}")
-    print(f"MSE: {mse:.6f}")
-    print(f"RMSE: {rmse:.6f}")
-    print(f"MAE: {mae:.6f}")
-
-    return {
-        "model": model,
-        "train_losses": train_losses,
-        "val_losses": val_losses,
-        "alpha_values": alpha_values,
-        "best_val_loss": best_val_loss,
-    }
-
-
-def expand_operations(
-    initial_ops,
-    op_importance,
-    op_categories=None,
-    complementary_map=None,
-    top_k=3,
-    max_ops=8,
-    verbose=True,
-):
-    """
-    Intelligently expand the set of architecture operations based on what performed well.
-
-    Args:
-        initial_ops (List[str]): Initial operation list.
-        op_importance (List[Tuple[str, float]]): Ranked (op_name, score) list.
-        op_categories (Dict[str, List[str]], optional): Category to ops map.
-        complementary_map (Dict[str, List[str]], optional): Best-op to complementary ops.
-        top_k (int): How many top operations to consider.
-        max_ops (int): Maximum allowed operation count after expansion.
-        verbose (bool): Whether to print reasoning.
-
-    Returns:
-        List[str]: Expanded operation list.
-    """
-    expanded_ops = list(initial_ops)
-    top_ops = [op for op, _ in op_importance[:top_k]]
-    best_op = top_ops[0]
-
-    # 🧱 Default categories (no RNNs)
-    if op_categories is None:
-        op_categories = {
-            "attention": ["Attention", "Transformer"],
-            "spectral": ["Wavelet", "Fourier"],
-            "convolution": ["TCN", "ConvMixer", "TimeConv"],
-            "mlp": ["ResidualMLP", "Identity", "GRN"],
-        }
-
-    # 🤝 Complementary pairs (customized)
-    if complementary_map is None:
-        complementary_map = {
-            "Attention": ["Wavelet", "GRN"],
-            "Transformer": ["Fourier", "GRN"],
-            "Wavelet": ["TimeConv", "ResidualMLP"],
-            "Fourier": ["Wavelet", "GRN"],
-            "TCN": ["GRN", "ResidualMLP"],
-            "ConvMixer": ["GRN", "Wavelet"],
-            "ResidualMLP": ["Attention", "TimeConv"],
-            "Identity": ["ResidualMLP", "TimeConv"],
-            "GRN": ["Attention", "ConvMixer"],
-            "TimeConv": ["Wavelet", "ResidualMLP"],
-        }
-
-    def add_op(op, reason):
-        if op not in expanded_ops:
-            expanded_ops.append(op)
-            if verbose:
-                print(f"➕ Added {op} because {reason}")
-
-    # Rule 1: Add all ops from any top-op's category
-    for cat, ops in op_categories.items():
-        if any(op in top_ops for op in ops):
-            for op in ops:
-                add_op(op, f"a {cat} op performed well")
-
-    # Rule 2: Add complementary ops to the best op
-    if best_op in complementary_map:
-        for op in complementary_map[best_op]:
-            add_op(op, f"it's complementary to {best_op}")
-
-    # Rule 3: Ensure at least one op per category
-    for cat, ops in op_categories.items():
-        if not any(op in expanded_ops for op in ops):
-            add_op(ops[0], f"ensuring {cat} coverage")
-
-    # Rule 4: Limit total ops to max_ops
-    if len(expanded_ops) > max_ops:
-
-        def sort_key(op):
-            if op in top_ops:
-                return (0, top_ops.index(op))
-            elif op in initial_ops:
-                return (1, initial_ops.index(op))
-            else:
-                return (2, op)
-
-        expanded_ops = sorted(expanded_ops, key=sort_key)[:max_ops]
-        if verbose:
-            print(f"⚠️ Trimmed to top {max_ops} ops for efficiency")
-
-    return expanded_ops
-
-
-def derive_final_architecture(model):
-    """
-    Create optimized model with fixed operations based on search results
-
-    Args:
-        model: Trained DARTS model
-
-    Returns:
-        Optimized model with fixed architecture
-    """
-    new_model = copy.deepcopy(model)
-
-    # Replace mixed operations with fixed ones
-    for cell in new_model.cells:
-        new_edges = nn.ModuleList()
-        for edge in cell.edges:
-            weights = F.softmax(edge.alphas, dim=-1)
-            top_op_idx = weights.argmax().item()
-            top_op = edge.ops[top_op_idx]
-            fixed_edge = FixedOp(top_op)
-            new_edges.append(fixed_edge)
-        cell.edges = new_edges
-
-    return new_model
-
-
-def train_final_model(
-    model,
-    train_loader,
-    val_loader,
-    test_loader,
-    epochs=100,
-    learning_rate=1e-3,
-    weight_decay=1e-5,
-    device="cuda",
-):
-    """
-    Train the final derived model with longer schedule and SWA
-
-    Args:
-        model: Derived model with fixed architecture
-        train_loader: Training data loader
-        val_loader: Validation data loader
-        test_loader: Test data loader
-        epochs: Number of training epochs
-        learning_rate: Learning rate
-        weight_decay: Weight decay
-        device: Device to run on
-
-    Returns:
-        Dictionary with trained model and metrics
-    """
-    model = model.to(device)
-
-    # Optimizer with weight decay
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=weight_decay
-    )
-
-    # OneCycle learning rate for super-convergence
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=learning_rate,
-        epochs=epochs,
-        steps_per_epoch=len(train_loader),
-        pct_start=0.3,
-        div_factor=25,
-        final_div_factor=1000,
-    )
-
-    # Stochastic Weight Averaging
-    swa_model = torch.optim.swa_utils.AveragedModel(model)
-    swa_model.to(device)
-    swa_start = epochs // 3
-
-    # Mixed precision
-    scaler = GradScaler()
-
-    # Training tracking
-    best_val_loss = float("inf")
-    patience_counter = 0
-    best_model_state = None
-    train_losses = []
-    val_losses = []
-
-    print(f"Training final model for {epochs} epochs...")
-    start_time = time.time()
-
-    for epoch in range(epochs):
-        # Training phase
-        model.train()
-        train_loss = 0.0
-
-        for batch_x, batch_y, *_ in train_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-
-            optimizer.zero_grad()
-
-            with autocast():
-                preds = model(batch_x)
-                loss = F.huber_loss(preds, batch_y, delta=0.1)
-
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-
-            # Update learning rate
-            scheduler.step()
-
-            train_loss += loss.item()
-
-        train_loss /= len(train_loader)
-        train_losses.append(train_loss)
-
-        # Validation phase
-        model.eval()
-        val_loss = 0.0
-
-        with torch.no_grad():
-            for batch_x, batch_y, *_ in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-
-                with autocast():
+            
+            for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
+                batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(self.device)
+                
+                model_optimizer.zero_grad()
+                with autocast('cuda' if self.device.startswith('cuda') else 'cpu'):
                     preds = model(batch_x)
-                    loss = F.huber_loss(preds, batch_y, delta=0.1)
-
-                val_loss += loss.item()
-
-        val_loss /= len(val_loader)
-        val_losses.append(val_loss)
-
-        # Update SWA model
-        if epoch >= swa_start:
-            swa_model.update_parameters(model)
-
-        # Print progress
-        print(
-            f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}"
-        )
-
-        # Check for improvement
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            best_model_state = {
-                k: v.cpu().detach() for k, v in model.state_dict().items()
-            }
-        else:
-            patience_counter += 1
-            if patience_counter >= 15:  # Higher patience for final model
-                print(f"Early stopping triggered at epoch {epoch+1}")
-                break
-
-    # Apply SWA if applicable
-    # Finalize SWA model if used
-    if epoch >= swa_start:
-        print("Updating batch normalization statistics for SWA model...")
-
-        # Create a custom loader just for updating batch norm on device
-        def fix_device_dataloader():
-            for batch_x, batch_y, *_ in train_loader:
-                # Ensure batch is on the correct device and type
-                yield batch_x.to(device).float(), batch_y.to(device)
-
-        # Custom function to update batch norm statistics
-        def update_bn_stats(loader, model, device=device):
-            model.train()
-            with torch.no_grad():
-                for batch_x, _ in loader:
-                    # Ensure all tensors are on the same device
-                    if batch_x.device != device:
-                        batch_x = batch_x.to(device)
-
-                    # Forward pass to update BN statistics
-                    model(batch_x)
-
-        # Update batch norm statistics with custom function
-        try:
-            # First try PyTorch's implementation with our fixed dataloader
-            torch.optim.swa_utils.update_bn(
-                fix_device_dataloader(), swa_model, device=device
-            )
-        except Exception as e:
-            print(f"Error using standard update_bn: {e}")
-            print("Using custom batch norm update function...")
-            # Fall back to our custom implementation
-            update_bn_stats(fix_device_dataloader(), swa_model, device)
-
-        # Evaluate SWA model
-        swa_model.eval()
-        swa_val_loss = 0.0
-
-        with torch.no_grad():
-            for batch_x, batch_y, *_ in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                swa_model = swa_model.to(device)
-                with autocast():
-                    swa_preds = swa_model(batch_x).to(device)
-                    loss = F.huber_loss(swa_preds, batch_y, delta=0.1)
-                swa_val_loss += loss.item()
-
-        swa_val_loss /= len(val_loader)
-        print(
-            f"SWA model validation loss: {swa_val_loss:.4f} vs Best: {best_val_loss:.4f}"
-        )
-
-        # Use SWA model if better
-        if swa_val_loss < best_val_loss:
-            print("SWA model performs better! Using SWA model.")
-            best_model_state = {
-                k: v.cpu().detach() for k, v in swa_model.state_dict().items()
-            }
-            best_val_loss = swa_val_loss
-
-    # Load best model
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
-
-    # Final evaluation on test set
-    model.eval()
-    test_loss = 0.0
-    all_preds = []
-    all_targets = []
-
-    with torch.no_grad():
-        for batch_x, batch_y, *_ in test_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-
-            with autocast():
-                preds = model(batch_x)
-                loss = F.huber_loss(preds, batch_y, delta=0.1)
-
-            test_loss += loss.item()
-            all_preds.append(preds.cpu().numpy())
-            all_targets.append(batch_y.cpu().numpy())
-
-    test_loss /= len(test_loader)
-
-    training_time = time.time() - start_time
-    print(f"Model training completed in {training_time:.1f} seconds")
-    print(f"Test loss: {test_loss:.4f}")
-
-    # print mse, rmse, mae, mape, r2
-    all_preds = np.concatenate(all_preds, axis=0)
-    all_targets = np.concatenate(all_targets, axis=0)
-    mse = np.mean((all_preds - all_targets) ** 2)
-    rmse = np.sqrt(mse)
-    mae = np.mean(np.abs(all_preds - all_targets))
-    mape = (
-        np.mean(np.abs((all_preds - all_targets) / (np.abs(all_targets) + 1e-5))) * 100
-    )
-    print(f"Final Model Performance:")
-    print(f"Test Loss: {test_loss:.6f}")
-    print(f"MSE: {mse:.6f}")
-    print(f"RMSE: {rmse:.6f}")
-    print(f"MAE: {mae:.6f}")
-    print(f"MAPE: {mape:.2f}%")
-
-    return {
-        "model": model,
-        "train_losses": train_losses,
-        "val_losses": val_losses,
-        "test_loss": test_loss,
-        "training_time": training_time,
-    }
-
-
-def multi_fidelity_darts_search(
-    input_dim=3,
-    hidden_dims=[32, 64, 128],  # Multiple model sizes
-    forecast_horizon=6,
-    seq_length=12,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    train_loader=None,
-    val_loader=None,
-    test_loader=None,
-    num_candidates=10,  # Number of architectures to evaluate
-    full_train_epochs=30,  # Epochs for final training
-):
-    """
-    Multi-fidelity architecture search using zero-cost metrics
-    for efficient screening
-    """
-    print("Starting multi-fidelity DARTS search...")
-
-    # Define possible operations
-    all_ops = [
-        "Identity",
-        "TimeConv",
-        "GRN",
-        "Wavelet",
-        "Fourier",
-        "Attention",
-        "TCN",
-        "ResidualMLP",
-        "ConvMixer",
-    ]
-
-    # Phase 1: Generate random architectures and evaluate with zero-cost metrics
-    candidates = []
-
-    for i in range(num_candidates):
-        # Randomly select operations
-        num_ops = random.randint(5, len(all_ops))
-        selected_ops = ["Identity"]  # Always include Identity
-        selected_ops.extend(
-            random.sample([op for op in all_ops if op != "Identity"], num_ops - 1)
-        )
-
-        # Randomly select model size
-        hidden_dim = random.choice(hidden_dims)
-
-        # Randomly select num_cells and num_nodes
-        num_cells = random.randint(1, 2)
-        num_nodes = random.randint(2, 4)
-
-        # Create model
-        model = TimeSeriesDARTS(
-            input_dim=input_dim,
-            hidden_dim=hidden_dim,
-            latent_dim=hidden_dim,
-            forecast_horizon=forecast_horizon,
-            seq_length=seq_length,
-            num_cells=num_cells,
-            num_nodes=num_nodes,
-            selected_ops=selected_ops,
-        ).to(device)
-
-        # Evaluate with zero-cost metrics
-        print(f"Evaluating candidate {i+1}/{num_candidates}...")
-        metrics = evaluate_zero_cost_metrics(model, val_loader, device)
-
-        candidates.append(
-            {
-                "model": model,
-                "metrics": metrics,
-                "score": metrics["aggregate_score"],
-                "selected_ops": selected_ops,
-                "hidden_dim": hidden_dim,
-                "num_cells": num_cells,
-                "num_nodes": num_nodes,
-            }
-        )
-
-    # Phase 2: Select top candidates based on zero-cost metrics
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-    top_k = min(5, len(candidates))
-    top_candidates = candidates[:top_k]
-
-    print(f"\nSelected top {top_k} candidates based on zero-cost metrics:")
-    for i, candidate in enumerate(top_candidates):
-        print(f"Candidate {i+1}:")
-        print(f"  Score: {candidate['score']:.4f}")
-        print(f"  Operations: {candidate['selected_ops']}")
-        print(f"  Hidden dim: {candidate['hidden_dim']}")
-        print(
-            f"  Architecture: {candidate['num_cells']} cells, {candidate['num_nodes']} nodes"
-        )
-
-    # Phase 3: Train top candidates with DARTS for a short period
-    trained_candidates = []
-    for i, candidate in enumerate(top_candidates):
-        print(f"\nShort DARTS training for candidate {i+1}/{top_k}...")
-
-        # Quick DARTS training
-        results = train_darts_model(
-            model=candidate["model"],
-            train_loader=train_loader,
-            val_loader=val_loader,
-            epochs=full_train_epochs // 3,  # Short training
-            device=device,
-            use_swa=False,
-        )
-
-        # Derive architecture
-        derived_model = derive_final_architecture(results["model"]).to(device)
-
-        # Evaluate on validation set
-        val_loss = 0.0
-        derived_model.eval()
-        with torch.no_grad():
-            for batch_x, batch_y, *_ in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                preds = derived_model(batch_x)
-                loss = F.huber_loss(preds, batch_y, delta=0.1)
-                val_loss += loss.item()
-        val_loss /= len(val_loader)
-
-        trained_candidates.append(
-            {"model": derived_model, "val_loss": val_loss, "candidate": candidate}
-        )
-
-    # Phase 4: Select best candidate and train fully
-    trained_candidates.sort(key=lambda x: x["val_loss"])
-    best_candidate = trained_candidates[0]
-
-    print(f"\nBest candidate found with val_loss: {best_candidate['val_loss']:.6f}")
-    print(f"Selected operations: {best_candidate['candidate']['selected_ops']}")
-
-    # Create final derived architecture
-    print(f"\nDeriving final architecture from search results")
-    derived_model = best_candidate["model"].to(device)
-    final_model = copy.deepcopy(derived_model)
-
-    # train the final model with the derived architecture
-    print(f"\nTraining derived model with final architecture")
-    final_epochs = 100
-    print(f"\nPHASE 3: Training Final Model ({final_epochs} epochs)")
-
-    # print the final model architecture
-    print(final_model)
-    print(pato)
-
-    # Enhanced training configuration
-    advanced_config = {
-        "optimizer": "Adam",
-        "learning_rate": 5e-4,
-        "weight_decay": 1e-5,
-        "scheduler": "OneCycleLR",
-        "mixed_precision": True,
-        "gradient_clip": 1.0,
-        "dropout": 0.2,
-        "stochastic_weight_averaging": True,
-        "batch_size": 256,
-    }
-
-    # Initialize optimizer with weight decay
-    optimizer = torch.optim.AdamW(
-        final_model.parameters(),
-        lr=advanced_config["learning_rate"],
-        weight_decay=advanced_config["weight_decay"],
-    )
-
-    # Use OneCycleLR scheduler for super-convergence
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=advanced_config["learning_rate"],
-        epochs=final_epochs,
-        steps_per_epoch=len(train_loader),
-        pct_start=0.3,
-        div_factor=25.0,
-        final_div_factor=1000.0,
-    )
-
-    # Set up stochastic weight averaging
-    if advanced_config["stochastic_weight_averaging"]:
-        swa_model = torch.optim.swa_utils.AveragedModel(final_model)
-        swa_start = final_epochs // 4
-
-    # Move model to device
-    final_model = final_model.to(device)
-
-    # Set up gradient scaler for mixed precision
-    scaler = GradScaler()
-
-    # Training parameters
-    best_val_loss = float("inf")
-    patience_counter = 0
-    best_model_state = None
-    train_losses = []
-    val_losses = []
-
-    # Training loop with progress bar
-    from tqdm import tqdm
-
-    for epoch in range(final_epochs):
-        # Training phase
-        final_model.train()
-        train_loss = 0.0
-        train_batches = tqdm(
-            train_loader, desc=f"Epoch {epoch+1}/{final_epochs} [Train]"
-        )
-
-        for batch_x, batch_y, *_ in train_batches:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-
-            optimizer.zero_grad()
-
-            # Use mixed precision
-            with autocast():
-                # Forward pass
-                preds = final_model(batch_x)
-
-                # Calculate loss - multi-horizon weighted loss
-                if batch_y.dim() > 2 and batch_y.size(1) > 1:
-                    # Weighted loss with higher weights for near-term predictions
-                    horizon_weights = torch.linspace(
-                        1.0, 0.5, batch_y.size(1), device=device
-                    )
-                    losses = F.huber_loss(preds, batch_y, delta=0.1, reduction="none")
-                    weighted_losses = losses * horizon_weights.view(1, -1, 1)
-                    loss = weighted_losses.mean()
-                else:
-                    loss = F.huber_loss(preds, batch_y, delta=0.1)
-
-            # Backward pass with gradient scaling
-            scaler.scale(loss).backward()
-
-            # Gradient clipping
-            if advanced_config["gradient_clip"] > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    final_model.parameters(), max_norm=advanced_config["gradient_clip"]
-                )
-
-            scaler.step(optimizer)
-            scaler.update()
-
-            # Step scheduler every batch (OneCycleLR)
+                    loss = loss_fn(preds, batch_y)
+                
+                scaler.scale(loss).backward()
+                scaler.unscale_(model_optimizer)
+                torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
+                scaler.step(model_optimizer)
+                scaler.update()
+                
+                epoch_train_loss += loss.item()
+                
+                batch_pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'avg_loss': f'{epoch_train_loss/(batch_idx+1):.4f}'
+                })
+            
+            batch_pbar.close()
             scheduler.step()
-
-            train_loss += loss.item()
-            train_batches.set_postfix({"loss": f"{loss.item():.4f}"})
-
-        # Average training loss
-        train_loss /= len(train_loader)
-        train_losses.append(train_loss)
-
-        # Validation phase
-        final_model.eval()
-        val_loss = 0.0
-        all_preds = []
-        all_targets = []
-
-        val_batches = tqdm(val_loader, desc=f"Epoch {epoch+1}/{final_epochs} [Valid]")
-
+            
+            # Validation phase
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                val_pbar = self._create_progress_bar(val_loader, "Validation", leave=False)
+                for batch_x, batch_y, *_ in val_pbar:
+                    batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(self.device)
+                    batch_val_loss = loss_fn(model(batch_x), batch_y).item()
+                    val_loss += batch_val_loss
+                    val_pbar.set_postfix({'val_loss': f'{batch_val_loss:.4f}'})
+                val_pbar.close()
+            
+            # Record losses
+            avg_train_loss = epoch_train_loss / num_batches
+            avg_val_loss = val_loss / len(val_loader)
+            train_losses.append(avg_train_loss)
+            val_losses.append(avg_val_loss)
+            
+            # Update epoch progress bar
+            epoch_pbar.set_postfix({
+                'train_loss': f'{avg_train_loss:.4f}',
+                'val_loss': f'{avg_val_loss:.4f}',
+                'best_val': f'{best_val_loss:.4f}',
+                'patience': f'{patience_counter}/{patience}'
+            })
+            
+            # Early stopping and model saving
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                patience_counter = 0
+                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                
+                if use_swa and epoch >= swa_start:
+                    swa_model.update_parameters(model)
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    epoch_pbar.set_description(f"Early stopping at epoch {epoch+1}")
+                    break
+        
+        epoch_pbar.close()
+        training_time = time.time() - start_time
+        
+        # Finalize SWA if used
+        if use_swa and swa_model is not None and epoch >= swa_start:
+            print("\\n🔄 Finalizing SWA model...")
+            try:
+                torch.optim.swa_utils.update_bn(train_loader, swa_model, device=self.device)
+            except Exception as e:
+                print(f"Warning: Standard BN update failed ({e}), using fallback...")
+                swa_model.train()
+                with torch.no_grad():
+                    for batch_x, *_ in self._create_progress_bar(train_loader, "Updating BN", leave=False):
+                        swa_model(batch_x.to(self.device).float())
+            
+            # Evaluate SWA performance
+            swa_val_loss = self._evaluate_model(swa_model, val_loader, loss_type)
+            print(f"SWA validation loss: {swa_val_loss:.6f} vs Best: {best_val_loss:.6f}")
+            
+            if swa_val_loss < best_val_loss:
+                print("✓ Using SWA model (better performance)")
+                best_state = {k: v.detach().clone() for k, v in swa_model.state_dict().items()}
+                best_val_loss = swa_val_loss
+        
+        # Load best model and compute final metrics
+        model.load_state_dict(best_state)
+        final_metrics = self._compute_final_metrics(model, val_loader)
+        
+        print("\\n" + "="*60)
+        print("🎯 DARTS TRAINING COMPLETED")
+        print("="*60)
+        print(f"Training time:         {training_time:.1f}s ({training_time/60:.1f}m)")
+        print(f"Final Validation Loss: {best_val_loss:.6f}")
+        print(f"MSE: {final_metrics['mse']:.6f} | RMSE: {final_metrics['rmse']:.6f}")
+        print(f"MAE: {final_metrics['mae']:.6f} | R²: {final_metrics['r2_score']:.4f}")
+        print(f"Total Epochs:          {epoch + 1}")
+        print("="*60)
+        
+        results = {
+            "model": model,
+            "train_losses": train_losses,
+            "val_losses": val_losses,
+            "alpha_values": alpha_values,
+            "best_val_loss": best_val_loss,
+            "training_time": training_time,
+            "final_metrics": final_metrics
+        }
+        
+        self.training_history.append(results)
+        return results
+    
+    def _compute_final_metrics(self, model: nn.Module, val_loader) -> Dict[str, float]:
+        """Compute final metrics on validation set."""
+        model.eval()
+        all_preds, all_targets = [], []
+        
         with torch.no_grad():
-            for batch_x, batch_y, *_ in val_batches:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-
-                with autocast():
-                    preds = final_model(batch_x, teacher_forcing_ratio=0.0)
-                    loss = F.huber_loss(preds, batch_y, delta=0.1)
-
-                val_loss += loss.item()
-                val_batches.set_postfix({"loss": f"{loss.item():.4f}"})
-
-                # Collect predictions for metrics
+            for batch_x, batch_y, *_ in self._create_progress_bar(val_loader, "Computing metrics", leave=False):
+                batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(self.device)
+                all_preds.append(model(batch_x).cpu().numpy())
+                all_targets.append(batch_y.cpu().numpy())
+        
+        preds_flat = np.concatenate(all_preds).reshape(-1)
+        targets_flat = np.concatenate(all_targets).reshape(-1)
+        
+        return self._compute_metrics(preds_flat, targets_flat)
+    
+    def derive_final_architecture(self, model: nn.Module) -> nn.Module:
+        """
+        Create optimized model with fixed operations based on search results.
+        
+        Args:
+            model: Trained DARTS model
+            
+        Returns:
+            Optimized model with fixed architecture
+        """
+        new_model = copy.deepcopy(model)
+        
+        print("🔧 Deriving final architecture...")
+        
+        # Replace mixed operations with fixed ones
+        for cell_idx, cell in enumerate(new_model.cells):
+            new_edges = nn.ModuleList()
+            for edge_idx, edge in enumerate(cell.edges):
+                weights = F.softmax(edge.alphas, dim=-1)
+                top_op_idx = weights.argmax().item()
+                top_op = edge.ops[top_op_idx]
+                
+                print(f"   Cell {cell_idx}, Edge {edge_idx}: {type(top_op).__name__} "
+                      f"(weight: {weights[top_op_idx]:.3f})")
+                
+                fixed_edge = FixedOp(top_op)
+                new_edges.append(fixed_edge)
+            cell.edges = new_edges
+        
+        print("✓ Architecture derivation completed")
+        return new_model
+    
+    def train_final_model(
+        self,
+        model: nn.Module,
+        train_loader,
+        val_loader,
+        test_loader,
+        epochs: int = 100,
+        learning_rate: float = 1e-3,
+        weight_decay: float = 1e-5,
+        patience: int = 15,
+        loss_type: str = "huber",
+        use_onecycle: bool = True,
+        swa_start_ratio: float = 0.33,
+        grad_clip_norm: float = 1.0
+    ) -> Dict[str, Any]:
+        """
+        Train final model with fixed architecture.
+        
+        Args:
+            model: Model with fixed architecture
+            train_loader: Training data loader
+            val_loader: Validation data loader
+            test_loader: Test data loader
+            epochs: Number of training epochs
+            learning_rate: Learning rate
+            weight_decay: Weight decay
+            patience: Early stopping patience
+            loss_type: Loss function type
+            use_onecycle: Whether to use OneCycle learning rate scheduler
+            swa_start_ratio: When to start SWA (as fraction of total epochs)
+            grad_clip_norm: Gradient clipping norm
+            
+        Returns:
+            Dictionary containing training results
+        """
+        model = model.to(self.device)
+        
+        # Setup training components
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        
+        # Scheduler setup
+        if use_onecycle:
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer, max_lr=learning_rate, epochs=epochs, steps_per_epoch=len(train_loader),
+                pct_start=0.3, div_factor=25, final_div_factor=1000
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        
+        # SWA and mixed precision setup
+        swa_model = torch.optim.swa_utils.AveragedModel(model).to(self.device)
+        scaler = GradScaler()
+        loss_fn = self._get_loss_function(loss_type)
+        
+        # Training state
+        best_val_loss, patience_counter, best_state = float("inf"), 0, None
+        train_losses, val_losses = [], []
+        swa_start = int(epochs * swa_start_ratio)
+        
+        print(f"🚀 Training final model for {epochs} epochs")
+        print(f"   Learning rate: {learning_rate}, Weight decay: {weight_decay}")
+        print(f"   Loss function: {loss_type}, Scheduler: {'OneCycle' if use_onecycle else 'CosineAnnealing'}")
+        print(f"   SWA starts at epoch {swa_start}, Patience: {patience}")
+        print("-" * 70)
+        
+        start_time = time.time()
+        epoch_pbar = self._create_progress_bar(range(epochs), "Final Training", unit="epoch")
+        
+        for epoch in epoch_pbar:
+            # Training phase
+            model.train()
+            epoch_train_loss = 0.0
+            num_train_batches = len(train_loader)
+            
+            train_pbar = self._create_progress_bar(
+                train_loader, 
+                f"Epoch {epoch+1:3d} Train", 
+                leave=False,
+                total=num_train_batches
+            )
+            
+            for batch_idx, (batch_x, batch_y, *_) in enumerate(train_pbar):
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                optimizer.zero_grad()
+                
+                with autocast('cuda' if self.device.startswith('cuda') else 'cpu'):
+                    preds = model(batch_x)
+                    loss = loss_fn(preds, batch_y)
+                
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+                scaler.step(optimizer)
+                scaler.update()
+                
+                if use_onecycle:
+                    scheduler.step()
+                
+                epoch_train_loss += loss.item()
+                
+                train_pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'avg_loss': f'{epoch_train_loss/(batch_idx+1):.4f}',
+                    'lr': f'{optimizer.param_groups[0]["lr"]:.2e}'
+                })
+            
+            train_pbar.close()
+            
+            if not use_onecycle:
+                scheduler.step()
+            
+            avg_train_loss = epoch_train_loss / num_train_batches
+            train_losses.append(avg_train_loss)
+            
+            # Validation phase
+            avg_val_loss = self._evaluate_model(model, val_loader, loss_type)
+            val_losses.append(avg_val_loss)
+            
+            # SWA update
+            swa_updated = False
+            if epoch >= swa_start:
+                swa_model.update_parameters(model)
+                swa_updated = True
+            
+            # Update main progress bar
+            postfix_dict = {
+                'train_loss': f'{avg_train_loss:.4f}',
+                'val_loss': f'{avg_val_loss:.4f}',
+                'best_val': f'{best_val_loss:.4f}',
+                'patience': f'{patience_counter}/{patience}'
+            }
+            
+            if swa_updated:
+                postfix_dict['swa'] = '✓'
+            
+            epoch_pbar.set_postfix(postfix_dict)
+            
+            # Early stopping logic
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                patience_counter = 0
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    epoch_pbar.set_description(f"Early stopping at epoch {epoch+1}")
+                    break
+        
+        epoch_pbar.close()
+        
+        # Finalize SWA model
+        swa_used = self._finalize_swa(model, swa_model, val_loader, train_loader, 
+                                     epoch, swa_start, loss_type, best_val_loss, best_state)
+        
+        # Evaluate on test set
+        model.load_state_dict(best_state)
+        test_results = self._evaluate_test_set(model, test_loader, loss_type)
+        training_time = time.time() - start_time
+        
+        # Final results
+        results = {
+            "model": model,
+            "train_losses": train_losses,
+            "val_losses": val_losses,
+            "test_loss": test_results["test_loss"],
+            "training_time": training_time,
+            "final_metrics": test_results["metrics"],
+            "training_info": {
+                "epochs_completed": epoch + 1,
+                "swa_used": swa_used,
+                "final_lr": optimizer.param_groups[0]["lr"],
+                "best_val_loss": best_val_loss
+            }
+        }
+        
+        self._print_final_results(results)
+        self.training_history.append(results)
+        
+        return results
+    
+    def _finalize_swa(self, model, swa_model, val_loader, train_loader, epoch, swa_start, 
+                     loss_type, best_val_loss, best_state):
+        """Finalize SWA model and determine whether to use it."""
+        if epoch < swa_start:
+            return False
+            
+        print("\\n🔄 Finalizing SWA model...")
+        
+        try:
+            bn_update_pbar = self._create_progress_bar(train_loader, "Updating BN", leave=False)
+            torch.optim.swa_utils.update_bn(bn_update_pbar, swa_model, device=self.device)
+            bn_update_pbar.close()
+        except Exception as e:
+            print(f"Warning: Standard BN update failed ({e}), using fallback...")
+            swa_model.train()
+            with torch.no_grad():
+                for batch_x, *_ in self._create_progress_bar(train_loader, "Fallback BN", leave=False):
+                    swa_model(batch_x.to(self.device))
+        
+        # Evaluate SWA model
+        swa_val_loss = self._evaluate_model(swa_model, val_loader, loss_type)
+        print(f"SWA validation loss: {swa_val_loss:.6f} vs Best: {best_val_loss:.6f}")
+        
+        if swa_val_loss < best_val_loss:
+            print("✓ Using SWA model (better performance)")
+            best_state.update({k: v.cpu().clone() for k, v in swa_model.state_dict().items()})
+            return True
+        else:
+            print("✓ Keeping original best model")
+            return False
+    
+    def _evaluate_test_set(self, model, test_loader, loss_type):
+        """Evaluate model on test set and compute comprehensive metrics."""
+        print("\\n📊 Evaluating on test set...")
+        model.eval()
+        loss_fn = self._get_loss_function(loss_type)
+        
+        test_loss = 0.0
+        all_preds, all_targets = [], []
+        
+        with torch.no_grad():
+            test_pbar = self._create_progress_bar(test_loader, "Test Evaluation")
+            
+            for batch_x, batch_y, *_ in test_pbar:
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                with autocast('cuda' if self.device.startswith('cuda') else 'cpu'):
+                    preds = model(batch_x)
+                    batch_test_loss = loss_fn(preds, batch_y).item()
+                
+                test_loss += batch_test_loss
                 all_preds.append(preds.cpu().numpy())
                 all_targets.append(batch_y.cpu().numpy())
+                
+                test_pbar.set_postfix({'test_loss': f'{batch_test_loss:.4f}'})
+            
+            test_pbar.close()
+        
+        test_loss /= len(test_loader)
+        preds_flat = np.concatenate(all_preds).reshape(-1)
+        targets_flat = np.concatenate(all_targets).reshape(-1)
+        
+        return {
+            "test_loss": test_loss,
+            "metrics": self._compute_metrics(preds_flat, targets_flat)
+        }
+    
+    def _print_final_results(self, results: Dict[str, Any]):
+        """Prints the final model's results in a professional, aligned format."""
+        metrics = results["final_metrics"]
+        info = results["training_info"]
 
-        # Average validation loss
-        val_loss /= len(val_loader)
-        val_losses.append(val_loss)
-
-        # Update SWA model if applicable
-        if advanced_config["stochastic_weight_averaging"] and epoch >= swa_start:
-            swa_model.update_parameters(final_model)
-
-        # Print progress
-        print(
-            f"Epoch {epoch+1}/{final_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}"
-        )
-
-        # Check for improvement
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            best_model_state = {
-                k: v.cpu().detach() for k, v in final_model.state_dict().items()
+        logger.info("\n" + "=" * 70)
+        logger.info("🏁 FINAL MODEL TRAINING COMPLETED")
+        logger.info("=" * 70)
+        logger.info(f"{'Training duration:':<30} {results['training_time']:.1f} seconds  ({results['training_time']/60:.1f} minutes)")
+        logger.info(f"{'Total epochs:':<30} {info['epochs_completed']}")
+        logger.info(f"{'Checkpoint used:':<30} {'SWA' if info.get('swa_used', False) else 'Best model'}")
+        logger.info(f"{'Final learning rate:':<30} {info['final_lr']:.2e}")
+        logger.info("-" * 70)
+        logger.info("📊 PERFORMANCE METRICS:")
+        logger.info(f"{'Test Loss:':<30} {results['test_loss']:.6f}")
+        logger.info(f"{'Mean Squared Error (MSE):':<30} {metrics['mse']:.6f}")
+        logger.info(f"{'Root Mean Squared Error (RMSE):':<30} {metrics['rmse']:.6f}")
+        logger.info(f"{'Mean Absolute Error (MAE):':<30} {metrics['mae']:.6f}")
+        logger.info(f"{'Mean Absolute % Error (MAPE):':<30} {metrics['mape']:.2f}%")
+        logger.info(f"{'R² Score:':<30} {metrics['r2_score']:.4f}")
+        logger.info("=" * 70 + "\n")
+    
+    def multi_fidelity_search(
+        self,
+        train_loader,
+        val_loader,
+        test_loader,
+        num_candidates: int = 10,
+        search_epochs: int = 30,
+        final_epochs: int = 100,
+        max_samples: int = 32,
+        top_k: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Multi-fidelity architecture search using zero-cost metrics.
+        
+        Args:
+            train_loader: Training data loader
+            val_loader: Validation data loader
+            test_loader: Test data loader
+            num_candidates: Number of candidates to generate
+            search_epochs: Epochs for DARTS search phase
+            final_epochs: Epochs for final training
+            max_samples: Max samples for zero-cost evaluation
+            top_k: Number of top candidates to train
+            
+        Returns:
+            Dictionary containing search results
+        """
+        print("🔍 Starting multi-fidelity DARTS search...")
+        print(f"   Candidates: {num_candidates}, Search epochs: {search_epochs}")
+        print(f"   Final epochs: {final_epochs}, Top-k: {top_k}")
+        print("-" * 60)
+        
+        # Phase 1: Generate and evaluate candidates with zero-cost metrics
+        print("\n📋 Phase 1: Generating and evaluating candidates...")
+        candidates = []
+        
+        candidate_pbar = self._create_progress_bar(range(num_candidates), "Generating candidates")
+        
+        for i in candidate_pbar:
+            # Random architecture generation
+            num_ops = random.randint(5, len(self.all_ops))
+            selected_ops = ["Identity"] + random.sample(
+                [op for op in self.all_ops if op != "Identity"], num_ops - 1
+            )
+            
+            config = {
+                'selected_ops': selected_ops,
+                'hidden_dim': random.choice(self.hidden_dims),
+                'num_cells': random.randint(1, 2),
+                'num_nodes': random.randint(2, 4)
             }
-            print(f"  → New best model saved!")
+            
+            # Create model
+            model = TimeSeriesDARTS(
+                input_dim=self.input_dim, 
+                hidden_dim=config['hidden_dim'],
+                latent_dim=config['hidden_dim'], 
+                forecast_horizon=self.forecast_horizon,
+                seq_length=self.seq_length, 
+                num_cells=config['num_cells'],
+                num_nodes=config['num_nodes'], 
+                selected_ops=config['selected_ops']
+            ).to(self.device)
+            
+            # Evaluate with zero-cost metrics
+            try:
+                metrics = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
+                score = metrics['aggregate_score']
+            except Exception as e:
+                print(f"Warning: Zero-cost evaluation failed for candidate {i+1}: {e}")
+                score = 0.0
+                metrics = {'aggregate_score': 0.0}
+            
+            candidates.append({
+                'model': model, 
+                'metrics': metrics, 
+                'score': score,
+                **config
+            })
+            
+            candidate_pbar.set_postfix({
+                'score': f'{score:.4f}',
+                'ops': len(selected_ops),
+                'hidden': config['hidden_dim']
+            })
+        
+        candidate_pbar.close()
+        
+        # Phase 2: Select top candidates
+        print(f"\n🏆 Phase 2: Selecting top {top_k} candidates...")
+        candidates.sort(key=lambda x: x['score'], reverse=True)
+        top_k = min(top_k, len(candidates))
+        top_candidates = candidates[:top_k]
+        
+        print("Top candidates:")
+        for i, c in enumerate(top_candidates):
+            print(f"  {i+1}: Score={c['score']:.4f}, Ops={len(c['selected_ops'])}, "
+                  f"Hidden={c['hidden_dim']}, Arch={c['num_cells']}x{c['num_nodes']}")
+            
+        for i, candidate in enumerate(top_candidates):
+            self.plot_architecture(candidate = candidate, save_path=f"candidate_{i+1}_architecture.png")
+
+        # Phase 3: Short DARTS training for top candidates
+        print(f"\n🔧 Phase 3: Training top {top_k} candidates...")
+        trained_candidates = []
+        
+        for i, candidate in enumerate(top_candidates):
+            print(f"\nTraining candidate {i+1}/{top_k}...")
+
+            # Quick DARTS training
+            search_results = self.train_darts_model(
+                model=candidate['model'], 
+                train_loader=train_loader,
+                val_loader=val_loader, 
+                epochs=search_epochs,
+                use_swa=False
+            )
+            
+            # Derive and evaluate architecture
+            derived_model = self.derive_final_architecture(search_results['model'])
+            val_loss = self._evaluate_model(derived_model, val_loader)
+            
+            trained_candidates.append({
+                'model': derived_model, 
+                'val_loss': val_loss, 
+                'candidate': candidate,
+                'search_results': search_results
+            })
+            
+            print(f"   Validation loss: {val_loss:.6f}")
+        
+        # Phase 4: Select best candidate
+        print(f"\n🎯 Phase 4: Selecting best candidate...")
+        best_candidate = min(trained_candidates, key=lambda x: x['val_loss'])
+
+
+        
+        print(f"Best candidate:")
+        print(f"   Validation loss: {best_candidate['val_loss']:.6f}")
+        print(f"   Operations: {best_candidate['candidate']['selected_ops']}")
+        print(f"   Architecture: {best_candidate['candidate']['num_cells']}x{best_candidate['candidate']['num_nodes']}")
+        print(f"   Hidden dim: {best_candidate['candidate']['hidden_dim']}")
+        
+        # Phase 5: Train final model
+        print(f"\n🚀 Phase 5: Training final model...")
+        final_model = copy.deepcopy(best_candidate['model'])
+        
+        final_results = self.train_final_model(
+            model=final_model,
+            train_loader=train_loader,
+            val_loader=val_loader, 
+            test_loader=test_loader,
+            epochs=final_epochs,
+            learning_rate=5e-4,
+            weight_decay=1e-5
+        )
+        
+        # Plot training curve
+        self._plot_training_curve(
+            final_results['train_losses'], 
+            final_results['val_losses'],
+            title="Final Model Training Progress",
+            save_path='final_model_training.png'
+        )
+        
+        # Store search results
+        search_summary = {
+            'final_model': final_results['model'],
+            'candidates': candidates,
+            'top_candidates': top_candidates,
+            'trained_candidates': trained_candidates,
+            'best_candidate': best_candidate,
+            'final_results': final_results,
+            'search_config': {
+                'num_candidates': num_candidates,
+                'search_epochs': search_epochs,
+                'final_epochs': final_epochs,
+                'top_k': top_k
+            }
+        }
+        
+        self.search_history.append(search_summary)
+        
+        print("\n✅ Multi-fidelity search completed!")
+        return search_summary
+    
+    def get_search_summary(self) -> str:
+        """Get a summary of all searches performed."""
+        if not self.search_history:
+            return "No searches performed yet."
+        
+        summary = []
+        summary.append("🔍 DARTS SEARCH SUMMARY")
+        summary.append("=" * 50)
+        
+        for i, search in enumerate(self.search_history):
+            final_metrics = search['final_results']['final_metrics']
+            config = search['search_config']
+            
+            summary.append(f"\nSearch {i+1}:")
+            summary.append(f"  Candidates evaluated: {config['num_candidates']}")
+            summary.append(f"  Final test RMSE: {final_metrics['rmse']:.6f}")
+            summary.append(f"  Final R² score: {final_metrics['r2_score']:.4f}")
+            summary.append(f"  Training time: {search['final_results']['training_time']:.1f}s")
+        
+        summary.append("\n" + "=" * 50)
+        return "\n".join(summary)
+    
+    def get_training_summary(self) -> str:
+        """Get a summary of all training sessions."""
+        if not self.training_history:
+            return "No training sessions completed yet."
+        
+        summary = []
+        summary.append("🚀 TRAINING SUMMARY")
+        summary.append("=" * 40)
+        
+        for i, training in enumerate(self.training_history):
+            if 'final_metrics' in training:
+                metrics = training['final_metrics']
+                summary.append(f"\nSession {i+1}:")
+                summary.append(f"  Best val loss: {training.get('best_val_loss', 'N/A')}")
+                summary.append(f"  RMSE: {metrics.get('rmse', 'N/A')}")
+                summary.append(f"  R² score: {metrics.get('r2_score', 'N/A')}")
+                summary.append(f"  Training time: {training.get('training_time', 'N/A')}s")
+        
+        summary.append("\n" + "=" * 40)
+        return "\n".join(summary)
+    
+    def save_best_model(self, filepath: str = "best_darts_model.pth"):
+        """Save the best model from search history."""
+        if not self.search_history:
+            print("❌ No search history available to save.")
+            return
+        
+        best_search = min(
+            self.search_history, 
+            key=lambda x: x['final_results']['final_metrics']['rmse']
+        )
+        
+        torch.save({
+            'model_state_dict': best_search['final_model'].state_dict(),
+            'final_metrics': best_search['final_results']['final_metrics'],
+            'training_info': best_search['final_results']['training_info'],
+            'search_config': best_search['search_config']
+        }, filepath)
+        
+        print(f"💾 Best model saved to {filepath}")
+        print(f"   RMSE: {best_search['final_results']['final_metrics']['rmse']:.6f}")
+        print(f"   R² Score: {best_search['final_results']['final_metrics']['r2_score']:.4f}")
+    
+    def load_model(self, filepath: str, model_class):
+        """Load a saved model."""
+        checkpoint = torch.load(filepath, map_location=self.device)
+        
+        # You'll need to reconstruct the model architecture first
+        # This is a placeholder - you'd need the actual architecture info
+        print(f"📂 Loading model from {filepath}")
+        print(f"   Saved RMSE: {checkpoint['final_metrics']['rmse']:.6f}")
+        print(f"   Saved R² Score: {checkpoint['final_metrics']['r2_score']:.4f}")
+        
+        return checkpoint
+    
+    def plot_alpha_evolution(self, alpha_values: List, save_path: str = "alpha_evolution.png"):
+        """Plot the evolution of architecture parameters during search."""
+        if not alpha_values:
+            print("❌ No alpha values to plot.")
+            return
+        
+        # Extract alpha evolution for first few edges
+        num_epochs = len(alpha_values)
+        num_edges_to_plot = min(4, len(alpha_values[0]))  # Plot first 4 edges
+        
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        axes = axes.flatten()
+        
+        for edge_idx in range(num_edges_to_plot):
+            if edge_idx < len(alpha_values[0]):
+                ax = axes[edge_idx]
+                
+                # Get alpha values for this edge across epochs
+                edge_alphas = []
+                for epoch_alphas in alpha_values:
+                    if edge_idx < len(epoch_alphas):
+                        cell_idx, edge_in_cell, alphas = epoch_alphas[edge_idx]
+                        edge_alphas.append(alphas)
+                
+                if edge_alphas:
+                    edge_alphas = np.array(edge_alphas)
+                    epochs = range(len(edge_alphas))
+                    
+                    # Plot each operation's alpha
+                    for op_idx in range(edge_alphas.shape[1]):
+                        ax.plot(epochs, edge_alphas[:, op_idx], 
+                               label=f'Op {op_idx}', linewidth=2, alpha=0.8)
+                    
+                    ax.set_title(f'Edge {edge_idx} Alpha Evolution', fontweight='bold')
+                    ax.set_xlabel('Epoch')
+                    ax.set_ylabel('Alpha Weight')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"📊 Alpha evolution plot saved to {save_path}")
+
+
+    def plot_architecture(self, *, candidate: dict, save_path: str = "arch.png"):
+
+        arquitetura = self.parse_model_architecture(candidate['model'])
+        self.draw_darts_architecture(arquitetura, save_path=save_path)
+
+
+    def draw_darts_architecture(self, model_info=None, save_path="darts_architecture.png"):
+        """
+        Draw a beautiful DARTS architecture diagram based on actual model structure.
+        
+        Args:
+            model_info: Dictionary containing model architecture details
+        """
+        fig, ax = plt.subplots(figsize=(18, 12))
+        ax.set_xlim(0, 20)
+        ax.set_ylim(0, 12)
+        ax.axis("off")
+        
+        # Default values if no model_info provided
+        if model_info is None:
+            model_info = {
+                'input_features': 3,
+                'embedding_dim': 128,
+                'cells': [
+                    {'ops': ['ConvMixerOp', 'FourierOp', 'GRNOp', 'ResidualMLPOp', 'ConvMixerOp']},
+                    {'ops': ['ResidualMLPOp', 'ConvMixerOp', 'WaveletOp', 'TCNOp', 'FourierOp']}
+                ],
+                'forecast_encoder': 'LSTM',
+                'forecast_decoder': 'LSTM', 
+                'mlp_dims': [128, 256, 128],
+                'output_features': 3
+            }
+        
+        # Beautiful color scheme
+        colors = {
+            "input_output": "#B8E6B8",
+            "embedding": "#A8D0F0", 
+            "cell1": "#F4E4E4",
+            "cell1_ops": "#F5C2C7",
+            "cell1_processing": "#F5C2C7",
+            "cell2": "#FFF3CD",
+            "cell2_ops": "#FFE69C", 
+            "forecast": "#E9ECEF",
+            "forecast_ops": "#CED4DA"
+        }
+        
+        # Helper functions for beautiful boxes
+        def add_beautiful_box(x, y, w, h, label, color, fontsize=10, fontweight='normal', 
+                            edge_color='#333333', linewidth=1.5, corner_radius=0.05):
+            """Add a beautiful rounded rectangle with shadow effect"""
+            # Add subtle shadow
+            shadow = FancyBboxPatch((x+0.02, y-0.02), w, h,
+                                boxstyle=f"round,pad=0.02,rounding_size={corner_radius}",
+                                facecolor='#00000015',
+                                edgecolor='none',
+                                zorder=1)
+            ax.add_patch(shadow)
+            
+            # Main box
+            box = FancyBboxPatch((x, y), w, h,
+                            boxstyle=f"round,pad=0.02,rounding_size={corner_radius}",
+                            edgecolor=edge_color,
+                            facecolor=color,
+                            linewidth=linewidth,
+                            zorder=2)
+            ax.add_patch(box)
+            
+            # Text with better typography
+            ax.text(x + w/2, y + h/2, label, ha="center", va="center", 
+                    fontsize=fontsize, weight=fontweight, color='#2C3E50', zorder=3)
+        
+        def draw_curved_arrow(start_x, start_y, end_x, end_y, style='->', linewidth=2, 
+                            color='#2C3E50', curve_strength=0.3):
+            """Draw a beautiful curved arrow"""
+            if abs(start_x - end_x) > abs(start_y - end_y):
+                # Horizontal curve
+                mid_x = (start_x + end_x) / 2
+                control_y = start_y + curve_strength * (end_y - start_y)
+                control_x = mid_x
+            else:
+                # Vertical curve  
+                mid_y = (start_y + end_y) / 2
+                control_x = start_x + curve_strength * (end_x - start_x)
+                control_y = mid_y
+            
+            # Create curved path
+            from matplotlib.path import Path
+            verts = [(start_x, start_y), (control_x, control_y), (end_x, end_y)]
+            codes = [Path.MOVETO, Path.CURVE3, Path.CURVE3]
+            path = Path(verts, codes)
+            
+            # Draw path
+            patch = patches.PathPatch(path, facecolor='none', edgecolor=color, 
+                                    linewidth=linewidth, zorder=2)
+            ax.add_patch(patch)
+            
+            # Add arrowhead
+            if style == '->':
+                dx = end_x - start_x
+                dy = end_y - start_y
+                length = np.sqrt(dx**2 + dy**2)
+                if length > 0:
+                    dx_norm = dx / length
+                    dy_norm = dy / length
+                    arrow_size = 0.15
+                    ax.arrow(end_x - arrow_size*dx_norm, end_y - arrow_size*dy_norm,
+                            arrow_size*dx_norm, arrow_size*dy_norm,
+                            head_width=0.08, head_length=0.08, fc=color, ec=color, zorder=3)
+        
+        def draw_dashed_connection(start_x, start_y, end_x, end_y, color='#7F8C8D', alpha=0.6):
+            """Draw beautiful dashed connections"""
+            ax.plot([start_x, end_x], [start_y, end_y], '--', 
+                color=color, linewidth=1.5, alpha=alpha, zorder=1)
+        
+        # Extract values from model_info
+        input_feat = model_info['input_features']
+        embed_dim = model_info['embedding_dim']
+        output_feat = model_info['output_features']
+        cells = model_info['cells']
+        
+        # 1. Input Features (top left)
+        add_beautiful_box(0.5, 9.5, 2.5, 1, f"Input Features ({input_feat})", 
+                        colors['input_output'], fontsize=11, fontweight='bold')
+        
+        # 2. Input Embedding (below input)
+        add_beautiful_box(0.5, 8, 2.5, 1, f"Input Embedding\nLinear({input_feat} → {embed_dim})", 
+                        colors['embedding'], fontsize=10, fontweight='bold')
+        
+        # Curved arrow from Input to Embedding
+        draw_curved_arrow(1.75, 9.5, 1.75, 9, linewidth=2.5, color='#2980B9')
+        
+        # 3. DARTS Cells (better positioned)
+        # Dynamically compute vertical positions for all DARTS cells
+        num_cells = len(cells)
+        cell_spacing = 4.0   # Vertical spacing between cells
+        total_height = (num_cells - 1) * cell_spacing
+        base_y = 6.5 - total_height / 2  # Center around y=6.5 (midpoint of forecast box)
+
+        cell_positions = [(4.5, base_y + i * cell_spacing) for i in range(num_cells)]
+
+        cell_colors = [colors['cell1'], colors['cell2']]
+        cell_op_colors = [colors['cell1_ops'], colors['cell2_ops']]
+        
+        for cell_idx, cell in enumerate(cells):
+            cell_x, cell_y = cell_positions[cell_idx]
+            
+            # Main cell container with beautiful styling
+            add_beautiful_box(cell_x, cell_y, 5, 3.2, "", cell_colors[cell_idx], 
+                            corner_radius=0.08, linewidth=2)
+            
+            # Cell title
+            add_beautiful_box(cell_x + 0.1, cell_y + 2.7, 4.8, 0.4, f"DARTS Cell {cell_idx + 1}", 
+                            cell_colors[cell_idx], fontsize=13, fontweight='bold')
+            
+            # Operations (left side with better spacing)
+            ops = cell['ops'][:5]  # Show up to 5 operations
+            op_width = 2
+            op_height = 0.35
+            for i, op in enumerate(ops):
+                op_y = cell_y + 2.2 - i * 0.4
+                add_beautiful_box(cell_x + 0.2, op_y, op_width, op_height, op, 
+                                cell_op_colors[cell_idx], fontsize=9, 
+                                corner_radius=0.03, linewidth=1)
+                
+                # Small connection line to processing box
+                line_start_x = cell_x + 0.2 + op_width
+                line_end_x = cell_x + 2.6
+                ax.plot([line_start_x, line_end_x], [op_y + op_height/2, op_y + op_height/2], 
+                    '-', color=cell_op_colors[cell_idx], linewidth=2, alpha=0.7)
+            
+            # Cell processing box (right side)
+            add_beautiful_box(cell_x + 2.6, cell_y + 0.6, 2.2, 1.8, 
+                            "Cell Processing\nProj + Norm + Gate", 
+                            cell_op_colors[cell_idx], fontsize=10, fontweight='bold',
+                            corner_radius=0.05)
+        
+        # 4. Beautiful dashed connections from embedding to cells
+        embed_center_x = 1.75
+        embed_center_y = 8.5
+        
+        for cell_idx, cell in enumerate(cells):
+            cell_x, cell_y = cell_positions[cell_idx]
+            ops = cell['ops'][:5]
+            
+            for i, op in enumerate(ops):
+                op_y = cell_y + 2.2 - i * 0.4 + 0.175  # Center of op box
+                draw_dashed_connection(3, embed_center_y, cell_x + 0.2, op_y)
+        
+        # 5. Forecasting Module (well-positioned)
+        forecast_x, forecast_y = 11, 6
+        add_beautiful_box(forecast_x, forecast_y, 4.5, 3.8, "", colors['forecast'], 
+                        corner_radius=0.08, linewidth=2)
+        
+        # Forecasting title
+        add_beautiful_box(forecast_x + 0.1, forecast_y + 3.3, 4.3, 0.4, "Forecasting Module", 
+                        colors['forecast'], fontsize=13, fontweight='bold')
+        
+        # Forecasting operations with actual model info
+        encoder_type = model_info['forecast_encoder']
+        decoder_type = model_info['forecast_decoder']
+        mlp_dims = model_info['mlp_dims']
+        
+        forecast_ops = [
+            f"{encoder_type} Encoder ({embed_dim} → {embed_dim})",
+            f"{decoder_type} Decoder ({input_feat} → {embed_dim})", 
+            f"MLP ({' → '.join(map(str, mlp_dims))})",
+            f"Output Layer ({embed_dim} → {output_feat})"
+        ]
+        
+        for i, op in enumerate(forecast_ops):
+            add_beautiful_box(forecast_x + 0.2, forecast_y + 2.7 - i*0.6, 4.1, 0.5, op, 
+                            colors['forecast_ops'], fontsize=10, corner_radius=0.03, linewidth=1)
+        
+        # 6. Output (far right)
+        add_beautiful_box(16.5, 7.5, 2.5, 1, f"Output ({output_feat})", 
+                        colors['input_output'], fontsize=11, fontweight='bold')
+        
+        # 7. Beautiful curved arrows from cells to forecasting
+        for cell_idx, cell in enumerate(cells):
+            cell_x, cell_y = cell_positions[cell_idx]
+            start_x = cell_x + 5
+            start_y = cell_y + 1.6
+            draw_curved_arrow(start_x, start_y, forecast_x, forecast_y + 1.9, 
+                            linewidth=3, color='#27AE60', curve_strength=0.2)
+        
+        # 8. Arrow from forecasting to output
+        draw_curved_arrow(forecast_x + 4.5, forecast_y + 1.9, 16.5, 8, 
+                        linewidth=3, color='#8E44AD', curve_strength=0.1)
+        
+        # 9. Beautiful Legend (repositioned)
+        legend_x, legend_y = 11.5, 0.5
+        add_beautiful_box(legend_x, legend_y, 3.5, 3.2, "", "white", 
+                        edge_color='#34495E', linewidth=2, corner_radius=0.06)
+        
+        ax.text(legend_x + 1.75, legend_y + 2.8, "Legend", ha="center", va="center", 
+            fontsize=12, weight='bold', color='#2C3E50')
+                
+        # Base legend items
+        legend_items = [
+            ("Input/Output", colors['input_output']),
+            ("Input Embedding", colors['embedding']),
+        ]
+
+        # Add DARTS cell legend entries dynamically
+        cell_colors_all = [colors['cell1'], colors['cell2']]  # Extend if more cells expected
+        for i in range(len(cells)):
+            color = cell_colors_all[i % len(cell_colors_all)]  # Cycle colors if needed
+            legend_items.append((f"DARTS Cell {i + 1}", color))
+
+        # Add Forecasting module
+        legend_items.append(("Forecasting Module", colors['forecast']))
+
+        
+        for i, (label, color) in enumerate(legend_items):
+            legend_item_y = legend_y + 2.3 - i*0.35
+            add_beautiful_box(legend_x + 0.15, legend_item_y, 0.3, 0.25, "", color, 
+                            corner_radius=0.02)
+            ax.text(legend_x + 0.6, legend_item_y + 0.125, label, ha="left", va="center", 
+                fontsize=10, color='#2C3E50')
+        
+        
+        # Set beautiful background
+        fig.patch.set_facecolor('#FAFAFA')
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='#FAFAFA', 
+                edgecolor='none', pad_inches=0.2)
+        plt.show()
+        print(f"Saved beautiful architecture diagram to {save_path}")
+
+
+    def parse_model_architecture(self, model_dict):
+        """
+        Parse the TimeSeriesDARTS model dictionary to extract architecture details.
+        
+        Args:
+            model_dict: Dictionary containing the PyTorch model (e.g., checkpoint['model'])
+        
+        Returns:
+            Dictionary with architecture information for visualization
+        """
+        model_info = {}
+        
+        # Get the actual model from the dictionary
+        if isinstance(model_dict, dict) and 'model' in model_dict:
+            model = model_dict['model']
         else:
-            patience_counter += 1
-            if patience_counter >= 15:  # Increased patience
-                print(f"Early stopping triggered at epoch {epoch+1}")
-                break
-
-    # Load best model
-    if best_model_state is not None:
-        final_model.load_state_dict(best_model_state)
-
-    # Plot training curve for the final model
-    plt.figure(figsize=(10, 6))
-    epochs = range(1, len(train_losses) + 1)
-    plt.plot(epochs, train_losses, "b-", linewidth=2, label="Train Loss")
-    plt.plot(epochs, val_losses, "r-", linewidth=2, label="Validation Loss")
-    plt.xlabel("Epoch", fontsize=12)
-    plt.ylabel("Loss", fontsize=12)
-    plt.title("Final Model Training Progress", fontsize=14, fontweight="bold")
-    plt.legend(fontsize=10)
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.savefig("final_model_training.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    # Phase 4: Evaluate on test set with enhanced metrics
-    print(f"\nPHASE 4: Evaluating Final Model on Test Set")
-    final_model.eval()
-    test_loss = 0.0
-    all_preds = []
-    all_targets = []
-
-    with torch.no_grad():
-        for batch_x, batch_y, *_ in test_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-
-            with autocast():
-                preds = final_model(batch_x)
-
-            loss = F.huber_loss(preds, batch_y, delta=0.1)
-            test_loss += loss.item()
-
-            all_preds.append(preds.cpu().numpy())
-            all_targets.append(batch_y.cpu().numpy())
-
-    test_loss /= len(test_loader)
-
-    # Calculate comprehensive metrics
-    all_preds = np.concatenate(all_preds, axis=0)
-    all_targets = np.concatenate(all_targets, axis=0)
-
-    # Calculate overall metrics
-    y_pred_flat = all_preds.reshape(-1)
-    y_true_flat = all_targets.reshape(-1)
-
-    mse = mean_squared_error(y_true_flat, y_pred_flat)
-    rmse = np.sqrt(mse)
-    mae = mean_absolute_error(y_true_flat, y_pred_flat)
-    mape = (
-        np.mean(np.abs((y_true_flat - y_pred_flat) / (np.abs(y_true_flat) + 1e-5)))
-        * 100
-    )
-    r2 = r2_score(y_true_flat, y_pred_flat)
-
-    # Print final results
-    print(f"\nOverall Model Performance:")
-    print(f"Test Loss: {test_loss:.6f}")
-    print(f"MSE: {mse:.6f}")
-    print(f"RMSE: {rmse:.6f}")
-    print(f"MAE: {mae:.6f}")
-    print(f"MAPE: {mape:.2f}%")
-    print(f"R²: {r2:.6f}")
-
-    return {
-        "final_model": final_model,
-        "candidates": candidates,
-        "top_candidates": top_candidates,
-        "trained_candidates": trained_candidates,
-        "best_candidate": best_candidate,
-    }
+            model = model_dict
+        
+        # Extract input features and embedding dimension from input_embedding
+        try:
+            input_embedding = model.input_embedding
+            # Find the first Linear layer
+            for layer in input_embedding:
+                if hasattr(layer, 'in_features') and hasattr(layer, 'out_features'):
+                    model_info['input_features'] = layer.in_features
+                    model_info['embedding_dim'] = layer.out_features
+                    break
+        except:
+            model_info['input_features'] = 3
+            model_info['embedding_dim'] = 32
+        
+        # Extract operations from DARTS cells
+        cells = []
+        try:
+            for cell_idx, cell in enumerate(model.cells):
+                ops = []
+                
+                # Traverse the cell structure to find operations
+                if hasattr(cell, 'edges'):
+                    for edge in cell.edges:
+                        if hasattr(edge, 'ops'):
+                            for op_idx, op in enumerate(edge.ops):
+                                op_name = type(op).__name__
+                                if op_name not in ops:
+                                    ops.append(op_name)
+                
+                if ops:
+                    cells.append({'ops': ops})
+        except:
+            # Fallback to default if parsing fails
+            cells = [{'ops': ['IdentityOp', 'AttentionOp', 'GRNOp', 'TimeConvOp', 'WaveletOp']}]
+        
+        model_info['cells'] = cells
+        
+        # Extract forecast encoder and decoder info
+        try:
+            forecast_encoder = model.forecast_encoder
+            model_info['forecast_encoder'] = type(forecast_encoder).__name__
+            if hasattr(forecast_encoder, 'input_size'):
+                encoder_input_dim = forecast_encoder.input_size
+            if hasattr(forecast_encoder, 'hidden_size'):
+                encoder_hidden_dim = forecast_encoder.hidden_size
+        except:
+            model_info['forecast_encoder'] = 'GRU'
+            encoder_input_dim = 32
+            encoder_hidden_dim = 32
+        
+        try:
+            forecast_decoder = model.forecast_decoder
+            model_info['forecast_decoder'] = type(forecast_decoder).__name__
+            if hasattr(forecast_decoder, 'input_size'):
+                decoder_input_dim = forecast_decoder.input_size
+            if hasattr(forecast_decoder, 'hidden_size'):
+                decoder_hidden_dim = forecast_decoder.hidden_size
+        except:
+            model_info['forecast_decoder'] = 'GRU'
+            decoder_input_dim = 3
+            decoder_hidden_dim = 32
+        
+        # Extract MLP dimensions
+        try:
+            mlp = model.mlp
+            mlp_dims = []
+            for layer in mlp:
+                if hasattr(layer, 'in_features') and hasattr(layer, 'out_features'):
+                    if not mlp_dims:  # First layer
+                        mlp_dims.append(layer.in_features)
+                    mlp_dims.append(layer.out_features)
+            model_info['mlp_dims'] = mlp_dims if mlp_dims else [32, 64, 32]
+        except:
+            model_info['mlp_dims'] = [32, 64, 32]
+        
+        # Extract output features
+        try:
+            output_layer = model.output_layer
+            model_info['output_features'] = output_layer.out_features
+        except:
+            model_info['output_features'] = 3
+        
+        return model_info
