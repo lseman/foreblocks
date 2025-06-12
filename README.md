@@ -112,6 +112,12 @@ ForeBlocks follows a clean, modular design:
 
 ---
 
+## ForecastingModel
+
+![ForecastingModel](imgs/forecasting_model_diagram.svg)
+
+---
+
 ## 🎯 Forecasting Models
 
 ### 1. Sequence-to-Sequence (Default)

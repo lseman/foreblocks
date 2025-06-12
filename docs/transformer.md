@@ -28,7 +28,6 @@ BaseTransformerLayer
 
 ![Transformer](imgs/transformer_diagram_fixed.svg)
 
-
 ---
 
 ## Advanced Feature Matrix

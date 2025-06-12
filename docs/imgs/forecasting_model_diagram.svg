@@ -1,0 +1,1174 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="1101"
+   height="1267.5"
+   version="1.1"
+   id="svg68"
+   sodipodi:docname="forecasting_model_diagram.svg"
+   inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.61903923"
+     inkscape:cx="383.65905"
+     inkscape:cy="718.8559"
+     inkscape:window-width="1800"
+     inkscape:window-height="1025"
+     inkscape:window-x="0"
+     inkscape:window-y="44"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg68" />
+  <defs
+     id="defs1">
+    <!-- Simple arrow marker -->
+    <marker
+       id="arrowhead"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="0,7 0,0 10,3.5 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1" />
+    </marker>
+    <!-- Decision diamond marker -->
+    <marker
+       id="diamond"
+       markerWidth="8"
+       markerHeight="8"
+       refX="4"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="4,8 0,4 4,0 8,4 "
+         fill="#f59e0b"
+         stroke="#92400e"
+         id="diamond1" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect
+     width="1099.9727"
+     height="1266.4784"
+     fill="#f8fafc"
+     stroke="#e2e8f0"
+     stroke-width="1.02731"
+     id="rect1"
+     x="0.51365662"
+     y="0.51365662" />
+  <!-- Title -->
+  <text
+     x="550.5"
+     y="30.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="18px"
+     font-weight="bold"
+     fill="#374151"
+     id="title">Unified ForecastingModel Architecture</text>
+  <!-- Input -->
+  <rect
+     x="454.99576"
+     y="60.615028"
+     width="187.57191"
+     height="39.769947"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2.23006"
+     rx="10.003836"
+     id="rect_input" />
+  <text
+     x="550.5"
+     y="85.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_input">src, targets, time_features</text>
+  <!-- Arrow -->
+  <path
+     d="m 550.5,105.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow1" />
+  <!-- Input Preprocessing -->
+  <rect
+     x="400.5"
+     y="125.5"
+     width="300"
+     height="80"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_preprocess" />
+  <text
+     x="550.5"
+     y="145.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_preprocess_title">Input Preprocessing</text>
+  <text
+     x="410.5"
+     y="165.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_preprocess1">• input_preprocessor(src)</text>
+  <text
+     x="410.5"
+     y="177.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_preprocess2">• Optional skip connection</text>
+  <text
+     x="410.5"
+     y="189.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_preprocess3">• input_normalization</text>
+  <text
+     x="570.5"
+     y="165.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_preprocess4">• Time feature embedding</text>
+  <text
+     x="570.5"
+     y="177.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_preprocess5">• Multi-encoder support</text>
+  <text
+     x="570.5"
+     y="189.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_preprocess6">• VAE hidden processing</text>
+  <!-- Arrow -->
+  <path
+     d="m 550.5,210.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow2" />
+  <!-- Strategy Router -->
+  <polygon
+     points="550,235 625,270 550,305 475,270 "
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="2"
+     id="strategy_router"
+     transform="translate(0.5,0.5)" />
+  <text
+     x="550.5"
+     y="275.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_strategy_router">Forecasting Strategy?</text>
+  <!-- Direct Strategy -->
+  <path
+     d="m 475.5,270.5 c -100,0 -200,0 -250,0 v 50"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_direct" />
+  <text
+     x="350.5"
+     y="290.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_direct">direct</text>
+  <rect
+     x="125.5"
+     y="325.5"
+     width="200"
+     height="80"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="2"
+     rx="8"
+     id="rect_direct" />
+  <text
+     x="225.5"
+     y="345.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_direct_title">Direct Forecasting</text>
+  <text
+     x="135.5"
+     y="365.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_direct1">• Single forward pass</text>
+  <text
+     x="135.5"
+     y="377.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_direct2">• decoder(src)</text>
+  <text
+     x="135.5"
+     y="389.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_direct3">• Fastest inference</text>
+  <text
+     x="135.5"
+     y="401.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_direct4">• No iterative generation</text>
+  <!-- Autoregressive Strategy -->
+  <path
+     d="m 500.5,305.5 c 0,20 0,40 0,60"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_auto" />
+  <text
+     x="480.5"
+     y="340.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_auto">autoregressive</text>
+  <rect
+     x="350.5"
+     y="370.5"
+     width="200"
+     height="100"
+     fill="#e9d5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_auto" />
+  <text
+     x="450.5"
+     y="390.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_auto_title">Autoregressive Generation</text>
+  <text
+     x="360.5"
+     y="410.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_auto1">• Start with last timestep</text>
+  <text
+     x="360.5"
+     y="422.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_auto2">• Generate step-by-step</text>
+  <text
+     x="360.5"
+     y="434.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_auto3">• Teacher forcing support</text>
+  <text
+     x="360.5"
+     y="446.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_auto4">• Scheduled sampling</text>
+  <text
+     x="360.5"
+     y="458.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_auto5">• For RNN/LSTM models</text>
+  <!-- Seq2Seq Strategy -->
+  <path
+     d="m 600.5,305.5 c 0,20 0,40 0,60"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_seq2seq" />
+  <text
+     x="620.5"
+     y="340.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_seq2seq">seq2seq / transformer_seq2seq</text>
+  <rect
+     x="575.5"
+     y="370.5"
+     width="200"
+     height="100"
+     fill="#d1fae5"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="8"
+     id="rect_seq2seq" />
+  <text
+     x="675.5"
+     y="390.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_seq2seq_title">Seq2Seq Strategy</text>
+  <text
+     x="585.5"
+     y="410.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_seq2seq1">• Routes by model_type</text>
+  <text
+     x="585.5"
+     y="422.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_seq2seq2">• RNN/LSTM style</text>
+  <text
+     x="585.5"
+     y="434.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_seq2seq3">• Transformer style</text>
+  <text
+     x="585.5"
+     y="446.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_seq2seq4">• Informer-like style</text>
+  <text
+     x="585.5"
+     y="458.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_seq2seq5">• Multi-encoder option</text>
+  <!-- Model Type Router (from seq2seq) -->
+  <path
+     d="m 675.5,475.5 v 25"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_to_model_type" />
+  <polygon
+     points="675,510 750,545 675,580 600,545 "
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     id="model_type_router"
+     transform="translate(0.5,0.5)" />
+  <text
+     x="675.5"
+     y="550.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_model_type_router">Model Type?</text>
+  <!-- RNN/LSTM Style -->
+  <path
+     d="m 600.5,545.5 c -150,0 -300,0 -350,0 v 50"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_rnn" />
+  <text
+     x="425.5"
+     y="565.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_rnn">lstm</text>
+  <rect
+     x="150.5"
+     y="600.5"
+     width="250"
+     height="140"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2"
+     rx="8"
+     id="rect_rnn" />
+  <text
+     x="275.5"
+     y="620.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_rnn_title">RNN/LSTM Style</text>
+  <!-- Encoder-Decoder box -->
+  <rect
+     x="160.5"
+     y="630.5"
+     width="230"
+     height="25"
+     fill="#faf5ff"
+     stroke="#d8b4fe"
+     stroke-width="1"
+     rx="5"
+     id="rect_rnn_encdec" />
+  <text
+     x="275.5"
+     y="647.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_rnn_encdec">Encoder → Hidden State → Decoder</text>
+  <text
+     x="170.5"
+     y="670.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_rnn1">• encoder(src) → outputs, hidden</text>
+  <text
+     x="170.5"
+     y="682.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_rnn2">• Process hidden (VAE/bidirectional)</text>
+  <text
+     x="170.5"
+     y="694.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_rnn3">• Initialize decoder input</text>
+  <text
+     x="170.5"
+     y="706.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_rnn4">• Step-by-step generation</text>
+  <text
+     x="170.5"
+     y="718.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_rnn5">• Optional attention mechanism</text>
+  <text
+     x="170.5"
+     y="730.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_rnn6">• Teacher forcing + scheduled sampling</text>
+  <!-- Transformer Style -->
+  <path
+     d="m 676.5,580.5 c 0,20 0,40 0,60"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_transformer" />
+  <text
+     x="720.5"
+     y="615.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_transformer">transformer</text>
+  <rect
+     x="575.5"
+     y="645.5"
+     width="250"
+     height="120"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_transformer" />
+  <text
+     x="700.5"
+     y="665.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_transformer_title">Transformer Style</text>
+  <text
+     x="585.5"
+     y="685.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_transformer1">• encoder(src) → memory</text>
+  <text
+     x="585.5"
+     y="697.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_transformer2">• Autoregressive decoding</text>
+  <text
+     x="585.5"
+     y="709.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_transformer3">• decoder(input, memory)</text>
+  <text
+     x="585.5"
+     y="721.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_transformer4">• Handle size mismatches</text>
+  <text
+     x="585.5"
+     y="733.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_transformer5">• Teacher forcing support</text>
+  <text
+     x="585.5"
+     y="745.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_transformer6">• Padding for input/output dims</text>
+  <text
+     x="585.5"
+     y="757.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_transformer7">• Cross-attention with memory</text>
+  <!-- Informer Style -->
+  <path
+     d="m 750.5,545.5 c 150,0 200,0 200,95"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_informer" />
+  <text
+     x="850.5"
+     y="565.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_informer">informer-like</text>
+  <rect
+     x="850.5"
+     y="645.5"
+     width="220"
+     height="120"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="2"
+     rx="8"
+     id="rect_informer" />
+  <text
+     x="960.5"
+     y="665.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_informer_title">Informer-Like Style</text>
+  <text
+     x="860.5"
+     y="685.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_informer1">• encoder(src, time_features)</text>
+  <text
+     x="860.5"
+     y="697.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_informer2">• Start token expansion</text>
+  <text
+     x="860.5"
+     y="709.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_informer3">• Parallel decoding</text>
+  <text
+     x="860.5"
+     y="721.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_informer4">• decoder(dec_input, enc_out)</text>
+  <text
+     x="860.5"
+     y="733.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_informer5">• Handle encoder/decoder tuples</text>
+  <text
+     x="860.5"
+     y="745.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_informer6">• Time feature integration</text>
+  <text
+     x="860.5"
+     y="757.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_informer7">• ProbSparse/Full attention</text>
+  <!-- Convergence arrows -->
+  <path
+     d="m 225.5,410.5 c 177.33309,98.48896 323.13327,388.97744 323.13327,458.97744"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv_direct"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 450.5,475.5 c 0,100 98.97771,338.97744 98.97771,393.97744"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv_auto"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 275.5,745.5 c 0,50 248.64441,-59.77762 275.6666,124.82189"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv_rnn"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 700.5,770.5 c 0,50 -167.91116,13.68894 -149.3334,98.97744"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv_transformer"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 960.5,770.5 c 0,50 -439.73336,-23.46656 -410.17785,99.82189"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv_informer"
+     sodipodi:nodetypes="cc" />
+  <!-- Output Processing -->
+  <rect
+     x="400.5"
+     y="871.5"
+     width="300"
+     height="80"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2"
+     rx="8"
+     id="rect_output_process" />
+  <text
+     x="550.5"
+     y="891.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_output_process_title">Output Processing</text>
+  <text
+     x="410.5"
+     y="911.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_output1">• output_normalization</text>
+  <text
+     x="410.5"
+     y="923.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_output2">• output_postprocessor</text>
+  <text
+     x="410.5"
+     y="935.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_output3">• KL divergence tracking</text>
+  <text
+     x="570.5"
+     y="911.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_output4">• Multi-encoder aggregation</text>
+  <text
+     x="570.5"
+     y="923.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_output5">• Attention context integration</text>
+  <text
+     x="570.5"
+     y="935.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_output6">• Dimension projection</text>
+  <!-- Arrow -->
+  <path
+     d="m 550.5,956.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_final" />
+  <!-- Final Output -->
+  <rect
+     x="475.5"
+     y="976.5"
+     width="150"
+     height="40"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_final_output" />
+  <text
+     x="550.5"
+     y="1001.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_final_output">Forecasted Sequence</text>
+  <!-- Side panels -->
+  <!-- Multi-Encoder Panel -->
+  <rect
+     x="50.5"
+     y="800.5"
+     width="250"
+     height="120"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="2"
+     rx="8"
+     id="rect_multi_encoder" />
+  <text
+     x="175.5"
+     y="820.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_multi_encoder_title">Multi-Encoder Mode</text>
+  <text
+     x="60.5"
+     y="840.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_multi1">• Separate encoder/decoder per feature</text>
+  <text
+     x="60.5"
+     y="852.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_multi2">• Process each input dimension</text>
+  <text
+     x="60.5"
+     y="864.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_multi3">• Independent attention per feature</text>
+  <text
+     x="60.5"
+     y="876.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_multi4">• Aggregation layer combines outputs</text>
+  <text
+     x="60.5"
+     y="888.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_multi5">• Linear combination weights</text>
+  <text
+     x="60.5"
+     y="900.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_multi6">• Parallel feature processing</text>
+  <text
+     x="60.5"
+     y="912.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_multi7">• ModuleList for scalability</text>
+  <!-- Teacher Forcing Panel -->
+  <rect
+     x="750.5"
+     y="800.5"
+     width="300"
+     height="120"
+     fill="#dcfce7"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="8"
+     id="rect_teacher_forcing" />
+  <text
+     x="900.5"
+     y="820.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_teacher_forcing_title">Teacher Forcing Sampling</text>
+  <text
+     x="760.5"
+     y="840.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_teacher1">• Training: use target values as next input</text>
+  <text
+     x="760.5"
+     y="852.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_teacher2">• Inference: use model predictions</text>
+  <text
+     x="760.5"
+     y="864.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_teacher3">• teacher_forcing_ratio controls probability</text>
+  <text
+     x="760.5"
+     y="876.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_teacher4">• scheduled_sampling_fn for curriculum</text>
+  <text
+     x="760.5"
+     y="888.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_teacher5">• Epoch-based scheduling</text>
+  <text
+     x="760.5"
+     y="900.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_teacher6">• Improves training stability</text>
+  <text
+     x="760.5"
+     y="912.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_teacher7">• Reduces exposure bias</text>
+  <!-- Features Summary -->
+  <rect
+     x="150.5"
+     y="1056.5"
+     width="800"
+     height="100"
+     fill="#f1f5f9"
+     stroke="#cbd5e1"
+     stroke-width="2"
+     rx="8"
+     id="rect_features" />
+  <text
+     x="550.5"
+     y="1076.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#374151"
+     id="text_features_title">Unified Architecture Features</text>
+  <text
+     x="170.5"
+     y="1096.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature1">✓ Multiple forecasting strategies in one model</text>
+  <text
+     x="170.5"
+     y="1111.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature2">✓ Support for LSTM, Transformer, Informer architectures</text>
+  <text
+     x="170.5"
+     y="1126.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature3">✓ Multi-encoder processing for complex features</text>
+  <text
+     x="170.5"
+     y="1141.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature4">✓ VAE hidden state processing with KL tracking</text>
+  <text
+     x="550.5"
+     y="1096.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature5">✓ Teacher forcing and scheduled sampling</text>
+  <text
+     x="550.5"
+     y="1111.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature6">✓ Bidirectional encoder support</text>
+  <text
+     x="550.5"
+     y="1126.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature7">✓ Optional attention mechanisms</text>
+  <text
+     x="550.5"
+     y="1141.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature8">✓ Flexible input/output processing pipeline</text>
+  <!-- Configuration Examples -->
+  <rect
+     x="150.5"
+     y="1176.5"
+     width="800"
+     height="90"
+     fill="#fffbeb"
+     stroke="#f59e0b"
+     stroke-width="2"
+     rx="8"
+     id="rect_config" />
+  <text
+     x="550.5"
+     y="1196.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_config_title">Common Configurations</text>
+  <text
+     x="170.5"
+     y="1216.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config1">LSTM Seq2Seq:</text>
+  <text
+     x="270.5"
+     y="1216.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config1_text">strategy=&quot;seq2seq&quot;, model_type=&quot;lstm&quot;, teacher_forcing_ratio=0.5</text>
+  <text
+     x="170.5"
+     y="1231.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config2">Transformer:</text>
+  <text
+     x="250.5"
+     y="1231.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config2_text">strategy=&quot;transformer_seq2seq&quot;, model_type=&quot;transformer&quot;</text>
+  <text
+     x="170.5"
+     y="1246.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config3">Informer-style:</text>
+  <text
+     x="260.5"
+     y="1246.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config3_text">strategy=&quot;seq2seq&quot;, model_type=&quot;informer-like&quot;</text>
+  <text
+     x="550.5"
+     y="1216.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config4">Direct:</text>
+  <text
+     x="590.5"
+     y="1216.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config4_text">strategy=&quot;direct&quot; (fastest inference)</text>
+  <text
+     x="550.5"
+     y="1231.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config5">Multi-Encoder:</text>
+  <text
+     x="640.5"
+     y="1231.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config5_text">multi_encoder_decoder=True</text>
+  <text
+     x="550.5"
+     y="1246.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config6">Autoregressive:</text>
+  <text
+     x="650.5"
+     y="1246.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config6_text">strategy=&quot;autoregressive&quot;</text>
+  <!-- Connection lines for multi-encoder -->
+  <path
+     d="m 301.03218,820.4913 c 0,-24.37641 174.55929,-24.37641 174.55929,-548.46905"
+     stroke="#fbbf24"
+     stroke-width="2.18793"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.7"
+     id="multi_connection1" />
+  <!-- Connection lines for teacher forcing -->
+  <path
+     d="m 900.58071,820.50129 c 0,-332.37919 -448.59391,-144.08577 -412.65409,-355.46503"
+     stroke="#86efac"
+     stroke-width="1.37976"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.7"
+     id="teacher_connection1"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 850.5,840.5 c 0,-270 -47.64802,-275.4691 -135.15367,-370.15367"
+     stroke="#86efac"
+     stroke-width="1.5"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.7"
+     id="teacher_connection2"
+     sodipodi:nodetypes="cc" />
+</svg>
