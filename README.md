@@ -114,7 +114,7 @@ ForeBlocks follows a clean, modular design:
 
 ## ForecastingModel
 
-![ForecastingModel](imgs/forecasting_model_diagram.svg)
+![ForecastingModel](docs/imgs/forecasting_model_diagram.svg)
 
 ---
 
