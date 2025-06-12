@@ -1,0 +1,837 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="837.96155"
+   height="986.0932"
+   version="1.1"
+   id="svg68"
+   sodipodi:docname="transformer_diagram_fixed.svg"
+   inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview68"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.65039613"
+     inkscape:cx="412.82533"
+     inkscape:cy="479.70765"
+     inkscape:window-width="1800"
+     inkscape:window-height="1025"
+     inkscape:window-x="0"
+     inkscape:window-y="44"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg68" />
+  <defs
+     id="defs1">
+    <!-- Simple arrow marker -->
+    <marker
+       id="arrowhead"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="0,0 10,3.5 0,7 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect
+     width="837.00439"
+     height="985.13605"
+     fill="#f8fafc"
+     stroke="#e2e8f0"
+     stroke-width="0.957174"
+     id="rect1"
+     x="0.478587"
+     y="0.478587" />
+  <!-- Title -->
+  <!-- Input Time Series -->
+  <rect
+     x="291.67447"
+     y="14.599691"
+     width="250"
+     height="50"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="10"
+     id="rect2" />
+  <text
+     x="416.67447"
+     y="34.599693"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text3">Input Time Series</text>
+  <text
+     x="416.67447"
+     y="54.599693"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#78350f"
+     id="text4">[B, T_enc, input_size]</text>
+  <!-- Arrow -->
+  <path
+     d="m 416.67446,69.599691 v 20"
+     stroke="#374151"
+     stroke-width="3"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path4"
+     style="stroke-width:2.2;stroke-dasharray:none" />
+  <!-- Input Processing -->
+  <rect
+     x="241.67445"
+     y="94.599693"
+     width="350"
+     height="80"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="10"
+     id="rect4" />
+  <text
+     x="416.67447"
+     y="114.59969"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text5">Input Processing</text>
+  <text
+     x="251.67445"
+     y="134.59969"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text6">• Linear projection → d_model</text>
+  <text
+     x="251.67445"
+     y="149.59969"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text7">• Positional encoding</text>
+  <text
+     x="251.67445"
+     y="164.59969"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text8">• Time feature embedding</text>
+  <text
+     x="431.67447"
+     y="134.59969"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text9">• Dropout (training)</text>
+  <text
+     x="431.67447"
+     y="149.59969"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text10">• Input normalization</text>
+  <text
+     x="431.67447"
+     y="164.59969"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text11">• Feature scaling</text>
+  <!-- Arrow -->
+  <path
+     d="m 416.67446,179.59969 v 20"
+     stroke="#374151"
+     stroke-width="3"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path11"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <!-- Transformer Encoder -->
+  <rect
+     x="241.67445"
+     y="204.59969"
+     width="350"
+     height="180"
+     fill="#e9d5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="10"
+     id="rect11" />
+  <text
+     x="416.67447"
+     y="224.59969"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text12">Transformer Encoder</text>
+  <!-- Encoder Layer 1 -->
+  <rect
+     x="256.67447"
+     y="234.59969"
+     width="320"
+     height="35"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="1"
+     rx="5"
+     id="rect12" />
+  <text
+     x="416.67447"
+     y="254.59969"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text13">Layer 1: Self-Attention + Feedforward</text>
+  <!-- Encoder Layer 2 -->
+  <rect
+     x="256.67447"
+     y="274.5997"
+     width="320"
+     height="35"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="1"
+     rx="5"
+     id="rect13" />
+  <text
+     x="416.67447"
+     y="294.5997"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text14">Layer 2: Self-Attention + Feedforward</text>
+  <!-- Dots -->
+  <text
+     x="416.67447"
+     y="324.5997"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     fill="#581c87"
+     id="text15">...</text>
+  <!-- Encoder Layer N -->
+  <rect
+     x="256.67447"
+     y="334.5997"
+     width="320"
+     height="35"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="1"
+     rx="5"
+     id="rect15" />
+  <text
+     x="416.67447"
+     y="354.5997"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text16">Layer N: Self-Attention + Feedforward</text>
+  <!-- Arrow -->
+  <path
+     d="m 416.67446,389.59969 v 20"
+     stroke="#374151"
+     stroke-width="3"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path16"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <!-- Memory -->
+  <rect
+     x="291.67447"
+     y="414.5997"
+     width="250"
+     height="40"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="2"
+     rx="10"
+     id="rect16" />
+  <text
+     x="416.67447"
+     y="429.5997"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text17">Memory</text>
+  <text
+     x="416.67447"
+     y="444.5997"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#164e63"
+     id="text18">[B, T_enc, d_model]</text>
+  <!-- Branching arrows -->
+  <path
+     d="m 416.67446,459.59969 v 15"
+     stroke="#374151"
+     stroke-width="3"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path18"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <!-- Decoder Input Generation -->
+  <rect
+     x="241.67445"
+     y="479.5997"
+     width="350"
+     height="70"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="2"
+     rx="10"
+     id="rect18" />
+  <text
+     x="416.67447"
+     y="499.5997"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text19">Decoder Input Generation</text>
+  <text
+     x="251.67445"
+     y="519.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text20">• Start token (last encoder input)</text>
+  <text
+     x="251.67445"
+     y="534.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text21">• Replicate for prediction length</text>
+  <text
+     x="431.67447"
+     y="519.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text22">• Positional encoding setup</text>
+  <text
+     x="431.67447"
+     y="534.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text23">• Target sequence initialization</text>
+  <!-- Arrow -->
+  <path
+     d="m 416.67446,554.59969 v 20"
+     stroke="#374151"
+     stroke-width="3"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path23"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <!-- Decoder Processing -->
+  <rect
+     x="241.67445"
+     y="579.59967"
+     width="350"
+     height="60"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="10"
+     id="rect23" />
+  <text
+     x="416.67447"
+     y="599.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text24">Decoder Processing</text>
+  <text
+     x="251.67445"
+     y="619.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text25">• Input projection → d_model</text>
+  <text
+     x="251.67445"
+     y="629.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text26">• Positional encoding</text>
+  <text
+     x="431.67447"
+     y="619.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text27">• Dropout (training)</text>
+  <text
+     x="431.67447"
+     y="629.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text28">• Target masking</text>
+  <!-- Arrow -->
+  <path
+     d="m 416.67446,644.59969 v 20"
+     stroke="#374151"
+     stroke-width="3"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path28"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <!-- Transformer Decoder -->
+  <rect
+     x="241.67445"
+     y="669.59967"
+     width="350"
+     height="140"
+     fill="#d1fae5"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="10"
+     id="rect28" />
+  <text
+     x="416.67447"
+     y="689.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text29">Transformer Decoder</text>
+  <!-- Decoder Layer 1 -->
+  <rect
+     x="256.67447"
+     y="699.59967"
+     width="320"
+     height="30"
+     fill="#ecfdf5"
+     stroke="#22c55e"
+     stroke-width="1"
+     rx="5"
+     id="rect29" />
+  <text
+     x="416.67447"
+     y="719.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text30">Layer 1: Self-Attn + Cross-Attn + Feedforward</text>
+  <!-- Dots -->
+  <text
+     x="416.67447"
+     y="744.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     fill="#065f46"
+     id="text31">...</text>
+  <!-- Decoder Layer N -->
+  <rect
+     x="256.67447"
+     y="759.59967"
+     width="320"
+     height="30"
+     fill="#ecfdf5"
+     stroke="#22c55e"
+     stroke-width="1"
+     rx="5"
+     id="rect31" />
+  <text
+     x="416.67447"
+     y="779.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text32">Layer N: Self-Attn + Cross-Attn + Feedforward</text>
+  <!-- Cross-attention connection arrow -->
+  <path
+     d="m 166.67446,434.59969 c -33.33333,0 -50,96.66667 -50,290 h 120.56212"
+     stroke="#67e8f9"
+     stroke-width="2"
+     fill="none"
+     stroke-dasharray="5, 5"
+     marker-end="url(#arrowhead)"
+     id="path32"
+     sodipodi:nodetypes="ccc" />
+  <text
+     x="-579.59967"
+     y="66.674461"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#0c4a6e"
+     transform="rotate(-90)"
+     id="text33">Memory → Cross-Attention</text>
+  <!-- Arrow -->
+  <path
+     d="m 416.67446,814.59969 v 20"
+     stroke="#374151"
+     stroke-width="3"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path33"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <!-- Final Processing -->
+  <rect
+     x="241.67445"
+     y="839.59967"
+     width="350"
+     height="60"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2"
+     rx="10"
+     id="rect33" />
+  <text
+     x="416.67447"
+     y="859.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text34">Final Processing</text>
+  <text
+     x="251.67445"
+     y="879.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text35">• Final normalization (optional)</text>
+  <text
+     x="251.67445"
+     y="889.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text36">• Output projection</text>
+  <text
+     x="431.67447"
+     y="879.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text37">• Activation function</text>
+  <text
+     x="431.67447"
+     y="889.59967"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text38">• Dimension mapping</text>
+  <!-- Arrow -->
+  <path
+     d="m 416.67446,904.59969 v 15"
+     stroke="#374151"
+     stroke-width="3"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path38"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <!-- Output Predictions -->
+  <rect
+     x="291.67447"
+     y="924.59967"
+     width="250"
+     height="50"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="10"
+     id="rect38" />
+  <text
+     x="416.67447"
+     y="944.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text39">Predictions</text>
+  <text
+     x="416.67447"
+     y="959.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#78350f"
+     id="text40">[B, T_pred, output_size]</text>
+  <!-- Side annotations -->
+  <!-- Left side - Encoder Section -->
+  <rect
+     x="16.674459"
+     y="204.59969"
+     width="200"
+     height="180"
+     fill="#e9d5ff"
+     fill-opacity="0.3"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="10"
+     stroke-dasharray="8, 4"
+     id="rect40" />
+  <text
+     x="116.67446"
+     y="224.59969"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text41">Encoder Section</text>
+  <text
+     x="116.67446"
+     y="239.59969"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#6b21a8"
+     id="text42">Feature Extraction</text>
+  <text
+     x="26.674459"
+     y="259.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text43">• Self-attention captures</text>
+  <text
+     x="26.674459"
+     y="271.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text44">temporal dependencies</text>
+  <text
+     x="26.674459"
+     y="286.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text45">• Multi-head attention</text>
+  <text
+     x="26.674459"
+     y="298.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text46">for different patterns</text>
+  <text
+     x="26.674459"
+     y="313.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text47">• Feedforward networks</text>
+  <text
+     x="26.674459"
+     y="325.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text48">for non-linear mapping</text>
+  <text
+     x="26.674459"
+     y="340.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text49">• Residual connections</text>
+  <text
+     x="26.674459"
+     y="352.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text50">and layer normalization</text>
+  <text
+     x="26.674459"
+     y="367.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text51">• Output: Rich memory</text>
+  <text
+     x="26.674459"
+     y="379.5997"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text52">representation</text>
+  <!-- Right side - Decoder Section -->
+  <rect
+     x="616.67444"
+     y="579.59967"
+     width="200"
+     height="230"
+     fill="#d1fae5"
+     fill-opacity="0.3"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="10"
+     stroke-dasharray="8, 4"
+     id="rect52" />
+  <text
+     x="716.67444"
+     y="599.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text53">Decoder Section</text>
+  <text
+     x="716.67444"
+     y="614.59967"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#047857"
+     id="text54">Prediction Generation</text>
+  <text
+     x="626.67444"
+     y="634.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text55">• Self-attention on</text>
+  <text
+     x="626.67444"
+     y="646.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text56">target sequence</text>
+  <text
+     x="626.67444"
+     y="661.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text57">• Cross-attention with</text>
+  <text
+     x="626.67444"
+     y="673.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text58">encoder memory</text>
+  <text
+     x="626.67444"
+     y="688.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text59">• Causal masking for</text>
+  <text
+     x="626.67444"
+     y="700.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text60">autoregressive generation</text>
+  <text
+     x="626.67444"
+     y="715.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text61">• Feedforward for</text>
+  <text
+     x="626.67444"
+     y="727.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text62">final transformations</text>
+  <text
+     x="626.67444"
+     y="742.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text63">• Multi-step prediction</text>
+  <text
+     x="626.67444"
+     y="754.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text64">capability</text>
+  <text
+     x="626.67444"
+     y="769.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text65">• Output: Future</text>
+  <text
+     x="626.67444"
+     y="781.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text66">time series values</text>
+  <text
+     x="626.67444"
+     y="796.59967"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text67">• Configurable horizon</text>
+  <!-- Connecting lines -->
+  <path
+     d="m 221.67446,294.59969 q 15,0 20,0"
+     stroke="#c4b5fd"
+     stroke-width="1.5"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.6"
+     id="path67" />
+  <path
+     d="m 611.67446,694.59969 q -15,0 -20,0"
+     stroke="#86efac"
+     stroke-width="1.5"
+     fill="none"
+     stroke-dasharray="3, 3"
+     opacity="0.6"
+     id="path68" />
+</svg>

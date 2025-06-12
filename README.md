@@ -76,8 +76,8 @@ predictions = model.predict(X_test)
 
 ## 📖 Documentation
 
-- 📘 [Preprocessing Guide](docs/preprocessor.md)
-- 🛠️ [Custom Blocks Guide](docs/custom_blocks.md)
+- [Preprocessing Guide](docs/preprocessor.md)
+- [Custom Blocks Guide](docs/custom_blocks.md)
 - [Transformer Blocks](docs/transformer.md)
 - [Fourier Blocks](docs/fourier.md)
 - [Wavelet Blocks](docs/wavelet.md)
