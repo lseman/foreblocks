@@ -1,0 +1,967 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="974.29968"
+   height="896.91602"
+   version="1.1"
+   id="svg68"
+   sodipodi:docname="multi_attention_diagram.svg"
+   inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.78838123"
+     inkscape:cx="354.52391"
+     inkscape:cy="408.43184"
+     inkscape:window-width="1800"
+     inkscape:window-height="1025"
+     inkscape:window-x="0"
+     inkscape:window-y="44"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg68" />
+  <defs
+     id="defs1">
+    <!-- Simple arrow marker -->
+    <marker
+       id="arrowhead"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="10,3.5 0,7 0,0 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1" />
+    </marker>
+    <!-- Decision diamond marker -->
+    <marker
+       id="diamond"
+       markerWidth="8"
+       markerHeight="8"
+       refX="4"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="4,0 8,4 4,8 0,4 "
+         fill="#f59e0b"
+         stroke="#92400e"
+         id="diamond1" />
+    </marker>
+    <marker
+       id="arrowhead-9"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="0,7 0,0 10,3.5 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1-1" />
+    </marker>
+    <marker
+       id="arrowhead-4"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="0,7 0,0 10,3.5 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1-9" />
+    </marker>
+    <marker
+       id="arrowhead-4-7"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="0,0 10,3.5 0,7 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1-9-4" />
+    </marker>
+    <marker
+       id="arrowhead-4-7-6"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="10,3.5 0,7 0,0 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1-9-4-2" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect
+     width="973.34155"
+     height="895.95789"
+     fill="#f8fafc"
+     stroke="#e2e8f0"
+     stroke-width="0.958112"
+     id="rect1"
+     x="0.479056"
+     y="0.479056" />
+  <!-- Title -->
+  <text
+     x="443.08316"
+     y="30.500002"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="18px"
+     font-weight="bold"
+     fill="#374151"
+     id="title">MultiAttention Module</text>
+  <!-- Input -->
+  <rect
+     x="368.08316"
+     y="60.5"
+     width="150"
+     height="40"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_input" />
+  <text
+     x="443.08316"
+     y="85.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_input">Query, Key, Value</text>
+  <!-- Arrow -->
+  <path
+     d="m 443.08316,105.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow1" />
+  <!-- Attention Type Router -->
+  <polygon
+     points="475,130 550,165 475,200 400,165 "
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="2"
+     id="router"
+     transform="translate(-31.91684,0.50000194)" />
+  <text
+     x="443.08316"
+     y="170.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_router">Attention Type?</text>
+  <!-- Standard Attention Branch -->
+  <path
+     d="m 368.08316,165.5 c -50,0 -150,0 -200,0 v 50"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_standard" />
+  <text
+     x="268.08316"
+     y="185.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_standard">standard</text>
+  <rect
+     x="64.08316"
+     y="220.5"
+     width="200"
+     height="120"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_standard" />
+  <text
+     x="164.08316"
+     y="240.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_standard_title">Standard Attention</text>
+  <!-- Backend optimization box -->
+  <rect
+     x="74.08316"
+     y="250.5"
+     width="180"
+     height="60"
+     fill="#eff6ff"
+     stroke="#60a5fa"
+     stroke-width="1"
+     rx="5"
+     id="rect_backends" />
+  <text
+     x="164.08316"
+     y="267.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_backends_title">Optimized Backends:</text>
+  <text
+     x="84.08316"
+     y="280.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_flash">• Flash Attention (if available)</text>
+  <text
+     x="84.08316"
+     y="290.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_sdp">• PyTorch SDP (if available)</text>
+  <text
+     x="84.08316"
+     y="300.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_xformers">• xFormers (if available)</text>
+  <text
+     x="84.08316"
+     y="320.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_kv_cache">• KV Caching support</text>
+  <text
+     x="84.08316"
+     y="330.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_rotary">• Optional Rotary embeddings</text>
+  <!-- ProbSparse Attention Branch -->
+  <path
+     d="m 418.08316,200.5 c 0,20 0,40 0,60"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_prob" />
+  <text
+     x="374.08316"
+     y="235.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_prob">prob_sparse</text>
+  <rect
+     x="318.08316"
+     y="265.5"
+     width="200"
+     height="120"
+     fill="#e9d5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_prob" />
+  <text
+     x="418.08316"
+     y="285.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_prob_title">ProbSparse Attention</text>
+  <text
+     x="328.08316"
+     y="305.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_prob1">• Sample K keys randomly</text>
+  <text
+     x="328.08316"
+     y="317.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_prob2">• Compute sparsity scores</text>
+  <text
+     x="328.08316"
+     y="329.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_prob3">• Select top-U queries</text>
+  <text
+     x="328.08316"
+     y="341.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_prob4">• Attention on selected pairs</text>
+  <text
+     x="328.08316"
+     y="353.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_prob5">• O(L log L) complexity</text>
+  <text
+     x="328.08316"
+     y="365.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_prob6">• Uses same optimized backends</text>
+  <text
+     x="328.08316"
+     y="377.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_prob7">• KV caching + rotary support</text>
+  <!-- SoftPick Attention Branch -->
+  <text
+     x="488.08316"
+     y="235.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_softpick">softpick</text>
+  <rect
+     x="538.08313"
+     y="265.5"
+     width="200"
+     height="120"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="2"
+     rx="8"
+     id="rect_softpick" />
+  <text
+     x="638.08313"
+     y="285.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_softpick_title">SoftPick Attention</text>
+  <text
+     x="548.08313"
+     y="305.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_softpick1">• Triton kernel implementation</text>
+  <text
+     x="548.08313"
+     y="317.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_softpick2">• Packed/non-packed modes</text>
+  <text
+     x="548.08313"
+     y="329.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_softpick3">• Chunk-based processing</text>
+  <text
+     x="548.08313"
+     y="341.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_softpick4">• Memory efficient</text>
+  <text
+     x="548.08313"
+     y="353.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_softpick5">• KV caching support</text>
+  <text
+     x="548.08313"
+     y="365.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_softpick6">• Fallback to standard if needed</text>
+  <text
+     x="548.08313"
+     y="377.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_softpick7">• Optional rotary embeddings</text>
+  <!-- External Attention Types -->
+  <path
+     d="m 517.16517,166.1726 c 83.96632,0 251.89897,0 335.86529,0 v 48.68117"
+     stroke="#374151"
+     stroke-width="2.55737"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_external"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <text
+     x="618.08313"
+     y="185.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_external">frequency/dwt/autocor</text>
+  <rect
+     x="764.08313"
+     y="220.5"
+     width="200"
+     height="100"
+     fill="#d1fae5"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="8"
+     id="rect_external" />
+  <text
+     x="864.08313"
+     y="240.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_external_title">External Attention</text>
+  <text
+     x="774.08313"
+     y="260.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_external1">• FrequencyAttention (FEDformer)</text>
+  <text
+     x="774.08313"
+     y="272.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_external2">• DWTAttention (wavelet-based)</text>
+  <text
+     x="774.08313"
+     y="284.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_external3">• AutoCorrelation (Autoformer)</text>
+  <text
+     x="774.08313"
+     y="296.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_external4">• Domain-specific implementations</text>
+  <text
+     x="774.08313"
+     y="308.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_external5">• No KV caching (typically)</text>
+  <!-- Convergence point -->
+  <path
+     d="m 417.84901,388.70656 0.44253,47.20133"
+     stroke="#374151"
+     stroke-width="1.51941"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv2"
+     sodipodi:nodetypes="cc"
+     style="stroke-width:2;stroke-dasharray:none" />
+  <path
+     d="m 851.02819,326.62991 c 0,23.15416 -33.15172,55.85399 -89.96989,69.86518 -113.03795,27.87481 -295.88489,26.25128 -330.67082,39.64034"
+     stroke="#374151"
+     stroke-width="2.22781"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv4"
+     style="stroke-width:2;stroke-dasharray:none"
+     sodipodi:nodetypes="csc" />
+  <path
+     d="m 629.94234,386.36449 c -153.63258,49.4271 -150.88314,32.0753 -199.48809,48.00547"
+     stroke="#374151"
+     stroke-width="2.22781"
+     fill="none"
+     marker-end="url(#arrowhead-4)"
+     id="conv4-5"
+     style="stroke-width:2;stroke-dasharray:none;marker-end:url(#arrowhead-4)"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 158.85549,343.45781 c 71.10934,75.09883 205.89864,66.24233 249.00204,92.68341"
+     stroke="#374151"
+     stroke-width="2.22781"
+     fill="none"
+     marker-end="url(#arrowhead-4-7)"
+     id="conv4-5-5"
+     style="stroke-width:2;stroke-dasharray:none;marker-end:url(#arrowhead-4-7)"
+     sodipodi:nodetypes="cc" />
+  <!-- Common Processing -->
+  <rect
+     x="294.43164"
+     y="440.64212"
+     width="327.28619"
+     height="79.715714"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2.28429"
+     rx="10.473157"
+     id="rect_common" />
+  <text
+     x="443.08316"
+     y="460.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_common_title">Common Output Processing</text>
+  <text
+     x="302.08316"
+     y="480.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_common1">• Reshape output tensor</text>
+  <text
+     x="302.08316"
+     y="492.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_common2">• Output projection (for internal types)</text>
+  <text
+     x="302.08316"
+     y="504.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_common3">• Dropout application</text>
+  <text
+     x="474.08316"
+     y="480.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_common4">• Return weights (if requested)</text>
+  <text
+     x="474.08316"
+     y="492.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_common5">• Update layer_state (KV cache)</text>
+  <text
+     x="474.08316"
+     y="504.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_common6">• Handle cross-attention mode</text>
+  <!-- Arrow -->
+  <path
+     d="m 443.08316,525.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_final" />
+  <!-- Output -->
+  <rect
+     x="318.08316"
+     y="545.5"
+     width="250"
+     height="40"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_output" />
+  <text
+     x="443.08316"
+     y="570.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_output">Output, Weights, Layer State</text>
+  <!-- Side panel: KV Caching Details -->
+  <rect
+     x="18.083158"
+     y="440.5"
+     width="250"
+     height="120"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="2"
+     rx="8"
+     id="rect_kv_cache" />
+  <text
+     x="143.08316"
+     y="460.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_kv_cache_title">KV Caching System</text>
+  <text
+     x="28.083158"
+     y="480.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_kv1">• Efficient inference for autoregressive generation</text>
+  <text
+     x="28.083158"
+     y="492.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_kv2">• Cache previous K, V tensors in layer_state</text>
+  <text
+     x="28.083158"
+     y="504.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_kv3">• Concatenate with new K, V</text>
+  <text
+     x="28.083158"
+     y="516.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_kv4">• Disabled for cross-attention</text>
+  <text
+     x="28.083158"
+     y="528.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_kv5">• Compatible with rotary embeddings</text>
+  <text
+     x="28.083158"
+     y="540.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_kv6">• Works with standard/prob_sparse/softpick</text>
+  <text
+     x="28.083158"
+     y="552.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_kv7">• reset_cache() method for clearing state</text>
+  <!-- Backend Detection Panel -->
+  <rect
+     x="646.04102"
+     y="459.45468"
+     width="250"
+     height="120"
+     fill="#dcfce7"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="8"
+     id="rect_backends_detail" />
+  <text
+     x="771.04102"
+     y="479.45468"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_backends_detail_title">Backend Detection</text>
+  <text
+     x="656.04102"
+     y="499.45468"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_backend1">• _get_available_backends() checks imports</text>
+  <text
+     x="656.04102"
+     y="511.45468"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_backend2">• Flash Attention: flash_attn package</text>
+  <text
+     x="656.04102"
+     y="523.45471"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_backend3">• xFormers: xformers.ops package</text>
+  <text
+     x="656.04102"
+     y="535.45471"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_backend4">• SDP: F.scaled_dot_product_attention</text>
+  <text
+     x="656.04102"
+     y="547.45471"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_backend5">• SoftPick: custom Triton kernels</text>
+  <text
+     x="656.04102"
+     y="559.45471"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_backend6">• Graceful fallback to standard</text>
+  <text
+     x="656.04102"
+     y="571.45471"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_backend7">• Runtime optimization selection</text>
+  <!-- Features Summary -->
+  <rect
+     x="118.08316"
+     y="610.5"
+     width="650"
+     height="100"
+     fill="#f1f5f9"
+     stroke="#cbd5e1"
+     stroke-width="2"
+     rx="8"
+     id="rect_features" />
+  <text
+     x="443.08316"
+     y="630.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#374151"
+     id="text_features_title">Key Features Summary</text>
+  <text
+     x="138.08316"
+     y="650.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature1">✓ Unified interface for multiple attention types</text>
+  <text
+     x="138.08316"
+     y="665.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature2">✓ Automatic backend optimization detection</text>
+  <text
+     x="138.08316"
+     y="680.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature3">✓ Efficient KV caching for inference</text>
+  <text
+     x="138.08316"
+     y="695.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature4">✓ Cross-attention and self-attention modes</text>
+  <text
+     x="418.08316"
+     y="650.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature5">✓ Rotary embeddings support</text>
+  <text
+     x="418.08316"
+     y="665.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature6">✓ Causal masking for autoregressive models</text>
+  <text
+     x="418.08316"
+     y="680.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature7">✓ Custom attention masks and padding masks</text>
+  <text
+     x="418.08316"
+     y="695.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     fill="#374151"
+     id="feature8">✓ Optional attention weight return</text>
+  <!-- Usage Example -->
+  <rect
+     x="118.08316"
+     y="730.5"
+     width="650"
+     height="150"
+     fill="#fffbeb"
+     stroke="#f59e0b"
+     stroke-width="2"
+     rx="8"
+     id="rect_usage" />
+  <text
+     x="443.08316"
+     y="750.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_usage_title">Configuration Examples</text>
+  <text
+     x="138.08316"
+     y="770.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config1">Standard Attention:</text>
+  <text
+     x="138.08316"
+     y="785.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config1_text">attention_type=&quot;standard&quot;, use_rotary=True</text>
+  <text
+     x="138.08316"
+     y="805.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config2">Sparse Attention:</text>
+  <text
+     x="138.08316"
+     y="820.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config2_text">attention_type=&quot;prob_sparse&quot;, prob_sparse_factor=0.4</text>
+  <text
+     x="138.08316"
+     y="840.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config3">Frequency Attention:</text>
+  <text
+     x="138.08316"
+     y="855.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config3_text">attention_type=&quot;frequency&quot;, freq_modes=32</text>
+  <text
+     x="418.08316"
+     y="770.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config4">SoftPick Attention:</text>
+  <text
+     x="418.08316"
+     y="785.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config4_text">attention_type=&quot;softpick&quot;, softpick_chunk_size=128</text>
+  <text
+     x="418.08316"
+     y="805.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config5">Cross Attention:</text>
+  <text
+     x="418.08316"
+     y="820.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config5_text">cross_attention=True (disables KV caching)</text>
+  <text
+     x="418.08316"
+     y="840.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     font-weight="bold"
+     fill="#374151"
+     id="config6">DWT/AutoCorr:</text>
+  <text
+     x="418.08316"
+     y="855.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="config6_text">attention_type=&quot;dwt&quot; or &quot;autocor&quot;</text>
+  <!-- Connection lines for KV cache -->
+  <path
+     d="m 470.35209,194.16578 c 57.99444,42.13596 133.78877,47.56555 161.79649,66.55166"
+     stroke="#374151"
+     stroke-width="2.22781"
+     fill="none"
+     marker-end="url(#arrowhead-4-7-6)"
+     id="conv4-5-5-5"
+     style="stroke-width:2;stroke-dasharray:none;marker-end:url(#arrowhead-4-7-6)"
+     sodipodi:nodetypes="cc" />
+</svg>

@@ -8,53 +8,7 @@ This implementation provides a state-of-the-art Mixture of Experts (MoE) system 
 
 ### MoE Computational Flow
 
-```
-                Input Tokens [B, T, D]
-                        |
-                        v
-              +-------------------+
-              |   Input Norm      |
-              +-------------------+
-                        |
-                        v
-              +-------------------+
-              |   Router Network  |  ← Learned/Hash/Random
-              |   • Compute probs |
-              |   • Top-k selection|
-              +-------------------+
-                        |
-         +--------------+---------------+
-         |                              |
-         v                              v
-+----------------+              +----------------+
-| Token Dispatch |              | Shared Expert  |  ← Optional
-| • Route to top-k|             | • Always active|
-| • Load balancing|             +----------------+
-+----------------+                       |
-         |                              |
-         v                              |
-+----------------+                      |
-| Expert Processing |                   |
-| +------------+ |                      |
-| | Expert 1   | |                      |
-| | Expert 2   | |                      |
-| | ...        | |                      |
-| | Expert N   | |                      |
-| +------------+ |                      |
-+----------------+                      |
-         |                              |
-         v                              |
-+----------------+                      |
-| Output Combine |                      |
-| • Weight by    |                      |
-|   router probs |                      |
-+----------------+                      |
-         |                              |
-         +-------------+----------------+
-                       |
-                       v
-               Final Output [B, T, D]
-```
+![MoE](imgs/moe_architecture_diagram.svg)
 
 ---
 

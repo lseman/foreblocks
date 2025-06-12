@@ -28,6 +28,10 @@ BaseTransformerLayer
 
 ![Transformer](imgs/transformer_diagram_fixed.svg)
 
+### Multi-Attention Modele
+
+![Attention](imgs/multi_attention_diagram.svg)
+
 ---
 
 ## Advanced Feature Matrix

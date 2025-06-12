@@ -1,0 +1,966 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="910.6568"
+   height="1015.5455"
+   version="1.1"
+   id="svg68"
+   sodipodi:docname="moe_architecture_diagram.svg"
+   inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.81722959"
+     inkscape:cx="383.61313"
+     inkscape:cy="473.55114"
+     inkscape:window-width="1800"
+     inkscape:window-height="1025"
+     inkscape:window-x="0"
+     inkscape:window-y="44"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg68" />
+  <defs
+     id="defs1">
+    <!-- Simple arrow marker -->
+    <marker
+       id="arrowhead"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="0,0 10,3.5 0,7 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1" />
+    </marker>
+    <!-- Decision diamond marker -->
+    <marker
+       id="diamond"
+       markerWidth="8"
+       markerHeight="8"
+       refX="4"
+       refY="4"
+       orient="auto">
+      <polygon
+         points="0,4 4,0 8,4 4,8 "
+         fill="#f59e0b"
+         stroke="#92400e"
+         id="diamond1" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect
+     width="909.88745"
+     height="1014.7762"
+     fill="#f8fafc"
+     stroke="#e2e8f0"
+     stroke-width="0.769337"
+     id="rect1"
+     x="0.3846685"
+     y="0.3846685" />
+  <!-- Title -->
+  <text
+     x="506.10974"
+     y="30.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="18px"
+     font-weight="bold"
+     fill="#374151"
+     id="title">Mixture of Experts (MoE) with Triton Optimization</text>
+  <!-- Input -->
+  <rect
+     x="406.09949"
+     y="60.648399"
+     width="199.30167"
+     height="39.703201"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2.29679"
+     rx="10.629422"
+     id="rect_input" />
+  <text
+     x="506.10974"
+     y="85.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_input">Input Tokens [B, L, d_model]</text>
+  <!-- Arrow -->
+  <path
+     d="m 506.10974,105.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow1" />
+  <!-- Input Normalization -->
+  <rect
+     x="406.10974"
+     y="125.5"
+     width="200"
+     height="40"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_norm" />
+  <text
+     x="506.10974"
+     y="150.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_norm">Input LayerNorm</text>
+  <!-- Arrow -->
+  <path
+     d="m 506.10974,170.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow2" />
+  <!-- Router Type Selection -->
+  <polygon
+     points="650,265 575,230 650,195 725,230 "
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="2"
+     id="router_type_selector"
+     transform="translate(-143.89026,0.49999998)" />
+  <text
+     x="506.10974"
+     y="235.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_router_type_selector">Router Type?</text>
+  <!-- Learned Router -->
+  <path
+     d="m 431.10974,230.5 c -150,0 -250,0 -300,0 v 50"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_learned" />
+  <text
+     x="281.10974"
+     y="250.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_learned">learned</text>
+  <rect
+     x="31.109735"
+     y="285.5"
+     width="200"
+     height="100"
+     fill="#e9d5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_learned" />
+  <text
+     x="131.10974"
+     y="305.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_learned_title">Learned Router</text>
+  <text
+     x="41.109737"
+     y="325.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_learned1">• Linear(d_model, num_experts)</text>
+  <text
+     x="41.109737"
+     y="337.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_learned2">• Optional dropout and jitter</text>
+  <text
+     x="41.109737"
+     y="349.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_learned3">• Switch gating noise</text>
+  <text
+     x="41.109737"
+     y="361.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_learned4">• Softmax normalization</text>
+  <text
+     x="41.109737"
+     y="373.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_learned5">• Router entropy calculation</text>
+  <!-- Hash Router -->
+  <path
+     d="m 505.10974,265.5 c 0,20 0,40 0,60"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_hash" />
+  <text
+     x="461.10974"
+     y="300.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_hash">hash</text>
+  <rect
+     x="406.10974"
+     y="330.5"
+     width="200"
+     height="80"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="2"
+     rx="8"
+     id="rect_hash" />
+  <text
+     x="506.10974"
+     y="350.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_hash_title">Hash Router</text>
+  <text
+     x="416.10974"
+     y="370.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_hash1">• Fixed hash weights (non-learnable)</text>
+  <text
+     x="416.10974"
+     y="382.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_hash2">• Hash values % num_experts</text>
+  <text
+     x="416.10974"
+     y="394.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_hash3">• Deterministic routing</text>
+  <text
+     x="416.10974"
+     y="406.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_hash4">• No gradient flow to router</text>
+  <!-- Random Router -->
+  <path
+     d="m 581.10974,230.5 c 150,0 200,0 200,95"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="path_random" />
+  <text
+     x="681.10974"
+     y="250.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="label_random">random</text>
+  <rect
+     x="681.10974"
+     y="330.5"
+     width="200"
+     height="80"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2"
+     rx="8"
+     id="rect_random" />
+  <text
+     x="781.10974"
+     y="350.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_random_title">Random Router</text>
+  <text
+     x="691.10974"
+     y="370.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_random1">• torch.rand probabilities</text>
+  <text
+     x="691.10974"
+     y="382.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_random2">• Uniform expert selection</text>
+  <text
+     x="691.10974"
+     y="394.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_random3">• Good baseline for comparison</text>
+  <text
+     x="691.10974"
+     y="406.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_random4">• No training required</text>
+  <!-- Convergence to router probabilities -->
+  <path
+     d="m 131.10974,390.5 c 0,50 322.84355,42.81182 365.25382,67.442"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv_learned"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 506.10974,415.5 c 0,20 0.31727,-2.28336 -0.40154,45.31727"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv_hash"
+     sodipodi:nodetypes="cc" />
+  <path
+     d="m 781.10974,415.5 c 0,50 -220.77136,7.58973 -267.49454,44.59846"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="conv_random"
+     sodipodi:nodetypes="cc" />
+  <!-- Top-K Selection -->
+  <rect
+     x="330.19403"
+     y="463.58429"
+     width="353.45975"
+     height="79.83139"
+     fill="#dcfce7"
+     stroke="#86efac"
+     stroke-width="2.16861"
+     rx="9.4255934"
+     id="rect_topk" />
+  <text
+     x="514.10974"
+     y="483.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_topk_title">Top-K Expert Selection</text>
+  <text
+     x="340.10974"
+     y="503.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_topk1">• torch.topk(router_probs, k=top_k)</text>
+  <text
+     x="340.10974"
+     y="515.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_topk2">• Probability normalization</text>
+  <text
+     x="340.10974"
+     y="527.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_topk3">• Switch gating (k=1) optimization</text>
+  <text
+     x="540.10974"
+     y="503.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_topk4">• Expert choice routing option</text>
+  <text
+     x="540.10974"
+     y="515.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_topk5">• Adaptive expert dropout</text>
+  <text
+     x="540.10974"
+     y="527.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_topk6">• Capacity management</text>
+  <!-- Arrow -->
+  <path
+     d="m 506.10974,548.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow3" />
+  <!-- Triton Dispatcher -->
+  <rect
+     x="306.10974"
+     y="568.5"
+     width="400"
+     height="100"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="2"
+     rx="8"
+     id="rect_dispatcher" />
+  <text
+     x="506.10974"
+     y="588.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_dispatcher_title">Triton MoE Dispatcher</text>
+  <!-- Dispatch kernel box -->
+  <rect
+     x="326.10974"
+     y="603.5"
+     width="170"
+     height="55"
+     fill="#fffbeb"
+     stroke="#f59e0b"
+     stroke-width="1"
+     rx="5"
+     id="rect_dispatch_kernel" />
+  <text
+     x="411.10974"
+     y="618.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_dispatch_kernel_title">moe_dispatch_kernel</text>
+  <text
+     x="336.10974"
+     y="633.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_dispatch1">• Vectorized token dispatching</text>
+  <text
+     x="336.10974"
+     y="643.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_dispatch2">• Memory coalescing</text>
+  <text
+     x="336.10974"
+     y="653.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_dispatch3">• Gating weight application</text>
+  <!-- Buffer management box -->
+  <rect
+     x="516.10974"
+     y="603.5"
+     width="170"
+     height="55"
+     fill="#fffbeb"
+     stroke="#f59e0b"
+     stroke-width="1"
+     rx="5"
+     id="rect_buffer_mgmt" />
+  <text
+     x="601.10974"
+     y="618.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_buffer_mgmt_title">Buffer Management</text>
+  <text
+     x="526.10974"
+     y="633.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_buffer1">• Memory pooling caching</text>
+  <text
+     x="526.10974"
+     y="643.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_buffer2">• LRU eviction policy</text>
+  <text
+     x="526.10974"
+     y="653.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_buffer3">• Adaptive buffer sizing</text>
+  <!-- Arrow -->
+  <path
+     d="m 506.10974,673.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow4" />
+  <!-- Expert Processing -->
+  <rect
+     x="163.98178"
+     y="693.37207"
+     width="682.94476"
+     height="120.25593"
+     fill="#e0e7ff"
+     stroke="#a5b4fc"
+     stroke-width="1.74407"
+     rx="6.0706205"
+     id="rect_expert_processing" />
+  <text
+     x="508.10974"
+     y="713.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#3730a3"
+     id="text_expert_processing_title">Expert Network Processing</text>
+  <!-- Expert 1 -->
+  <rect
+     x="184.10974"
+     y="728.5"
+     width="130"
+     height="70"
+     fill="#f0f9ff"
+     stroke="#0ea5e9"
+     stroke-width="1"
+     rx="5"
+     id="rect_expert1" />
+  <text
+     x="249.10974"
+     y="748.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_expert1_title">Expert 1</text>
+  <text
+     x="194.10974"
+     y="763.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expert1_type">SwiGLU FFN</text>
+  <text
+     x="194.10974"
+     y="775.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expert1_detail1">• Gate Up proj</text>
+  <text
+     x="194.10974"
+     y="785.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expert1_detail2">• SiLU activation</text>
+  <text
+     x="194.10974"
+     y="795.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expert1_detail3">• Down projection</text>
+  <!-- Expert 2 -->
+  <rect
+     x="334.10974"
+     y="728.5"
+     width="130"
+     height="70"
+     fill="#f0f9ff"
+     stroke="#0ea5e9"
+     stroke-width="1"
+     rx="5"
+     id="rect_expert2" />
+  <text
+     x="399.10974"
+     y="748.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_expert2_title">Expert 2</text>
+  <text
+     x="344.10974"
+     y="763.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expert2_type">SwiGLU FFN</text>
+  <text
+     x="344.10974"
+     y="775.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expert2_detail1">• Triton kernel</text>
+  <text
+     x="344.10974"
+     y="785.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expert2_detail2">• Memory fusion</text>
+  <text
+     x="344.10974"
+     y="795.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expert2_detail3">• Optimized ops</text>
+  <!-- Expert N -->
+  <text
+     x="506.10974"
+     y="763.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     fill="#3730a3"
+     id="text_experts_dots">...</text>
+  <!-- Expert N -->
+  <rect
+     x="568.10974"
+     y="728.5"
+     width="130"
+     height="70"
+     fill="#f0f9ff"
+     stroke="#0ea5e9"
+     stroke-width="1"
+     rx="5"
+     id="rect_expertN" />
+  <text
+     x="633.10974"
+     y="748.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_expertN_title">Expert N</text>
+  <text
+     x="578.10974"
+     y="763.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expertN_type">Standard FFN</text>
+  <text
+     x="578.10974"
+     y="775.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expertN_detail1">• Linear layers</text>
+  <text
+     x="578.10974"
+     y="785.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expertN_detail2">• GELU/ReLU/SiLU</text>
+  <text
+     x="578.10974"
+     y="795.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_expertN_detail3">• Dropout option</text>
+  <!-- Shared Expert -->
+  <rect
+     x="714.10974"
+     y="728.5"
+     width="110"
+     height="70"
+     fill="#ecfdf5"
+     stroke="#22c55e"
+     stroke-width="1"
+     rx="5"
+     id="rect_shared" />
+  <text
+     x="769.10974"
+     y="748.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_shared_title">Shared Expert</text>
+  <text
+     x="724.10974"
+     y="763.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_shared_type">Always Active</text>
+  <text
+     x="724.10974"
+     y="775.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_shared_detail1">• Base knowledge</text>
+  <text
+     x="724.10974"
+     y="785.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_shared_detail2">• 25% capacity</text>
+  <text
+     x="724.10974"
+     y="795.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_shared_detail3">• Added to output</text>
+  <!-- Arrow -->
+  <path
+     d="m 506.10974,818.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow5" />
+  <!-- Output Combination & Auxiliary Loss -->
+  <rect
+     x="256.10974"
+     y="838.5"
+     width="500"
+     height="100"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2"
+     rx="8"
+     id="rect_output_combination" />
+  <text
+     x="506.10974"
+     y="858.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_output_combination_title">Output Combination Auxiliary Loss</text>
+  <!-- Output combination -->
+  <rect
+     x="276.10974"
+     y="873.5"
+     width="220"
+     height="55"
+     fill="#faf5ff"
+     stroke="#d8b4fe"
+     stroke-width="1"
+     rx="5"
+     id="rect_output_comb" />
+  <text
+     x="386.10974"
+     y="888.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_output_comb_title">Weighted Combination</text>
+  <text
+     x="286.10974"
+     y="903.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_output_comb1">• Gather expert outputs by token</text>
+  <text
+     x="286.10974"
+     y="913.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_output_comb2">• Apply gating probabilities</text>
+  <text
+     x="286.10974"
+     y="923.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_output_comb3">• Sum + shared expert output</text>
+  <!-- Auxiliary loss -->
+  <rect
+     x="516.10974"
+     y="873.5"
+     width="220"
+     height="55"
+     fill="#faf5ff"
+     stroke="#d8b4fe"
+     stroke-width="1"
+     rx="5"
+     id="rect_aux_loss" />
+  <text
+     x="626.10974"
+     y="888.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_aux_loss_title">Auxiliary Loss Terms</text>
+  <text
+     x="526.10974"
+     y="903.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_aux_loss1">• Load balancing loss</text>
+  <text
+     x="526.10974"
+     y="913.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_aux_loss2">• Router Z-loss (entropy)</text>
+  <text
+     x="526.10974"
+     y="923.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="text_aux_loss3">• Expert diversity regularization</text>
+  <!-- Arrow -->
+  <path
+     d="m 506.10974,943.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow6" />
+  <!-- Final Output -->
+  <rect
+     x="403.33978"
+     y="963.6665"
+     width="205.82889"
+     height="39.666962"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2.33304"
+     rx="10.977543"
+     id="rect_final_output" />
+  <text
+     x="506.10974"
+     y="988.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_final_output">Enhanced Output + aux_loss</text>
+  <!-- Side panels -->
+  <!-- Triton Optimization Details -->
+  <rect
+     x="45.707409"
+     y="486.09766"
+     width="215.32249"
+     height="116.1283"
+     fill="#fffbeb"
+     stroke="#f59e0b"
+     stroke-width="1.19535"
+     rx="4.9216571"
+     id="rect_triton_details" />
+  <text
+     x="159.10974"
+     y="506.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_triton_details_title">Triton Kernel Optimizations</text>
+  <text
+     x="66.109734"
+     y="526.5"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#374151"
+     id="triton_swiglu">SwiGLU Kernel (swiglu_kernel):</text>
+  <text
+     x="66.109734"
+     y="541.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="triton_swiglu1">• Fused gate/up projections</text>
+  <text
+     x="66.109734"
+     y="553.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="triton_swiglu2">• Memory coalescing optimization</text>
+  <text
+     x="66.109734"
+     y="565.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="triton_swiglu3">• Vectorized operations</text>
+</svg>
