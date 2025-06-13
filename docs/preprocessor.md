@@ -1,5 +1,7 @@
 # TimeSeriesPreprocessor Guide
 
+![preforeblocks](imgs/timeseriespreprocessor_logo.svg)
+
 **Advanced, self-tuning preprocessing for time series forecasting with state-of-the-art techniques**
 
 ---

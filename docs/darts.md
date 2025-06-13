@@ -1,5 +1,7 @@
 # ForeBlocks DARTS: Neural Architecture Search for Time Series
 
+![darts](imgs/darts_module_logo.svg)
+
 **ForeBlocks DARTS** is an advanced Neural Architecture Search (NAS) module that automatically discovers optimal neural network architectures for time series forecasting. It combines DARTS (Differentiable Architecture Search) with zero-cost metrics for efficient architecture evaluation using a comprehensive `DARTSTrainer` class.
 
 ---
