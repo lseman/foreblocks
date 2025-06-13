@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg
    width="1101"
-   height="1267.5"
+   height="1291.7368"
    version="1.1"
    id="svg68"
    sodipodi:docname="forecasting_model_diagram.svg"
@@ -19,9 +19,9 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="0.61903923"
-     inkscape:cx="383.65905"
-     inkscape:cy="718.8559"
+     inkscape:zoom="1.2214231"
+     inkscape:cx="570.23647"
+     inkscape:cy="1127.3735"
      inkscape:window-width="1800"
      inkscape:window-height="1025"
      inkscape:window-x="0"
@@ -40,7 +40,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="0,7 0,0 10,3.5 "
+         points="0,0 10,3.5 0,7 "
          fill="#374151"
          stroke="none"
          id="polygon1" />
@@ -54,7 +54,7 @@
        refY="4"
        orient="auto">
       <polygon
-         points="4,8 0,4 4,0 8,4 "
+         points="0,4 4,0 8,4 4,8 "
          fill="#f59e0b"
          stroke="#92400e"
          id="diamond1" />
@@ -62,18 +62,18 @@
   </defs>
   <!-- Background -->
   <rect
-     width="1099.9727"
-     height="1266.4784"
+     width="1099.9629"
+     height="1290.6997"
      fill="#f8fafc"
      stroke="#e2e8f0"
-     stroke-width="1.02731"
+     stroke-width="1.03708"
      id="rect1"
-     x="0.51365662"
-     y="0.51365662" />
+     x="0.51854002"
+     y="0.51854002" />
   <!-- Title -->
   <text
      x="550.5"
-     y="30.5"
+     y="30.499996"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="18px"
@@ -83,7 +83,7 @@
   <!-- Input -->
   <rect
      x="454.99576"
-     y="60.615028"
+     y="60.615025"
      width="187.57191"
      height="39.769947"
      fill="#fed7aa"
@@ -180,12 +180,12 @@
      id="arrow2" />
   <!-- Strategy Router -->
   <polygon
-     points="550,235 625,270 550,305 475,270 "
+     points="550,305 475,270 550,235 625,270 "
      fill="#fef3c7"
      stroke="#fbbf24"
      stroke-width="2"
      id="strategy_router"
-     transform="translate(0.5,0.5)" />
+     transform="translate(0.49999714,0.49999714)" />
   <text
      x="550.5"
      y="275.5"
@@ -267,8 +267,8 @@
      marker-end="url(#arrowhead)"
      id="path_auto" />
   <text
-     x="480.5"
-     y="340.5"
+     x="462.48822"
+     y="331.49411"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -337,8 +337,8 @@
      marker-end="url(#arrowhead)"
      id="path_seq2seq" />
   <text
-     x="620.5"
-     y="340.5"
+     x="677.81018"
+     y="331.49411"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -407,12 +407,12 @@
      marker-end="url(#arrowhead)"
      id="arrow_to_model_type" />
   <polygon
-     points="675,510 750,545 675,580 600,545 "
+     points="675,580 600,545 675,510 750,545 "
      fill="#fed7aa"
      stroke="#fdba74"
      stroke-width="2"
      id="model_type_router"
-     transform="translate(0.5,0.5)" />
+     transform="translate(0.49999714,0.49999714)" />
   <text
      x="675.5"
      y="550.5"
@@ -821,7 +821,7 @@
   <!-- Side panels -->
   <!-- Multi-Encoder Panel -->
   <rect
-     x="50.5"
+     x="50.499996"
      y="800.5"
      width="250"
      height="120"
@@ -840,49 +840,49 @@
      fill="#92400e"
      id="text_multi_encoder_title">Multi-Encoder Mode</text>
   <text
-     x="60.5"
+     x="60.499996"
      y="840.5"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#374151"
      id="text_multi1">• Separate encoder/decoder per feature</text>
   <text
-     x="60.5"
+     x="60.499996"
      y="852.5"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#374151"
      id="text_multi2">• Process each input dimension</text>
   <text
-     x="60.5"
+     x="60.499996"
      y="864.5"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#374151"
      id="text_multi3">• Independent attention per feature</text>
   <text
-     x="60.5"
+     x="60.499996"
      y="876.5"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#374151"
      id="text_multi4">• Aggregation layer combines outputs</text>
   <text
-     x="60.5"
+     x="60.499996"
      y="888.5"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#374151"
      id="text_multi5">• Linear combination weights</text>
   <text
-     x="60.5"
+     x="60.499996"
      y="900.5"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#374151"
      id="text_multi6">• Parallel feature processing</text>
   <text
-     x="60.5"
+     x="60.499996"
      y="912.5"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -1099,7 +1099,7 @@
      fill="#374151"
      id="config3_text">strategy=&quot;seq2seq&quot;, model_type=&quot;informer-like&quot;</text>
   <text
-     x="550.5"
+     x="610.5"
      y="1216.5"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -1107,14 +1107,14 @@
      fill="#374151"
      id="config4">Direct:</text>
   <text
-     x="590.5"
+     x="650.5"
      y="1216.5"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#374151"
      id="config4_text">strategy=&quot;direct&quot; (fastest inference)</text>
   <text
-     x="550.5"
+     x="610.5"
      y="1231.5"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -1122,14 +1122,14 @@
      fill="#374151"
      id="config5">Multi-Encoder:</text>
   <text
-     x="640.5"
+     x="700.5"
      y="1231.5"
      font-family="Arial, sans-serif"
      font-size="10px"
      fill="#374151"
      id="config5_text">multi_encoder_decoder=True</text>
   <text
-     x="550.5"
+     x="610.5"
      y="1246.5"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -1137,7 +1137,7 @@
      fill="#374151"
      id="config6">Autoregressive:</text>
   <text
-     x="650.5"
+     x="710.5"
      y="1246.5"
      font-family="Arial, sans-serif"
      font-size="10px"
@@ -1145,9 +1145,9 @@
      id="config6_text">strategy=&quot;autoregressive&quot;</text>
   <!-- Connection lines for multi-encoder -->
   <path
-     d="m 301.03218,820.4913 c 0,-24.37641 174.55929,-24.37641 174.55929,-548.46905"
+     d="m 301.47434,820.48019 c 0,-22.73797 247.36113,-22.73797 247.36113,-511.60422"
      stroke="#fbbf24"
-     stroke-width="2.18793"
+     stroke-width="2.51547"
      fill="none"
      stroke-dasharray="3, 3"
      opacity="0.7"

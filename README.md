@@ -73,15 +73,19 @@ predictions = model.predict(X_test)
 
 ---
 
-
 ## 📖 Documentation
 
-- [Preprocessing Guide](docs/preprocessor.md)
-- [Custom Blocks Guide](docs/custom_blocks.md)
-- [Transformer Blocks](docs/transformer.md)
-- [Fourier Blocks](docs/fourier.md)
-- [Wavelet Blocks](docs/wavelet.md)
-- [DARTS Module](docs/darts.md)
+Explore the documentation:
+
+
+| Section         | Description                                     | Link                                |
+|-----------------|-------------------------------------------------|-------------------------------------|
+| Preprocessing   | Data cleaning, EWT, normalization, differencing | [Guide](docs/preprocessor.md)       |
+| Custom Blocks   | Register your own modules                       | [Guide](docs/custom_blocks.md)      |
+| Transformers    | Core transformer blocks                         | [Docs](docs/transformer.md)         |
+| Fourier         | Fourier-based forecasting layers                | [Docs](docs/fourier.md)             |
+| Wavelet         | Wavelet transform layers                        | [Docs](docs/wavelet.md)             |
+| DARTS           | Differentiable Architecture Search              | [Docs](docs/darts.md)               |
 
 ---
 

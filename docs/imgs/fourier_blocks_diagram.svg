@@ -1,0 +1,1053 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="838"
+   height="1217.3613"
+   version="1.1"
+   id="svg68"
+   sodipodi:docname="fourier_blocks_diagram.svg"
+   inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1.0561595"
+     inkscape:cx="398.14061"
+     inkscape:cy="633.42703"
+     inkscape:window-width="1800"
+     inkscape:window-height="955"
+     inkscape:window-x="0"
+     inkscape:window-y="114"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg68" />
+  <defs
+     id="defs1">
+    <!-- Simple arrow marker -->
+    <marker
+       id="arrowhead"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto"
+       markerUnits="strokeWidth">
+      <polygon
+         points="10,3.5 0,7 0,0 "
+         fill="#374151"
+         stroke="none"
+         id="polygon1" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect
+     width="836.99323"
+     height="1216.3545"
+     fill="#f8fafc"
+     stroke="#e2e8f0"
+     stroke-width="1.00678"
+     id="rect1"
+     x="0.50339001"
+     y="0.50339001" />
+  <!-- Title -->
+  <text
+     x="418.5"
+     y="30.499996"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="18px"
+     font-weight="bold"
+     fill="#374151"
+     id="title">Fourier-Based Neural Network Components</text>
+  <!-- ========== SPECTRAL CONV 1D BLOCK ========== -->
+  <!-- Block 1 Header -->
+  <rect
+     x="50.499996"
+     y="60.499996"
+     width="320"
+     height="40"
+     fill="#e9d5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     rx="10"
+     id="rect_block1_header" />
+  <text
+     x="210.5"
+     y="85.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_block1_title">SpectralConv1D Block</text>
+  <!-- Input -->
+  <rect
+     x="130.5"
+     y="120.5"
+     width="160"
+     height="35"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_spec_input" />
+  <text
+     x="210.5"
+     y="142.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_spec_input">[B, C, L]</text>
+  <!-- Arrow -->
+  <path
+     d="m 210.5,160.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_spec1" />
+  <!-- FFT -->
+  <rect
+     x="80.5"
+     y="180.5"
+     width="260"
+     height="50"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_fft" />
+  <text
+     x="210.5"
+     y="200.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_fft_title">Real FFT Transform</text>
+  <text
+     x="90.5"
+     y="215.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fft1">• torch.fft.rfft(x, dim=-1)</text>
+  <text
+     x="90.5"
+     y="225.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fft2">• Complex frequency representation</text>
+  <!-- Arrow -->
+  <path
+     d="m 210.5,235.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_spec2" />
+  <!-- Complex Multiplication -->
+  <rect
+     x="80.5"
+     y="255.5"
+     width="260"
+     height="70"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="2"
+     rx="8"
+     id="rect_complex" />
+  <text
+     x="210.5"
+     y="275.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_complex_title">Complex Weight Multiplication</text>
+  <text
+     x="90.5"
+     y="290.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_complex1">• Complex weights: [in_ch, out_ch, modes]</text>
+  <text
+     x="90.5"
+     y="300.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_complex2">• Einsum: &quot;bcm,com-&gt;bom&quot;</text>
+  <text
+     x="90.5"
+     y="310.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_complex3">• Truncate to selected modes</text>
+  <text
+     x="90.5"
+     y="320.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_complex4">• Zero-pad high frequencies</text>
+  <!-- Arrow -->
+  <path
+     d="m 210.5,330.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_spec3" />
+  <!-- IFFT -->
+  <rect
+     x="80.5"
+     y="350.5"
+     width="260"
+     height="50"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_ifft" />
+  <text
+     x="210.5"
+     y="370.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_ifft_title">Inverse FFT Transform</text>
+  <text
+     x="90.5"
+     y="385.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_ifft1">• torch.fft.irfft(out_ft, n=L, dim=-1)</text>
+  <text
+     x="90.5"
+     y="395.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_ifft2">• Return to time domain</text>
+  <!-- Arrow -->
+  <path
+     d="m 210.5,405.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_spec4" />
+  <!-- Output -->
+  <rect
+     x="130.5"
+     y="425.5"
+     width="160"
+     height="35"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_spec_output" />
+  <text
+     x="210.5"
+     y="447.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_spec_output">[B, L, C_out]</text>
+  <!-- ========== FNO1D LAYER BLOCK ========== -->
+  <!-- Block 2 Header -->
+  <rect
+     x="450.5"
+     y="60.499996"
+     width="320"
+     height="40"
+     fill="#d1fae5"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="10"
+     id="rect_block2_header" />
+  <text
+     x="610.5"
+     y="85.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_block2_title">FNO1D Layer</text>
+  <!-- Input -->
+  <rect
+     x="530.5"
+     y="120.5"
+     width="160"
+     height="35"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_fno_input" />
+  <text
+     x="610.5"
+     y="142.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_fno_input">[B, L, C_in]</text>
+  <!-- Arrow -->
+  <path
+     d="m 610.5,160.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_fno1" />
+  <!-- SpectralConv1D (referenced) -->
+  <rect
+     x="480.5"
+     y="180.5"
+     width="260"
+     height="50"
+     fill="#e9d5ff"
+     stroke="#c4b5fd"
+     stroke-width="2"
+     stroke-dasharray="5, 5"
+     rx="8"
+     id="rect_fno_spectral" />
+  <text
+     x="610.5"
+     y="200.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_fno_spectral_title">SpectralConv1D</text>
+  <text
+     x="490.5"
+     y="215.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fno_spectral1">• Uses SpectralConv1D from above</text>
+  <text
+     x="490.5"
+     y="225.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fno_spectral2">• Permute dimensions for processing</text>
+  <!-- Residual Connection -->
+  <path
+     d="m 510.5,138 c -40,0 -40,60 -40,92.5 0,32.5 0,92.5 40,92.5"
+     stroke="#86efac"
+     stroke-width="2"
+     fill="none"
+     stroke-dasharray="5, 5"
+     id="residual_path" />
+  <text
+     x="-275.5"
+     y="400.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#047857"
+     transform="rotate(-90)"
+     id="text_residual">Residual Path</text>
+  <!-- Arrow -->
+  <path
+     d="m 610.5,235.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_fno2" />
+  <!-- Processing -->
+  <rect
+     x="480.5"
+     y="255.5"
+     width="260"
+     height="70"
+     fill="#f0fdf4"
+     stroke="#22c55e"
+     stroke-width="2"
+     rx="8"
+     id="rect_fno_process" />
+  <text
+     x="610.5"
+     y="275.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_fno_process_title">Layer Processing</text>
+  <text
+     x="490.5"
+     y="290.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fno_process1">• Residual connection (+ projection if needed)</text>
+  <text
+     x="490.5"
+     y="300.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fno_process2">• Layer normalization</text>
+  <text
+     x="490.5"
+     y="310.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fno_process3">• GELU activation</text>
+  <text
+     x="490.5"
+     y="320.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fno_process4">• Identity or Conv1d projection</text>
+  <!-- Arrow -->
+  <path
+     d="m 610.5,330.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_fno3" />
+  <!-- Output -->
+  <rect
+     x="530.5"
+     y="350.5"
+     width="160"
+     height="35"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_fno_output" />
+  <text
+     x="610.5"
+     y="372.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_fno_output">[B, L, C_out]</text>
+  <!-- ========== FOURIER FEATURES BLOCK ========== -->
+  <!-- Block 3 Header -->
+  <rect
+     x="50.499996"
+     y="520.5"
+     width="320"
+     height="40"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2"
+     rx="10"
+     id="rect_block3_header" />
+  <text
+     x="210.5"
+     y="545.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_block3_title">Fourier Features</text>
+  <!-- Input -->
+  <rect
+     x="130.5"
+     y="580.5"
+     width="160"
+     height="35"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_ff_input" />
+  <text
+     x="210.5"
+     y="602.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_ff_input">[B, L, input_size]</text>
+  <!-- Arrow -->
+  <path
+     d="m 210.5,620.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_ff1" />
+  <!-- Time Normalization -->
+  <rect
+     x="80.5"
+     y="640.5"
+     width="260"
+     height="50"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_time_norm" />
+  <text
+     x="210.5"
+     y="660.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_time_norm_title">Time Normalization</text>
+  <text
+     x="90.5"
+     y="675.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_time_norm1">• Linspace [0, 1] over sequence length</text>
+  <text
+     x="90.5"
+     y="685.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_time_norm2">• Broadcast to [B, L, input_size]</text>
+  <!-- Arrow -->
+  <path
+     d="m 210.5,695.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_ff2" />
+  <!-- Fourier Encoding -->
+  <rect
+     x="80.5"
+     y="715.5"
+     width="260"
+     height="80"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2"
+     rx="8"
+     id="rect_fourier_enc" />
+  <text
+     x="210.5"
+     y="735.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_fourier_enc_title">Sinusoidal Encoding</text>
+  <text
+     x="90.5"
+     y="750.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_enc1">• Frequency matrix [input_size, num_freq]</text>
+  <text
+     x="90.5"
+     y="760.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_enc2">• Signal = 2π * time * freq + phase</text>
+  <text
+     x="90.5"
+     y="770.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_enc3">• Sin/Cos features: [B, L, 2*D*F]</text>
+  <text
+     x="90.5"
+     y="780.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_enc4">• Optional layer normalization</text>
+  <text
+     x="90.5"
+     y="790.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_enc5">• Concatenate with original input</text>
+  <!-- Arrow -->
+  <path
+     d="m 210.5,800.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_ff3" />
+  <!-- Projection -->
+  <rect
+     x="80.5"
+     y="820.5"
+     width="260"
+     height="50"
+     fill="#dbeafe"
+     stroke="#93c5fd"
+     stroke-width="2"
+     rx="8"
+     id="rect_projection" />
+  <text
+     x="210.5"
+     y="840.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#1e40af"
+     id="text_projection_title">Multi-layer Projection</text>
+  <text
+     x="90.5"
+     y="855.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_projection1">• Linear layers + activation + dropout</text>
+  <text
+     x="90.5"
+     y="865.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_projection2">• Map to output_size dimensions</text>
+  <!-- Arrow -->
+  <path
+     d="m 210.5,875.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_ff4" />
+  <!-- Output -->
+  <rect
+     x="130.5"
+     y="895.5"
+     width="160"
+     height="35"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_ff_output" />
+  <text
+     x="210.5"
+     y="917.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_ff_output">[B, L, output_size]</text>
+  <!-- ========== ADAPTIVE FOURIER FEATURES BLOCK ========== -->
+  <!-- Block 4 Header -->
+  <rect
+     x="450.5"
+     y="520.5"
+     width="320"
+     height="40"
+     fill="#fef3c7"
+     stroke="#fbbf24"
+     stroke-width="2"
+     rx="10"
+     id="rect_block4_header" />
+  <text
+     x="610.5"
+     y="545.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_block4_title">Adaptive Fourier Features</text>
+  <!-- Input -->
+  <rect
+     x="530.5"
+     y="580.5"
+     width="160"
+     height="35"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_aff_input" />
+  <text
+     x="610.5"
+     y="602.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_aff_input">[B, L, input_size]</text>
+  <!-- Arrow -->
+  <path
+     d="m 610.5,620.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_aff1" />
+  <!-- Frequency Generation -->
+  <rect
+     x="480.5"
+     y="640.5"
+     width="260"
+     height="60"
+     fill="#f3e8ff"
+     stroke="#a855f7"
+     stroke-width="2"
+     rx="8"
+     id="rect_freq_gen" />
+  <text
+     x="610.5"
+     y="660.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#581c87"
+     id="text_freq_gen_title">Adaptive Frequency Generation</text>
+  <text
+     x="490.5"
+     y="675.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_freq_gen1">• Learnable frequency matrix scaling</text>
+  <text
+     x="490.5"
+     y="685.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_freq_gen2">• Optional learnable phase shifts</text>
+  <text
+     x="490.5"
+     y="695.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_freq_gen3">• Per-dimension processing</text>
+  <!-- Arrow -->
+  <path
+     d="m 610.5,705.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_aff2" />
+  <!-- Attention Mechanism -->
+  <rect
+     x="480.5"
+     y="725.5"
+     width="260"
+     height="70"
+     fill="#cffafe"
+     stroke="#67e8f9"
+     stroke-width="2"
+     rx="8"
+     id="rect_attention" />
+  <text
+     x="610.5"
+     y="745.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#0c4a6e"
+     id="text_attention_title">Multi-Head Frequency Attention</text>
+  <text
+     x="490.5"
+     y="760.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_attention1">• Query projection from input</text>
+  <text
+     x="490.5"
+     y="770.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_attention2">• Key/Value from frequency embeds</text>
+  <text
+     x="490.5"
+     y="780.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_attention3">• Attention weights on sin/cos features</text>
+  <text
+     x="490.5"
+     y="790.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_attention4">• Dropout on attention weights</text>
+  <!-- Arrow -->
+  <path
+     d="m 610.5,800.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_aff3" />
+  <!-- Gated Output -->
+  <rect
+     x="480.5"
+     y="820.5"
+     width="260"
+     height="60"
+     fill="#d1fae5"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="8"
+     id="rect_gated" />
+  <text
+     x="610.5"
+     y="840.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_gated_title">Gated Output Combination</text>
+  <text
+     x="490.5"
+     y="855.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_gated1">• Gate: Linear + Sigmoid</text>
+  <text
+     x="490.5"
+     y="865.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_gated2">• Projection: Linear + SiLU</text>
+  <text
+     x="490.5"
+     y="875.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_gated3">• Output: input + gate * projection</text>
+  <!-- Arrow -->
+  <path
+     d="m 610.5,885.5 v 15"
+     stroke="#374151"
+     stroke-width="2"
+     fill="none"
+     marker-end="url(#arrowhead)"
+     id="arrow_aff4" />
+  <!-- Output -->
+  <rect
+     x="530.5"
+     y="905.5"
+     width="160"
+     height="35"
+     fill="#fed7aa"
+     stroke="#fdba74"
+     stroke-width="2"
+     rx="8"
+     id="rect_aff_output" />
+  <text
+     x="610.5"
+     y="927.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#92400e"
+     id="text_aff_output">[B, L, output_size]</text>
+  <!-- ========== FOURIER BLOCK ========== -->
+  <!-- Block 5 Header -->
+  <rect
+     x="250.5"
+     y="990.5"
+     width="320"
+     height="40"
+     fill="#dcfce7"
+     stroke="#86efac"
+     stroke-width="2"
+     rx="10"
+     id="rect_block5_header" />
+  <text
+     x="410.5"
+     y="1015.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="16px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_block5_title">FourierBlock (Alternative)</text>
+  <!-- Key differences box -->
+  <rect
+     x="270.5"
+     y="1050.5"
+     width="280"
+     height="80"
+     fill="#f0fdf4"
+     stroke="#22c55e"
+     stroke-width="2"
+     rx="8"
+     id="rect_fourier_block" />
+  <text
+     x="410.5"
+     y="1070.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#065f46"
+     id="text_fourier_block_title">Key Differences from SpectralConv1D:</text>
+  <text
+     x="280.5"
+     y="1085.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_block1">• Uses separate real/imaginary weights for AMP</text>
+  <text
+     x="280.5"
+     y="1095.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_block2">• Mode selection strategies (random/lowest)</text>
+  <text
+     x="280.5"
+     y="1105.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_block3">• Manual complex multiplication</text>
+  <text
+     x="280.5"
+     y="1115.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#374151"
+     id="text_fourier_block4">• Vectorized frequency processing</text>
+  <!-- Side annotations for independent blocks -->
+  <text
+     x="40.499996"
+     y="50.499996"
+     font-family="Arial, sans-serif"
+     font-size="12px"
+     font-weight="bold"
+     fill="#6b7280"
+     id="annotation1">Independent Components:</text>
+  <!-- Left column description -->
+  <rect
+     x="20.499996"
+     y="480.5"
+     width="25"
+     height="460"
+     fill="#e9d5ff"
+     fill-opacity="0.3"
+     stroke="#c4b5fd"
+     stroke-width="1"
+     stroke-dasharray="3, 3"
+     id="left_indicator" />
+  <text
+     x="-752.5"
+     y="35.499996"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#581c87"
+     transform="rotate(-90)"
+     id="left_label">Basic Fourier Operations</text>
+  <!-- Right column description -->
+  <rect
+     x="792.5"
+     y="480.5"
+     width="25"
+     height="460"
+     fill="#fef3c7"
+     fill-opacity="0.3"
+     stroke="#fbbf24"
+     stroke-width="1"
+     stroke-dasharray="3, 3"
+     id="right_indicator" />
+  <text
+     x="670.5"
+     y="-801.5"
+     font-family="Arial, sans-serif"
+     font-size="10px"
+     fill="#92400e"
+     transform="rotate(90)"
+     id="right_label">Adaptive Enhanced</text>
+  <!-- Usage notes -->
+  <rect
+     x="50.588211"
+     y="1150.5883"
+     width="719.82355"
+     height="55.373035"
+     fill="#f1f5f9"
+     stroke="#cbd5e1"
+     stroke-width="1.17643"
+     rx="4.9987745"
+     id="usage_notes" />
+  <text
+     x="410.5"
+     y="1167.5"
+     text-anchor="middle"
+     font-family="Arial, sans-serif"
+     font-size="11px"
+     font-weight="bold"
+     fill="#374151"
+     id="usage_title">Usage Notes:</text>
+  <text
+     x="60.499996"
+     y="1180.5"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="usage_text1">• These are independent components that can be used separately or combined in neural architectures</text>
+  <text
+     x="60.833546"
+     y="1195.7114"
+     font-family="Arial, sans-serif"
+     font-size="9px"
+     fill="#374151"
+     id="usage_text2">• FNO1D uses SpectralConv1D internally but adds residual connections and normalization</text>
+</svg>
