@@ -33,6 +33,23 @@
   <!-- Define gradients (Inkscape compatible) -->
   <defs
      id="defs6">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect1"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,5,0,1 @ F,0,0,1,0,5,0,1 @ F,0,0,1,0,5,0,1 @ F,0,0,1,0,5,0,1"
+       radius="5"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
     <!-- Flow gradient -->
     <linearGradient
        id="flowGradient"
@@ -134,7 +151,7 @@
        style="color-interpolation-filters:sRGB"
        inkscape:label="Drop Shadow"
        id="filter9"
-       x="-0.00847526"
+       x="-0.0084752601"
        y="-0.012918825"
        width="1.019873"
        height="1.0302924">
@@ -171,7 +188,7 @@
   </defs>
   <!-- Main processing blocks -->
   <!-- Input block -->
-  <rect
+  <path
      width="342.17239"
      height="224.47862"
      fill="#f8fafc"
@@ -180,7 +197,10 @@
      id="rect1"
      x="2.8999999"
      y="2.9000001"
-     style="stroke-width:1;stroke-linejoin:round;stroke-dasharray:none;filter:url(#filter9);stroke:#000000;stroke-opacity:1" />
+     style="stroke:#000000;stroke-width:1;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;filter:url(#filter9)"
+     inkscape:path-effect="#path-effect1"
+     sodipodi:type="rect"
+     d="M 7.8999999,2.9000001 H 340.07239 a 5,5 45 0 1 5,5 V 222.37862 a 5,5 135 0 1 -5,5 H 7.8999999 a 5,5 45 0 1 -5,-5 l 0,-214.4786199 a 5,5 135 0 1 5,-5 z" />
   <rect
      x="9.7216377"
      y="62.964417"

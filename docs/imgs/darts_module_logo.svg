@@ -22,8 +22,8 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="2.2208081"
-     inkscape:cx="194.29864"
-     inkscape:cy="178.08833"
+     inkscape:cx="177.18775"
+     inkscape:cy="171.78432"
      inkscape:window-width="1800"
      inkscape:window-height="1024"
      inkscape:window-x="0"
@@ -34,6 +34,23 @@
   <!-- Define gradients (Inkscape compatible) -->
   <defs
      id="defs8">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect1"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,4.2847391,0,1 @ F,0,0,1,0,4.2847391,0,1 @ F,0,0,1,0,4.2847391,0,1 @ F,0,0,1,0,4.2847391,0,1"
+       radius="5"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
     <!-- Neural network gradient -->
     <linearGradient
        id="neuralGradient"
@@ -158,7 +175,7 @@
        style="color-interpolation-filters:sRGB"
        inkscape:label="Drop Shadow"
        id="filter9"
-       x="-0.0082631097"
+       x="-0.0082631096"
        y="-0.012595444"
        width="1.0194487"
        height="1.0296457">
@@ -196,7 +213,7 @@
   <!-- Main architecture search visualization -->
   <!-- Neural architecture blocks (representing different architectures) -->
   <!-- Architecture 1 (basic) -->
-  <rect
+  <path
      width="342.17239"
      height="224.47862"
      fill="#f8fafc"
@@ -206,7 +223,10 @@
      x="-0.73094499"
      y="-0.30358183"
      style="stroke:#000000;stroke-width:0.854816;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;filter:url(#filter9)"
-     transform="matrix(1.0900901,0,0,1.2554293,3.8789252,3.9307363)" />
+     transform="matrix(1.0900901,0,0,1.2554293,3.8789252,3.9307363)"
+     inkscape:path-effect="#path-effect1"
+     sodipodi:type="rect"
+     d="m 3.5537941,-0.30358183 333.6029159,0 a 4.2847391,4.2847391 45 0 1 4.28474,4.28473913 V 219.8903 a 4.2847391,4.2847391 135 0 1 -4.28474,4.28474 H 3.5537941 a 4.2847391,4.2847391 45 0 1 -4.28473909,-4.28474 l 0,-215.9091427 A 4.2847391,4.2847391 135 0 1 3.5537941,-0.30358183 Z" />
   <g
      transform="translate(21.744468,74.326481)"
      id="g11">
