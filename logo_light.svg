@@ -29,6 +29,6 @@
   <!-- Text Label -->
   <text x="200" y="220" font-family="'Segoe UI', sans-serif" font-weight="600"
         font-size="28" fill="#1D3557" text-anchor="middle">
-    ForeBlocks
+    foreblocks
   </text>
 </svg>

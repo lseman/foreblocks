@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg
-   viewBox="0 0 373.04715 280.23996"
+   viewBox="0 0 380.25311 290.17169"
    version="1.1"
    id="svg58"
    sodipodi:docname="darts_module_logo.svg"
    inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
-   width="373.04715"
-   height="280.23996"
+   width="380.25311"
+   height="290.17169"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns:xlink="http://www.w3.org/1999/xlink"
@@ -22,10 +22,10 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="2.2208081"
-     inkscape:cx="187.99463"
-     inkscape:cy="91.858454"
+     inkscape:cx="194.29864"
+     inkscape:cy="178.08833"
      inkscape:window-width="1800"
-     inkscape:window-height="1025"
+     inkscape:window-height="1024"
      inkscape:window-x="0"
      inkscape:window-y="44"
      inkscape:window-maximized="1"
@@ -103,7 +103,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="0,0 8,3 0,6 "
+         points="8,3 0,6 0,0 "
          fill="#34495e"
          id="polygon7" />
     </marker>
@@ -117,7 +117,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="0,0 10,3.5 0,7 "
+         points="10,3.5 0,7 0,0 "
          fill="#f39c12"
          id="polygon8" />
     </marker>
@@ -140,7 +140,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="10,3.5 0,7 0,0 "
+         points="0,7 0,0 10,3.5 "
          fill="#f39c12"
          id="polygon8-5" />
     </marker>
@@ -154,22 +154,61 @@
        y1="130.87753"
        x2="73.626083"
        y2="155.97733" />
+    <filter
+       style="color-interpolation-filters:sRGB"
+       inkscape:label="Drop Shadow"
+       id="filter9"
+       x="-0.0082631097"
+       y="-0.012595444"
+       width="1.0194487"
+       height="1.0296457">
+      <feFlood
+         result="flood"
+         in="SourceGraphic"
+         flood-opacity="0.498039"
+         flood-color="rgb(0,0,0)"
+         id="feFlood8" />
+      <feGaussianBlur
+         result="blur"
+         in="SourceGraphic"
+         stdDeviation="1.000000"
+         id="feGaussianBlur8" />
+      <feOffset
+         result="offset"
+         in="blur"
+         dx="1.000000"
+         dy="1.000000"
+         id="feOffset8" />
+      <feComposite
+         result="comp1"
+         operator="in"
+         in="flood"
+         in2="offset"
+         id="feComposite8" />
+      <feComposite
+         result="comp2"
+         operator="over"
+         in="SourceGraphic"
+         in2="comp1"
+         id="feComposite9" />
+    </filter>
   </defs>
   <!-- Main architecture search visualization -->
   <!-- Neural architecture blocks (representing different architectures) -->
   <!-- Architecture 1 (basic) -->
   <rect
-     width="372.04715"
-     height="279.23996"
+     width="342.17239"
+     height="224.47862"
      fill="#f8fafc"
      stroke="#e2e8f0"
-     stroke-width="0.321611"
+     stroke-width="0.276537"
      id="rect1"
-     x="0.5"
-     y="0.5"
-     style="stroke-width:1;stroke-dasharray:none" />
+     x="-0.73094499"
+     y="-0.30358183"
+     style="stroke-width:0.854816;stroke-linejoin:round;stroke-dasharray:none;filter:url(#filter9)"
+     transform="matrix(1.0900901,0,0,1.2554293,3.8789252,3.9307363)" />
   <g
-     transform="translate(18.233089,70.720042)"
+     transform="translate(21.744468,74.326481)"
      id="g11">
     <rect
        x="0"
@@ -226,7 +265,7 @@
   </g>
   <!-- Architecture 2 (evolved) -->
   <g
-     transform="translate(68.233089,60.720042)"
+     transform="translate(71.744468,64.326481)"
      id="g17">
     <rect
        x="0"
@@ -312,7 +351,7 @@
   </g>
   <!-- Architecture 3 (optimized) -->
   <g
-     transform="translate(148.23308,55.720042)"
+     transform="translate(151.74446,59.326481)"
      id="g26">
     <rect
        x="0"
@@ -423,20 +462,20 @@
   </g>
   <!-- Search evolution arrows -->
   <line
-     x1="57.923786"
-     y1="167.65292"
-     x2="66.867096"
-     y2="167.65292"
+     x1="61.435165"
+     y1="171.25937"
+     x2="70.378471"
+     y2="171.25937"
      stroke="url(#searchGradient)"
      stroke-width="2.31646"
      marker-end="url(#searchArrow)"
      id="line27"
      style="stroke:url(#linearGradient59)" />
   <line
-     x1="137.8792"
-     y1="167.63527"
-     x2="146.82251"
-     y2="167.63527"
+     x1="141.39058"
+     y1="171.24171"
+     x2="150.33389"
+     y2="171.24171"
      stroke="url(#searchGradient)"
      stroke-width="2.31646"
      marker-end="url(#searchArrow-6)"
@@ -444,24 +483,24 @@
      style="stroke:url(#linearGradient60);marker-end:url(#searchArrow-6)" />
   <!-- Search process labels -->
   <text
-     x="28.233089"
-     y="170.72003"
+     x="31.744469"
+     y="174.32648"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#7f8c8d"
      id="text28">Basic</text>
   <text
-     x="93.233086"
-     y="170.72003"
+     x="96.744461"
+     y="174.32648"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#7f8c8d"
      id="text29">Evolved</text>
   <text
-     x="183.23309"
-     y="170.72003"
+     x="186.74448"
+     y="174.32648"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
@@ -469,7 +508,7 @@
      id="text30">Optimized</text>
   <!-- Zero-cost evaluation visualization -->
   <g
-     transform="translate(248.23308,70.720042)"
+     transform="translate(251.74446,74.326481)"
      id="g38">
     <!-- Evaluation metrics -->
     <rect
@@ -589,8 +628,8 @@
   </g>
   <!-- Main title -->
   <text
-     x="178.23309"
-     y="20.720041"
+     x="181.74448"
+     y="24.326481"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="20px"
@@ -599,8 +638,8 @@
      id="text39">ForeBlocks DARTS</text>
   <!-- Subtitle -->
   <text
-     x="178.23309"
-     y="38.720043"
+     x="181.74448"
+     y="42.326481"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="11px"
@@ -608,7 +647,7 @@
      id="text40">Neural Architecture Search</text>
   <!-- Key features -->
   <g
-     transform="translate(28.233089,190.72004)"
+     transform="translate(31.744468,194.32648)"
      id="g44">
     <!-- Multi-fidelity search -->
     <circle
@@ -665,7 +704,7 @@
        transform="translate(0,40)"
        id="g43">
       <polygon
-         points="8,14 2,8 8,2 14,8 "
+         points="8,2 14,8 8,14 2,8 "
          fill="none"
          stroke="#e74c3c"
          stroke-width="2"
@@ -689,7 +728,7 @@
   </g>
   <!-- DARTS process flow -->
   <g
-     transform="translate(5.2047439,265.84884)"
+     transform="translate(8.7161231,269.45528)"
      id="g49">
     <text
        x="0"
@@ -786,7 +825,7 @@
   </g>
   <!-- Architecture complexity visualization -->
   <g
-     transform="translate(258.23308,150.72004)"
+     transform="translate(261.74446,154.32648)"
      id="g58">
     <!-- Simple to complex progression -->
     <rect

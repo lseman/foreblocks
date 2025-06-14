@@ -1,4 +1,4 @@
-# ForeBlocks: Modular Time Series Forecasting Library
+# foreblocks: Modular Time Series Forecasting Library
 
 [![PyPI Version](https://img.shields.io/pypi/v/tracernaut.svg)](https://pypi.org/project/foreblocks/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/foreblocks.svg)](https://pypi.org/project/foreblocks/)
@@ -20,6 +20,13 @@
 git clone https://github.com/lseman/foreblocks
 cd foreblocks
 pip install -e .
+```
+
+or
+
+```bash
+# Instalattion via pip
+pip install foreblocks
 ```
 
 ```python
