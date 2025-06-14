@@ -5,31 +5,29 @@ import warnings
 from typing import List, Optional, Tuple
 
 # ============================
+# Visualization
+# ============================
+import matplotlib.pyplot as plt
+
+# ============================
 # External Libraries - Core
 # ============================
 import numpy as np
 import pandas as pd
-from tabulate import tabulate
 import torch
 from joblib import Parallel, delayed
+from scipy.signal import find_peaks, welch
+from scipy.stats import entropy, kurtosis, skew
 
 # ============================
 # Scientific Computing & ML
 # ============================
 from sklearn.impute import KNNImputer
 from sklearn.preprocessing import StandardScaler
-from statsmodels.tsa.stattools import pacf
-from scipy.stats import skew, kurtosis, entropy
-from scipy.signal import welch, find_peaks
-from statsmodels.tsa.stattools import adfuller, acf
-
-# ============================
-# Visualization
-# ============================
-import matplotlib.pyplot as plt
+from statsmodels.tsa.stattools import acf, adfuller, pacf
+from tabulate import tabulate
 
 from .pre.impute import SAITSImputer
-
 from .pre.outlier import _remove_outliers
 
 # ============================
@@ -45,15 +43,16 @@ try:
 except ImportError:
     EMD = None
 
+from tqdm import tqdm
+
+from .pre.ewt import *
+
 # ============================
 # Internal Imports
 # ============================
 from .pre.filters import *
 from .pre.outlier import *
-from .pre.ewt import *
 from .pre.outlier import _remove_outliers_parallel
-
-from tqdm import tqdm
 
 FILTER_METHODS = {
     "savgol": lambda self, d, k: adaptive_savgol_filter(
@@ -471,7 +470,7 @@ class TimeSeriesPreprocessor:
             # Very high missingness — fallback to naive filling
             self.impute_method = "ffill" if temporal_score > 2 else "bfill"
 
-        self.impute_method = "saits"
+        self.impute_method = "interpolate"
 
         print(
             f"→ Temporal structure: {temporal_score:.2f}, Missing rate: {missing_rate:.3f} → Impute: {self.impute_method or 'None'}"
@@ -493,9 +492,9 @@ class TimeSeriesPreprocessor:
 
         # === Heuristic-based scoring
         scores["ecod"] = 2.0 if self.available_methods.get("ecod") else 0
-        scores["tranad"] = (
-            2.5 if self.available_methods.get("tranad") and avg_snr > 5 else 0
-        )
+        # scores["tranad"] = (
+        #     2.5 if self.available_methods.get("tranad") and avg_snr > 5 else 0
+        # )
         scores["isolation_forest"] = 1.5 if T > 3000 and missing_rate < 0.1 else 0
         scores["lof"] = 1.0 if D > 5 and dimensionality_ratio > 0.01 else 0
         scores["zscore"] = 1.0 if high_skew > 0.4 or extreme_ratio > 0.2 else 0
@@ -504,10 +503,10 @@ class TimeSeriesPreprocessor:
         scores["iqr"] = 0.5  # fallback
 
         # === Optional: Dynamic penalty/boost
-        if avg_flatness < 0.3:
-            scores["tranad"] += 0.5
-        if np.mean(kurts) > 10:
-            scores["mad"] += 0.5
+        # if avg_flatness < 0.3:
+        #     scores["tranad"] += 0.5
+        # if np.mean(kurts) > 10:
+        #     scores["mad"] += 0.5
 
         # Select method with highest score
         self.outlier_method = max(scores, key=scores.get)
@@ -554,9 +553,11 @@ class TimeSeriesPreprocessor:
         self.auto_configure(processed)
 
         # 3. Imputation
-        if self.apply_imputation:
-            processed = self._impute_missing(processed)
-            self._plot_comparison(data, processed, "After Imputation", time_stamps)
+        # check if there are NaNs in the data
+        if np.any(np.isnan(processed)):
+            if self.apply_imputation:
+                processed = self._impute_missing(processed)
+                self._plot_comparison(data, processed, "After Imputation", time_stamps)
 
         if np.any(np.isnan(processed)):
             raise ValueError("NaNs remain after imputation.")
@@ -604,7 +605,7 @@ class TimeSeriesPreprocessor:
             self.scaler = StandardScaler()
             processed = self.scaler.fit_transform(processed)
 
-        time_feates = None
+        time_feats = None
         # 10. Timestamp features
         if time_stamps is not None and self.generate_time_features:
             time_feats = self._generate_time_features(time_stamps)

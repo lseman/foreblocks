@@ -229,7 +229,17 @@ class Trainer:
     def train_epoch(self, dataloader, callbacks=None):
         self.model.train()
         total_loss = 0.0
-        for batch_idx, (X, y, time_feat) in enumerate(dataloader):
+        for batch_idx, data in enumerate(dataloader):
+            # check if data size is 2 or 3
+            if len(data) == 2:
+                X, y = data
+                time_feat = None
+            elif len(data) == 3:
+                X, y, time_feat = data
+            else:
+                raise ValueError(
+                    f"Expected 2 or 3 elements in batch, got {len(data)}"
+                )
             X, y = X.to(self.device), y.to(self.device)
             if time_feat is not None:
                 time_feat = time_feat.to(self.device)

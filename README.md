@@ -4,7 +4,11 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/foreblocks.svg)](https://pypi.org/project/foreblocks/)
 [![License](https://img.shields.io/github/license/lseman/foreblocks)](LICENSE)
 
-![Data Flow Diagram](logo.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="logo-light.svg">
+  <img alt="ForeBlocks Logo" src="logo-light.svg">
+</picture>
 
 **ForeBlocks** is a flexible, modular deep learning framework for time series forecasting built on PyTorch. It provides various neural network architectures and forecasting strategies to tackle complex time series prediction problems with an intuitive, research-friendly API.
 

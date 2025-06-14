@@ -199,7 +199,8 @@ def _remove_outliers(
         if adaptive:
             score_z = (scores - np.mean(scores)) / (np.std(scores) + 1e-8)
             anomaly_mask = np.full(T, False)
-            anomaly_mask[seq_len:] = score_z > min_z
+            # Map scores to the end of each sequence window
+            anomaly_mask[seq_len-1:seq_len-1+len(score_z)] = score_z > min_z
         else:
             if threshold > 1.0:
                 percentile = min(max(threshold, 0), 100)
@@ -207,8 +208,8 @@ def _remove_outliers(
                 percentile = threshold * 100
             score_thresh = np.nanpercentile(scores, percentile)
             anomaly_mask = np.full(T, False)
-            anomaly_mask[seq_len:] = scores > score_thresh
-
+            # Map scores to the end of each sequence window
+            anomaly_mask[seq_len-1:seq_len-1+len(scores)] = scores > score_thresh
         # === Mask out anomalies ===
         x_cleaned = x.copy()
         x_cleaned[anomaly_mask] = np.nan
@@ -229,273 +230,135 @@ def _remove_outliers_wrapper(args):
 ###########################################################################
 # TranAD
 ###########################################################################
-
-
-class PositionalEncoding(nn.Module):
-    """Improved positional encoding with caching and optional learnable components."""
-
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
-        super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
-        self.d_model = d_model
-
-        # Pre-compute positional encodings
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
-        )
-
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer("pe", pe)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (batch_size, seq_len, d_model)
-        seq_len = x.size(1)
-        x = x + self.pe[:seq_len].transpose(0, 1)
-        return self.dropout(x)
-
-
-class MultiHeadAttention(nn.Module):
-    """Optimized multi-head attention with optional flash attention."""
-
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
-        super().__init__()
-        assert d_model % n_heads == 0
-
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_k = d_model // n_heads
-
-        self.w_q = nn.Linear(d_model, d_model, bias=False)
-        self.w_k = nn.Linear(d_model, d_model, bias=False)
-        self.w_v = nn.Linear(d_model, d_model, bias=False)
-        self.w_o = nn.Linear(d_model, d_model)
-
-        self.dropout = nn.Dropout(dropout)
-        self.scale = math.sqrt(self.d_k)
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        batch_size, seq_len = query.size(0), query.size(1)
-
-        # Linear transformations and reshape
-        Q = (
-            self.w_q(query)
-            .view(batch_size, seq_len, self.n_heads, self.d_k)
-            .transpose(1, 2)
-        )
-        K = self.w_k(key).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
-        V = self.w_v(value).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
-
-        # Use scaled dot-product attention with optional flash attention
-        if hasattr(F, "scaled_dot_product_attention"):
-            # Use PyTorch's optimized attention (available in PyTorch 2.0+)
-            attn_output = F.scaled_dot_product_attention(
-                Q,
-                K,
-                V,
-                attn_mask=mask,
-                dropout_p=self.dropout.p if self.training else 0.0,
-            )
-        else:
-            # Fallback to manual implementation
-            scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
-            if mask is not None:
-                scores = scores.masked_fill(mask == 0, -1e9)
-            attn_weights = F.softmax(scores, dim=-1)
-            attn_weights = self.dropout(attn_weights)
-            attn_output = torch.matmul(attn_weights, V)
-
-        # Reshape and apply output projection
-        attn_output = (
-            attn_output.transpose(1, 2)
-            .contiguous()
-            .view(batch_size, seq_len, self.d_model)
-        )
-        return self.w_o(attn_output)
-
-
-class TransformerBlock(nn.Module):
-    """Optimized transformer block with pre-norm and better initialization."""
-
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
-        super().__init__()
-        self.attention = MultiHeadAttention(d_model, n_heads, dropout)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-
-        # Use GELU for better performance
-        self.feed_forward = nn.Sequential(
-            nn.Linear(d_model, d_ff),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model),
-            nn.Dropout(dropout),
-        )
-
-        # Initialize weights
-        self._init_weights()
-
-    def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    def forward(
-        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        # Pre-norm architecture for better gradient flow
-        norm_x = self.norm1(x)
-        attn_output = self.attention(norm_x, norm_x, norm_x, mask)
-        x = x + attn_output
-
-        norm_x = self.norm2(x)
-        ff_output = self.feed_forward(norm_x)
-        x = x + ff_output
-
-        return x
-
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from tqdm import tqdm
+from typing import Optional, Tuple, Union
+from ..tf.embeddings import PositionalEncoding
+from ..tf.transformer import TransformerEncoder, TransformerDecoder
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from tqdm import tqdm
+from typing import Union, Optional
+import math
 
 class TranAD(nn.Module):
-    """Improved TranAD with better architecture and training stability."""
-
-    def __init__(
-        self,
-        feats: int,
-        window_size: int = 10,
-        d_model: int = None,
-        n_heads: int = None,
-        n_layers: int = 2,
-        dropout: float = 0.1,
-    ):
+    def __init__(self, feats, window_size=24, d_model=None, n_heads=None, n_layers=2, dropout=0.1):
         super().__init__()
-        self.n_feats = feats
-        self.n_window = window_size
+        d_model = d_model or max(64, feats * 8)
+        n_heads = n_heads or max(1, d_model // 64)
+        d_model = (d_model // n_heads) * n_heads
 
-        # Auto-configure model dimensions
-        self.d_model = d_model or max(64, feats * 8)
-        self.n_heads = n_heads or max(1, self.d_model // 64)
-
-        # Ensure d_model is divisible by n_heads
-        self.d_model = (self.d_model // self.n_heads) * self.n_heads
-
-        # Input projection
-        self.input_projection = nn.Linear(feats, self.d_model)
-        self.context_projection = nn.Linear(feats, self.d_model)
-
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(self.d_model, dropout, window_size)
-
-        # Encoder
-        self.encoder_layers = nn.ModuleList(
-            [
-                TransformerBlock(self.d_model, self.n_heads, self.d_model * 4, dropout)
-                for _ in range(n_layers)
-            ]
+        self.encoder = TransformerEncoder(
+            input_size=feats,
+            d_model=d_model,
+            nhead=n_heads,
+            num_layers=n_layers,
+            dropout=dropout,
+            use_adaptive_ln="layer",
+            norm_strategy="pre_norm",
         )
 
-        # Dual decoders
-        self.decoder1_layers = nn.ModuleList(
-            [
-                TransformerBlock(self.d_model, self.n_heads, self.d_model * 4, dropout)
-                for _ in range(n_layers)
-            ]
+        self.decoder1 = TransformerDecoder(
+            input_size=feats,
+            output_size=feats,
+            d_model=d_model,
+            nhead=n_heads,
+            num_layers=n_layers,
+            dropout=dropout,
+            informer_like=False,
+            use_adaptive_ln="layer",
         )
 
-        self.decoder2_layers = nn.ModuleList(
-            [
-                TransformerBlock(self.d_model, self.n_heads, self.d_model * 4, dropout)
-                for _ in range(n_layers)
-            ]
+        self.decoder2 = TransformerDecoder(
+            input_size=feats,
+            output_size=feats,
+            d_model=d_model,
+            nhead=n_heads,
+            num_layers=n_layers,
+            dropout=dropout,
+            informer_like=True,
         )
+        
+        # Pre-allocate context tensors to avoid repeated allocations
+        self.register_buffer('_context_cache', torch.empty(1, 1, feats))
 
-        # Output layers with residual connections
-        self.output1 = nn.Sequential(
-            nn.LayerNorm(self.d_model),
-            nn.Linear(self.d_model, self.d_model // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(self.d_model // 2, feats),
-        )
+    def encode(self, x, context):
+        # Fused operation to reduce memory allocations
+        return self.encoder(x + context)
 
-        self.output2 = nn.Sequential(
-            nn.LayerNorm(self.d_model),
-            nn.Linear(self.d_model, self.d_model // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(self.d_model // 2, feats),
-        )
+    def forward(self, src, tgt=None):
+        """
+        Forward pass for TranAD using dual-pass reconstruction.
+        Optimized version with reduced memory allocations.
+        """
+        batch_size, seq_len, feats = src.shape
+        
+        # Reuse buffer for zero context if possible
+        if (self._context_cache.shape[0] != batch_size or 
+            self._context_cache.shape[1] != seq_len or 
+            self._context_cache.shape[2] != feats):
+            self._context_cache = torch.zeros_like(src)
+        else:
+            self._context_cache.zero_()
+        
+        # First pass: zero context
+        enc1 = self.encode(src, self._context_cache)
+        out1 = self.decoder1(src, enc1)
 
-        # Initialize weights
-        self.apply(self._init_weights)
+        # Second pass: reconstruction error as context (in-place to save memory)
+        context2 = out1 - src
+        context2.square_()  # In-place operation
+        enc2 = self.encode(src, context2)
+        out2 = self.decoder2(src, enc2)
 
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
+        return out1, out2
 
-    def encode(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        # Project inputs
-        x_proj = self.input_projection(x)
-        c_proj = self.context_projection(context)
 
-        # Combine input and context
-        combined = x_proj + c_proj
-        combined = self.pos_encoder(combined)
+class OptimizedTensorDataset(TensorDataset):
+    """Memory-efficient dataset that creates sequences on-the-fly"""
+    def __init__(self, data, seq_len):
+        self.data = data
+        self.seq_len = seq_len
+        self.length = data.shape[0] - seq_len + 1
+    
+    def __len__(self):
+        return self.length
+    
+    def __getitem__(self, idx):
+        return self.data[idx:idx + self.seq_len]
 
-        # Apply encoder layers
-        for layer in self.encoder_layers:
-            combined = layer(combined)
 
-        return combined
-
-    def decode(
-        self, memory: torch.Tensor, decoder_layers: nn.ModuleList
-    ) -> torch.Tensor:
-        x = memory
-        for layer in decoder_layers:
-            x = layer(x)
-        return x
-
-    def forward(
-        self, src: torch.Tensor, tgt: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size, seq_len, n_feats = src.shape
-
-        # First pass with zero context
-        context1 = torch.zeros_like(src)
-        memory1 = self.encode(src, context1)
-        decoded1 = self.decode(memory1, self.decoder1_layers)
-        output1 = self.output1(decoded1)
-
-        # Second pass with reconstruction error as context
-        context2 = (output1 - src) ** 2
-        memory2 = self.encode(src, context2)
-        decoded2 = self.decode(memory2, self.decoder2_layers)
-        output2 = self.output2(decoded2)
-
-        return output1, output2
+def create_sequences_vectorized(data: np.ndarray, seq_len: int) -> torch.Tensor:
+    """Optimized sequence creation using vectorized operations"""
+    if data.ndim == 1:
+        data = data[:, None]
+    
+    n_samples = data.shape[0] - seq_len + 1
+    if n_samples <= 0:
+        raise ValueError(f"Data length {data.shape[0]} is too short for sequence length {seq_len}")
+    
+    # Use unfold for memory-efficient sequence creation
+    data_tensor = torch.from_numpy(data.T).float()  # [features, time]
+    sequences = data_tensor.unfold(1, seq_len, 1).permute(1, 2, 0)  # [n_samples, seq_len, features]
+    return sequences
 
 
 class TranADDetector:
-    """Improved TranAD detector with better training and inference."""
-
     def __init__(
         self,
         seq_len: int = 24,
-        d_model: int = None,
-        n_heads: int = None,
+        d_model: Optional[int] = None,
+        n_heads: Optional[int] = None,
         n_layers: int = 2,
         epochs: int = 50,
         batch_size: int = 256,
@@ -503,9 +366,11 @@ class TranADDetector:
         weight_decay: float = 1e-5,
         dropout: float = 0.1,
         patience: int = 10,
-        device: str = None,
+        device: Optional[str] = None,
         scaler_type: str = "standard",
         use_mixed_precision: bool = True,
+        compile_model: bool = False,  # New: PyTorch 2.0 compilation
+        memory_efficient: bool = True,  # New: Use memory-efficient sequences
     ):
         self.seq_len = seq_len
         self.d_model = d_model
@@ -519,96 +384,84 @@ class TranADDetector:
         self.patience = patience
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.use_mixed_precision = use_mixed_precision and torch.cuda.is_available()
+        self.compile_model = compile_model
+        self.memory_efficient = memory_efficient
 
-        # Choose scaler
         self.scaler = RobustScaler() if scaler_type == "robust" else StandardScaler()
         self.model = None
-
-        # Initialize mixed precision scaler
-        if self.use_mixed_precision:
-            self.amp_scaler = torch.cuda.amp.GradScaler()
+        self.amp_scaler = torch.cuda.amp.GradScaler() if self.use_mixed_precision else None
 
     def _create_sequences(self, data: np.ndarray) -> torch.Tensor:
-        """Create sliding window sequences more efficiently."""
-        n_samples = len(data) - self.seq_len + 1
-        sequences = np.zeros((n_samples, self.seq_len, data.shape[1]))
+        """Optimized sequence creation"""
+        return create_sequences_vectorized(data, self.seq_len)
 
-        for i in range(n_samples):
-            sequences[i] = data[i : i + self.seq_len]
-
-        return torch.tensor(sequences, dtype=torch.float32)
-
-    def _adaptive_loss(
-        self, x1: torch.Tensor, x2: torch.Tensor, target: torch.Tensor, epoch: int
-    ) -> torch.Tensor:
-        """Adaptive loss that balances both decoders."""
-        mse1 = F.mse_loss(x1, target)
-        mse2 = F.mse_loss(x2, target)
-
-        # Gradually shift focus to second decoder
+    def _adaptive_loss(self, x1, x2, target, epoch):
+        """Optimized loss computation with pre-computed alpha"""
         alpha = min(0.8, epoch / self.epochs)
-        return (1 - alpha) * mse1 + alpha * mse2
+        # Compute both losses in one pass when possible
+        if alpha == 0:
+            return F.mse_loss(x1, target)
+        elif alpha == 0.8:
+            return F.mse_loss(x2, target)
+        else:
+            return (1 - alpha) * F.mse_loss(x1, target) + alpha * F.mse_loss(x2, target)
 
-    def _compute_anomaly_scores(
-        self, x2: torch.Tensor, target: torch.Tensor
-    ) -> np.ndarray:
-        """Compute anomaly scores using multiple metrics."""
-        # MSE-based score
-        mse_scores = F.mse_loss(x2, target, reduction="none").mean(dim=(1, 2))
+    def _compute_anomaly_scores(self, x2, target):
+        """Optimized anomaly score computation"""
+        # Compute both MSE and MAE in one pass
+        diff = x2 - target
+        mse = (diff * diff).mean(dim=(1, 2))
+        mae = diff.abs().mean(dim=(1, 2))
+        # Fused weighted combination
+        return (0.7 * mse + 0.3 * mae).detach().cpu().numpy()
 
-        # MAE-based score
-        mae_scores = F.l1_loss(x2, target, reduction="none").mean(dim=(1, 2))
-
-        # Combined score
-        combined_scores = 0.7 * mse_scores + 0.3 * mae_scores
-
-        return combined_scores.detach().cpu().numpy()
-
-    def fit_predict(
-        self, series: Union[np.ndarray, torch.Tensor], validation_split: float = 0.2
-    ) -> np.ndarray:
-        """Fit model and predict anomaly scores with validation."""
-
-        # Convert to numpy if needed
+    def fit_predict(self, series: Union[np.ndarray, torch.Tensor], validation_split: float = 0.2) -> np.ndarray:
         if isinstance(series, torch.Tensor):
-            series = series.detach().cpu().numpy()
-
-        series = np.asarray(series)
+            series = series.cpu().numpy()
         if series.ndim == 1:
             series = series[:, None]
 
-        # Scale data
         series_scaled = self.scaler.fit_transform(series)
+        
+        # Choose dataset type based on memory efficiency setting
+        if self.memory_efficient:
+            # Create sequences on-the-fly to save memory
+            sequences_tensor = torch.from_numpy(series_scaled).float()
+            n_train = int((len(series_scaled) - self.seq_len + 1) * (1 - validation_split))
+            
+            train_ds = OptimizedTensorDataset(sequences_tensor[:n_train + self.seq_len - 1], self.seq_len)
+            val_ds = OptimizedTensorDataset(sequences_tensor[n_train:], self.seq_len) if validation_split > 0 else None
+        else:
+            # Pre-create all sequences (original approach)
+            sequences = self._create_sequences(series_scaled)
+            n_train = int(len(sequences) * (1 - validation_split))
+            
+            train_ds = TensorDataset(sequences[:n_train])
+            val_ds = TensorDataset(sequences[n_train:]) if validation_split > 0 else None
 
-        # Create sequences
-        sequences = self._create_sequences(series_scaled)
-
-        # Train/validation split
-        n_train = int(len(sequences) * (1 - validation_split))
-        train_sequences = sequences[:n_train]
-        val_sequences = sequences[n_train:] if validation_split > 0 else None
-
-        # Create data loaders
-        train_dataset = torch.utils.data.TensorDataset(train_sequences)
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_size=self.batch_size,
+        # Optimized DataLoader settings
+        num_workers = min(4, torch.get_num_threads())
+        train_loader = DataLoader(
+            train_ds, 
+            batch_size=self.batch_size, 
             shuffle=True,
-            pin_memory=True,
-            num_workers=2,
+            num_workers=num_workers, 
+            pin_memory=True, 
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=2,
+            drop_last=True  # Helps with performance consistency
         )
+        
+        val_loader = DataLoader(
+            val_ds, 
+            batch_size=self.batch_size, 
+            shuffle=False,
+            num_workers=num_workers, 
+            pin_memory=True, 
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=2
+        ) if val_ds else None
 
-        if val_sequences is not None:
-            val_dataset = torch.utils.data.TensorDataset(val_sequences)
-            val_loader = torch.utils.data.DataLoader(
-                val_dataset,
-                batch_size=self.batch_size,
-                shuffle=False,
-                pin_memory=True,
-                num_workers=2,
-            )
-
-        # Initialize model
         input_size = series.shape[1]
         self.model = TranAD(
             feats=input_size,
@@ -619,155 +472,166 @@ class TranADDetector:
             dropout=self.dropout,
         ).to(self.device)
 
-        # Optimizer with weight decay
-        optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay
+        # PyTorch 2.0 compilation for faster execution
+        if self.compile_model and hasattr(torch, 'compile'):
+            self.model = torch.compile(self.model, mode='max-autotune')
+
+        # Optimized optimizer settings
+        opt = torch.optim.AdamW(
+            self.model.parameters(), 
+            lr=self.lr, 
+            weight_decay=self.weight_decay,
+            fused=True if self.device == 'cuda' else False  # Fused optimizer for CUDA
+        )
+        
+        # Cosine annealing with warm restarts for better convergence
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            opt, T_0=self.epochs // 4, T_mult=2, eta_min=self.lr * 0.01
         )
 
-        # Learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.5, patience=self.patience // 2, verbose=True
-        )
-
-        # Training loop with early stopping
         best_val_loss = float("inf")
         patience_counter = 0
 
-        for epoch in tqdm(range(self.epochs), desc="Training"):
-            # Training phase
-            self.model.train()
-            train_loss = 0.0
+        # Pre-compute epoch-dependent alpha values for adaptive loss
+        alphas = [min(0.8, epoch / self.epochs) for epoch in range(self.epochs)]
 
-            for (batch,) in train_loader:
-                batch = batch.to(self.device, non_blocking=True)
-
-                optimizer.zero_grad()
-
-                if self.use_mixed_precision:
-                    with torch.cuda.amp.autocast():
-                        x1, x2 = self.model(batch, batch)
-                        loss = self._adaptive_loss(x1, x2, batch, epoch)
-
-                    self.amp_scaler.scale(loss).backward()
-                    self.amp_scaler.step(optimizer)
-                    self.amp_scaler.update()
-                else:
-                    x1, x2 = self.model(batch, batch)
-                    loss = self._adaptive_loss(x1, x2, batch, epoch)
-                    loss.backward()
-                    optimizer.step()
-
-                train_loss += loss.item()
-
-            # Validation phase
-            if val_sequences is not None:
-                self.model.eval()
-                val_loss = 0.0
-
-                with torch.no_grad():
-                    for (batch,) in val_loader:
-                        batch = batch.to(self.device, non_blocking=True)
-
-                        if self.use_mixed_precision:
-                            with torch.cuda.amp.autocast():
-                                x1, x2 = self.model(batch, batch)
-                                loss = self._adaptive_loss(x1, x2, batch, epoch)
+        with tqdm(range(self.epochs), desc="Training", unit="epoch") as pbar:
+            for epoch in pbar:
+                self.model.train()
+                total_loss = 0.0
+                n_batches = 0
+                
+                for batch_data in train_loader:
+                    if isinstance(batch_data, tuple):
+                        batch = batch_data[0]
+                    else:
+                        batch = batch_data
+                    
+                    batch = batch.to(self.device, non_blocking=True)
+                    
+                    with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
+                        x1, x2 = self.model(batch)
+                        
+                        # Use pre-computed alpha
+                        alpha = alphas[epoch]
+                        if alpha == 0:
+                            loss = F.mse_loss(x1, batch)
+                        elif alpha >= 0.8:
+                            loss = F.mse_loss(x2, batch)
                         else:
-                            x1, x2 = self.model(batch, batch)
-                            loss = self._adaptive_loss(x1, x2, batch, epoch)
+                            loss = (1 - alpha) * F.mse_loss(x1, batch) + alpha * F.mse_loss(x2, batch)
 
-                        val_loss += loss.item()
+                    opt.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+                    
+                    if self.use_mixed_precision:
+                        self.amp_scaler.scale(loss).backward()
+                        self.amp_scaler.step(opt)
+                        self.amp_scaler.update()
+                    else:
+                        loss.backward()
+                        opt.step()
+                    
+                    total_loss += loss.item()
+                    n_batches += 1
 
-                val_loss /= len(val_loader)
-                scheduler.step(val_loss)
+                avg_train_loss = total_loss / n_batches
+                scheduler.step()
 
-                # Early stopping
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    patience_counter = 0
-                    # Save best model
-                    torch.save(self.model.state_dict(), "best_model.pth")
-                else:
-                    patience_counter += 1
+                val_loss = None
+                if val_loader:
+                    self.model.eval()
+                    val_total = 0.0
+                    val_batches = 0
+                    
+                    with torch.no_grad():
+                        for batch_data in val_loader:
+                            if isinstance(batch_data, tuple):
+                                batch = batch_data[0]
+                            else:
+                                batch = batch_data
+                            
+                            batch = batch.to(self.device, non_blocking=True)
+                            
+                            with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
+                                x1, x2 = self.model(batch)
+                                alpha = alphas[epoch]
+                                if alpha == 0:
+                                    batch_loss = F.mse_loss(x1, batch)
+                                elif alpha >= 0.8:
+                                    batch_loss = F.mse_loss(x2, batch)
+                                else:
+                                    batch_loss = (1 - alpha) * F.mse_loss(x1, batch) + alpha * F.mse_loss(x2, batch)
+                                
+                            val_total += batch_loss.item()
+                            val_batches += 1
+                    
+                    val_loss = val_total / val_batches
+                    
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        patience_counter = 0
+                        # Use more efficient checkpoint saving
+                        checkpoint = {
+                            'model_state_dict': self.model.state_dict(),
+                            'optimizer_state_dict': opt.state_dict(),
+                            'epoch': epoch,
+                            'val_loss': val_loss
+                        }
+                        torch.save(checkpoint, "best_model.pth", _use_new_zipfile_serialization=False)
+                    else:
+                        patience_counter += 1
+                        if patience_counter >= self.patience:
+                            print(f"\nEarly stopping at epoch {epoch+1}")
+                            checkpoint = torch.load("best_model.pth", map_location=self.device)
+                            self.model.load_state_dict(checkpoint['model_state_dict'])
+                            break
 
-                if patience_counter >= self.patience:
-                    print(f"Early stopping at epoch {epoch+1}")
-                    # Load best model
-                    self.model.load_state_dict(torch.load("best_model.pth"))
-                    break
+                pbar.set_postfix(train_loss=f"{avg_train_loss:.6f}", val_loss=f"{val_loss:.6f}" if val_loss else "N/A")
 
-            if epoch % 10 == 0:
-                avg_train_loss = train_loss / len(train_loader)
-                if val_sequences is not None:
-                    print(
-                        f"Epoch {epoch+1}/{self.epochs} - Train Loss: {avg_train_loss:.4f}, "
-                        f"Val Loss: {val_loss:.4f}"
-                    )
-                else:
-                    print(
-                        f"Epoch {epoch+1}/{self.epochs} - Train Loss: {avg_train_loss:.4f}"
-                    )
+        # Create sequences for inference
+        if self.memory_efficient:
+            sequences = self._create_sequences(series_scaled)
+        else:
+            sequences = self._create_sequences(series_scaled)
+            
+        return self._infer(sequences)
 
-        # Inference phase
+    def _infer(self, sequences: torch.Tensor) -> np.ndarray:
+        """Optimized inference with larger batch sizes"""
         self.model.eval()
         scores = []
+        
+        # Use larger batch size for inference
+        infer_batch_size = min(self.batch_size * 4, 1024)
+        loader = DataLoader(
+            TensorDataset(sequences),
+            batch_size=infer_batch_size,
+            shuffle=False,
+            num_workers=min(2, torch.get_num_threads()),
+            pin_memory=True,
+            prefetch_factor=2
+        )
 
         with torch.no_grad():
-            # Use sliding window for inference
-            inference_loader = torch.utils.data.DataLoader(
-                sequences, batch_size=self.batch_size * 2, shuffle=False
-            )
-
-            for (batch,) in inference_loader:
-                batch = batch.to(self.device)
-
-                if self.use_mixed_precision:
-                    with torch.cuda.amp.autocast():
-                        _, x2 = self.model(batch, batch)
-                        batch_scores = self._compute_anomaly_scores(x2, batch)
-                else:
-                    _, x2 = self.model(batch, batch)
+            for (batch,) in loader:
+                batch = batch.to(self.device, non_blocking=True)
+                with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
+                    _, x2 = self.model(batch)
                     batch_scores = self._compute_anomaly_scores(x2, batch)
-
-                scores.extend(batch_scores)
-
+                    scores.extend(batch_scores)
+        
         return np.array(scores)
 
     def predict(self, series: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
-        """Predict anomaly scores for new data."""
+        """Optimized prediction method"""
         if self.model is None:
-            raise ValueError("Model not trained. Call fit_predict first.")
-
+            raise RuntimeError("Model not trained. Call fit_predict first.")
+        
         if isinstance(series, torch.Tensor):
-            series = series.detach().cpu().numpy()
-
-        series = np.asarray(series)
+            series = series.cpu().numpy()
         if series.ndim == 1:
             series = series[:, None]
 
-        # Scale using fitted scaler
-        series_scaled = self.scaler.transform(series)
-        sequences = self._create_sequences(series_scaled)
-
-        self.model.eval()
-        scores = []
-
-        with torch.no_grad():
-            loader = torch.utils.data.DataLoader(
-                sequences, batch_size=self.batch_size * 2, shuffle=False
-            )
-
-            for (batch,) in loader:
-                batch = batch.to(self.device)
-
-                if self.use_mixed_precision:
-                    with torch.cuda.amp.autocast():
-                        _, x2 = self.model(batch, batch)
-                        batch_scores = self._compute_anomaly_scores(x2, batch)
-                else:
-                    _, x2 = self.model(batch, batch)
-                    batch_scores = self._compute_anomaly_scores(x2, batch)
-
-                scores.extend(batch_scores)
-
-        return np.array(scores)
+        scaled = self.scaler.transform(series)
+        seqs = self._create_sequences(scaled)
+        return self._infer(seqs)
