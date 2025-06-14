@@ -1,9 +1,21 @@
 <svg width="300" height="240" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .logo-stroke { stroke: #1D3557; }
+    .logo-text { fill: #1D3557; }
+    .logo-arrow { fill: #457B9D; }
+    
+    @media (prefers-color-scheme: dark) {
+      .logo-stroke { stroke: #E8F4F8; }
+      .logo-text { fill: #E8F4F8; }
+      .logo-arrow { fill: #A8DADC; }
+    }
+  </style>
+  
   <!-- Transparent Background -->
   <rect width="100%" height="100%" fill="none" />
-
+  
   <!-- Grid-style blocks (outline only) -->
-  <g transform="translate(50, 40)" stroke="#1D3557" stroke-width="2" fill="none">
+  <g transform="translate(50, 40)" stroke-width="2" fill="none" class="logo-stroke">
     <rect x="0" y="80" width="50" height="50" rx="6"/>
     <rect x="60" y="80" width="50" height="50" rx="6"/>
     <rect x="120" y="80" width="50" height="50" rx="6"/>
@@ -11,24 +23,28 @@
     <rect x="120" y="20" width="50" height="50" rx="6"/>
     <rect x="120" y="-40" width="50" height="50" rx="6"/>
   </g>
-
+  
   <!-- Forecast Line with Arrow -->
   <defs>
     <linearGradient id="lineGradient" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#E63946"/>
       <stop offset="100%" stop-color="#457B9D"/>
     </linearGradient>
-    <marker id="arrowhead" markerWidth="10" markerHeight="7"
-            refX="0" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#457B9D" />
+    <linearGradient id="lineGradientDark" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FF6B6B"/>
+      <stop offset="100%" stop-color="#A8DADC"/>
+    </linearGradient>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" class="logo-arrow" />
     </marker>
   </defs>
-  <path d="M50 120 C80 100, 110 60, 140 100 S 200 130, 230 90 L 245 75" 
+  
+  <path d="M50 120 C80 100, 110 60, 140 100 S 200 130, 230 90 L 245 75"
         fill="none" stroke="url(#lineGradient)" stroke-width="4" marker-end="url(#arrowhead)"/>
-
+  
   <!-- Text Label -->
   <text x="200" y="220" font-family="'Segoe UI', sans-serif" font-weight="600"
-        font-size="28" fill="#1D3557" text-anchor="middle">
-    ForeBlocks
+        font-size="28" text-anchor="middle" class="logo-text">
+    foreblocks
   </text>
 </svg>
