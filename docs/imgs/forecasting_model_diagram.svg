@@ -20,16 +20,33 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="1.2214231"
-     inkscape:cx="570.23647"
-     inkscape:cy="1127.3735"
+     inkscape:cx="499.8268"
+     inkscape:cy="404.0369"
      inkscape:window-width="1800"
-     inkscape:window-height="1025"
+     inkscape:window-height="1024"
      inkscape:window-x="0"
      inkscape:window-y="44"
      inkscape:window-maximized="1"
      inkscape:current-layer="svg68" />
   <defs
      id="defs1">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect1"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,10,0,1 @ F,0,0,1,0,10,0,1 @ F,0,0,1,0,10,0,1 @ F,0,0,1,0,10,0,1"
+       radius="10"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
     <!-- Simple arrow marker -->
     <marker
        id="arrowhead"
@@ -61,7 +78,7 @@
     </marker>
   </defs>
   <!-- Background -->
-  <rect
+  <path
      width="1099.9629"
      height="1290.6997"
      fill="#f8fafc"
@@ -69,7 +86,11 @@
      stroke-width="1.03708"
      id="rect1"
      x="0.51854002"
-     y="0.51854002" />
+     y="0.51854002"
+     style="stroke:#000000;stroke-width:1;stroke-dasharray:none;stroke-opacity:1"
+     inkscape:path-effect="#path-effect1"
+     sodipodi:type="rect"
+     d="M 10.51854,0.51854002 H 1090.4814 a 10,10 45 0 1 10,9.99999998 V 1281.2182 a 10,10 135 0 1 -10,10 H 10.51854 a 10,10 45 0 1 -9.99999998,-10 V 10.51854 A 10,10 135 0 1 10.51854,0.51854002 Z" />
   <!-- Title -->
   <text
      x="550.5"

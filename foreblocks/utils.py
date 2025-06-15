@@ -583,7 +583,7 @@ class Trainer:
                     label="Forecast Start",
                 )
                 axes[i].set_title(f"Feature {i}: Full Series with Forecast")
-                axes[i].legend()
+                axes[i].legend(loc="upper left")
                 axes[i].grid(True)
 
             plt.xlabel("Time Step")
@@ -601,7 +601,7 @@ class Trainer:
             ax.set_title("Validation Prediction")
             ax.set_xlabel("Time Step")
             ax.set_ylabel("Value")
-            ax.legend()
+            ax.legend(loc="upper left")
             ax.grid(True)
 
         if show:

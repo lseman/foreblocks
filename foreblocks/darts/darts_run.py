@@ -1,8 +1,13 @@
 # ─── Standard Library ─────────────────────────────────────────────
+import concurrent.futures
 import copy
+import logging
 import random
+import threading
 import time
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
+
+import matplotlib.patches as patches
 
 # ─── Third-Party Libraries ────────────────────────────────────────
 import matplotlib.pyplot as plt
@@ -10,22 +15,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from matplotlib.lines import Line2D
+from matplotlib.patches import FancyBboxPatch, Rectangle
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
-import matplotlib.patches as patches
 
 # ─── Local Imports ─────────────────────────────────────────────────
 from .darts import *
 from .darts_metrics import *
-
-import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch, Rectangle
-from matplotlib.lines import Line2D
-import numpy as np
-
-
-import logging
 
 # Optional: configure a custom logger
 logger = logging.getLogger("NASLogger")
@@ -36,17 +34,18 @@ handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
 
+
 class DARTSTrainer:
     """
     Comprehensive DARTS trainer with search, training, and evaluation capabilities.
-    
+
     This class encapsulates the entire DARTS workflow:
     - Architecture search with zero-cost metrics
     - DARTS training with mixed operations
     - Final model training with fixed architecture
     - Multi-fidelity search strategies
     """
-    
+
     def __init__(
         self,
         input_dim: int = 3,
@@ -54,11 +53,11 @@ class DARTSTrainer:
         forecast_horizon: int = 6,
         seq_length: int = 12,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        all_ops: Optional[List[str]] = None
+        all_ops: Optional[List[str]] = None,
     ):
         """
         Initialize DARTS trainer.
-        
+
         Args:
             input_dim: Input feature dimension
             hidden_dims: List of possible hidden dimensions
@@ -72,112 +71,137 @@ class DARTSTrainer:
         self.forecast_horizon = forecast_horizon
         self.seq_length = seq_length
         self.device = device
-        
+
         self.all_ops = all_ops or [
-            "Identity", "TimeConv", "GRN", "Wavelet", "Fourier", 
-            "Attention", "TCN", "ResidualMLP", "ConvMixer"
+            "Identity",
+            "TimeConv",
+            "GRN",
+            "Wavelet",
+            "Fourier",
+            "Attention",
+            "TCN",
+            "ResidualMLP",
+            "ConvMixer",
         ]
-        
+
         # Training history
         self.search_history = []
         self.training_history = []
-        
+
         print(f"🚀 DARTSTrainer initialized on {device}")
         print(f"   Input dim: {input_dim}, Forecast horizon: {forecast_horizon}")
         print(f"   Available operations: {len(self.all_ops)}")
-    
+
     def _get_loss_function(self, loss_type: str):
         """Get loss function by name."""
         loss_functions = {
             "huber": lambda p, t: F.huber_loss(p, t, delta=0.1),
             "mse": F.mse_loss,
             "mae": F.l1_loss,
-            "smooth_l1": F.smooth_l1_loss
+            "smooth_l1": F.smooth_l1_loss,
         }
         return loss_functions.get(loss_type, loss_functions["huber"])
-    
+
     def _create_progress_bar(self, iterable, desc: str, leave: bool = True, **kwargs):
         """Create standardized progress bar."""
         # Set default unit if not provided
-        if 'unit' not in kwargs:
-            kwargs['unit'] = 'batch'
+        if "unit" not in kwargs:
+            kwargs["unit"] = "batch"
         return tqdm(iterable, desc=desc, leave=leave, **kwargs)
-    
-    def _evaluate_model(self, model: nn.Module, dataloader, loss_type: str = "huber") -> float:
+
+    def _evaluate_model(
+        self, model: nn.Module, dataloader, loss_type: str = "huber"
+    ) -> float:
         """Evaluate model on given dataloader."""
         model.eval()
         loss_fn = self._get_loss_function(loss_type)
         total_loss = 0.0
-        
+
         with torch.no_grad():
             for batch_x, batch_y, *_ in dataloader:
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                 preds = model(batch_x)
                 total_loss += loss_fn(preds, batch_y).item()
-        
+
         return total_loss / len(dataloader)
-    
-    def _compute_metrics(self, preds: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
+
+    def _compute_metrics(
+        self, preds: np.ndarray, targets: np.ndarray
+    ) -> Dict[str, float]:
         """Compute comprehensive regression metrics."""
         mse = np.mean((preds - targets) ** 2)
         rmse = np.sqrt(mse)
         mae = np.mean(np.abs(preds - targets))
         mape = np.mean(np.abs((preds - targets) / (np.abs(targets) + 1e-8))) * 100
-        
+
         # R² score
         ss_res = np.sum((targets - preds) ** 2)
         ss_tot = np.sum((targets - np.mean(targets)) ** 2)
         r2_score = 1 - (ss_res / (ss_tot + 1e-8))
-        
+
         return {
             "mse": mse,
             "rmse": rmse,
             "mae": mae,
             "mape": mape,
-            "r2_score": r2_score
+            "r2_score": r2_score,
         }
-    
-    def _plot_training_curve(self, train_losses: List[float], val_losses: List[float], 
-                           title: str = "Training Progress", save_path: str = None):
+
+    def _plot_training_curve(
+        self,
+        train_losses: List[float],
+        val_losses: List[float],
+        title: str = "Training Progress",
+        save_path: str = None,
+    ):
         """Plot and save training curves."""
         plt.figure(figsize=(10, 6))
         epochs = range(1, len(train_losses) + 1)
-        
-        plt.plot(epochs, train_losses, 'b-', linewidth=2, label='Train Loss', alpha=0.8)
-        plt.plot(epochs, val_losses, 'r-', linewidth=2, label='Validation Loss', alpha=0.8)
-        
-        plt.xlabel('Epoch', fontsize=12)
-        plt.ylabel('Loss', fontsize=12)
-        plt.title(title, fontsize=14, fontweight='bold')
-        plt.legend(fontsize=10)
-        plt.grid(True, linestyle='--', alpha=0.7)
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"📊 Training curve saved to {save_path}")
-        
-        plt.close()
-    
-    def evaluate_zero_cost_metrics(self, model: nn.Module, dataloader, 
-                                 max_samples: int = 32, num_batches: int = 2) -> Dict[str, Any]:
-        """Evaluate model using zero-cost metrics."""
-        def create_custom_config(max_samples: int = 32, max_outputs: int = 10,
-                                timeout_seconds: float = 30.0, 
-                                enable_mixed_precision: bool = False) -> Config:
-            return Config(max_samples=max_samples, max_outputs=max_outputs)
-        
-        config = create_custom_config(
-            max_samples=max_samples, max_outputs=10, 
-            timeout_seconds=30.0, enable_mixed_precision=True
+
+        plt.plot(epochs, train_losses, "b-", linewidth=2, label="Train Loss", alpha=0.8)
+        plt.plot(
+            epochs, val_losses, "r-", linewidth=2, label="Validation Loss", alpha=0.8
         )
-        
+
+        plt.xlabel("Epoch", fontsize=12)
+        plt.ylabel("Loss", fontsize=12)
+        plt.title(title, fontsize=14, fontweight="bold")
+        plt.legend(fontsize=10)
+        plt.grid(True, linestyle="--", alpha=0.7)
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            print(f"📊 Training curve saved to {save_path}")
+
+        plt.close()
+
+    def evaluate_zero_cost_metrics(
+        self, model: nn.Module, dataloader, max_samples: int = 32, num_batches: int = 1
+    ) -> Dict[str, Any]:
+        """Evaluate model using zero-cost metrics."""
+
+        def create_custom_config(
+            max_samples: int = 32,
+            max_outputs: int = 10,
+            timeout_seconds: float = 30.0,
+            enable_mixed_precision: bool = False,
+        ) -> Config:
+            return Config(max_samples=max_samples, max_outputs=max_outputs)
+
+        config = create_custom_config(
+            max_samples=max_samples,
+            max_outputs=10,
+            timeout_seconds=30.0,
+            enable_mixed_precision=True,
+        )
+
         nas_evaluator = ZeroCostNAS(config=config)
         results = nas_evaluator.evaluate_model(
             model, dataloader, self.device, num_batches=num_batches
         )
-        
+
         return results
-    
+
     def train_darts_model(
         self,
         model: nn.Module,
@@ -190,11 +214,11 @@ class DARTSTrainer:
         model_weight_decay: float = 1e-4,
         patience: int = 10,
         loss_type: str = "huber",
-        use_swa: bool = False
+        use_swa: bool = False,
     ) -> Dict[str, Any]:
         """
         Train DARTS model with architecture search.
-        
+
         Args:
             model: DARTS model with mixed operations
             train_loader: Training data loader
@@ -207,54 +231,64 @@ class DARTSTrainer:
             patience: Early stopping patience
             loss_type: Loss function type
             use_swa: Whether to use Stochastic Weight Averaging
-            
+
         Returns:
             Dictionary containing training results
         """
         model = model.to(self.device)
-        
+
         # Separate architecture and model parameters
         arch_params = [edge.alphas for cell in model.cells for edge in cell.edges]
         model_params = [p for n, p in model.named_parameters() if "alphas" not in n]
-        
+
         # Optimizers and schedulers
         arch_optimizer = torch.optim.Adam(
-            arch_params, lr=arch_learning_rate, 
-            betas=(0.5, 0.999), weight_decay=arch_weight_decay
+            arch_params,
+            lr=arch_learning_rate,
+            betas=(0.5, 0.999),
+            weight_decay=arch_weight_decay,
         )
         model_optimizer = torch.optim.AdamW(
             model_params, lr=model_learning_rate, weight_decay=model_weight_decay
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model_optimizer, T_max=epochs)
-        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            model_optimizer, T_max=epochs
+        )
+
         # SWA setup
         swa_model = None
         swa_start = epochs // 2 if use_swa else None
         if use_swa:
             swa_model = torch.optim.swa_utils.AveragedModel(model).to(self.device)
-        
+
         # Training setup
         scaler = GradScaler()
         val_iter = iter(val_loader)
         loss_fn = self._get_loss_function(loss_type)
-        
+
         # Training state
         best_val_loss, patience_counter, best_state = float("inf"), 0, None
         train_losses, val_losses, alpha_values = [], [], []
-        
+
         print(f"🔍 Training DARTS model for {epochs} epochs")
-        print(f"   Architecture LR: {arch_learning_rate}, Model LR: {model_learning_rate}")
-        print(f"   Loss function: {loss_type}, SWA: {'enabled' if use_swa else 'disabled'}")
+        print(
+            f"   Architecture LR: {arch_learning_rate}, Model LR: {model_learning_rate}"
+        )
+        print(
+            f"   Loss function: {loss_type}, SWA: {'enabled' if use_swa else 'disabled'}"
+        )
         print("-" * 60)
-        
+
         start_time = time.time()
-        epoch_pbar = self._create_progress_bar(range(epochs), "DARTS Training", unit="epoch")
-        
+        epoch_pbar = self._create_progress_bar(
+            range(epochs), "DARTS Training", unit="epoch"
+        )
+
         for epoch in epoch_pbar:
             model.train()
             epoch_train_loss = 0.0
             num_batches = len(train_loader)
-            
+
             # Track alpha evolution
             current_alphas = [
                 (i, j, F.softmax(edge.alphas, dim=-1).detach().cpu().numpy())
@@ -262,7 +296,7 @@ class DARTSTrainer:
                 for j, edge in enumerate(cell.edges)
             ]
             alpha_values.append(current_alphas)
-            
+
             # Architecture parameter update (skip first epoch)
             if epoch >= 1:
                 try:
@@ -270,86 +304,105 @@ class DARTSTrainer:
                 except StopIteration:
                     val_iter = iter(val_loader)
                     val_batch = next(val_iter)
-                
-                val_x, val_y = val_batch[0].to(self.device).float(), val_batch[1].to(self.device)
-                
+
+                val_x, val_y = val_batch[0].to(self.device).float(), val_batch[1].to(
+                    self.device
+                )
+
                 arch_optimizer.zero_grad()
-                val_preds = model(val_x)
-                
-                # Architecture loss with entropy regularization
-                arch_loss = loss_fn(val_preds, val_y)
+                with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
+                    val_preds = model(val_x)
+                    arch_loss = loss_fn(val_preds, val_y)
+
                 entropy_reg = sum(
-                    -torch.sum(F.softmax(edge.alphas, dim=-1) * F.log_softmax(edge.alphas, dim=-1))
-                    for cell in model.cells for edge in cell.edges
+                    -torch.sum(
+                        F.softmax(edge.alphas, dim=-1)
+                        * F.log_softmax(edge.alphas, dim=-1)
+                    )
+                    for cell in model.cells
+                    for edge in cell.edges
                 )
                 total_arch_loss = arch_loss - 0.01 * entropy_reg
                 total_arch_loss.backward()
                 arch_optimizer.step()
-            
+
             # Model weight updates
             batch_pbar = self._create_progress_bar(
-                enumerate(train_loader), 
-                f"Epoch {epoch+1:3d}", 
+                enumerate(train_loader),
+                f"Epoch {epoch+1:3d}",
                 leave=False,
-                total=num_batches
+                total=num_batches,
             )
-            
+
             for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
-                batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(self.device)
-                
+                batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(
+                    self.device
+                )
+
                 model_optimizer.zero_grad()
-                with autocast('cuda' if self.device.startswith('cuda') else 'cpu'):
+                with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
                     preds = model(batch_x)
                     loss = loss_fn(preds, batch_y)
-                
+
                 scaler.scale(loss).backward()
                 scaler.unscale_(model_optimizer)
                 torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
                 scaler.step(model_optimizer)
                 scaler.update()
-                
+
                 epoch_train_loss += loss.item()
-                
-                batch_pbar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'avg_loss': f'{epoch_train_loss/(batch_idx+1):.4f}'
-                })
-            
+
+                batch_pbar.set_postfix(
+                    {
+                        "loss": f"{loss.item():.4f}",
+                        "avg_loss": f"{epoch_train_loss/(batch_idx+1):.4f}",
+                    }
+                )
+
             batch_pbar.close()
             scheduler.step()
-            
+
             # Validation phase
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
-                val_pbar = self._create_progress_bar(val_loader, "Validation", leave=False)
+                val_pbar = self._create_progress_bar(
+                    val_loader, "Validation", leave=False
+                )
                 for batch_x, batch_y, *_ in val_pbar:
-                    batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(self.device)
-                    batch_val_loss = loss_fn(model(batch_x), batch_y).item()
+                    batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(
+                        self.device)
+                    with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
+                        preds = model(batch_x)
+                        batch_val_loss = loss_fn(preds, batch_y).item()
                     val_loss += batch_val_loss
-                    val_pbar.set_postfix({'val_loss': f'{batch_val_loss:.4f}'})
+                    val_pbar.set_postfix({"val_loss": f"{batch_val_loss:.4f}"})
                 val_pbar.close()
-            
+
             # Record losses
             avg_train_loss = epoch_train_loss / num_batches
             avg_val_loss = val_loss / len(val_loader)
             train_losses.append(avg_train_loss)
             val_losses.append(avg_val_loss)
-            
+
             # Update epoch progress bar
-            epoch_pbar.set_postfix({
-                'train_loss': f'{avg_train_loss:.4f}',
-                'val_loss': f'{avg_val_loss:.4f}',
-                'best_val': f'{best_val_loss:.4f}',
-                'patience': f'{patience_counter}/{patience}'
-            })
-            
+            epoch_pbar.set_postfix(
+                {
+                    "train_loss": f"{avg_train_loss:.4f}",
+                    "val_loss": f"{avg_val_loss:.4f}",
+                    "best_val": f"{best_val_loss:.4f}",
+                    "patience": f"{patience_counter}/{patience}",
+                }
+            )
+
             # Early stopping and model saving
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 patience_counter = 0
-                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-                
+                best_state = {
+                    k: v.detach().clone() for k, v in model.state_dict().items()
+                }
+
                 if use_swa and epoch >= swa_start:
                     swa_model.update_parameters(model)
             else:
@@ -357,45 +410,53 @@ class DARTSTrainer:
                 if patience_counter >= patience:
                     epoch_pbar.set_description(f"Early stopping at epoch {epoch+1}")
                     break
-        
+
         epoch_pbar.close()
         training_time = time.time() - start_time
-        
+
         # Finalize SWA if used
         if use_swa and swa_model is not None and epoch >= swa_start:
             print("\\n🔄 Finalizing SWA model...")
             try:
-                torch.optim.swa_utils.update_bn(train_loader, swa_model, device=self.device)
+                torch.optim.swa_utils.update_bn(
+                    train_loader, swa_model, device=self.device
+                )
             except Exception as e:
                 print(f"Warning: Standard BN update failed ({e}), using fallback...")
                 swa_model.train()
                 with torch.no_grad():
-                    for batch_x, *_ in self._create_progress_bar(train_loader, "Updating BN", leave=False):
+                    for batch_x, *_ in self._create_progress_bar(
+                        train_loader, "Updating BN", leave=False
+                    ):
                         swa_model(batch_x.to(self.device).float())
-            
+
             # Evaluate SWA performance
             swa_val_loss = self._evaluate_model(swa_model, val_loader, loss_type)
-            print(f"SWA validation loss: {swa_val_loss:.6f} vs Best: {best_val_loss:.6f}")
-            
+            print(
+                f"SWA validation loss: {swa_val_loss:.6f} vs Best: {best_val_loss:.6f}"
+            )
+
             if swa_val_loss < best_val_loss:
                 print("✓ Using SWA model (better performance)")
-                best_state = {k: v.detach().clone() for k, v in swa_model.state_dict().items()}
+                best_state = {
+                    k: v.detach().clone() for k, v in swa_model.state_dict().items()
+                }
                 best_val_loss = swa_val_loss
-        
+
         # Load best model and compute final metrics
         model.load_state_dict(best_state)
         final_metrics = self._compute_final_metrics(model, val_loader)
-        
-        print("\\n" + "="*60)
+
+        print("\\n" + "=" * 60)
         print("🎯 DARTS TRAINING COMPLETED")
-        print("="*60)
+        print("=" * 60)
         print(f"Training time:         {training_time:.1f}s ({training_time/60:.1f}m)")
         print(f"Final Validation Loss: {best_val_loss:.6f}")
         print(f"MSE: {final_metrics['mse']:.6f} | RMSE: {final_metrics['rmse']:.6f}")
         print(f"MAE: {final_metrics['mae']:.6f} | R²: {final_metrics['r2_score']:.4f}")
         print(f"Total Epochs:          {epoch + 1}")
-        print("="*60)
-        
+        print("=" * 60)
+
         results = {
             "model": model,
             "train_losses": train_losses,
@@ -403,42 +464,46 @@ class DARTSTrainer:
             "alpha_values": alpha_values,
             "best_val_loss": best_val_loss,
             "training_time": training_time,
-            "final_metrics": final_metrics
+            "final_metrics": final_metrics,
         }
-        
+
         self.training_history.append(results)
         return results
-    
+
     def _compute_final_metrics(self, model: nn.Module, val_loader) -> Dict[str, float]:
         """Compute final metrics on validation set."""
         model.eval()
         all_preds, all_targets = [], []
-        
+
         with torch.no_grad():
-            for batch_x, batch_y, *_ in self._create_progress_bar(val_loader, "Computing metrics", leave=False):
-                batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(self.device)
+            for batch_x, batch_y, *_ in self._create_progress_bar(
+                val_loader, "Computing metrics", leave=False
+            ):
+                batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(
+                    self.device
+                )
                 all_preds.append(model(batch_x).cpu().numpy())
                 all_targets.append(batch_y.cpu().numpy())
-        
+
         preds_flat = np.concatenate(all_preds).reshape(-1)
         targets_flat = np.concatenate(all_targets).reshape(-1)
-        
+
         return self._compute_metrics(preds_flat, targets_flat)
-    
+
     def derive_final_architecture(self, model: nn.Module) -> nn.Module:
         """
         Create optimized model with fixed operations based on search results.
-        
+
         Args:
             model: Trained DARTS model
-            
+
         Returns:
             Optimized model with fixed architecture
         """
         new_model = copy.deepcopy(model)
-        
+
         print("🔧 Deriving final architecture...")
-        
+
         # Replace mixed operations with fixed ones
         for cell_idx, cell in enumerate(new_model.cells):
             new_edges = nn.ModuleList()
@@ -446,17 +511,19 @@ class DARTSTrainer:
                 weights = F.softmax(edge.alphas, dim=-1)
                 top_op_idx = weights.argmax().item()
                 top_op = edge.ops[top_op_idx]
-                
-                print(f"   Cell {cell_idx}, Edge {edge_idx}: {type(top_op).__name__} "
-                      f"(weight: {weights[top_op_idx]:.3f})")
-                
+
+                print(
+                    f"   Cell {cell_idx}, Edge {edge_idx}: {type(top_op).__name__} "
+                    f"(weight: {weights[top_op_idx]:.3f})"
+                )
+
                 fixed_edge = FixedOp(top_op)
                 new_edges.append(fixed_edge)
             cell.edges = new_edges
-        
+
         print("✓ Architecture derivation completed")
         return new_model
-    
+
     def train_final_model(
         self,
         model: nn.Module,
@@ -470,11 +537,11 @@ class DARTSTrainer:
         loss_type: str = "huber",
         use_onecycle: bool = True,
         swa_start_ratio: float = 0.33,
-        grad_clip_norm: float = 1.0
+        grad_clip_norm: float = 1.0,
     ) -> Dict[str, Any]:
         """
         Train final model with fixed architecture.
-        
+
         Args:
             model: Model with fixed architecture
             train_loader: Training data loader
@@ -488,112 +555,129 @@ class DARTSTrainer:
             use_onecycle: Whether to use OneCycle learning rate scheduler
             swa_start_ratio: When to start SWA (as fraction of total epochs)
             grad_clip_norm: Gradient clipping norm
-            
+
         Returns:
             Dictionary containing training results
         """
         model = model.to(self.device)
-        
+
         # Setup training components
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=learning_rate, weight_decay=weight_decay
+        )
+
         # Scheduler setup
         if use_onecycle:
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer, max_lr=learning_rate, epochs=epochs, steps_per_epoch=len(train_loader),
-                pct_start=0.3, div_factor=25, final_div_factor=1000
+                optimizer,
+                max_lr=learning_rate,
+                epochs=epochs,
+                steps_per_epoch=len(train_loader),
+                pct_start=0.3,
+                div_factor=25,
+                final_div_factor=1000,
             )
         else:
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-        
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=epochs
+            )
+
         # SWA and mixed precision setup
         swa_model = torch.optim.swa_utils.AveragedModel(model).to(self.device)
         scaler = GradScaler()
         loss_fn = self._get_loss_function(loss_type)
-        
+
         # Training state
         best_val_loss, patience_counter, best_state = float("inf"), 0, None
         train_losses, val_losses = [], []
         swa_start = int(epochs * swa_start_ratio)
-        
+
         print(f"🚀 Training final model for {epochs} epochs")
         print(f"   Learning rate: {learning_rate}, Weight decay: {weight_decay}")
-        print(f"   Loss function: {loss_type}, Scheduler: {'OneCycle' if use_onecycle else 'CosineAnnealing'}")
+        print(
+            f"   Loss function: {loss_type}, Scheduler: {'OneCycle' if use_onecycle else 'CosineAnnealing'}"
+        )
         print(f"   SWA starts at epoch {swa_start}, Patience: {patience}")
         print("-" * 70)
-        
+
         start_time = time.time()
-        epoch_pbar = self._create_progress_bar(range(epochs), "Final Training", unit="epoch")
-        
+        epoch_pbar = self._create_progress_bar(
+            range(epochs), "Final Training", unit="epoch"
+        )
+
         for epoch in epoch_pbar:
             # Training phase
             model.train()
             epoch_train_loss = 0.0
             num_train_batches = len(train_loader)
-            
+
             train_pbar = self._create_progress_bar(
-                train_loader, 
-                f"Epoch {epoch+1:3d} Train", 
+                train_loader,
+                f"Epoch {epoch+1:3d} Train",
                 leave=False,
-                total=num_train_batches
+                total=num_train_batches,
             )
-            
+
             for batch_idx, (batch_x, batch_y, *_) in enumerate(train_pbar):
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                 optimizer.zero_grad()
-                
-                with autocast('cuda' if self.device.startswith('cuda') else 'cpu'):
+
+                with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
                     preds = model(batch_x)
                     loss = loss_fn(preds, batch_y)
-                
+
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=grad_clip_norm
+                )
                 scaler.step(optimizer)
                 scaler.update()
-                
+
                 if use_onecycle:
                     scheduler.step()
-                
+
                 epoch_train_loss += loss.item()
-                
-                train_pbar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'avg_loss': f'{epoch_train_loss/(batch_idx+1):.4f}',
-                    'lr': f'{optimizer.param_groups[0]["lr"]:.2e}'
-                })
-            
+
+                train_pbar.set_postfix(
+                    {
+                        "loss": f"{loss.item():.4f}",
+                        "avg_loss": f"{epoch_train_loss/(batch_idx+1):.4f}",
+                        "lr": f'{optimizer.param_groups[0]["lr"]:.2e}',
+                    }
+                )
+
             train_pbar.close()
-            
+
             if not use_onecycle:
                 scheduler.step()
-            
+
             avg_train_loss = epoch_train_loss / num_train_batches
             train_losses.append(avg_train_loss)
-            
+
             # Validation phase
             avg_val_loss = self._evaluate_model(model, val_loader, loss_type)
             val_losses.append(avg_val_loss)
-            
+
             # SWA update
             swa_updated = False
             if epoch >= swa_start:
                 swa_model.update_parameters(model)
                 swa_updated = True
-            
+
             # Update main progress bar
             postfix_dict = {
-                'train_loss': f'{avg_train_loss:.4f}',
-                'val_loss': f'{avg_val_loss:.4f}',
-                'best_val': f'{best_val_loss:.4f}',
-                'patience': f'{patience_counter}/{patience}'
+                "train_loss": f"{avg_train_loss:.4f}",
+                "val_loss": f"{avg_val_loss:.4f}",
+                "best_val": f"{best_val_loss:.4f}",
+                "patience": f"{patience_counter}/{patience}",
             }
-            
+
             if swa_updated:
-                postfix_dict['swa'] = '✓'
-            
+                postfix_dict["swa"] = "✓"
+
             epoch_pbar.set_postfix(postfix_dict)
-            
+
             # Early stopping logic
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
@@ -604,18 +688,27 @@ class DARTSTrainer:
                 if patience_counter >= patience:
                     epoch_pbar.set_description(f"Early stopping at epoch {epoch+1}")
                     break
-        
+
         epoch_pbar.close()
-        
+
         # Finalize SWA model
-        swa_used = self._finalize_swa(model, swa_model, val_loader, train_loader, 
-                                     epoch, swa_start, loss_type, best_val_loss, best_state)
-        
+        swa_used = self._finalize_swa(
+            model,
+            swa_model,
+            val_loader,
+            train_loader,
+            epoch,
+            swa_start,
+            loss_type,
+            best_val_loss,
+            best_state,
+        )
+
         # Evaluate on test set
         model.load_state_dict(best_state)
         test_results = self._evaluate_test_set(model, test_loader, loss_type)
         training_time = time.time() - start_time
-        
+
         # Final results
         results = {
             "model": model,
@@ -628,81 +721,99 @@ class DARTSTrainer:
                 "epochs_completed": epoch + 1,
                 "swa_used": swa_used,
                 "final_lr": optimizer.param_groups[0]["lr"],
-                "best_val_loss": best_val_loss
-            }
+                "best_val_loss": best_val_loss,
+            },
         }
-        
+
         self._print_final_results(results)
         self.training_history.append(results)
-        
+
         return results
-    
-    def _finalize_swa(self, model, swa_model, val_loader, train_loader, epoch, swa_start, 
-                     loss_type, best_val_loss, best_state):
+
+    def _finalize_swa(
+        self,
+        model,
+        swa_model,
+        val_loader,
+        train_loader,
+        epoch,
+        swa_start,
+        loss_type,
+        best_val_loss,
+        best_state,
+    ):
         """Finalize SWA model and determine whether to use it."""
         if epoch < swa_start:
             return False
-            
+
         print("\\n🔄 Finalizing SWA model...")
-        
+
         try:
-            bn_update_pbar = self._create_progress_bar(train_loader, "Updating BN", leave=False)
-            torch.optim.swa_utils.update_bn(bn_update_pbar, swa_model, device=self.device)
+            bn_update_pbar = self._create_progress_bar(
+                train_loader, "Updating BN", leave=False
+            )
+            torch.optim.swa_utils.update_bn(
+                bn_update_pbar, swa_model, device=self.device
+            )
             bn_update_pbar.close()
         except Exception as e:
             print(f"Warning: Standard BN update failed ({e}), using fallback...")
             swa_model.train()
             with torch.no_grad():
-                for batch_x, *_ in self._create_progress_bar(train_loader, "Fallback BN", leave=False):
+                for batch_x, *_ in self._create_progress_bar(
+                    train_loader, "Fallback BN", leave=False
+                ):
                     swa_model(batch_x.to(self.device))
-        
+
         # Evaluate SWA model
         swa_val_loss = self._evaluate_model(swa_model, val_loader, loss_type)
         print(f"SWA validation loss: {swa_val_loss:.6f} vs Best: {best_val_loss:.6f}")
-        
+
         if swa_val_loss < best_val_loss:
             print("✓ Using SWA model (better performance)")
-            best_state.update({k: v.cpu().clone() for k, v in swa_model.state_dict().items()})
+            best_state.update(
+                {k: v.cpu().clone() for k, v in swa_model.state_dict().items()}
+            )
             return True
         else:
             print("✓ Keeping original best model")
             return False
-    
+
     def _evaluate_test_set(self, model, test_loader, loss_type):
         """Evaluate model on test set and compute comprehensive metrics."""
         print("\\n📊 Evaluating on test set...")
         model.eval()
         loss_fn = self._get_loss_function(loss_type)
-        
+
         test_loss = 0.0
         all_preds, all_targets = [], []
-        
+
         with torch.no_grad():
             test_pbar = self._create_progress_bar(test_loader, "Test Evaluation")
-            
+
             for batch_x, batch_y, *_ in test_pbar:
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
-                with autocast('cuda' if self.device.startswith('cuda') else 'cpu'):
+                with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
                     preds = model(batch_x)
                     batch_test_loss = loss_fn(preds, batch_y).item()
-                
+
                 test_loss += batch_test_loss
                 all_preds.append(preds.cpu().numpy())
                 all_targets.append(batch_y.cpu().numpy())
-                
-                test_pbar.set_postfix({'test_loss': f'{batch_test_loss:.4f}'})
-            
+
+                test_pbar.set_postfix({"test_loss": f"{batch_test_loss:.4f}"})
+
             test_pbar.close()
-        
+
         test_loss /= len(test_loader)
         preds_flat = np.concatenate(all_preds).reshape(-1)
         targets_flat = np.concatenate(all_targets).reshape(-1)
-        
+
         return {
             "test_loss": test_loss,
-            "metrics": self._compute_metrics(preds_flat, targets_flat)
+            "metrics": self._compute_metrics(preds_flat, targets_flat),
         }
-    
+
     def _print_final_results(self, results: Dict[str, Any]):
         """Prints the final model's results in a professional, aligned format."""
         metrics = results["final_metrics"]
@@ -711,9 +822,13 @@ class DARTSTrainer:
         logger.info("\n" + "=" * 70)
         logger.info("🏁 FINAL MODEL TRAINING COMPLETED")
         logger.info("=" * 70)
-        logger.info(f"{'Training duration:':<30} {results['training_time']:.1f} seconds  ({results['training_time']/60:.1f} minutes)")
+        logger.info(
+            f"{'Training duration:':<30} {results['training_time']:.1f} seconds  ({results['training_time']/60:.1f} minutes)"
+        )
         logger.info(f"{'Total epochs:':<30} {info['epochs_completed']}")
-        logger.info(f"{'Checkpoint used:':<30} {'SWA' if info.get('swa_used', False) else 'Best model'}")
+        logger.info(
+            f"{'Checkpoint used:':<30} {'SWA' if info.get('swa_used', False) else 'Best model'}"
+        )
         logger.info(f"{'Final learning rate:':<30} {info['final_lr']:.2e}")
         logger.info("-" * 70)
         logger.info("📊 PERFORMANCE METRICS:")
@@ -724,21 +839,22 @@ class DARTSTrainer:
         logger.info(f"{'Mean Absolute % Error (MAPE):':<30} {metrics['mape']:.2f}%")
         logger.info(f"{'R² Score:':<30} {metrics['r2_score']:.4f}")
         logger.info("=" * 70 + "\n")
-    
+
     def multi_fidelity_search(
         self,
         train_loader,
         val_loader,
         test_loader,
         num_candidates: int = 10,
-        search_epochs: int = 30,
+        search_epochs: int = 10,
         final_epochs: int = 100,
         max_samples: int = 32,
-        top_k: int = 5
+        top_k: int = 5,
+        max_workers: int = None,  # New parameter for controlling parallelism
     ) -> Dict[str, Any]:
         """
-        Multi-fidelity architecture search using zero-cost metrics.
-        
+        Multi-fidelity architecture search using zero-cost metrics with parallel Phase 1.
+
         Args:
             train_loader: Training data loader
             val_loader: Validation data loader
@@ -748,302 +864,375 @@ class DARTSTrainer:
             final_epochs: Epochs for final training
             max_samples: Max samples for zero-cost evaluation
             top_k: Number of top candidates to train
-            
+            max_workers: Maximum number of parallel workers (None = auto-detect)
+
         Returns:
             Dictionary containing search results
         """
         print("🔍 Starting multi-fidelity DARTS search...")
         print(f"   Candidates: {num_candidates}, Search epochs: {search_epochs}")
         print(f"   Final epochs: {final_epochs}, Top-k: {top_k}")
+        print(f"   Max workers: {max_workers or 'auto-detect'}")
         print("-" * 60)
-        
-        # Phase 1: Generate and evaluate candidates with zero-cost metrics
-        print("\n📋 Phase 1: Generating and evaluating candidates...")
-        candidates = []
-        
-        candidate_pbar = self._create_progress_bar(range(num_candidates), "Generating candidates")
-        
-        for i in candidate_pbar:
-            # Random architecture generation
-            num_ops = random.randint(5, len(self.all_ops))
-            selected_ops = ["Identity"] + random.sample(
-                [op for op in self.all_ops if op != "Identity"], num_ops - 1
-            )
-            
-            config = {
-                'selected_ops': selected_ops,
-                'hidden_dim': random.choice(self.hidden_dims),
-                'num_cells': random.randint(1, 2),
-                'num_nodes': random.randint(2, 4)
-            }
-            
-            # Create model
-            model = TimeSeriesDARTS(
-                input_dim=self.input_dim, 
-                hidden_dim=config['hidden_dim'],
-                latent_dim=config['hidden_dim'], 
-                forecast_horizon=self.forecast_horizon,
-                seq_length=self.seq_length, 
-                num_cells=config['num_cells'],
-                num_nodes=config['num_nodes'], 
-                selected_ops=config['selected_ops']
-            ).to(self.device)
-            
-            # Evaluate with zero-cost metrics
+
+        # Phase 1: Generate and evaluate candidates with zero-cost metrics (PARALLELIZED)
+        print("\n📋 Phase 1: Generating and evaluating candidates in parallel...")
+
+        def generate_and_evaluate_candidate(candidate_id: int) -> Dict[str, Any]:
+            """Generate and evaluate a single candidate."""
             try:
-                metrics = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
-                score = metrics['aggregate_score']
+                # Random architecture generation
+                num_ops = random.randint(5, len(self.all_ops))
+                selected_ops = ["Identity"] + random.sample(
+                    [op for op in self.all_ops if op != "Identity"], num_ops - 1
+                )
+
+                config = {
+                    "selected_ops": selected_ops,
+                    "hidden_dim": random.choice(self.hidden_dims),
+                    "num_cells": random.randint(1, 2),
+                    "num_nodes": random.randint(2, 4),
+                }
+
+                # Create model (each worker gets its own model instance)
+                model = TimeSeriesDARTS(
+                    input_dim=self.input_dim,
+                    hidden_dim=config["hidden_dim"],
+                    latent_dim=config["hidden_dim"],
+                    forecast_horizon=self.forecast_horizon,
+                    seq_length=self.seq_length,
+                    num_cells=config["num_cells"],
+                    num_nodes=config["num_nodes"],
+                    selected_ops=config["selected_ops"],
+                ).to(self.device)
+
+                # Evaluate with zero-cost metrics
+                metrics = self.evaluate_zero_cost_metrics(
+                    model, val_loader, max_samples
+                )
+                score = metrics["aggregate_score"]
+
+                return {
+                    "candidate_id": candidate_id,
+                    "model": model,
+                    "metrics": metrics,
+                    "score": score,
+                    "success": True,
+                    **config,
+                }
+
             except Exception as e:
-                print(f"Warning: Zero-cost evaluation failed for candidate {i+1}: {e}")
-                score = 0.0
-                metrics = {'aggregate_score': 0.0}
-            
-            candidates.append({
-                'model': model, 
-                'metrics': metrics, 
-                'score': score,
-                **config
-            })
-            
-            candidate_pbar.set_postfix({
-                'score': f'{score:.4f}',
-                'ops': len(selected_ops),
-                'hidden': config['hidden_dim']
-            })
-        
-        candidate_pbar.close()
-        
+                print(f"Warning: Candidate {candidate_id + 1} evaluation failed: {e}")
+                return {
+                    "candidate_id": candidate_id,
+                    "model": None,
+                    "metrics": {"aggregate_score": 0.0},
+                    "score": 0.0,
+                    "success": False,
+                    "error": str(e),
+                }
+
+        # Execute parallel candidate generation and evaluation
+        candidates = []
+        completed_count = 0
+        lock = threading.Lock()
+
+        # Progress tracking function
+        def update_progress(future):
+            nonlocal completed_count
+            with lock:
+                completed_count += 1
+                result = future.result()
+                if result["success"]:
+                    print(
+                        f"✓ Candidate {completed_count}/{num_candidates} - "
+                        f"Score: {result['score']:.4f}, "
+                        f"Ops: {len(result.get('selected_ops', []))}, "
+                        f"Hidden: {result.get('hidden_dim', 'N/A')}"
+                    )
+                else:
+                    print(f"✗ Candidate {completed_count}/{num_candidates} - Failed")
+
+        # Use ThreadPoolExecutor for I/O bound tasks or ProcessPoolExecutor for CPU bound
+        # ThreadPoolExecutor is usually better for PyTorch models due to GIL and CUDA context
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all candidate generation tasks
+            future_to_id = {
+                executor.submit(generate_and_evaluate_candidate, i): i
+                for i in range(num_candidates)
+            }
+
+            # Add callback for progress tracking
+            for future in future_to_id:
+                future.add_done_callback(update_progress)
+
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(future_to_id):
+                result = future.result()
+                if result["success"]:
+                    candidates.append(result)
+
+        print(
+            f"\n📊 Phase 1 completed: {len(candidates)}/{num_candidates} candidates successful"
+        )
+
         # Phase 2: Select top candidates
         print(f"\n🏆 Phase 2: Selecting top {top_k} candidates...")
-        candidates.sort(key=lambda x: x['score'], reverse=True)
+        candidates.sort(key=lambda x: x["score"], reverse=True)
         top_k = min(top_k, len(candidates))
         top_candidates = candidates[:top_k]
-        
+
         print("Top candidates:")
         for i, c in enumerate(top_candidates):
-            print(f"  {i+1}: Score={c['score']:.4f}, Ops={len(c['selected_ops'])}, "
-                  f"Hidden={c['hidden_dim']}, Arch={c['num_cells']}x{c['num_nodes']}")
-            
-        for i, candidate in enumerate(top_candidates):
-            self.plot_architecture(candidate = candidate, save_path=f"candidate_{i+1}_architecture.png")
+            print(
+                f"  {i+1}: Score={c['score']:.4f}, Ops={len(c['selected_ops'])}, "
+                f"Hidden={c['hidden_dim']}, Arch={c['num_cells']}x{c['num_nodes']}"
+            )
+
+        # for i, candidate in enumerate(top_candidates):
+        #     self.plot_architecture(
+        #         candidate=candidate, save_path=f"candidate_{i+1}_architecture.png"
+        #     )
 
         # Phase 3: Short DARTS training for top candidates
         print(f"\n🔧 Phase 3: Training top {top_k} candidates...")
         trained_candidates = []
-        
+
         for i, candidate in enumerate(top_candidates):
             print(f"\nTraining candidate {i+1}/{top_k}...")
 
             # Quick DARTS training
             search_results = self.train_darts_model(
-                model=candidate['model'], 
+                model=candidate["model"],
                 train_loader=train_loader,
-                val_loader=val_loader, 
+                val_loader=val_loader,
                 epochs=search_epochs,
-                use_swa=False
+                use_swa=False,
             )
-            
+
             # Derive and evaluate architecture
-            derived_model = self.derive_final_architecture(search_results['model'])
+            derived_model = self.derive_final_architecture(search_results["model"])
             val_loss = self._evaluate_model(derived_model, val_loader)
-            
-            trained_candidates.append({
-                'model': derived_model, 
-                'val_loss': val_loss, 
-                'candidate': candidate,
-                'search_results': search_results
-            })
-            
+
+            trained_candidates.append(
+                {
+                    "model": derived_model,
+                    "val_loss": val_loss,
+                    "candidate": candidate,
+                    "search_results": search_results,
+                }
+            )
+
             print(f"   Validation loss: {val_loss:.6f}")
-        
+
         # Phase 4: Select best candidate
         print(f"\n🎯 Phase 4: Selecting best candidate...")
-        best_candidate = min(trained_candidates, key=lambda x: x['val_loss'])
+        best_candidate = min(trained_candidates, key=lambda x: x["val_loss"])
 
-
-        
         print(f"Best candidate:")
         print(f"   Validation loss: {best_candidate['val_loss']:.6f}")
         print(f"   Operations: {best_candidate['candidate']['selected_ops']}")
-        print(f"   Architecture: {best_candidate['candidate']['num_cells']}x{best_candidate['candidate']['num_nodes']}")
+        print(
+            f"   Architecture: {best_candidate['candidate']['num_cells']}x{best_candidate['candidate']['num_nodes']}"
+        )
         print(f"   Hidden dim: {best_candidate['candidate']['hidden_dim']}")
-        
+
         # Phase 5: Train final model
         print(f"\n🚀 Phase 5: Training final model...")
-        final_model = copy.deepcopy(best_candidate['model'])
-        
+        final_model = copy.deepcopy(best_candidate["model"])
+
         final_results = self.train_final_model(
             model=final_model,
             train_loader=train_loader,
-            val_loader=val_loader, 
+            val_loader=val_loader,
             test_loader=test_loader,
             epochs=final_epochs,
             learning_rate=5e-4,
-            weight_decay=1e-5
+            weight_decay=1e-5,
         )
-        
+
         # Plot training curve
         self._plot_training_curve(
-            final_results['train_losses'], 
-            final_results['val_losses'],
+            final_results["train_losses"],
+            final_results["val_losses"],
             title="Final Model Training Progress",
-            save_path='final_model_training.png'
+            save_path="final_model_training.png",
         )
-        
+
         # Store search results
         search_summary = {
-            'final_model': final_results['model'],
-            'candidates': candidates,
-            'top_candidates': top_candidates,
-            'trained_candidates': trained_candidates,
-            'best_candidate': best_candidate,
-            'final_results': final_results,
-            'search_config': {
-                'num_candidates': num_candidates,
-                'search_epochs': search_epochs,
-                'final_epochs': final_epochs,
-                'top_k': top_k
-            }
+            "final_model": final_results["model"],
+            "candidates": candidates,
+            "top_candidates": top_candidates,
+            "trained_candidates": trained_candidates,
+            "best_candidate": best_candidate,
+            "final_results": final_results,
+            "search_config": {
+                "num_candidates": num_candidates,
+                "search_epochs": search_epochs,
+                "final_epochs": final_epochs,
+                "top_k": top_k,
+            },
         }
-        
+
         self.search_history.append(search_summary)
-        
+
+        self.final_model = final_results["model"]
+
         print("\n✅ Multi-fidelity search completed!")
         return search_summary
-    
+
     def get_search_summary(self) -> str:
         """Get a summary of all searches performed."""
         if not self.search_history:
             return "No searches performed yet."
-        
+
         summary = []
         summary.append("🔍 DARTS SEARCH SUMMARY")
         summary.append("=" * 50)
-        
+
         for i, search in enumerate(self.search_history):
-            final_metrics = search['final_results']['final_metrics']
-            config = search['search_config']
-            
+            final_metrics = search["final_results"]["final_metrics"]
+            config = search["search_config"]
+
             summary.append(f"\nSearch {i+1}:")
             summary.append(f"  Candidates evaluated: {config['num_candidates']}")
             summary.append(f"  Final test RMSE: {final_metrics['rmse']:.6f}")
             summary.append(f"  Final R² score: {final_metrics['r2_score']:.4f}")
-            summary.append(f"  Training time: {search['final_results']['training_time']:.1f}s")
-        
+            summary.append(
+                f"  Training time: {search['final_results']['training_time']:.1f}s"
+            )
+
         summary.append("\n" + "=" * 50)
         return "\n".join(summary)
-    
+
     def get_training_summary(self) -> str:
         """Get a summary of all training sessions."""
         if not self.training_history:
             return "No training sessions completed yet."
-        
+
         summary = []
         summary.append("🚀 TRAINING SUMMARY")
         summary.append("=" * 40)
-        
+
         for i, training in enumerate(self.training_history):
-            if 'final_metrics' in training:
-                metrics = training['final_metrics']
+            if "final_metrics" in training:
+                metrics = training["final_metrics"]
                 summary.append(f"\nSession {i+1}:")
-                summary.append(f"  Best val loss: {training.get('best_val_loss', 'N/A')}")
+                summary.append(
+                    f"  Best val loss: {training.get('best_val_loss', 'N/A')}"
+                )
                 summary.append(f"  RMSE: {metrics.get('rmse', 'N/A')}")
                 summary.append(f"  R² score: {metrics.get('r2_score', 'N/A')}")
-                summary.append(f"  Training time: {training.get('training_time', 'N/A')}s")
-        
+                summary.append(
+                    f"  Training time: {training.get('training_time', 'N/A')}s"
+                )
+
         summary.append("\n" + "=" * 40)
         return "\n".join(summary)
-    
+
     def save_best_model(self, filepath: str = "best_darts_model.pth"):
         """Save the best model from search history."""
         if not self.search_history:
             print("❌ No search history available to save.")
             return
-        
+
         best_search = min(
-            self.search_history, 
-            key=lambda x: x['final_results']['final_metrics']['rmse']
+            self.search_history,
+            key=lambda x: x["final_results"]["final_metrics"]["rmse"],
         )
-        
-        torch.save({
-            'model_state_dict': best_search['final_model'].state_dict(),
-            'final_metrics': best_search['final_results']['final_metrics'],
-            'training_info': best_search['final_results']['training_info'],
-            'search_config': best_search['search_config']
-        }, filepath)
-        
+
+        torch.save(
+            {
+                "model_state_dict": best_search["final_model"].state_dict(),
+                "final_metrics": best_search["final_results"]["final_metrics"],
+                "training_info": best_search["final_results"]["training_info"],
+                "search_config": best_search["search_config"],
+            },
+            filepath,
+        )
+
         print(f"💾 Best model saved to {filepath}")
         print(f"   RMSE: {best_search['final_results']['final_metrics']['rmse']:.6f}")
-        print(f"   R² Score: {best_search['final_results']['final_metrics']['r2_score']:.4f}")
-    
+        print(
+            f"   R² Score: {best_search['final_results']['final_metrics']['r2_score']:.4f}"
+        )
+
     def load_model(self, filepath: str, model_class):
         """Load a saved model."""
         checkpoint = torch.load(filepath, map_location=self.device)
-        
+
         # You'll need to reconstruct the model architecture first
         # This is a placeholder - you'd need the actual architecture info
         print(f"📂 Loading model from {filepath}")
         print(f"   Saved RMSE: {checkpoint['final_metrics']['rmse']:.6f}")
         print(f"   Saved R² Score: {checkpoint['final_metrics']['r2_score']:.4f}")
-        
+
         return checkpoint
-    
-    def plot_alpha_evolution(self, alpha_values: List, save_path: str = "alpha_evolution.png"):
+
+    def plot_alpha_evolution(
+        self, alpha_values: List, save_path: str = "alpha_evolution.png"
+    ):
         """Plot the evolution of architecture parameters during search."""
         if not alpha_values:
             print("❌ No alpha values to plot.")
             return
-        
+
         # Extract alpha evolution for first few edges
         num_epochs = len(alpha_values)
         num_edges_to_plot = min(4, len(alpha_values[0]))  # Plot first 4 edges
-        
+
         fig, axes = plt.subplots(2, 2, figsize=(12, 8))
         axes = axes.flatten()
-        
+
         for edge_idx in range(num_edges_to_plot):
             if edge_idx < len(alpha_values[0]):
                 ax = axes[edge_idx]
-                
+
                 # Get alpha values for this edge across epochs
                 edge_alphas = []
                 for epoch_alphas in alpha_values:
                     if edge_idx < len(epoch_alphas):
                         cell_idx, edge_in_cell, alphas = epoch_alphas[edge_idx]
                         edge_alphas.append(alphas)
-                
+
                 if edge_alphas:
                     edge_alphas = np.array(edge_alphas)
                     epochs = range(len(edge_alphas))
-                    
+
                     # Plot each operation's alpha
                     for op_idx in range(edge_alphas.shape[1]):
-                        ax.plot(epochs, edge_alphas[:, op_idx], 
-                               label=f'Op {op_idx}', linewidth=2, alpha=0.8)
-                    
-                    ax.set_title(f'Edge {edge_idx} Alpha Evolution', fontweight='bold')
-                    ax.set_xlabel('Epoch')
-                    ax.set_ylabel('Alpha Weight')
+                        ax.plot(
+                            epochs,
+                            edge_alphas[:, op_idx],
+                            label=f"Op {op_idx}",
+                            linewidth=2,
+                            alpha=0.8,
+                        )
+
+                    ax.set_title(f"Edge {edge_idx} Alpha Evolution", fontweight="bold")
+                    ax.set_xlabel("Epoch")
+                    ax.set_ylabel("Alpha Weight")
                     ax.legend()
                     ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"📊 Alpha evolution plot saved to {save_path}")
 
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+        print(f"📊 Alpha evolution plot saved to {save_path}")
 
     def plot_architecture(self, *, candidate: dict, save_path: str = "arch.png"):
 
-        arquitetura = self.parse_model_architecture(candidate['model'])
+        arquitetura = self.parse_model_architecture(candidate["model"])
         self.draw_darts_architecture(arquitetura, save_path=save_path)
 
-
-    def draw_darts_architecture(self, model_info=None, save_path="darts_architecture.png"):
+    def draw_darts_architecture(
+        self, model_info=None, save_path="darts_architecture.png"
+    ):
         """
         Draw a beautiful DARTS architecture diagram based on actual model structure.
-        
+
         Args:
             model_info: Dictionary containing model architecture details
         """
@@ -1051,62 +1240,114 @@ class DARTSTrainer:
         ax.set_xlim(0, 20)
         ax.set_ylim(0, 12)
         ax.axis("off")
-        
+
         # Default values if no model_info provided
         if model_info is None:
             model_info = {
-                'input_features': 3,
-                'embedding_dim': 128,
-                'cells': [
-                    {'ops': ['ConvMixerOp', 'FourierOp', 'GRNOp', 'ResidualMLPOp', 'ConvMixerOp']},
-                    {'ops': ['ResidualMLPOp', 'ConvMixerOp', 'WaveletOp', 'TCNOp', 'FourierOp']}
+                "input_features": 3,
+                "embedding_dim": 128,
+                "cells": [
+                    {
+                        "ops": [
+                            "ConvMixerOp",
+                            "FourierOp",
+                            "GRNOp",
+                            "ResidualMLPOp",
+                            "ConvMixerOp",
+                        ]
+                    },
+                    {
+                        "ops": [
+                            "ResidualMLPOp",
+                            "ConvMixerOp",
+                            "WaveletOp",
+                            "TCNOp",
+                            "FourierOp",
+                        ]
+                    },
                 ],
-                'forecast_encoder': 'LSTM',
-                'forecast_decoder': 'LSTM', 
-                'mlp_dims': [128, 256, 128],
-                'output_features': 3
+                "forecast_encoder": "LSTM",
+                "forecast_decoder": "LSTM",
+                "mlp_dims": [128, 256, 128],
+                "output_features": 3,
             }
-        
+
         # Beautiful color scheme
         colors = {
             "input_output": "#B8E6B8",
-            "embedding": "#A8D0F0", 
+            "embedding": "#A8D0F0",
             "cell1": "#F4E4E4",
             "cell1_ops": "#F5C2C7",
             "cell1_processing": "#F5C2C7",
             "cell2": "#FFF3CD",
-            "cell2_ops": "#FFE69C", 
+            "cell2_ops": "#FFE69C",
             "forecast": "#E9ECEF",
-            "forecast_ops": "#CED4DA"
+            "forecast_ops": "#CED4DA",
         }
-        
+
         # Helper functions for beautiful boxes
-        def add_beautiful_box(x, y, w, h, label, color, fontsize=10, fontweight='normal', 
-                            edge_color='#333333', linewidth=1.5, corner_radius=0.05):
+        def add_beautiful_box(
+            x,
+            y,
+            w,
+            h,
+            label,
+            color,
+            fontsize=10,
+            fontweight="normal",
+            edge_color="#333333",
+            linewidth=1.5,
+            corner_radius=0.05,
+        ):
             """Add a beautiful rounded rectangle with shadow effect"""
             # Add subtle shadow
-            shadow = FancyBboxPatch((x+0.02, y-0.02), w, h,
-                                boxstyle=f"round,pad=0.02,rounding_size={corner_radius}",
-                                facecolor='#00000015',
-                                edgecolor='none',
-                                zorder=1)
+            shadow = FancyBboxPatch(
+                (x + 0.02, y - 0.02),
+                w,
+                h,
+                boxstyle=f"round,pad=0.02,rounding_size={corner_radius}",
+                facecolor="#00000015",
+                edgecolor="none",
+                zorder=1,
+            )
             ax.add_patch(shadow)
-            
+
             # Main box
-            box = FancyBboxPatch((x, y), w, h,
-                            boxstyle=f"round,pad=0.02,rounding_size={corner_radius}",
-                            edgecolor=edge_color,
-                            facecolor=color,
-                            linewidth=linewidth,
-                            zorder=2)
+            box = FancyBboxPatch(
+                (x, y),
+                w,
+                h,
+                boxstyle=f"round,pad=0.02,rounding_size={corner_radius}",
+                edgecolor=edge_color,
+                facecolor=color,
+                linewidth=linewidth,
+                zorder=2,
+            )
             ax.add_patch(box)
-            
+
             # Text with better typography
-            ax.text(x + w/2, y + h/2, label, ha="center", va="center", 
-                    fontsize=fontsize, weight=fontweight, color='#2C3E50', zorder=3)
-        
-        def draw_curved_arrow(start_x, start_y, end_x, end_y, style='->', linewidth=2, 
-                            color='#2C3E50', curve_strength=0.3):
+            ax.text(
+                x + w / 2,
+                y + h / 2,
+                label,
+                ha="center",
+                va="center",
+                fontsize=fontsize,
+                weight=fontweight,
+                color="#2C3E50",
+                zorder=3,
+            )
+
+        def draw_curved_arrow(
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            style="->",
+            linewidth=2,
+            color="#2C3E50",
+            curve_strength=0.3,
+        ):
             """Draw a beautiful curved arrow"""
             if abs(start_x - end_x) > abs(start_y - end_y):
                 # Horizontal curve
@@ -1114,24 +1355,26 @@ class DARTSTrainer:
                 control_y = start_y + curve_strength * (end_y - start_y)
                 control_x = mid_x
             else:
-                # Vertical curve  
+                # Vertical curve
                 mid_y = (start_y + end_y) / 2
                 control_x = start_x + curve_strength * (end_x - start_x)
                 control_y = mid_y
-            
+
             # Create curved path
             from matplotlib.path import Path
+
             verts = [(start_x, start_y), (control_x, control_y), (end_x, end_y)]
             codes = [Path.MOVETO, Path.CURVE3, Path.CURVE3]
             path = Path(verts, codes)
-            
+
             # Draw path
-            patch = patches.PathPatch(path, facecolor='none', edgecolor=color, 
-                                    linewidth=linewidth, zorder=2)
+            patch = patches.PathPatch(
+                path, facecolor="none", edgecolor=color, linewidth=linewidth, zorder=2
+            )
             ax.add_patch(patch)
-            
+
             # Add arrowhead
-            if style == '->':
+            if style == "->":
                 dx = end_x - start_x
                 dy = end_y - start_y
                 length = np.sqrt(dx**2 + dy**2)
@@ -1139,269 +1382,613 @@ class DARTSTrainer:
                     dx_norm = dx / length
                     dy_norm = dy / length
                     arrow_size = 0.15
-                    ax.arrow(end_x - arrow_size*dx_norm, end_y - arrow_size*dy_norm,
-                            arrow_size*dx_norm, arrow_size*dy_norm,
-                            head_width=0.08, head_length=0.08, fc=color, ec=color, zorder=3)
-        
-        def draw_dashed_connection(start_x, start_y, end_x, end_y, color='#7F8C8D', alpha=0.6):
+                    ax.arrow(
+                        end_x - arrow_size * dx_norm,
+                        end_y - arrow_size * dy_norm,
+                        arrow_size * dx_norm,
+                        arrow_size * dy_norm,
+                        head_width=0.08,
+                        head_length=0.08,
+                        fc=color,
+                        ec=color,
+                        zorder=3,
+                    )
+
+        def draw_dashed_connection(
+            start_x, start_y, end_x, end_y, color="#7F8C8D", alpha=0.6
+        ):
             """Draw beautiful dashed connections"""
-            ax.plot([start_x, end_x], [start_y, end_y], '--', 
-                color=color, linewidth=1.5, alpha=alpha, zorder=1)
-        
+            ax.plot(
+                [start_x, end_x],
+                [start_y, end_y],
+                "--",
+                color=color,
+                linewidth=1.5,
+                alpha=alpha,
+                zorder=1,
+            )
+
         # Extract values from model_info
-        input_feat = model_info['input_features']
-        embed_dim = model_info['embedding_dim']
-        output_feat = model_info['output_features']
-        cells = model_info['cells']
-        
+        input_feat = model_info["input_features"]
+        embed_dim = model_info["embedding_dim"]
+        output_feat = model_info["output_features"]
+        cells = model_info["cells"]
+
         # 1. Input Features (top left)
-        add_beautiful_box(0.5, 9.5, 2.5, 1, f"Input Features ({input_feat})", 
-                        colors['input_output'], fontsize=11, fontweight='bold')
-        
+        add_beautiful_box(
+            0.5,
+            9.5,
+            2.5,
+            1,
+            f"Input Features ({input_feat})",
+            colors["input_output"],
+            fontsize=11,
+            fontweight="bold",
+        )
+
         # 2. Input Embedding (below input)
-        add_beautiful_box(0.5, 8, 2.5, 1, f"Input Embedding\nLinear({input_feat} → {embed_dim})", 
-                        colors['embedding'], fontsize=10, fontweight='bold')
-        
+        add_beautiful_box(
+            0.5,
+            8,
+            2.5,
+            1,
+            f"Input Embedding\nLinear({input_feat} → {embed_dim})",
+            colors["embedding"],
+            fontsize=10,
+            fontweight="bold",
+        )
+
         # Curved arrow from Input to Embedding
-        draw_curved_arrow(1.75, 9.5, 1.75, 9, linewidth=2.5, color='#2980B9')
-        
+        draw_curved_arrow(1.75, 9.5, 1.75, 9, linewidth=2.5, color="#2980B9")
+
         # 3. DARTS Cells (better positioned)
         # Dynamically compute vertical positions for all DARTS cells
         num_cells = len(cells)
-        cell_spacing = 4.0   # Vertical spacing between cells
+        cell_spacing = 4.0  # Vertical spacing between cells
         total_height = (num_cells - 1) * cell_spacing
-        base_y = 6.5 - total_height / 2  # Center around y=6.5 (midpoint of forecast box)
+        base_y = (
+            6.5 - total_height / 2
+        )  # Center around y=6.5 (midpoint of forecast box)
 
         cell_positions = [(4.5, base_y + i * cell_spacing) for i in range(num_cells)]
 
-        cell_colors = [colors['cell1'], colors['cell2']]
-        cell_op_colors = [colors['cell1_ops'], colors['cell2_ops']]
-        
+        cell_colors = [colors["cell1"], colors["cell2"]]
+        cell_op_colors = [colors["cell1_ops"], colors["cell2_ops"]]
+
         for cell_idx, cell in enumerate(cells):
             cell_x, cell_y = cell_positions[cell_idx]
-            
+
             # Main cell container with beautiful styling
-            add_beautiful_box(cell_x, cell_y, 5, 3.2, "", cell_colors[cell_idx], 
-                            corner_radius=0.08, linewidth=2)
-            
+            add_beautiful_box(
+                cell_x,
+                cell_y,
+                5,
+                3.2,
+                "",
+                cell_colors[cell_idx],
+                corner_radius=0.08,
+                linewidth=2,
+            )
+
             # Cell title
-            add_beautiful_box(cell_x + 0.1, cell_y + 2.7, 4.8, 0.4, f"DARTS Cell {cell_idx + 1}", 
-                            cell_colors[cell_idx], fontsize=13, fontweight='bold')
-            
+            add_beautiful_box(
+                cell_x + 0.1,
+                cell_y + 2.7,
+                4.8,
+                0.4,
+                f"DARTS Cell {cell_idx + 1}",
+                cell_colors[cell_idx],
+                fontsize=13,
+                fontweight="bold",
+            )
+
             # Operations (left side with better spacing)
-            ops = cell['ops'][:5]  # Show up to 5 operations
+            ops = cell["ops"][:5]  # Show up to 5 operations
             op_width = 2
             op_height = 0.35
             for i, op in enumerate(ops):
                 op_y = cell_y + 2.2 - i * 0.4
-                add_beautiful_box(cell_x + 0.2, op_y, op_width, op_height, op, 
-                                cell_op_colors[cell_idx], fontsize=9, 
-                                corner_radius=0.03, linewidth=1)
-                
+                add_beautiful_box(
+                    cell_x + 0.2,
+                    op_y,
+                    op_width,
+                    op_height,
+                    op,
+                    cell_op_colors[cell_idx],
+                    fontsize=9,
+                    corner_radius=0.03,
+                    linewidth=1,
+                )
+
                 # Small connection line to processing box
                 line_start_x = cell_x + 0.2 + op_width
                 line_end_x = cell_x + 2.6
-                ax.plot([line_start_x, line_end_x], [op_y + op_height/2, op_y + op_height/2], 
-                    '-', color=cell_op_colors[cell_idx], linewidth=2, alpha=0.7)
-            
+                ax.plot(
+                    [line_start_x, line_end_x],
+                    [op_y + op_height / 2, op_y + op_height / 2],
+                    "-",
+                    color=cell_op_colors[cell_idx],
+                    linewidth=2,
+                    alpha=0.7,
+                )
+
             # Cell processing box (right side)
-            add_beautiful_box(cell_x + 2.6, cell_y + 0.6, 2.2, 1.8, 
-                            "Cell Processing\nProj + Norm + Gate", 
-                            cell_op_colors[cell_idx], fontsize=10, fontweight='bold',
-                            corner_radius=0.05)
-        
+            add_beautiful_box(
+                cell_x + 2.6,
+                cell_y + 0.6,
+                2.2,
+                1.8,
+                "Cell Processing\nProj + Norm + Gate",
+                cell_op_colors[cell_idx],
+                fontsize=10,
+                fontweight="bold",
+                corner_radius=0.05,
+            )
+
         # 4. Beautiful dashed connections from embedding to cells
         embed_center_x = 1.75
         embed_center_y = 8.5
-        
+
         for cell_idx, cell in enumerate(cells):
             cell_x, cell_y = cell_positions[cell_idx]
-            ops = cell['ops'][:5]
-            
+            ops = cell["ops"][:5]
+
             for i, op in enumerate(ops):
                 op_y = cell_y + 2.2 - i * 0.4 + 0.175  # Center of op box
                 draw_dashed_connection(3, embed_center_y, cell_x + 0.2, op_y)
-        
+
         # 5. Forecasting Module (well-positioned)
         forecast_x, forecast_y = 11, 6
-        add_beautiful_box(forecast_x, forecast_y, 4.5, 3.8, "", colors['forecast'], 
-                        corner_radius=0.08, linewidth=2)
-        
+        add_beautiful_box(
+            forecast_x,
+            forecast_y,
+            4.5,
+            3.8,
+            "",
+            colors["forecast"],
+            corner_radius=0.08,
+            linewidth=2,
+        )
+
         # Forecasting title
-        add_beautiful_box(forecast_x + 0.1, forecast_y + 3.3, 4.3, 0.4, "Forecasting Module", 
-                        colors['forecast'], fontsize=13, fontweight='bold')
-        
+        add_beautiful_box(
+            forecast_x + 0.1,
+            forecast_y + 3.3,
+            4.3,
+            0.4,
+            "Forecasting Module",
+            colors["forecast"],
+            fontsize=13,
+            fontweight="bold",
+        )
+
         # Forecasting operations with actual model info
-        encoder_type = model_info['forecast_encoder']
-        decoder_type = model_info['forecast_decoder']
-        mlp_dims = model_info['mlp_dims']
-        
+        encoder_type = model_info["forecast_encoder"]
+        decoder_type = model_info["forecast_decoder"]
+        mlp_dims = model_info["mlp_dims"]
+
         forecast_ops = [
             f"{encoder_type} Encoder ({embed_dim} → {embed_dim})",
-            f"{decoder_type} Decoder ({input_feat} → {embed_dim})", 
+            f"{decoder_type} Decoder ({input_feat} → {embed_dim})",
             f"MLP ({' → '.join(map(str, mlp_dims))})",
-            f"Output Layer ({embed_dim} → {output_feat})"
+            f"Output Layer ({embed_dim} → {output_feat})",
         ]
-        
+
         for i, op in enumerate(forecast_ops):
-            add_beautiful_box(forecast_x + 0.2, forecast_y + 2.7 - i*0.6, 4.1, 0.5, op, 
-                            colors['forecast_ops'], fontsize=10, corner_radius=0.03, linewidth=1)
-        
+            add_beautiful_box(
+                forecast_x + 0.2,
+                forecast_y + 2.7 - i * 0.6,
+                4.1,
+                0.5,
+                op,
+                colors["forecast_ops"],
+                fontsize=10,
+                corner_radius=0.03,
+                linewidth=1,
+            )
+
         # 6. Output (far right)
-        add_beautiful_box(16.5, 7.5, 2.5, 1, f"Output ({output_feat})", 
-                        colors['input_output'], fontsize=11, fontweight='bold')
-        
+        add_beautiful_box(
+            16.5,
+            7.5,
+            2.5,
+            1,
+            f"Output ({output_feat})",
+            colors["input_output"],
+            fontsize=11,
+            fontweight="bold",
+        )
+
         # 7. Beautiful curved arrows from cells to forecasting
         for cell_idx, cell in enumerate(cells):
             cell_x, cell_y = cell_positions[cell_idx]
             start_x = cell_x + 5
             start_y = cell_y + 1.6
-            draw_curved_arrow(start_x, start_y, forecast_x, forecast_y + 1.9, 
-                            linewidth=3, color='#27AE60', curve_strength=0.2)
-        
+            draw_curved_arrow(
+                start_x,
+                start_y,
+                forecast_x,
+                forecast_y + 1.9,
+                linewidth=3,
+                color="#27AE60",
+                curve_strength=0.2,
+            )
+
         # 8. Arrow from forecasting to output
-        draw_curved_arrow(forecast_x + 4.5, forecast_y + 1.9, 16.5, 8, 
-                        linewidth=3, color='#8E44AD', curve_strength=0.1)
-        
+        draw_curved_arrow(
+            forecast_x + 4.5,
+            forecast_y + 1.9,
+            16.5,
+            8,
+            linewidth=3,
+            color="#8E44AD",
+            curve_strength=0.1,
+        )
+
         # 9. Beautiful Legend (repositioned)
         legend_x, legend_y = 11.5, 0.5
-        add_beautiful_box(legend_x, legend_y, 3.5, 3.2, "", "white", 
-                        edge_color='#34495E', linewidth=2, corner_radius=0.06)
-        
-        ax.text(legend_x + 1.75, legend_y + 2.8, "Legend", ha="center", va="center", 
-            fontsize=12, weight='bold', color='#2C3E50')
-                
+        add_beautiful_box(
+            legend_x,
+            legend_y,
+            3.5,
+            3.2,
+            "",
+            "white",
+            edge_color="#34495E",
+            linewidth=2,
+            corner_radius=0.06,
+        )
+
+        ax.text(
+            legend_x + 1.75,
+            legend_y + 2.8,
+            "Legend",
+            ha="center",
+            va="center",
+            fontsize=12,
+            weight="bold",
+            color="#2C3E50",
+        )
+
         # Base legend items
         legend_items = [
-            ("Input/Output", colors['input_output']),
-            ("Input Embedding", colors['embedding']),
+            ("Input/Output", colors["input_output"]),
+            ("Input Embedding", colors["embedding"]),
         ]
 
         # Add DARTS cell legend entries dynamically
-        cell_colors_all = [colors['cell1'], colors['cell2']]  # Extend if more cells expected
+        cell_colors_all = [
+            colors["cell1"],
+            colors["cell2"],
+        ]  # Extend if more cells expected
         for i in range(len(cells)):
             color = cell_colors_all[i % len(cell_colors_all)]  # Cycle colors if needed
             legend_items.append((f"DARTS Cell {i + 1}", color))
 
         # Add Forecasting module
-        legend_items.append(("Forecasting Module", colors['forecast']))
+        legend_items.append(("Forecasting Module", colors["forecast"]))
 
-        
         for i, (label, color) in enumerate(legend_items):
-            legend_item_y = legend_y + 2.3 - i*0.35
-            add_beautiful_box(legend_x + 0.15, legend_item_y, 0.3, 0.25, "", color, 
-                            corner_radius=0.02)
-            ax.text(legend_x + 0.6, legend_item_y + 0.125, label, ha="left", va="center", 
-                fontsize=10, color='#2C3E50')
-        
-        
+            legend_item_y = legend_y + 2.3 - i * 0.35
+            add_beautiful_box(
+                legend_x + 0.15, legend_item_y, 0.3, 0.25, "", color, corner_radius=0.02
+            )
+            ax.text(
+                legend_x + 0.6,
+                legend_item_y + 0.125,
+                label,
+                ha="left",
+                va="center",
+                fontsize=10,
+                color="#2C3E50",
+            )
+
         # Set beautiful background
-        fig.patch.set_facecolor('#FAFAFA')
-        
+        fig.patch.set_facecolor("#FAFAFA")
+
         plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='#FAFAFA', 
-                edgecolor='none', pad_inches=0.2)
+        plt.savefig(
+            save_path,
+            dpi=300,
+            bbox_inches="tight",
+            facecolor="#FAFAFA",
+            edgecolor="none",
+            pad_inches=0.2,
+        )
         plt.show()
         print(f"Saved beautiful architecture diagram to {save_path}")
-
 
     def parse_model_architecture(self, model_dict):
         """
         Parse the TimeSeriesDARTS model dictionary to extract architecture details.
-        
+
         Args:
             model_dict: Dictionary containing the PyTorch model (e.g., checkpoint['model'])
-        
+
         Returns:
             Dictionary with architecture information for visualization
         """
         model_info = {}
-        
+
         # Get the actual model from the dictionary
-        if isinstance(model_dict, dict) and 'model' in model_dict:
-            model = model_dict['model']
+        if isinstance(model_dict, dict) and "model" in model_dict:
+            model = model_dict["model"]
         else:
             model = model_dict
-        
+
         # Extract input features and embedding dimension from input_embedding
         try:
             input_embedding = model.input_embedding
             # Find the first Linear layer
             for layer in input_embedding:
-                if hasattr(layer, 'in_features') and hasattr(layer, 'out_features'):
-                    model_info['input_features'] = layer.in_features
-                    model_info['embedding_dim'] = layer.out_features
+                if hasattr(layer, "in_features") and hasattr(layer, "out_features"):
+                    model_info["input_features"] = layer.in_features
+                    model_info["embedding_dim"] = layer.out_features
                     break
         except:
-            model_info['input_features'] = 3
-            model_info['embedding_dim'] = 32
-        
+            model_info["input_features"] = 3
+            model_info["embedding_dim"] = 32
+
         # Extract operations from DARTS cells
         cells = []
         try:
             for cell_idx, cell in enumerate(model.cells):
                 ops = []
-                
+
                 # Traverse the cell structure to find operations
-                if hasattr(cell, 'edges'):
+                if hasattr(cell, "edges"):
                     for edge in cell.edges:
-                        if hasattr(edge, 'ops'):
+                        if hasattr(edge, "ops"):
                             for op_idx, op in enumerate(edge.ops):
                                 op_name = type(op).__name__
                                 if op_name not in ops:
                                     ops.append(op_name)
-                
+
                 if ops:
-                    cells.append({'ops': ops})
+                    cells.append({"ops": ops})
         except:
             # Fallback to default if parsing fails
-            cells = [{'ops': ['IdentityOp', 'AttentionOp', 'GRNOp', 'TimeConvOp', 'WaveletOp']}]
-        
-        model_info['cells'] = cells
-        
+            cells = [
+                {
+                    "ops": [
+                        "IdentityOp",
+                        "AttentionOp",
+                        "GRNOp",
+                        "TimeConvOp",
+                        "WaveletOp",
+                    ]
+                }
+            ]
+
+        model_info["cells"] = cells
+
         # Extract forecast encoder and decoder info
         try:
             forecast_encoder = model.forecast_encoder
-            model_info['forecast_encoder'] = type(forecast_encoder).__name__
-            if hasattr(forecast_encoder, 'input_size'):
+            model_info["forecast_encoder"] = type(forecast_encoder).__name__
+            if hasattr(forecast_encoder, "input_size"):
                 encoder_input_dim = forecast_encoder.input_size
-            if hasattr(forecast_encoder, 'hidden_size'):
+            if hasattr(forecast_encoder, "hidden_size"):
                 encoder_hidden_dim = forecast_encoder.hidden_size
         except:
-            model_info['forecast_encoder'] = 'GRU'
+            model_info["forecast_encoder"] = "GRU"
             encoder_input_dim = 32
             encoder_hidden_dim = 32
-        
+
         try:
             forecast_decoder = model.forecast_decoder
-            model_info['forecast_decoder'] = type(forecast_decoder).__name__
-            if hasattr(forecast_decoder, 'input_size'):
+            model_info["forecast_decoder"] = type(forecast_decoder).__name__
+            if hasattr(forecast_decoder, "input_size"):
                 decoder_input_dim = forecast_decoder.input_size
-            if hasattr(forecast_decoder, 'hidden_size'):
+            if hasattr(forecast_decoder, "hidden_size"):
                 decoder_hidden_dim = forecast_decoder.hidden_size
         except:
-            model_info['forecast_decoder'] = 'GRU'
+            model_info["forecast_decoder"] = "GRU"
             decoder_input_dim = 3
             decoder_hidden_dim = 32
-        
+
         # Extract MLP dimensions
         try:
             mlp = model.mlp
             mlp_dims = []
             for layer in mlp:
-                if hasattr(layer, 'in_features') and hasattr(layer, 'out_features'):
+                if hasattr(layer, "in_features") and hasattr(layer, "out_features"):
                     if not mlp_dims:  # First layer
                         mlp_dims.append(layer.in_features)
                     mlp_dims.append(layer.out_features)
-            model_info['mlp_dims'] = mlp_dims if mlp_dims else [32, 64, 32]
+            model_info["mlp_dims"] = mlp_dims if mlp_dims else [32, 64, 32]
         except:
-            model_info['mlp_dims'] = [32, 64, 32]
-        
+            model_info["mlp_dims"] = [32, 64, 32]
+
         # Extract output features
         try:
             output_layer = model.output_layer
-            model_info['output_features'] = output_layer.out_features
+            model_info["output_features"] = output_layer.out_features
         except:
-            model_info['output_features'] = 3
-        
+            model_info["output_features"] = 3
+
         return model_info
+
+    def _batched_forecast(self, X_val: torch.Tensor, batch_size: int = 256):
+        """
+        Generate batched forecasts aligned for time series evaluation or plotting.
+
+        Returns:
+            forecast: Tensor of shape [T + target_len - 1, output_size]
+        """
+        model = self.final_model
+        model.eval()
+        device = next(model.parameters()).device
+        X_val = X_val.to(device)
+        N = X_val.shape[0]
+
+        # Run a dummy forward pass to determine output shape
+        with torch.no_grad():
+            dummy_out = model(X_val[0:1])
+            if isinstance(dummy_out, tuple):
+                dummy_out = dummy_out[0]
+            if dummy_out.dim() == 3:
+                output_len, output_size = dummy_out.shape[1], dummy_out.shape[2]
+            elif dummy_out.dim() == 2:
+                output_len, output_size = 1, dummy_out.shape[1]
+            else:
+                output_len, output_size = 1, dummy_out.shape[0]
+
+        forecast = torch.zeros(N + output_len - 1, output_size, device=device)
+        count = torch.zeros_like(forecast)
+
+        with torch.no_grad():
+            for i in range(0, N, batch_size):
+                batch = X_val[i : i + batch_size]
+                with autocast("cuda", dtype=torch.float16):
+                    outputs = model(batch)
+                    if isinstance(outputs, tuple):
+                        outputs = outputs[0]
+
+                    for j in range(outputs.shape[0]):
+                        pred = outputs[j]  # shape: [T, D], [1, D], or [D]
+                        start = i + j
+                        if pred.dim() == 3:  # [1, T, D]
+                            pred = pred.squeeze(0)
+                        if pred.dim() == 2:
+                            if pred.shape[0] == 1:
+                                forecast[start] += pred.squeeze(0)
+                                count[start] += 1
+                            else:
+                                forecast[start : start + pred.shape[0]] += pred
+                                count[start : start + pred.shape[0]] += 1
+                        elif pred.dim() == 1:
+                            forecast[start] += pred
+                            count[start] += 1
+                        else:
+                            raise ValueError(
+                                f"Unexpected prediction shape: {pred.shape}"
+                            )
+
+        return forecast / count.clamp(min=1.0)
+
+    def plot_prediction(
+        self,
+        X_val: torch.Tensor,
+        y_val: torch.Tensor,
+        full_series: Optional[torch.Tensor] = None,
+        offset: int = 0,
+        figsize: Tuple[int, int] = (12, 4),
+        show: bool = False,
+        device: Optional[torch.device] = None,
+    ) -> plt.Figure:
+        """
+        Plot predicted sequence over the validation data, aligned to form a full series forecast.
+        Creates one subplot for each feature in the last dimension.
+
+        Args:
+            X_val: Tensor of shape [N, seq_len, input_size]
+            y_val: Tensor of shape [N, target_len, output_size]
+            full_series: (Optional) Original full time series for reference
+            offset: (Optional) Index offset for where the validation data starts in the full series
+            figsize: (Optional) Figure size as (width, height) in inches
+            show: (Optional) Whether to display the plot with plt.show()
+
+        Returns:
+            matplotlib Figure object
+        """
+
+        model = self.final_model
+        model.eval()  # Set model to evaluation mode
+        X_val = X_val.to(device)
+        y_val = y_val.to(device)
+        target_len = y_val.shape[1]
+        output_size = y_val.shape[2]
+        forecast = self._batched_forecast(X_val).cpu().numpy()
+
+        # If full_series is provided
+        if full_series is not None:
+            full_series = full_series.cpu().numpy()
+            last_dim_size = full_series.shape[-1] if full_series.ndim > 1 else 1
+            fig, axes = plt.subplots(
+                last_dim_size,
+                1,
+                figsize=(figsize[0], figsize[1] * last_dim_size),
+                sharex=True,
+            )
+
+            if last_dim_size == 1:
+                axes = [axes]
+
+            forecast_start = offset + X_val.shape[1]
+
+            for i in range(last_dim_size):
+                # Extract feature series
+                if full_series.ndim == 3:
+                    feature_series = full_series[:, 0, i]
+                elif full_series.ndim == 2:
+                    feature_series = full_series[:, i]
+                else:
+                    feature_series = full_series
+
+                # Plot original
+                axes[i].plot(
+                    np.arange(len(feature_series)),
+                    feature_series,
+                    label=f"Original (Feature {i})",
+                    alpha=0.5,
+                )
+
+                # Plot clipped forecast
+                feature_forecast = forecast[:, i] if forecast.ndim > 1 else forecast
+                end_idx = min(
+                    forecast_start + len(feature_forecast), len(feature_series)
+                )
+                forecast_range = slice(forecast_start, end_idx)
+                forecast_plot = feature_forecast[: end_idx - forecast_start]
+
+                axes[i].plot(
+                    np.arange(forecast_range.start, forecast_range.stop),
+                    forecast_plot,
+                    label=f"Forecast (Feature {i})",
+                    color="orange",
+                )
+
+                # Optional error shading
+                if len(feature_series) >= end_idx:
+                    axes[i].fill_between(
+                        np.arange(forecast_range.start, forecast_range.stop),
+                        forecast_plot,
+                        feature_series[forecast_range],
+                        color="red",
+                        alpha=0.2,
+                        label="Forecast Error",
+                    )
+
+                axes[i].axvline(
+                    x=forecast_start,
+                    color="gray",
+                    linestyle="--",
+                    label="Forecast Start",
+                )
+                axes[i].set_title(f"Feature {i}: Full Series with Forecast")
+                axes[i].legend(loc="upper left")
+                axes[i].grid(True)
+
+            plt.xlabel("Time Step")
+            axes[last_dim_size // 2].set_ylabel("Value")
+            plt.tight_layout()
+
+        else:
+            # No full_series provided
+            fig, ax = plt.subplots(figsize=figsize)
+            if forecast.ndim > 1:
+                for i in range(forecast.shape[1]):
+                    ax.plot(forecast[:, i], label=f"Forecast (Feature {i})")
+            else:
+                ax.plot(forecast, label="Forecast", color="orange")
+            ax.set_title("Validation Prediction")
+            ax.set_xlabel("Time Step")
+            ax.set_ylabel("Value")
+            ax.legend(loc="upper left")
+            ax.grid(True)
+
+        if show:
+            plt.show()
+
+        return fig

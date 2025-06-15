@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg
-   viewBox="0 0 380.25311 290.17169"
+   viewBox="0 0 373.93057 282.8902"
    version="1.1"
    id="svg58"
    sodipodi:docname="darts_module_logo.svg"
    inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
-   width="380.25311"
-   height="290.17169"
+   width="373.93057"
+   height="282.8902"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns:xlink="http://www.w3.org/1999/xlink"
@@ -22,8 +22,8 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="2.2208081"
-     inkscape:cx="177.18775"
-     inkscape:cy="171.78432"
+     inkscape:cx="174.48604"
+     inkscape:cy="168.63231"
      inkscape:window-width="1800"
      inkscape:window-height="1024"
      inkscape:window-x="0"
@@ -120,7 +120,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="0,6 0,0 8,3 "
+         points="0,0 8,3 0,6 "
          fill="#34495e"
          id="polygon7" />
     </marker>
@@ -134,7 +134,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="0,7 0,0 10,3.5 "
+         points="0,0 10,3.5 0,7 "
          fill="#f39c12"
          id="polygon8" />
     </marker>
@@ -157,7 +157,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="0,0 10,3.5 0,7 "
+         points="10,3.5 0,7 0,0 "
          fill="#f39c12"
          id="polygon8-5" />
     </marker>
@@ -175,9 +175,9 @@
        style="color-interpolation-filters:sRGB"
        inkscape:label="Drop Shadow"
        id="filter9"
-       x="-0.0082631096"
+       x="-0.0082631093"
        y="-0.012595444"
-       width="1.0194487"
+       width="1.0194488"
        height="1.0296457">
       <feFlood
          result="flood"
@@ -222,13 +222,13 @@
      id="rect1"
      x="-0.73094499"
      y="-0.30358183"
-     style="stroke:#000000;stroke-width:0.854816;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;filter:url(#filter9)"
-     transform="matrix(1.0900901,0,0,1.2554293,3.8789252,3.9307363)"
+     style="stroke:#000000;stroke-width:0.854816;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+     transform="matrix(1.0900901,0,0,1.2554293,1.2627091,0.91770607)"
      inkscape:path-effect="#path-effect1"
      sodipodi:type="rect"
      d="m 3.5537941,-0.30358183 333.6029159,0 a 4.2847391,4.2847391 45 0 1 4.28474,4.28473913 V 219.8903 a 4.2847391,4.2847391 135 0 1 -4.28474,4.28474 H 3.5537941 a 4.2847391,4.2847391 45 0 1 -4.28473909,-4.28474 l 0,-215.9091427 A 4.2847391,4.2847391 135 0 1 3.5537941,-0.30358183 Z" />
   <g
-     transform="translate(21.744468,74.326481)"
+     transform="translate(19.128252,71.313451)"
      id="g11">
     <rect
        x="0"
@@ -285,7 +285,7 @@
   </g>
   <!-- Architecture 2 (evolved) -->
   <g
-     transform="translate(71.744468,64.326481)"
+     transform="translate(69.128252,61.313451)"
      id="g17">
     <rect
        x="0"
@@ -371,7 +371,7 @@
   </g>
   <!-- Architecture 3 (optimized) -->
   <g
-     transform="translate(151.74446,59.326481)"
+     transform="translate(149.12824,56.313451)"
      id="g26">
     <rect
        x="0"
@@ -482,20 +482,20 @@
   </g>
   <!-- Search evolution arrows -->
   <line
-     x1="61.435165"
-     y1="171.25937"
-     x2="70.378471"
-     y2="171.25937"
+     x1="58.818951"
+     y1="168.24634"
+     x2="67.762253"
+     y2="168.24634"
      stroke="url(#searchGradient)"
      stroke-width="2.31646"
      marker-end="url(#searchArrow)"
      id="line27"
      style="stroke:url(#linearGradient59)" />
   <line
-     x1="141.39058"
-     y1="171.24171"
-     x2="150.33389"
-     y2="171.24171"
+     x1="138.77437"
+     y1="168.22868"
+     x2="147.71768"
+     y2="168.22868"
      stroke="url(#searchGradient)"
      stroke-width="2.31646"
      marker-end="url(#searchArrow-6)"
@@ -503,24 +503,24 @@
      style="stroke:url(#linearGradient60);marker-end:url(#searchArrow-6)" />
   <!-- Search process labels -->
   <text
-     x="31.744469"
-     y="174.32648"
+     x="29.128252"
+     y="171.31345"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#7f8c8d"
      id="text28">Basic</text>
   <text
-     x="96.744461"
-     y="174.32648"
+     x="94.128242"
+     y="171.31345"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
      fill="#7f8c8d"
      id="text29">Evolved</text>
   <text
-     x="186.74448"
-     y="174.32648"
+     x="184.12827"
+     y="171.31345"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="9px"
@@ -528,7 +528,7 @@
      id="text30">Optimized</text>
   <!-- Zero-cost evaluation visualization -->
   <g
-     transform="translate(251.74446,74.326481)"
+     transform="translate(249.12824,71.313451)"
      id="g38">
     <!-- Evaluation metrics -->
     <rect
@@ -648,8 +648,8 @@
   </g>
   <!-- Main title -->
   <text
-     x="181.74448"
-     y="24.326481"
+     x="179.12827"
+     y="21.31345"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="20px"
@@ -658,8 +658,8 @@
      id="text39">ForeBlocks DARTS</text>
   <!-- Subtitle -->
   <text
-     x="181.74448"
-     y="42.326481"
+     x="179.12827"
+     y="39.31345"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="11px"
@@ -667,7 +667,7 @@
      id="text40">Neural Architecture Search</text>
   <!-- Key features -->
   <g
-     transform="translate(31.744468,194.32648)"
+     transform="translate(29.128252,191.31345)"
      id="g44">
     <!-- Multi-fidelity search -->
     <circle
@@ -724,7 +724,7 @@
        transform="translate(0,40)"
        id="g43">
       <polygon
-         points="8,14 2,8 8,2 14,8 "
+         points="8,2 14,8 8,14 2,8 "
          fill="none"
          stroke="#e74c3c"
          stroke-width="2"
@@ -748,7 +748,7 @@
   </g>
   <!-- DARTS process flow -->
   <g
-     transform="translate(8.7161231,269.45528)"
+     transform="translate(6.099907,266.44225)"
      id="g49">
     <text
        x="0"
@@ -845,7 +845,7 @@
   </g>
   <!-- Architecture complexity visualization -->
   <g
-     transform="translate(261.74446,154.32648)"
+     transform="translate(259.12824,151.31345)"
      id="g58">
     <!-- Simple to complex progression -->
     <rect

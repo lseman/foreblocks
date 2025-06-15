@@ -4,7 +4,7 @@
    height="597.76227"
    version="1.1"
    id="svg96"
-   sodipodi:docname="preprocessing_module-2.svg"
+   sodipodi:docname="preprocessing_module.svg"
    inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
    inkscape:export-filename="preprocessing_module.png"
    inkscape:export-xdpi="96"
@@ -24,15 +24,32 @@
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="0.62003814"
      inkscape:cx="433.03788"
-     inkscape:cy="96.768241"
+     inkscape:cy="97.574643"
      inkscape:window-width="1800"
-     inkscape:window-height="1025"
+     inkscape:window-height="1024"
      inkscape:window-x="0"
      inkscape:window-y="44"
      inkscape:window-maximized="1"
      inkscape:current-layer="svg96" />
   <defs
      id="defs1">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect1"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,10,0,1 @ F,0,0,1,0,10,0,1 @ F,0,0,1,0,10,0,1 @ F,0,0,1,0,10,0,1"
+       radius="10"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
     <!-- Simple arrow marker -->
     <marker
        id="arrowhead"
@@ -50,7 +67,7 @@
   <!-- Background -->
   <!-- Title -->
   <!-- Raw Input Data -->
-  <rect
+  <path
      width="1223.9037"
      height="596.76227"
      fill="#f8fafc"
@@ -59,7 +76,10 @@
      id="rect1"
      x="0.5"
      y="0.5"
-     style="stroke-width:1;stroke-linejoin:round;stroke-dasharray:none" />
+     style="stroke:#000000;stroke-width:1;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+     inkscape:path-effect="#path-effect1"
+     sodipodi:type="rect"
+     d="m 10.5,0.5 h 1203.9037 a 10,10 45 0 1 10,10 v 576.76227 a 10,10 135 0 1 -10,10 H 10.5 a 10,10 45 0 1 -10,-10 V 10.5 a 10,10 135 0 1 10,-10 z" />
   <rect
      x="121.8059"
      y="29.267319"

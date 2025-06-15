@@ -67,7 +67,7 @@ class TransformerOp(nn.Module):
             self.num_heads -= 1
         
         self.head_dim = latent_dim // self.num_heads
-        self.scale = self.head_dim ** -0.5
+        self.scale = 1.0 / math.sqrt(self.head_dim)
         self.latent_dim = latent_dim
 
         # Efficient input projection
@@ -204,30 +204,39 @@ class FourierOp(nn.Module):
     def forward(self, x):
         B, L, C = x.shape
 
-        # Efficient FFT with proper padding
-        if L != self.seq_length:
-            x_padded = F.pad(x, (0, 0, 0, max(0, self.seq_length - L)))
-            x_fft = torch.fft.rfft(x_padded, dim=1, norm="ortho")
-        else:
-            x_fft = torch.fft.rfft(x, dim=1, norm="ortho")
-            
-        x_fft = x_fft[:, :self.num_frequencies, :]
+        # === Step 1: Padding (only if needed) ===
+        if L < self.seq_length:
+            pad_len = self.seq_length - L
+            x = F.pad(x, (0, 0, 0, pad_len))
+        elif L > self.seq_length:
+            x = x[:, :self.seq_length, :]  # Optional: clip instead of error
 
-        # Apply learnable frequency weighting
+        # === Step 2: FFT and truncate ===
+        x_fft = torch.fft.rfft(x, dim=1, norm="ortho")
+        x_fft = x_fft[:, :self.num_frequencies, :]  # Shape: [B, F, C]
+
+        # === Step 3: Frequency weighting ===
         freq_weights = F.softmax(self.freq_weights, dim=0)
-        x_fft = x_fft * freq_weights.view(1, -1, 1)
+        freq_weights = freq_weights.view(1, self.num_frequencies, 1)  # Cache shape
 
-        # Process frequency features
-        real_imag = torch.cat([x_fft.real, x_fft.imag], dim=-1)
+        # Apply weights (manual if real/imag are used separately)
+        x_fft_real = x_fft.real.mul(freq_weights)
+        x_fft_imag = x_fft.imag.mul(freq_weights)
+
+        # === Step 4: Project frequency features ===
+        real_imag = torch.cat([x_fft_real, x_fft_imag], dim=-1)  # [B, F, 2C]
         freq_features = self.freq_proj(real_imag)
 
-        # Global-local fusion with gating
-        global_feat = freq_features.mean(dim=1, keepdim=True).expand(-1, L, -1)
+        # === Step 5: Global fusion ===
+        global_feat = freq_features.mean(dim=1, keepdim=True)  # [B, 1, D]
+        global_feat = global_feat.expand(-1, L, -1)
+
         gate = self.gate(global_feat)
-        
-        # Combine with input
-        combined = torch.cat([x, gate * global_feat], dim=-1)
+
+        # === Step 6: Combine with input and project ===
+        combined = torch.cat([x[:, :L, :], gate * global_feat], dim=-1)
         return self.norm(self.output_proj(combined))
+
 
 
 class AttentionOp(nn.Module):
@@ -495,8 +504,9 @@ class MixedOp(nn.Module):
         self._cached_weights = None
         self._cache_counter = 0
 
+
     def forward(self, x):
-        # Use cached weights for efficiency during inference
+        # === Weight selection ===
         if not self.training and self._cached_weights is not None:
             weights = self._cached_weights
         else:
@@ -504,45 +514,54 @@ class MixedOp(nn.Module):
                 weights = F.gumbel_softmax(self.alphas, tau=self.temperature, hard=False)
             else:
                 weights = F.softmax(self.alphas / self.temperature, dim=0)
-            
+
             if not self.training:
                 self._cached_weights = weights
 
-        # Efficient operation execution with early stopping
+        # === Drop mask optimization ===
+        if self.training:
+            drop_mask = (torch.rand(len(self.ops), device=x.device) < self.drop_prob)
+        else:
+            drop_mask = torch.zeros(len(self.ops), dtype=torch.bool, device=x.device)
+
         result = None
         total_weight = 0.0
-        
+
         for i, (weight, op) in enumerate(zip(weights, self.ops)):
-            # Skip operations with very low weights
+            # Skip operations with negligible weight
             if weight < 1e-3:
                 continue
 
-            # Stochastic depth during training
-            if self.training and torch.rand(1).item() < self.drop_prob:
+            # Apply drop mask
+            if drop_mask[i]:
                 continue
 
             try:
                 out = op(x)
-                if self.normalize_outputs and self.training:  # Only normalize during training
+                if self.normalize_outputs and self.training:
                     out = F.layer_norm(out, out.shape[-1:])
-                
+
                 if result is None:
                     result = weight * out
                 else:
-                    result = result + weight * out
+                    result += weight * out
+
                 total_weight += weight
-                
+
             except Exception as e:
                 continue
 
+        # If all ops skipped or failed
         if result is None:
             return x
 
-        # Normalize by actual weights used
+        # Normalize by total weight
         if total_weight > 0 and abs(total_weight - 1.0) > 1e-6:
             result = result / total_weight
 
         return result
+
+
 
     def get_alphas(self):
         return F.softmax(self.alphas, dim=0)
@@ -708,7 +727,7 @@ class TimeSeriesDARTS(nn.Module):
         ])
 
         # Efficient encoder-decoder
-        self.forecast_encoder = nn.GRU(
+        self.forecast_encoder = nn.LSTM(
             input_size=hidden_dim,
             hidden_size=latent_dim,
             num_layers=2,
@@ -717,7 +736,7 @@ class TimeSeriesDARTS(nn.Module):
             bidirectional=False,
         )
 
-        self.forecast_decoder = nn.GRU(
+        self.forecast_decoder = nn.LSTM(
             input_size=input_dim,
             hidden_size=latent_dim,
             num_layers=2,

@@ -1,4 +1,4 @@
-# TimeSeriesPreprocessor Guide
+# pre_foreblock: TimeSeriesPreprocessor Guide
 
 ![preforeblocks](imgs/timeseriespreprocessor_logo.svg)
 

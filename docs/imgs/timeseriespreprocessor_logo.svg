@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg
-   viewBox="0 0 348.97238 231.27861"
+   viewBox="0 0 343.17239 225.47862"
    version="1.1"
    id="svg24"
    sodipodi:docname="timeseriespreprocessor_logo.svg"
-   width="348.97238"
-   height="231.27861"
+   width="343.17239"
+   height="225.47862"
    inkscape:version="1.4 (e7c3feb1, 2024-10-09)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
@@ -21,8 +21,8 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="2.5352554"
-     inkscape:cx="185.18844"
-     inkscape:cy="101.56768"
+     inkscape:cx="182.82182"
+     inkscape:cy="99.201051"
      inkscape:window-width="1800"
      inkscape:window-height="1024"
      inkscape:window-x="0"
@@ -103,7 +103,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="10,3.5 0,7 0,0 "
+         points="0,7 0,0 10,3.5 "
          fill="#9b59b6"
          id="polygon5" />
     </marker>
@@ -117,7 +117,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="6,2 0,4 0,0 "
+         points="0,4 0,0 6,2 "
          fill="#7f8c8d"
          id="polygon6" />
     </marker>
@@ -130,7 +130,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="0,7 0,0 10,3.5 "
+         points="0,0 10,3.5 0,7 "
          fill="#9b59b6"
          id="polygon5-8" />
     </marker>
@@ -143,7 +143,7 @@
        orient="auto"
        markerUnits="strokeWidth">
       <polygon
-         points="0,0 10,3.5 0,7 "
+         points="10,3.5 0,7 0,0 "
          fill="#9b59b6"
          id="polygon5-8-5" />
     </marker>
@@ -151,7 +151,7 @@
        style="color-interpolation-filters:sRGB"
        inkscape:label="Drop Shadow"
        id="filter9"
-       x="-0.0084752601"
+       x="-0.0084752599"
        y="-0.012918825"
        width="1.019873"
        height="1.0302924">
@@ -197,13 +197,14 @@
      id="rect1"
      x="2.8999999"
      y="2.9000001"
-     style="stroke:#000000;stroke-width:1;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;filter:url(#filter9)"
+     style="stroke:#000000;stroke-width:1;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
      inkscape:path-effect="#path-effect1"
      sodipodi:type="rect"
-     d="M 7.8999999,2.9000001 H 340.07239 a 5,5 45 0 1 5,5 V 222.37862 a 5,5 135 0 1 -5,5 H 7.8999999 a 5,5 45 0 1 -5,-5 l 0,-214.4786199 a 5,5 135 0 1 5,-5 z" />
+     d="M 7.8999999,2.9000001 H 340.07239 a 5,5 45 0 1 5,5 V 222.37862 a 5,5 135 0 1 -5,5 H 7.8999999 a 5,5 45 0 1 -5,-5 l 0,-214.4786199 a 5,5 135 0 1 5,-5 z"
+     transform="translate(-2.3999999,-2.4000001)" />
   <rect
-     x="9.7216377"
-     y="62.964417"
+     x="7.3216381"
+     y="60.564415"
      width="45"
      height="45"
      rx="8"
@@ -214,8 +215,8 @@
      id="rect6" />
   <!-- Processing blocks -->
   <rect
-     x="9.7216377"
-     y="122.96441"
+     x="7.3216381"
+     y="120.56441"
      width="45"
      height="45"
      rx="8"
@@ -225,8 +226,8 @@
      stroke-width="3"
      id="rect7" />
   <rect
-     x="69.721642"
-     y="92.964417"
+     x="67.32164"
+     y="90.564415"
      width="45"
      height="45"
      rx="8"
@@ -236,8 +237,8 @@
      stroke-width="3"
      id="rect8" />
   <rect
-     x="129.72163"
-     y="122.96441"
+     x="127.32163"
+     y="120.56441"
      width="45"
      height="45"
      rx="8"
@@ -248,8 +249,8 @@
      id="rect9" />
   <!-- Output block -->
   <rect
-     x="189.72163"
-     y="92.964417"
+     x="187.32164"
+     y="90.564415"
      width="45"
      height="45"
      rx="8"
@@ -260,7 +261,7 @@
      id="rect10" />
   <!-- Raw noisy signal (input) -->
   <path
-     d="m 14.721638,77.964415 q 10,-10 20,10 10,14.999995 15,-5"
+     d="m 12.321638,75.564415 q 10,-10 20,10 10,14.999995 15,-5"
      stroke="#e74c3c"
      stroke-width="2.5"
      fill="none"
@@ -268,29 +269,29 @@
      id="path10" />
   <!-- Processing flow arrows -->
   <line
-     x1="63.084412"
-     y1="86.415489"
-     x2="76.084412"
-     y2="86.415489"
+     x1="60.68441"
+     y1="84.015488"
+     x2="73.68441"
+     y2="84.015488"
      stroke="#9b59b6"
      stroke-width="2"
      marker-end="url(#arrowhead)"
      id="line10" />
   <line
-     x1="110.49901"
-     y1="147.89857"
-     x2="123.49901"
-     y2="147.89857"
+     x1="108.09901"
+     y1="145.49858"
+     x2="121.09901"
+     y2="145.49858"
      stroke="#9b59b6"
      stroke-width="2"
      marker-end="url(#arrowhead-1)"
      id="line10-8"
      style="marker-end:url(#arrowhead-1)" />
   <line
-     x1="170.02831"
-     y1="110.9359"
-     x2="183.02831"
-     y2="110.9359"
+     x1="167.62831"
+     y1="108.5359"
+     x2="180.62831"
+     y2="108.5359"
      stroke="#9b59b6"
      stroke-width="2"
      marker-end="url(#arrowhead-1-3)"
@@ -298,7 +299,7 @@
      style="marker-end:url(#arrowhead-1-3)" />
   <!-- Clean processed signal (output) -->
   <path
-     d="m 194.72164,107.96441 q 10,3 20,7 10,3 15,6"
+     d="m 192.32164,105.56441 q 10,3 20,7 10,3 15,6"
      stroke="#27ae60"
      stroke-width="2.5"
      fill="none"
@@ -307,7 +308,7 @@
   <!-- Processing icons inside blocks -->
   <!-- Outlier detection (X mark) -->
   <g
-     transform="translate(32.221638,85.464415)"
+     transform="translate(29.821638,83.064415)"
      id="g13">
     <path
        d="M -5,-5 5,5 M 5,-5 -5,5"
@@ -318,7 +319,7 @@
   </g>
   <!-- Filter (wave) -->
   <g
-     transform="translate(92.221638,115.46441)"
+     transform="translate(89.821638,113.06441)"
      id="g14">
     <path
        d="m -8,0 q 4,-4 8,0 4,4 8,0"
@@ -330,7 +331,7 @@
   </g>
   <!-- Imputation (filled gap) -->
   <g
-     transform="translate(152.22164,145.46441)"
+     transform="translate(149.82164,143.06441)"
      id="g15">
     <rect
        x="-6"
@@ -357,7 +358,7 @@
   </g>
   <!-- Normalization (scales) -->
   <g
-     transform="translate(212.22164,115.46441)"
+     transform="translate(209.82164,113.06441)"
      id="g16">
     <rect
        x="-6"
@@ -378,8 +379,8 @@
   </g>
   <!-- Main title -->
   <text
-     x="179.72163"
-     y="22.964415"
+     x="177.32164"
+     y="20.564415"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="22px"
@@ -390,8 +391,8 @@
    id="tspan1">pre</tspan>foreblocks</text>
   <!-- Subtitle -->
   <text
-     x="179.72163"
-     y="40.964417"
+     x="177.32164"
+     y="38.564415"
      text-anchor="middle"
      font-family="Arial, sans-serif"
      font-size="11px"
@@ -399,7 +400,7 @@
      id="text17">Intelligent Data Preparation</text>
   <!-- Feature highlights -->
   <g
-     transform="translate(259.72164,62.964415)"
+     transform="translate(257.32164,60.564415)"
      id="g21">
     <!-- Auto-tuning icon -->
     <circle
@@ -460,7 +461,7 @@
        transform="translate(0,50)"
        id="g20">
       <polygon
-         points="15,5 25,15 15,25 5,15 "
+         points="15,25 5,15 15,5 25,15 "
          fill="none"
          stroke="#e74c3c"
          stroke-width="2"
@@ -484,7 +485,7 @@
   </g>
   <!-- Data flow visualization at bottom -->
   <g
-     transform="translate(29.721638,212.96441)"
+     transform="translate(27.321638,210.56441)"
      id="g24">
     <text
        x="0"

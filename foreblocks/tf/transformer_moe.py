@@ -971,14 +971,17 @@ class MoE_FFNExpert(nn.Module):
 # End of MoE
 ############################################################
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 class _StandardFeedForwardBlock(nn.Module):
     """
-    Optimized standard feedforward block with performance improvements:
-    - Cached activation functions
-    - Inline dropout for SwiGLU
-    - Optimized SwiGLU implementation
-    - Better numerical stability
+    Optimized feedforward block with:
+    - Modular SwiGLU and standard FFN paths
+    - Fused SiLU + multiplication
+    - Inline dropout
+    - Compatible with torch.compile and export
     """
 
     def __init__(
@@ -986,72 +989,40 @@ class _StandardFeedForwardBlock(nn.Module):
     ):
         super().__init__()
         self.use_swiglu = use_swiglu
+        self._needs_dropout = dropout > 0.0
         self.dropout_p = dropout
 
-        # Cache whether we need dropout for faster runtime checks
-        self._needs_dropout = dropout > 0.0
-
         if use_swiglu:
-            # Optimized SwiGLU with better dimension calculation
             swiglu_dim = int(dim_ff * 4 / 3)
-            self.w1 = nn.Linear(
-                d_model, swiglu_dim, bias=False
-            )  # Often works better without bias
+            self.w1 = nn.Linear(d_model, swiglu_dim, bias=False)
             self.w2 = nn.Linear(d_model, swiglu_dim, bias=False)
             self.w3 = nn.Linear(swiglu_dim, d_model)
-
-            # No separate dropout layer for SwiGLU (applied inline)
-            self.dropout = None
-
         else:
             self.linear1 = nn.Linear(d_model, dim_ff)
             self.linear2 = nn.Linear(dim_ff, d_model)
 
-            # Cache activation function for faster dispatch
             if activation == "relu":
                 self.activation = F.relu
-            elif activation == "gelu":
-                self.activation = F.gelu
-            elif activation == "swish" or activation == "silu":
+            elif activation == "silu" or activation == "swish":
                 self.activation = F.silu
             else:
-                self.activation = F.gelu  # Default fallback
+                self.activation = F.gelu  # default
 
-            # Keep dropout layer for standard FFN
-            self.dropout = nn.Dropout(dropout) if self._needs_dropout else None
+            self.dropout = nn.Dropout(dropout) if self._needs_dropout else nn.Identity()
 
     def forward(self, x):
         if self.use_swiglu:
-            # Optimized SwiGLU implementation
-            # Compute both projections
             u = self.w1(x)
             v = self.w2(x)
-
-            # More stable clamping (avoid extreme values)
-            u = u.clamp(-20, 20)  # Reduced range for better stability
-            v = v.clamp(-20, 20)
-
-            # Fused SiLU + multiply (more efficient than separate operations)
             z = F.silu(u) * v
-
-            # Apply inline dropout for SwiGLU
             if self.training and self._needs_dropout:
                 z = F.dropout(z, p=self.dropout_p, training=True)
-
-            # Output projection
             return self.w3(z)
-
         else:
-            # Standard feedforward with cached activation
             x = self.linear1(x)
             x = self.activation(x)
-
-            # Apply dropout if needed
-            if self.dropout is not None:
-                x = self.dropout(x)
-
+            x = self.dropout(x)
             return self.linear2(x)
-
 
 class FeedForwardBlock(nn.Module):
     """
