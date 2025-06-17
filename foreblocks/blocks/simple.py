@@ -100,6 +100,9 @@ class GRU(nn.Module):
             weight.data.uniform_(-std, std)
 
     def forward(self, x):
+        # check input shape
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
         batch_size, seq_len, _ = x.shape
         device = x.device
 

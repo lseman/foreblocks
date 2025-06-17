@@ -25,56 +25,79 @@ class DecoderBase(nn.Module):
 # LSTM
 ################################################
 
-
-class LSTMEncoder(EncoderBase):
-    def __init__(
-        self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False
-    ):
+class LSTMEncoder(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False):
         super(LSTMEncoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bidirectional = bidirectional
+
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
+            dropout=dropout if num_layers > 1 else 0.0,
             bidirectional=bidirectional,
             batch_first=True,
         )
+        self._init_weights()
 
-    def forward(
-        self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+    def _init_weights(self):
+        for name, param in self.lstm.named_parameters():
+            if "weight_ih" in name:
+                nn.init.xavier_uniform_(param.data)
+            elif "weight_hh" in name:
+                nn.init.orthogonal_(param.data)
+            elif "bias" in name:
+                param.data.fill_(0.0)
+                # Set forget gate bias to 1
+                n = param.size(0)
+                param.data[n // 4 : n // 2].fill_(1.0)
+
+    def forward(self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         outputs, hidden = self.lstm(x, hidden)
         return outputs, hidden
 
 
-class LSTMDecoder(DecoderBase):
+class LSTMDecoder(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, dropout=0.0):
         super(LSTMDecoder, self).__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.num_layers = num_layers
+
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
+            dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
         )
         self.output_layer = nn.Linear(hidden_size, output_size)
+        self._init_weights()
 
-    def forward(
-        self, x: torch.Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+    def _init_weights(self):
+        for name, param in self.lstm.named_parameters():
+            if "weight_ih" in name:
+                nn.init.xavier_uniform_(param.data)
+            elif "weight_hh" in name:
+                nn.init.orthogonal_(param.data)
+            elif "bias" in name:
+                param.data.fill_(0.0)
+                n = param.size(0)
+                param.data[n // 4 : n // 2].fill_(1.0)
+
+        nn.init.xavier_uniform_(self.output_layer.weight)
+        if self.output_layer.bias is not None:
+            self.output_layer.bias.data.fill_(0.0)
+
+    def forward(self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         if x.dim() == 2:
             x = x.unsqueeze(1)
         lstm_out, hidden = self.lstm(x, hidden)
         output = self.output_layer(lstm_out.squeeze(1))
         return output, hidden
-
 
 ###################################################
 # GRU

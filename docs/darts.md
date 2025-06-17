@@ -14,6 +14,9 @@ This module implements a multi-fidelity architecture search strategy through the
 - **Optimizes** promising candidates with differentiable search
 - **Derives** final high-performance architectures
 - **Visualizes** architecture evolution and final structures
+- 
+![darts](imgs/darts_module.svg)
+
 
 ### Key Features
 
@@ -663,5 +666,3 @@ Contributions are welcome! Areas for improvement:
 ## 📄 License
 
 This module is part of ForeBlocks and follows the same MIT License.
-
----

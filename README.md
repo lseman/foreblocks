@@ -101,22 +101,6 @@ Explore the documentation:
 
 ForeBlocks follows a clean, modular design:
 
-```
-┌─────────────────────┐
-│   TimeSeriesSeq2Seq │  ← High-level Interface
-├─────────────────────┤
-│  ForecastingModel   │  ← Core Model Class
-├─────────────────────┤
-│ Encoders & Decoders │  ← Neural Network Modules
-├─────────────────────┤
-│    Preprocessing    │  ← Data Pipeline
-├─────────────────────┤
-│   Training Utils    │  ← Trainer & Metrics
-└─────────────────────┘
-```
-
-### Core Components
-
 - **`TimeSeriesSeq2Seq`**: High-level interface for building and training models
 - **`ForecastingModel`**: Main model class integrating encoders, decoders, and strategies
 - **`TimeSeriesPreprocessor`**: Advanced data preparation with automatic feature detection
