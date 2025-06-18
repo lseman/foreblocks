@@ -1,4 +1,5 @@
 import contextlib
+import math
 import re
 import time
 import warnings
@@ -279,30 +280,40 @@ class MetricsComputer:
             score = 0.0
             count = 0
             for module_name, module in relu_modules:
-                if module_name in activations:
-                    try:
-                        act = activations[module_name].detach()
-                        act_flat = act.view(act.size(0), -1)
-                        
-                        if act_flat.numel() == 0:
-                            continue
-                            
-                        mean = act_flat.mean(dim=1)
-                        std = act_flat.std(dim=1) + self.config.eps
-                        
-                        # Avoid division by zero
-                        mask = std > self.config.eps
-                        if mask.sum() > 0:
-                            snr = (mean[mask]**2 / std[mask]**2).mean().item()
-                            if torch.isfinite(torch.tensor(snr)):
-                                score += snr
-                                count += 1
-                                
-                    except Exception as e:
-                        print(f"[zennas] Layer {module_name} failed: {e}")
+                if module_name not in activations:
+                    print(f"[zennas] Missing activation for {module_name}")
+                    continue
+
+                try:
+                    act = activations[module_name].detach()
+                    act_flat = act.view(act.size(0), -1)
+
+                    if act_flat.numel() == 0:
+                        print(f"[zennas] Empty activation for {module_name}")
                         continue
-                        
-            return score / max(count, 1)
+
+                    mean = act_flat.mean(dim=1)
+                    std = act_flat.std(dim=1) + self.config.eps
+
+                    mask = std > self.config.eps
+                    if mask.sum() == 0:
+                        print(f"[zennas] All std too small in {module_name}")
+                        continue
+
+                    snr = (mean[mask] ** 2 / std[mask] ** 2).mean().item()
+                    if torch.isfinite(torch.tensor(snr)):
+                        score += snr
+                        count += 1
+                    else:
+                        print(f"[zennas] Non-finite SNR for {module_name}")
+
+                except Exception as e:
+                    print(f"[zennas] Exception in {module_name}: {e}")
+                    continue
+
+            final_score = score / max(count, 1)
+            #print(f"[zennas] Final Zen-NAS score: {final_score:.4f} from {count} layers")
+            return final_score
         
         results["zennas"] = self._compute_safely(_zennas)
         
@@ -342,7 +353,8 @@ class MetricsComputer:
                     loss, 
                     trainable_params, 
                     retain_graph=False, 
-                    create_graph=False
+                    create_graph=False,
+                    allow_unused=True
                 )
                 
                 # GRASP: gradient * parameter squared
@@ -378,7 +390,8 @@ class MetricsComputer:
                     loss, 
                     [p for p in model.parameters() if p.requires_grad], 
                     retain_graph=False, 
-                    create_graph=False
+                    create_graph=False,
+                    allow_unused=True
                 )
                 
                 grad_squares = [
@@ -399,6 +412,8 @@ class MetricsComputer:
         def _snip():
             was_training = model.training
             model.train()
+
+            loss_fn = self.helper.get_loss_fn(y)
             
             try:
                 outputs = model(x)
@@ -432,7 +447,8 @@ class MetricsComputer:
                     loss, 
                     [p for _, p in weight_params], 
                     retain_graph=False, 
-                    create_graph=False
+                    create_graph=False,
+                    allow_unused=True
                 )
                 
                 # SNIP: |gradient * parameter|
@@ -453,18 +469,21 @@ class MetricsComputer:
         return results
     
     def _compute_synflow(self, model, inputs):
-        """SynFlow computation with numerical stability"""
+        """SynFlow computation with numerical stability and fallback to original method"""
+        
         def _compute():
             was_training = model.training
-            model.train()
-            
-            # Store original parameters
             original_params = {}
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    original_params[name] = param.data.clone()
             
             try:
+                model.train()
+                
+                # Store original parameters
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        original_params[name] = param.data.clone()
+                
+                # Prepare input
                 batch_size = min(inputs.size(0), self.config.max_samples)
                 x = torch.ones_like(inputs[:batch_size])
                 
@@ -475,15 +494,34 @@ class MetricsComputer:
                 
                 model.zero_grad()
                 output = model(x)
-                
                 if isinstance(output, tuple):
                     output = output[0]
-                
                 if output.dim() > 1:
                     output = output.sum(dim=0)
                 output.sum().backward()
                 
-                # Compute score with better numerical stability
+                # Try improved computation first
+                try:
+                    log_score = 0.0
+                    param_count = 0
+                    
+                    for param in model.parameters():
+                        if param.grad is not None and param.requires_grad:
+                            param_contribution = (param * param.grad).abs().sum().item()
+                            if param_contribution > 0 and not (np.isnan(param_contribution) or np.isinf(param_contribution)):
+                                log_score += np.log(param_contribution + self.config.eps)
+                                param_count += 1
+                    
+                    if param_count > 0:
+                        final_score = log_score / param_count
+                        # Check if result is valid
+                        if not (np.isnan(final_score) or np.isinf(final_score)):
+                            return np.clip(final_score, -50, 50)
+                    
+                except:
+                    pass  # Fall back to original method
+                
+                # Fallback to original computation method
                 log_score = 0.0
                 param_count = 0
                 
@@ -499,19 +537,18 @@ class MetricsComputer:
                 
                 # Clamp to reasonable range
                 return np.clip(final_score, -50, 50)
-                
+                    
             finally:
                 # Restore original parameters
                 for name, param in model.named_parameters():
                     if name in original_params:
                         param.data = original_params[name]
-                
                 model.zero_grad()
                 if not was_training:
                     model.eval()
         
         return self._compute_safely(_compute)
-    
+
     def _compute_jacobian(self, model, inputs):
         """Jacobian computation with closed-form entropy approximation"""
         def _compute():
@@ -595,24 +632,26 @@ class MetricsComputer:
                     model.eval()
         
         return self._compute_safely(_compute)
-    
+        
     def _compute_safely(self, compute_fn):
-        """Safe computation wrapper with better error handling"""
         try:
             start_time = time.time()
             value = compute_fn()
             elapsed = time.time() - start_time
-            
-            # Check for numerical issues
+
             if isinstance(value, (int, float)):
                 if np.isnan(value) or np.isinf(value):
+                    print(f"Metric failed due to nan/inf: {compute_fn.__name__}")
                     return Result(0.0, False, "Numerical instability (nan/inf)", elapsed)
-                # Clamp extreme values
+
                 value = np.clip(value, -1e10, 1e10)
-            
+
             return Result(float(value), True, "", elapsed)
+
         except Exception as e:
+            print(f"Metric '{compute_fn.__name__}' failed with exception: {e}")
             return Result(0.0, False, str(e), 0.0)
+
 
     # Individual metric methods for compatibility
     def synflow(self, model: nn.Module, inputs: torch.Tensor) -> Result:
@@ -623,39 +662,6 @@ class MetricsComputer:
         """Jacobian metric"""
         return self._compute_jacobian(model, inputs)
     
-    def zennas(self, model: nn.Module, inputs: torch.Tensor) -> Result:
-        """Zen-NAS ReLU activation signal-to-noise ratio"""
-        # Use the optimized shared computation but extract just zennas
-        activations = {}
-        relu_modules = []
-
-        def hook_fn(module, _, output):
-            activations[len(relu_modules)] = output[0] if isinstance(output, tuple) else output
-            relu_modules.append((str(len(relu_modules)), module))
-
-        hooks = []
-        for module in model.modules():
-            if isinstance(module, nn.ReLU):
-                hooks.append(module.register_forward_hook(hook_fn))
-
-        try:
-            model.eval()
-            with torch.no_grad():
-                model(inputs)
-
-            result = self._compute_activation_metrics(
-                activations,
-                [],  # no conv/linear modules for zennas
-                relu_modules,
-                {}
-            )["zennas"]
-            
-            return result
-
-        finally:
-            for hook in hooks:
-                hook.remove()
-
     def grasp(self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor) -> Result:
         """GRASP metric"""
         return self._compute_gradient_metrics(model, inputs, targets)["grasp"]
@@ -878,17 +884,27 @@ class ZeroCostNAS:
         aggregated = {}
 
         for metric in metrics:
+            #print(f"Aggregating results for metric: {metric}")
             vals = [r[metric].value for r in all_results if r[metric].success]
+            #print(f"Values for {metric}: {vals}")
             times = [r[metric].time for r in all_results]
             success = any(r[metric].success for r in all_results)
-            avg_time = sum(times) / len(times)
+            avg_time = sum(times) / len(times) if times else 0.0
+
+            median_value = float(np.median(vals)) if vals else float('nan')
+            is_nan = math.isnan(median_value)
 
             aggregated[metric] = Result(
-                value=float(np.median(vals)) if vals else 0.0,
-                success=success,
-                error="" if success else "All batches failed",
+                value=0.0 if is_nan else median_value,
+                success=success and not is_nan,
+                error=(
+                    "" if success and not is_nan else
+                    f"{metric} resulted in NaN" if is_nan else
+                    "All batches failed"
+                ),
                 time=avg_time
             )
+        #print(f"Aggregated results: {aggregated}")
 
         return aggregated
 
@@ -906,6 +922,9 @@ class ZeroCostNAS:
             # Normalize values
             if metric in {"synflow", "params", "flops"}:
                 normalized = np.log1p(result.value)
+                # check for nan
+                if np.isnan(normalized):
+                    normalized = 0.0
             elif metric == "conditioning":
                 normalized = min(result.value, 100.0) / 100.0
             else:

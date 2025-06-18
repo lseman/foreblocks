@@ -496,7 +496,33 @@ class ForecastingModel(nn.Module):
         """Get KL divergence for VAE loss"""
         return self._kl
 
-    def attribute_forward(self, src: torch.Tensor) -> torch.Tensor:
-        """Captum-compatible forward for attribution analysis"""
+    def attribute_forward(
+        self,
+        src: torch.Tensor,
+        time_features: Optional[torch.Tensor] = None,
+        targets: Optional[torch.Tensor] = None,
+        epoch: Optional[int] = None,
+        output_idx: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Captum-compatible forward pass for attribution.
+        Forces train() mode to allow backward through cuDNN RNNs.
+        Disables dropout manually.
+        """
+        self.train()  # Enable backward for RNN
+        self._disable_dropout()
+
         src = src.requires_grad_()
-        return self.forward(src)
+
+        out = self.forward(src, targets=targets, time_features=time_features, epoch=epoch)
+
+        if output_idx is not None:
+            return out[..., output_idx]
+
+        return out
+
+    def _disable_dropout(self):
+        """Disable dropout layers while keeping the model in train() mode for cuDNN backward."""
+        for module in self.modules():
+            if isinstance(module, nn.Dropout):
+                module.p = 0.0
