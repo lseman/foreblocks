@@ -79,10 +79,11 @@ class DARTSTrainer:
             "GRN",
             "Wavelet",
             "Fourier",
-            "Attention",
             "TCN",
             "ResidualMLP",
             "ConvMixer",
+            "MultiScaleConv",
+            "PyramidConv",
         ]
 
         # Training history
@@ -833,16 +834,53 @@ class DARTSTrainer:
             decoder_weights = F.softmax(new_model.forecast_decoder.alphas, dim=-1)
             top_idx = decoder_weights.argmax().item()
             top_decoder = new_model.forecast_decoder.decoders[top_idx]
+            top_decoder_type = new_model.forecast_decoder.rnn_names[top_idx]
+
+            # Infer latent_dim safely
+            if hasattr(top_decoder, 'latent_dim'):
+                latent_dim = top_decoder.latent_dim
+            elif hasattr(top_decoder, 'hidden_size'):  # for LSTM/GRU
+                latent_dim = top_decoder.hidden_size
+            else:
+                raise ValueError("Could not extract latent_dim from selected decoder")
 
             print(
                 f"   → Fixing Forecast Decoder: {type(top_decoder).__name__} "
                 f"(weight: {decoder_weights[top_idx]:.3f})"
             )
 
-            new_model.forecast_decoder = FixedDecoder(top_decoder).to(device)
+            max_att_idx = 0
+            if new_model.use_attention_bridge and hasattr(new_model.forecast_decoder, 'attention_alphas'):
+                attention_weights = F.softmax(new_model.forecast_decoder.attention_alphas, dim=0)
+                max_idx = attention_weights.argmax().item()
+                
+                if max_idx == len(attention_weights) - 1:
+                    attention_choice = "no_attention"
+                else:
+                    attention_choice = f"attention_layer_{max_idx}"
+                
+                print("   → Using Attention Bridge:", attention_choice)
+                max_att_idx = max_idx
+
+            attention_bridges = new_model.forecast_decoder.attention_bridges if hasattr(new_model.forecast_decoder, 'attention_bridges') else None
+
+            new_model.forecast_decoder = FixedDecoder(
+                rnn=top_decoder,
+                rnn_type=top_decoder_type,  # Optional: makes it explicit
+                input_dim=new_model.input_dim,
+                latent_dim=latent_dim,
+                dropout=new_model.dropout,
+                use_attention_bridge=new_model.use_attention_bridge and attention_choice != "no_attention",
+                attention_layers=1 if attention_choice != "no_attention" else 0,
+                attention_heads=8,
+                attention_d_model=latent_dim,
+            ).to(device)
+            new_model.forecast_decoder.attention_bridges = nn.ModuleList([attention_bridges[max_att_idx]]) if attention_choice != "no_attention" else None
+
 
         print("✓ Architecture derivation completed")
         return new_model
+
 
     def train_final_model(
         self,
@@ -2072,7 +2110,6 @@ class DARTSTrainer:
                 {
                     "ops": [
                         "IdentityOp",
-                        "AttentionOp",
                         "GRNOp",
                         "TimeConvOp",
                         "WaveletOp",

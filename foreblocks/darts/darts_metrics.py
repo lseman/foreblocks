@@ -191,7 +191,8 @@ class MetricsComputer:
             was_training = model.training
             model.eval()
             
-            with torch.no_grad():
+            #with torch.no_grad():
+            with self.helper.safe_mode(model):
                 shared_outputs = model(inputs)
             
             # Process all metrics that only need activations
@@ -205,10 +206,10 @@ class MetricsComputer:
             results["synflow"] = self._compute_synflow(model, inputs)
             
             # Jacobian (needs special handling)  
-            results["jacobian"] = self._compute_jacobian(model, inputs)
+            results["jacobian"] = self._compute_jacobian(model, inputs, shared_outputs)
             
             # Sensitivity
-            results["sensitivity"] = self.sensitivity(model, inputs)
+            results["sensitivity"] = self.sensitivity(model, inputs, shared_outputs)
             
         finally:
             # Clean up hooks
@@ -325,148 +326,74 @@ class MetricsComputer:
         results["flops"] = self._compute_safely(_flops)
         
         return results
-    
     def _compute_gradient_metrics(self, model, inputs, targets):
-        """Compute gradient-based metrics with shared setup and numerical stability"""
+        """Compute gradient-based metrics (GRASP, Fisher, SNIP) with a shared forward+backward"""
         results = {}
-        
-        # Prepare data once
-        x, y = inputs.clone().detach(), targets.clone().detach()
-        loss_fn = self.helper.get_loss_fn(y)
-        
-        # GRASP
-        def _grasp():
-            was_training = model.training
-            model.train()
-            
-            try:
-                outputs = model(x)
-                outputs, y_prep = self.helper.prepare_data(outputs, y)
-                loss = loss_fn(outputs, y_prep)
-                
-                if not torch.isfinite(loss):
-                    return 0.0
-                    
-                # More efficient gradient computation
-                trainable_params = [p for p in model.parameters() if p.requires_grad]
-                grads = torch.autograd.grad(
-                    loss, 
-                    trainable_params, 
-                    retain_graph=False, 
-                    create_graph=False,
-                    allow_unused=True
-                )
-                
-                # GRASP: gradient * parameter squared
-                grasp_scores = [
-                    (g * p).pow(2).sum().item()
-                    for g, p in zip(grads, trainable_params)
-                    if g is not None and torch.isfinite(g).all()
-                ]
-                
-                return sum(grasp_scores) / max(len(grasp_scores), 1)
-                
-            finally:
-                if not was_training:
-                    model.eval()
-        
-        results["grasp"] = self._compute_safely(_grasp)
-        
-        # Fisher
-        def _fisher():
-            was_training = model.training
-            model.train()
-            
-            try:
-                outputs = model(x)
-                outputs, y_prep = self.helper.prepare_data(outputs, y)
-                loss = loss_fn(outputs, y_prep)
-                
-                if not torch.isfinite(loss):
-                    return 0.0
-                    
-                # More efficient gradient computation
-                grads = torch.autograd.grad(
-                    loss, 
-                    [p for p in model.parameters() if p.requires_grad], 
-                    retain_graph=False, 
-                    create_graph=False,
-                    allow_unused=True
-                )
-                
-                grad_squares = [
-                    g.pow(2).sum().item() 
-                    for g in grads 
-                    if g is not None and torch.isfinite(g).all()
-                ]
-                
-                return sum(grad_squares) / max(len(grad_squares), 1)
-                
-            finally:
-                if not was_training:
-                    model.eval()
-            
-        results["fisher"] = self._compute_safely(_fisher)
-        
-        # SNIP
-        def _snip():
-            was_training = model.training
-            model.train()
+        was_training = model.training
+        model.train()
 
+        try:
+            x, y = inputs.clone().detach(), targets.clone().detach()
             loss_fn = self.helper.get_loss_fn(y)
-            
-            try:
-                outputs = model(x)
-                outputs, y_prep = self.helper.prepare_data(outputs, y)
-                
-                # Handle target shape issues
-                if y.dtype == torch.long:
-                    if outputs.dim() == 2 and y.dim() == 1:
-                        if outputs.size(1) == 1:
-                            outputs = outputs.squeeze(1)
-                            loss_fn = nn.BCEWithLogitsLoss()
-                        elif y.max() >= outputs.size(1):
-                            # Create dummy targets if mismatch
-                            y_prep = torch.randint(0, outputs.size(1), (outputs.size(0),), device=y.device)
-                
-                loss = loss_fn(outputs, y_prep)
-                
-                if not torch.isfinite(loss):
-                    return 0.0
-                    
-                # Get only weight parameters for SNIP
-                weight_params = [
-                    (name, p) for name, p in model.named_parameters() 
-                    if p.requires_grad and "weight" in name
-                ]
-                
-                if not weight_params:
-                    return 0.0
-                
-                grads = torch.autograd.grad(
-                    loss, 
-                    [p for _, p in weight_params], 
-                    retain_graph=False, 
-                    create_graph=False,
-                    allow_unused=True
-                )
-                
-                # SNIP: |gradient * parameter|
-                snip_scores = [
-                    (g * p).abs().sum().item()
-                    for g, (_, p) in zip(grads, weight_params)
+
+            x.requires_grad = True
+            outputs = model(x)
+            outputs, y_prep = self.helper.prepare_data(outputs, y)
+            loss = loss_fn(outputs, y_prep)
+
+            if not torch.isfinite(loss):
+                for name in ["grasp", "fisher", "snip"]:
+                    results[name] = Result(0.0, False, "Non-finite loss", 0.0)
+                return results
+
+            weight_params = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+            weights = [p for _, p in weight_params]
+
+            grads = torch.autograd.grad(
+                loss,
+                weights,
+                create_graph=False,
+                retain_graph=True,
+                allow_unused=True,
+            )
+
+            # ----- GRASP -----
+            def _grasp():
+                scores = [
+                    (g * p).pow(2).sum().item()
+                    for g, p in zip(grads, weights)
                     if g is not None and torch.isfinite(g).all()
                 ]
-                
+                return sum(scores) / max(len(scores), 1)
+
+            # ----- Fisher -----
+            def _fisher():
+                scores = [
+                    g.pow(2).sum().item()
+                    for g in grads
+                    if g is not None and torch.isfinite(g).all()
+                ]
+                return sum(scores) / max(len(scores), 1)
+
+            # ----- SNIP -----
+            def _snip():
+                snip_scores = []
+                for (name, p), g in zip(weight_params, grads):
+                    if "weight" in name and g is not None and torch.isfinite(g).all():
+                        snip_scores.append((g * p).abs().sum().item())
                 return sum(snip_scores) / max(len(snip_scores), 1)
-                
-            finally:
-                if not was_training:
-                    model.eval()
-            
-        results["snip"] = self._compute_safely(_snip)
-        
+
+            results["grasp"] = self._compute_safely(_grasp)
+            results["fisher"] = self._compute_safely(_fisher)
+            results["snip"] = self._compute_safely(_snip)
+
+        finally:
+            if not was_training:
+                model.eval()
+            model.zero_grad()
+
         return results
+
     
     def _compute_synflow(self, model, inputs):
         """SynFlow computation with numerical stability and fallback to original method"""
@@ -548,90 +475,55 @@ class MetricsComputer:
                     model.eval()
         
         return self._compute_safely(_compute)
-
-    def _compute_jacobian(self, model, inputs):
-        """Jacobian computation with closed-form entropy approximation"""
+    
+    def _compute_jacobian(self, model, inputs, shared_outputs=None):
+        """Fast Jacobian entropy estimation using Hutchinson's method"""
         def _compute():
             was_training = model.training
             model.train()
-            
+
             try:
                 batch_size = min(inputs.size(0), self.config.max_samples)
                 x = inputs[:batch_size].detach().clone().requires_grad_(True)
-                
+
                 with self.helper.safe_mode(model):
-                    outputs = model(x)
+                    outputs = shared_outputs if shared_outputs is not None else model(x)
                     outputs, _ = self.helper.prepare_data(outputs, torch.zeros(batch_size))
-                    
+
                     if outputs.dim() == 1:
                         outputs = outputs.unsqueeze(1)
-                    
+
                     output_size = min(outputs.size(1), self.config.max_outputs)
-                    input_size = x.view(batch_size, -1).size(1)
-                    
-                    # Collect all gradients first
-                    all_grads = []
-                    for i in range(output_size):
-                        model.zero_grad()
-                        x.grad = None
-                        
-                        outputs[:, i].sum().backward(retain_graph=(i < output_size - 1))
-                        
-                        if x.grad is not None:
-                            for j in range(batch_size):
-                                grad_flat = x.grad[j].flatten()
-                                if grad_flat.abs().sum() > self.config.eps:
-                                    all_grads.append(grad_flat)
-                    
-                    if not all_grads:
+                    proj = torch.randn(outputs[:, :output_size].shape, device=outputs.device)  # v
+
+                    # Compute vector-Jacobian product Jᵗv
+                    grad = torch.autograd.grad(
+                        outputs=outputs[:, :output_size],
+                        inputs=x,
+                        grad_outputs=proj,
+                        retain_graph=False,
+                        create_graph=False,
+                        allow_unused=True
+                    )[0]
+
+                    if grad is None:
                         return 0.0
-                    
-                    # Stack gradients into Jacobian matrix
-                    J = torch.stack(all_grads, dim=0)  # [num_valid_samples, input_size]
-                    
-                    # Closed-form entropy approximation using trace and Frobenius norm
-                    JJT = J @ J.t()
-                    JJT += self.config.eps * torch.eye(JJT.size(0), device=J.device)
-                    
-                    # Closed-form entropy approximation:
-                    # For a matrix A, entropy ≈ log(trace(A)) - trace(A*log(A))/trace(A)
-                    # Simplified version using trace and determinant properties
-                    
-                    trace_val = torch.trace(JJT).item()
-                    frobenius_norm = torch.norm(JJT, 'fro').item() ** 2
-                    
-                    if trace_val > self.config.eps:
-                        # Approximation: entropy ≈ log(trace) - frobenius_norm/(2*trace^2)
-                        entropy_approx = np.log(trace_val + self.config.eps) - frobenius_norm / (2 * trace_val**2 + self.config.eps)
-                        
-                        # Alternative: Use condition number as entropy proxy
-                        # Higher condition number → lower entropy (more ill-conditioned)
-                        try:
-                            # Fast condition number approximation using norms
-                            max_singular = torch.norm(JJT, 2).item()  # largest singular value
-                            trace_normalized = trace_val / JJT.size(0)  # average eigenvalue
-                            condition_proxy = max_singular / (trace_normalized + self.config.eps)
-                            
-                            # Convert to entropy-like measure (higher is better)
-                            entropy_from_condition = -np.log(condition_proxy + 1.0)
-                            
-                            # Combine both measures
-                            final_entropy = 0.7 * entropy_approx + 0.3 * entropy_from_condition
-                            
-                        except:
-                            final_entropy = entropy_approx
-                            
-                        return np.clip(final_entropy, -10, 10)  # Reasonable bounds
-                    else:
-                        return 0.0
-                    
+
+                    grad = grad.view(batch_size, -1)
+                    norm_sq = grad.pow(2).sum(dim=1).mean().item()
+
+                    # Optional: log entropy approximation
+                    entropy = np.log(norm_sq + self.config.eps)
+                    return np.clip(entropy, -10, 10)
+
             finally:
                 x.requires_grad_(False)
                 model.zero_grad()
                 if not was_training:
                     model.eval()
-        
+
         return self._compute_safely(_compute)
+
         
     def _compute_safely(self, compute_fn):
         try:
@@ -675,10 +567,16 @@ class MetricsComputer:
         return self._compute_gradient_metrics(model, inputs, targets)["snip"]
 
     def params(self, model: nn.Module) -> Result:
-        """Parameter count"""
+        """Parameter count using fvcore if available"""
         def _compute():
-            return sum(p.numel() for p in model.parameters() if p.requires_grad)
+            try:
+                from fvcore.nn import parameter_count
+                count_dict = parameter_count(model)
+                return sum(v for v in count_dict.values())
+            except Exception:
+                return sum(p.numel() for p in model.parameters() if p.requires_grad)
         return self._compute_safely(_compute)
+
 
     def conditioning(self, model: nn.Module) -> Result:
         """Weight conditioning"""
@@ -696,57 +594,68 @@ class MetricsComputer:
                             continue
             return sum(conditions) / len(conditions) if conditions else 1.0
         return self._compute_safely(_compute)
-
+    
     def flops(self, model: nn.Module, inputs: torch.Tensor) -> Result:
-        """FLOP estimation"""
+        """FLOP estimation using fvcore with fallback to manual hook-based count"""
         def _compute():
-            flops_count = {}
-
-            def counting_hook(name):
-                def hook(module, inp, out):
-                    input_shape = inp[0].shape
-                    output_shape = (
-                        out.shape if not isinstance(out, tuple) else out[0].shape
-                    )
-
-                    if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                        kernel_ops = (
-                            np.prod(module.kernel_size)
-                            * module.in_channels
-                            // module.groups
-                        )
-                        output_elements = np.prod(output_shape)
-                        flops = output_elements * kernel_ops * 2
-                    elif isinstance(module, nn.Linear):
-                        flops = (
-                            input_shape[0]
-                            * module.in_features
-                            * module.out_features
-                            * 2
-                        )
-                    else:
-                        flops = 0
-
-                    flops_count[name] = flops
-
-                return hook
-
-            hooks = []
-            for name, module in model.named_modules():
-                if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)):
-                    hooks.append(module.register_forward_hook(counting_hook(name)))
-
             try:
-                with torch.no_grad():
-                    model(inputs)
-                return sum(flops_count.values())
-            finally:
-                for hook in hooks:
-                    hook.remove()
+                from fvcore.nn import FlopCountAnalysis
+
+                # Ensure input is in tuple format
+                input_tuple = (inputs[:1].detach().clone(),)
+                flops = FlopCountAnalysis(model, input_tuple)
+                return flops.total()
+
+            except Exception as e:
+                # Fallback to original hook-based logic
+                flops_count = {}
+
+                def counting_hook(name):
+                    def hook(module, inp, out):
+                        input_shape = inp[0].shape
+                        output_shape = (
+                            out.shape if not isinstance(out, tuple) else out[0].shape
+                        )
+
+                        if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+                            kernel_ops = (
+                                np.prod(module.kernel_size)
+                                * module.in_channels
+                                // module.groups
+                            )
+                            output_elements = np.prod(output_shape)
+                            flops = output_elements * kernel_ops * 2
+                        elif isinstance(module, nn.Linear):
+                            flops = (
+                                input_shape[0]
+                                * module.in_features
+                                * module.out_features
+                                * 2
+                            )
+                        else:
+                            flops = 0
+
+                        flops_count[name] = flops
+
+                    return hook
+
+                hooks = []
+                for name, module in model.named_modules():
+                    if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)):
+                        hooks.append(module.register_forward_hook(counting_hook(name)))
+
+                try:
+                    with torch.no_grad():
+                        model(inputs[:1])  # only one sample needed
+                    return sum(flops_count.values())
+                finally:
+                    for hook in hooks:
+                        hook.remove()
 
         return self._compute_safely(_compute)
 
-    def sensitivity(self, model: nn.Module, inputs: torch.Tensor) -> Result:
+
+    def sensitivity(self, model: nn.Module, inputs: torch.Tensor, shared_outputs: Optional[torch.Tensor] = None) -> Result:
         """Input sensitivity"""
         def _compute():
             model.train()
@@ -850,34 +759,7 @@ class ZeroCostNAS:
                         if output.dim() > 1 else torch.randn(inputs.size(0), device=device)
 
         return inputs, targets
-
-    def compare(
-        self,
-        models: List[nn.Module],
-        names: List[str],
-        dataloader: DataLoader,
-        device: torch.device,
-    ) -> Dict[str, Any]:
-        """Compare multiple models"""
-        results = {}
-        for model, name in zip(models, names):
-            print(f"\nEvaluating {name}...")
-            results[name] = self.evaluate_model(model, dataloader, device)
-
-        rankings = self._rank_models(results, names)
-        return {
-            "results": results,
-            "rankings": rankings,
-            "best": rankings["overall"][0],
-            "summary": {
-                name: {
-                    "score": results[name]["aggregate_score"],
-                    "rank": rankings["overall"].index(name) + 1,
-                }
-                for name in names
-            },
-        }
-
+    
     def _aggregate_results(self, all_results: List[Dict[str, Result]]) -> Dict[str, Result]:
         """Aggregate metric results across batches"""
         metrics = all_results[0].keys()
@@ -934,17 +816,3 @@ class ZeroCostNAS:
             total_weight += abs(weight)
 
         return total_score / max(total_weight, 1.0)
-
-    def _rank_models(self, results: Dict[str, Any], names: List[str]) -> Dict[str, List[str]]:
-        """Compute metric-wise and overall rankings"""
-        rankings = {}
-
-        for metric in results[names[0]]["metrics"]:
-            vals = [(name, results[name]["metrics"][metric]) for name in names]
-            reverse = metric not in {"params", "conditioning", "flops"}
-            rankings[metric] = [name for name, _ in sorted(vals, key=lambda x: x[1], reverse=reverse)]
-
-        scores = [(name, results[name]["aggregate_score"]) for name in names]
-        rankings["overall"] = [name for name, _ in sorted(scores, key=lambda x: x[1], reverse=True)]
-
-        return rankings
