@@ -31,3 +31,5 @@ examples/stefano.ipynb
 *.png
 *.pth
 teste*
+test*
+*.xlsx
