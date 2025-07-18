@@ -33,3 +33,6 @@ examples/stefano.ipynb
 teste*
 test*
 *.xlsx
+*.pdf
+*backup*
+work/

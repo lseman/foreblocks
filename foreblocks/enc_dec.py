@@ -74,6 +74,7 @@ class LSTMDecoder(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
         )
+        self.input_size = input_size
         self.output_layer = nn.Linear(hidden_size, output_size)
         self._init_weights()
 
@@ -93,11 +94,16 @@ class LSTMDecoder(nn.Module):
             self.output_layer.bias.data.fill_(0.0)
 
     def forward(self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
+        # Always ensure 3D shape [B, T, D] without boolean control flow
+        x = x.reshape(x.shape[0], -1, x.shape[-1])
+        
         lstm_out, hidden = self.lstm(x, hidden)
-        output = self.output_layer(lstm_out.squeeze(1))
-        return output, hidden
+        
+        # Take the last timestep’s output explicitly
+        last_out = lstm_out[:, -1, :]  # always safe
+        #output = self.output_layer(last_out)
+        
+        return last_out, hidden
 
 ###################################################
 # GRU

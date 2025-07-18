@@ -178,14 +178,24 @@ class MetricsComputer:
         
         # Register hooks once for all metrics
         hooks = []
+
+        def is_relu_like(module):
+            if isinstance(module, (nn.ReLU, nn.ReLU6)):
+                return True
+            if isinstance(module, nn.LeakyReLU):
+                return getattr(module, 'negative_slope', 0.0) == 0.0
+            return False
+
         for module_name, module in model.named_modules():
             if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)):
                 conv_linear_modules.append((module_name, module))
                 hooks.append(module.register_forward_hook(activation_hook(module_name)))
-            elif isinstance(module, nn.ReLU):
-                relu_modules.append((module_name, module))
-                hooks.append(module.register_forward_hook(activation_hook(module_name)))
-        
+        relu_modules = [
+            (name, module)
+            for name, module in model.named_modules()
+            if is_relu_like(module)
+        ]
+
         try:
             # Single forward pass for multiple metrics
             was_training = model.training
@@ -206,7 +216,7 @@ class MetricsComputer:
             results["synflow"] = self._compute_synflow(model, inputs)
             
             # Jacobian (needs special handling)  
-            results["jacobian"] = self._compute_jacobian(model, inputs, shared_outputs)
+            results["jacobian"] = self._compute_jacobian(model, inputs)
             
             # Sensitivity
             results["sensitivity"] = self.sensitivity(model, inputs, shared_outputs)
@@ -278,44 +288,60 @@ class MetricsComputer:
         
         # Zen-NAS
         def _zennas():
-            score = 0.0
-            count = 0
+            total_score = 0.0
+            valid_layer_count = 0
+            layer_scores = []
+
+            reduction = getattr(self.config, "zennas_reduction", "mean")  # mean, geom, or sum
+            eps = getattr(self.config, "eps", 1e-8)
+
             for module_name, module in relu_modules:
                 if module_name not in activations:
                     print(f"[zennas] Missing activation for {module_name}")
                     continue
 
                 try:
-                    act = activations[module_name].detach()
-                    act_flat = act.view(act.size(0), -1)
-
-                    if act_flat.numel() == 0:
+                    act = activations[module_name]
+                    if act.numel() == 0:
                         print(f"[zennas] Empty activation for {module_name}")
                         continue
 
+                    act_flat = act.view(act.size(0), -1)
                     mean = act_flat.mean(dim=1)
-                    std = act_flat.std(dim=1) + self.config.eps
+                    std = act_flat.std(dim=1).clamp(min=eps)
+                    snr = (mean**2 / std**2)
 
-                    mask = std > self.config.eps
-                    if mask.sum() == 0:
-                        print(f"[zennas] All std too small in {module_name}")
+                    valid_snr = snr[torch.isfinite(snr)]
+                    if valid_snr.numel() == 0:
+                        print(f"[zennas] No valid SNR in {module_name}")
                         continue
 
-                    snr = (mean[mask] ** 2 / std[mask] ** 2).mean().item()
-                    if torch.isfinite(torch.tensor(snr)):
-                        score += snr
-                        count += 1
-                    else:
-                        print(f"[zennas] Non-finite SNR for {module_name}")
+                    layer_snr = valid_snr.mean().item()
+                    layer_scores.append(layer_snr)
+                    total_score += layer_snr
+                    valid_layer_count += 1
 
                 except Exception as e:
                     print(f"[zennas] Exception in {module_name}: {e}")
                     continue
 
-            final_score = score / max(count, 1)
-            #print(f"[zennas] Final Zen-NAS score: {final_score:.4f} from {count} layers")
+            if valid_layer_count == 0:
+                print("[zennas] No valid layers found.")
+                return 0.0
+
+            if reduction == "mean":
+                final_score = total_score / valid_layer_count
+            elif reduction == "sum":
+                final_score = total_score
+            elif reduction == "geom":
+                log_vals = torch.tensor(layer_scores).log()
+                final_score = torch.exp(log_vals.mean()).item()
+            else:
+                raise ValueError(f"[zennas] Unknown reduction mode: {reduction}")
+
+            print(f"[zennas] Final Zen-NAS score: {final_score:.4f} from {valid_layer_count} layers")
             return final_score
-        
+
         results["zennas"] = self._compute_safely(_zennas)
         
         # FLOPS (already computed during forward pass)
@@ -477,7 +503,11 @@ class MetricsComputer:
         return self._compute_safely(_compute)
     
     def _compute_jacobian(self, model, inputs, shared_outputs=None):
-        """Fast Jacobian entropy estimation using Hutchinson's method"""
+        """
+        Hutchinson-based Jacobian entropy approximation.
+        Estimates Tr(JᵗJ) via E[||∇x (fᵗv)||²] and returns log-trace entropy.
+        """
+
         def _compute():
             was_training = model.training
             model.train()
@@ -488,33 +518,38 @@ class MetricsComputer:
 
                 with self.helper.safe_mode(model):
                     outputs = shared_outputs if shared_outputs is not None else model(x)
-                    outputs, _ = self.helper.prepare_data(outputs, torch.zeros(batch_size))
+
+                    if outputs is None or not outputs.requires_grad:
+                        print("⚠️ Outputs not differentiable from inputs.")
+                        return 0.0
 
                     if outputs.dim() == 1:
                         outputs = outputs.unsqueeze(1)
 
+                    outputs, _ = self.helper.prepare_data(outputs, torch.zeros_like(outputs))
                     output_size = min(outputs.size(1), self.config.max_outputs)
-                    proj = torch.randn(outputs[:, :output_size].shape, device=outputs.device)  # v
 
-                    # Compute vector-Jacobian product Jᵗv
+                    # Hutchinson vector + scalar projection
+                    v = torch.randn_like(outputs[:, :output_size])
+                    scalar = (outputs[:, :output_size] * v).sum()
+
                     grad = torch.autograd.grad(
-                        outputs=outputs[:, :output_size],
-                        inputs=x,
-                        grad_outputs=proj,
-                        retain_graph=False,
-                        create_graph=False,
-                        allow_unused=True
+                        scalar, x, retain_graph=False, create_graph=False, allow_unused=False
                     )[0]
 
                     if grad is None:
+                        print("⚠️ Gradient is None. Model may not depend on input.")
                         return 0.0
 
                     grad = grad.view(batch_size, -1)
                     norm_sq = grad.pow(2).sum(dim=1).mean().item()
 
-                    # Optional: log entropy approximation
                     entropy = np.log(norm_sq + self.config.eps)
-                    return np.clip(entropy, -10, 10)
+                    return float(np.clip(entropy, -10, 10))
+
+            except Exception as e:
+                print(f"❌ Jacobian estimation failed: {e}")
+                return 0.0
 
             finally:
                 x.requires_grad_(False)
@@ -579,7 +614,7 @@ class MetricsComputer:
 
 
     def conditioning(self, model: nn.Module) -> Result:
-        """Weight conditioning"""
+        """Weight conditioning with numerical stability"""
         def _compute():
             conditions = []
             for name, param in model.named_parameters():
@@ -588,13 +623,17 @@ class MetricsComputer:
                     if min(W.size()) > 1:
                         try:
                             _, S, _ = torch.linalg.svd(W, full_matrices=False)
-                            if S[0] > 0 and S[-1] > 0:
-                                conditions.append((S[0] / S[-1]).item())
-                        except:
+                            s_max = S[0].item()
+                            s_min = S[-1].item()
+                            if math.isfinite(s_max) and math.isfinite(s_min):
+                                cond = s_max / (s_min + self.config.eps)
+                                cond = min(cond, 1e6)  # Optional clamp to avoid outliers
+                                conditions.append(cond)
+                        except Exception:
                             continue
             return sum(conditions) / len(conditions) if conditions else 1.0
         return self._compute_safely(_compute)
-    
+
     def flops(self, model: nn.Module, inputs: torch.Tensor) -> Result:
         """FLOP estimation using fvcore with fallback to manual hook-based count"""
         def _compute():
@@ -725,8 +764,8 @@ class ZeroCostNAS:
 
         all_results = []
         for i, (inputs, targets) in enumerate(batches):
-            if verbose:
-                print(f"Processing batch {i+1}/{len(batches)}")
+            #if verbose:
+            #    print(f"Processing batch {i+1}/{len(batches)}")
             batch_results = self.computer.compute_all(model, inputs, targets)
             all_results.append(batch_results)
 

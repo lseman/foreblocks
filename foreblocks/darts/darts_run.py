@@ -5,7 +5,9 @@ import logging
 import random
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Callable, Union
+from enum import Enum
+
 
 import matplotlib.patches as patches
 
@@ -25,6 +27,7 @@ from tqdm import tqdm
 from .darts import *
 from .darts_metrics import *
 
+import higher
 # Optional: configure a custom logger
 logger = logging.getLogger("NASLogger")
 logger.setLevel(logging.INFO)
@@ -34,6 +37,223 @@ handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
 
+class RegularizationType(Enum):
+    """Types of regularization for architecture search"""
+    ENTROPY = "entropy"
+    KL_DIVERGENCE = "kl_divergence"
+    L2_NORM = "l2_norm"
+    DIVERSITY = "diversity"
+    SPARSITY = "sparsity"
+    EFFICIENCY = "efficiency"
+
+class ArchitectureRegularizer:
+    """Helper class for different types of architecture regularization"""
+    
+    def __init__(self, reg_types: List[RegularizationType], weights: List[float] = None):
+        self.reg_types = reg_types
+        self.weights = weights or [1.0] * len(reg_types)
+        assert len(self.reg_types) == len(self.weights), "Number of weights must match number of regularization types"
+    
+    def compute_regularization(self, model: nn.Module, arch_params: List[torch.Tensor], 
+                             epoch: int = 0, total_epochs: int = 100) -> Dict[str, torch.Tensor]:
+        """Compute all specified regularization terms"""
+        reg_losses = {}
+        total_reg = torch.tensor(0.0, device=next(model.parameters()).device)
+        
+        for reg_type, weight in zip(self.reg_types, self.weights):
+            reg_loss = self._compute_single_regularization(
+                model, arch_params, reg_type, epoch, total_epochs
+            )
+            reg_losses[reg_type.value] = reg_loss
+            total_reg += weight * reg_loss
+        
+        reg_losses['total'] = total_reg
+        return reg_losses
+    
+    def _compute_single_regularization(self, model: nn.Module, arch_params: List[torch.Tensor], 
+                                     reg_type: RegularizationType, epoch: int, total_epochs: int) -> torch.Tensor:
+        """Compute a single type of regularization"""
+        device = next(model.parameters()).device
+        
+        if reg_type == RegularizationType.ENTROPY:
+            return self._entropy_regularization(arch_params)
+        elif reg_type == RegularizationType.KL_DIVERGENCE:
+            return self._kl_divergence_regularization(arch_params)
+        elif reg_type == RegularizationType.L2_NORM:
+            return self._l2_norm_regularization(arch_params)
+        elif reg_type == RegularizationType.DIVERSITY:
+            return self._diversity_regularization(model)
+        elif reg_type == RegularizationType.SPARSITY:
+            return self._sparsity_regularization(arch_params, epoch, total_epochs)
+        elif reg_type == RegularizationType.EFFICIENCY:
+            return self._efficiency_regularization(model)
+        else:
+            return torch.tensor(0.0, device=device)
+    
+    def _entropy_regularization(self, arch_params: List[torch.Tensor]) -> torch.Tensor:
+        """Entropy regularization to encourage exploration"""
+        total_entropy = torch.tensor(0.0, device=arch_params[0].device)
+        
+        for param in arch_params:
+            if param.dim() >= 1:
+                # Apply softmax along the last dimension
+                probs = F.softmax(param.view(-1, param.size(-1)), dim=-1)
+                entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()
+                # Encourage exploration by penalizing low entropy
+                total_entropy += (1.0 - entropy / np.log(param.size(-1)))
+        
+        return total_entropy
+    
+    def _kl_divergence_regularization(self, arch_params: List[torch.Tensor]) -> torch.Tensor:
+        """KL divergence from uniform distribution to encourage diversity"""
+        total_kl = torch.tensor(0.0, device=arch_params[0].device)
+        
+        for param in arch_params:
+            if param.dim() >= 1:
+                # Reshape to 2D for easier processing
+                flat_param = param.view(-1, param.size(-1))
+                probs = F.softmax(flat_param, dim=-1)
+                
+                # Uniform distribution target
+                uniform = torch.ones_like(probs) / probs.size(-1)
+                
+                # KL divergence: KL(P||Q) = sum(P * log(P/Q))
+                kl_div = (probs * torch.log(probs / (uniform + 1e-8) + 1e-8)).sum(dim=-1).mean()
+                total_kl += kl_div
+        
+        return total_kl
+    
+    def _l2_norm_regularization(self, arch_params: List[torch.Tensor]) -> torch.Tensor:
+        """L2 norm regularization on architecture parameters"""
+        total_l2 = torch.tensor(0.0, device=arch_params[0].device)
+        
+        for param in arch_params:
+            total_l2 += torch.norm(param, p=2)
+        
+        return total_l2
+    
+    def _diversity_regularization(self, model: nn.Module) -> torch.Tensor:
+        """Encourage diversity across different parts of the architecture"""
+        diversity_loss = torch.tensor(0.0, device=next(model.parameters()).device)
+        
+        # Collect all architecture weights
+        all_weights = []
+        for module in model.modules():
+            if hasattr(module, 'get_alphas'):
+                try:
+                    alphas = module.get_alphas()
+                    if alphas.numel() > 0:
+                        all_weights.append(F.softmax(alphas, dim=-1))
+                except:
+                    continue
+        
+        if len(all_weights) >= 2:
+            # Compute pairwise diversity (negative cosine similarity)
+            for i in range(len(all_weights)):
+                for j in range(i + 1, len(all_weights)):
+                    w1, w2 = all_weights[i], all_weights[j]
+                    
+                    # Handle different sizes by truncating to smaller size
+                    min_size = min(w1.size(0), w2.size(0))
+                    w1_trunc = w1[:min_size]
+                    w2_trunc = w2[:min_size]
+                    
+                    # Cosine similarity
+                    cos_sim = F.cosine_similarity(w1_trunc, w2_trunc, dim=0)
+                    # Encourage diversity (low similarity)
+                    diversity_loss += cos_sim
+        
+        return diversity_loss
+    
+    def _sparsity_regularization(self, arch_params: List[torch.Tensor], 
+                               epoch: int, total_epochs: int) -> torch.Tensor:
+        """Sparsity regularization that increases over time"""
+        sparsity_loss = torch.tensor(0.0, device=arch_params[0].device)
+        
+        # Increase sparsity pressure over time
+        sparsity_weight = min(1.0, epoch / (total_epochs * 0.8))
+        
+        for param in arch_params:
+            if param.dim() >= 1:
+                probs = F.softmax(param.view(-1, param.size(-1)), dim=-1)
+                # L1 penalty on probabilities to encourage sparsity
+                sparsity_loss += sparsity_weight * probs.sum()
+        
+        return sparsity_loss
+    
+    def _efficiency_regularization(self, model: nn.Module) -> torch.Tensor:
+        """Efficiency regularization based on operation complexity"""
+        efficiency_loss = torch.tensor(0.0, device=next(model.parameters()).device)
+        
+        # Operation efficiency scores (lower is more efficient)
+        op_costs = {
+            "Identity": 0.0,
+            "ResidualMLP": 0.2,
+            "TimeConv": 0.3,
+            "TCN": 0.5,
+            "ConvMixer": 0.4,
+            "Fourier": 0.6,
+            "Wavelet": 0.6,
+            "GRN": 0.4,
+            "MultiScaleConv": 0.7,
+            "PyramidConv": 0.8,
+        }
+        
+        for module in model.modules():
+            if hasattr(module, 'get_alphas') and hasattr(module, 'available_ops'):
+                try:
+                    alphas = module.get_alphas()
+                    probs = F.softmax(alphas, dim=-1)
+                    
+                    # Compute expected cost
+                    for i, op_name in enumerate(module.available_ops):
+                        if i < len(probs):
+                            cost = op_costs.get(op_name, 0.5)  # Default medium cost
+                            efficiency_loss += probs[i] * cost
+                except:
+                    continue
+        
+        return efficiency_loss
+
+class TemperatureScheduler:
+    """Advanced temperature scheduling for architecture search"""
+    
+    def __init__(self, initial_temp: float = 2.0, final_temp: float = 0.1, 
+                 schedule_type: str = "cosine", warmup_epochs: int = 5):
+        self.initial_temp = initial_temp
+        self.final_temp = final_temp
+        self.schedule_type = schedule_type
+        self.warmup_epochs = warmup_epochs
+    
+    def get_temperature(self, epoch: int, total_epochs: int) -> float:
+        """Get temperature for current epoch"""
+        if epoch < self.warmup_epochs:
+            # Linear warmup
+            return self.initial_temp
+        
+        progress = (epoch - self.warmup_epochs) / (total_epochs - self.warmup_epochs)
+        progress = min(progress, 1.0)
+        
+        if self.schedule_type == "cosine":
+            temp = self.final_temp + (self.initial_temp - self.final_temp) * \
+                   (1 + np.cos(np.pi * progress)) / 2
+        elif self.schedule_type == "exponential":
+            decay_rate = np.log(self.final_temp / self.initial_temp) / (total_epochs - self.warmup_epochs)
+            temp = self.initial_temp * np.exp(decay_rate * (epoch - self.warmup_epochs))
+        elif self.schedule_type == "linear":
+            temp = self.initial_temp - (self.initial_temp - self.final_temp) * progress
+        elif self.schedule_type == "step":
+            # Step decay at specific epochs
+            if progress < 0.3:
+                temp = self.initial_temp
+            elif progress < 0.7:
+                temp = self.initial_temp * 0.5
+            else:
+                temp = self.final_temp
+        else:
+            temp = self.initial_temp
+        
+        return max(temp, self.final_temp)
 
 class DARTSTrainer:
     """
@@ -210,7 +430,7 @@ class DARTSTrainer:
         train_loader,
         val_loader,
         epochs: int = 50,
-        arch_learning_rate: float = 3e-4,
+        arch_learning_rate: float = 1e-2,
         model_learning_rate: float = 1e-3,
         arch_weight_decay: float = 1e-3,
         model_weight_decay: float = 1e-4,
@@ -218,136 +438,169 @@ class DARTSTrainer:
         loss_type: str = "huber",
         use_swa: bool = False,
         warmup_epochs: int = 2,
-        architecture_update_freq: int = 1,
-        diversity_check_freq: int = 3,
+        architecture_update_freq: int = 3,
+        diversity_check_freq: int = 1,
         progressive_shrinking: bool = True,
         use_bilevel_optimization: bool = True,
+        use_amp: bool = True,
+        gradient_accumulation_steps: int = 1,
+        verbose: bool = True,
+        regularization_types: Optional[List[str]] = None,
+        regularization_weights: Optional[List[float]] = None,
+        temperature_schedule: str = "cosine",
     ) -> Dict[str, Any]:
-        """Enhanced DARTS training - cleaner and less bloated version"""
+        """Simplified DARTS training with essential features"""
 
         model = model.to(self.device)
         start_time = time.time()
 
-        # === SETUP: Parameters, Optimizers, Data ===
+        # Model compilation (if available)
+        # if hasattr(torch, 'compile'):
+        #     try:
+        #         model = torch.compile(model, mode='reduce-overhead', fullgraph=False)
+        #         if verbose:
+        #             print("✓ Model compiled")
+        #     except Exception as e:
+        #         if verbose:
+        #             print(f"Warning: Compilation failed ({e})")
+
+        # Separate architecture and model parameters
         arch_params, model_params = [], []
         for name, param in model.named_parameters():
+            #print(f"🔍 Parameter: {name} ({param.numel()})")
             if any(arch_name in name for arch_name in ["alphas", "arch_", "alpha_"]):
                 arch_params.append(param)
+                # print(f"🔍 Architecture param: {name} ({param.numel()})")
             else:
                 model_params.append(param)
 
-        # Add encoder/decoder alphas if they exist
+        # Add encoder/decoder alphas
         for module_name in ["forecast_encoder", "forecast_decoder"]:
             if hasattr(model, module_name):
                 module = getattr(model, module_name)
                 if hasattr(module, "alphas"):
                     arch_params.append(module.alphas)
-                # Add attention alphas for attention bridge selection
                 if hasattr(module, "attention_alphas"):
                     arch_params.append(module.attention_alphas)
 
-        print(
-            f"📊 Architecture params: {len(arch_params)}, Model params: {len(model_params)}"
-        )
+        if verbose:
+            print(f"📊 Architecture params: {len(arch_params)}, Model params: {len(model_params)}")
 
-        # Optimizers and schedulers
-        arch_optimizer = torch.optim.Adam(
-            arch_params,
-            lr=arch_learning_rate,
-            betas=(0.5, 0.999),
-            weight_decay=arch_weight_decay,
-        )
-        model_optimizer = torch.optim.AdamW(
-            model_params, lr=model_learning_rate, weight_decay=model_weight_decay
-        )
+        # Setup optimizers with fused operations if available
+        try:
+            arch_optimizer = torch.optim.Adam(
+                arch_params, lr=arch_learning_rate, betas=(0.5, 0.999), 
+                weight_decay=arch_weight_decay, fused=True
+            )
+            model_optimizer = torch.optim.Adam(
+                model_params, lr=model_learning_rate, 
+                weight_decay=model_weight_decay, fused=True
+            )
+        except:
+            arch_optimizer = torch.optim.Adam(
+                arch_params, lr=arch_learning_rate, betas=(0.5, 0.999), 
+                weight_decay=arch_weight_decay
+            )
+            model_optimizer = torch.optim.AdamW(
+                model_params, lr=model_learning_rate, weight_decay=model_weight_decay
+            )
 
+        # Learning rate schedulers
         arch_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             arch_optimizer, T_max=epochs, eta_min=arch_learning_rate * 0.01
         )
         model_scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            model_optimizer,
-            max_lr=model_learning_rate,
-            epochs=epochs,
-            steps_per_epoch=len(train_loader),
-            pct_start=0.3,
-            anneal_strategy="cos",
+            model_optimizer, max_lr=model_learning_rate, epochs=epochs,
+            steps_per_epoch=len(train_loader) // gradient_accumulation_steps,
+            pct_start=0.3, anneal_strategy="cos"
         )
 
-        # Data loaders and loss
+        # Loss function and data loaders
         loss_fn = self._get_loss_function(loss_type)
         if use_bilevel_optimization:
-            train_arch_loader, train_model_loader = self._create_bilevel_loaders(
-                train_loader
-            )
+            train_arch_loader, train_model_loader = self._create_bilevel_loaders(train_loader)
             val_arch_iter = iter(val_loader)
         else:
             train_model_loader = train_loader
             val_arch_iter = iter(val_loader)
 
         # SWA setup
-        swa_model = None
-        swa_start = max(epochs // 2, warmup_epochs + 5) if use_swa else None
+        swa_model, swa_start = None, None
         if use_swa:
+            swa_start = max(epochs // 2, warmup_epochs + 5)
             swa_model = torch.optim.swa_utils.AveragedModel(model).to(self.device)
 
+        # Mixed precision
+        scaler = GradScaler(enabled=use_amp and self.device.startswith('cuda'))
+
         # Training state
-        scaler = GradScaler()
-        best_val_loss, patience_counter, best_state = float("inf"), 0, None
+        best_val_loss = float("inf")
+        patience_counter = 0
+        best_state = None
         train_losses, val_losses, alpha_values = [], [], []
         diversity_scores = []
 
-        print(f"🔍 Training DARTS for {epochs} epochs")
-        print(f"   Arch LR: {arch_learning_rate}, Model LR: {model_learning_rate}")
-        print(f"   Bilevel: {use_bilevel_optimization}, SWA: {use_swa}")
-        print("-" * 60)
+        if verbose:
+            print(f"🔍 Training DARTS for {epochs} epochs")
+            print(f"   Arch LR: {arch_learning_rate}, Model LR: {model_learning_rate}")
+            print(f"   Bilevel: {use_bilevel_optimization}, SWA: {use_swa}, AMP: {use_amp}")
+            print("-" * 60)
 
-        # === MAIN TRAINING LOOP ===
-        epoch_pbar = self._create_progress_bar(
-            range(epochs), "Enhanced DARTS", unit="epoch"
+        # Main training loop
+        epoch_pbar = self._create_progress_bar(range(epochs), "DARTS", unit="epoch") if verbose else range(epochs)
+        # Setup regularization
+        if regularization_types is None:
+            regularization_types = ["kl_divergence", "efficiency"]
+        if regularization_weights is None:
+            regularization_weights = [0.05, 0.01]
+        
+        reg_types = [RegularizationType(rt) for rt in regularization_types]
+        regularizer = ArchitectureRegularizer(reg_types, regularization_weights)
+        
+        # Setup temperature scheduler
+        temp_scheduler = TemperatureScheduler(
+            initial_temp=2.0, final_temp=0.1, 
+            schedule_type=temperature_schedule, 
+            warmup_epochs=warmup_epochs
         )
-
         for epoch in epoch_pbar:
             model.train()
-            epoch_train_loss = 0.0
-
+            
             # Dynamic temperature
-            base_temp = 2.0 if epoch < warmup_epochs else 1.0
-            current_temperature = base_temp * max(0.1, np.exp(-epoch / (epochs * 0.4)))
+            current_temperature = temp_scheduler.get_temperature(epoch, epochs)
+
             if hasattr(model, "set_temperature"):
                 model.set_temperature(current_temperature)
 
-            # Track alphas
-            current_alphas = self._extract_alpha_values(model)
-            alpha_values.append(current_alphas)
+            # Track alphas every 5 epochs
+            if epoch % 5 == 0:
+                alpha_values.append(self._extract_alpha_values(model))
 
-            # === ARCHITECTURE UPDATE ===
+            # Architecture updates
             if epoch >= warmup_epochs and epoch % architecture_update_freq == 0:
-                for arch_step in range(2):  # 2 steps per update
-                    # Get architecture batch
+                for _ in range(2):  # 2 architecture steps
                     try:
-                        arch_batch = next(
-                            iter(train_arch_loader)
-                            if use_bilevel_optimization
-                            else val_arch_iter
-                        )
+                        if use_bilevel_optimization:
+                            arch_batch = next(iter(train_arch_loader))
+                        else:
+                            arch_batch = next(val_arch_iter)
                     except StopIteration:
                         val_arch_iter = iter(val_loader)
                         arch_batch = next(val_arch_iter)
 
-                    arch_x, arch_y = arch_batch[0].to(self.device).float(), arch_batch[
-                        1
-                    ].to(self.device)
+                    arch_x, arch_y = arch_batch[0].to(self.device), arch_batch[1].to(self.device)
                     arch_optimizer.zero_grad()
 
-                    with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
+                    with autocast("cuda" if self.device.startswith("cuda") else "cpu", enabled=use_amp):
                         arch_preds = model(arch_x)
                         arch_loss = loss_fn(arch_preds, arch_y)
-
-                        # Consolidated regularization
-                        reg_loss = self._compute_architecture_regularization(
-                            model, epoch, epochs, current_temperature, alpha_values
+                        
+                        # Simple regularization
+                        reg_losses = regularizer.compute_regularization(
+                            model, arch_params, epoch, epochs
                         )
-                        total_arch_loss = arch_loss + reg_loss
+                        
+                        total_arch_loss = arch_loss + reg_losses['total']
 
                     scaler.scale(total_arch_loss).backward()
                     scaler.unscale_(arch_optimizer)
@@ -356,165 +609,176 @@ class DARTSTrainer:
                     scaler.update()
 
                 arch_scheduler.step()
+                # print("Architecture gradients:")
+                # for name, param in model.named_parameters():
+                #     if any(param is p for p in arch_params):  # ✅ identity check
+                #         if param.grad is not None:
+                #             print(f"{name} grad norm: {param.grad.norm().item():.4e}")
+                #         else:
+                #             print(f"{name} grad: None")
 
-            # === MODEL WEIGHT UPDATES ===
-            batch_pbar = self._create_progress_bar(
-                enumerate(train_model_loader),
-                f"Epoch {epoch+1:3d}",
-                leave=False,
-                total=len(train_model_loader),
+            # Model parameter updates
+            epoch_train_loss = 0.0
+            batch_pbar = (
+                self._create_progress_bar(enumerate(train_model_loader), f"Epoch {epoch+1:3d}", 
+                                        leave=False, total=len(train_model_loader))
+                if verbose else enumerate(train_model_loader)
             )
 
+            model_optimizer.zero_grad()
             for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
-                batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(
-                    self.device
-                )
-                model_optimizer.zero_grad()
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
 
-                with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
+                with autocast("cuda" if self.device.startswith("cuda") else "cpu", enabled=use_amp):
                     preds = model(batch_x)
-                    loss = loss_fn(preds, batch_y)
+                    loss = loss_fn(preds, batch_y) / gradient_accumulation_steps
 
                 scaler.scale(loss).backward()
-                scaler.unscale_(model_optimizer)
-                torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
-                scaler.step(model_optimizer)
-                scaler.update()
-                model_scheduler.step()
 
-                epoch_train_loss += loss.item()
+                if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                    scaler.unscale_(model_optimizer)
+                    torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
+                    scaler.step(model_optimizer)
+                    scaler.update()
+                    model_scheduler.step()
+                    model_optimizer.zero_grad()
 
-                batch_pbar.set_postfix(
-                    {
-                        "loss": f"{loss.item():.4f}",
-                        "avg_loss": f"{epoch_train_loss/(batch_idx+1):.4f}",
-                        "temp": f"{current_temperature:.3f}",
-                    }
-                )
+                epoch_train_loss += loss.item() * gradient_accumulation_steps
 
-            batch_pbar.close()
+                if verbose and hasattr(batch_pbar, 'set_postfix'):
+                    batch_pbar.set_postfix({
+                        "loss": f"{loss.item() * gradient_accumulation_steps:.4f}",
+                        "avg": f"{epoch_train_loss/(batch_idx+1):.4f}",
+                    })
 
-            # === VALIDATION ===
+            if verbose and hasattr(batch_pbar, 'close'):
+                batch_pbar.close()
+
+            # Validation
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
-                val_pbar = self._create_progress_bar(
-                    val_loader, "Validation", leave=False
-                )
-                for batch_x, batch_y, *_ in val_pbar:
-                    batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(
-                        self.device
-                    )
-                    with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
+                val_pbar = self._create_progress_bar(val_loader, "Val", leave=False) if verbose else val_loader
+                
+                for batch_data in val_pbar:
+                    batch_x, batch_y = batch_data[0].to(self.device), batch_data[1].to(self.device)
+                    
+                    with autocast("cuda" if self.device.startswith("cuda") else "cpu", enabled=use_amp):
                         preds = model(batch_x)
-                        batch_val_loss = loss_fn(preds, batch_y).item()
-                    val_loss += batch_val_loss
-                    val_pbar.set_postfix({"val_loss": f"{batch_val_loss:.4f}"})
-                val_pbar.close()
+                        val_loss += loss_fn(preds, batch_y).item()
+                    
+                    if verbose and hasattr(val_pbar, 'set_postfix'):
+                        val_pbar.set_postfix({"val_loss": f"{val_loss/(len(val_loader)):.4f}"})
+                
+                if verbose and hasattr(val_pbar, 'close'):
+                    val_pbar.close()
 
             avg_train_loss = epoch_train_loss / len(train_model_loader)
             avg_val_loss = val_loss / len(val_loader)
             train_losses.append(avg_train_loss)
             val_losses.append(avg_val_loss)
 
-            # === MONITORING & MAINTENANCE ===
             # Architecture health check
-            if epoch % diversity_check_freq == 0 and hasattr(
-                model, "validate_architecture_health"
-            ):
+            if epoch % diversity_check_freq == 0 and hasattr(model, "validate_architecture_health"):
                 health = model.validate_architecture_health()
-                diversity_scores.append(
-                    {
-                        "epoch": epoch,
-                        "health_score": health["health_score"],
-                        "avg_identity_dominance": health["avg_identity_dominance"],
-                        "issues": len(health["issues"]),
-                    }
-                )
+                diversity_scores.append({
+                    "epoch": epoch,
+                    "health_score": health["health_score"],
+                    "avg_identity_dominance": health["avg_identity_dominance"],
+                    "issues": len(health["issues"]),
+                })
 
                 if health["health_score"] < 0.4:
-                    print(
-                        f"\n⚠️ Architecture health low ({health['health_score']:.3f}), applying fixes..."
-                    )
+                    if verbose:
+                        print(f"\n⚠️ Architecture health low ({health['health_score']:.3f})")
                     if hasattr(model, "apply_architecture_fixes"):
                         model.apply_architecture_fixes()
 
             # Progressive shrinking
-            if progressive_shrinking and epoch > epochs * 0.6 and epoch % 5 == 0:
+            if progressive_shrinking and epoch > epochs * 0.6:
                 if hasattr(model, "prune_weak_operations"):
                     threshold = 0.1 + 0.1 * (epoch - epochs * 0.6) / (epochs * 0.4)
                     model.prune_weak_operations(threshold=threshold)
 
-            # Early stopping and best model tracking
+            # Early stopping
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 patience_counter = 0
-                best_state = {
-                    k: v.detach().clone() for k, v in model.state_dict().items()
-                }
-
+                best_state = {k: v.detach().clone().float() for k, v in model.state_dict().items()}
+                
                 if use_swa and swa_model and epoch >= swa_start:
                     swa_model.update_parameters(model)
             else:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    epoch_pbar.set_description(f"Early stopping at epoch {epoch+1}")
+                    if verbose:
+                        print(f"\nEarly stopping at epoch {epoch+1}")
                     break
 
-            # Update epoch progress bar
-            postfix = {
-                "train_loss": f"{avg_train_loss:.4f}",
-                "val_loss": f"{avg_val_loss:.4f}",
-                "best_val": f"{best_val_loss:.4f}",
-                "patience": f"{patience_counter}/{patience}",
-            }
+            # Progress update
+            if verbose and hasattr(epoch_pbar, 'set_postfix'):
+                epoch_pbar.set_postfix({
+                    "train": f"{avg_train_loss:.4f}",
+                    "val": f"{avg_val_loss:.4f}",
+                    "best": f"{best_val_loss:.4f}",
+                    "patience": f"{patience_counter}/{patience}",
+                })
 
-            if diversity_scores:
-                postfix["health"] = f"{diversity_scores[-1]['health_score']:.3f}"
-
-            epoch_pbar.set_postfix(postfix)
-
-        epoch_pbar.close()
+        if verbose and hasattr(epoch_pbar, 'close'):
+            epoch_pbar.close()
 
         training_time = time.time() - start_time
 
-        # === FINALIZATION ===
         # SWA finalization
         if use_swa and swa_model and epoch >= swa_start:
-            print("\n🔄 Finalizing SWA model...")
+            if verbose:
+                print("\n🔄 Finalizing SWA...")
             try:
-                torch.optim.swa_utils.update_bn(
-                    train_loader, swa_model, device=self.device
-                )
+                torch.optim.swa_utils.update_bn(train_loader, swa_model, device=self.device)
                 swa_val_loss = self._evaluate_model(swa_model, val_loader, loss_type)
                 if swa_val_loss < best_val_loss:
-                    print("✓ Using SWA model (better performance)")
-                    best_state = {
-                        k: v.detach().clone() for k, v in swa_model.state_dict().items()
-                    }
+                    if verbose:
+                        print("✓ SWA model is better")
+                    best_state = {k: v.detach().clone() for k, v in swa_model.state_dict().items()}
                     best_val_loss = swa_val_loss
             except Exception as e:
-                print(f"Warning: SWA finalization failed ({e})")
+                if verbose:
+                    print(f"Warning: SWA failed ({e})")
 
-        # Load best model and derive architecture
-        model.load_state_dict(best_state)
-        final_architecture = self._derive_final_architecture(model)
+        # Load best model
+        try:
+            model.load_state_dict(best_state)
+        except RuntimeError as e:
+            if "Missing key" in str(e):
+                # Handle missing buffers
+                filtered_state = {k: v for k, v in best_state.items() 
+                                if not k.startswith('_forecast_buffer') and not k.startswith('_context_buffer')}
+                model.load_state_dict(filtered_state, strict=False)
+            else:
+                raise e
+
+        # Ensure float32
+        if hasattr(model, 'ensure_float32_dtype'):
+            model.ensure_float32_dtype()
+        else:
+            model = model.float()
+
+        # Final results
+        #final_architecture = self._derive_final_architecture(model)
         final_metrics = self._compute_final_metrics(model, val_loader)
 
-        print(f"\n🎯 DARTS Training Completed in {training_time:.1f}s")
-        print(f"Final Val Loss: {best_val_loss:.6f}")
-        print(
-            f"MSE: {final_metrics['mse']:.6f} | MAE: {final_metrics['mae']:.6f} | R²: {final_metrics['r2_score']:.4f}"
-        )
+        if verbose:
+            print(f"\n🎯 Training completed in {training_time:.1f}s")
+            print(f"Best Val Loss: {best_val_loss:.6f}")
+            print(f"MSE: {final_metrics['mse']:.6f} | MAE: {final_metrics['mae']:.6f}")
 
-        # Return consolidated results
         results = {
             "model": model,
             "train_losses": train_losses,
             "val_losses": val_losses,
             "alpha_values": alpha_values,
             "diversity_scores": diversity_scores,
-            "final_architecture": final_architecture,
+            "final_architecture": model,
             "best_val_loss": best_val_loss,
             "training_time": training_time,
             "final_metrics": final_metrics,
@@ -589,16 +853,16 @@ class DARTSTrainer:
             train_dataset,
             batch_size=train_loader.batch_size,
             shuffle=True,
-            num_workers=train_loader.num_workers,
-            pin_memory=train_loader.pin_memory,
+            #num_workers=train_loader.num_workers,
+            #pin_memory=train_loader.pin_memory,
         )
 
         train_arch_loader = torch.utils.data.DataLoader(
             arch_dataset,
             batch_size=train_loader.batch_size,
             shuffle=True,
-            num_workers=train_loader.num_workers,
-            pin_memory=train_loader.pin_memory,
+            #num_workers=train_loader.num_workers,
+            #pin_memory=train_loader.pin_memory,
         )
 
         return train_arch_loader, train_model_loader
@@ -812,7 +1076,7 @@ class DARTSTrainer:
         targets_flat = np.concatenate(all_targets).reshape(-1)
 
         return self._compute_metrics(preds_flat, targets_flat)
-
+    
     def derive_final_architecture(self, model: nn.Module) -> nn.Module:
         """
         Create optimized model with fixed operations based on search results.
@@ -828,97 +1092,163 @@ class DARTSTrainer:
         print("🔧 Deriving final architecture...")
 
         # Replace mixed operations with fixed ones
-        for cell_idx, cell in enumerate(new_model.cells):
-            new_edges = nn.ModuleList()
-            for edge_idx, edge in enumerate(cell.edges):
-                weights = F.softmax(edge.alphas, dim=-1)
-                top_op_idx = weights.argmax().item()
-                top_op = edge.ops[top_op_idx]
+        if hasattr(new_model, 'cells'):
+            for cell_idx, cell in enumerate(new_model.cells):
+                new_edges = nn.ModuleList()
+                for edge_idx, edge in enumerate(cell.edges):
+                    weights = F.softmax(edge.alphas, dim=-1)
+                    top_op_idx = weights.argmax().item()
+                    top_op = edge.ops[top_op_idx]
 
-                print(
-                    f"   Cell {cell_idx}, Edge {edge_idx}: {type(top_op).__name__} "
-                    f"(weight: {weights[top_op_idx]:.3f})"
-                )
+                    print(
+                        f"   Cell {cell_idx}, Edge {edge_idx}: {type(top_op).__name__} "
+                        f"(weight: {weights[top_op_idx]:.3f})"
+                    )
 
-                fixed_edge = FixedOp(top_op)
-                new_edges.append(fixed_edge)
-            cell.edges = new_edges
+                    fixed_edge = FixedOp(top_op)
+                    new_edges.append(fixed_edge)
+                cell.edges = new_edges
 
         device = next(new_model.parameters()).device
 
         # Fix encoder
-        if hasattr(new_model, "forecast_encoder"):
-            encoder_weights = F.softmax(new_model.forecast_encoder.alphas, dim=-1)
-            top_idx = encoder_weights.argmax().item()
-            top_encoder = new_model.forecast_encoder.encoders[top_idx]
+        if hasattr(new_model, "forecast_encoder") and hasattr(new_model.forecast_encoder, 'alphas'):
+            try:
+                encoder_weights = F.softmax(new_model.forecast_encoder.alphas, dim=-1)
+                top_idx = encoder_weights.argmax().item()
+                
+                # Get the encoder based on the architecture
+                if hasattr(new_model.forecast_encoder, 'encoders'):
+                    top_encoder = new_model.forecast_encoder.encoders[top_idx]
+                elif hasattr(new_model.forecast_encoder, 'lstm') and top_idx == 0:
+                    top_encoder = new_model.forecast_encoder.lstm
+                elif hasattr(new_model.forecast_encoder, 'gru') and top_idx == 1:
+                    top_encoder = new_model.forecast_encoder.gru
+                elif hasattr(new_model.forecast_encoder, 'transformer') and top_idx == 2:
+                    top_encoder = new_model.forecast_encoder.transformer
+                else:
+                    raise ValueError(f"Could not find encoder for index {top_idx}")
 
-            print(
-                f"   → Fixing Forecast Encoder: {type(top_encoder).__name__} "
-                f"(weight: {encoder_weights[top_idx]:.3f})"
-            )
+                encoder_names = getattr(new_model.forecast_encoder, 'encoder_names', ['lstm', 'gru', 'transformer'])
+                encoder_type = encoder_names[top_idx] if top_idx < len(encoder_names) else 'unknown'
 
-            new_model.forecast_encoder = FixedEncoder(top_encoder).to(device)
+                print(
+                    f"   → Fixing Forecast Encoder: {type(top_encoder).__name__} "
+                    f"(weight: {encoder_weights[top_idx]:.3f})"
+                )
+
+                # Create fixed encoder using ArchitectureConverter
+                new_model.forecast_encoder = ArchitectureConverter.create_fixed_encoder(
+                    new_model.forecast_encoder
+                ).to(device)
+
+            except Exception as e:
+                print(f"Warning: Could not fix encoder architecture: {e}")
+                print("Falling back to weight fixing...")
+                ArchitectureConverter.fix_mixed_weights(new_model.forecast_encoder)
 
         # Fix decoder
-        if hasattr(new_model, "forecast_decoder"):
-            decoder_weights = F.softmax(new_model.forecast_decoder.alphas, dim=-1)
-            top_idx = decoder_weights.argmax().item()
-            top_decoder = new_model.forecast_decoder.decoders[top_idx]
-            top_decoder_type = new_model.forecast_decoder.rnn_names[top_idx]
-
-            # Infer latent_dim safely
-            if hasattr(top_decoder, "latent_dim"):
-                latent_dim = top_decoder.latent_dim
-            elif hasattr(top_decoder, "hidden_size"):  # for LSTM/GRU
-                latent_dim = top_decoder.hidden_size
-            else:
-                raise ValueError("Could not extract latent_dim from selected decoder")
-
-            print(
-                f"   → Fixing Forecast Decoder: {type(top_decoder).__name__} "
-                f"(weight: {decoder_weights[top_idx]:.3f})"
-            )
-
-            max_att_idx = 0
-            if new_model.use_attention_bridge and hasattr(
-                new_model.forecast_decoder, "attention_alphas"
-            ):
-                attention_weights = F.softmax(
-                    new_model.forecast_decoder.attention_alphas, dim=0
-                )
-                max_idx = attention_weights.argmax().item()
-
-                if max_idx == len(attention_weights) - 1:
-                    attention_choice = "no_attention"
+        if hasattr(new_model, "forecast_decoder") and hasattr(new_model.forecast_decoder, 'alphas'):
+            try:
+                decoder_weights = F.softmax(new_model.forecast_decoder.alphas, dim=-1)
+                top_idx = decoder_weights.argmax().item()
+                
+                # Get the decoder based on the architecture
+                if hasattr(new_model.forecast_decoder, 'decoders'):
+                    top_decoder = new_model.forecast_decoder.decoders[top_idx]
+                elif hasattr(new_model.forecast_decoder, 'lstm') and top_idx == 0:
+                    top_decoder = new_model.forecast_decoder.lstm
+                elif hasattr(new_model.forecast_decoder, 'gru') and top_idx == 1:
+                    top_decoder = new_model.forecast_decoder.gru
+                elif hasattr(new_model.forecast_decoder, 'transformer') and top_idx == 2:
+                    top_decoder = new_model.forecast_decoder.transformer
                 else:
-                    attention_choice = f"attention_layer_{max_idx}"
+                    raise ValueError(f"Could not find decoder for index {top_idx}")
 
-                print("   → Using Attention Bridge:", attention_choice)
-                max_att_idx = max_idx
+                decoder_names = getattr(new_model.forecast_decoder, 'rnn_names', 
+                                    getattr(new_model.forecast_decoder, 'decoder_names', ['lstm', 'gru', 'transformer']))
+                top_decoder_type = decoder_names[top_idx] if top_idx < len(decoder_names) else 'unknown'
 
-            attention_bridges = (
-                new_model.forecast_decoder.attention_bridges
-                if hasattr(new_model.forecast_decoder, "attention_bridges")
-                else None
-            )
+                # Infer latent_dim safely
+                if hasattr(top_decoder, "latent_dim"):
+                    latent_dim = top_decoder.latent_dim
+                elif hasattr(top_decoder, "hidden_size"):  # for LSTM/GRU
+                    latent_dim = top_decoder.hidden_size
+                elif hasattr(new_model.forecast_decoder, "latent_dim"):
+                    latent_dim = new_model.forecast_decoder.latent_dim
+                else:
+                    print("Warning: Could not extract latent_dim, using default 64")
+                    latent_dim = 64
 
-            new_model.forecast_decoder = FixedDecoder(
-                rnn=top_decoder,
-                rnn_type=top_decoder_type,  # Optional: makes it explicit
-                input_dim=new_model.input_dim,
-                latent_dim=latent_dim,
-                dropout=new_model.dropout,
-                use_attention_bridge=new_model.use_attention_bridge
-                and attention_choice != "no_attention",
-                attention_layers=1 if attention_choice != "no_attention" else 0,
-                attention_heads=8,
-                attention_d_model=latent_dim,
-            ).to(device)
-            new_model.forecast_decoder.attention_bridges = (
-                nn.ModuleList([attention_bridges[max_att_idx]])
-                if attention_choice != "no_attention"
-                else None
-            )
+                print(
+                    f"   → Fixing Forecast Decoder: {type(top_decoder).__name__} "
+                    f"(weight: {decoder_weights[top_idx]:.3f})"
+                )
+
+                # Handle attention bridge selection
+                attention_choice = "no_attention"
+                max_att_idx = 0
+                
+                use_attention = getattr(new_model, 'use_attention_bridge', False)
+                
+                if use_attention and hasattr(new_model.forecast_decoder, "attention_alphas"):
+                    try:
+                        attention_weights = F.softmax(
+                            new_model.forecast_decoder.attention_alphas, dim=0
+                        )
+                        max_idx = attention_weights.argmax().item()
+
+                        if max_idx == len(attention_weights) - 1:
+                            attention_choice = "no_attention"
+                        else:
+                            attention_choice = f"attention_layer_{max_idx}"
+                            max_att_idx = max_idx
+
+                        print("   → Using Attention Bridge:", attention_choice)
+                    except Exception as e:
+                        print(f"Warning: Could not determine attention choice: {e}")
+                        attention_choice = "attention" if use_attention else "no_attention"
+
+                # Get attention bridges safely
+                attention_bridges = None
+                if hasattr(new_model.forecast_decoder, "attention_bridges"):
+                    attention_bridges = new_model.forecast_decoder.attention_bridges
+                elif hasattr(new_model.forecast_decoder, "attention_bridge"):
+                    # Handle single attention bridge case
+                    attention_bridges = [new_model.forecast_decoder.attention_bridge]
+
+                # Create fixed decoder using ArchitectureConverter
+                use_attention_final = use_attention and attention_choice != "no_attention"
+                
+                new_model.forecast_decoder = ArchitectureConverter.create_fixed_decoder(
+                    new_model.forecast_decoder,
+                    use_attention_bridge=use_attention_final
+                ).to(device)
+
+                # Handle attention bridges assignment safely
+                if use_attention_final and attention_bridges is not None:
+                    try:
+                        if isinstance(attention_bridges, (list, nn.ModuleList)) and len(attention_bridges) > max_att_idx:
+                            if hasattr(new_model.forecast_decoder, 'attention_bridges'):
+                                new_model.forecast_decoder.attention_bridges = nn.ModuleList([attention_bridges[max_att_idx]])
+                            elif hasattr(new_model.forecast_decoder, 'attention_bridge'):
+                                # Transfer weights to the single attention bridge
+                                new_model.forecast_decoder.attention_bridge.load_state_dict(
+                                    attention_bridges[max_att_idx].state_dict()
+                                )
+                        else:
+                            print("Warning: Could not assign attention bridges - index out of range or invalid format")
+                    except Exception as e:
+                        print(f"Warning: Could not assign attention bridges: {e}")
+                else:
+                    # Ensure no attention bridges are set
+                    if hasattr(new_model.forecast_decoder, 'attention_bridges'):
+                        new_model.forecast_decoder.attention_bridges = None
+
+            except Exception as e:
+                print(f"Warning: Could not fix decoder architecture: {e}")
+                print("Falling back to weight fixing...")
+                ArchitectureConverter.fix_mixed_weights(new_model.forecast_decoder)
 
         print("✓ Architecture derivation completed")
         return new_model
@@ -932,7 +1262,7 @@ class DARTSTrainer:
         epochs: int = 100,
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-5,
-        patience: int = 15,
+        patience: int = 50,
         loss_type: str = "huber",
         use_onecycle: bool = True,
         swa_start_ratio: float = 0.33,
@@ -1103,8 +1433,13 @@ class DARTSTrainer:
             best_state,
         )
 
+        if swa_used:
+            # strip .module
+            if any(k.startswith("module.") for k in best_state.keys()):
+                best_state = {k.replace("module.", "", 1): v for k, v in best_state.items()}
+                
         # Evaluate on test set
-        model.load_state_dict(best_state)
+        model.load_state_dict(best_state, strict=False)
         test_results = self._evaluate_test_set(model, test_loader, loss_type)
         training_time = time.time() - start_time
 
@@ -1281,7 +1616,7 @@ class DARTSTrainer:
             """Generate and evaluate a single candidate."""
             try:
                 # Random architecture generation
-                num_ops = random.randint(5, len(self.all_ops))
+                num_ops = random.randint(2, len(self.all_ops))
                 selected_ops = ["Identity"] + random.sample(
                     [op for op in self.all_ops if op != "Identity"], num_ops - 1
                 )
@@ -1306,9 +1641,7 @@ class DARTSTrainer:
                 ).to(self.device)
 
                 # Evaluate with zero-cost metrics
-                metrics = self.evaluate_zero_cost_metrics(
-                    model, val_loader, max_samples
-                )
+                metrics = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
                 score = metrics["aggregate_score"]
 
                 return {
@@ -1321,7 +1654,6 @@ class DARTSTrainer:
                 }
 
             except Exception as e:
-                print(f"Warning: Candidate {candidate_id + 1} evaluation failed: {e}")
                 return {
                     "candidate_id": candidate_id,
                     "model": None,
@@ -1331,49 +1663,46 @@ class DARTSTrainer:
                     "error": str(e),
                 }
 
-        # Execute parallel candidate generation and evaluation
+        # ─────────────────────────────────────────────────────────────────────────────
+
         candidates = []
         completed_count = 0
         lock = threading.Lock()
 
-        # Progress tracking function
         def update_progress(future):
             nonlocal completed_count
+            result = future.result()
             with lock:
                 completed_count += 1
-                result = future.result()
+                cid = result.get("candidate_id", -1)
                 if result["success"]:
                     print(
-                        f"✓ Candidate {completed_count}/{num_candidates} - "
-                        f"Score: {result['score']:.4f}, "
-                        f"Ops: {len(result.get('selected_ops', []))}, "
+                        f"✓ Candidate {completed_count}/{num_candidates} "
+                        f"(ID {cid}) | Score: {result['score']:.4f} | "
+                        f"Ops: {len(result.get('selected_ops', []))} | "
                         f"Hidden: {result.get('hidden_dim', 'N/A')}"
                     )
                 else:
-                    print(f"✗ Candidate {completed_count}/{num_candidates} - Failed")
+                    print(f"✗ Candidate {completed_count}/{num_candidates} (ID {cid}) - Failed")
 
-        # Use ThreadPoolExecutor for I/O bound tasks or ProcessPoolExecutor for CPU bound
-        # ThreadPoolExecutor is usually better for PyTorch models due to GIL and CUDA context
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all candidate generation tasks
-            future_to_id = {
+            futures = {
                 executor.submit(generate_and_evaluate_candidate, i): i
                 for i in range(num_candidates)
             }
 
-            # Add callback for progress tracking
-            for future in future_to_id:
+            for future in futures:
                 future.add_done_callback(update_progress)
 
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(future_to_id):
-                result = future.result()
-                if result["success"]:
-                    candidates.append(result)
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if result["success"]:
+                        candidates.append(result)
+                except Exception as e:
+                    print(f"⚠️ Unexpected error in future: {e}")
 
-        print(
-            f"\n📊 Phase 1 completed: {len(candidates)}/{num_candidates} candidates successful"
-        )
+        print(f"\n📊 Phase 1 completed: {len(candidates)}/{num_candidates} candidates successful")
 
         # Phase 2: Select top candidates
         print(f"\n🏆 Phase 2: Selecting top {top_k} candidates...")
@@ -1450,7 +1779,7 @@ class DARTSTrainer:
             final_results["train_losses"],
             final_results["val_losses"],
             title="Final Model Training Progress",
-            save_path="final_model_training.png",
+            save_path="final_model_training.pdf",
         )
 
         # Store search results
@@ -1635,36 +1964,6 @@ class DARTSTrainer:
         ax.set_ylim(0, 12)
         ax.axis("off")
 
-        # Default values if no model_info provided
-        if model_info is None:
-            model_info = {
-                "input_features": 3,
-                "embedding_dim": 128,
-                "cells": [
-                    {
-                        "ops": [
-                            "ConvMixerOp",
-                            "FourierOp",
-                            "GRNOp",
-                            "ResidualMLPOp",
-                            "ConvMixerOp",
-                        ]
-                    },
-                    {
-                        "ops": [
-                            "ResidualMLPOp",
-                            "ConvMixerOp",
-                            "WaveletOp",
-                            "TCNOp",
-                            "FourierOp",
-                        ]
-                    },
-                ],
-                "forecast_encoder": "LSTM",
-                "forecast_decoder": "LSTM",
-                "mlp_dims": [128, 256, 128],
-                "output_features": 3,
-            }
 
         # Beautiful color scheme
         colors = {
@@ -2269,6 +2568,7 @@ class DARTSTrainer:
         figsize: Tuple[int, int] = (12, 4),
         show: bool = False,
         device: Optional[torch.device] = None,
+        names: Optional[List[str]] = None,
     ) -> plt.Figure:
         """
         Plot predicted sequence over the validation data, aligned to form a full series forecast.
@@ -2323,7 +2623,7 @@ class DARTSTrainer:
                 axes[i].plot(
                     np.arange(len(feature_series)),
                     feature_series,
-                    label=f"Original (Feature {i})",
+                    label=f"Original - {names[i] if names else f'Feature {i}'}",
                     alpha=0.5,
                 )
 
@@ -2338,7 +2638,7 @@ class DARTSTrainer:
                 axes[i].plot(
                     np.arange(forecast_range.start, forecast_range.stop),
                     forecast_plot,
-                    label=f"Forecast (Feature {i})",
+                    label=f"Forecast - {names[i] if names else f'Feature {i}'}",
                     color="orange",
                 )
 
@@ -2359,7 +2659,7 @@ class DARTSTrainer:
                     linestyle="--",
                     label="Forecast Start",
                 )
-                axes[i].set_title(f"Feature {i}: Full Series with Forecast")
+                axes[i].set_title(f"{names[i] if names else f'Feature {i}'} Forecast")
                 axes[i].legend(loc="upper left")
                 axes[i].grid(True)
 
@@ -2372,7 +2672,7 @@ class DARTSTrainer:
             fig, ax = plt.subplots(figsize=figsize)
             if forecast.ndim > 1:
                 for i in range(forecast.shape[1]):
-                    ax.plot(forecast[:, i], label=f"Forecast (Feature {i})")
+                    ax.plot(forecast[:, i], label=f"Forecast {names[i] if names else f'Feature {i}'}")
             else:
                 ax.plot(forecast, label="Forecast", color="orange")
             ax.set_title("Validation Prediction")

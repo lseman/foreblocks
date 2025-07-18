@@ -34,11 +34,11 @@ from .nha import NHA
 from .ode import NeuralODE
 
 # Simple blocks
-from .simple import GRU
+from .simple import GRN
 
 __all__ = [
     # Simple blocks
-    "GRU",
+    "GRN",
     "NHA",
     # Fourier-based blocks
     "FourierFeatures",

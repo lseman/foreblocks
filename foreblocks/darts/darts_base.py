@@ -1,1054 +1,567 @@
 import math
+import random
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Tuple, Union
+
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization"""
+    def __init__(self, dim: int, eps: float = 1e-8):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        norm = x.norm(dim=-1, keepdim=True) * (x.size(-1) ** -0.5)
+        return self.weight * x / (norm + self.eps)
+
 
 class LinearSelfAttention(nn.Module):
-    def __init__(self, dim, heads=4, dropout=0.0):
+    """Improved linear self-attention with consistent behavior"""
+    def __init__(self, dim, heads=4, dropout=0.0, causal=False):
         super().__init__()
         self.heads = heads
         self.dim = dim
-        self.scale = dim**-0.5
-        self.to_qkv = nn.Linear(dim, dim * 3)
-        self.out_proj = nn.Linear(dim, dim)
-        self.dropout = nn.Dropout(dropout)
+        self.head_dim = dim // heads
+        self.scale = self.head_dim**-0.5
+        self.causal = causal
+        
+        # Ensure head_dim is valid
+        assert dim % heads == 0, f"dim {dim} must be divisible by heads {heads}"
+        
+        # Fused QKV projection
+        self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
+        self.dropout_p = dropout
+        
+        # Layer norm for stability
+        self.norm = RMSNorm(dim)
 
     def forward(self, x):
-        B, T, D = x.size()
+        B, T, D = x.shape
         H = self.heads
-        qkv = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = [
-            t.view(B, T, H, D // H).transpose(1, 2) for t in qkv
-        ]  # [B, H, T, D//H]
-
-        k = k.softmax(dim=-2)  # across sequence
-        context = torch.einsum("bhtd,bhtv->bhdv", k, v)  # context: [B, H, D//H, D//H]
-        out = torch.einsum("bhtd,bhdv->bhtv", q, context)  # attention result
-        out = out.transpose(1, 2).contiguous().view(B, T, D)
-        return self.dropout(self.out_proj(out))
+        
+        # Apply normalization first
+        x_norm = self.norm(x)
+        
+        # More efficient reshape pattern
+        qkv = self.to_qkv(x_norm).view(B, T, 3, H, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)  # [B, H, T, head_dim]
+        
+        if self.causal:
+            # Standard causal attention for autoregressive behavior
+            scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+            
+            # Create causal mask
+            mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
+            scores.masked_fill_(mask, float('-inf'))
+            
+            attn_weights = F.softmax(scores, dim=-1)
+            if self.training and self.dropout_p > 0:
+                attn_weights = F.dropout(attn_weights, p=self.dropout_p)
+            
+            out = torch.matmul(attn_weights, v)
+        else:
+            # Linear attention with numerical stability (non-causal)
+            # Apply softmax to keys for stability
+            k_norm = F.softmax(k * self.scale, dim=-2)
+            
+            # Compute context and output
+            context = torch.einsum('bhtd,bhtv->bhdv', k_norm, v)
+            out = torch.einsum('bhtd,bhdv->bhtv', q, context)
+        
+        # Reshape back and apply residual connection
+        out = out.transpose(1, 2).reshape(B, T, D)
+        out = self.out_proj(out)
+        
+        if self.training and self.dropout_p > 0:
+            out = F.dropout(out, p=self.dropout_p)
+        
+        # Residual connection
+        return x + out
 
 
 class LightweightTransformerEncoder(nn.Module):
-    def __init__(self, input_dim, latent_dim, num_layers=2, dropout=0.1, nhead=4):
+    """Improved transformer encoder with better RNN compatibility"""
+    def __init__(self, input_dim, latent_dim, num_layers=2, dropout=0.1, nhead=4, max_seq_len=512, causal=False):
         super().__init__()
-        self.latent_dim = latent_dim  # ← this was missing
+        self.latent_dim = latent_dim
+        self.num_layers = num_layers
+        self.causal = causal
 
-        self.input_proj = nn.Linear(input_dim, latent_dim)
-        self.pos_encoder = PositionalEncoding(latent_dim)
-        self.layers = nn.ModuleList(
-            [
-                nn.ModuleDict(
-                    {
-                        "attn": LinearSelfAttention(
-                            latent_dim, heads=nhead, dropout=dropout
-                        ),
-                        "ffn": nn.Sequential(
-                            nn.Linear(latent_dim, latent_dim * 4),
-                            nn.ReLU(),
-                            nn.Dropout(dropout),
-                            nn.Linear(latent_dim * 4, latent_dim),
-                        ),
-                        "norm1": nn.LayerNorm(latent_dim),
-                        "norm2": nn.LayerNorm(latent_dim),
-                        "drop": nn.Dropout(dropout),
-                    }
-                )
-                for _ in range(num_layers)
-            ]
-        )
-        self.state_proj = nn.Linear(latent_dim, latent_dim)
+        self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
+        
+        # Learnable positional embeddings
+        self.pos_embed = nn.Parameter(torch.randn(1, max_seq_len, latent_dim) * 0.02)
+        
+        # Transformer layers
+        self.layers = nn.ModuleList([
+            nn.ModuleDict({
+                'self_attn': LinearSelfAttention(latent_dim, heads=nhead, dropout=dropout, causal=causal),
+                'ffn': nn.Sequential(
+                    nn.Linear(latent_dim, latent_dim * 4, bias=False),
+                    nn.SiLU(),
+                    nn.Linear(latent_dim * 4, latent_dim, bias=False),
+                ),
+                'norm1': RMSNorm(latent_dim),
+                'norm2': RMSNorm(latent_dim),
+            })
+            for _ in range(num_layers)
+        ])
+        
+        self.final_norm = RMSNorm(latent_dim)
+        self.dropout_p = dropout
+        
+        # State projection for RNN compatibility
+        self.state_proj = nn.Linear(latent_dim, latent_dim * 2, bias=False)  # Project to (h, c)
 
     def forward(self, x, hidden_state=None):
+        B, T, _ = x.shape
+        
         x = self.input_proj(x)
-        x = self.pos_encoder(x)
-        for layer in self.layers:
-            attn_out = layer["attn"](x)
-            x = layer["norm1"](x + layer["drop"](attn_out))
-            ff_out = layer["ffn"](x)
-            x = layer["norm2"](x + layer["drop"](ff_out))
+        
+        # Add positional encoding with interpolation for longer sequences
+        if T <= self.pos_embed.size(1):
+            x = x + self.pos_embed[:, :T]
+        else:
+            # Interpolate positional embeddings for longer sequences
+            pos_embed_interp = F.interpolate(
+                self.pos_embed.transpose(1, 2), 
+                size=T, 
+                mode='linear', 
+                align_corners=False
+            ).transpose(1, 2)
+            x = x + pos_embed_interp
 
-        ctx = x[:, -1:, :]
-        h_state = (
-            self.state_proj(ctx.squeeze(1))
-            .unsqueeze(0)
-            .expand(len(self.layers), -1, -1)
-            .contiguous()
-        )
-        c_state = h_state.clone()
-        return x, ctx, (h_state, c_state)
+        # Process through transformer layers
+        for layer in self.layers:
+            # Self-attention with residual (handled inside LinearSelfAttention)
+            x = layer['self_attn'](x)
+            
+            # FFN with residual
+            ffn_input = layer['norm1'](x)
+            ffn_out = layer['ffn'](ffn_input)
+            if self.training and self.dropout_p > 0:
+                ffn_out = F.dropout(ffn_out, p=self.dropout_p)
+            x = layer['norm2'](x + ffn_out)
+
+        x = self.final_norm(x)
+        
+        # Create RNN-compatible outputs
+        # Context is the last timestep
+        context = x[:, -1:, :]  # [B, 1, D]
+        
+        # Create hidden state compatible with RNNs
+        # Use mean pooling of the sequence for global representation
+        pooled = x.mean(dim=1)  # [B, D]
+        state_proj = self.state_proj(pooled)  # [B, 2*D]
+        h_state, c_state = state_proj.chunk(2, dim=-1)  # Each [B, D]
+        
+        # Reshape to match RNN state format [num_layers, B, D]
+        h_state = h_state.unsqueeze(0).expand(self.num_layers, -1, -1)
+        c_state = c_state.unsqueeze(0).expand(self.num_layers, -1, -1)
+        
+        return x, context, (h_state, c_state)
 
 
 class LightweightTransformerDecoder(nn.Module):
-    def __init__(self, input_dim, latent_dim, num_layers=2, dropout=0.1, nhead=4):
+    """Improved transformer decoder with better compatibility"""
+    def __init__(self, input_dim, latent_dim, num_layers=2, dropout=0.1, nhead=4, max_seq_len=512, causal=True):
         super().__init__()
         self.latent_dim = latent_dim
-        self.input_proj = nn.Linear(input_dim, latent_dim)
-        self.pos_decoder = nn.Parameter(torch.randn(1, 512, latent_dim) * 0.02)
-        self.layers = nn.ModuleList(
-            [
-                nn.ModuleDict(
-                    {
-                        "self_attn": LinearSelfAttention(
-                            latent_dim, heads=nhead, dropout=dropout
-                        ),
-                        "cross_attn": nn.MultiheadAttention(
-                            latent_dim, nhead, dropout=dropout, batch_first=True
-                        ),
-                        "ffn": nn.Sequential(
-                            nn.Linear(latent_dim, latent_dim * 4),
-                            nn.ReLU(),
-                            nn.Dropout(dropout),
-                            nn.Linear(latent_dim * 4, latent_dim),
-                        ),
-                        "norm1": nn.LayerNorm(latent_dim),
-                        "norm2": nn.LayerNorm(latent_dim),
-                        "norm3": nn.LayerNorm(latent_dim),
-                        "drop": nn.Dropout(dropout),
-                    }
-                )
-                for _ in range(num_layers)
-            ]
-        )
-        self.state_proj = nn.Linear(latent_dim, latent_dim)
+        self.num_layers = num_layers
+        self.causal = causal
+        
+        self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
+        self.pos_embed = nn.Parameter(torch.randn(1, max_seq_len, latent_dim) * 0.02)
+        
+        # Decoder layers
+        self.layers = nn.ModuleList([
+            nn.ModuleDict({
+                'self_attn': LinearSelfAttention(latent_dim, heads=nhead, dropout=dropout, causal=causal),
+                'cross_attn': nn.MultiheadAttention(
+                    latent_dim, nhead, dropout=dropout, batch_first=True, bias=False
+                ),
+                'ffn': nn.Sequential(
+                    nn.Linear(latent_dim, latent_dim * 4, bias=False),
+                    nn.SiLU(),
+                    nn.Linear(latent_dim * 4, latent_dim, bias=False),
+                ),
+                'norm1': RMSNorm(latent_dim),
+                'norm2': RMSNorm(latent_dim),
+                'norm3': RMSNorm(latent_dim),
+            })
+            for _ in range(num_layers)
+        ])
+        
+        self.final_norm = RMSNorm(latent_dim)
+        self.dropout_p = dropout
+        self.state_proj = nn.Linear(latent_dim, latent_dim * 2, bias=False)
+
+    def _prepare_memory(self, memory_or_hidden):
+        """Robustly prepare memory from various input formats"""
+        if memory_or_hidden is None:
+            return None
+            
+        if isinstance(memory_or_hidden, tuple):
+            if len(memory_or_hidden) == 2:  # (h, c) format
+                h, c = memory_or_hidden
+                if h.dim() == 3:
+                    # Handle both [layers, batch, dim] and [batch, layers, dim]
+                    if h.size(0) == self.num_layers:
+                        memory = h.transpose(0, 1)  # [batch, layers, dim]
+                    else:
+                        memory = h  # Already [batch, seq, dim]
+                else:
+                    memory = h.unsqueeze(1)  # Add sequence dimension
+            else:
+                memory = memory_or_hidden[0]
+        else:
+            # Single tensor
+            if memory_or_hidden.dim() == 3:
+                if memory_or_hidden.size(0) == self.num_layers:
+                    memory = memory_or_hidden.transpose(0, 1)
+                else:
+                    memory = memory_or_hidden
+            else:
+                memory = memory_or_hidden.unsqueeze(1)
+                
+        return memory
 
     def forward(self, tgt, memory_or_hidden, hidden_state=None):
-        # Handle RNN-style state or Transformer memory
-        if isinstance(memory_or_hidden, tuple):
-            memory = memory_or_hidden[0].transpose(0, 1)  # [B, T, D]
-        else:
-            memory = memory_or_hidden
-
         tgt = self.input_proj(tgt)
         seq_len = tgt.size(1)
-        if seq_len <= self.pos_decoder.size(1):
-            tgt = tgt + self.pos_decoder[:, :seq_len, :]
+        
+        # Add positional encoding
+        if seq_len <= self.pos_embed.size(1):
+            tgt = tgt + self.pos_embed[:, :seq_len]
+        else:
+            pos_embed_interp = F.interpolate(
+                self.pos_embed.transpose(1, 2), 
+                size=seq_len, 
+                mode='linear', 
+                align_corners=False
+            ).transpose(1, 2)
+            tgt = tgt + pos_embed_interp
 
+        # Prepare memory
+        memory = self._prepare_memory(memory_or_hidden)
+
+        # Process through decoder layers
         for layer in self.layers:
-            tgt2 = layer["self_attn"](tgt)
-            tgt = layer["norm1"](tgt + layer["drop"](tgt2))
+            # Self-attention (causal)
+            tgt = layer['self_attn'](tgt)
 
-            tgt2, _ = layer["cross_attn"](tgt, memory, memory)
-            tgt = layer["norm2"](tgt + layer["drop"](tgt2))
+            # Cross-attention with robust error handling
+            if memory is not None:
+                try:
+                    attn_input = layer['norm1'](tgt)
+                    cross_out, _ = layer['cross_attn'](attn_input, memory, memory)
+                    if self.training and self.dropout_p > 0:
+                        cross_out = F.dropout(cross_out, p=self.dropout_p)
+                    tgt = layer['norm2'](tgt + cross_out)
+                except (RuntimeError, ValueError) as e:
+                    # Fallback: skip cross-attention if shapes don't match
+                    tgt = layer['norm2'](tgt)
+            else:
+                tgt = layer['norm2'](tgt)
 
-            tgt2 = layer["ffn"](tgt)
-            tgt = layer["norm3"](tgt + layer["drop"](tgt2))
+            # FFN
+            ffn_input = layer['norm2'](tgt) if memory is None else tgt
+            ffn_out = layer['ffn'](ffn_input)
+            if self.training and self.dropout_p > 0:
+                ffn_out = F.dropout(ffn_out, p=self.dropout_p)
+            tgt = layer['norm3'](tgt + ffn_out)
 
-        last = tgt[:, -1, :]
-        h_state = (
-            self.state_proj(last)
-            .unsqueeze(0)
-            .expand(len(self.layers), -1, -1)
-            .contiguous()
-        )
-        c_state = h_state.clone()
+        tgt = self.final_norm(tgt)
+
+        # Create RNN-compatible state
+        last_token = tgt[:, -1]  # [B, D]
+        state_proj = self.state_proj(last_token)  # [B, 2*D]
+        h_state, c_state = state_proj.chunk(2, dim=-1)
+        
+        # Reshape to RNN format
+        h_state = h_state.unsqueeze(0).expand(self.num_layers, -1, -1)
+        c_state = c_state.unsqueeze(0).expand(self.num_layers, -1, -1)
+        
         return tgt, (h_state, c_state)
 
+class ArchitectureNormalizer(nn.Module):
+    """Normalizes outputs from different architectures for compatibility"""
+    
+    def __init__(self, latent_dim: int):
+        super().__init__()
+        self.latent_dim = latent_dim
+        
+        # Projection layers to ensure consistent output dimensions
+        self.rnn_proj = nn.Linear(latent_dim, latent_dim)
+        self.transformer_proj = nn.Linear(latent_dim, latent_dim)
+        
+        # State normalization
+        self.state_norm = nn.LayerNorm(latent_dim)
+    
+    def normalize_state(self, state, arch_type: str):
+        """FIX: Better state normalization with type checking"""
+        if state is None:
+            return None, None
+            
+        if arch_type == "lstm":
+            if isinstance(state, tuple) and len(state) == 2:
+                h, c = state
+                return self.state_norm(h), self.state_norm(c)
+            else:
+                # Handle malformed LSTM state
+                h = state if not isinstance(state, tuple) else state[0]
+                c = torch.zeros_like(h)
+                return self.state_norm(h), self.state_norm(c)
+        
+        elif arch_type == "gru":
+            h = state if not isinstance(state, tuple) else state[0]
+            c = torch.zeros_like(h)
+            return self.state_norm(h), self.state_norm(c)
+        
+        elif arch_type == "transformer":
+            if isinstance(state, tuple) and len(state) == 2:
+                h, c = state
+                return self.state_norm(h), self.state_norm(c)
+            else:
+                h = state if not isinstance(state, tuple) else state[0]
+                c = torch.zeros_like(h) if h is not None else None
+                return self.state_norm(h) if h is not None else None, self.state_norm(c) if c is not None else None
 
-class BaseRNN(nn.Module):
-    """Streamlined base class for encoder/decoder implementations"""
+    def normalize_output(self, output: torch.Tensor, arch_type: str) -> torch.Tensor:
+        """Apply architecture-specific normalization"""
+        if arch_type in ["lstm", "gru"]:
+            return self.rnn_proj(output)
+        elif arch_type == "transformer":
+            return self.transformer_proj(output)
+        else:
+            return output
 
+class MixedEncoder(nn.Module):
+    """Improved mixed encoder with better compatibility"""
+    
     def __init__(
-        self, input_dim: int, latent_dim: int, num_layers: int = 2, dropout: float = 0.0
+        self,
+        input_dim: int,
+        latent_dim: int,
+        seq_len: int,
+        dropout: float = 0.1,
+        temperature: float = 1.0,
     ):
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
-        self.num_layers = num_layers
-        self.dropout = dropout
-
-        # Cache RNN names and mappings for efficiency
-        self.rnn_names = ["lstm", "gru", "transformer"]
-        self._type_cache = {}
-        self._alpha_cache = {}
-
-    def _create_rnn(
-        self,
-        rnn_type: str,
-        input_dim: int,
-        latent_dim: int,
-        num_layers: int,
-        dropout: float,
-        is_decoder: bool = False,
-    ) -> nn.Module:
-        """Create RNN with optimized parameter handling"""
-        rnn_type = rnn_type.lower()
-
-        if rnn_type == "transformer":
-            return self._create_transformer(
-                input_dim, latent_dim, num_layers, dropout, is_decoder
-            )
-        elif rnn_type in ["lstm", "gru"]:
-            return self._create_recurrent_rnn(
-                rnn_type, input_dim, latent_dim, num_layers, dropout
-            )
-        else:
-            raise ValueError(f"Unsupported RNN type: {rnn_type}")
-
-    def _create_transformer(
-        self,
-        input_dim: int,
-        latent_dim: int,
-        num_layers: int,
-        dropout: float,
-        is_decoder: bool,
-    ) -> nn.Module:
-        """Create transformer encoder or decoder"""
-        wrapper_class = (
-            LightweightTransformerDecoder
-            if is_decoder
-            else LightweightTransformerEncoder
-        )
-        return wrapper_class(
-            input_dim=input_dim,
-            latent_dim=latent_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-        )
-
-    def _create_recurrent_rnn(
-        self,
-        rnn_type: str,
-        input_dim: int,
-        latent_dim: int,
-        num_layers: int,
-        dropout: float,
-    ) -> nn.Module:
-        """Create LSTM or GRU with proper initialization"""
-        rnn_class = nn.LSTM if rnn_type == "lstm" else nn.GRU
-
-        # Optimize dropout handling
-        effective_dropout = dropout if num_layers > 1 else 0.0
-
-        # Create RNN with appropriate parameters
-        if rnn_type == "lstm":
-            rnn = rnn_class(
-                input_size=input_dim,
-                hidden_size=latent_dim,
-                num_layers=num_layers,
-                dropout=effective_dropout,
-                batch_first=True,
-                proj_size=0,  # LSTM-specific parameter
-            )
-        else:  # GRU
-            rnn = rnn_class(
-                input_size=input_dim,
-                hidden_size=latent_dim,
-                num_layers=num_layers,
-                dropout=effective_dropout,
-                batch_first=True,
-            )
-
-        # Initialize weights for better convergence
-        self._init_rnn_weights(rnn, rnn_type)
-        return rnn
-
-    def _init_rnn_weights(self, rnn: nn.Module, rnn_type: str):
-        """Initialize RNN weights for better training stability"""
-        for name, param in rnn.named_parameters():
-            if "weight_ih" in name:
-                nn.init.xavier_uniform_(param.data)
-            elif "weight_hh" in name:
-                nn.init.orthogonal_(param.data)
-            elif "bias" in name:
-                param.data.fill_(0)
-
-                # Set forget gate bias to 1 for LSTM
-                if rnn_type == "lstm" and "bias_ih" in name:
-                    n = param.size(0)
-                    start, end = n // 4, n // 2
-                    param.data[start:end].fill_(1.0)
-
-    def _detect_rnn_type(self, rnn: nn.Module) -> str:
-        """Detect RNN type with caching"""
-        rnn_id = id(rnn)
-        if rnn_id not in self._type_cache:
-            class_name = type(rnn).__name__.lower()
-
-            if "transformer" in class_name:
-                rnn_type = "transformer"
-            elif "lstm" in class_name:
-                rnn_type = "lstm"
-            elif "gru" in class_name:
-                rnn_type = "gru"
-            else:
-                rnn_type = class_name
-
-            self._type_cache[rnn_id] = rnn_type
-
-        return self._type_cache[rnn_id]
-
-    def _extract_rnn_properties(self, rnn: nn.Module) -> tuple:
-        """Extract RNN properties with fallback options"""
-        # Try multiple attribute names for robustness
-        latent_dim = (
-            getattr(rnn, "hidden_size", None)
-            or getattr(rnn, "latent_dim", None)
-            or getattr(rnn, "d_model", None)
-        )
-
-        if latent_dim is None:
-            raise ValueError(f"Cannot extract latent_dim from {type(rnn).__name__}")
-
-        num_layers = getattr(rnn, "num_layers", 1)
-        return latent_dim, num_layers
-
-    def _get_alpha_for_type(self, rnn_type: str, device: torch.device) -> torch.Tensor:
-        """Get cached one-hot encoding for RNN type"""
-        cache_key = (rnn_type, device)
-
-        if cache_key not in self._alpha_cache:
-            alpha_map = {
-                "lstm": [1.0, 0.0, 0.0],
-                "gru": [0.0, 1.0, 0.0],
-                "transformer": [0.0, 0.0, 1.0],
-            }
-
-            alpha = torch.tensor(
-                alpha_map.get(rnn_type, [0.0, 0.0, 1.0]),
-                device=device,
-                dtype=torch.float32,
-            )
-            self._alpha_cache[cache_key] = alpha
-
-        return self._alpha_cache[cache_key]
-
-    def get_rnn_info(self, rnn: nn.Module) -> dict[str, any]:
-        """Get comprehensive RNN information for debugging"""
-        rnn_type = self._detect_rnn_type(rnn)
-        latent_dim, num_layers = self._extract_rnn_properties(rnn)
-
-        return {
-            "type": rnn_type,
-            "latent_dim": latent_dim,
-            "num_layers": num_layers,
-            "parameters": sum(p.numel() for p in rnn.parameters()),
-            "trainable_parameters": sum(
-                p.numel() for p in rnn.parameters() if p.requires_grad
-            ),
-        }
-
-    def clear_caches(self):
-        """Clear all internal caches"""
-        self._type_cache.clear()
-        self._alpha_cache.clear()
-
-    def set_dropout(self, dropout: float):
-        """Update dropout rate for all components"""
-        self.dropout = dropout
-        # Update dropout in existing RNN modules if needed
-        for module in self.modules():
-            if hasattr(module, "dropout") and isinstance(module.dropout, float):
-                module.dropout = dropout
-
-
-class FixedEncoder(BaseRNN):
-    """Streamlined single encoder with fixed architecture"""
-
-    def __init__(
-        self,
-        rnn: nn.Module = None,
-        *,
-        rnn_type: str = None,
-        input_dim: int = 64,
-        latent_dim: int = 64,
-        num_layers: int = 2,
-        dropout: float = 0.0,
-    ):
-        super().__init__(input_dim, latent_dim, num_layers, dropout)
-
-        # Initialize RNN from existing module or create new one
-        if rnn is not None:
-            self._init_from_existing_rnn(rnn)
-        else:
-            self._init_from_parameters(
-                rnn_type, input_dim, latent_dim, num_layers, dropout
-            )
-
-        # Cache for alpha tensor
-        self._cached_alpha = None
-
-    def _init_from_existing_rnn(self, rnn: nn.Module):
-        """Initialize from existing RNN module"""
-        self.rnn = rnn
-        self.rnn_type = self._detect_rnn_type(rnn)
-        self.latent_dim, self.num_layers = self._extract_rnn_properties(rnn)
-
-    def _init_from_parameters(
-        self,
-        rnn_type: str,
-        input_dim: int,
-        latent_dim: int,
-        num_layers: int,
-        dropout: float,
-    ):
-        """Initialize by creating new RNN"""
-        if rnn_type is None:
-            raise ValueError("Either 'rnn' or 'rnn_type' must be provided")
-
-        self.rnn_type = rnn_type.lower()
-        self.rnn = self._create_rnn(
-            self.rnn_type, input_dim, latent_dim, num_layers, dropout
-        )
-
-    def _process_transformer_output(self, x: torch.Tensor) -> tuple:
-        """Process transformer output"""
-        return self.rnn(x)  # Returns (output, ctx, state)
-
-    def _process_recurrent_output(self, x: torch.Tensor) -> tuple:
-        """Process LSTM/GRU output"""
-        h, state = self.rnn(x)
-        # Extract last timestep as context efficiently
-        ctx = h.narrow(1, h.size(1) - 1, 1)
-        return h, ctx, state
-
-    def forward(self, x: torch.Tensor) -> tuple:
-        """Optimized forward pass with type-specific processing"""
-        if self.rnn_type == "transformer":
-            return self._process_transformer_output(x)
-        else:
-            return self._process_recurrent_output(x)
-
-    def get_alphas(self) -> torch.Tensor:
-        """Get cached alpha tensor for this encoder type"""
-        device = next(self.parameters()).device
-
-        # Return cached alpha if valid, otherwise compute and cache
-        if self._cached_alpha is None or self._cached_alpha.device != device:
-            self._cached_alpha = self._get_alpha_for_type(self.rnn_type, device)
-
-        return self._cached_alpha
-
-    def get_entropy_loss(self) -> torch.Tensor:
-        """Return zero entropy loss for fixed encoder"""
-        return torch.tensor(0.0, device=next(self.parameters()).device)
-
-    def get_encoder_info(self) -> dict[str, any]:
-        """Get comprehensive encoder information"""
-        base_info = self.get_rnn_info(self.rnn)
-        base_info.update(
-            {
-                "encoder_type": "fixed",
-                "architecture": self.rnn_type,
-                "is_learnable": False,
-            }
-        )
-        return base_info
-
-    def set_temperature(self, temp: float):
-        """Temperature has no effect on fixed encoder"""
-        pass  # No-op for fixed encoder
-
-    def clear_cache(self):
-        """Clear cached alpha tensor"""
-        self._cached_alpha = None
-
-
-class MixedEncoder(BaseRNN):
-    """Streamlined mixed encoder with learnable weights"""
-
-    def __init__(
-        self,
-        input_dim: int,
-        latent_dim: int,
-        seq_len: int,
-        dropout: float = 0.1,
-        temperature: float = 1.0,
-    ):
-        super().__init__(input_dim, latent_dim, num_layers=2, dropout=dropout)
-
-        self.temperature = temperature
         self.seq_len = seq_len
-
-        # Create encoders for each RNN type
-        self.encoders = nn.ModuleList(
-            [
-                self._create_rnn(
-                    rnn_type, input_dim, latent_dim, self.num_layers, dropout
-                )
-                for rnn_type in self.rnn_names
-            ]
+        self.dropout = dropout
+        self.temperature = temperature
+        
+        # Individual encoders
+        self.lstm = nn.LSTM(
+            input_dim, latent_dim, num_layers=2, dropout=dropout if dropout > 0 else 0,
+            batch_first=True
         )
-        self.encoder_names = self.rnn_names
-
-        # Initialize architecture parameters
-        self.alphas = nn.Parameter(torch.zeros(len(self.encoders)))
-
-        # Cache for inference optimization
-        self._inference_cache = None
-
-    def _get_encoder_weights(self) -> torch.Tensor:
-        """Get encoder weights with temperature scaling"""
-        return F.softmax(self.alphas / self.temperature, dim=0)
-
-    def _process_single_encoder(
-        self, encoder: nn.Module, rnn_type: str, x: torch.Tensor
-    ) -> tuple:
-        """Process single encoder and return standardized output format"""
-        if rnn_type == "transformer":
-            return encoder(x)  # Returns (h, ctx, state)
-        else:
-            h, state = encoder(x)
-            ctx = h.narrow(1, h.size(1) - 1, 1)  # Last timestep as context
-            return h, ctx, state
-
-    def _handle_inference_caching(self, weights: torch.Tensor, x: torch.Tensor):
-        """Handle inference with caching for dominant encoder"""
-        max_weight = weights.max().item()
-        if max_weight <= 0.9:
-            return None  # No dominant encoder
-
-        max_idx = weights.argmax().item()
-
-        # Use cached encoder if available
-        if self._inference_cache is not None and self._inference_cache[0] == max_idx:
-            encoder = self._inference_cache[1]
-        else:
-            encoder = self.encoders[max_idx]
-            self._inference_cache = (max_idx, encoder)
-
-        rnn_type = self.rnn_names[max_idx]
-        return self._process_single_encoder(encoder, rnn_type, x)
-
-    def _get_active_encoders(self, weights: torch.Tensor, threshold: float = 1e-3):
-        """Get active encoder indices and normalized weights"""
-        active_indices = (weights > threshold).nonzero(as_tuple=False).squeeze(-1)
-
-        if len(active_indices) == 0:
-            # Fallback to first encoder
-            active_indices = torch.tensor([0], device=weights.device)
-
-        active_weights = weights[active_indices]
-        active_weights = active_weights / active_weights.sum()  # Normalize
-
-        return active_indices, active_weights
-
-    def _combine_encoder_outputs(
-        self, outputs: list, contexts: list, states: list, active_weights: torch.Tensor
-    ) -> tuple:
-        """Efficiently combine outputs from multiple encoders"""
-        # Stack and weight outputs
-        weighted_output = torch.stack(outputs, dim=0)
-        weighted_output = torch.sum(
-            active_weights.view(-1, 1, 1, 1) * weighted_output, dim=0
+        self.gru = nn.GRU(
+            input_dim, latent_dim, num_layers=2, dropout=dropout if dropout > 0 else 0,
+            batch_first=True
         )
-
-        # Stack and weight contexts
-        weighted_context = torch.stack(contexts, dim=0)
-        weighted_context = torch.sum(
-            active_weights.view(-1, 1, 1, 1) * weighted_context, dim=0
+        self.transformer = LightweightTransformerEncoder(
+            input_dim=input_dim, latent_dim=latent_dim, num_layers=2, dropout=dropout
         )
-
-        # Use state from encoder with highest weight
-        max_weight_idx = active_weights.argmax().item()
-        final_state = states[max_weight_idx]
-
-        return weighted_output, weighted_context, final_state
-
-    def forward(self, x: torch.Tensor) -> tuple:
-        """Optimized forward with caching and efficient combination"""
-        weights = self._get_encoder_weights()
-
-        # Try inference caching for dominant encoder
-        if not self.training:
-            cached_result = self._handle_inference_caching(weights, x)
-            if cached_result is not None:
-                return cached_result
-
-        # Get active encoders
-        active_indices, active_weights = self._get_active_encoders(weights)
-
-        # Process active encoders
-        outputs, contexts, states = [], [], []
-
-        for i in active_indices:
-            encoder = self.encoders[i]
-            rnn_type = self.rnn_names[i]
-
-            h, ctx, state = self._process_single_encoder(encoder, rnn_type, x)
-
-            outputs.append(h)
-            contexts.append(ctx)
-            states.append(state)
-
-        # Combine outputs
-        return self._combine_encoder_outputs(outputs, contexts, states, active_weights)
-
+        
+        self.encoders = nn.ModuleList([self.lstm, self.gru, self.transformer])
+        # Normalization and compatibility
+        self.normalizer = ArchitectureNormalizer(latent_dim)
+        
+        # Architecture selection
+        num_options = len(self.encoders)
+        init = torch.zeros(num_options)
+        init[random.randint(0, num_options - 1)] = 1.0
+        self.register_parameter('alphas', nn.Parameter(init))
+        
+        # Context projection to ensure consistent format
+        self.context_proj = nn.Linear(latent_dim, latent_dim)
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize weights properly"""
+        for rnn in [self.lstm, self.gru]:
+            for name, param in rnn.named_parameters():
+                if "weight_ih" in name:
+                    nn.init.xavier_uniform_(param)
+                elif "weight_hh" in name:
+                    nn.init.orthogonal_(param)
+                elif "bias" in name:
+                    param.data.fill_(0)
+                    if "lstm" in str(rnn.__class__).lower() and "bias_ih" in name:
+                        n = param.size(0)
+                        param.data[n//4:n//2].fill_(1.0)
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """Forward pass with improved compatibility"""
+        weights = F.gumbel_softmax(self.alphas, tau=self.temperature, hard=False, dim=0)
+        
+        # Run all encoders
+        lstm_out, lstm_state = self.lstm(x)
+        gru_out, gru_state = self.gru(x)
+        trans_out, trans_ctx, trans_state = self.transformer(x)
+        
+        # Normalize outputs for compatibility
+        lstm_out_norm = self.normalizer.normalize_output(lstm_out, "lstm")
+        gru_out_norm = self.normalizer.normalize_output(gru_out, "gru")
+        trans_out_norm = self.normalizer.normalize_output(trans_out, "transformer")
+        
+        # Normalize states
+        lstm_state_norm = self.normalizer.normalize_state(lstm_state, "lstm")
+        gru_state_norm = self.normalizer.normalize_state(gru_state, "gru")
+        trans_state_norm = self.normalizer.normalize_state(trans_state, "transformer")
+        
+        # Weighted combination of normalized outputs
+        output = (weights[0] * lstm_out_norm + 
+                 weights[1] * gru_out_norm + 
+                 weights[2] * trans_out_norm)
+        
+        # Create consistent context (last timestep)
+        lstm_ctx = lstm_out[:, -1:, :]
+        gru_ctx = gru_out[:, -1:, :]
+        # trans_ctx is already provided by transformer
+        
+        context = (weights[0] * lstm_ctx + 
+                  weights[1] * gru_ctx + 
+                  weights[2] * trans_ctx)
+        context = self.context_proj(context)
+        
+        # Blend states properly
+        h_blended = (weights[0] * lstm_state_norm[0] + 
+                    weights[1] * gru_state_norm[0] + 
+                    weights[2] * trans_state_norm[0])
+        c_blended = (weights[0] * lstm_state_norm[1] + 
+                    weights[1] * gru_state_norm[1] + 
+                    weights[2] * trans_state_norm[1])
+        
+        return output, context, (h_blended, c_blended)
+    
     def get_alphas(self) -> torch.Tensor:
         """Get normalized architecture weights"""
         return F.softmax(self.alphas, dim=0)
-
-    def get_entropy_loss(self) -> torch.Tensor:
-        """Compute entropy loss for regularization"""
-        probs = self.get_alphas()
-        log_probs = torch.log(torch.clamp(probs, min=1e-8, max=1.0))
-        entropy = -(probs * log_probs).sum() * 0.01
-        return torch.clamp(entropy, min=0.0, max=1.0)
-
+    
     def set_temperature(self, temp: float):
-        """Set temperature and clear cache"""
+        """Set temperature for sampling"""
         self.temperature = temp
-        self._inference_cache = None
-
-    def clear_cache(self):
-        """Clear inference cache"""
-        self._inference_cache = None
-
-    def get_encoder_weights(self) -> dict[str, float]:
-        """Get current encoder weights for analysis"""
-        weights = self._get_encoder_weights()
-        return {
-            name: weight.item() for name, weight in zip(self.encoder_names, weights)
-        }
 
 
-class BaseDecoder(BaseRNN):
-    """Streamlined base decoder with efficient attention handling"""
-
-    def __init__(
-        self,
-        input_dim: int,
-        latent_dim: int,
-        num_layers: int = 2,
-        dropout: float = 0.0,
-        temperature: float = 1.0,
-        use_attention_bridge: bool = True,
-        attention_heads: int = 8,
-        attention_layers: int = 1,
-        use_temporal_bias: bool = True,
-        use_rotary: bool = False,
-        attention_d_model: int = None,
-    ):
-        super().__init__(input_dim, latent_dim, num_layers, dropout)
-
-        self.temperature = temperature
-        self.use_attention_bridge = use_attention_bridge
-        self.attention_d_model = attention_d_model or latent_dim
-
-        # Initialize attention bridge if enabled
-        if use_attention_bridge:
-            self._init_attention_components(
-                attention_heads,
-                attention_layers,
-                dropout,
-                use_temporal_bias,
-                use_rotary,
-            )
-        else:
-            print("⚠️ CrossAttentionBridge disabled")
-
-        # Cache for attention optimization
-        self._attention_cache = None
-
-    def _init_attention_components(
-        self,
-        attention_heads: int,
-        attention_layers: int,
-        dropout: float,
-        use_temporal_bias: bool,
-        use_rotary: bool,
-    ):
-        """Initialize attention bridge components"""
-        # Optimize number of heads based on model size
-        optimal_heads = min(attention_heads, max(1, self.attention_d_model // 32))
-
-        # Create attention bridges
-        self.attention_bridges = nn.ModuleList(
-            [
-                CrossAttentionBridge(
-                    d_model=self.attention_d_model,
-                    num_heads=optimal_heads,
-                    dropout=dropout,
-                    use_temporal_bias=use_temporal_bias,
-                    use_rotary=use_rotary,
-                )
-                for _ in range(attention_layers)
-            ]
-        )
-
-        # Initialize attention weights (favor no attention initially)
-        self.attention_alphas = nn.Parameter(
-            torch.cat(
-                [
-                    torch.zeros(attention_layers),  # Attention layers
-                    torch.tensor([1.0]),  # No attention (higher initial weight)
-                ]
-            )
-        )
-
-        print(
-            f"✅ CrossAttentionBridge enabled with {optimal_heads} heads and {attention_layers} layers"
-        )
-
-    def _prepare_hidden_state(
-        self, hidden_state, batch_size: int, device: torch.device
-    ):
-        """Prepare hidden state with efficient memory handling"""
-        if hidden_state is None:
-            # Create initial hidden states
-            h_0 = torch.zeros(
-                self.num_layers,
-                batch_size,
-                self.latent_dim,
-                device=device,
-                dtype=torch.float32,
-            )
-            c_0 = torch.zeros_like(h_0)
-            return (h_0, c_0), h_0
-
-        if isinstance(hidden_state, tuple):
-            h, c = hidden_state
-            # Ensure proper dimensions
-            if h.dim() != 3:
-                h = h.unsqueeze(0).expand(self.num_layers, -1, -1)
-            if c.dim() != 3:
-                c = c.unsqueeze(0).expand(self.num_layers, -1, -1)
-            return (h.contiguous(), c.contiguous()), h
-        else:
-            # Handle single tensor (GRU case)
-            if hidden_state.dim() != 3:
-                h = hidden_state.unsqueeze(0).expand(self.num_layers, -1, -1)
-            else:
-                h = hidden_state
-            c = torch.zeros_like(h)
-            return (h.contiguous(), c.contiguous()), h
-
-    def _ensure_sequence_dims(
-        self, tensor: torch.Tensor, rnn_type: str
-    ) -> torch.Tensor:
-        """Ensure proper sequence dimensions for RNN types"""
-        if rnn_type in ["lstm", "gru"] and tensor.dim() == 2:
-            return tensor.unsqueeze(1)
-        return tensor
-
-    def _get_attention_weights(self) -> torch.Tensor:
-        """Get attention weights with temperature scaling"""
-        return F.softmax(self.attention_alphas / self.temperature, dim=0)
-
-    def _apply_single_attention(
-        self,
-        decoder_output: torch.Tensor,
-        encoder_output: torch.Tensor,
-        bridge_idx: int,
-    ) -> torch.Tensor:
-        """Apply single attention bridge with error handling"""
-        try:
-            if bridge_idx == len(self.attention_bridges):
-                return decoder_output  # No attention
-
-            bridge = self.attention_bridges[bridge_idx]
-            attended_output, _ = bridge(decoder_output, encoder_output)
-            return attended_output
-        except Exception as e:
-            print(f"Attention bridge {bridge_idx} failed: {e}")
-            return decoder_output
-
-    def _apply_attention_bridge(
-        self,
-        decoder_output: torch.Tensor,
-        encoder_output: torch.Tensor,
-        rnn_type: str = "transformer",
-    ) -> torch.Tensor:
-        """Apply attention bridge with caching and efficient combination"""
-        if (
-            not self.use_attention_bridge
-            or not hasattr(self, "attention_bridges")
-            or encoder_output is None
-        ):
-            return decoder_output
-
-        try:
-            # Ensure proper sequence dimensions
-            decoder_output = self._ensure_sequence_dims(decoder_output, rnn_type)
-            encoder_output = self._ensure_sequence_dims(encoder_output, rnn_type)
-
-            attention_weights = self._get_attention_weights()
-
-            # Aggressive caching for inference with dominant weight
-            if not self.training:
-                max_weight = attention_weights.max().item()
-                if max_weight > 0.95:
-                    max_idx = attention_weights.argmax().item()
-
-                    # Use cached function if available
-                    if (
-                        self._attention_cache is not None
-                        and self._attention_cache[0] == max_idx
-                    ):
-                        return self._attention_cache[1](decoder_output, encoder_output)
-                    else:
-                        # Cache the dominant attention function
-                        if max_idx == len(self.attention_bridges):
-                            func = lambda x, y: x  # No attention
-                        else:
-                            func = lambda x, y: self._apply_single_attention(
-                                x, y, max_idx
-                            )
-
-                        self._attention_cache = (max_idx, func)
-                        return func(decoder_output, encoder_output)
-
-            # Weighted combination of all active attention mechanisms
-            attended_outputs = []
-            active_weights = []
-
-            # Process each attention option
-            for i in range(len(attention_weights)):
-                weight = attention_weights[i]
-                if weight.item() > 1e-3:  # Skip very small weights
-                    attended_output = self._apply_single_attention(
-                        decoder_output, encoder_output, i
-                    )
-                    attended_outputs.append(attended_output)
-                    active_weights.append(weight)
-
-            # Return weighted combination
-            if not attended_outputs:
-                return decoder_output
-
-            if len(attended_outputs) == 1:
-                return attended_outputs[0]
-
-            # Efficient weighted sum
-            total_weight = sum(active_weights)
-            if total_weight < 1e-8:
-                return decoder_output
-
-            stacked_outputs = torch.stack(attended_outputs, dim=0)
-            norm_weights = torch.stack(active_weights) / total_weight
-            return torch.sum(norm_weights.view(-1, 1, 1, 1) * stacked_outputs, dim=0)
-
-        except Exception as e:
-            print(f"Attention bridge application failed: {e}")
-            return decoder_output
-
-    def _process_decoder_output(
-        self,
-        decoder: nn.Module,
-        rnn_type: str,
-        tgt: torch.Tensor,
-        memory: torch.Tensor,
-        hidden_state,
-        batch_size: int,
-        device: torch.device,
-    ):
-        """Process decoder output based on RNN type"""
-        if rnn_type == "lstm":
-            lstm_state, _ = self._prepare_hidden_state(hidden_state, batch_size, device)
-            return decoder(tgt, lstm_state)
-        elif rnn_type == "gru":
-            _, gru_state = self._prepare_hidden_state(hidden_state, batch_size, device)
-            return decoder(tgt, gru_state)
-        else:  # transformer
-            return decoder(tgt, memory, hidden_state)
-
-    def _get_attention_entropy_loss(self) -> torch.Tensor:
-        """Compute attention entropy loss for regularization"""
-        if self.use_attention_bridge and hasattr(self, "attention_alphas"):
-            attn_probs = F.softmax(self.attention_alphas / self.temperature, dim=0)
-            log_probs = torch.log(torch.clamp(attn_probs, min=1e-8, max=1.0))
-            attn_entropy = -(attn_probs * log_probs).sum() * 0.01
-            return torch.clamp(attn_entropy, min=0.0, max=1.0)
-
-        return torch.tensor(0.0, device=next(self.parameters()).device)
-
-    def set_temperature(self, temp: float):
-        """Set temperature and clear cache"""
-        self.temperature = temp
-        self._attention_cache = None
-
-    def clear_attention_cache(self):
-        """Clear attention cache"""
-        self._attention_cache = None
-
-
-class FixedDecoder(BaseDecoder):
-    """Streamlined fixed decoder with efficient caching"""
-
-    def __init__(
-        self,
-        rnn: nn.Module = None,
-        *,
-        rnn_type: str = None,
-        input_dim: int = 64,
-        latent_dim: int = 64,
-        num_layers: int = 2,
-        dropout: float = 0.0,
-        temperature: float = 1.0,
-        use_attention_bridge: bool = True,
-        attention_heads: int = 8,
-        attention_layers: int = 1,
-        use_temporal_bias: bool = True,
-        use_rotary: bool = False,
-        attention_d_model: int = None,
-    ):
-        super().__init__(
-            input_dim=input_dim,
-            latent_dim=latent_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-            temperature=temperature,
-            use_attention_bridge=use_attention_bridge,
-            attention_heads=attention_heads,
-            attention_layers=attention_layers,
-            use_temporal_bias=use_temporal_bias,
-            use_rotary=use_rotary,
-            attention_d_model=attention_d_model,
-        )
-
-        # Initialize RNN from existing module or create new one
-        if rnn is not None:
-            self._init_from_existing_rnn(rnn)
-        else:
-            self._init_from_parameters(
-                rnn_type, input_dim, latent_dim, num_layers, dropout
-            )
-
-        # Cache for alpha computation
-        self._cached_alphas = None
-
-    def _init_from_existing_rnn(self, rnn: nn.Module):
-        """Initialize from existing RNN module"""
-        self.rnn = rnn
-        self.rnn_type = self._detect_rnn_type(rnn)
-        self.latent_dim, self.num_layers = self._extract_rnn_properties(rnn)
-
-    def _init_from_parameters(
-        self,
-        rnn_type: str,
-        input_dim: int,
-        latent_dim: int,
-        num_layers: int,
-        dropout: float,
-    ):
-        """Initialize by creating new RNN"""
-        if rnn_type is None:
-            raise ValueError("Either 'rnn' or 'rnn_type' must be provided")
-
-        self.rnn_type = rnn_type.lower()
-        self.rnn = self._create_rnn(
-            self.rnn_type,
-            input_dim,
-            latent_dim,
-            num_layers,
-            dropout,
-            is_decoder=True,
-        )
-
+class AttentionBridge(nn.Module):
+    """Unified attention bridge that adapts to different architectures"""
+    
+    def __init__(self, d_model: int, num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = min(num_heads, d_model)
+        
+        # Ensure divisibility
+        while d_model % self.num_heads != 0 and self.num_heads > 1:
+            self.num_heads -= 1
+            
+        self.head_dim = d_model // self.num_heads
+        self.scale = self.head_dim ** -0.5
+        
+        # Unified attention components
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model)
+        
+        # Input adaptation layers
+        self.decoder_adapter = nn.Linear(d_model, d_model)
+        self.encoder_adapter = nn.Linear(d_model, d_model)
+        
+        # Gating mechanism
+        self.gate = nn.Linear(d_model * 2, d_model)  # Input: [decoder, attended]
+        
+        self.dropout = nn.Dropout(dropout)
+        self._init_weights()
+    
+    def _init_weights(self):
+        for module in [self.q_proj, self.k_proj, self.v_proj, self.out_proj]:
+            if hasattr(module, 'weight'):
+                nn.init.xavier_uniform_(module.weight)
+            if hasattr(module, 'bias') and module.bias is not None:
+                nn.init.zeros_(module.bias)
+    
     def forward(
-        self,
-        tgt: torch.Tensor,
-        memory: torch.Tensor = None,
-        hidden_state=None,
-        encoder_output: torch.Tensor = None,
-    ) -> tuple:
-        """Optimized forward pass with attention bridge integration"""
-        batch_size = tgt.size(0)
-        device = tgt.device
-
-        # Determine attention source
-        attention_memory = encoder_output if encoder_output is not None else memory
-
-        # Process through RNN/Transformer decoder
-        output, new_state = self._process_decoder_output(
-            self.rnn, self.rnn_type, tgt, memory, hidden_state, batch_size, device
-        )
-
-        # Apply cross-attention bridge if available
-        if attention_memory is not None:
-            output = self._apply_attention_bridge(
-                output, attention_memory, self.rnn_type
-            )
-
-        return output, new_state
-
-    def get_alphas(self) -> torch.Tensor:
-        """Get cached alpha tensor combining decoder and attention alphas"""
-        if self._cached_alphas is None:
-            self._cached_alphas = self._compute_combined_alphas()
-
-        return self._cached_alphas
-
-    def _compute_combined_alphas(self) -> torch.Tensor:
-        """Compute combined decoder and attention alphas"""
-        device = next(self.parameters()).device
-
-        # Get decoder alphas (one-hot for fixed type)
-        decoder_alphas = self._get_alpha_for_type(self.rnn_type, device)
-
-        # Add attention alphas if attention bridge is enabled
-        if self.use_attention_bridge and hasattr(self, "attention_alphas"):
-            attention_alphas = F.softmax(self.attention_alphas, dim=0)
-            return torch.cat([decoder_alphas, attention_alphas])
+        self, 
+        decoder_hidden: torch.Tensor, 
+        encoder_output: Optional[torch.Tensor] = None,
+        encoder_context: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Unified attention that works with both sequence and context inputs
+        """
+        B, L_dec, D = decoder_hidden.shape
+        
+        # Adapt decoder input
+        decoder_adapted = self.decoder_adapter(decoder_hidden)
+        
+        # Determine encoder input (prefer full sequence over context)
+        if encoder_output is not None:
+            encoder_input = encoder_output
+            L_enc = encoder_output.size(1)
+        elif encoder_context is not None:
+            # Expand context to create a pseudo-sequence
+            encoder_input = encoder_context.expand(B, L_dec, D)
+            L_enc = L_dec
         else:
-            return decoder_alphas
-
-    def get_entropy_loss(self) -> torch.Tensor:
-        """Get entropy loss from attention bridge only (decoder is fixed)"""
-        return self._get_attention_entropy_loss()
-
-    def get_decoder_info(self) -> dict[str, any]:
-        """Get comprehensive decoder information"""
-        base_info = self.get_rnn_info(self.rnn)
-        base_info.update(
-            {
-                "decoder_type": "fixed",
-                "architecture": self.rnn_type,
-                "is_learnable": False,
-                "attention_bridge_enabled": self.use_attention_bridge,
-                "attention_layers": (
-                    len(self.attention_bridges)
-                    if hasattr(self, "attention_bridges")
-                    else 0
-                ),
-            }
-        )
-        return base_info
-
-    def set_temperature(self, temp: float):
-        """Set temperature for attention bridge (decoder architecture is fixed)"""
-        self.temperature = temp
-        self._cached_alphas = None  # Invalidate cache
-
-        # Set temperature for attention bridge if it exists
-        if hasattr(self, "attention_bridges"):
-            for bridge in self.attention_bridges:
-                if hasattr(bridge, "set_temperature"):
-                    bridge.set_temperature(temp)
-
-    def clear_cache(self):
-        """Clear all cached tensors"""
-        self._cached_alphas = None
-        self.clear_attention_cache()
-
-    def get_decoder_weights(self) -> dict[str, float]:
-        """Get current decoder weights (will be one-hot for fixed decoder)"""
-        alphas = self.get_alphas()
-
-        weights = {"decoder_type": self.rnn_type}
-
-        # Add attention weights if available
-        if self.use_attention_bridge and hasattr(self, "attention_alphas"):
-            decoder_alpha_size = 1  # Fixed decoder has single alpha
-            attention_alphas = alphas[decoder_alpha_size:]
-
-            attention_names = [
-                f"attention_layer_{i}" for i in range(len(attention_alphas) - 1)
-            ] + ["no_attention"]
-            attention_weights = {
-                name: weight.item()
-                for name, weight in zip(attention_names, attention_alphas)
-            }
-            weights["attention_bridge"] = attention_weights
-
-        return weights
+            # No encoder input - return adapted decoder
+            return decoder_adapted
+        
+        # Adapt encoder input
+        encoder_adapted = self.encoder_adapter(encoder_input)
+        
+        # Compute attention
+        q = self.q_proj(decoder_adapted)
+        k = self.k_proj(encoder_adapted)
+        v = self.v_proj(encoder_adapted)
+        
+        # Reshape for multi-head attention
+        if self.num_heads > 1:
+            q = q.view(B, L_dec, self.num_heads, self.head_dim).transpose(1, 2)
+            k = k.view(B, L_enc, self.num_heads, self.head_dim).transpose(1, 2)
+            v = v.view(B, L_enc, self.num_heads, self.head_dim).transpose(1, 2)
+            
+            # Scaled dot-product attention
+            scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+            attn_weights = F.softmax(scores, dim=-1)
+            attn_weights = self.dropout(attn_weights)
+            
+            attended = torch.matmul(attn_weights, v)
+            attended = attended.transpose(1, 2).contiguous().view(B, L_dec, D)
+        else:
+            # Single-head attention (more efficient for small models)
+            scores = torch.sum(q * k, dim=-1, keepdim=True) * self.scale
+            attn_weights = F.softmax(scores, dim=1)
+            attended = attn_weights * v
+        
+        attended = self.out_proj(attended)
+        
+        # Gated combination
+        combined_input = torch.cat([decoder_hidden, attended], dim=-1)
+        gate_weights = torch.sigmoid(self.gate(combined_input))
+        
+        output = gate_weights * attended + (1 - gate_weights) * decoder_hidden
+        return output
 
 
-class MixedDecoder(BaseDecoder):
-    """Streamlined mixed decoder with efficient weight handling"""
-
+class MixedDecoder(nn.Module):
+    """Improved mixed decoder with better architecture compatibility"""
+    
     def __init__(
         self,
         input_dim: int,
@@ -1057,502 +570,706 @@ class MixedDecoder(BaseDecoder):
         dropout: float = 0.1,
         temperature: float = 1.0,
         use_attention_bridge: bool = True,
-        attention_heads: int = 8,
-        attention_layers: int = 1,
-        use_temporal_bias: bool = True,
-        use_rotary: bool = True,
+        attention_layers: int = 1,  # For backward compatibility
     ):
-        super().__init__(
-            input_dim=input_dim,
-            latent_dim=latent_dim,
-            num_layers=2,
-            dropout=dropout,
-            temperature=temperature,
-            use_attention_bridge=use_attention_bridge,
-            attention_heads=attention_heads,
-            attention_layers=attention_layers,
-            use_temporal_bias=use_temporal_bias,
-            use_rotary=use_rotary,
-        )
+        super().__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
         self.seq_len = seq_len
-
-        # Create all decoder types
-        self.decoders = nn.ModuleList(
-            [
-                self._create_rnn(
-                    decoder_type,
-                    input_dim,
-                    latent_dim,
-                    self.num_layers,
-                    dropout,
-                    is_decoder=True,
-                )
-                for decoder_type in self.rnn_names
-            ]
+        self.dropout = dropout
+        self.temperature = temperature
+        self.use_attention_bridge = use_attention_bridge
+        self.attention_layers = attention_layers
+        
+        # Create decoders
+        self.lstm = nn.LSTM(
+            input_dim, latent_dim, num_layers=2, dropout=dropout if dropout > 0 else 0,
+            batch_first=True
         )
-        self.decoder_names = self.rnn_names
-
-        # Architecture parameters
-        self.alphas = nn.Parameter(torch.zeros(len(self.decoders)))
-
-        # Caching for inference optimization
-        self._decoder_cache = None
-
-    def _get_active_decoders(self, weights: torch.Tensor, threshold: float = 1e-3):
-        """Get indices and weights of active decoders"""
-        active_indices = (weights > threshold).nonzero(as_tuple=False).squeeze(-1)
-        if len(active_indices) == 0:
-            # Fallback to first decoder (usually LSTM)
-            active_indices = torch.tensor([0], device=weights.device)
-
-        active_weights = weights[active_indices]
-        active_weights = active_weights / active_weights.sum()  # Normalize
-        return active_indices, active_weights
-
-    def _process_single_decoder(
-        self,
-        decoder_idx: int,
-        tgt: torch.Tensor,
-        memory: torch.Tensor,
-        hidden_state,
-        batch_size: int,
-        device: torch.device,
-    ):
-        """Process a single decoder and return output and state"""
-        decoder = self.decoders[decoder_idx]
-        rnn_type = self.rnn_names[decoder_idx]
-
-        return self._process_decoder_output(
-            decoder, rnn_type, tgt, memory, hidden_state, batch_size, device
+        self.gru = nn.GRU(
+            input_dim, latent_dim, num_layers=2, dropout=dropout if dropout > 0 else 0,
+            batch_first=True
         )
-
-    def _handle_inference_caching(
-        self,
-        weights: torch.Tensor,
-        tgt: torch.Tensor,
-        memory: torch.Tensor,
-        hidden_state,
-        batch_size: int,
-        device: torch.device,
-    ):
-        """Handle inference with caching for dominant decoder"""
-        max_weight = weights.max().item()
-        if max_weight <= 0.9:
-            return None, None  # No dominant decoder, use normal path
-
-        max_idx = weights.argmax().item()
-
-        # Use cached decoder if available
-        if self._decoder_cache is not None and self._decoder_cache[0] == max_idx:
-            decoder = self._decoder_cache[1]
-            rnn_type = self._decoder_cache[2]
-        else:
-            decoder = self.decoders[max_idx]
-            rnn_type = self.rnn_names[max_idx]
-            self._decoder_cache = (max_idx, decoder, rnn_type)
-
-        return self._process_decoder_output(
-            decoder, rnn_type, tgt, memory, hidden_state, batch_size, device
+        self.transformer = LightweightTransformerDecoder(
+            input_dim=input_dim, latent_dim=latent_dim, num_layers=2, dropout=dropout
         )
-
-    def _combine_decoder_outputs(
-        self,
-        outputs: List[torch.Tensor],
-        states: List,
-        active_weights: torch.Tensor,
-        active_indices: torch.Tensor,
-    ):
-        """Efficiently combine outputs from multiple decoders"""
-        # Stack and combine outputs
-        stacked_outputs = torch.stack(outputs, dim=0)
-        combined_output = torch.sum(
-            active_weights.view(-1, 1, 1, 1) * stacked_outputs, dim=0
-        )
-
-        # Use state from decoder with highest weight
-        max_idx = active_weights.argmax().item()
-        dominant_state = states[max_idx]
-        dominant_rnn_type = self.rnn_names[active_indices[max_idx]]
-
-        return combined_output, dominant_state, dominant_rnn_type
-
+        
+        # Compatibility attributes
+        self.decoders = nn.ModuleList([self.lstm, self.gru, self.transformer])
+        self.decoder_names = ["lstm", "gru", "transformer"]
+        self.rnn_names = ["lstm", "gru", "transformer"]
+        
+        # Architecture normalization
+        self.normalizer = ArchitectureNormalizer(latent_dim)
+        
+        # Architecture selection parameters
+        num_decoder_options = len(self.decoders)
+        decoder_init = torch.zeros(num_decoder_options)
+        decoder_init[random.randint(0, num_decoder_options - 1)] = 1.0
+        self.register_parameter('alphas', nn.Parameter(decoder_init))
+        
+        # Unified attention bridge
+        if use_attention_bridge:
+            self.attention_bridge = AttentionBridge(latent_dim, num_heads=4, dropout=dropout)
+            
+            # Optional: attention choice parameters for backward compatibility
+            # This might be what was causing the UnboundLocalError
+            attention_init = torch.zeros(2)  # [use_attention, no_attention]
+            attention_init[0] = 1.0  # Default to using attention
+            self.register_parameter('attention_alphas', nn.Parameter(attention_init))
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize RNN weights"""
+        for rnn in [self.lstm, self.gru]:
+            for name, param in rnn.named_parameters():
+                if "weight_ih" in name:
+                    nn.init.xavier_uniform_(param)
+                elif "weight_hh" in name:
+                    nn.init.orthogonal_(param)
+                elif "bias" in name:
+                    param.data.fill_(0)
+                    if "lstm" in str(rnn.__class__).lower() and "bias_ih" in name:
+                        n = param.size(0)
+                        param.data[n//4:n//2].fill_(1.0)
+    
     def forward(
         self,
         tgt: torch.Tensor,
         memory: torch.Tensor,
         hidden_state=None,
         encoder_output: Optional[torch.Tensor] = None,
-    ):
-        """Optimized forward with efficient caching and combination"""
+        encoder_context: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """Forward pass with improved compatibility"""
         batch_size = tgt.size(0)
-        device = tgt.device
-        weights = F.softmax(self.alphas / self.temperature, dim=0)
+        
+        # FIX: More robust hidden state initialization
+        if hidden_state is None:
+            device, dtype = tgt.device, tgt.dtype
+            h_0 = torch.zeros(2, batch_size, self.latent_dim, device=device, dtype=dtype)
+            c_0 = torch.zeros(2, batch_size, self.latent_dim, device=device, dtype=dtype)
+            lstm_state = (h_0.contiguous(), c_0.contiguous())
+            gru_state = h_0.contiguous()
+            trans_state = (h_0.contiguous(), c_0.contiguous())
+        else:
+            # FIX: Better state format handling
+            if isinstance(hidden_state, tuple) and len(hidden_state) == 2:
+                h, c = hidden_state
+                # Ensure contiguous and proper device/dtype
+                h = h.contiguous().to(device=tgt.device, dtype=tgt.dtype)
+                c = c.contiguous().to(device=tgt.device, dtype=tgt.dtype)
+                lstm_state = (h, c)
+                gru_state = h
+                trans_state = (h, c)
+            else:
+                h = hidden_state.contiguous().to(device=tgt.device, dtype=tgt.dtype)
+                c = torch.zeros_like(h)
+                lstm_state = (h, c)
+                gru_state = h
+                trans_state = (h, c)
 
-        attention_memory = encoder_output if encoder_output is not None else memory
-
-        # Try inference caching for dominant decoder
-        if not self.training:
-            cached_output, cached_state = self._handle_inference_caching(
-                weights, tgt, memory, hidden_state, batch_size, device
-            )
-            if cached_output is not None:
-                if attention_memory is not None:
-                    cached_output = self._apply_attention_bridge(
-                        cached_output, attention_memory, self._decoder_cache[2]
-                    )
-                return cached_output, cached_state
-
-        # Get active decoders
-        active_indices, active_weights = self._get_active_decoders(weights)
-
-        # Process active decoders
-        outputs, states = [], []
-        for i in active_indices:
-            output, state = self._process_single_decoder(
-                i.item(), tgt, memory, hidden_state, batch_size, device
-            )
-            outputs.append(output)
-            states.append(state)
-
-        # Combine outputs
-        combined_output, dominant_state, dominant_rnn_type = (
-            self._combine_decoder_outputs(
-                outputs, states, active_weights, active_indices
-            )
-        )
-
-        # Apply attention bridge if needed
-        if attention_memory is not None:
-            combined_output = self._apply_attention_bridge(
-                combined_output, attention_memory, dominant_rnn_type
-            )
-
-        return combined_output, dominant_state
-
+        # Run all decoders
+        lstm_out, lstm_new_state = self.lstm(tgt, lstm_state)
+        gru_out, gru_new_state = self.gru(tgt, gru_state)
+        
+        # Handle transformer memory input more robustly
+        if memory is not None:
+            trans_out, trans_new_state = self.transformer(tgt, memory, trans_state)
+        else:
+            # Fallback: use encoder context as memory
+            fallback_memory = encoder_context if encoder_context is not None else torch.zeros_like(tgt[:, :1, :])
+            trans_out, trans_new_state = self.transformer(tgt, fallback_memory, trans_state)
+        
+        # Normalize outputs
+        lstm_out_norm = self.normalizer.normalize_output(lstm_out, "lstm")
+        gru_out_norm = self.normalizer.normalize_output(gru_out, "gru")
+        trans_out_norm = self.normalizer.normalize_output(trans_out, "transformer")
+        
+        # Get architecture weights
+        decoder_weights = F.gumbel_softmax(self.alphas, tau=self.temperature, hard=False, dim=0)
+        
+        # Apply attention if enabled
+        if self.use_attention_bridge and (encoder_output is not None or encoder_context is not None):
+            # Determine whether to use attention based on parameters
+            if hasattr(self, 'attention_alphas'):
+                attention_weights = F.gumbel_softmax(self.attention_alphas, tau=self.temperature, hard=False, dim=0)
+                use_attention_prob = attention_weights[0]  # Probability of using attention
+            else:
+                use_attention_prob = 1.0  # Always use attention if bridge is enabled
+            
+            # Apply attention to outputs
+            lstm_attended = self.attention_bridge(lstm_out_norm, encoder_output, encoder_context)
+            gru_attended = self.attention_bridge(gru_out_norm, encoder_output, encoder_context)
+            trans_attended = self.attention_bridge(trans_out_norm, encoder_output, encoder_context)
+            
+            # Mix attended and non-attended outputs based on attention choice
+            if hasattr(self, 'attention_alphas'):
+                lstm_final = use_attention_prob * lstm_attended + (1 - use_attention_prob) * lstm_out_norm
+                gru_final = use_attention_prob * gru_attended + (1 - use_attention_prob) * gru_out_norm
+                trans_final = use_attention_prob * trans_attended + (1 - use_attention_prob) * trans_out_norm
+            else:
+                lstm_final = lstm_attended
+                gru_final = gru_attended
+                trans_final = trans_attended
+            
+            # Weighted combination
+            output = (decoder_weights[0] * lstm_final + 
+                     decoder_weights[1] * gru_final + 
+                     decoder_weights[2] * trans_final)
+        else:
+            # No attention - direct combination
+            output = (decoder_weights[0] * lstm_out_norm + 
+                     decoder_weights[1] * gru_out_norm + 
+                     decoder_weights[2] * trans_out_norm)
+        
+        # Normalize and blend states
+        lstm_state_norm = self.normalizer.normalize_state(lstm_new_state, "lstm")
+        gru_state_norm = self.normalizer.normalize_state(gru_new_state, "gru")
+        trans_state_norm = self.normalizer.normalize_state(trans_new_state, "transformer")
+        
+        # Blend states
+        h_blended = (decoder_weights[0] * lstm_state_norm[0] + 
+                    decoder_weights[1] * gru_state_norm[0] + 
+                    decoder_weights[2] * trans_state_norm[0])
+        c_blended = (decoder_weights[0] * lstm_state_norm[1] + 
+                    decoder_weights[1] * gru_state_norm[1] + 
+                    decoder_weights[2] * trans_state_norm[1])
+        
+        return output, (h_blended, c_blended)
+    
     def get_alphas(self) -> torch.Tensor:
-        """Get all architecture parameters including attention alphas"""
+        """Get architecture parameters for compatibility"""
         decoder_alphas = F.softmax(self.alphas, dim=0)
-
-        if self.use_attention_bridge and hasattr(self, "attention_alphas"):
+        
+        if self.use_attention_bridge and hasattr(self, 'attention_alphas'):
             attention_alphas = F.softmax(self.attention_alphas, dim=0)
             return torch.cat([decoder_alphas, attention_alphas])
-
+        
         return decoder_alphas
-
-    def get_entropy_loss(self) -> torch.Tensor:
-        """Compute entropy loss for regularization"""
-        # Decoder entropy
-        probs = F.softmax(self.alphas / self.temperature, dim=0)
-        log_probs = torch.log(torch.clamp(probs, min=1e-8, max=1.0))
-        entropy = -(probs * log_probs).sum() * 0.01
-
-        # Add attention entropy if available
-        if hasattr(self, "_get_attention_entropy_loss"):
-            attention_entropy = self._get_attention_entropy_loss()
-            entropy += attention_entropy
-
-        return torch.clamp(entropy, min=0.0, max=1.0)
-
+    
     def set_temperature(self, temp: float):
-        """Set temperature and clear cache"""
+        """Set temperature for sampling"""
         self.temperature = temp
-        self._decoder_cache = None
-
-        # Set temperature for attention bridge if it exists
-        if hasattr(self, "attention_bridge"):
-            self.attention_bridge.set_temperature(temp)
-
-    def clear_cache(self):
-        """Clear decoder cache"""
-        self._decoder_cache = None
-
-    def get_decoder_weights(self) -> Dict[str, float]:
-        """Get current decoder weights for analysis"""
-        weights = F.softmax(self.alphas / self.temperature, dim=0)
-        return {
-            name: weight.item() for name, weight in zip(self.decoder_names, weights)
-        }
 
 
-class CrossAttentionBridge(nn.Module):
-    """Streamlined RNN-compatible cross-attention bridge"""
+# Helper function for backward compatibility
+def blend_states(w, states):
+    """Improved state blending with proper normalization"""
+    normalizer = ArchitectureNormalizer(states[0][0].size(-1) if isinstance(states[0], tuple) else states[0].size(-1))
+    
+    normalized_states = []
+    arch_types = ["lstm", "gru", "transformer"]
+    
+    for i, state in enumerate(states):
+        arch_type = arch_types[i] if i < len(arch_types) else "lstm"
+        normalized_state = normalizer.normalize_state(state, arch_type)
+        normalized_states.append(normalized_state)
+    
+    # Blend normalized states
+    h = sum(w[i] * normalized_states[i][0] for i in range(len(normalized_states)))
+    c = sum(w[i] * normalized_states[i][1] for i in range(len(normalized_states)))
+    return (h, c)
 
+
+class ArchitectureConverter:
+    """Utility class for converting between mixed and fixed architectures"""
+    
+    @staticmethod
+    def get_best_architecture(alphas: torch.Tensor) -> str:
+        """Get the best architecture from alpha weights"""
+        arch_names = ["lstm", "gru", "transformer"]
+        best_idx = torch.argmax(alphas[:3]).item()  # Only consider first 3 (decoder types)
+        return arch_names[best_idx]
+    
+    @staticmethod
+    def ensure_proper_state_format(state, rnn_type: str, num_layers: int, batch_size: int, hidden_size: int, device: torch.device):
+        """Ensure hidden state has proper format for the given RNN type"""
+        if state is None:
+            # Create zero states
+            h = torch.zeros(num_layers, batch_size, hidden_size, device=device)
+            c = torch.zeros(num_layers, batch_size, hidden_size, device=device)
+            
+            if rnn_type == "gru":
+                return h
+            elif rnn_type == "lstm":
+                return (h, c)
+            else:  # transformer
+                return (h, c)
+        
+        if rnn_type == "gru":
+            if isinstance(state, tuple):
+                h = state[0]
+            else:
+                h = state
+            
+            # Ensure correct dimensions
+            if h.dim() == 2:
+                h = h.unsqueeze(0).expand(num_layers, -1, -1).contiguous()
+            elif h.dim() == 3:
+                h = h.contiguous()
+            
+            return h
+            
+        elif rnn_type == "lstm":
+            if isinstance(state, tuple):
+                h, c = state
+            else:
+                h = state
+                c = torch.zeros_like(h)
+            
+            # Ensure correct dimensions
+            if h.dim() == 2:
+                h = h.unsqueeze(0).expand(num_layers, -1, -1).contiguous()
+                c = c.unsqueeze(0).expand(num_layers, -1, -1).contiguous()
+            elif h.dim() == 3:
+                h = h.contiguous()
+                c = c.contiguous()
+            
+            return (h, c)
+        else:  # transformer
+            if isinstance(state, tuple):
+                h, c = state
+            else:
+                h = state
+                c = torch.zeros_like(h)
+            
+            # Ensure correct dimensions
+            if h.dim() == 2:
+                h = h.unsqueeze(0).expand(num_layers, -1, -1).contiguous()
+                c = c.unsqueeze(0).expand(num_layers, -1, -1).contiguous()
+            elif h.dim() == 3:
+                h = h.contiguous()
+                c = c.contiguous()
+            
+            return (h, c)
+
+    @staticmethod
+    def get_attention_choice(mixed_decoder) -> str:
+        """Get the best attention choice from mixed decoder"""
+        if not hasattr(mixed_decoder, 'use_attention_bridge') or not mixed_decoder.use_attention_bridge:
+            return "no_attention"
+        
+        if hasattr(mixed_decoder, 'attention_alphas'):
+            attention_weights = F.softmax(mixed_decoder.attention_alphas, dim=0)
+            if len(attention_weights) >= 2:
+                # Assume format is [use_attention, no_attention]
+                return "attention" if attention_weights[0] > attention_weights[1] else "no_attention"
+        
+        return "attention"  # Default to using attention
+    
+    @staticmethod
+    def fix_mixed_weights(mixed_model, temperature: float = 0.01):
+        """Fix mixed model to use best architecture by setting alphas"""
+        with torch.no_grad():
+            # Get current best architecture
+            alphas = mixed_model.get_alphas()
+            best_idx = torch.argmax(alphas[:3])
+            
+            # Create one-hot alphas
+            new_alphas = torch.zeros_like(mixed_model.alphas)
+            new_alphas[best_idx] = 1.0
+            mixed_model.alphas.data = new_alphas
+            
+            # Set very low temperature for sharp selection
+            mixed_model.set_temperature(temperature)
+            
+            # Fix attention alphas if they exist
+            if hasattr(mixed_model, 'attention_alphas'):
+                attention_best = torch.argmax(mixed_model.attention_alphas)
+                new_attention_alphas = torch.zeros_like(mixed_model.attention_alphas)
+                new_attention_alphas[attention_best] = 1.0
+                mixed_model.attention_alphas.data = new_attention_alphas
+    
+    @staticmethod
+    def derive_architecture_safely(mixed_model, device=None):
+        """Safely derive architecture from mixed model with proper error handling"""
+        if device is None:
+            device = next(mixed_model.parameters()).device
+        
+        try:
+            # Handle encoder
+            if hasattr(mixed_model, 'encoder') or hasattr(mixed_model, 'forecast_encoder'):
+                encoder = getattr(mixed_model, 'encoder', None) or getattr(mixed_model, 'forecast_encoder', None)
+                if encoder and hasattr(encoder, 'get_alphas'):
+                    encoder_alphas = encoder.get_alphas()
+                    best_encoder_type = ArchitectureConverter.get_best_architecture(encoder_alphas)
+                    
+                    # Create fixed encoder
+                    fixed_encoder = ArchitectureConverter.create_fixed_encoder(encoder)
+                    
+                    # Replace in model
+                    if hasattr(mixed_model, 'encoder'):
+                        mixed_model.encoder = fixed_encoder
+                    if hasattr(mixed_model, 'forecast_encoder'):
+                        mixed_model.forecast_encoder = fixed_encoder
+            
+            # Handle decoder
+            if hasattr(mixed_model, 'decoder') or hasattr(mixed_model, 'forecast_decoder'):
+                decoder = getattr(mixed_model, 'decoder', None) or getattr(mixed_model, 'forecast_decoder', None)
+                if decoder and hasattr(decoder, 'get_alphas'):
+                    decoder_alphas = decoder.get_alphas()
+                    best_decoder_type = ArchitectureConverter.get_best_architecture(decoder_alphas)
+                    attention_choice = ArchitectureConverter.get_attention_choice(decoder)
+                    
+                    # Create fixed decoder
+                    fixed_decoder = ArchitectureConverter.create_fixed_decoder(
+                        decoder, 
+                        use_attention_bridge=(attention_choice == "attention")
+                    )
+                    
+                    # Replace in model
+                    if hasattr(mixed_model, 'decoder'):
+                        mixed_model.decoder = fixed_decoder
+                    if hasattr(mixed_model, 'forecast_decoder'):
+                        mixed_model.forecast_decoder = fixed_decoder
+            
+            return mixed_model
+            
+        except Exception as e:
+            print(f"Warning: Could not derive architecture safely: {e}")
+            print("Falling back to fixing weights only...")
+            
+            # Fallback: just fix the weights
+            if hasattr(mixed_model, 'encoder') or hasattr(mixed_model, 'forecast_encoder'):
+                encoder = getattr(mixed_model, 'encoder', None) or getattr(mixed_model, 'forecast_encoder', None)
+                if encoder:
+                    ArchitectureConverter.fix_mixed_weights(encoder)
+            
+            if hasattr(mixed_model, 'decoder') or hasattr(mixed_model, 'forecast_decoder'):
+                decoder = getattr(mixed_model, 'decoder', None) or getattr(mixed_model, 'forecast_decoder', None)
+                if decoder:
+                    ArchitectureConverter.fix_mixed_weights(decoder)
+            
+            return mixed_model
+    
+    @staticmethod
+    def create_fixed_encoder(mixed_encoder, **kwargs) -> 'FixedEncoder':
+        """Create a FixedEncoder from a MixedEncoder"""
+        best_type = ArchitectureConverter.get_best_architecture(mixed_encoder.get_alphas())
+        
+        # Create fixed encoder
+        fixed_encoder = FixedEncoder(
+            rnn_type=best_type,
+            input_dim=mixed_encoder.input_dim,
+            latent_dim=mixed_encoder.latent_dim,
+            **kwargs
+        )
+        
+        # Transfer weights
+        ArchitectureConverter._transfer_encoder_weights(mixed_encoder, fixed_encoder, best_type)
+        return fixed_encoder
+    
+    @staticmethod
+    def create_fixed_decoder(mixed_decoder, **kwargs) -> 'FixedDecoder':
+        """Create a FixedDecoder from a MixedDecoder"""
+        best_type = ArchitectureConverter.get_best_architecture(mixed_decoder.get_alphas())
+        
+        # Create fixed decoder
+        fixed_decoder = FixedDecoder(
+            rnn_type=best_type,
+            input_dim=mixed_decoder.input_dim,
+            latent_dim=mixed_decoder.latent_dim,
+            use_attention_bridge=kwargs.get('use_attention_bridge', mixed_decoder.use_attention_bridge),
+            **{k: v for k, v in kwargs.items() if k != 'use_attention_bridge'}
+        )
+        
+        # Transfer weights
+        ArchitectureConverter._transfer_decoder_weights(mixed_decoder, fixed_decoder, best_type)
+        return fixed_decoder
+    
+    @staticmethod
+    def _transfer_encoder_weights(mixed_encoder, fixed_encoder, arch_type: str):
+        """Transfer weights from mixed to fixed encoder"""
+        try:
+            # Transfer the specific architecture weights
+            if arch_type == "lstm":
+                source_rnn = mixed_encoder.lstm
+            elif arch_type == "gru":
+                source_rnn = mixed_encoder.gru
+            elif arch_type == "transformer":
+                source_rnn = mixed_encoder.transformer
+            else:
+                raise ValueError(f"Unknown architecture type: {arch_type}")
+            
+            # Copy state dict
+            fixed_encoder.rnn.load_state_dict(source_rnn.state_dict())
+        except Exception as e:
+            print(f"Warning: Could not transfer encoder weights: {e}")
+    
+    @staticmethod
+    def _transfer_decoder_weights(mixed_decoder, fixed_decoder, arch_type: str):
+        """Transfer weights from mixed to fixed decoder"""
+        try:
+            # Transfer the specific architecture weights
+            if arch_type == "lstm":
+                source_rnn = mixed_decoder.lstm
+            elif arch_type == "gru":
+                source_rnn = mixed_decoder.gru
+            elif arch_type == "transformer":
+                source_rnn = mixed_decoder.transformer
+            else:
+                raise ValueError(f"Unknown architecture type: {arch_type}")
+            
+            # Copy state dict
+            fixed_decoder.rnn.load_state_dict(source_rnn.state_dict())
+            
+            # Transfer attention bridge weights if present
+            if (fixed_decoder.use_attention_bridge and 
+                hasattr(mixed_decoder, 'attention_bridge') and 
+                hasattr(fixed_decoder, 'attention_bridge')):
+                try:
+                    fixed_decoder.attention_bridge.load_state_dict(
+                        mixed_decoder.attention_bridge.state_dict()
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not transfer attention bridge weights: {e}")
+                    
+        except Exception as e:
+            print(f"Warning: Could not transfer decoder weights: {e}")
+
+class FixedEncoder(nn.Module):
+    """Simple fixed encoder wrapper for deployment"""
+    
     def __init__(
         self,
-        d_model: int,
-        num_heads: int = 8,
-        dropout: float = 0.1,
-        use_temporal_bias: bool = True,
-        use_rotary: bool = False,
-        max_seq_len: int = 512,
-        rnn_integration_mode: str = "adaptive",
+        rnn=None,
+        rnn_type: str = None,
+        input_dim: int = 64,
+        latent_dim: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.0,
     ):
         super().__init__()
-
-        # Store config and validate heads
-        self.d_model = d_model
-        self.num_heads = self._find_valid_heads(d_model, num_heads)
-        self.head_dim = d_model // self.num_heads
-        self.scale = self.head_dim**-0.5
-        self.rnn_integration_mode = rnn_integration_mode
-        self.use_temporal_bias = use_temporal_bias
-        self.use_rotary = use_rotary
-
-        # Core attention components
-        self.qkv_proj = nn.Linear(d_model, d_model * 3, bias=False)
-        self.out_proj = nn.Linear(d_model, d_model)
-        self.norm = nn.LayerNorm(d_model)
-        self.gate_proj = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-
-        # Optional components
-        if use_temporal_bias:
-            self._init_temporal_bias(min(max_seq_len, 128))
-
-        if use_rotary:
-            self.rotary_emb = RotaryPositionalEncoding(self.head_dim, max_seq_len)
-
-        # Cache for dimension projections
-        self._projection_cache = {}
-
-        self._init_weights()
-
-    def _find_valid_heads(self, d_model: int, num_heads: int) -> int:
-        """Find valid number of heads that divides d_model"""
-        num_heads = min(num_heads, d_model)
-        while d_model % num_heads != 0 and num_heads > 1:
-            num_heads -= 1
-        return max(1, num_heads)
-
-    def _init_temporal_bias(self, max_len: int):
-        """Create temporal bias with reduced memory footprint"""
-        bias = torch.zeros(self.num_heads, max_len, max_len)
-        positions = torch.arange(max_len).float()
-        distance_matrix = torch.abs(positions.unsqueeze(0) - positions.unsqueeze(1))
-
-        temporal_weight = torch.exp(-distance_matrix * 0.1)
-        recency_bias = -distance_matrix * 0.05
-        bias[:] = temporal_weight + recency_bias
-
-        self.register_buffer("temporal_bias", bias.unsqueeze(0))
-
-    def _init_weights(self):
-        """Initialize weights with proper scaling"""
-        nn.init.xavier_uniform_(self.qkv_proj.weight, gain=1 / math.sqrt(3))
-        nn.init.xavier_uniform_(self.out_proj.weight)
-        nn.init.zeros_(self.out_proj.bias)
-        nn.init.xavier_uniform_(self.gate_proj.weight)
-        nn.init.zeros_(self.gate_proj.bias)
-
-    def _get_projection(
-        self, from_dim: int, to_dim: int, device: torch.device, dtype: torch.dtype
-    ) -> nn.Linear:
-        """Get or create cached projection layer"""
-        key = (from_dim, to_dim)
-        if key not in self._projection_cache:
-            self._projection_cache[key] = nn.Linear(
-                from_dim, to_dim, device=device, dtype=dtype
-            )
-        return self._projection_cache[key]
-
-    def _ensure_dims(self, tensor: torch.Tensor, target_dim: int) -> torch.Tensor:
-        """Ensure tensor has target dimension"""
-        if tensor.size(-1) == target_dim:
-            return tensor
-
-        proj = self._get_projection(
-            tensor.size(-1), target_dim, tensor.device, tensor.dtype
-        )
-        return proj(tensor)
-
-    def _compute_qkv(self, query_input: torch.Tensor, kv_input: torch.Tensor) -> tuple:
-        """Compute Q, K, V tensors efficiently"""
-        B, L_q = query_input.shape[:2]
-        L_kv = kv_input.shape[1]
-
-        # Compute Q from decoder, K,V from encoder
-        q = F.linear(query_input, self.qkv_proj.weight[: self.d_model])
-        k = F.linear(kv_input, self.qkv_proj.weight[self.d_model : 2 * self.d_model])
-        v = F.linear(kv_input, self.qkv_proj.weight[2 * self.d_model :])
-
-        # Reshape for multi-head attention
-        q = q.view(B, L_q, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, L_kv, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, L_kv, self.num_heads, self.head_dim).transpose(1, 2)
-
-        return q, k, v
-
-    def _apply_temporal_bias(
-        self, attn_scores: torch.Tensor, L_q: int, L_kv: int
-    ) -> torch.Tensor:
-        """Apply temporal bias with interpolation if needed"""
-        if not self.use_temporal_bias or not hasattr(self, "temporal_bias"):
-            return attn_scores
-
-        bias_size = self.temporal_bias.size(-1)
-
-        if L_q <= bias_size and L_kv <= bias_size:
-            # Direct slicing for small sequences
-            bias_slice = self.temporal_bias[:, : self.num_heads, :L_q, :L_kv]
-            attn_scores += bias_slice
+        
+        rnn_or_type = rnn if rnn is not None else rnn_type
+        if rnn_or_type is None:
+            raise ValueError("Either 'rnn' or 'rnn_type' must be provided")
+        
+        if isinstance(rnn_or_type, str):
+            self.rnn_type = rnn_or_type.lower()
+            self.latent_dim = latent_dim
+            
+            if self.rnn_type == "lstm":
+                self.rnn = nn.LSTM(
+                    input_dim, latent_dim, num_layers, 
+                    dropout=dropout if dropout > 0 else 0, batch_first=True
+                )
+            elif self.rnn_type == "gru":
+                self.rnn = nn.GRU(
+                    input_dim, latent_dim, num_layers,
+                    dropout=dropout if dropout > 0 else 0, batch_first=True
+                )
+            elif self.rnn_type == "transformer":
+                self.rnn = LightweightTransformerEncoder(
+                    input_dim=input_dim, latent_dim=latent_dim,
+                    num_layers=num_layers, dropout=dropout
+                )
+            else:
+                raise ValueError(f"Unsupported RNN type: {self.rnn_type}")
         else:
-            # Interpolate for larger sequences
-            bias = F.interpolate(
-                self.temporal_bias.squeeze(0),
-                size=(L_q, L_kv),
-                mode="bilinear",
-                align_corners=False,
-            ).unsqueeze(0)
-            attn_scores += bias[:, : self.num_heads]
-
-        return attn_scores
-
-    def _apply_masks(
-        self,
-        attn_scores: torch.Tensor,
-        encoder_mask: torch.Tensor = None,
-        decoder_mask: torch.Tensor = None,
-        L_q: int = None,
-        L_kv: int = None,
-    ) -> torch.Tensor:
-        """Apply encoder and decoder masks efficiently"""
-        # Encoder mask
-        if encoder_mask is not None:
-            if encoder_mask.dim() == 2:
-                mask = encoder_mask.view(
-                    encoder_mask.size(0), 1, 1, encoder_mask.size(1)
-                )
-            elif encoder_mask.dim() == 3:
-                mask = encoder_mask.unsqueeze(1)
+            self.rnn = rnn_or_type
+            if isinstance(self.rnn, nn.LSTM):
+                self.rnn_type = "lstm"
+                self.latent_dim = self.rnn.hidden_size
+            elif isinstance(self.rnn, nn.GRU):
+                self.rnn_type = "gru"
+                self.latent_dim = self.rnn.hidden_size
+            elif hasattr(self.rnn, 'latent_dim'):
+                self.rnn_type = "transformer"
+                self.latent_dim = self.rnn.latent_dim
             else:
-                mask = encoder_mask
+                self.rnn_type = "unknown"
+                self.latent_dim = latent_dim
 
-            if mask.size(-1) == L_kv and mask.size(-2) == 1 and L_q > 1:
-                mask = mask.expand(-1, -1, L_q, -1)
+    def forward(self, x: torch.Tensor) -> tuple:
+        """Forward pass optimized for single architecture"""
+        if self.rnn_type == "transformer":
+            return self.rnn(x)  # Returns (output, context, state)
+        else:
+            output, state = self.rnn(x)
+            context = output[:, -1:, :]  # Last timestep
+            
+            # Ensure state format is consistent
+            if isinstance(self.rnn, nn.GRU):
+                # GRU returns [num_layers, batch, hidden_size]
+                # Convert to tuple format: (h, c) where c is zeros
+                h = state
+                c = torch.zeros_like(h)
+                state = (h, c)
+            elif isinstance(self.rnn, nn.LSTM):
+                # LSTM already returns (h, c) in correct format
+                pass
+                
+            return output, context, state
 
-            attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
+    def get_alphas(self) -> torch.Tensor:
+        """Return one-hot encoding for the fixed architecture"""
+        device = next(self.parameters()).device
+        if self.rnn_type == "lstm":
+            return torch.tensor([1.0, 0.0, 0.0], device=device)
+        elif self.rnn_type == "gru":
+            return torch.tensor([0.0, 1.0, 0.0], device=device)
+        else:  # transformer
+            return torch.tensor([0.0, 0.0, 1.0], device=device)
 
-        # Decoder mask
-        if decoder_mask is not None:
-            if decoder_mask.dim() == 2:
-                mask = decoder_mask.view(
-                    decoder_mask.size(0), 1, decoder_mask.size(1), 1
+    def set_temperature(self, temp: float):
+        """No-op for fixed encoder"""
+        pass
+
+
+class FixedDecoder(nn.Module):
+    """Simple fixed decoder wrapper for deployment"""
+    
+    def __init__(
+        self,
+        rnn=None,
+        rnn_type: str = None,
+        input_dim: int = 64,
+        latent_dim: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.0,
+        use_attention_bridge: bool = False,
+        attention_layers: int = 1,
+    ):
+        super().__init__()
+        self.use_attention_bridge = use_attention_bridge
+        
+        rnn_or_type = rnn if rnn is not None else rnn_type
+        if rnn_or_type is None:
+            raise ValueError("Either 'rnn' or 'rnn_type' must be provided")
+        
+        if isinstance(rnn_or_type, str):
+            self.rnn_type = rnn_or_type.lower()
+            self.latent_dim = latent_dim
+            
+            if self.rnn_type == "lstm":
+                self.rnn = nn.LSTM(
+                    input_dim, latent_dim, num_layers,
+                    dropout=dropout if dropout > 0 else 0, batch_first=True
+                )
+            elif self.rnn_type == "gru":
+                self.rnn = nn.GRU(
+                    input_dim, latent_dim, num_layers,
+                    dropout=dropout if dropout > 0 else 0, batch_first=True
+                )
+            elif self.rnn_type == "transformer":
+                self.rnn = LightweightTransformerDecoder(
+                    input_dim=input_dim, latent_dim=latent_dim,
+                    num_layers=num_layers, dropout=dropout
                 )
             else:
-                mask = decoder_mask
+                raise ValueError(f"Unsupported RNN type: {self.rnn_type}")
+        else:
+            self.rnn = rnn_or_type
+            if isinstance(self.rnn, nn.LSTM):
+                self.rnn_type = "lstm"
+                self.latent_dim = self.rnn.hidden_size
+            elif isinstance(self.rnn, nn.GRU):
+                self.rnn_type = "gru"
+                self.latent_dim = self.rnn.hidden_size
+            elif hasattr(self.rnn, 'latent_dim'):
+                self.rnn_type = "transformer"
+                self.latent_dim = self.rnn.latent_dim
+            else:
+                self.rnn_type = "unknown"
+                self.latent_dim = latent_dim
 
-            attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
+        # Simple attention bridge for fixed decoder
+        if use_attention_bridge:
+            self.attention_bridge = AttentionBridge(latent_dim, num_heads=4, dropout=dropout)
 
-        return attn_scores
+    def forward(self, tgt: torch.Tensor, memory: torch.Tensor, hidden_state=None, encoder_output: torch.Tensor = None) -> tuple:
+        """Forward pass optimized for single architecture"""
+        batch_size = tgt.size(0)
+        
+        # Get RNN parameters
+        num_layers = getattr(self.rnn, 'num_layers', 1)
+        hidden_size = getattr(self.rnn, 'hidden_size', self.latent_dim)
+        
+        # Ensure proper hidden state format
+        hidden_state = ArchitectureConverter.ensure_proper_state_format(
+            hidden_state, self.rnn_type, num_layers, batch_size, hidden_size, tgt.device
+        )
 
-    def forward(
-        self,
-        decoder_hidden: torch.Tensor,
-        encoder_output: torch.Tensor,
-        encoder_mask: torch.Tensor = None,
-        return_attention: bool = False,
-        decoder_mask: torch.Tensor = None,
-        use_causal_mask: bool = False,
-    ) -> tuple:
-        """Main forward pass with cross-attention"""
+        # Forward pass
+        if self.rnn_type == "transformer":
+            output, new_state = self.rnn(tgt, memory, hidden_state)
+        else:
+            output, new_state = self.rnn(tgt, hidden_state)
 
-        B, L_q, _ = decoder_hidden.shape
-        _, L_kv, _ = encoder_output.shape
+        # Apply attention if enabled
+        if self.use_attention_bridge and hasattr(self, 'attention_bridge'):
+            attention_source = encoder_output if encoder_output is not None else memory
+            if attention_source is not None:
+                output = self.attention_bridge(output, attention_source)
 
-        # Early exit for empty sequences
-        if B == 0 or L_q == 0 or L_kv == 0:
-            return decoder_hidden, None
+        return output, new_state
 
-        # Store original for residual
-        residual = decoder_hidden
+    def get_alphas(self) -> torch.Tensor:
+        """Return one-hot encoding for the fixed architecture"""
+        device = next(self.parameters()).device
+        if self.rnn_type == "lstm":
+            return torch.tensor([1.0, 0.0, 0.0], device=device)
+        elif self.rnn_type == "gru":
+            return torch.tensor([0.0, 1.0, 0.0], device=device)
+        else:  # transformer
+            return torch.tensor([0.0, 0.0, 1.0], device=device)
 
-        try:
-            # Ensure dimension compatibility and normalize
-            query_input = self.norm(self._ensure_dims(decoder_hidden, self.d_model))
-            kv_input = self.norm(self._ensure_dims(encoder_output, self.d_model))
-
-            # Compute Q, K, V
-            q, k, v = self._compute_qkv(query_input, kv_input)
-
-            # Apply rotary embeddings if enabled
-            if self.use_rotary:
-                cos_emb, sin_emb = self.rotary_emb(max(L_q, L_kv), q.device)
-                q = self.rotary_emb.apply_rotary_pos_emb(q, cos_emb, sin_emb)
-                k = self.rotary_emb.apply_rotary_pos_emb(k, cos_emb, sin_emb)
-
-            # Scaled dot-product attention
-            attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-
-            # Apply temporal bias and masks
-            attn_scores = self._apply_temporal_bias(attn_scores, L_q, L_kv)
-            attn_scores = self._apply_masks(
-                attn_scores, encoder_mask, decoder_mask, L_q, L_kv
-            )
-
-            # Attention weights and apply to values
-            attn_weights = F.softmax(attn_scores, dim=-1)
-            attn_weights = self.dropout(attn_weights)
-
-            attended = torch.matmul(attn_weights, v)
-            attended = attended.transpose(1, 2).contiguous().view(B, L_q, self.d_model)
-
-            # Output projection and gating
-            attended = self.out_proj(attended)
-            residual = self._ensure_dims(residual, self.d_model)
-
-            gate = torch.sigmoid(self.gate_proj(attended))
-            output = gate * attended + (1 - gate) * residual
-
-            return output, attn_weights.mean(dim=1) if return_attention else None
-
-        except Exception as e:
-            print(f"CrossAttentionBridge failed: {e}")
-            print(
-                f"Shapes - decoder: {decoder_hidden.shape}, encoder: {encoder_output.shape}"
-            )
-            return self._ensure_dims(residual, self.d_model), None
+    def set_temperature(self, temp: float):
+        """No-op for fixed decoder"""
+        pass
 
 
 class RotaryPositionalEncoding(nn.Module):
     """Streamlined rotary positional encoding with efficient caching"""
-
+    
     def __init__(self, dim: int, max_seq_len: int = 512, base: float = 10000.0):
         super().__init__()
         self.dim = dim
         self.max_seq_len = max_seq_len
         self.base = base
-
+        
         # Pre-compute and cache frequency bands
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
-
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        
         # Pre-compute embeddings for common sequence lengths
         self._init_cached_embeddings(max_seq_len)
 
     def _init_cached_embeddings(self, max_len: int):
         """Pre-compute embeddings for efficiency"""
-        t = torch.arange(max_len).float()
+        t = torch.arange(max_len, dtype=torch.float)
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
-
-        self.register_buffer("cached_cos", emb.cos())
-        self.register_buffer("cached_sin", emb.sin())
+        
+        self.register_buffer("cached_cos", emb.cos(), persistent=False)
+        self.register_buffer("cached_sin", emb.sin(), persistent=False)
 
     def _compute_embeddings(self, seq_len: int, device: torch.device) -> tuple:
         """Compute embeddings on-the-fly for longer sequences"""
-        t = torch.arange(seq_len, device=device).type_as(self.inv_freq)
+        t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         return emb.cos(), emb.sin()
 
-    def forward(self, seq_len: int, device: torch.device) -> tuple:
+    def forward(self, seq_len: int, device: torch.device = None) -> tuple:
         """Generate cos and sin embeddings with efficient caching"""
+        if device is None:
+            device = self.inv_freq.device
+            
         if seq_len <= self.cached_cos.size(0):
             # Use cached embeddings
-            return (
-                self.cached_cos[:seq_len].to(device),
-                self.cached_sin[:seq_len].to(device),
-            )
+            cos = self.cached_cos[:seq_len]
+            sin = self.cached_sin[:seq_len]
+            
+            # Only move to device if necessary
+            if cos.device != device:
+                cos = cos.to(device)
+                sin = sin.to(device)
+                
+            return cos, sin
         else:
             # Compute on-the-fly for longer sequences
             return self._compute_embeddings(seq_len, device)
@@ -1563,11 +1280,17 @@ class RotaryPositionalEncoding(nn.Module):
         """Apply rotary positional embedding efficiently"""
         seq_len = x.size(-2)
         head_dim = x.size(-1)
-
+        
+        # Handle odd head dimensions gracefully
+        if head_dim % 2 != 0:
+            raise ValueError(f"Head dimension {head_dim} must be even for rotary embeddings")
+        
+        half_dim = head_dim // 2
+        
         # Ensure dimensions match and reshape for broadcasting
-        cos = cos[:seq_len, : head_dim // 2].view(1, 1, seq_len, head_dim // 2)
-        sin = sin[:seq_len, : head_dim // 2].view(1, 1, seq_len, head_dim // 2)
-
+        cos = cos[:seq_len, :half_dim].view(1, 1, seq_len, half_dim)
+        sin = sin[:seq_len, :half_dim].view(1, 1, seq_len, half_dim)
+        
         # Split and apply rotation in one operation
         x_even, x_odd = x.chunk(2, dim=-1)
         return torch.cat(
@@ -1584,32 +1307,74 @@ class RotaryPositionalEncoding(nn.Module):
         self, seq_len: int, device: torch.device = None
     ) -> tuple:
         """Convenient method to get embeddings for specific length"""
-        if device is None:
-            device = self.inv_freq.device
         return self.forward(seq_len, device)
 
 
 class PositionalEncoding(nn.Module):
     """Optimized positional encoding"""
-
+    
     def __init__(self, d_model: int, max_len: int = 512, base: float = 10000.0):
         super().__init__()
         self.d_model = d_model
-
+        
+        # Ensure d_model is even for proper sin/cos pairing
+        if d_model % 2 != 0:
+            raise ValueError(f"d_model {d_model} must be even for positional encoding")
+        
         # Vectorized computation of positional encodings
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        
+        # More numerically stable computation
         div_term = torch.exp(
-            torch.arange(0, d_model, 2, dtype=torch.float) * -(math.log(base) / d_model)
+            torch.arange(0, d_model, 2, dtype=torch.float) * 
+            -(math.log(base) / d_model)
         )
-
+        
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-
-        self.register_buffer("pe", pe.unsqueeze(0))
+        
+        # Register as non-persistent buffer (won't be saved in checkpoints)
+        self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Add positional encoding with automatic device placement"""
         seq_len = x.size(1)
-        return x + self.pe[:, :seq_len].to(x.device, x.dtype)
+        
+        # Handle sequences longer than max_len gracefully
+        if seq_len > self.pe.size(1):
+            # Extend PE on-the-fly for longer sequences
+            pe_extended = self._compute_extended_pe(seq_len, x.device, x.dtype)
+            return x + pe_extended[:, :seq_len]
+        
+        # Use cached PE
+        pe_slice = self.pe[:, :seq_len]
+        
+        # Ensure correct device and dtype
+        if pe_slice.device != x.device or pe_slice.dtype != x.dtype:
+            pe_slice = pe_slice.to(device=x.device, dtype=x.dtype)
+        
+        return x + pe_slice
 
+    def _compute_extended_pe(self, seq_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """Compute positional encoding for sequences longer than max_len"""
+        pe = torch.zeros(seq_len, self.d_model, device=device, dtype=dtype)
+        position = torch.arange(0, seq_len, dtype=dtype, device=device).unsqueeze(1)
+        
+        div_term = torch.exp(
+            torch.arange(0, self.d_model, 2, dtype=dtype, device=device) * 
+            -(math.log(10000.0) / self.d_model)
+        )
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        return pe.unsqueeze(0)
+
+    def extend_max_len(self, new_max_len: int):
+        """Extend the maximum length of cached positional encodings"""
+        if new_max_len > self.pe.size(1):
+            device = self.pe.device
+            dtype = self.pe.dtype
+            new_pe = self._compute_extended_pe(new_max_len, device, dtype)
+            self.register_buffer("pe", new_pe, persistent=False)
