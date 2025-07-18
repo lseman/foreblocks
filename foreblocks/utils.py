@@ -1,5 +1,3 @@
-import contextlib
-import copy
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -12,7 +10,7 @@ from tqdm import tqdm
 
 from .third_party.vsgd import *
 
-
+import copy
 class TimeSeriesDataset(torch.utils.data.Dataset):
     """Dataset for time series data"""
 
@@ -72,6 +70,12 @@ def create_dataloaders(X_train, y_train, X_val=None, y_val=None, batch_size=32):
 
 
 class Trainer:
+    """
+    Clean trainer focused purely on training logic.
+    All model-specific features (quantization, distillation) are handled by the model itself.
+    Works seamlessly with BaseForecastingModel, ForecastingModel, and QuantizedForecastingModel.
+    """
+
     def __init__(
         self,
         model: nn.Module,
@@ -82,10 +86,6 @@ class Trainer:
         device: Optional[str] = None,
         use_wandb: bool = False,
         wandb_config: Optional[Dict[str, Any]] = None,
-        # Quantization parameters
-        quantization_config: Optional[Dict[str, Any]] = None,
-        # Distillation parameters
-        distillation_config: Optional[Dict[str, Any]] = None,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
@@ -94,14 +94,6 @@ class Trainer:
         self.config = self._default_config()
         if config:
             self.config.update(config)
-
-        # Setup quantization
-        self.quantization_config = quantization_config or {}
-        self._setup_quantization()
-
-        # Setup distillation
-        self.distillation_config = distillation_config or {}
-        self._setup_distillation()
 
         self.optimizer = optimizer or self._get_optimizer()
         self.criterion = criterion or self._get_criterion()
@@ -123,7 +115,6 @@ class Trainer:
             "min_delta": 1e-4,
             "use_amp": True,
             "gradient_clip_val": None,
-            "teacher_forcing_ratio": 0.5,
             "scheduler_type": None,
             "min_lr": 1e-6,
             "lr_step_size": 30,
@@ -135,182 +126,7 @@ class Trainer:
             "gradient_accumulation_steps": 1,
             "l1_regularization": 0.0,
             "kl_weight": 1.0,
-            # Quantization training specific
-            "qat_start_epoch": 10,  # Start QAT after this epoch
-            "qat_freeze_bn_delay": 5,  # Freeze BN stats after this many QAT epochs
-            # Distillation specific
-            "distillation_start_epoch": 0,  # Start distillation from this epoch
-            "distillation_warmup_epochs": 5,  # Gradually increase distillation weight
         }
-
-    def _setup_quantization(self):
-        """Setup quantization configuration"""
-        self.quantization_enabled = len(self.quantization_config) > 0
-        
-        if not self.quantization_enabled:
-            self.quantization_mode = None
-            return
-            
-        # Default quantization config
-        default_quant_config = {
-            "mode": "qat",  # "ptq", "qat", or "dynamic"
-            "backend": "fbgemm",
-            "bit_width": 8,
-            "calibration_batches": 100,
-            "enable_fake_quantization": True,
-        }
-        
-        # Update with user config
-        for key, value in default_quant_config.items():
-            if key not in self.quantization_config:
-                self.quantization_config[key] = value
-        
-        self.quantization_mode = self.quantization_config["mode"]
-        self.calibration_data = []
-        self.quantization_prepared = False
-        
-        print(f"Quantization enabled: {self.quantization_mode}")
-
-    def _setup_distillation(self):
-        """Setup knowledge distillation configuration"""
-        self.distillation_enabled = len(self.distillation_config) > 0
-        
-        if not self.distillation_enabled:
-            return
-            
-        # Default distillation config
-        default_distill_config = {
-            "mode": "output",  # "output", "feature", "attention", "comprehensive"
-            "teacher_model": None,
-            "temperature": 4.0,
-            "alpha": 0.7,
-            "feature_layers": [],
-            "attention_layers": [],
-            "teacher_model_path": None,
-        }
-        
-        # Update with user config
-        for key, value in default_distill_config.items():
-            if key not in self.distillation_config:
-                self.distillation_config[key] = value
-        
-        self.distillation_mode = self.distillation_config["mode"]
-        self.teacher_model = None
-        self.distillation_weight = 0.0  # Will be adjusted during training
-        
-        # Load teacher model if path provided
-        if self.distillation_config["teacher_model_path"]:
-            self._load_teacher_model()
-        elif self.distillation_config["teacher_model"]:
-            self.teacher_model = self.distillation_config["teacher_model"]
-        
-        # Setup distillation in student model
-        if hasattr(self.model, 'enable_distillation') and self.teacher_model is not None:
-            self.model.enable_distillation(
-                mode=self.distillation_mode,
-                teacher_model=self.teacher_model
-            )
-            self.model.distillation_temperature = self.distillation_config["temperature"]
-            self.model.distillation_alpha = self.distillation_config["alpha"]
-            
-        print(f"Distillation enabled: {self.distillation_mode}")
-
-    def _load_teacher_model(self):
-        """Load teacher model from saved checkpoint"""
-        try:
-            checkpoint = torch.load(self.distillation_config["teacher_model_path"], map_location=self.device)
-            
-            # Create teacher model (assuming same architecture for now)
-            self.teacher_model = copy.deepcopy(self.model)
-            
-            # Load teacher weights
-            if "model_state_dict" in checkpoint:
-                self.teacher_model.load_state_dict(checkpoint["model_state_dict"])
-            else:
-                self.teacher_model.load_state_dict(checkpoint)
-            
-            # Set teacher to eval mode
-            self.teacher_model.eval()
-            for param in self.teacher_model.parameters():
-                param.requires_grad = False
-                
-            print(f"Teacher model loaded from {self.distillation_config['teacher_model_path']}")
-            
-        except Exception as e:
-            print(f"Failed to load teacher model: {e}")
-            self.distillation_enabled = False
-
-    def prepare_quantization(self, sample_input: torch.Tensor, calibration_loader: Optional[torch.utils.data.DataLoader] = None):
-        """
-        Prepare model for quantization
-        
-        Args:
-            sample_input: Sample input tensor for model tracing
-            calibration_loader: DataLoader for calibration (PTQ only)
-        """
-        if not self.quantization_enabled or not hasattr(self.model, 'prepare_for_quantization'):
-            return
-            
-        print(f"Preparing model for {self.quantization_mode} quantization...")
-        
-        if self.quantization_mode == "ptq":
-            # For PTQ, we need calibration data
-            if calibration_loader is None:
-                print("Warning: No calibration data provided for PTQ. Using dummy calibration.")
-                calibration_loader = self._create_dummy_calibration_loader(sample_input)
-            
-            # Prepare and calibrate
-            self.model = self.model.prepare_for_quantization(sample_input, calibration_loader)
-            self.quantization_prepared = True
-            
-        elif self.quantization_mode == "qat":
-            # For QAT, we prepare but don't quantize yet
-            self.model = self.model.prepare_for_quantization(sample_input)
-            self.quantization_prepared = True
-            
-        elif self.quantization_mode == "dynamic":
-            # Dynamic quantization can be applied immediately
-            self.model = self.model.prepare_for_quantization(sample_input)
-            self.quantization_prepared = True
-
-    def _create_dummy_calibration_loader(self, sample_input: torch.Tensor):
-        """Create dummy calibration loader for PTQ"""
-        dummy_dataset = torch.utils.data.TensorDataset(sample_input.repeat(10, 1, 1))
-        return torch.utils.data.DataLoader(dummy_dataset, batch_size=1)
-
-    def finalize_quantization(self):
-        """Finalize quantization after QAT training"""
-        if not self.quantization_enabled or not self.quantization_prepared:
-            return
-            
-        if self.quantization_mode == "qat" and hasattr(self.model, 'finalize_quantization'):
-            print("Finalizing QAT quantization...")
-            self.model = self.model.finalize_quantization()
-            print("Model quantization finalized!")
-
-    def _get_distillation_weight(self, epoch: int) -> float:
-        """Get distillation weight based on current epoch"""
-        if not self.distillation_enabled:
-            return 0.0
-            
-        start_epoch = self.config["distillation_start_epoch"]
-        warmup_epochs = self.config["distillation_warmup_epochs"]
-        
-        if epoch < start_epoch:
-            return 0.0
-        elif epoch < start_epoch + warmup_epochs:
-            # Linear warmup
-            progress = (epoch - start_epoch) / warmup_epochs
-            return progress * self.distillation_config["alpha"]
-        else:
-            return self.distillation_config["alpha"]
-
-    def _should_start_qat(self, epoch: int) -> bool:
-        """Check if QAT should start at this epoch"""
-        return (self.quantization_enabled and 
-                self.quantization_mode == "qat" and 
-                epoch >= self.config["qat_start_epoch"] and
-                not self.quantization_prepared)
 
     def set_config(self, key: str, value: Any):
         if key in self.config:
@@ -323,9 +139,9 @@ class Trainer:
             "train_losses": [], 
             "val_losses": [], 
             "learning_rates": [],
-            "distillation_losses": [],
             "task_losses": [],
-            "quantization_info": []
+            "distillation_losses": [],
+            "model_info": []  # General model info (size, etc.)
         }
         self.best_val_loss = float("inf")
         self.best_model_state = None
@@ -359,28 +175,31 @@ class Trainer:
         return None
 
     def _forward_pass(self, X, y, time_feat=None):
-        """Enhanced forward pass with distillation support"""
-        if self.distillation_enabled and hasattr(self.model, 'forward'):
-            # Get both student and teacher outputs for distillation
-            result = self.model(X, y, time_feat, self.current_epoch, return_teacher_outputs=True)
-            if isinstance(result, tuple) and len(result) == 2:
-                outputs, teacher_outputs = result
-                return outputs, {"teacher_outputs": teacher_outputs}
-            else:
-                # Fallback if teacher outputs not available
-                outputs = result[0] if isinstance(result, tuple) else result
-                return outputs, {}
+        """Enhanced forward pass with automatic distillation support"""
+        # Check if model supports distillation
+        if hasattr(self.model, 'get_distillation_info'):
+            distill_info = self.model.get_distillation_info()
+            if distill_info.get('distillation_enabled', False):
+                # Model has distillation - try to get teacher outputs
+                result = self.model(X, y, time_feat, self.current_epoch, return_teacher_outputs=True)
+                if isinstance(result, tuple) and len(result) == 2:
+                    outputs, teacher_outputs = result
+                    return outputs, {"teacher_outputs": teacher_outputs}
+                else:
+                    # Fallback if teacher outputs not available
+                    outputs = result[0] if isinstance(result, tuple) else result
+                    return outputs, {}
+        
+        # Regular forward pass (BaseForecastingModel or no distillation)
+        result = self.model(X, y, time_feat, self.current_epoch)
+        if isinstance(result, tuple):
+            outputs, aux = result
         else:
-            # Regular forward pass
-            result = self.model(X, y, time_feat, self.current_epoch)
-            if isinstance(result, tuple):
-                outputs, aux = result
-            else:
-                outputs, aux = result, {}
-            return outputs, aux
+            outputs, aux = result, {}
+        return outputs, aux
 
     def _compute_loss(self, outputs, targets, aux: Optional[Dict[str, torch.Tensor]] = None):
-        """Enhanced loss computation with distillation support"""
+        """Enhanced loss computation with automatic distillation support"""
         if aux is None:
             aux = {}
             
@@ -391,9 +210,8 @@ class Trainer:
         # Track individual loss components
         loss_components = {"task_loss": base_loss.item()}
         
-        # Knowledge distillation loss
-        if (self.distillation_enabled and 
-            hasattr(self.model, 'compute_distillation_loss') and
+        # Knowledge distillation loss (delegate to model if available)
+        if (hasattr(self.model, 'compute_distillation_loss') and
             "teacher_outputs" in aux):
             
             teacher_outputs = aux["teacher_outputs"]
@@ -401,16 +219,14 @@ class Trainer:
                 outputs, teacher_outputs, targets, self.criterion
             )
             
-            # Use current epoch's distillation weight
-            distill_weight = self._get_distillation_weight(self.current_epoch)
-            total_loss = (1 - distill_weight) * base_loss + distill_weight * distillation_loss
+            # Use the model's own distillation alpha
+            total_loss = distillation_loss
             
             # Track distillation components
             loss_components.update({
                 f"distill_{k}": v.item() if isinstance(v, torch.Tensor) else v 
                 for k, v in distill_components.items()
             })
-            loss_components["distillation_weight"] = distill_weight
 
         # Add auxiliary loss if present
         if "aux_loss" in aux:
@@ -429,7 +245,7 @@ class Trainer:
             total_loss += l1_weight * l1
             loss_components["l1_loss"] = (l1_weight * l1).item()
 
-        # KL divergence (e.g., for VAEs)
+        # KL divergence (delegate to model)
         if hasattr(self.model, "get_kl"):
             kl_div = self.model.get_kl()
             if kl_div is not None:
@@ -467,19 +283,9 @@ class Trainer:
                 self.optimizer.zero_grad()
 
     def train_epoch(self, dataloader, callbacks=None):
-        """Enhanced training epoch with quantization and distillation support"""
+        """Clean training epoch with automatic feature detection"""
         self.model.train()
         
-        # Check if we should start QAT
-        if self._should_start_qat(self.current_epoch):
-            print(f"Starting QAT at epoch {self.current_epoch}")
-            sample_batch = next(iter(dataloader))
-            sample_input = sample_batch[0][:1].to(self.device)  # Take first sample
-            self.prepare_quantization(sample_input)
-            
-            # Re-initialize optimizer for QAT
-            self.optimizer = self._get_optimizer()
-            
         total_loss = 0.0
         epoch_loss_components = {}
         
@@ -526,7 +332,7 @@ class Trainer:
         return total_loss / len(dataloader)
 
     def evaluate(self, dataloader):
-        """Enhanced evaluation with quantization support"""
+        """Clean evaluation"""
         self.model.eval()
         total_loss = 0.0
         
@@ -545,11 +351,15 @@ class Trainer:
         return total_loss / len(dataloader.dataset)
 
     def train(self, train_loader, val_loader=None, callbacks=None, epochs=None):
-        """Enhanced training with quantization and distillation support"""
+        """Clean training loop with automatic feature detection"""
         self._init_tracking()
         num_epochs = self.config["num_epochs"]
         if epochs is not None:
             num_epochs = epochs
+
+        # Detect model capabilities
+        has_distillation = hasattr(self.model, 'get_distillation_info')
+        has_quantization = hasattr(self.model, 'get_quantization_info')
 
         with tqdm(range(num_epochs), desc="Training", unit="epoch") as pbar:
             for epoch in pbar:
@@ -565,16 +375,15 @@ class Trainer:
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 self.history["learning_rates"].append(current_lr)
                 
-                # Log quantization info
-                if self.quantization_enabled and hasattr(self.model, 'get_model_size'):
+                # Log model info (delegate to model)
+                if hasattr(self.model, 'get_model_size'):
                     model_info = self.model.get_model_size()
-                    self.history["quantization_info"].append({
+                    self.history["model_info"].append({
                         "epoch": epoch,
-                        "is_quantized": model_info.get("is_quantized", False),
-                        "model_size_mb": model_info.get("size_mb", 0),
+                        **model_info
                     })
 
-                # Enhanced logging with distillation info
+                # Enhanced logging with automatic feature detection
                 log_dict = {
                     "epoch": epoch + 1,
                     "train_loss": train_loss,
@@ -582,9 +391,19 @@ class Trainer:
                     "learning_rate": current_lr,
                 }
                 
-                # Add distillation weight to logs
-                if self.distillation_enabled:
-                    log_dict["distillation_weight"] = self._get_distillation_weight(epoch)
+                # Add distillation info if available
+                if has_distillation:
+                    distill_info = self.model.get_distillation_info()
+                    if distill_info.get('distillation_enabled', False):
+                        log_dict["distillation_mode"] = distill_info.get('distillation_mode', 'none')
+                        log_dict["has_teacher"] = distill_info.get('has_teacher', False)
+                
+                # Add quantization info if available
+                if has_quantization:
+                    quant_info = self.model.get_quantization_info()
+                    if quant_info.get('quantization_enabled', False):
+                        log_dict["quantization_mode"] = quant_info.get('quantization_mode', 'none')
+                        log_dict["is_quantized"] = quant_info.get('is_quantized', False)
                 
                 # Add task and distillation losses if available
                 if self.history["task_losses"]:
@@ -610,23 +429,29 @@ class Trainer:
                         print("Early stopping triggered.")
                         break
 
-                # Update progress bar
+                # Update progress bar with automatic feature detection
                 pbar_dict = {
                     "train_loss": train_loss,
                     "val_loss": val_loss if val_loader else "N/A",
                     "lr": current_lr,
                 }
-                if self.distillation_enabled:
-                    pbar_dict["distill_w"] = f"{self._get_distillation_weight(epoch):.3f}"
+                
+                # Add distillation weight to progress bar if available
+                if has_distillation:
+                    distill_info = self.model.get_distillation_info()
+                    if distill_info.get('distillation_enabled', False):
+                        pbar_dict["distill"] = "✓"
+                
+                # Add quantization status to progress bar if available
+                if has_quantization:
+                    quant_info = self.model.get_quantization_info()
+                    if quant_info.get('quantization_enabled', False):
+                        pbar_dict["quant"] = "✓"
                 
                 pbar.set_postfix(pbar_dict)
 
                 if self.scheduler:
                     self.scheduler.step(val_loss if val_loader else train_loss)
-
-        # Finalize quantization after training
-        if self.quantization_mode == "qat":
-            self.finalize_quantization()
 
         # Restore best model
         if self.best_model_state:
@@ -635,43 +460,35 @@ class Trainer:
         return self.history
 
     def save(self, path):
-        """Enhanced save with quantization and distillation info"""
+        """Save model and training state with automatic feature detection"""
         save_dict = {
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "history": self.history,
             "config": self.config,
-            "quantization_config": self.quantization_config,
-            "distillation_config": self.distillation_config,
         }
         
-        # Add model size info if available
+        # Add model info if available (delegate to model)
         if hasattr(self.model, 'get_model_size'):
             save_dict["model_info"] = self.model.get_model_size()
+        if hasattr(self.model, 'get_quantization_info'):
+            save_dict["quantization_info"] = self.model.get_quantization_info()
+        if hasattr(self.model, 'get_distillation_info'):
+            save_dict["distillation_info"] = self.model.get_distillation_info()
             
         torch.save(save_dict, path)
 
     def load(self, path):
-        """Enhanced load with quantization and distillation info"""
+        """Load model and training state"""
         checkpoint = torch.load(path, map_location=self.device)
         
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.history = checkpoint.get("history", {})
         self.config.update(checkpoint.get("config", {}))
-        
-        # Restore quantization config
-        if "quantization_config" in checkpoint:
-            self.quantization_config = checkpoint["quantization_config"]
-            self._setup_quantization()
-            
-        # Restore distillation config
-        if "distillation_config" in checkpoint:
-            self.distillation_config = checkpoint["distillation_config"]
-            self._setup_distillation()
 
     def benchmark_model(self, sample_input: torch.Tensor, num_runs: int = 100):
-        """Benchmark model performance with quantization comparison"""
+        """Benchmark model performance (delegate to model)"""
         if not hasattr(self.model, 'benchmark_inference'):
             print("Model does not support benchmarking")
             return None
@@ -682,8 +499,6 @@ class Trainer:
         print("\nModel Performance Benchmark:")
         print(f"  Average inference time: {results['avg_inference_time_ms']:.2f} ms")
         print(f"  Throughput: {results['throughput_samples_per_sec']:.2f} samples/sec")
-        print(f"  Quantization mode: {results['quantization_mode']}")
-        print(f"  Is quantized: {results['is_quantized']}")
         
         if hasattr(self.model, 'get_model_size'):
             size_info = self.model.get_model_size()
@@ -692,8 +507,8 @@ class Trainer:
         
         return results
 
-    def plot_learning_curves(self, figsize=(15, 10)):
-        """Enhanced learning curves with distillation info"""
+    def plot_learning_curves(self, figsize=(15, 8)):
+        """Plot learning curves with automatic feature detection"""
         fig, axes = plt.subplots(2, 2, figsize=figsize)
         
         # Loss curves
@@ -713,7 +528,7 @@ class Trainer:
         axes[0, 1].set_title("Learning Rate Schedule")
         axes[0, 1].grid(True)
         
-        # Distillation losses
+        # Distillation losses (if available)
         if self.history["task_losses"] and self.history["distillation_losses"]:
             axes[1, 0].plot(self.history["task_losses"], label="Task Loss")
             axes[1, 0].plot(self.history["distillation_losses"], label="Distillation Loss")
@@ -726,72 +541,26 @@ class Trainer:
             axes[1, 0].text(0.5, 0.5, "No distillation data", ha='center', va='center', transform=axes[1, 0].transAxes)
             axes[1, 0].set_title("Distillation Loss")
         
-        # Model size over time (for quantization)
-        if self.history["quantization_info"]:
-            epochs = [info["epoch"] for info in self.history["quantization_info"]]
-            sizes = [info["model_size_mb"] for info in self.history["quantization_info"]]
-            is_quantized = [info["is_quantized"] for info in self.history["quantization_info"]]
+        # Model size over time
+        if self.history["model_info"]:
+            epochs = [info["epoch"] for info in self.history["model_info"]]
+            sizes = [info.get("size_mb", 0) for info in self.history["model_info"]]
             
             axes[1, 1].plot(epochs, sizes, label="Model Size (MB)")
-            
-            # Mark quantization points
-            for i, (epoch, quantized) in enumerate(zip(epochs, is_quantized)):
-                if quantized:
-                    axes[1, 1].axvline(x=epoch, color='red', linestyle='--', alpha=0.7)
-                    if i == 0 or not is_quantized[i-1]:  # First quantization point
-                        axes[1, 1].text(epoch, sizes[i], 'Quantized', rotation=90, va='bottom')
-            
             axes[1, 1].set_xlabel("Epoch")
             axes[1, 1].set_ylabel("Model Size (MB)")
             axes[1, 1].set_title("Model Size Over Training")
             axes[1, 1].legend()
             axes[1, 1].grid(True)
         else:
-            axes[1, 1].text(0.5, 0.5, "No quantization data", ha='center', va='center', transform=axes[1, 1].transAxes)
+            axes[1, 1].text(0.5, 0.5, "No model size data", ha='center', va='center', transform=axes[1, 1].transAxes)
             axes[1, 1].set_title("Model Size")
         
         plt.tight_layout()
         plt.show()
 
-    def get_distillation_info(self) -> Dict[str, Any]:
-        """Get information about distillation setup"""
-        if not self.distillation_enabled:
-            return {"distillation_enabled": False}
-            
-        info = {
-            "distillation_enabled": True,
-            "distillation_mode": self.distillation_mode,
-            "has_teacher": self.teacher_model is not None,
-            "temperature": self.distillation_config["temperature"],
-            "alpha": self.distillation_config["alpha"],
-            "current_weight": self._get_distillation_weight(self.current_epoch),
-        }
-        
-        if hasattr(self.model, 'get_distillation_info'):
-            info.update(self.model.get_distillation_info())
-            
-        return info
-
-    def get_quantization_info(self) -> Dict[str, Any]:
-        """Get information about quantization setup"""
-        if not self.quantization_enabled:
-            return {"quantization_enabled": False}
-            
-        info = {
-            "quantization_enabled": True,
-            "quantization_mode": self.quantization_mode,
-            "quantization_prepared": self.quantization_prepared,
-            "backend": self.quantization_config["backend"],
-            "bit_width": self.quantization_config["bit_width"],
-        }
-        
-        if hasattr(self.model, 'get_model_size'):
-            info.update(self.model.get_model_size())
-            
-        return info
-
     def print_training_summary(self):
-        """Print comprehensive training summary"""
+        """Print training summary with automatic feature detection"""
         print("\n" + "="*60)
         print("TRAINING SUMMARY")
         print("="*60)
@@ -803,27 +572,42 @@ class Trainer:
             print(f"Final val loss: {self.history['val_losses'][-1]:.6f}")
             print(f"Best val loss: {self.best_val_loss:.6f}")
         
-        # Distillation info
-        if self.distillation_enabled:
-            print("\nDISTILLATION INFO:")
-            distill_info = self.get_distillation_info()
-            for key, value in distill_info.items():
-                print(f"  {key}: {value}")
+        # Model type detection
+        model_type = "BaseForecastingModel"
+        if hasattr(self.model, 'get_distillation_info'):
+            distill_info = self.model.get_distillation_info()
+            if distill_info.get('distillation_enabled', False):
+                model_type = "ForecastingModel (with distillation)"
         
-        # Quantization info
-        if self.quantization_enabled:
-            print("\nQUANTIZATION INFO:")
-            quant_info = self.get_quantization_info()
-            for key, value in quant_info.items():
-                print(f"  {key}: {value}")
+        if hasattr(self.model, 'get_quantization_info'):
+            quant_info = self.model.get_quantization_info()
+            if quant_info.get('quantization_enabled', False):
+                model_type = "QuantizedForecastingModel"
         
-        # Model size comparison
+        print(f"\nMODEL TYPE: {model_type}")
+        
+        # Distillation info (if available)
+        if hasattr(self.model, 'get_distillation_info'):
+            distill_info = self.model.get_distillation_info()
+            if distill_info.get('distillation_enabled', False):
+                print(f"\nDISTILLATION INFO:")
+                for key, value in distill_info.items():
+                    print(f"  {key}: {value}")
+        
+        # Model info (delegate to model)
         if hasattr(self.model, 'get_model_size'):
             model_info = self.model.get_model_size()
-            print(f"\nMODEL SIZE:")
-            print(f"  Parameters: {model_info['parameters']:,}")
-            print(f"  Model size: {model_info['size_mb']:.2f} MB")
-            print(f"  Is quantized: {model_info['is_quantized']}")
+            print(f"\nMODEL INFO:")
+            for key, value in model_info.items():
+                print(f"  {key}: {value}")
+        
+        # Quantization info (if available)
+        if hasattr(self.model, 'get_quantization_info'):
+            quant_info = self.model.get_quantization_info()
+            if quant_info.get('quantization_enabled', False):
+                print(f"\nQUANTIZATION INFO:")
+                for key, value in quant_info.items():
+                    print(f"  {key}: {value}")
         
         print("="*60)
 
@@ -846,7 +630,7 @@ class Trainer:
         print(f"Baseline model loss: {baseline_loss:.6f}")
         print(f"Improvement: {((baseline_loss - current_loss) / baseline_loss * 100):.2f}%")
         
-        # Size comparison
+        # Size comparison (delegate to models)
         if hasattr(self.model, 'get_model_size') and hasattr(baseline_model, 'get_model_size'):
             current_size = self.model.get_model_size()
             baseline_size = baseline_model.get_model_size()
@@ -855,26 +639,12 @@ class Trainer:
             print(f"Baseline model size: {baseline_size['size_mb']:.2f} MB")
             print(f"Size reduction: {((baseline_size['size_mb'] - current_size['size_mb']) / baseline_size['size_mb'] * 100):.2f}%")
         
-        # Speed comparison
-        if hasattr(self.model, 'benchmark_inference'):
-            sample_batch = next(iter(test_loader))
-            sample_input = sample_batch[0][:1].to(self.device)
-            
-            current_bench = self.model.benchmark_inference(sample_input, num_runs=50)
-            baseline_bench = baseline_model.benchmark_inference(sample_input, num_runs=50)
-            
-            print(f"\nCurrent model inference: {current_bench['avg_inference_time_ms']:.2f} ms")
-            print(f"Baseline model inference: {baseline_bench['avg_inference_time_ms']:.2f} ms")
-            speed_improvement = ((baseline_bench['avg_inference_time_ms'] - current_bench['avg_inference_time_ms']) / baseline_bench['avg_inference_time_ms'] * 100)
-            print(f"Speed improvement: {speed_improvement:.2f}%")
-        
         print("="*60)
         
         return {
             "current_loss": current_loss,
             "baseline_loss": baseline_loss,
             "loss_improvement": ((baseline_loss - current_loss) / baseline_loss * 100),
-            "speed_improvement": speed_improvement if 'speed_improvement' in locals() else None
         }
 
     def _batched_forecast(self, X_val: torch.Tensor, batch_size: int = 256):
@@ -1016,6 +786,7 @@ class Trainer:
             offset: (Optional) Index offset for where the validation data starts in the full series
             figsize: (Optional) Figure size as (width, height) in inches
             show: (Optional) Whether to display the plot with plt.show()
+            names: (Optional) Names for features
 
         Returns:
             matplotlib Figure object
@@ -1118,3 +889,68 @@ class Trainer:
             plt.show()
 
         return fig
+
+    # ==================== MODEL INTERFACE METHODS ====================
+    # These methods provide a clean interface to the model's features
+    
+    def prepare_quantization(self, sample_input: torch.Tensor, calibration_loader: Optional[torch.utils.data.DataLoader] = None):
+        """
+        Prepare model for quantization (delegates to model)
+        
+        Args:
+            sample_input: Sample input tensor for model preparation
+            calibration_loader: DataLoader for calibration (PTQ only)
+        """
+        if hasattr(self.model, 'prepare_for_quantization'):
+            print("Preparing model for quantization...")
+            sample_input = sample_input.to(self.device)
+            self.model = self.model.prepare_for_quantization(calibration_loader)
+            print("Model quantization prepared!")
+        else:
+            print("Model does not support quantization")
+
+    def finalize_quantization(self):
+        """Finalize quantization (delegates to model)"""
+        if hasattr(self.model, 'finalize_quantization'):
+            print("Finalizing quantization...")
+            self.model = self.model.finalize_quantization()
+            print("Quantization finalized!")
+        else:
+            print("Model does not support quantization finalization")
+
+    def get_quantization_info(self) -> Dict[str, Any]:
+        """Get quantization info (delegates to model)"""
+        if hasattr(self.model, 'get_quantization_info'):
+            return self.model.get_quantization_info()
+        return {"quantization_enabled": False}
+
+    def set_quantization_mode(self, mode: str):
+        """Set quantization mode (delegates to model)"""
+        if hasattr(self.model, 'set_quantization_mode'):
+            self.model.set_quantization_mode(mode)
+            print(f"Quantization mode set to: {mode}")
+        else:
+            print("Model does not support quantization mode setting")
+
+    def get_distillation_info(self) -> Dict[str, Any]:
+        """Get distillation info (delegates to model)"""
+        if hasattr(self.model, 'get_distillation_info'):
+            return self.model.get_distillation_info()
+        return {"distillation_enabled": False}
+
+    def enable_distillation(self, mode: str = "output", teacher_model: nn.Module = None):
+        """Enable distillation (delegates to model)"""
+        if hasattr(self.model, 'enable_distillation'):
+            self.model.enable_distillation(mode, teacher_model)
+            print(f"Distillation enabled: {mode}")
+        else:
+            print("Model does not support distillation")
+
+    def disable_distillation(self):
+        """Disable distillation (delegates to model)"""
+        if hasattr(self.model, 'disable_distillation'):
+            self.model.disable_distillation()
+            print("Distillation disabled")
+        else:
+            print("Model does not support distillation")
+
