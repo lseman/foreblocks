@@ -1,12 +1,9 @@
-import functools
-import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 
 
 @dataclass
@@ -37,10 +34,7 @@ class DARTSConfig:
     edge_normalization: bool = True
     progressive_shrinking: bool = True
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
+
 
 
 class RMSNorm(nn.Module):
@@ -536,6 +530,8 @@ class FixedOp(nn.Module):
         return self.op(x)
 
 from .darts_base import *
+
+
 class MixedOp(nn.Module):
     """Enhanced MixedOp using your existing operators with better search strategy"""
 

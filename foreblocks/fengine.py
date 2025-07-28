@@ -3,7 +3,7 @@ import random
 import numpy as np
 import pywt
 from scipy.interpolate import interp1d
-from scipy.signal import butter, filtfilt, hilbert, resample, welch
+from scipy.signal import hilbert, resample, welch
 from scipy.stats import kurtosis
 
 

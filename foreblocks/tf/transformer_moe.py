@@ -1,11 +1,8 @@
-import math
 from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import triton
-import triton.language as tl
 
 try:
     import triton
@@ -19,190 +16,189 @@ except ImportError:
 # Mixture of Experts (MoE) implementation using Triton for optimized performance
 ################################################################################
 
-
-@triton.jit
-def swiglu_kernel(
-    x_ptr,
-    gate_up_weight_ptr,
-    down_weight_ptr,
-    out_ptr,
-    N,
-    D_MODEL,
-    D_FF,
-    stride_x,
-    stride_out,
-    BLOCK_M: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    BLOCK_FF: tl.constexpr,
-):
-    """Optimized SwiGLU kernel with better memory coalescing and vectorization"""
-    pid_m = tl.program_id(0)
-    pid_ff = tl.program_id(1)
-
-    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    offs_ff = pid_ff * BLOCK_FF + tl.arange(0, BLOCK_FF)
-
-    mask_m = offs_m < N
-    mask_ff = offs_ff < D_FF
-
-    # Initialize accumulators for gate and up projections
-    acc_gate = tl.zeros((BLOCK_M, BLOCK_FF), dtype=tl.float32)
-    acc_up = tl.zeros((BLOCK_M, BLOCK_FF), dtype=tl.float32)
-
-    # Process input in chunks for better memory bandwidth utilization
-    for k_start in range(0, D_MODEL, BLOCK_K):
-        offs_k = k_start + tl.arange(0, BLOCK_K)
-        mask_k = offs_k < D_MODEL
-
-        # Load input chunk with proper masking
-        x_ptrs = x_ptr + offs_m[:, None] * stride_x + offs_k[None, :]
-        x_chunk = tl.load(x_ptrs, mask=mask_m[:, None] & mask_k[None, :], other=0.0)
-
-        # Load gate weights (first half of gate_up_weight)
-        gate_w_ptrs = gate_up_weight_ptr + offs_k[:, None] * D_FF + offs_ff[None, :]
-        gate_w = tl.load(
-            gate_w_ptrs, mask=mask_k[:, None] & mask_ff[None, :], other=0.0
-        )
-
-        # Load up weights (second half of gate_up_weight)
-        up_w_ptrs = (
-            gate_up_weight_ptr + (D_FF + offs_k[:, None]) * D_FF + offs_ff[None, :]
-        )
-        up_w = tl.load(up_w_ptrs, mask=mask_k[:, None] & mask_ff[None, :], other=0.0)
-
-        # Accumulate matrix multiplications
-        acc_gate += tl.dot(x_chunk, gate_w, allow_tf32=True)
-        acc_up += tl.dot(x_chunk, up_w, allow_tf32=True)
-
-    # Apply SiLU activation to gate: silu(x) = x * sigmoid(x) = x / (1 + exp(-x))
-    gate_silu = acc_gate * tl.sigmoid(acc_gate)
-    hidden = gate_silu * acc_up
-
-    # Down projection - simplified single-pass approach
-    acc_out = tl.zeros((BLOCK_M, D_MODEL), dtype=tl.float32)
-
-    for d_start in range(0, D_MODEL, BLOCK_K):
-        offs_d = d_start + tl.arange(0, BLOCK_K)
-        mask_d = offs_d < D_MODEL
-
-        # Load portion of down weight matrix
-        down_w_ptrs = down_weight_ptr + offs_ff[:, None] * D_MODEL + offs_d[None, :]
-        down_w = tl.load(
-            down_w_ptrs, mask=mask_ff[:, None] & mask_d[None, :], other=0.0
-        )
-
-        # Compute this portion of output
-        out_chunk = tl.dot(hidden, down_w, allow_tf32=True)
-
-        # Accumulate to output buffer
-        if d_start == 0:
-            acc_out = tl.zeros((BLOCK_M, len(offs_d)), dtype=tl.float32)
-
-        # Add to appropriate slice of accumulator
-        for i in range(len(offs_d)):
-            if mask_d[i]:
-                acc_out[:, i] = out_chunk[:, i]
-
-    # Store final output
-    out_ptrs = out_ptr + offs_m[:, None] * stride_out + tl.arange(0, D_MODEL)[None, :]
-    final_mask = mask_m[:, None] & (tl.arange(0, D_MODEL)[None, :] < D_MODEL)
-    tl.store(out_ptrs, acc_out, mask=final_mask)
-
-
-def triton_swiglu_forward(x, gate_up_weight, down_weight):
-    """Optimized SwiGLU forward with better kernel launch configuration"""
-    N, D_MODEL = x.shape
-    D_FF = gate_up_weight.size(1) // 2
-
-    out = torch.empty((N, D_MODEL), device=x.device, dtype=x.dtype)
-
-    # Optimized block sizes based on problem dimensions and GPU architecture
-    BLOCK_M = min(64, triton.next_power_of_2(N))
-    BLOCK_K = min(128, triton.next_power_of_2(D_MODEL))
-    BLOCK_FF = min(128, triton.next_power_of_2(D_FF))
-
-    # 2D grid for better parallelization
-    grid = (triton.cdiv(N, BLOCK_M), triton.cdiv(D_FF, BLOCK_FF))
-
-    swiglu_kernel[grid](
-        x,
-        gate_up_weight,
-        down_weight,
-        out,
+if TRITON_AVAILABLE:
+    @triton.jit
+    def swiglu_kernel(
+        x_ptr,
+        gate_up_weight_ptr,
+        down_weight_ptr,
+        out_ptr,
         N,
         D_MODEL,
         D_FF,
-        x.stride(0),
-        out.stride(0),
-        BLOCK_M=BLOCK_M,
-        BLOCK_K=BLOCK_K,
-        BLOCK_FF=BLOCK_FF,
-    )
-    return out
+        stride_x,
+        stride_out,
+        BLOCK_M: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        BLOCK_FF: tl.constexpr,
+    ):
+        """Optimized SwiGLU kernel with better memory coalescing and vectorization"""
+        pid_m = tl.program_id(0)
+        pid_ff = tl.program_id(1)
+
+        offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        offs_ff = pid_ff * BLOCK_FF + tl.arange(0, BLOCK_FF)
+
+        mask_m = offs_m < N
+        mask_ff = offs_ff < D_FF
+
+        # Initialize accumulators for gate and up projections
+        acc_gate = tl.zeros((BLOCK_M, BLOCK_FF), dtype=tl.float32)
+        acc_up = tl.zeros((BLOCK_M, BLOCK_FF), dtype=tl.float32)
+
+        # Process input in chunks for better memory bandwidth utilization
+        for k_start in range(0, D_MODEL, BLOCK_K):
+            offs_k = k_start + tl.arange(0, BLOCK_K)
+            mask_k = offs_k < D_MODEL
+
+            # Load input chunk with proper masking
+            x_ptrs = x_ptr + offs_m[:, None] * stride_x + offs_k[None, :]
+            x_chunk = tl.load(x_ptrs, mask=mask_m[:, None] & mask_k[None, :], other=0.0)
+
+            # Load gate weights (first half of gate_up_weight)
+            gate_w_ptrs = gate_up_weight_ptr + offs_k[:, None] * D_FF + offs_ff[None, :]
+            gate_w = tl.load(
+                gate_w_ptrs, mask=mask_k[:, None] & mask_ff[None, :], other=0.0
+            )
+
+            # Load up weights (second half of gate_up_weight)
+            up_w_ptrs = (
+                gate_up_weight_ptr + (D_FF + offs_k[:, None]) * D_FF + offs_ff[None, :]
+            )
+            up_w = tl.load(up_w_ptrs, mask=mask_k[:, None] & mask_ff[None, :], other=0.0)
+
+            # Accumulate matrix multiplications
+            acc_gate += tl.dot(x_chunk, gate_w, allow_tf32=True)
+            acc_up += tl.dot(x_chunk, up_w, allow_tf32=True)
+
+        # Apply SiLU activation to gate: silu(x) = x * sigmoid(x) = x / (1 + exp(-x))
+        gate_silu = acc_gate * tl.sigmoid(acc_gate)
+        hidden = gate_silu * acc_up
+
+        # Down projection - simplified single-pass approach
+        acc_out = tl.zeros((BLOCK_M, D_MODEL), dtype=tl.float32)
+
+        for d_start in range(0, D_MODEL, BLOCK_K):
+            offs_d = d_start + tl.arange(0, BLOCK_K)
+            mask_d = offs_d < D_MODEL
+
+            # Load portion of down weight matrix
+            down_w_ptrs = down_weight_ptr + offs_ff[:, None] * D_MODEL + offs_d[None, :]
+            down_w = tl.load(
+                down_w_ptrs, mask=mask_ff[:, None] & mask_d[None, :], other=0.0
+            )
+
+            # Compute this portion of output
+            out_chunk = tl.dot(hidden, down_w, allow_tf32=True)
+
+            # Accumulate to output buffer
+            if d_start == 0:
+                acc_out = tl.zeros((BLOCK_M, len(offs_d)), dtype=tl.float32)
+
+            # Add to appropriate slice of accumulator
+            for i in range(len(offs_d)):
+                if mask_d[i]:
+                    acc_out[:, i] = out_chunk[:, i]
+
+        # Store final output
+        out_ptrs = out_ptr + offs_m[:, None] * stride_out + tl.arange(0, D_MODEL)[None, :]
+        final_mask = mask_m[:, None] & (tl.arange(0, D_MODEL)[None, :] < D_MODEL)
+        tl.store(out_ptrs, acc_out, mask=final_mask)
 
 
-@triton.jit
-def moe_dispatch_kernel(
-    x_ptr,
-    top_k_probs_ptr,
-    top_k_indices_ptr,
-    expert_row_indices_ptr,
-    expert_input_ptr,
-    N,
-    D,
-    stride_x_n,
-    stride_x_d,
-    stride_probs_n,
-    stride_probs_k,
-    stride_indices_n,
-    stride_indices_k,
-    stride_expert_indices_n,
-    stride_expert_indices_k,
-    stride_expert_input_n,
-    stride_expert_input_d,
-    K: tl.constexpr,
-    BLOCK_D: tl.constexpr,
-):
-    """Optimized MoE dispatch kernel"""
-    pid = tl.program_id(0)
+    def triton_swiglu_forward(x, gate_up_weight, down_weight):
+        """Optimized SwiGLU forward with better kernel launch configuration"""
+        N, D_MODEL = x.shape
+        D_FF = gate_up_weight.size(1) // 2
 
-    # Each program handles one token
-    token_id = pid
-    if token_id >= N:
-        return
+        out = torch.empty((N, D_MODEL), device=x.device, dtype=x.dtype)
 
-    offs_d = tl.arange(0, BLOCK_D)
-    mask_d = offs_d < D
+        # Optimized block sizes based on problem dimensions and GPU architecture
+        BLOCK_M = min(64, triton.next_power_of_2(N))
+        BLOCK_K = min(128, triton.next_power_of_2(D_MODEL))
+        BLOCK_FF = min(128, triton.next_power_of_2(D_FF))
 
-    # Load input for this token
-    x_ptrs = x_ptr + token_id * stride_x_n + offs_d * stride_x_d
-    x_vec = tl.load(x_ptrs, mask=mask_d, other=0.0)
+        # 2D grid for better parallelization
+        grid = (triton.cdiv(N, BLOCK_M), triton.cdiv(D_FF, BLOCK_FF))
 
-    # Process each expert assignment for this token
-    for k in tl.static_range(K):
-        # Load probability for this token and expert k
-        prob_ptr = top_k_probs_ptr + token_id * stride_probs_n + k * stride_probs_k
-        prob = tl.load(prob_ptr)
-
-        # Load expert row index
-        expert_row_ptr = (
-            expert_row_indices_ptr
-            + token_id * stride_expert_indices_n
-            + k * stride_expert_indices_k
+        swiglu_kernel[grid](
+            x,
+            gate_up_weight,
+            down_weight,
+            out,
+            N,
+            D_MODEL,
+            D_FF,
+            x.stride(0),
+            out.stride(0),
+            BLOCK_M=BLOCK_M,
+            BLOCK_K=BLOCK_K,
+            BLOCK_FF=BLOCK_FF,
         )
-        expert_row = tl.load(expert_row_ptr)
+        return out
 
-        # Apply gating and store to expert buffer
-        weighted_x = x_vec * prob
 
-        # Store to expert buffer
-        expert_ptrs = (
-            expert_input_ptr
-            + expert_row * stride_expert_input_n
-            + offs_d * stride_expert_input_d
-        )
-        tl.store(expert_ptrs, weighted_x, mask=mask_d)
+    @triton.jit
+    def moe_dispatch_kernel(
+        x_ptr,
+        top_k_probs_ptr,
+        top_k_indices_ptr,
+        expert_row_indices_ptr,
+        expert_input_ptr,
+        N,
+        D,
+        stride_x_n,
+        stride_x_d,
+        stride_probs_n,
+        stride_probs_k,
+        stride_indices_n,
+        stride_indices_k,
+        stride_expert_indices_n,
+        stride_expert_indices_k,
+        stride_expert_input_n,
+        stride_expert_input_d,
+        K: tl.constexpr,
+        BLOCK_D: tl.constexpr,
+    ):
+        """Optimized MoE dispatch kernel"""
+        pid = tl.program_id(0)
 
+        # Each program handles one token
+        token_id = pid
+        if token_id >= N:
+            return
+
+        offs_d = tl.arange(0, BLOCK_D)
+        mask_d = offs_d < D
+
+        # Load input for this token
+        x_ptrs = x_ptr + token_id * stride_x_n + offs_d * stride_x_d
+        x_vec = tl.load(x_ptrs, mask=mask_d, other=0.0)
+
+        # Process each expert assignment for this token
+        for k in tl.static_range(K):
+            # Load probability for this token and expert k
+            prob_ptr = top_k_probs_ptr + token_id * stride_probs_n + k * stride_probs_k
+            prob = tl.load(prob_ptr)
+
+            # Load expert row index
+            expert_row_ptr = (
+                expert_row_indices_ptr
+                + token_id * stride_expert_indices_n
+                + k * stride_expert_indices_k
+            )
+            expert_row = tl.load(expert_row_ptr)
+
+            # Apply gating and store to expert buffer
+            weighted_x = x_vec * prob
+
+            # Store to expert buffer
+            expert_ptrs = (
+                expert_input_ptr
+                + expert_row * stride_expert_input_n
+                + offs_d * stride_expert_input_d
+            )
+            tl.store(expert_ptrs, weighted_x, mask=mask_d)
 
 class TritonMoEDispatcher:
     def __init__(self, d_model: int, top_k: int, block_d: int = 64):
@@ -973,7 +969,7 @@ class MoE_FFNExpert(nn.Module):
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
 
 class _StandardFeedForwardBlock(nn.Module):
     """

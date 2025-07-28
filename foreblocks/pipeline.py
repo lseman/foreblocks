@@ -5,25 +5,24 @@ from typing import Optional, Tuple
 import torch
 from torch import nn
 
-from .preprocessing import TimeSeriesPreprocessor
-
-# Model components (these must be implemented or imported from your package)
-from .core import ForecastingModel
-from .enc_dec import (
-    LSTMEncoder,
-    LSTMDecoder,
-    GRUEncoder,
-    GRUDecoder,
-    VariationalEncoderWrapper,
-    LatentConditionedDecoder,
-)
-from .tf.transformer import TransformerEncoder, TransformerDecoder
-
-from .utils import Trainer  # Your existing Trainer implementation
 from .aux import (
     ModelConfig,
     TrainingConfig,
 )  # Your existing ModelConfig and TrainingConfig implementations
+
+# Model components (these must be implemented or imported from your package)
+from .core import ForecastingModel
+from .enc_dec import (
+    GRUDecoder,
+    GRUEncoder,
+    LatentConditionedDecoder,
+    LSTMDecoder,
+    LSTMEncoder,
+    VariationalEncoderWrapper,
+)
+from .preprocessing import TimeSeriesPreprocessor
+from .tf.transformer import TransformerDecoder, TransformerEncoder
+from .utils import Trainer  # Your existing Trainer implementation
 
 
 class TimeSeriesSeq2Seq:

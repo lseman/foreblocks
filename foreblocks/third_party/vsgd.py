@@ -1,6 +1,7 @@
 # https://github.com/generativeai-tue/vsgd
 
 from typing import List
+
 import torch
 from torch import Tensor
 from torch.optim.optimizer import Optimizer, required

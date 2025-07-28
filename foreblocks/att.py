@@ -24,15 +24,16 @@ Dependencies:
 """
 
 import math
+from typing import Optional, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, Union
 
 # Optional imports with fallback handling
 try:
-    import xformers.ops as xops
     import xformers
+    import xformers.ops as xops
     HAS_XFORMERS = True
 except ImportError:
     HAS_XFORMERS = False

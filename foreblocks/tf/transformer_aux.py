@@ -1,11 +1,7 @@
-import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import triton
-import triton.language as tl
 
 try:
     import triton
@@ -16,100 +12,101 @@ except ImportError:
     TRITON_AVAILABLE = False
 
 
-@triton.jit
-def fused_norm_scale_kernel(
-    x_ptr,
-    alpha_ptr,
-    beta_ptr,
-    out_ptr,
-    batch_seq_size,
-    hidden_size,
-    eps,
-    use_bias: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Optimized fused normalization + scaling kernel"""
-    row_id = tl.program_id(0)
+if TRITON_AVAILABLE:
 
-    # Load data
-    col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < hidden_size
+    @triton.jit
+    def fused_norm_scale_kernel(
+        x_ptr,
+        alpha_ptr,
+        beta_ptr,
+        out_ptr,
+        batch_seq_size,
+        hidden_size,
+        eps,
+        use_bias: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Optimized fused normalization + scaling kernel"""
+        row_id = tl.program_id(0)
 
-    x_row_ptr = x_ptr + row_id * hidden_size
-    out_row_ptr = out_ptr + row_id * hidden_size
+        # Load data
+        col_offsets = tl.arange(0, BLOCK_SIZE)
+        mask = col_offsets < hidden_size
 
-    # Load input row
-    x = tl.load(x_row_ptr + col_offsets, mask=mask, other=0.0)
+        x_row_ptr = x_ptr + row_id * hidden_size
+        out_row_ptr = out_ptr + row_id * hidden_size
 
-    # Compute RMS normalization
-    x_squared = x * x
-    mean_x_squared = tl.sum(x_squared, axis=0) / hidden_size
-    inv_rms = tl.rsqrt(mean_x_squared + eps)
+        # Load input row
+        x = tl.load(x_row_ptr + col_offsets, mask=mask, other=0.0)
 
-    # Load scale parameters
-    alpha = tl.load(alpha_ptr + col_offsets, mask=mask, other=1.0)
+        # Compute RMS normalization
+        x_squared = x * x
+        mean_x_squared = tl.sum(x_squared, axis=0) / hidden_size
+        inv_rms = tl.rsqrt(mean_x_squared + eps)
 
-    # Apply normalization and scaling
-    out = x * inv_rms * alpha
+        # Load scale parameters
+        alpha = tl.load(alpha_ptr + col_offsets, mask=mask, other=1.0)
 
-    if use_bias:
-        beta = tl.load(beta_ptr + col_offsets, mask=mask, other=0.0)
-        out = out + beta
-
-    # Store result
-    tl.store(out_row_ptr + col_offsets, out, mask=mask)
-
-
-def triton_fused_norm_scale(
-    x: torch.Tensor,
-    alpha: torch.Tensor,
-    beta: Optional[torch.Tensor] = None,
-    eps: float = 1e-5,
-) -> torch.Tensor:
-    """Optimized Triton-based fused normalization + scaling"""
-    if not TRITON_AVAILABLE or not x.is_cuda or x.numel() < 4096:
-        # Fallback to optimized PyTorch implementation
-        variance = x.pow(2).mean(dim=-1, keepdim=True)
-        inv_rms = torch.rsqrt(variance + eps)
+        # Apply normalization and scaling
         out = x * inv_rms * alpha
-        if beta is not None:
+
+        if use_bias:
+            beta = tl.load(beta_ptr + col_offsets, mask=mask, other=0.0)
             out = out + beta
-        return out
 
-    try:
-        batch_size, seq_len, hidden_size = x.shape
-        batch_seq_size = batch_size * seq_len
+        # Store result
+        tl.store(out_row_ptr + col_offsets, out, mask=mask)
 
-        # Reshape for kernel processing
-        x_flat = x.view(batch_seq_size, hidden_size)
-        out = torch.empty_like(x_flat)
+    def triton_fused_norm_scale(
+        x: torch.Tensor,
+        alpha: torch.Tensor,
+        beta: Optional[torch.Tensor] = None,
+        eps: float = 1e-5,
+    ) -> torch.Tensor:
+        """Optimized Triton-based fused normalization + scaling"""
+        if not TRITON_AVAILABLE or not x.is_cuda or x.numel() < 4096:
+            # Fallback to optimized PyTorch implementation
+            variance = x.pow(2).mean(dim=-1, keepdim=True)
+            inv_rms = torch.rsqrt(variance + eps)
+            out = x * inv_rms * alpha
+            if beta is not None:
+                out = out + beta
+            return out
 
-        # Launch kernel
-        grid = (batch_seq_size,)
-        BLOCK_SIZE = triton.next_power_of_2(min(hidden_size, 1024))
+        try:
+            batch_size, seq_len, hidden_size = x.shape
+            batch_seq_size = batch_size * seq_len
 
-        fused_norm_scale_kernel[grid](
-            x_flat,
-            alpha,
-            beta,
-            out,
-            batch_seq_size,
-            hidden_size,
-            eps=eps,
-            use_bias=beta is not None,
-            BLOCK_SIZE=BLOCK_SIZE,
-        )
+            # Reshape for kernel processing
+            x_flat = x.view(batch_seq_size, hidden_size)
+            out = torch.empty_like(x_flat)
 
-        return out.view_as(x)
+            # Launch kernel
+            grid = (batch_seq_size,)
+            BLOCK_SIZE = triton.next_power_of_2(min(hidden_size, 1024))
 
-    except Exception:
-        # Fallback to PyTorch if Triton fails
-        variance = x.pow(2).mean(dim=-1, keepdim=True)
-        inv_rms = torch.rsqrt(variance + eps)
-        out = x * inv_rms * alpha
-        if beta is not None:
-            out = out + beta
-        return out
+            fused_norm_scale_kernel[grid](
+                x_flat,
+                alpha,
+                beta,
+                out,
+                batch_seq_size,
+                hidden_size,
+                eps=eps,
+                use_bias=beta is not None,
+                BLOCK_SIZE=BLOCK_SIZE,
+            )
+
+            return out.view_as(x)
+
+        except Exception:
+            # Fallback to PyTorch if Triton fails
+            variance = x.pow(2).mean(dim=-1, keepdim=True)
+            inv_rms = torch.rsqrt(variance + eps)
+            out = x * inv_rms * alpha
+            if beta is not None:
+                out = out + beta
+            return out
 
 
 class AdaptiveRMSNorm(nn.Module):

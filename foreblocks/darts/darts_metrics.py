@@ -1,10 +1,9 @@
 import contextlib
 import math
-import re
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -53,6 +52,8 @@ class Result:
     def __repr__(self):
         status = "✓" if self.success else "✗"
         return f"Result({status} {self.value:.4f}, {self.time:.3f}s)"
+
+
 class CompatibilityHelper:
     """Handles model compatibility issues and fallback routines"""
 
@@ -75,7 +76,9 @@ class CompatibilityHelper:
                 F.scaled_dot_product_attention = original_sdpa
 
     @staticmethod
-    def _manual_attention(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None):
+    def _manual_attention(
+        q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None
+    ):
         """Simplified SDPA fallback using matmul and masking"""
         scale = scale or (q.size(-1) ** -0.5)
         attn = torch.matmul(q, k.transpose(-2, -1)) * scale
@@ -84,7 +87,9 @@ class CompatibilityHelper:
             attn += attn_mask
         elif is_causal:
             L = q.size(-2)
-            causal_mask = torch.triu(torch.full((L, L), float("-inf"), device=q.device), diagonal=1)
+            causal_mask = torch.triu(
+                torch.full((L, L), float("-inf"), device=q.device), diagonal=1
+            )
             attn = attn + causal_mask
 
         attn = F.softmax(attn, dim=-1)
@@ -129,53 +134,59 @@ class CompatibilityHelper:
         """Select appropriate loss function based on task type"""
         return nn.CrossEntropyLoss() if targets.dtype == torch.long else nn.MSELoss()
 
+
 class MetricsComputer:
     """Optimized metrics computer with shared hooks and minimal forward passes"""
-    
+
     def __init__(self, config):
         self.config = config
         self.helper = CompatibilityHelper()
-        
+
     def compute_all(
         self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor = None
     ) -> Dict[str, Result]:
         """Compute all metrics with shared hooks and minimal forward passes"""
         results = {}
-        
+
         # Model-only metrics (no forward pass needed)
         results["params"] = self.params(model)
         results["conditioning"] = self.conditioning(model)
-        
+
         # Shared activation collection for multiple metrics
         activations = {}
         conv_linear_modules = []
         relu_modules = []
         flops_count = {}
-        
+
         # Single hook setup for all metrics that need activations
         def activation_hook(name):
             def hook(module, inp, out):
                 # Store for NASWOT and Zen-NAS
                 activations[name] = out[0] if isinstance(out, tuple) else out
-                
+
                 # FLOPS counting inline
                 input_shape = inp[0].shape
                 output_shape = out.shape if not isinstance(out, tuple) else out[0].shape
-                
+
                 if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
                     kernel_ops = (
-                        np.prod(module.kernel_size) * module.in_channels // module.groups
+                        np.prod(module.kernel_size)
+                        * module.in_channels
+                        // module.groups
                     )
                     output_elements = np.prod(output_shape)
                     flops = output_elements * kernel_ops * 2
                 elif isinstance(module, nn.Linear):
-                    flops = input_shape[0] * module.in_features * module.out_features * 2
+                    flops = (
+                        input_shape[0] * module.in_features * module.out_features * 2
+                    )
                 else:
                     flops = 0
-                    
+
                 flops_count[name] = flops
+
             return hook
-        
+
         # Register hooks once for all metrics
         hooks = []
 
@@ -183,7 +194,7 @@ class MetricsComputer:
             if isinstance(module, (nn.ReLU, nn.ReLU6)):
                 return True
             if isinstance(module, nn.LeakyReLU):
-                return getattr(module, 'negative_slope', 0.0) == 0.0
+                return getattr(module, "negative_slope", 0.0) == 0.0
             return False
 
         for module_name, module in model.named_modules():
@@ -200,99 +211,111 @@ class MetricsComputer:
             # Single forward pass for multiple metrics
             was_training = model.training
             model.eval()
-            
-            #with torch.no_grad():
+
+            # with torch.no_grad():
             with self.helper.safe_mode(model):
                 shared_outputs = model(inputs)
-            
+
             # Process all metrics that only need activations
-            results.update(self._compute_activation_metrics(activations, conv_linear_modules, relu_modules, flops_count))
-            
+            results.update(
+                self._compute_activation_metrics(
+                    activations, conv_linear_modules, relu_modules, flops_count
+                )
+            )
+
             # Metrics requiring gradients (separate forward passes with minimal overhead)
             if targets is not None:
                 results.update(self._compute_gradient_metrics(model, inputs, targets))
-            
+
             # SynFlow (needs special handling)
             results["synflow"] = self._compute_synflow(model, inputs)
-            
-            # Jacobian (needs special handling)  
+
+            # Jacobian (needs special handling)
             results["jacobian"] = self._compute_jacobian(model, inputs)
-            
+
             # Sensitivity
             results["sensitivity"] = self.sensitivity(model, inputs, shared_outputs)
-            
+
         finally:
             # Clean up hooks
             for hook in hooks:
                 hook.remove()
             if not was_training:
                 model.eval()
-                
+
         return results
-    
-    def _compute_activation_metrics(self, activations, conv_linear_modules, relu_modules, flops_count):
+
+    def _compute_activation_metrics(
+        self, activations, conv_linear_modules, relu_modules, flops_count
+    ):
         """Compute metrics that only need stored activations with numerical stability"""
         results = {}
-        
+
         # NASWOT
         def _naswot():
             total_rank = 0.0
-            spectral_sum = 0.0 
+            spectral_sum = 0.0
             layer_count = 0
-            
+
             for module_name, module in conv_linear_modules:
                 if module_name in activations:
                     try:
                         activation = activations[module_name]
                         act = activation.reshape(activation.size(0), -1)
-                        
+
                         # Add numerical stability
                         if act.numel() == 0:
                             continue
-                            
+
                         binary = (act > 0).float()
-                        
+
                         # Skip if all zeros or all ones
                         if binary.sum() == 0 or binary.sum() == binary.numel():
                             continue
-                        
+
                         K = binary @ binary.t()
                         K += self.config.eps * torch.eye(K.size(0), device=K.device)
-                        
+
                         # More stable rank computation
                         try:
                             rank = torch.linalg.matrix_rank(K, rtol=1e-5).item()
                             total_rank += rank
-                            
+
                             eigvals = torch.linalg.eigvalsh(K)
                             eigvals = eigvals[eigvals > self.config.eps]
-                            spectral_norm = eigvals[-1].item() if len(eigvals) > 0 else 0.0
+                            spectral_norm = (
+                                eigvals[-1].item() if len(eigvals) > 0 else 0.0
+                            )
                             spectral_sum += spectral_norm
-                            
+
                             layer_count += 1
-                            
+
                         except Exception as e:
-                            print(f"[naswot] Layer {module_name} eigenvalue computation failed: {e}")
+                            print(
+                                f"[naswot] Layer {module_name} eigenvalue computation failed: {e}"
+                            )
                             continue
-                        
+
                     except Exception as e:
                         print(f"[naswot] Layer {module_name} failed: {e}")
                         continue
-            
+
             if layer_count == 0:
                 return 0.0  # Return 0 instead of raising error
-                
+
             return (total_rank + spectral_sum) / (2 * layer_count)
-        
+
         results["naswot"] = self._compute_safely(_naswot)
-        
+
         # Zen-NAS
         def _zennas():
             total_score = 0.0
             valid_layer_count = 0
             layer_scores = []
 
-            reduction = getattr(self.config, "zennas_reduction", "mean")  # mean, geom, or sum
+            reduction = getattr(
+                self.config, "zennas_reduction", "mean"
+            )  # mean, geom, or sum
             eps = getattr(self.config, "eps", 1e-8)
 
             for module_name, module in relu_modules:
@@ -309,7 +332,7 @@ class MetricsComputer:
                     act_flat = act.view(act.size(0), -1)
                     mean = act_flat.mean(dim=1)
                     std = act_flat.std(dim=1).clamp(min=eps)
-                    snr = (mean**2 / std**2)
+                    snr = mean**2 / std**2
 
                     valid_snr = snr[torch.isfinite(snr)]
                     if valid_snr.numel() == 0:
@@ -339,19 +362,22 @@ class MetricsComputer:
             else:
                 raise ValueError(f"[zennas] Unknown reduction mode: {reduction}")
 
-            print(f"[zennas] Final Zen-NAS score: {final_score:.4f} from {valid_layer_count} layers")
+            print(
+                f"[zennas] Final Zen-NAS score: {final_score:.4f} from {valid_layer_count} layers"
+            )
             return final_score
 
         results["zennas"] = self._compute_safely(_zennas)
-        
+
         # FLOPS (already computed during forward pass)
         def _flops():
             total_flops = sum(flops_count.values())
             return max(total_flops, 1)  # Ensure non-zero
-            
+
         results["flops"] = self._compute_safely(_flops)
-        
+
         return results
+
     def _compute_gradient_metrics(self, model, inputs, targets):
         """Compute gradient-based metrics (GRASP, Fisher, SNIP) with a shared forward+backward"""
         results = {}
@@ -372,7 +398,9 @@ class MetricsComputer:
                     results[name] = Result(0.0, False, "Non-finite loss", 0.0)
                 return results
 
-            weight_params = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+            weight_params = [
+                (n, p) for n, p in model.named_parameters() if p.requires_grad
+            ]
             weights = [p for _, p in weight_params]
 
             grads = torch.autograd.grad(
@@ -420,31 +448,30 @@ class MetricsComputer:
 
         return results
 
-    
     def _compute_synflow(self, model, inputs):
         """SynFlow computation with numerical stability and fallback to original method"""
-        
+
         def _compute():
             was_training = model.training
             original_params = {}
-            
+
             try:
                 model.train()
-                
+
                 # Store original parameters
                 for name, param in model.named_parameters():
                     if param.requires_grad:
                         original_params[name] = param.data.clone()
-                
+
                 # Prepare input
                 batch_size = min(inputs.size(0), self.config.max_samples)
                 x = torch.ones_like(inputs[:batch_size])
-                
+
                 # Set all parameters to ones
                 for param in model.parameters():
                     if param.requires_grad:
                         param.data = torch.ones_like(param.data)
-                
+
                 model.zero_grad()
                 output = model(x)
                 if isinstance(output, tuple):
@@ -452,45 +479,52 @@ class MetricsComputer:
                 if output.dim() > 1:
                     output = output.sum(dim=0)
                 output.sum().backward()
-                
+
                 # Try improved computation first
                 try:
                     log_score = 0.0
                     param_count = 0
-                    
+
                     for param in model.parameters():
                         if param.grad is not None and param.requires_grad:
                             param_contribution = (param * param.grad).abs().sum().item()
-                            if param_contribution > 0 and not (np.isnan(param_contribution) or np.isinf(param_contribution)):
-                                log_score += np.log(param_contribution + self.config.eps)
+                            if param_contribution > 0 and not (
+                                np.isnan(param_contribution)
+                                or np.isinf(param_contribution)
+                            ):
+                                log_score += np.log(
+                                    param_contribution + self.config.eps
+                                )
                                 param_count += 1
-                    
+
                     if param_count > 0:
                         final_score = log_score / param_count
                         # Check if result is valid
                         if not (np.isnan(final_score) or np.isinf(final_score)):
                             return np.clip(final_score, -50, 50)
-                    
+
                 except:
                     pass  # Fall back to original method
-                
+
                 # Fallback to original computation method
                 log_score = 0.0
                 param_count = 0
-                
+
                 for param in model.parameters():
                     if param.grad is not None and param.requires_grad:
                         param_contribution = (param * param.grad).abs().sum().item()
                         if param_contribution > 0:
                             log_score += np.log(param_contribution + self.config.eps)
                             param_count += 1
-                
+
                 # Normalize by number of parameters to prevent explosion
-                final_score = log_score / max(param_count, 1) if param_count > 0 else -np.inf
-                
+                final_score = (
+                    log_score / max(param_count, 1) if param_count > 0 else -np.inf
+                )
+
                 # Clamp to reasonable range
                 return np.clip(final_score, -50, 50)
-                    
+
             finally:
                 # Restore original parameters
                 for name, param in model.named_parameters():
@@ -499,9 +533,9 @@ class MetricsComputer:
                 model.zero_grad()
                 if not was_training:
                     model.eval()
-        
+
         return self._compute_safely(_compute)
-    
+
     def _compute_jacobian(self, model, inputs, shared_outputs=None):
         """
         Hutchinson-based Jacobian entropy approximation.
@@ -526,7 +560,9 @@ class MetricsComputer:
                     if outputs.dim() == 1:
                         outputs = outputs.unsqueeze(1)
 
-                    outputs, _ = self.helper.prepare_data(outputs, torch.zeros_like(outputs))
+                    outputs, _ = self.helper.prepare_data(
+                        outputs, torch.zeros_like(outputs)
+                    )
                     output_size = min(outputs.size(1), self.config.max_outputs)
 
                     # Hutchinson vector + scalar projection
@@ -534,7 +570,11 @@ class MetricsComputer:
                     scalar = (outputs[:, :output_size] * v).sum()
 
                     grad = torch.autograd.grad(
-                        scalar, x, retain_graph=False, create_graph=False, allow_unused=False
+                        scalar,
+                        x,
+                        retain_graph=False,
+                        create_graph=False,
+                        allow_unused=False,
                     )[0]
 
                     if grad is None:
@@ -559,7 +599,6 @@ class MetricsComputer:
 
         return self._compute_safely(_compute)
 
-        
     def _compute_safely(self, compute_fn):
         try:
             start_time = time.time()
@@ -569,7 +608,9 @@ class MetricsComputer:
             if isinstance(value, (int, float)):
                 if np.isnan(value) or np.isinf(value):
                     print(f"Metric failed due to nan/inf: {compute_fn.__name__}")
-                    return Result(0.0, False, "Numerical instability (nan/inf)", elapsed)
+                    return Result(
+                        0.0, False, "Numerical instability (nan/inf)", elapsed
+                    )
 
                 value = np.clip(value, -1e10, 1e10)
 
@@ -579,42 +620,50 @@ class MetricsComputer:
             print(f"Metric '{compute_fn.__name__}' failed with exception: {e}")
             return Result(0.0, False, str(e), 0.0)
 
-
     # Individual metric methods for compatibility
     def synflow(self, model: nn.Module, inputs: torch.Tensor) -> Result:
         """SynFlow metric"""
         return self._compute_synflow(model, inputs)
-    
+
     def jacobian(self, model: nn.Module, inputs: torch.Tensor) -> Result:
         """Jacobian metric"""
         return self._compute_jacobian(model, inputs)
-    
-    def grasp(self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor) -> Result:
+
+    def grasp(
+        self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor
+    ) -> Result:
         """GRASP metric"""
         return self._compute_gradient_metrics(model, inputs, targets)["grasp"]
-    
-    def fisher(self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor) -> Result:
+
+    def fisher(
+        self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor
+    ) -> Result:
         """Fisher metric"""
         return self._compute_gradient_metrics(model, inputs, targets)["fisher"]
-    
-    def snip(self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor) -> Result:
+
+    def snip(
+        self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor
+    ) -> Result:
         """SNIP metric"""
         return self._compute_gradient_metrics(model, inputs, targets)["snip"]
 
     def params(self, model: nn.Module) -> Result:
         """Parameter count using fvcore if available"""
+
         def _compute():
             try:
                 from fvcore.nn import parameter_count
+
                 count_dict = parameter_count(model)
                 return sum(v for v in count_dict.values())
             except Exception:
                 return sum(p.numel() for p in model.parameters() if p.requires_grad)
-        return self._compute_safely(_compute)
 
+        return self._compute_safely(_compute)
 
     def conditioning(self, model: nn.Module) -> Result:
         """Weight conditioning with numerical stability"""
+
         def _compute():
             conditions = []
             for name, param in model.named_parameters():
@@ -627,15 +676,19 @@ class MetricsComputer:
                             s_min = S[-1].item()
                             if math.isfinite(s_max) and math.isfinite(s_min):
                                 cond = s_max / (s_min + self.config.eps)
-                                cond = min(cond, 1e6)  # Optional clamp to avoid outliers
+                                cond = min(
+                                    cond, 1e6
+                                )  # Optional clamp to avoid outliers
                                 conditions.append(cond)
                         except Exception:
                             continue
             return sum(conditions) / len(conditions) if conditions else 1.0
+
         return self._compute_safely(_compute)
 
     def flops(self, model: nn.Module, inputs: torch.Tensor) -> Result:
         """FLOP estimation using fvcore with fallback to manual hook-based count"""
+
         def _compute():
             try:
                 from fvcore.nn import FlopCountAnalysis
@@ -645,7 +698,7 @@ class MetricsComputer:
                 flops = FlopCountAnalysis(model, input_tuple)
                 return flops.total()
 
-            except Exception as e:
+            except Exception:
                 # Fallback to original hook-based logic
                 flops_count = {}
 
@@ -693,9 +746,14 @@ class MetricsComputer:
 
         return self._compute_safely(_compute)
 
-
-    def sensitivity(self, model: nn.Module, inputs: torch.Tensor, shared_outputs: Optional[torch.Tensor] = None) -> Result:
+    def sensitivity(
+        self,
+        model: nn.Module,
+        inputs: torch.Tensor,
+        shared_outputs: Optional[torch.Tensor] = None,
+    ) -> Result:
         """Input sensitivity"""
+
         def _compute():
             model.train()
             model.zero_grad()
@@ -733,6 +791,7 @@ class MetricsComputer:
 
         return self._compute_safely(_compute)
 
+
 class ZeroCostNAS:
     """Main zero-cost NAS evaluation class"""
 
@@ -764,7 +823,7 @@ class ZeroCostNAS:
 
         all_results = []
         for i, (inputs, targets) in enumerate(batches):
-            #if verbose:
+            # if verbose:
             #    print(f"Processing batch {i+1}/{len(batches)}")
             batch_results = self.computer.compute_all(model, inputs, targets)
             all_results.append(batch_results)
@@ -775,7 +834,9 @@ class ZeroCostNAS:
         return {
             "metrics": {k: r.value for k, r in final_results.items()},
             "success_rates": {k: r.success for k, r in final_results.items()},
-            "error_messages": {k: r.error for k, r in final_results.items() if not r.success},
+            "error_messages": {
+                k: r.error for k, r in final_results.items() if not r.success
+            },
             "aggregate_score": score,
             "config": self.config,
         }
@@ -785,47 +846,58 @@ class ZeroCostNAS:
         if isinstance(batch, (list, tuple)) and len(batch) >= 2:
             inputs, targets = batch[0].to(device), batch[1].to(device)
         else:
-            inputs = batch[0].to(device) if isinstance(batch, (list, tuple)) else batch.to(device)
+            inputs = (
+                batch[0].to(device)
+                if isinstance(batch, (list, tuple))
+                else batch.to(device)
+            )
             with torch.no_grad():
                 output = model(inputs[:1])
                 if isinstance(output, tuple):
                     output = output[0]
 
                 if output.dim() > 1 and output.size(1) > 1:
-                    targets = torch.randint(0, output.size(1), (inputs.size(0),), device=device)
+                    targets = torch.randint(
+                        0, output.size(1), (inputs.size(0),), device=device
+                    )
                 else:
-                    targets = torch.randint(0, 2, (inputs.size(0),), device=device) \
-                        if output.dim() > 1 else torch.randn(inputs.size(0), device=device)
+                    targets = (
+                        torch.randint(0, 2, (inputs.size(0),), device=device)
+                        if output.dim() > 1
+                        else torch.randn(inputs.size(0), device=device)
+                    )
 
         return inputs, targets
-    
-    def _aggregate_results(self, all_results: List[Dict[str, Result]]) -> Dict[str, Result]:
+
+    def _aggregate_results(
+        self, all_results: List[Dict[str, Result]]
+    ) -> Dict[str, Result]:
         """Aggregate metric results across batches"""
         metrics = all_results[0].keys()
         aggregated = {}
 
         for metric in metrics:
-            #print(f"Aggregating results for metric: {metric}")
+            # print(f"Aggregating results for metric: {metric}")
             vals = [r[metric].value for r in all_results if r[metric].success]
-            #print(f"Values for {metric}: {vals}")
+            # print(f"Values for {metric}: {vals}")
             times = [r[metric].time for r in all_results]
             success = any(r[metric].success for r in all_results)
             avg_time = sum(times) / len(times) if times else 0.0
 
-            median_value = float(np.median(vals)) if vals else float('nan')
+            median_value = float(np.median(vals)) if vals else float("nan")
             is_nan = math.isnan(median_value)
 
             aggregated[metric] = Result(
                 value=0.0 if is_nan else median_value,
                 success=success and not is_nan,
                 error=(
-                    "" if success and not is_nan else
-                    f"{metric} resulted in NaN" if is_nan else
-                    "All batches failed"
+                    ""
+                    if success and not is_nan
+                    else f"{metric} resulted in NaN" if is_nan else "All batches failed"
                 ),
-                time=avg_time
+                time=avg_time,
             )
-        #print(f"Aggregated results: {aggregated}")
+        # print(f"Aggregated results: {aggregated}")
 
         return aggregated
 
@@ -855,3 +927,4 @@ class ZeroCostNAS:
             total_weight += abs(weight)
 
         return total_score / max(total_weight, 1.0)
+

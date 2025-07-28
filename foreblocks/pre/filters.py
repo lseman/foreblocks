@@ -1,9 +1,9 @@
 # Standard Library
 from typing import Tuple
-from joblib import Parallel, delayed
 
 # Scientific Computing and Visualization
 import numpy as np
+from joblib import Parallel, delayed
 from scipy.signal import savgol_filter, wiener
 from statsmodels.nonparametric.smoothers_lowess import lowess
 

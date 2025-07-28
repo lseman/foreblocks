@@ -1,11 +1,5 @@
 import copy
-from typing import Callable, Dict, Optional, Tuple, Union, List
-import warnings
-import math
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -350,14 +344,9 @@ class ManualDeQuantStub(nn.Module):
         return x  # No-op for manual implementation
 
 
-import copy
-from typing import Callable, Dict, Optional, Tuple, Union, List
-import warnings
-import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class BaseForecastingModel(nn.Module):

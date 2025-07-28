@@ -1,9 +1,21 @@
 import math
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.parameter import Parameter
+
+# Check for Triton availability
+try:
+    import triton
+    import triton.language as tl
+
+    HAVE_TRITON = True
+except ImportError:
+    HAVE_TRITON = False
+    triton = None
+    tl = None
 
 
 class PositionalEncoding(nn.Module):
@@ -181,6 +193,7 @@ class InformerTimeEmbedding(nn.Module):
         # Apply normalization
         return embs * self.norm_factor
 
+
 class RotaryEmbedding(nn.Module):
     """
     Optimized Rotary position embeddings (RoPE) with better caching.
@@ -308,164 +321,167 @@ class RotaryEmbedding(nn.Module):
         # Only persistent buffers remain
         pass
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import triton
-import triton.language as tl
-import math
-from typing import Optional
-from torch.nn.parameter import Parameter
 
+if HAVE_TRITON:
 
-@triton.jit
-def fused_pe_addition_kernel(
-    x_ptr,
-    pe_ptr,
-    output_ptr,
-    scale_val: tl.constexpr,
-    n_elements: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Fused kernel for PE addition with scaling"""
-    pid = tl.program_id(axis=0)
-    offset = pid * BLOCK_SIZE
-    
-    offsets = offset + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
-    
-    # Load input and PE
-    x_vals = tl.load(x_ptr + offsets, mask=mask, other=0.0)
-    pe_vals = tl.load(pe_ptr + offsets, mask=mask, other=0.0)
-    
-    # Fused operation: x + pe * scale
-    result = x_vals + pe_vals * scale_val
-    
-    tl.store(output_ptr + offsets, result, mask=mask)
+    @triton.jit
+    def fused_pe_addition_kernel(
+        x_ptr,
+        pe_ptr,
+        output_ptr,
+        scale_val: tl.constexpr,
+        n_elements: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Fused kernel for PE addition with scaling"""
+        pid = tl.program_id(axis=0)
+        offset = pid * BLOCK_SIZE
 
+        offsets = offset + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
 
-@triton.jit  
-def low_rank_matmul_kernel(
-    U_ptr,
-    V_ptr,
-    output_ptr,
-    batch_size: tl.constexpr,
-    seq_len: tl.constexpr,
-    low_rank_dim: tl.constexpr,
-    d_model: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-):
-    """Optimized low-rank matrix multiplication kernel"""
-    # 3D grid: (M_blocks, N_blocks, batch)
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
-    pid_b = tl.program_id(2)
-    
-    # Calculate ranges for this block
-    m_start = pid_m * BLOCK_M
-    n_start = pid_n * BLOCK_N
-    
-    # Accumulator for this block
-    accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    
-    # Iterate over K dimension
-    for k_start in range(0, low_rank_dim, BLOCK_K):
-        k_end = tl.minimum(k_start + BLOCK_K, low_rank_dim)
-        
-        # Load U block [BLOCK_M, BLOCK_K]
+        # Load input and PE
+        x_vals = tl.load(x_ptr + offsets, mask=mask, other=0.0)
+        pe_vals = tl.load(pe_ptr + offsets, mask=mask, other=0.0)
+
+        # Fused operation: x + pe * scale
+        result = x_vals + pe_vals * scale_val
+
+        tl.store(output_ptr + offsets, result, mask=mask)
+
+    @triton.jit
+    def low_rank_matmul_kernel(
+        U_ptr,
+        V_ptr,
+        output_ptr,
+        batch_size: tl.constexpr,
+        seq_len: tl.constexpr,
+        low_rank_dim: tl.constexpr,
+        d_model: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+    ):
+        """Optimized low-rank matrix multiplication kernel"""
+        # 3D grid: (M_blocks, N_blocks, batch)
+        pid_m = tl.program_id(0)
+        pid_n = tl.program_id(1)
+        pid_b = tl.program_id(2)
+
+        # Calculate ranges for this block
+        m_start = pid_m * BLOCK_M
+        n_start = pid_n * BLOCK_N
+
+        # Accumulator for this block
+        accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+        # Iterate over K dimension
+        for k_start in range(0, low_rank_dim, BLOCK_K):
+            k_end = tl.minimum(k_start + BLOCK_K, low_rank_dim)
+
+            # Load U block [BLOCK_M, BLOCK_K]
+            m_offsets = m_start + tl.arange(0, BLOCK_M)[:, None]
+            k_offsets = k_start + tl.arange(0, BLOCK_K)[None, :]
+
+            u_ptrs = (
+                U_ptr
+                + pid_b * seq_len * low_rank_dim
+                + m_offsets * low_rank_dim
+                + k_offsets
+            )
+            u_mask = (m_offsets < seq_len) & (k_offsets < k_end)
+            U_block = tl.load(u_ptrs, mask=u_mask, other=0.0)
+
+            # Load V block [BLOCK_K, BLOCK_N]
+            k_offsets_v = k_start + tl.arange(0, BLOCK_K)[:, None]
+            n_offsets = n_start + tl.arange(0, BLOCK_N)[None, :]
+
+            v_ptrs = (
+                V_ptr
+                + pid_b * low_rank_dim * d_model
+                + k_offsets_v * d_model
+                + n_offsets
+            )
+            v_mask = (k_offsets_v < k_end) & (n_offsets < d_model)
+            V_block = tl.load(v_ptrs, mask=v_mask, other=0.0)
+
+            # Matrix multiplication
+            accumulator += tl.dot(U_block, V_block)
+
+        # Store result
         m_offsets = m_start + tl.arange(0, BLOCK_M)[:, None]
-        k_offsets = k_start + tl.arange(0, BLOCK_K)[None, :]
-        
-        u_ptrs = U_ptr + pid_b * seq_len * low_rank_dim + m_offsets * low_rank_dim + k_offsets
-        u_mask = (m_offsets < seq_len) & (k_offsets < k_end)
-        U_block = tl.load(u_ptrs, mask=u_mask, other=0.0)
-        
-        # Load V block [BLOCK_K, BLOCK_N]  
-        k_offsets_v = k_start + tl.arange(0, BLOCK_K)[:, None]
         n_offsets = n_start + tl.arange(0, BLOCK_N)[None, :]
-        
-        v_ptrs = V_ptr + pid_b * low_rank_dim * d_model + k_offsets_v * d_model + n_offsets
-        v_mask = (k_offsets_v < k_end) & (n_offsets < d_model)
-        V_block = tl.load(v_ptrs, mask=v_mask, other=0.0)
-        
-        # Matrix multiplication
-        accumulator += tl.dot(U_block, V_block)
-    
-    # Store result
-    m_offsets = m_start + tl.arange(0, BLOCK_M)[:, None]
-    n_offsets = n_start + tl.arange(0, BLOCK_N)[None, :]
-    
-    output_ptrs = output_ptr + pid_b * seq_len * d_model + m_offsets * d_model + n_offsets
-    output_mask = (m_offsets < seq_len) & (n_offsets < d_model)
-    
-    tl.store(output_ptrs, accumulator, mask=output_mask)
 
+        output_ptrs = (
+            output_ptr + pid_b * seq_len * d_model + m_offsets * d_model + n_offsets
+        )
+        output_mask = (m_offsets < seq_len) & (n_offsets < d_model)
 
-@triton.jit
-def embedding_lookup_kernel(
-    positions_ptr,
-    embeddings_ptr,
-    output_ptr,
-    batch_size: tl.constexpr,
-    seq_len: tl.constexpr,
-    embed_dim: tl.constexpr,
-    max_len: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Optimized embedding lookup for positional indices"""
-    pid = tl.program_id(axis=0)
-    
-    # Calculate which sequence position this block handles
-    total_elements = batch_size * seq_len
-    start_idx = pid * BLOCK_SIZE
-    
-    if start_idx >= total_elements:
-        return
-        
-    # Process multiple positions in this block
-    for i in range(BLOCK_SIZE):
-        linear_idx = start_idx + i
-        if linear_idx >= total_elements:
-            break
-            
-        # Convert linear index to (batch, seq) coordinates
-        batch_idx = linear_idx // seq_len
-        seq_idx = linear_idx % seq_len
-        
-        # Load position index
-        pos_ptr = positions_ptr + batch_idx * seq_len + seq_idx
-        position = tl.load(pos_ptr)
-        
-        # Bounds check
-        if position >= max_len or position < 0:
-            continue
-            
-        # Copy embedding row
-        for d in range(0, embed_dim, 32):  # Process 32 dims at a time
-            d_end = tl.minimum(d + 32, embed_dim)
-            d_offsets = d + tl.arange(0, 32)
-            d_mask = d_offsets < d_end
-            
-            # Load from embedding table
-            embed_ptrs = embeddings_ptr + position * embed_dim + d_offsets
-            embed_vals = tl.load(embed_ptrs, mask=d_mask, other=0.0)
-            
-            # Store to output
-            output_ptrs = output_ptr + linear_idx * embed_dim + d_offsets
-            tl.store(output_ptrs, embed_vals, mask=d_mask)
+        tl.store(output_ptrs, accumulator, mask=output_mask)
+
+    @triton.jit
+    def embedding_lookup_kernel(
+        positions_ptr,
+        embeddings_ptr,
+        output_ptr,
+        batch_size: tl.constexpr,
+        seq_len: tl.constexpr,
+        embed_dim: tl.constexpr,
+        max_len: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Optimized embedding lookup for positional indices"""
+        pid = tl.program_id(axis=0)
+
+        # Calculate which sequence position this block handles
+        total_elements = batch_size * seq_len
+        start_idx = pid * BLOCK_SIZE
+
+        if start_idx >= total_elements:
+            return
+
+        # Process multiple positions in this block
+        for i in range(BLOCK_SIZE):
+            linear_idx = start_idx + i
+            if linear_idx >= total_elements:
+                break
+
+            # Convert linear index to (batch, seq) coordinates
+            batch_idx = linear_idx // seq_len
+            seq_idx = linear_idx % seq_len
+
+            # Load position index
+            pos_ptr = positions_ptr + batch_idx * seq_len + seq_idx
+            position = tl.load(pos_ptr)
+
+            # Bounds check
+            if position >= max_len or position < 0:
+                continue
+
+            # Copy embedding row
+            for d in range(0, embed_dim, 32):  # Process 32 dims at a time
+                d_end = tl.minimum(d + 32, embed_dim)
+                d_offsets = d + tl.arange(0, 32)
+                d_mask = d_offsets < d_end
+
+                # Load from embedding table
+                embed_ptrs = embeddings_ptr + position * embed_dim + d_offsets
+                embed_vals = tl.load(embed_ptrs, mask=d_mask, other=0.0)
+
+                # Store to output
+                output_ptrs = output_ptr + linear_idx * embed_dim + d_offsets
+                tl.store(output_ptrs, embed_vals, mask=d_mask)
 
 
 class LearnablePositionalEncoding(nn.Module):
     """
     Highly optimized learnable positional encoding with:
-    - Triton kernels for computation
+    - Optional Triton kernels for computation (when HAVE_TRITON=True)
     - Memory-efficient parameter storage
     - Fused operations
     - Optimized initialization
     """
-    
+
     def __init__(
         self,
         d_model: int,
@@ -485,9 +501,16 @@ class LearnablePositionalEncoding(nn.Module):
         self.max_len = max_len
         self.low_rank_dim = low_rank_dim
         self.norm_strategy = norm_strategy
-        self.use_triton = use_triton and torch.cuda.is_available()
+        # Only enable Triton if it's available, CUDA is available, and user wants it
+        self.use_triton = use_triton and HAVE_TRITON and torch.cuda.is_available()
         self.memory_efficient = memory_efficient
-        
+
+        # Warn user if they requested Triton but it's not available
+        if use_triton and not HAVE_TRITON:
+            print(
+                "Warning: Triton requested but not available. Falling back to PyTorch operations."
+            )
+
         # Optimized parameter initialization
         if low_rank_dim is None:
             # Standard learnable PE with memory optimization
@@ -496,7 +519,9 @@ class LearnablePositionalEncoding(nn.Module):
                 pe_data = self._init_pe_optimized(initialization, (max_len, d_model))
                 self.pe = Parameter(pe_data)
             else:
-                self.pe = Parameter(self._init_pe(initialization, (1, max_len, d_model)))
+                self.pe = Parameter(
+                    self._init_pe(initialization, (1, max_len, d_model))
+                )
         else:
             # Low-rank factorization for memory efficiency
             self.pe_proj_U = Parameter(
@@ -505,7 +530,7 @@ class LearnablePositionalEncoding(nn.Module):
             self.pe_proj_V = Parameter(
                 self._init_pe(initialization, (low_rank_dim, d_model))
             )
-            
+
         # Optimized scaling
         if scale_strategy == "learnable":
             init_scale = scale_value or math.sqrt(d_model)
@@ -513,29 +538,29 @@ class LearnablePositionalEncoding(nn.Module):
             self.scale_is_tensor = True
         elif scale_strategy == "fixed":
             scale_val = scale_value or math.sqrt(d_model)
-            self.register_buffer('scale', torch.tensor(scale_val, dtype=torch.float32))
+            self.register_buffer("scale", torch.tensor(scale_val, dtype=torch.float32))
             self.scale_is_tensor = False
         else:
-            self.register_buffer('scale', torch.tensor(1.0, dtype=torch.float32))
+            self.register_buffer("scale", torch.tensor(1.0, dtype=torch.float32))
             self.scale_is_tensor = False
-            
+
         # Optimized normalization
         if use_layer_norm:
             # Use fused layer norm when available
-            if hasattr(F, 'layer_norm') and torch.cuda.is_available():
+            if hasattr(F, "layer_norm") and torch.cuda.is_available():
                 self.layer_norm = nn.LayerNorm(d_model, elementwise_affine=True)
             else:
                 self.layer_norm = nn.LayerNorm(d_model)
         else:
             self.layer_norm = None
-            
+
         # Optimized dropout
         self.dropout = nn.Dropout(dropout, inplace=True) if dropout > 0 else None
-        
+
         # Cache for frequently used sequence lengths
         self._pe_cache = {}
         self._cache_size_limit = 8
-        
+
     def _init_pe(self, mode: str, shape: tuple) -> torch.Tensor:
         """Standard initialization"""
         if mode == "normal":
@@ -546,21 +571,25 @@ class LearnablePositionalEncoding(nn.Module):
         elif mode == "zero":
             return torch.zeros(shape)
         elif mode == "xavier":
-            return torch.empty(shape).normal_(0, math.sqrt(2.0 / (shape[-2] + shape[-1])))
+            return torch.empty(shape).normal_(
+                0, math.sqrt(2.0 / (shape[-2] + shape[-1]))
+            )
         else:
             return torch.randn(shape) * 0.02
-            
+
     def _init_pe_optimized(self, mode: str, shape: tuple) -> torch.Tensor:
         """Memory-optimized initialization"""
         # Remove batch dimension for memory efficiency
         pe = self._init_pe(mode, shape)
-        
+
         # Optional: quantize for even more memory savings (experimental)
         # pe = pe.half()  # Use FP16 if your model supports it
-        
+
         return pe
-        
-    def _get_pe_standard(self, B: int, T: int, positions: Optional[torch.Tensor] = None) -> torch.Tensor:
+
+    def _get_pe_standard(
+        self, B: int, T: int, positions: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """Get PE for standard (non-low-rank) case"""
         if positions is None:
             if self.memory_efficient:
@@ -570,26 +599,35 @@ class LearnablePositionalEncoding(nn.Module):
             else:
                 return self.pe[:, :T].expand(B, -1, -1)
         else:
-            # Embedding lookup - use Triton for large lookups
-            if self.use_triton and positions.device.type == 'cuda' and B * T > 1024:
+            # Embedding lookup - use Triton for large lookups if available
+            if self.use_triton and positions.device.type == "cuda" and B * T > 1024:
                 return self._triton_embedding_lookup(positions)
             else:
                 if self.memory_efficient:
                     return F.embedding(positions, self.pe)
                 else:
                     return F.embedding(positions, self.pe.squeeze(0))
-    
+
     def _triton_embedding_lookup(self, positions: torch.Tensor) -> torch.Tensor:
-        """Triton-accelerated embedding lookup"""
+        """Triton-accelerated embedding lookup (only available when HAVE_TRITON=True)"""
+        if not HAVE_TRITON:
+            # Fallback to standard embedding lookup
+            if self.memory_efficient:
+                return F.embedding(positions, self.pe)
+            else:
+                return F.embedding(positions, self.pe.squeeze(0))
+
         B, T = positions.shape
-        output = torch.empty(B, T, self.d_model, device=positions.device, dtype=self.pe.dtype)
-        
+        output = torch.empty(
+            B, T, self.d_model, device=positions.device, dtype=self.pe.dtype
+        )
+
         total_elements = B * T
         BLOCK_SIZE = min(256, triton.next_power_of_2(total_elements))
         grid_size = triton.cdiv(total_elements, BLOCK_SIZE)
-        
+
         pe_data = self.pe if self.memory_efficient else self.pe.squeeze(0)
-        
+
         embedding_lookup_kernel[(grid_size,)](
             positions,
             pe_data,
@@ -600,17 +638,24 @@ class LearnablePositionalEncoding(nn.Module):
             max_len=self.max_len,
             BLOCK_SIZE=BLOCK_SIZE,
         )
-        
+
         return output
-        
-    def _get_pe_low_rank(self, B: int, T: int, positions: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Get PE for low-rank case with Triton optimization"""
+
+    def _get_pe_low_rank(
+        self, B: int, T: int, positions: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Get PE for low-rank case with optional Triton optimization"""
         if positions is None:
             U = self.pe_proj_U[:T]  # [T, low_rank_dim]
-            V = self.pe_proj_V      # [low_rank_dim, d_model]
-            
-            # Use Triton for large matrix multiplications
-            if self.use_triton and U.device.type == 'cuda' and T * self.d_model > 4096:
+            V = self.pe_proj_V  # [low_rank_dim, d_model]
+
+            # Use Triton for large matrix multiplications if available
+            if (
+                self.use_triton
+                and U.device.type == "cuda"
+                and T * self.d_model > 4096
+                and HAVE_TRITON
+            ):
                 return self._triton_low_rank_matmul(U, V, B, T)
             else:
                 # Standard PyTorch implementation
@@ -619,31 +664,41 @@ class LearnablePositionalEncoding(nn.Module):
         else:
             # Embedding lookup for both U and V
             U = F.embedding(positions, self.pe_proj_U)  # [B, T, low_rank_dim]
-            V = self.pe_proj_V.unsqueeze(0).expand(B, -1, -1)  # [B, low_rank_dim, d_model]
-            
-            if self.use_triton and U.device.type == 'cuda' and B * T * self.d_model > 8192:
+            V = self.pe_proj_V.unsqueeze(0).expand(
+                B, -1, -1
+            )  # [B, low_rank_dim, d_model]
+
+            if (
+                self.use_triton
+                and U.device.type == "cuda"
+                and B * T * self.d_model > 8192
+                and HAVE_TRITON
+            ):
                 return self._triton_batch_matmul(U, V)
             else:
                 return torch.bmm(U, V)
-                
-    def _triton_low_rank_matmul(self, U: torch.Tensor, V: torch.Tensor, B: int, T: int) -> torch.Tensor:
-        """Triton kernel for low-rank matrix multiplication"""
+
+    def _triton_low_rank_matmul(
+        self, U: torch.Tensor, V: torch.Tensor, B: int, T: int
+    ) -> torch.Tensor:
+        """Triton kernel for low-rank matrix multiplication (only available when HAVE_TRITON=True)"""
+        if not HAVE_TRITON:
+            # Fallback to standard PyTorch
+            pe = torch.matmul(U, V)  # [T, d_model]
+            return pe.unsqueeze(0).expand(B, -1, -1)
+
         output = torch.empty(B, T, self.d_model, device=U.device, dtype=U.dtype)
-        
+
         # Expand U for batch processing
         U_batch = U.unsqueeze(0).expand(B, -1, -1).contiguous()
         V_batch = V.unsqueeze(0).expand(B, -1, -1).contiguous()
-        
+
         BLOCK_M = min(64, triton.next_power_of_2(T))
         BLOCK_N = min(64, triton.next_power_of_2(self.d_model))
         BLOCK_K = min(32, triton.next_power_of_2(self.low_rank_dim))
-        
-        grid = (
-            triton.cdiv(T, BLOCK_M),
-            triton.cdiv(self.d_model, BLOCK_N),
-            B
-        )
-        
+
+        grid = (triton.cdiv(T, BLOCK_M), triton.cdiv(self.d_model, BLOCK_N), B)
+
         low_rank_matmul_kernel[grid](
             U_batch,
             V_batch,
@@ -656,24 +711,24 @@ class LearnablePositionalEncoding(nn.Module):
             BLOCK_N=BLOCK_N,
             BLOCK_K=BLOCK_K,
         )
-        
+
         return output
-        
+
     def _triton_batch_matmul(self, U: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        """Triton-optimized batch matrix multiplication"""
+        """Triton-optimized batch matrix multiplication (only available when HAVE_TRITON=True)"""
+        if not HAVE_TRITON:
+            # Fallback to standard PyTorch
+            return torch.bmm(U, V)
+
         B, T, _ = U.shape
         output = torch.empty(B, T, self.d_model, device=U.device, dtype=U.dtype)
-        
+
         BLOCK_M = min(64, triton.next_power_of_2(T))
         BLOCK_N = min(64, triton.next_power_of_2(self.d_model))
         BLOCK_K = min(32, triton.next_power_of_2(self.low_rank_dim))
-        
-        grid = (
-            triton.cdiv(T, BLOCK_M),
-            triton.cdiv(self.d_model, BLOCK_N),
-            B
-        )
-        
+
+        grid = (triton.cdiv(T, BLOCK_M), triton.cdiv(self.d_model, BLOCK_N), B)
+
         low_rank_matmul_kernel[grid](
             U.contiguous(),
             V.contiguous(),
@@ -686,23 +741,30 @@ class LearnablePositionalEncoding(nn.Module):
             BLOCK_N=BLOCK_N,
             BLOCK_K=BLOCK_K,
         )
-        
+
         return output
-        
+
     def _triton_fused_addition(self, x: torch.Tensor, pe: torch.Tensor) -> torch.Tensor:
-        """Triton kernel for fused PE addition with scaling"""
+        """Triton kernel for fused PE addition with scaling (only available when HAVE_TRITON=True)"""
+        if not HAVE_TRITON:
+            # Fallback to standard PyTorch
+            if self.scale_is_tensor:
+                return x + pe * self.scale
+            else:
+                return x.add_(pe, alpha=self.scale)  # In-place when possible
+
         output = torch.empty_like(x)
-        
+
         total_elements = x.numel()
         BLOCK_SIZE = 1024
         grid_size = triton.cdiv(total_elements, BLOCK_SIZE)
-        
+
         # Convert scale to float for kernel
         if self.scale_is_tensor:
             scale_val = float(self.scale.item())
         else:
             scale_val = float(self.scale.item())
-        
+
         fused_pe_addition_kernel[(grid_size,)](
             x.contiguous().view(-1),
             pe.contiguous().view(-1),
@@ -711,13 +773,15 @@ class LearnablePositionalEncoding(nn.Module):
             n_elements=total_elements,
             BLOCK_SIZE=BLOCK_SIZE,
         )
-        
+
         return output
-        
-    def forward(self, x: torch.Tensor, positions: Optional[torch.Tensor] = None) -> torch.Tensor:
+
+    def forward(
+        self, x: torch.Tensor, positions: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """Optimized forward pass"""
         B, T, _ = x.shape
-        
+
         # Cache check for common sequence lengths
         cache_key = (T, positions is not None)
         if cache_key in self._pe_cache and positions is None:
@@ -730,19 +794,26 @@ class LearnablePositionalEncoding(nn.Module):
                 pe = self._get_pe_standard(B, T, positions)
             else:
                 pe = self._get_pe_low_rank(B, T, positions)
-                
+
             # Cache if reasonable size and no custom positions
-            if (len(self._pe_cache) < self._cache_size_limit and 
-                positions is None and T <= 2048):
+            if (
+                len(self._pe_cache) < self._cache_size_limit
+                and positions is None
+                and T <= 2048
+            ):
                 self._pe_cache[cache_key] = pe[:1] if B > 1 else pe
-        
+
         # Pre-norm if specified
         if self.norm_strategy == "pre_add" and self.layer_norm:
             x = self.layer_norm(x)
-        
-        # Fused PE addition with Triton for large tensors
-        if (self.use_triton and x.device.type == 'cuda' and 
-            B * T * self.d_model > 4096):
+
+        # Fused PE addition with Triton for large tensors (if available)
+        if (
+            self.use_triton
+            and x.device.type == "cuda"
+            and B * T * self.d_model > 4096
+            and HAVE_TRITON
+        ):
             x = self._triton_fused_addition(x, pe)
         else:
             # Standard addition
@@ -750,10 +821,10 @@ class LearnablePositionalEncoding(nn.Module):
                 x = x + pe * self.scale
             else:
                 x = x.add_(pe, alpha=self.scale)  # In-place when possible
-        
+
         # Post-norm if specified
         if self.norm_strategy == "post_add" and self.layer_norm:
             x = self.layer_norm(x)
-            
+
         # Dropout
         return self.dropout(x) if self.dropout else x

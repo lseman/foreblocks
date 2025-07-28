@@ -1,13 +1,12 @@
-from sympy import Poly
-import torch
-from torch import nn
-import torch.nn.functional as F
-import numpy as np
-from scipy.special import eval_legendre
-from sympy import legendre, Symbol, chebyshevt
 from functools import partial
 from typing import List
-from torch import Tensor
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from scipy.special import eval_legendre
+from sympy import Poly, Symbol, chebyshevt, legendre
+from torch import Tensor, nn
 
 
 def legendreDer(k, x):

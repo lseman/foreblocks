@@ -1,7 +1,6 @@
 # Standard Library
-import math
 import warnings
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 # Scientific Computing and Visualization
 import numpy as np
@@ -230,26 +229,12 @@ def _remove_outliers_wrapper(args):
 ###########################################################################
 # TranAD
 ###########################################################################
-import math
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from tqdm import tqdm
-from typing import Optional, Tuple, Union
-from ..tf.embeddings import PositionalEncoding
-from ..tf.transformer import TransformerEncoder, TransformerDecoder
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from tqdm import tqdm
-from typing import Union, Optional
-import math
+
+from ..tf.transformer import TransformerDecoder, TransformerEncoder
+
 
 class TranAD(nn.Module):
     def __init__(self, feats, window_size=24, d_model=None, n_heads=None, n_layers=2, dropout=0.1):

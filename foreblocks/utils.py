@@ -1,3 +1,4 @@
+import copy
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -10,7 +11,7 @@ from tqdm import tqdm
 
 from .third_party.vsgd import *
 
-import copy
+
 class TimeSeriesDataset(torch.utils.data.Dataset):
     """Dataset for time series data"""
 

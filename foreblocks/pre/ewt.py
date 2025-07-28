@@ -7,12 +7,12 @@ import warnings
 # External Libraries - Core
 # ============================
 import numpy as np
-from joblib import Parallel, delayed
 
 # ============================
 # Scientific Computing & ML
 # ============================
 import statsmodels.api as sm
+from joblib import Parallel, delayed
 
 # ============================
 # Visualization
@@ -21,9 +21,10 @@ import statsmodels.api as sm
 
 # --- Parallel EWT + Detrend ---
 def _select_best_imf_by_aic(signal: np.ndarray, imfs: np.ndarray) -> int:
-    from statsmodels.tsa.stattools import arma_order_select_ic
-    from statsmodels.tools.sm_exceptions import ConvergenceWarning
     import warnings
+
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+    from statsmodels.tsa.stattools import arma_order_select_ic
 
     best_score = np.inf
     best_idx = 0

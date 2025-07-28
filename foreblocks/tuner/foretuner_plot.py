@@ -1,4 +1,3 @@
-
 from typing import List
 
 import matplotlib.pyplot as plt
@@ -17,6 +16,7 @@ except ImportError:
     MPLCURSORS_AVAILABLE = False
 
 from .foretuner import *
+
 
 def plot_optimization_results(trials: List, title: str = "Enhanced Foretuner Results"):
     """State-of-the-art optimization visualization for Foretuner trials"""
