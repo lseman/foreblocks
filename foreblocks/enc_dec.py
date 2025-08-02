@@ -25,10 +25,9 @@ class DecoderBase(nn.Module):
 ################################################
 # LSTM
 ################################################
-
 class LSTMEncoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False):
-        super(LSTMEncoder, self).__init__()
+        super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -45,25 +44,31 @@ class LSTMEncoder(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        for name, param in self.lstm.named_parameters():
-            if "weight_ih" in name:
-                nn.init.xavier_uniform_(param.data)
-            elif "weight_hh" in name:
-                nn.init.orthogonal_(param.data)
-            elif "bias" in name:
-                param.data.fill_(0.0)
-                # Set forget gate bias to 1
-                n = param.size(0)
-                param.data[n // 4 : n // 2].fill_(1.0)
+        with torch.no_grad():
+            for name, param in self.lstm.named_parameters():
+                if "weight_ih" in name:
+                    nn.init.xavier_uniform_(param)
+                elif "weight_hh" in name:
+                    nn.init.orthogonal_(param)
+                elif "bias" in name:
+                    param.fill_(0.0)
+                    # Set forget gate bias to 1
+                    n = param.size(0)
+                    param[n // 4 : n // 2].fill_(1.0)
 
-    def forward(self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
-        outputs, hidden = self.lstm(x, hidden)
-        return outputs, hidden
+    def forward(
+        self,
+        x: Tensor,
+        hidden: Optional[Tuple[Tensor, Tensor]] = None
+    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+        output, hidden = self.lstm(x, hidden)
+        return output, hidden
 
 
 class LSTMDecoder(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, dropout=0.0):
-        super(LSTMDecoder, self).__init__()
+        super().__init__()
+        self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.num_layers = num_layers
@@ -75,61 +80,75 @@ class LSTMDecoder(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
         )
-        self.input_size = input_size
         self.output_layer = nn.Linear(hidden_size, output_size)
         self._init_weights()
 
     def _init_weights(self):
-        for name, param in self.lstm.named_parameters():
-            if "weight_ih" in name:
-                nn.init.xavier_uniform_(param.data)
-            elif "weight_hh" in name:
-                nn.init.orthogonal_(param.data)
-            elif "bias" in name:
-                param.data.fill_(0.0)
-                n = param.size(0)
-                param.data[n // 4 : n // 2].fill_(1.0)
+        with torch.no_grad():
+            for name, param in self.lstm.named_parameters():
+                if "weight_ih" in name:
+                    nn.init.xavier_uniform_(param)
+                elif "weight_hh" in name:
+                    nn.init.orthogonal_(param)
+                elif "bias" in name:
+                    param.fill_(0.0)
+                    # Set forget gate bias to 1
+                    n = param.size(0)
+                    param[n // 4 : n // 2].fill_(1.0)
 
-        nn.init.xavier_uniform_(self.output_layer.weight)
-        if self.output_layer.bias is not None:
-            self.output_layer.bias.data.fill_(0.0)
-
-    def forward(self, x: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
-        # Always ensure 3D shape [B, T, D] without boolean control flow
-        x = x.reshape(x.shape[0], -1, x.shape[-1])
-        
+    def forward(
+        self,
+        x: Tensor,
+        hidden: Optional[Tuple[Tensor, Tensor]] = None
+    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+        x = x.view(x.size(0), -1, x.size(-1))  # Ensure 3D shape: [B, T, D]
         lstm_out, hidden = self.lstm(x, hidden)
-        
-        # Take the last timestep’s output explicitly
-        last_out = lstm_out[:, -1, :]  # always safe
-        #output = self.output_layer(last_out)
-        
+        last_out = lstm_out[:, -1]  # [B, H]
         return last_out, hidden
+
 
 ###################################################
 # GRU
 ###################################################
 
-
 class GRUEncoder(EncoderBase):
-    def __init__(
-        self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False
-    ):
+    def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.0, bidirectional=False):
         super(GRUEncoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bidirectional = bidirectional
+
         self.gru = nn.GRU(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
+            dropout=dropout if num_layers > 1 else 0.0,
             bidirectional=bidirectional,
             batch_first=True,
         )
+        self._init_weights()
+
+    def _init_weights(self):
+        with torch.no_grad():
+            for name, param in self.gru.named_parameters():
+                if "weight_ih" in name:
+                    nn.init.xavier_uniform_(param)
+                elif "weight_hh" in name:
+                    nn.init.orthogonal_(param)
+                elif "bias" in name:
+                    param.fill_(0.0)
 
     def forward(self, x, hidden=None):
+        """
+        Args:
+            x: Input tensor of shape [B, T, input_size]
+            hidden: Optional initial hidden state
+
+        Returns:
+            outputs: All hidden states [B, T, hidden_size]
+            hidden: Final hidden state [num_layers * num_directions, B, hidden_size]
+        """
         outputs, hidden = self.gru(x, hidden)
         return outputs, hidden
 
@@ -140,22 +159,43 @@ class GRUDecoder(DecoderBase):
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.num_layers = num_layers
+
         self.gru = nn.GRU(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
+            dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
         )
-        self.output_layer = nn.Linear(hidden_size, output_size)
+        self._init_weights()
+
+    def _init_weights(self):
+        with torch.no_grad():
+            for name, param in self.gru.named_parameters():
+                if "weight_ih" in name:
+                    nn.init.xavier_uniform_(param)
+                elif "weight_hh" in name:
+                    nn.init.orthogonal_(param)
+                elif "bias" in name:
+                    param.fill_(0.0)
 
     def forward(self, x, hidden=None):
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        gru_out, hidden = self.gru(x, hidden)
-        output = self.output_layer(gru_out.squeeze(1))
-        return output, hidden
+        """
+        Args:
+            x: Input tensor of shape [B, input_size] or [B, T, input_size]
+            hidden: Optional hidden state [num_layers, B, hidden_size]
 
+        Returns:
+            output: Output tensor [B, output_size]
+            hidden: Final hidden state [num_layers, B, hidden_size]
+        """
+        if x.dim() == 2:
+            x = x.unsqueeze(1)  # [B, 1, input_size]
+
+        gru_out, hidden = self.gru(x, hidden)
+        last_out = gru_out[:, -1, :]  # [B, hidden_size]
+
+        return last_out, hidden
 
 ###############
 

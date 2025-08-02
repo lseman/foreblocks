@@ -1,10 +1,13 @@
+import contextlib
 import copy
+import logging
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import wandb
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
@@ -72,9 +75,8 @@ def create_dataloaders(X_train, y_train, X_val=None, y_val=None, batch_size=32):
 
 class Trainer:
     """
-    Clean trainer focused purely on training logic.
-    All model-specific features (quantization, distillation) are handled by the model itself.
-    Works seamlessly with BaseForecastingModel, ForecastingModel, and QuantizedForecastingModel.
+    Clean trainer with automatic handling of AMP, distillation, and quantization.
+    Works with BaseForecastingModel, ForecastingModel, and QuantizedForecastingModel.
     """
 
     def __init__(
@@ -104,6 +106,7 @@ class Trainer:
         self._init_tracking()
 
         if self.use_wandb:
+            import wandb
             wandb.init(**(wandb_config or {}))
             wandb.watch(self.model, log="all", log_freq=100)
 
@@ -137,12 +140,12 @@ class Trainer:
 
     def _init_tracking(self):
         self.history = {
-            "train_losses": [], 
-            "val_losses": [], 
+            "train_losses": [],
+            "val_losses": [],
             "learning_rates": [],
             "task_losses": [],
             "distillation_losses": [],
-            "model_info": []  # General model info (size, etc.)
+            "model_info": []
         }
         self.best_val_loss = float("inf")
         self.best_model_state = None
@@ -150,7 +153,7 @@ class Trainer:
         self.current_epoch = 0
 
     def _get_optimizer(self):
-        print("Warning: Using custom VSGD optimizer.")
+        logging.warning("Using custom VSGD optimizer.")
         return VSGD(
             self.model.parameters(),
             lr=self.config["learning_rate"],
@@ -166,8 +169,7 @@ class Trainer:
         return nn.MSELoss()
 
     def _get_scheduler(self):
-        t = self.config["scheduler_type"]
-        if t == "step":
+        if self.config["scheduler_type"] == "step":
             return torch.optim.lr_scheduler.StepLR(
                 self.optimizer,
                 step_size=self.config["lr_step_size"],
@@ -175,78 +177,82 @@ class Trainer:
             )
         return None
 
-    def _forward_pass(self, X, y, time_feat=None):
-        """Enhanced forward pass with automatic distillation support"""
-        # Check if model supports distillation
+    def _extract_batch_data(self, batch):
+        if len(batch) == 2:
+            return batch[0], batch[1], None
+        elif len(batch) == 3:
+            return batch[0], batch[1], batch[2]
+        else:
+            raise ValueError(f"Expected 2 or 3 elements in batch, got {len(batch)}")
+
+    def _extract_model_info(self):
+        info = {}
+        if hasattr(self.model, 'get_model_size'):
+            info.update(self.model.get_model_size())
+
         if hasattr(self.model, 'get_distillation_info'):
             distill_info = self.model.get_distillation_info()
-            if distill_info.get('distillation_enabled', False):
-                # Model has distillation - try to get teacher outputs
-                result = self.model(X, y, time_feat, self.current_epoch, return_teacher_outputs=True)
-                if isinstance(result, tuple) and len(result) == 2:
-                    outputs, teacher_outputs = result
-                    return outputs, {"teacher_outputs": teacher_outputs}
-                else:
-                    # Fallback if teacher outputs not available
-                    outputs = result[0] if isinstance(result, tuple) else result
-                    return outputs, {}
-        
-        # Regular forward pass (BaseForecastingModel or no distillation)
+            if distill_info.get("distillation_enabled", False):
+                info.update({
+                    "distillation_mode": distill_info.get("distillation_mode"),
+                    "has_teacher": distill_info.get("has_teacher"),
+                })
+
+        if hasattr(self.model, 'get_quantization_info'):
+            quant_info = self.model.get_quantization_info()
+            if quant_info.get("quantization_enabled", False):
+                info.update({
+                    "quantization_mode": quant_info.get("quantization_mode"),
+                    "is_quantized": quant_info.get("is_quantized"),
+                })
+
+        return info
+
+    def _log_features(self, epoch, train_loss, val_loss, lr):
+        log_dict = {
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "learning_rate": lr,
+        }
+        if self.history["task_losses"]:
+            log_dict["task_loss"] = self.history["task_losses"][-1]
+        if self.history["distillation_losses"]:
+            log_dict["distillation_loss"] = self.history["distillation_losses"][-1]
+
+        log_dict.update(self._extract_model_info())
+        return log_dict
+
+    def _forward_pass(self, X, y, time_feat=None):
+        if hasattr(self.model, 'get_distillation_info') and self.model.get_distillation_info().get("distillation_enabled", False):
+            result = self.model(X, y, time_feat, self.current_epoch, return_teacher_outputs=True)
+            if isinstance(result, tuple) and len(result) == 2:
+                return result[0], {"teacher_outputs": result[1]}
+            return result[0] if isinstance(result, tuple) else result, {}
+
         result = self.model(X, y, time_feat, self.current_epoch)
-        if isinstance(result, tuple):
-            outputs, aux = result
-        else:
-            outputs, aux = result, {}
-        return outputs, aux
+        return result if isinstance(result, tuple) else (result, {})
 
     def _compute_loss(self, outputs, targets, aux: Optional[Dict[str, torch.Tensor]] = None):
-        """Enhanced loss computation with automatic distillation support"""
-        if aux is None:
-            aux = {}
-            
-        # Base task loss
+        aux = aux or {}
         base_loss = self.criterion(outputs, targets)
         total_loss = base_loss
-        
-        # Track individual loss components
         loss_components = {"task_loss": base_loss.item()}
-        
-        # Knowledge distillation loss (delegate to model if available)
-        if (hasattr(self.model, 'compute_distillation_loss') and
-            "teacher_outputs" in aux):
-            
-            teacher_outputs = aux["teacher_outputs"]
+
+        if hasattr(self.model, 'compute_distillation_loss') and "teacher_outputs" in aux:
             distillation_loss, distill_components = self.model.compute_distillation_loss(
-                outputs, teacher_outputs, targets, self.criterion
+                outputs, aux["teacher_outputs"], targets, self.criterion
             )
-            
-            # Use the model's own distillation alpha
             total_loss = distillation_loss
-            
-            # Track distillation components
-            loss_components.update({
-                f"distill_{k}": v.item() if isinstance(v, torch.Tensor) else v 
-                for k, v in distill_components.items()
-            })
+            loss_components.update({f"distill_{k}": v.item() if isinstance(v, torch.Tensor) else v
+                                    for k, v in distill_components.items()})
 
-        # Add auxiliary loss if present
-        if "aux_loss" in aux:
-            aux_weight = self.config.get("aux_loss_weight", 0.01)
-            total_loss += aux_weight * aux["aux_loss"]
-            loss_components["aux_loss"] = aux["aux_loss"].item()
-
-        # L1 regularization
         l1_weight = self.config.get("l1_regularization", 0.0)
         if l1_weight > 0:
-            l1 = sum(
-                torch.sum(torch.abs(p))
-                for p in self.model.parameters()
-                if p.requires_grad
-            )
+            l1 = sum(torch.sum(torch.abs(p)) for p in self.model.parameters() if p.requires_grad)
             total_loss += l1_weight * l1
             loss_components["l1_loss"] = (l1_weight * l1).item()
 
-        # KL divergence (delegate to model)
         if hasattr(self.model, "get_kl"):
             kl_div = self.model.get_kl()
             if kl_div is not None:
@@ -254,22 +260,19 @@ class Trainer:
                 total_loss += kl_weight * kl_div
                 loss_components["kl_loss"] = (kl_weight * kl_div).item()
 
-        # Store loss components for logging
         self.last_loss_components = loss_components
-        
         return total_loss
 
     def _step_optimizer(self, loss, batch_idx, total_batches):
         grad_acc = self.config["gradient_accumulation_steps"]
         loss = loss / grad_acc
+
         if self.config["use_amp"]:
             self.scaler.scale(loss).backward()
             if (batch_idx + 1) % grad_acc == 0 or (batch_idx + 1 == total_batches):
                 if self.config["gradient_clip_val"]:
                     self.scaler.unscale_(self.optimizer)
-                    nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.config["gradient_clip_val"]
-                    )
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.config["gradient_clip_val"])
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad()
@@ -277,145 +280,83 @@ class Trainer:
             loss.backward()
             if (batch_idx + 1) % grad_acc == 0 or (batch_idx + 1 == total_batches):
                 if self.config["gradient_clip_val"]:
-                    nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.config["gradient_clip_val"]
-                    )
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.config["gradient_clip_val"])
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
     def train_epoch(self, dataloader, callbacks=None):
-        """Clean training epoch with automatic feature detection"""
         self.model.train()
-        
         total_loss = 0.0
         epoch_loss_components = {}
-        
-        for batch_idx, data in enumerate(dataloader):
-            # Handle different data formats
-            if len(data) == 2:
-                X, y = data
-                time_feat = None
-            elif len(data) == 3:
-                X, y, time_feat = data
-            else:
-                raise ValueError(f"Expected 2 or 3 elements in batch, got {len(data)}")
-                
+
+        for batch_idx, batch in enumerate(dataloader):
+            X, y, time_feat = self._extract_batch_data(batch)
             X, y = X.to(self.device), y.to(self.device)
             if time_feat is not None:
                 time_feat = time_feat.to(self.device)
-                
+
             with (autocast("cuda") if self.config["use_amp"] else contextlib.nullcontext()):
                 outputs, aux = self._forward_pass(X, y, time_feat)
                 loss = self._compute_loss(outputs, y, aux)
-                
+
             self._step_optimizer(loss, batch_idx, len(dataloader))
             total_loss += loss.item()
-            
-            # Accumulate loss components
-            if hasattr(self, 'last_loss_components'):
-                for key, value in self.last_loss_components.items():
-                    if key not in epoch_loss_components:
-                        epoch_loss_components[key] = []
-                    epoch_loss_components[key].append(value)
-        
-        # Average loss components for the epoch
-        avg_loss_components = {}
-        for key, values in epoch_loss_components.items():
-            avg_loss_components[key] = np.mean(values)
-            
-        # Store in history
-        if "task_loss" in avg_loss_components:
-            self.history["task_losses"].append(avg_loss_components["task_loss"])
-        if any(k.startswith("distill_") for k in avg_loss_components):
-            distill_loss = sum(v for k, v in avg_loss_components.items() if k.startswith("distill_"))
+
+            for k, v in self.last_loss_components.items():
+                epoch_loss_components.setdefault(k, []).append(v)
+
+        # Average tracked loss components
+        avg_loss = {k: np.mean(v) for k, v in epoch_loss_components.items()}
+        if "task_loss" in avg_loss:
+            self.history["task_losses"].append(avg_loss["task_loss"])
+        if any(k.startswith("distill_") for k in avg_loss):
+            distill_loss = sum(v for k, v in avg_loss.items() if k.startswith("distill_"))
             self.history["distillation_losses"].append(distill_loss)
-        
+
         return total_loss / len(dataloader)
 
     def evaluate(self, dataloader):
-        """Clean evaluation"""
         self.model.eval()
         total_loss = 0.0
-        
+
         with torch.no_grad():
-            for batch_idx, (X, y) in enumerate(dataloader):
+            for batch in dataloader:
+                X, y, _ = self._extract_batch_data(batch)
                 X, y = X.to(self.device), y.to(self.device)
                 with (autocast("cuda") if self.config["use_amp"] else contextlib.nullcontext()):
                     result = self.model(X)
-                    if isinstance(result, tuple):
-                        outputs, _ = result
-                    else:
-                        outputs = result
+                    outputs = result[0] if isinstance(result, tuple) else result
                     loss = self.criterion(outputs, y)
-                total_loss += loss.item() * X.size(0)
-                
+                    total_loss += loss.item() * X.size(0)
+
         return total_loss / len(dataloader.dataset)
 
     def train(self, train_loader, val_loader=None, callbacks=None, epochs=None):
-        """Clean training loop with automatic feature detection"""
         self._init_tracking()
-        num_epochs = self.config["num_epochs"]
-        if epochs is not None:
-            num_epochs = epochs
-
-        # Detect model capabilities
-        has_distillation = hasattr(self.model, 'get_distillation_info')
-        has_quantization = hasattr(self.model, 'get_quantization_info')
+        num_epochs = epochs or self.config["num_epochs"]
 
         with tqdm(range(num_epochs), desc="Training", unit="epoch") as pbar:
             for epoch in pbar:
                 self.current_epoch = epoch
-                train_loss = self.train_epoch(train_loader, callbacks)
+                train_loss = self.train_epoch(train_loader)
                 self.history["train_losses"].append(train_loss)
-                
+
                 val_loss = None
                 if val_loader:
                     val_loss = self.evaluate(val_loader)
                     self.history["val_losses"].append(val_loss)
 
-                current_lr = self.optimizer.param_groups[0]["lr"]
-                self.history["learning_rates"].append(current_lr)
-                
-                # Log model info (delegate to model)
+                lr = self.optimizer.param_groups[0]["lr"]
+                self.history["learning_rates"].append(lr)
+
                 if hasattr(self.model, 'get_model_size'):
-                    model_info = self.model.get_model_size()
-                    self.history["model_info"].append({
-                        "epoch": epoch,
-                        **model_info
-                    })
+                    self.history["model_info"].append({"epoch": epoch, **self.model.get_model_size()})
 
-                # Enhanced logging with automatic feature detection
-                log_dict = {
-                    "epoch": epoch + 1,
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "learning_rate": current_lr,
-                }
-                
-                # Add distillation info if available
-                if has_distillation:
-                    distill_info = self.model.get_distillation_info()
-                    if distill_info.get('distillation_enabled', False):
-                        log_dict["distillation_mode"] = distill_info.get('distillation_mode', 'none')
-                        log_dict["has_teacher"] = distill_info.get('has_teacher', False)
-                
-                # Add quantization info if available
-                if has_quantization:
-                    quant_info = self.model.get_quantization_info()
-                    if quant_info.get('quantization_enabled', False):
-                        log_dict["quantization_mode"] = quant_info.get('quantization_mode', 'none')
-                        log_dict["is_quantized"] = quant_info.get('is_quantized', False)
-                
-                # Add task and distillation losses if available
-                if self.history["task_losses"]:
-                    log_dict["task_loss"] = self.history["task_losses"][-1]
-                if self.history["distillation_losses"]:
-                    log_dict["distillation_loss"] = self.history["distillation_losses"][-1]
-
+                log_dict = self._log_features(epoch, train_loss, val_loss, lr)
                 if self.use_wandb:
+                    import wandb
                     wandb.log(log_dict)
 
-                # Early stopping logic
                 if val_loader:
                     if val_loss + self.config["min_delta"] < self.best_val_loss:
                         self.best_val_loss = val_loss
@@ -430,35 +371,30 @@ class Trainer:
                         print("Early stopping triggered.")
                         break
 
-                # Update progress bar with automatic feature detection
-                pbar_dict = {
-                    "train_loss": train_loss,
-                    "val_loss": val_loss if val_loader else "N/A",
-                    "lr": current_lr,
+                postfix_dict = {
+                    "epoch": epoch + 1,
+                    "train_loss": f"{train_loss:.4f}",
+                    "lr": f"{lr:.2e}",
                 }
-                
-                # Add distillation weight to progress bar if available
-                if has_distillation:
-                    distill_info = self.model.get_distillation_info()
-                    if distill_info.get('distillation_enabled', False):
-                        pbar_dict["distill"] = "✓"
-                
-                # Add quantization status to progress bar if available
-                if has_quantization:
-                    quant_info = self.model.get_quantization_info()
-                    if quant_info.get('quantization_enabled', False):
-                        pbar_dict["quant"] = "✓"
-                
-                pbar.set_postfix(pbar_dict)
+                if val_loss is not None:
+                    postfix_dict["val_loss"] = f"{self.val_loss:.4f}"
+                if log_dict.get("is_quantized"):
+                    postfix_dict["quant"] = "✓"
+                if log_dict.get("distillation_mode") not in [None, "none"]:
+                    postfix_dict["distill"] = "✓"
+                pbar.set_postfix(postfix_dict)
+
 
                 if self.scheduler:
                     self.scheduler.step(val_loss if val_loader else train_loss)
 
-        # Restore best model
         if self.best_model_state:
             self.model.load_state_dict(self.best_model_state)
 
         return self.history
+
+
+    ## Save and Load Methods
 
     def save(self, path):
         """Save model and training state with automatic feature detection"""
@@ -488,252 +424,230 @@ class Trainer:
         self.history = checkpoint.get("history", {})
         self.config.update(checkpoint.get("config", {}))
 
+    ## Benchmarking Methods
+    
     def benchmark_model(self, sample_input: torch.Tensor, num_runs: int = 100):
-        """Benchmark model performance (delegate to model)"""
+        """Benchmark model performance (delegated to model)"""
         if not hasattr(self.model, 'benchmark_inference'):
-            print("Model does not support benchmarking")
+            print("Model does not support benchmarking.")
             return None
-            
+
         sample_input = sample_input.to(self.device)
         results = self.model.benchmark_inference(sample_input, num_runs=num_runs)
-        
+
         print("\nModel Performance Benchmark:")
-        print(f"  Average inference time: {results['avg_inference_time_ms']:.2f} ms")
-        print(f"  Throughput: {results['throughput_samples_per_sec']:.2f} samples/sec")
-        
+        print(f"  Inference Time: {results['avg_inference_time_ms']:.2f} ms")
+        print(f"  Throughput:     {results['throughput_samples_per_sec']:.2f} samples/sec")
+
         if hasattr(self.model, 'get_model_size'):
             size_info = self.model.get_model_size()
-            print(f"  Model size: {size_info['size_mb']:.2f} MB")
-            print(f"  Parameters: {size_info['parameters']:,}")
-        
+            print(f"  Model Size:     {size_info['size_mb']:.2f} MB")
+            print(f"  Parameters:     {size_info['parameters']:,}")
+
         return results
 
     def plot_learning_curves(self, figsize=(15, 8)):
-        """Plot learning curves with automatic feature detection"""
+        """Plot loss, learning rate, distillation, and model size over epochs"""
         fig, axes = plt.subplots(2, 2, figsize=figsize)
-        
+
         # Loss curves
-        axes[0, 0].plot(self.history["train_losses"], label="Train Loss")
+        axes[0, 0].plot(self.history["train_losses"], label="Train")
         if self.history["val_losses"]:
-            axes[0, 0].plot(self.history["val_losses"], label="Val Loss")
+            axes[0, 0].plot(self.history["val_losses"], label="Validation")
+        axes[0, 0].set_title("Loss")
         axes[0, 0].set_xlabel("Epoch")
         axes[0, 0].set_ylabel("Loss")
-        axes[0, 0].set_title("Training & Validation Loss")
         axes[0, 0].legend()
         axes[0, 0].grid(True)
-        
+
         # Learning rate
-        axes[0, 1].plot(self.history["learning_rates"], label="Learning Rate")
+        axes[0, 1].plot(self.history["learning_rates"], label="LR")
+        axes[0, 1].set_title("Learning Rate")
         axes[0, 1].set_xlabel("Epoch")
         axes[0, 1].set_ylabel("LR")
-        axes[0, 1].set_title("Learning Rate Schedule")
         axes[0, 1].grid(True)
-        
-        # Distillation losses (if available)
+
+        # Task vs distillation loss
         if self.history["task_losses"] and self.history["distillation_losses"]:
-            axes[1, 0].plot(self.history["task_losses"], label="Task Loss")
-            axes[1, 0].plot(self.history["distillation_losses"], label="Distillation Loss")
+            axes[1, 0].plot(self.history["task_losses"], label="Task")
+            axes[1, 0].plot(self.history["distillation_losses"], label="Distillation")
+            axes[1, 0].set_title("Task vs Distillation Loss")
             axes[1, 0].set_xlabel("Epoch")
             axes[1, 0].set_ylabel("Loss")
-            axes[1, 0].set_title("Task vs Distillation Loss")
             axes[1, 0].legend()
             axes[1, 0].grid(True)
         else:
-            axes[1, 0].text(0.5, 0.5, "No distillation data", ha='center', va='center', transform=axes[1, 0].transAxes)
+            axes[1, 0].text(0.5, 0.5, "No distillation data", ha='center', va='center')
             axes[1, 0].set_title("Distillation Loss")
-        
-        # Model size over time
+
+        # Model size
         if self.history["model_info"]:
             epochs = [info["epoch"] for info in self.history["model_info"]]
             sizes = [info.get("size_mb", 0) for info in self.history["model_info"]]
-            
-            axes[1, 1].plot(epochs, sizes, label="Model Size (MB)")
+            axes[1, 1].plot(epochs, sizes, label="Size (MB)")
+            axes[1, 1].set_title("Model Size")
             axes[1, 1].set_xlabel("Epoch")
-            axes[1, 1].set_ylabel("Model Size (MB)")
-            axes[1, 1].set_title("Model Size Over Training")
+            axes[1, 1].set_ylabel("MB")
             axes[1, 1].legend()
             axes[1, 1].grid(True)
         else:
-            axes[1, 1].text(0.5, 0.5, "No model size data", ha='center', va='center', transform=axes[1, 1].transAxes)
+            axes[1, 1].text(0.5, 0.5, "No model size data", ha='center', va='center')
             axes[1, 1].set_title("Model Size")
-        
+
         plt.tight_layout()
         plt.show()
 
+
     def print_training_summary(self):
-        """Print training summary with automatic feature detection"""
+        """Print formatted training summary with distillation and quantization info"""
         print("\n" + "="*60)
         print("TRAINING SUMMARY")
         print("="*60)
-        
-        # Basic info
-        print(f"Total epochs: {len(self.history['train_losses'])}")
-        print(f"Final train loss: {self.history['train_losses'][-1]:.6f}")
-        if self.history['val_losses']:
-            print(f"Final val loss: {self.history['val_losses'][-1]:.6f}")
-            print(f"Best val loss: {self.best_val_loss:.6f}")
-        
-        # Model type detection
+
+        print(f"Total epochs:      {len(self.history['train_losses'])}")
+        print(f"Final train loss:  {self.history['train_losses'][-1]:.6f}")
+        if self.history["val_losses"]:
+            print(f"Final val loss:    {self.history['val_losses'][-1]:.6f}")
+            print(f"Best val loss:     {self.best_val_loss:.6f}")
+
         model_type = "BaseForecastingModel"
-        if hasattr(self.model, 'get_distillation_info'):
-            distill_info = self.model.get_distillation_info()
-            if distill_info.get('distillation_enabled', False):
+        if getattr(self.model, 'get_distillation_info', None):
+            info = self.model.get_distillation_info()
+            if info.get("distillation_enabled", False):
                 model_type = "ForecastingModel (with distillation)"
-        
-        if hasattr(self.model, 'get_quantization_info'):
-            quant_info = self.model.get_quantization_info()
-            if quant_info.get('quantization_enabled', False):
+
+        if getattr(self.model, 'get_quantization_info', None):
+            info = self.model.get_quantization_info()
+            if info.get("quantization_enabled", False):
                 model_type = "QuantizedForecastingModel"
-        
+
         print(f"\nMODEL TYPE: {model_type}")
-        
-        # Distillation info (if available)
-        if hasattr(self.model, 'get_distillation_info'):
-            distill_info = self.model.get_distillation_info()
-            if distill_info.get('distillation_enabled', False):
-                print(f"\nDISTILLATION INFO:")
-                for key, value in distill_info.items():
-                    print(f"  {key}: {value}")
-        
-        # Model info (delegate to model)
-        if hasattr(self.model, 'get_model_size'):
-            model_info = self.model.get_model_size()
-            print(f"\nMODEL INFO:")
-            for key, value in model_info.items():
-                print(f"  {key}: {value}")
-        
-        # Quantization info (if available)
-        if hasattr(self.model, 'get_quantization_info'):
-            quant_info = self.model.get_quantization_info()
-            if quant_info.get('quantization_enabled', False):
-                print(f"\nQUANTIZATION INFO:")
-                for key, value in quant_info.items():
-                    print(f"  {key}: {value}")
-        
+
+        for label, getter in [
+            ("DISTILLATION INFO", "get_distillation_info"),
+            ("MODEL INFO", "get_model_size"),
+            ("QUANTIZATION INFO", "get_quantization_info")
+        ]:
+            if hasattr(self.model, getter):
+                info = getattr(self.model, getter)()
+                if info:
+                    print(f"\n{label}:")
+                    for k, v in info.items():
+                        print(f"  {k}: {v}")
+
         print("="*60)
 
+
     def compare_with_baseline(self, baseline_model: nn.Module, test_loader: torch.utils.data.DataLoader):
-        """Compare current model with baseline model"""
+        """Compare current model with a baseline model on loss and size"""
         print("\n" + "="*60)
         print("MODEL COMPARISON")
         print("="*60)
-        
-        # Evaluate both models
+
         current_loss = self.evaluate(test_loader)
-        
-        # Temporarily switch to baseline
+
         original_model = self.model
         self.model = baseline_model.to(self.device)
         baseline_loss = self.evaluate(test_loader)
         self.model = original_model
-        
-        print(f"Current model loss: {current_loss:.6f}")
+
+        print(f"Current model loss:  {current_loss:.6f}")
         print(f"Baseline model loss: {baseline_loss:.6f}")
-        print(f"Improvement: {((baseline_loss - current_loss) / baseline_loss * 100):.2f}%")
-        
-        # Size comparison (delegate to models)
+        improvement = 100 * (baseline_loss - current_loss) / baseline_loss
+        print(f"Improvement:          {improvement:.2f}%")
+
         if hasattr(self.model, 'get_model_size') and hasattr(baseline_model, 'get_model_size'):
-            current_size = self.model.get_model_size()
-            baseline_size = baseline_model.get_model_size()
-            
-            print(f"\nCurrent model size: {current_size['size_mb']:.2f} MB")
-            print(f"Baseline model size: {baseline_size['size_mb']:.2f} MB")
-            print(f"Size reduction: {((baseline_size['size_mb'] - current_size['size_mb']) / baseline_size['size_mb'] * 100):.2f}%")
-        
+            cur_size = self.model.get_model_size()["size_mb"]
+            base_size = baseline_model.get_model_size()["size_mb"]
+            reduction = 100 * (base_size - cur_size) / base_size
+
+            print(f"\nCurrent size:   {cur_size:.2f} MB")
+            print(f"Baseline size:  {base_size:.2f} MB")
+            print(f"Size reduction: {reduction:.2f}%")
+
         print("="*60)
-        
+
         return {
             "current_loss": current_loss,
             "baseline_loss": baseline_loss,
-            "loss_improvement": ((baseline_loss - current_loss) / baseline_loss * 100),
+            "loss_improvement": improvement,
         }
 
     def _batched_forecast(self, X_val: torch.Tensor, batch_size: int = 256):
         """
         Generate batched forecasts aligned for time series evaluation or plotting.
-
-        Returns:
-            forecast: Tensor of shape [T + target_len - 1, output_size]
+        Returns: forecast tensor of shape [T + target_len - 1, output_size]
         """
         self.model.eval()
         X_val = X_val.to(self.device)
         N = X_val.shape[0]
 
-        # Run a dummy forward pass to determine output shape
+        # Dummy output to infer shape
         with torch.no_grad():
-            dummy_out = self.model(X_val[0:1])
-            if isinstance(dummy_out, tuple):
-                dummy_out = dummy_out[0]
-            if dummy_out.dim() == 3:
-                output_len, output_size = dummy_out.shape[1], dummy_out.shape[2]
-            elif dummy_out.dim() == 2:
-                output_len, output_size = 1, dummy_out.shape[1]
+            dummy = self.model(X_val[:1])
+            dummy = dummy[0] if isinstance(dummy, tuple) else dummy
+            if dummy.ndim == 3:
+                output_len, output_size = dummy.shape[1:]
+            elif dummy.ndim == 2:
+                output_len, output_size = 1, dummy.shape[1]
             else:
-                output_len, output_size = 1, dummy_out.shape[0]
+                output_len, output_size = 1, dummy.shape[0]
 
         forecast = torch.zeros(N + output_len - 1, output_size, device=self.device)
         count = torch.zeros_like(forecast)
 
         with torch.no_grad():
             for i in range(0, N, batch_size):
-                batch = X_val[i : i + batch_size]
+                batch = X_val[i:i + batch_size]
                 with autocast("cuda", dtype=torch.float16):
-                    outputs = self.model(batch)
-                    if isinstance(outputs, tuple):
-                        outputs = outputs[0]
+                    preds = self.model(batch)
+                    preds = preds[0] if isinstance(preds, tuple) else preds
 
-                    for j in range(outputs.shape[0]):
-                        pred = outputs[j]  # shape: [T, D], [1, D], or [D]
-                        start = i + j
-                        if pred.dim() == 3:  # [1, T, D]
-                            pred = pred.squeeze(0)
-                        if pred.dim() == 2:
-                            if pred.shape[0] == 1:
-                                forecast[start] += pred.squeeze(0)
-                                count[start] += 1
-                            else:
-                                forecast[start : start + pred.shape[0]] += pred
-                                count[start : start + pred.shape[0]] += 1
-                        elif pred.dim() == 1:
-                            forecast[start] += pred
-                            count[start] += 1
-                        else:
-                            raise ValueError(
-                                f"Unexpected prediction shape: {pred.shape}"
-                            )
+                for j in range(preds.shape[0]):
+                    pred = preds[j]
+                    start = i + j
+
+                    # Normalize shape
+                    if pred.ndim == 3:
+                        pred = pred.squeeze(0)
+                    if pred.ndim == 2:
+                        end = start + pred.shape[0]
+                        forecast[start:end] += pred
+                        count[start:end] += 1
+                    elif pred.ndim == 1:
+                        forecast[start] += pred
+                        count[start] += 1
+                    else:
+                        raise ValueError(f"Unexpected prediction shape: {pred.shape}")
 
         return forecast / count.clamp(min=1.0)
 
     def metrics(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Dict[str, float]:
         """
-        Compute error metrics (MSE, RMSE, MAE) over the full validation set prediction.
-
+        Compute error metrics (MSE, RMSE, MAE) over full validation forecast.
         Args:
-            X_val: Tensor of shape [N, seq_len, input_size]
-            y_val: Tensor of shape [N, target_len, output_size]
-
+            X_val: [N, seq_len, input_size]
+            y_val: [N, target_len, output_size]
         Returns:
-            Dictionary with 'mse', 'rmse', and 'mae'
+            Dict with 'mse', 'rmse', 'mae'
         """
         self.model.eval()
-        X_val = X_val.to(self.device)
-        y_val = y_val.to(self.device)
-
+        X_val, y_val = X_val.to(self.device), y_val.to(self.device)
         N, target_len, output_size = y_val.shape
-        forecast = self._batched_forecast(X_val)  # shape [T, D]
 
-        # Reconstruct ground truth for comparison
-        aligned_truth = torch.zeros_like(forecast)
-        truth_count = torch.zeros_like(forecast)
+        forecast = self._batched_forecast(X_val)  # [T, D]
+
+        # Align ground truth
+        truth = torch.zeros_like(forecast)
+        count = torch.zeros_like(forecast)
 
         for i in range(N):
-            aligned_truth[i : i + target_len] += y_val[i]
-            truth_count[i : i + target_len] += 1
+            truth[i:i + target_len] += y_val[i]
+            count[i:i + target_len] += 1
 
-        aligned_truth = aligned_truth / torch.clamp(truth_count, min=1.0)
+        truth /= count.clamp(min=1.0)
 
-        # Compute metrics per feature then average
-        metrics = self._compute_metrics(forecast, aligned_truth)
+        metrics = self._compute_metrics(forecast, truth)
 
         print("\nValidation Forecast Error Metrics:")
         for k, v in metrics.items():
@@ -743,28 +657,27 @@ class Trainer:
 
     def _compute_metrics(
         self,
-        prediction: Union[np.ndarray, torch.Tensor],
-        target: Union[np.ndarray, torch.Tensor],
+        prediction: Union[torch.Tensor, np.ndarray],
+        target: Union[torch.Tensor, np.ndarray]
     ) -> Dict[str, float]:
         """
-        Compute per-feature error metrics between prediction and target:
-        MSE, RMSE, MAE. Returns overall mean across features.
+        Compute per-feature MSE, RMSE, MAE and return overall average.
         """
         if isinstance(prediction, torch.Tensor):
             prediction = prediction.detach().cpu().numpy()
         if isinstance(target, torch.Tensor):
             target = target.detach().cpu().numpy()
 
-        # shape: [T, output_size] or [T, F]
-        mse_per_feat = np.mean((prediction - target) ** 2, axis=0)
-        rmse_per_feat = np.sqrt(mse_per_feat)
-        mae_per_feat = np.mean(np.abs(prediction - target), axis=0)
+        mse = np.mean((prediction - target) ** 2, axis=0)
+        rmse = np.sqrt(mse)
+        mae = np.mean(np.abs(prediction - target), axis=0)
 
         return {
-            "mse": float(np.mean(mse_per_feat)),
-            "rmse": float(np.mean(rmse_per_feat)),
-            "mae": float(np.mean(mae_per_feat)),
+            "mse": float(np.mean(mse)),
+            "rmse": float(np.mean(rmse)),
+            "mae": float(np.mean(mae)),
         }
+
 
     def plot_prediction(
         self,
@@ -777,110 +690,79 @@ class Trainer:
         names: Optional[Union[str, list]] = None,
     ) -> plt.Figure:
         """
-        Plot predicted sequence over the validation data, aligned to form a full series forecast.
-        Creates one subplot for each feature in the last dimension.
+        Plot predicted sequences and optionally overlay on full time series.
 
         Args:
-            X_val: Tensor of shape [N, seq_len, input_size]
-            y_val: Tensor of shape [N, target_len, output_size]
-            full_series: (Optional) Original full time series for reference
-            offset: (Optional) Index offset for where the validation data starts in the full series
-            figsize: (Optional) Figure size as (width, height) in inches
-            show: (Optional) Whether to display the plot with plt.show()
-            names: (Optional) Names for features
+            X_val: [N, seq_len, input_size]
+            y_val: [N, target_len, output_size]
+            full_series: (Optional) Original full time series
+            offset: Offset for forecast alignment in full_series
+            figsize: Size of each subplot
+            show: Whether to call plt.show()
+            names: Optional list of feature names
 
         Returns:
-            matplotlib Figure object
+            Matplotlib figure
         """
         self.model.eval()
         X_val = X_val.to(self.device)
         y_val = y_val.to(self.device)
-        target_len = y_val.shape[1]
-        output_size = y_val.shape[2]
         forecast = self._batched_forecast(X_val).cpu().numpy()
+        target_len, output_size = y_val.shape[1:]
 
-        # If full_series is provided
         if full_series is not None:
             full_series = full_series.cpu().numpy()
-            last_dim_size = full_series.shape[-1] if full_series.ndim > 1 else 1
+            last_dim = full_series.shape[-1] if full_series.ndim > 1 else 1
+
             fig, axes = plt.subplots(
-                last_dim_size,
-                1,
-                figsize=(figsize[0], figsize[1] * last_dim_size),
-                sharex=True,
+                last_dim, 1, figsize=(figsize[0], figsize[1] * last_dim), sharex=True
             )
-
-            if last_dim_size == 1:
-                axes = [axes]
-
+            axes = np.atleast_1d(axes)
             forecast_start = offset + X_val.shape[1]
 
-            for i in range(last_dim_size):
-                # Extract feature series
-                if full_series.ndim == 3:
-                    feature_series = full_series[:, 0, i]
-                elif full_series.ndim == 2:
-                    feature_series = full_series[:, i]
-                else:
-                    feature_series = full_series
+            for i in range(last_dim):
+                name = names[i] if names else f"Feature {i}"
+                series = full_series[:, i] if full_series.ndim > 1 else full_series
+                pred = forecast[:, i] if forecast.ndim > 1 else forecast
 
-                # Plot original
-                axes[i].plot(
-                    np.arange(len(feature_series)),
-                    feature_series,
-                    label=f"Original {names[i] if names else f'Feature {i}'}",
-                    alpha=0.5,
-                )
+                end = min(forecast_start + len(pred), len(series))
+                forecast_plot = pred[: end - forecast_start]
 
-                # Plot clipped forecast
-                feature_forecast = forecast[:, i] if forecast.ndim > 1 else forecast
-                end_idx = min(
-                    forecast_start + len(feature_forecast), len(feature_series)
-                )
-                forecast_range = slice(forecast_start, end_idx)
-                forecast_plot = feature_forecast[: end_idx - forecast_start]
-
-                axes[i].plot(
-                    np.arange(forecast_range.start, forecast_range.stop),
+                ax = axes[i]
+                ax.plot(series, label=f"Original {name}", alpha=0.5)
+                ax.plot(
+                    np.arange(forecast_start, end),
                     forecast_plot,
-                    label=f"Forecast {names[i] if names else f'Feature {i}'}",
+                    label=f"Forecast {name}",
                     color="orange",
                 )
-
-                # Optional error shading
-                if len(feature_series) >= end_idx:
-                    axes[i].fill_between(
-                        np.arange(forecast_range.start, forecast_range.stop),
+                if len(series) >= end:
+                    ax.fill_between(
+                        np.arange(forecast_start, end),
                         forecast_plot,
-                        feature_series[forecast_range],
+                        series[forecast_start:end],
                         color="red",
                         alpha=0.2,
                         label="Forecast Error",
                     )
+                ax.axvline(forecast_start, color="gray", linestyle="--", label="Forecast Start")
+                ax.set_title(f"{name}: Full Series Forecast")
+                ax.legend(loc="upper left")
+                ax.grid(True)
 
-                axes[i].axvline(
-                    x=forecast_start,
-                    color="gray",
-                    linestyle="--",
-                    label="Forecast Start",
-                )
-                axes[i].set_title(f"Feature {i}: Full Series with Forecast")
-                axes[i].legend(loc="upper left")
-                axes[i].grid(True)
-
+            axes[last_dim // 2].set_ylabel("Value")
             plt.xlabel("Time Step")
-            axes[last_dim_size // 2].set_ylabel("Value")
             plt.tight_layout()
 
         else:
-            # No full_series provided
             fig, ax = plt.subplots(figsize=figsize)
-            if forecast.ndim > 1:
-                for i in range(forecast.shape[1]):
-                    ax.plot(forecast[:, i], label=f"Forecast (Feature {i})")
-            else:
+            if forecast.ndim == 1:
                 ax.plot(forecast, label="Forecast", color="orange")
-            ax.set_title("Validation Prediction")
+            else:
+                for i in range(forecast.shape[1]):
+                    name = names[i] if names else f"Feature {i}"
+                    ax.plot(forecast[:, i], label=f"Forecast {name}")
+            ax.set_title("Forecast (Validation)")
             ax.set_xlabel("Time Step")
             ax.set_ylabel("Value")
             ax.legend(loc="upper left")
@@ -888,70 +770,55 @@ class Trainer:
 
         if show:
             plt.show()
-
         return fig
 
     # ==================== MODEL INTERFACE METHODS ====================
     # These methods provide a clean interface to the model's features
     
-    def prepare_quantization(self, sample_input: torch.Tensor, calibration_loader: Optional[torch.utils.data.DataLoader] = None):
-        """
-        Prepare model for quantization (delegates to model)
-        
-        Args:
-            sample_input: Sample input tensor for model preparation
-            calibration_loader: DataLoader for calibration (PTQ only)
-        """
-        if hasattr(self.model, 'prepare_for_quantization'):
+    def prepare_quantization(self, sample_input: torch.Tensor, calibration_loader=None):
+        if hasattr(self.model, "prepare_for_quantization"):
             print("Preparing model for quantization...")
             sample_input = sample_input.to(self.device)
             self.model = self.model.prepare_for_quantization(calibration_loader)
             print("Model quantization prepared!")
         else:
-            print("Model does not support quantization")
+            print("Model does not support quantization.")
 
     def finalize_quantization(self):
-        """Finalize quantization (delegates to model)"""
-        if hasattr(self.model, 'finalize_quantization'):
+        if hasattr(self.model, "finalize_quantization"):
             print("Finalizing quantization...")
             self.model = self.model.finalize_quantization()
             print("Quantization finalized!")
         else:
-            print("Model does not support quantization finalization")
+            print("Model does not support quantization finalization.")
 
     def get_quantization_info(self) -> Dict[str, Any]:
-        """Get quantization info (delegates to model)"""
-        if hasattr(self.model, 'get_quantization_info'):
+        if hasattr(self.model, "get_quantization_info"):
             return self.model.get_quantization_info()
         return {"quantization_enabled": False}
 
     def set_quantization_mode(self, mode: str):
-        """Set quantization mode (delegates to model)"""
-        if hasattr(self.model, 'set_quantization_mode'):
+        if hasattr(self.model, "set_quantization_mode"):
             self.model.set_quantization_mode(mode)
             print(f"Quantization mode set to: {mode}")
         else:
-            print("Model does not support quantization mode setting")
+            print("Model does not support setting quantization mode.")
 
     def get_distillation_info(self) -> Dict[str, Any]:
-        """Get distillation info (delegates to model)"""
-        if hasattr(self.model, 'get_distillation_info'):
+        if hasattr(self.model, "get_distillation_info"):
             return self.model.get_distillation_info()
         return {"distillation_enabled": False}
 
     def enable_distillation(self, mode: str = "output", teacher_model: nn.Module = None):
-        """Enable distillation (delegates to model)"""
-        if hasattr(self.model, 'enable_distillation'):
+        if hasattr(self.model, "enable_distillation"):
             self.model.enable_distillation(mode, teacher_model)
-            print(f"Distillation enabled: {mode}")
+            print(f"Distillation enabled (mode: {mode}).")
         else:
-            print("Model does not support distillation")
+            print("Model does not support distillation.")
 
     def disable_distillation(self):
-        """Disable distillation (delegates to model)"""
-        if hasattr(self.model, 'disable_distillation'):
+        if hasattr(self.model, "disable_distillation"):
             self.model.disable_distillation()
-            print("Distillation disabled")
+            print("Distillation disabled.")
         else:
-            print("Model does not support distillation")
-
+            print("Model does not support disabling distillation.")

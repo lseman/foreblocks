@@ -80,338 +80,107 @@ ForeBlocks uses a pipeline of customizable processing blocks that transform data
 
 ---
 
-## 🎯 Forecasting Strategies
+## 📈 Forecasting Strategies
 
-### 1. **Seq2Seq** (Default)
-*🎯 Best for: Most time series problems with complex patterns*
-
-**Flow**: Full encoder-decoder with step-by-step generation
+### 1. 🔁 Seq2Seq (Default)
+*Best for complex temporal patterns*
 
 ```python
 def _forward_seq2seq(self, src, targets, epoch):
-    """Standard sequence-to-sequence forecasting with step-by-step generation."""
-    batch_size, _, _ = src.shape
-    device = src.device
+    # Full encoder-decoder with step-wise decoding
+````
 
-    # 1. Encode the input sequence
-    encoder_outputs, encoder_hidden = self.encoder(src)
+**Highlights**:
 
-    # 2. Handle VAE and bidirectional encoders
-    decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
-    self._kl = kl_div  # Store for potential VAE loss
-
-    # 3. Initialize decoder with learned projection from encoder
-    decoder_input = self.init_decoder_input_layer(
-        encoder_outputs[:, -1, :]
-    ).unsqueeze(1)
-
-    outputs = torch.zeros(batch_size, self.target_len, self.output_size, device=device)
-
-    # 4. Generate sequence step by step
-    for t in range(self.target_len):
-        decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden)
-
-        # Apply attention if configured
-        if self.use_attention:
-            context, _ = self.attention_module(decoder_hidden, encoder_outputs)
-            decoder_output = self.output_layer(
-                torch.cat((decoder_output, context), dim=-1)
-            )
-        else:
-            decoder_output = self.output_layer(decoder_output)
-
-        # Apply processing blocks
-        decoder_output = self.output_block(decoder_output)
-        decoder_output = self.output_normalization(decoder_output)
-        outputs[:, t:t+1] = decoder_output.unsqueeze(1)
-
-        # Teacher forcing decision
-        if targets is not None:
-            teacher_force_ratio = (
-                self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn
-                else self.teacher_forcing_ratio
-            )
-            use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-            decoder_input = (
-                targets[:, t:t+1] if use_teacher_forcing
-                else decoder_output.unsqueeze(1)
-            )
-        else:
-            decoder_input = decoder_output.unsqueeze(1)
-
-    return self.output_postprocessor(outputs)
-```
-
-**Key Features**:
-- ✅ Smart decoder initialization from encoder outputs
-- ✅ VAE-compatible with automatic KL divergence handling
-- ✅ Bidirectional encoder support
-- ✅ Scheduled sampling support
-- ✅ Uses all processing blocks
-- ✅ Supports attention mechanisms
+* ✅ Scheduled sampling
+* ✅ Attention & bidirectional support
+* ✅ VAE-compatible
+* ✅ Fully block-aware
 
 ---
 
-### 2. **Autoregressive**
-*🎯 Best for: Sequential dependencies where each prediction affects the next*
+### 2. 🔄 Autoregressive
 
-**Flow**: Decoder-only with feedback loop
+*Best when each prediction depends on previous outputs*
 
 ```python
 def _forward_autoregressive(self, src, targets, epoch):
-    """Autoregressive forecasting with feedback loop."""
-    batch_size, _, _ = src.shape
-    decoder_input = src[:, -1:, :]  # Use last time step as initial input
-    outputs = []
-
-    # Generate sequence autoregressively
-    for t in range(self.target_len):
-        decoder_output = self.decoder(decoder_input)
-        decoder_output = self.output_normalization(decoder_output)
-        outputs.append(decoder_output)
-
-        # Determine next input (teacher forcing or own prediction)
-        if targets is not None:
-            teacher_force_ratio = (
-                self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn
-                else self.teacher_forcing_ratio
-            )
-            use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-            decoder_input = (
-                targets[:, t:t+1] if use_teacher_forcing else decoder_output
-            )
-        else:
-            decoder_input = decoder_output
-
-    return self.output_postprocessor(torch.cat(outputs, dim=1))
+    # Feedback loop decoder-only approach
 ```
 
-**Key Features**:
-- ⚡ Faster than seq2seq (no encoder)
-- 🔄 Each prediction feeds into the next
-- 📉 Good for trend continuation
-- 🎯 Uses output processing blocks
+**Highlights**:
+
+* ⚡ Fast
+* 🔁 Feedback loop
+* 📉 Less error propagation than seq2seq
 
 ---
 
-### 3. **Direct Multi-Step**
-*🎯 Best for: Independent predictions across time steps*
+### 3. 🚀 Direct Multi-Step
 
-**Flow**: Single forward pass generates all predictions
+*Best for parallel, error-free multi-step outputs*
 
 ```python
 def _forward_direct(self, src):
-    """Direct forecasting - single-step prediction of all future values."""
-    output = self.decoder(src)
-    output = self.output_normalization(output)
-    return self.output_postprocessor(output)
+    # One-pass prediction for all time steps
 ```
 
-**Key Features**:
-- ⚡ Fastest approach
-- 🎯 No error accumulation
-- 🔧 Simple architecture
-- ✅ Uses normalization and postprocessing
+**Highlights**:
+
+* ⚡ Fastest
+* ❌ No recursion
+* 🎯 Low complexity
 
 ---
 
-### 4. **Transformer Seq2Seq**
-*🎯 Best for: Long sequences with complex attention patterns*
+### 4. ⚡ Transformer Seq2Seq
 
-**Flow**: Transformer architecture with efficient caching
+*Best for long sequences and attention-heavy problems*
 
 ```python
-def _forward_transformer_seq2seq(self, src, targets=None, epoch=None):
-    """Efficient transformer decoding with optional teacher forcing and caching."""
-    batch_size, _, _ = src.shape
-    device = src.device
-
-    # Encode input once
-    memory = self.encoder(src)
-
-    # Initialize context and state
-    x_dec_so_far = src[:, -self.label_len:, :]
-    next_input = x_dec_so_far[:, -1:, :]  # Start with last context step
-
-    preds = []
-    incremental_state = None  # For efficient caching
-
-    # Teacher forcing decision
-    teacher_forcing = False
-    if self.training and targets is not None:
-        teacher_force_ratio = (
-            self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn
-            else self.teacher_forcing_ratio
-        )
-        teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-
-    # Generate predictions step by step
-    for t in range(self.pred_len):
-        # Use optimized single-step decoder with caching
-        out, incremental_state = self.decoder.forward_one_step(
-            tgt=next_input,
-            memory=memory,
-            incremental_state=incremental_state,
-        )
-        pred_t = self.output_layer(out)  # [B, 1, output_dim]
-        preds.append(pred_t)
-
-        # Choose next input
-        if self.training and teacher_forcing and targets is not None:
-            next_input = targets[:, t:t+1, :]
-        else:
-            next_input = pred_t
-
-        # Handle dimension mismatch between input and output
-        if self.output_size != self.input_size:
-            pad_size = self.input_size - self.output_size
-            padding = torch.zeros(next_input.size(0), 1, pad_size, device=device)
-            next_input = torch.cat([next_input, padding], dim=-1)
-
-    return torch.cat(preds, dim=1)
+def _forward_transformer_seq2seq(self, src, targets, epoch):
+    # Step-wise decoding with efficient caching
 ```
 
-**Key Features**:
-- ⚡ Incremental state caching for efficiency
-- 🔧 Automatic dimension handling
-- 🎯 Single-step optimized decoder calls
-- 🧠 Self-attention mechanisms
-- 📏 Handles long sequences well
+**Highlights**:
+
+* 🔄 Incremental state caching
+* 🧠 Self-attention
+* 📏 Dynamic input-output shape management
 
 ---
 
-### 5. **Informer-Style**
-*🎯 Best for: Parallel computation and long-range predictions*
+### 5. 📡 Informer-Style
 
-**Flow**: Parallel prediction without autoregressive generation
+*Best for long-range parallel forecasting*
 
 ```python
-def _forward_transformer_informer(self, src, targets=None, epoch=None):
-    """Informer-style: parallel prediction of all future steps."""
-    batch_size, _, _ = src.shape
-    device = src.device
-
-    # Encode full input sequence
-    enc_out = self.encoder(src)  # [B, T_enc, D]
-
-    # Create start token sequence for decoder
-    start_token = src[:, -1:, :]  # Last encoder input as start
-    dec_input = start_token.expand(batch_size, self.pred_len, -1)  # [B, T_pred, input_size]
-
-    # Decode entire prediction range in one shot
-    out = self.decoder(dec_input, enc_out)  # [B, T_pred, D]
-
-    # Project to output space
-    out = self.output_layer(out)  # [B, T_pred, output_size]
-
-    return out
+def _forward_transformer_informer(self, src, targets, epoch):
+    # Fully parallel decoder with no recursion
 ```
 
-**Key Features**:
-- ⚡ Fastest approach - no sequential generation
-- 🎯 No error accumulation
-- 📊 Suitable for long-range predictions
-- 🔄 No sequential bottlenecks
+**Highlights**:
+
+* 🚀 Fastest Transformer mode
+* 🧮 Parallel decoding
+* 🔁 Ideal for high-horizon tasks
 
 ---
 
 ## 🔀 Multi-Encoder-Decoder Architecture
 
-When `multi_encoder_decoder=True`, the model creates separate encoder-decoder pairs for each input feature:
-
-### 🔄 Architecture Flow
+> Enables feature-wise encoders and decoders when `multi_encoder_decoder=True`
 
 ```
-Feature 1 ---> Encoder 1 ---> Decoder 1 ---> Output 1
-                                                |
-Feature 2 ---> Encoder 2 ---> Decoder 2 ---> Output 2
-                                                |
-Feature 3 ---> Encoder 3 ---> Decoder 3 ---> Output 3  }---> Aggregator ---> Final Output
-                                                |
-    ...            ...           ...          ...
-                                                |
-Feature N ---> Encoder N ---> Decoder N ---> Output N
+Feature_i -> Encoder_i -> Decoder_i -> Output_i
+                                      |
+                   ... Aggregator --> Final Prediction
 ```
 
-### 💻 Implementation
+**Advantages**:
 
-```python
-def _forward_seq2seq_multi(self, src, targets, epoch):
-    """Multi-encoder-decoder sequence-to-sequence forecasting."""
-    batch_size, seq_len, input_size = src.shape
-    device = src.device
-
-    # Each feature gets its own encoder-decoder
-    decoder_outputs_list = []
-    for i in range(input_size):
-        # Extract single feature and process it
-        x_i = src[:, :, i].unsqueeze(-1)  # [B, T, 1]
-        encoder_i = self.encoder[i]
-        decoder_i = self.decoder[i]
-
-        # Encode the input
-        encoder_outputs, encoder_hidden = encoder_i(x_i)
-
-        # Handle VAE latent representations if present
-        decoder_hidden, kl_div = self._process_encoder_hidden(encoder_hidden)
-        self._kl = kl_div  # Store KL divergence for potential VAE loss
-
-        # Initialize decoder sequence for this feature
-        decoder_input = torch.zeros(batch_size, 1, self.output_size, device=device)
-        feature_outputs = torch.zeros(
-            batch_size, self.target_len, self.output_size, device=device
-        )
-
-        # Generate sequence step by step for this feature
-        for t in range(self.target_len):
-            decoder_output, decoder_hidden = decoder_i(
-                decoder_input, decoder_hidden
-            )
-
-            # Apply attention if configured
-            if self.use_attention:
-                query = self._get_attention_query(decoder_output, decoder_hidden)
-                context, _ = self.attention_module(query, encoder_outputs)
-                decoder_output = self.output_layer(
-                    torch.cat((decoder_output, context), dim=-1)
-                )
-            else:
-                decoder_output = self.output_layer(decoder_output)
-
-            # Apply output transformations
-            decoder_output = self.output_block(decoder_output)
-            decoder_output = self.output_normalization(decoder_output)
-            feature_outputs[:, t:t+1] = decoder_output.unsqueeze(1)
-
-            # Teacher forcing logic
-            if targets is not None:
-                teacher_force_ratio = (
-                    self.scheduled_sampling_fn(epoch) if self.scheduled_sampling_fn
-                    else self.teacher_forcing_ratio
-                )
-                use_teacher_forcing = torch.rand(1).item() < teacher_force_ratio
-                decoder_input = (
-                    targets[:, t:t+1] if use_teacher_forcing
-                    else decoder_output.unsqueeze(1)
-                )
-            else:
-                decoder_input = decoder_output.unsqueeze(1)
-
-        decoder_outputs_list.append(feature_outputs)  # [B, T, output_size]
-
-    # Aggregate outputs from all features
-    stacked = (
-        torch.stack(decoder_outputs_list, dim=0).permute(1, 2, 0, 3).squeeze(3)
-    )
-    outputs = self.decoder_aggregator(stacked).squeeze(1)
-
-    return self.output_postprocessor(outputs)
-```
-
-**Benefits**:
-- 🎯 Feature-specific pattern learning
-- 🔧 Better handling of heterogeneous features
-- 📊 Improved performance on multivariate data
+* 🔍 Per-feature specialization
+* ⚙️ Better with heterogeneous input features
 
 ---
 

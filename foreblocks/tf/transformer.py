@@ -481,6 +481,7 @@ class TransformerEncoder(BaseTransformer):
         self.freq_modes = kwargs.get("freq_modes", 32)
 
         super().__init__(input_size, **kwargs)
+        self.input_size = input_size
 
         # Encoder-specific components
         self.time_encoder = InformerTimeEmbedding(self.d_model)
