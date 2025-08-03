@@ -26,9 +26,17 @@ from sklearn.impute import KNNImputer
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.stattools import acf, adfuller, pacf
 from tabulate import tabulate
+from tqdm import tqdm
 
+from .pre.ewt import *
+
+# ============================
+# Internal Imports
+# ============================
+from .pre.filters import *
 from .pre.impute import SAITSImputer
-from .pre.outlier import _remove_outliers
+from .pre.outlier import *
+from .pre.outlier import _remove_outliers, _remove_outliers_parallel
 
 # ============================
 # Optional Imports
@@ -43,16 +51,6 @@ try:
 except ImportError:
     EMD = None
 
-from tqdm import tqdm
-
-from .pre.ewt import *
-
-# ============================
-# Internal Imports
-# ============================
-from .pre.filters import *
-from .pre.outlier import *
-from .pre.outlier import _remove_outliers_parallel
 
 FILTER_METHODS = {
     "savgol": lambda self, d, k: adaptive_savgol_filter(
@@ -398,148 +396,147 @@ class TimeSeriesPreprocessor:
 
     def _centered(self, data: np.ndarray, means: np.ndarray) -> np.ndarray:
         return data - means[np.newaxis, :]
-
+    
     def auto_configure(self, data: np.ndarray, verbose=True) -> None:
         if not self.self_tune:
             return
 
         print("\n📊 [Auto-Configuration]")
         T, D = data.shape
-        
+
         # === COMPUTE DATA CHARACTERISTICS ===
         coverage, means, stds, skews, kurts = compute_basic_stats(data)
         missing_rate = 1.0 - np.mean(coverage)
         flatness_scores, snr_scores = analyze_signal_quality(data, D)
         pacf_scores = score_pacf(data, D)
-        
-        # Initialize log transform flags
+
         self.log_transform_flags = [self._should_log_transform(sk, ku) for sk, ku in zip(skews, kurts)]
-        
-        # Consolidated statistics
+
         stats = {
-            'T': T, 'D': D, 'missing_rate': missing_rate,
-            'avg_flatness': np.mean(flatness_scores),
-            'avg_snr': np.mean(snr_scores),
-            'temporal_score': np.mean(pacf_scores),
-            'means': means, 'stds': stds, 'skews': skews, 'kurts': kurts,
-            'extreme_ratio': np.nanmean(np.any(np.abs(np.nan_to_num(self._centered(data, means))) > (6 * stds), axis=0)),
-            'heavy_tails': np.nanmean(kurts > 5),
-            'high_skew': np.nanmean(np.abs(skews) > 2.5)
+            "T": T,
+            "D": D,
+            "means": means,
+            "stds": stds,
+            "skews": skews,
+            "kurts": kurts,
+            "coverage": coverage,
+            "missing_rate": missing_rate,
+            "avg_flatness": np.mean(flatness_scores),
+            "avg_snr": np.mean(snr_scores),
+            "temporal_score": np.mean(pacf_scores),
+            "extreme_ratio": np.nanmean(np.any(np.abs(np.nan_to_num(self._centered(data, means))) > (6 * stds), axis=0)),
+            "heavy_tails": np.nanmean(kurts > 5),
+            "high_skew": np.nanmean(np.abs(skews) > 2.5),
         }
-        
-        # === DETECT ARCHETYPE AND CONFIGURE ===
-        # Clean regular data
-        if stats['missing_rate'] < 0.01 and stats['avg_flatness'] > 0.7:
+
+        # === CONFIGURATION BASED ON ARCHETYPE ===
+        if stats["missing_rate"] < 0.01 and stats["avg_flatness"] > 0.75:
+            # Clean and complete data
             self.log_transform = any(self.log_transform_flags)
-            self.filter_method = 'none'
+            self.filter_method = "none"
             self.apply_filter = False
-            self.impute_method = 'interpolate'
-            self.outlier_method = 'quantile'
+            self.impute_method = "interpolate"
+            self.outlier_method = "quantile"
             self.outlier_threshold = 3.0
-            archetype = 'clean_regular'
-        
-        # Noisy temporal data
-        elif stats['temporal_score'] > 0.8 and stats['avg_snr'] < 2.0:
+            archetype = "clean_regular"
+
+        elif stats["temporal_score"] > 0.75 and stats["avg_snr"] < 1.8:
+            # High-frequency noise in temporal signal
             self.log_transform = any(self.log_transform_flags)
-            self.filter_method = 'savgol'
+            self.filter_method = "savgol"
             self.apply_filter = True
-            self.impute_method = 'interpolate'
-            self.outlier_method = 'mad'
-            self.outlier_threshold = 3.5 + 0.5 * np.mean(np.abs(stats['skews']))
-            archetype = 'noisy_temporal'
-        
-        # Sparse irregular data
-        elif stats['missing_rate'] > 0.3 and stats['temporal_score'] < 0.3:
+            self.impute_method = "interpolate"
+            self.outlier_method = "mad"
+            self.outlier_threshold = 3.0 + np.clip(np.mean(np.abs(stats["skews"])), 0.0, 1.0)
+            archetype = "noisy_temporal"
+
+        elif stats["missing_rate"] > 0.35 and stats["temporal_score"] < 0.3:
+            # Sparse and irregular
             self.log_transform = False
-            self.filter_method = 'none'
+            self.filter_method = "none"
             self.apply_filter = False
-            self.impute_method = 'iterative' if stats['missing_rate'] < 0.6 else 'ffill'
-            self.outlier_method = 'mad'
+            self.impute_method = "iterative" if stats["missing_rate"] < 0.6 else "ffill"
+            self.outlier_method = "mad"
             self.outlier_threshold = 4.0
-            archetype = 'sparse_irregular'
-        
-        # Heavy outliers
-        elif stats['extreme_ratio'] > 0.1 and stats['heavy_tails'] > 0.5:
+            archetype = "sparse_irregular"
+
+        elif stats["extreme_ratio"] > 0.08 and stats["heavy_tails"] > 0.4:
+            # Heavy-tailed with many outliers
             self.log_transform = any(self.log_transform_flags)
-            self.filter_method = 'wiener'
+            self.filter_method = "wiener"
             self.apply_filter = True
-            self.impute_method = 'mad' if stats['missing_rate'] < 0.1 else 'iterative'
-            self.outlier_method = 'mad'
+            self.impute_method = "mad" if stats["missing_rate"] < 0.1 else "iterative"
+            self.outlier_method = "mad"
             self.outlier_threshold = 4.5
-            archetype = 'heavy_outliers'
-        
-        # === HEURISTIC CONFIGURATION ===
+            archetype = "heavy_outliers"
+
         else:
+            # === HEURISTIC CONFIGURATION ===
             self.log_transform = any(self.log_transform_flags)
-            
+
             # Filter selection
-            if stats['missing_rate'] > 0.2:
-                self.filter_method, self.apply_filter = 'kalman', True
-            elif stats['avg_flatness'] < 0.4 and stats['T'] > 500:
-                self.filter_method, self.apply_filter = 'savgol', True
-            elif stats['avg_flatness'] < 0.5:
-                self.filter_method, self.apply_filter = 'lowess', True
-            elif stats['avg_flatness'] >= 0.5 and stats['T'] > 50:
-                self.filter_method, self.apply_filter = 'wiener', True
+            if stats["missing_rate"] > 0.2:
+                self.filter_method, self.apply_filter = "kalman", True
+            elif stats["avg_flatness"] < 0.4 and stats["T"] > 500:
+                self.filter_method, self.apply_filter = "savgol", True
+            elif stats["avg_flatness"] < 0.5:
+                self.filter_method, self.apply_filter = "lowess", True
+            elif stats["avg_flatness"] >= 0.5 and stats["T"] > 50:
+                self.filter_method, self.apply_filter = "wiener", True
             else:
-                self.filter_method, self.apply_filter = 'none', False
-            
-            # Imputation selection
-            if stats['missing_rate'] == 0:
-                self.impute_method = 'interpolate'
-            elif stats['missing_rate'] < 0.05:
-                self.impute_method = 'interpolate' if stats['temporal_score'] > 0.6 else 'mean'
-            elif stats['missing_rate'] < 0.15:
-                self.impute_method = 'knn' if stats['temporal_score'] < 0.4 else 'interpolate'
-            elif stats['missing_rate'] < 0.3:
-                self.impute_method = 'iterative' if stats['temporal_score'] > 0.5 else 'knn'
-            elif stats['missing_rate'] < 0.6:
-                self.impute_method = 'iterative' if stats['temporal_score'] > 0.3 else 'ffill'
+                self.filter_method, self.apply_filter = "none", False
+
+            # Imputation strategy
+            if stats["missing_rate"] == 0:
+                self.impute_method = "interpolate"
+
+            elif stats["missing_rate"] < 0.05:
+                self.impute_method = "interpolate" if stats["temporal_score"] > 0.5 else "mean"
+
+            elif stats["missing_rate"] < 0.15:
+                self.impute_method = "knn" if stats["temporal_score"] < 0.3 else "interpolate"
+
+            elif stats["missing_rate"] < 0.3:
+                self.impute_method = "saits" if stats["temporal_score"] > 0.3 else "iterative"
+
+            elif stats["missing_rate"] < 0.6:
+                self.impute_method = "saits"
+
             else:
-                self.impute_method = 'ffill' if stats['temporal_score'] > 0.6 else 'bfill'
-            
-            # Outlier detection selection
-            if stats['heavy_tails'] > 0.3 or stats['high_skew'] > 0.3:
-                self.outlier_method = 'mad'
-            elif hasattr(self, 'available_methods') and self.available_methods.get('tranad', False):
-                self.outlier_method = 'tranad'
-            elif hasattr(self, 'available_methods') and self.available_methods.get('ecod', False):
-                self.outlier_method = 'ecod'
-            elif stats['T'] > 3000 and stats['missing_rate'] < 0.1:
-                self.outlier_method = 'isolation_forest'
-            elif stats['D'] > 5:
-                self.outlier_method = 'lof'
+                self.impute_method = "saits" if stats["temporal_score"] > 0.5 else "ffill"
+
+            # Outlier detection
+            if stats["heavy_tails"] > 0.3 or stats["high_skew"] > 0.3:
+                self.outlier_method = "mad"
+            elif self.available_methods.get("tranad", False):
+                self.outlier_method = "tranad"
+            elif self.available_methods.get("ecod", False):
+                self.outlier_method = "ecod"
+            elif stats["T"] > 3000 and stats["missing_rate"] < 0.1:
+                self.outlier_method = "isolation_forest"
+            elif stats["D"] > 5:
+                self.outlier_method = "lof"
             else:
-                self.outlier_method = 'zscore'
-            
-            # Adaptive threshold
+                self.outlier_method = "zscore"
+
+            # Threshold tuning
             base = 3.5
-            skew_adj = min(1.5, 0.5 * np.mean(np.abs(stats['skews'])))
-            kurt_adj = 0.2 * max(0, np.mean(stats['kurts']) - 3)
-            if stats['extreme_ratio'] > 0.05:
-                base += 0.5
+            skew_adj = np.clip(0.5 * np.mean(np.abs(stats["skews"])), 0, 1.5)
+            kurt_adj = 0.2 * max(0, np.mean(stats["kurts"]) - 3)
+            base += 0.5 if stats["extreme_ratio"] > 0.05 else 0
             self.outlier_threshold = base + skew_adj + kurt_adj
-            
-            archetype = 'heuristic'
-        
+
+            archetype = "heuristic"
+
         # === STANDARD CONFIGURATIONS ===
-        # Stationarity
-        pvals = detect_stationarity(data, D)
-        self.detrend = any(p > 0.05 for p in pvals)
-        
-        # Seasonality
-        seasonal_flags, detected_periods = detect_seasonality(data, D)
-        self.seasonal = any(seasonal_flags)
-        
-        # Wavelet bands
-        bands = estimate_ewt_bands(data, D)
-        self.ewt_bands = int(np.round(np.mean(bands)))
-        
-        # === PRINT SUMMARY ===
+        self.detrend = any(p > 0.05 for p in detect_stationarity(data, D))
+        self.seasonal = any(detect_seasonality(data, D)[0])
+        self.ewt_bands = int(np.round(np.mean(estimate_ewt_bands(data, D))))
+
         if verbose:
-            config_summary = {
+            summarize_configuration({
                 "dimensions": f"{stats['T']} × {stats['D']}",
-                "missing_rate": stats['missing_rate'],  # Keep as float for formatting
+                "missing_rate": stats["missing_rate"],
                 "pattern": archetype,
                 "log_transform": self.log_transform,
                 "filter_method": self.filter_method,
@@ -550,11 +547,10 @@ class TimeSeriesPreprocessor:
                 "detrend": self.detrend,
                 "seasonal": self.seasonal,
                 "ewt_bands": self.ewt_bands
-            }
-            summarize_configuration(config_summary)
-        
+            })
+
         print("✅ Configuration complete.\n")
-            
+
     def fit_transform(
         self, data: np.ndarray, time_stamps=None, feats=None
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -597,6 +593,7 @@ class TimeSeriesPreprocessor:
 
         # 6. EWT + Detrending
         if self.apply_ewt:
+            print("Applying Empirical Wavelet Transform (EWT)...")
             processed = self._apply_ewt_and_detrend(processed, time_stamps)
 
         # 7. Filtering
@@ -849,7 +846,7 @@ class TimeSeriesPreprocessor:
             Transformed data
         """
         try:
-            from pyeewt import EWT1D
+            from ewtpy import EWT1D
         except ImportError:
             warnings.warn("PyEWT not installed. Skipping EWT.")
             return data

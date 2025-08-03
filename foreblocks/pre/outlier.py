@@ -7,10 +7,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from numba import njit, prange
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import RobustScaler, StandardScaler
+from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
+
+from ..tf.transformer import TransformerDecoder, TransformerEncoder
 
 # Optional imports
 try:
@@ -23,7 +27,6 @@ try:
 except ImportError:
     EMD = None
 
-from numba import njit, prange
 
 
 def _remove_outliers_parallel(index, col, method, threshold):
@@ -230,10 +233,7 @@ def _remove_outliers_wrapper(args):
 # TranAD
 ###########################################################################
 
-import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
 
-from ..tf.transformer import TransformerDecoder, TransformerEncoder
 
 
 class TranAD(nn.Module):
@@ -309,7 +309,7 @@ class TranAD(nn.Module):
         return out1, out2
 
 
-class OptimizedTensorDataset(TensorDataset):
+class TranADDataset(TensorDataset):
     """Memory-efficient dataset that creates sequences on-the-fly"""
     def __init__(self, data, seq_len):
         self.data = data
@@ -414,8 +414,8 @@ class TranADDetector:
             sequences_tensor = torch.from_numpy(series_scaled).float()
             n_train = int((len(series_scaled) - self.seq_len + 1) * (1 - validation_split))
             
-            train_ds = OptimizedTensorDataset(sequences_tensor[:n_train + self.seq_len - 1], self.seq_len)
-            val_ds = OptimizedTensorDataset(sequences_tensor[n_train:], self.seq_len) if validation_split > 0 else None
+            train_ds = TranADDataset(sequences_tensor[:n_train + self.seq_len - 1], self.seq_len)
+            val_ds = TranADDataset(sequences_tensor[n_train:], self.seq_len) if validation_split > 0 else None
         else:
             # Pre-create all sequences (original approach)
             sequences = self._create_sequences(series_scaled)
@@ -434,7 +434,7 @@ class TranADDetector:
             pin_memory=True, 
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=2,
-            drop_last=True  # Helps with performance consistency
+            drop_last=False  # Helps with performance consistency
         )
         
         val_loader = DataLoader(

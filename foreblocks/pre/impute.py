@@ -165,6 +165,8 @@ class SAITS(nn.Module):
         MIT=False,
         use_layer_scale=True,
         layer_scale_init=1e-4,
+        mit_mode=False,
+        holdout_rate=0.15,
     ):
         super().__init__()
         self.seq_len = seq_len
@@ -173,7 +175,11 @@ class SAITS(nn.Module):
         self.n_groups = n_groups
         self.n_group_inner_layers = n_group_inner_layers
         self.MIT = MIT
+        self.mit_mode = mit_mode
+        self.holdout_rate = holdout_rate
+        
         self.use_layer_scale = use_layer_scale
+        
 
         actual_input_size = input_size * 2 if input_with_mask else input_size
 
@@ -289,7 +295,6 @@ class SAITS(nn.Module):
 
         imputed_data, [X_tilde_1, X_tilde_2, X_tilde_3] = self.impute(X, masks)
 
-        # Compute losses more efficiently
         recon_loss = (
             masked_mae_cal(X_tilde_1, X, masks)
             + masked_mae_cal(X_tilde_2, X, masks)
@@ -303,25 +308,33 @@ class SAITS(nn.Module):
         else:
             imput_mae = torch.tensor(0.0, device=X.device)
 
+        loss = recon_loss + imput_mae
+
         return {
             "imputed_data": imputed_data,
-            "reconstruction_loss": recon_loss,
+            "reconstruction_loss": loss,
             "imputation_loss": imput_mae,
             "reconstruction_MAE": final_mae,
             "imputation_MAE": imput_mae,
         }
 
-
-# === Optimized Dataset with Caching ===
 class SaitsDataset(Dataset):
-    def __init__(self, X, mask):
-        self.X = X.contiguous()  # Ensure memory layout is optimized
+    def __init__(self, X, mask, mit_mode=False, holdout_rate=0.15):
+        self.X = X.contiguous()
         self.mask = mask.contiguous()
 
-        # Pre-compute derived tensors
         self.X_holdout = self.X.clone()
         self.indicating_mask = 1.0 - self.mask
 
+        if mit_mode:
+            # Simulate a holdout mask over existing observed values
+            B, T, D = X.shape
+            random_mask = torch.rand(B, T, D, device=X.device) < holdout_rate
+            # Only hide parts of the observed data (i.e., where mask == 1)
+            holdout_mask = random_mask & (self.mask == 1.0)
+            self.X_holdout[holdout_mask] = 0.0  # Or NaN depending on preference
+            self.indicating_mask[holdout_mask] = 1.0
+            self.mask[holdout_mask] = 0.0  # Hide them from training
     def __getitem__(self, idx):
         return {
             "X": self.X[idx],
@@ -430,6 +443,8 @@ class SAITSImputer:
         pin_memory=True,
         warmup_epochs=5,
         lr_scheduler="cosine",
+        mit_mode=False,
+        holdout_rate=0.15,
     ):
         self.seq_len = seq_len
         self.epochs = epochs
@@ -449,6 +464,8 @@ class SAITSImputer:
         self.pin_memory = pin_memory and device == "cuda"
         self.warmup_epochs = warmup_epochs
         self.lr_scheduler = lr_scheduler
+        self.mit_mode = mit_mode
+        self.holdout_rate = holdout_rate
 
         self.model = None
         self.trainer = None
@@ -498,7 +515,7 @@ class SAITSImputer:
         mask = torch.tensor(masks, dtype=torch.float32)
 
         # Optimized dataset
-        dataset = SaitsDataset(X, mask)
+        dataset = SaitsDataset(X, mask, mit_mode=self.mit_mode, holdout_rate=self.holdout_rate)
 
         # Optimized dataloader
         dataloader = DataLoader(

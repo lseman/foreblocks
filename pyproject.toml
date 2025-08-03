@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foreblocks"
-version = "0.1.1"
+version = "0.1.4"
 description = "Modular Time Series Forecasting Library"
 authors = [
-    { name = "Laio Seman", email = "you@example.com" }
+    { name = "Laio Seman", email = "laioseman@gmail.com" }
 ]
+
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
@@ -21,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Topic :: Scientific/Engineering :: Artificial Intelligence"
 ]
+
 dependencies = [
     "torch>=1.12",
     "numpy",
@@ -30,13 +32,14 @@ dependencies = [
     "PyWavelets",
     "pytorch_wavelets",
     "wandb",
-    "darts>=0.24.0"
 ]
 
 [project.urls]
 Homepage = "https://github.com/lseman/foreblocks"
 Repository = "https://github.com/lseman/foreblocks"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["."]
-

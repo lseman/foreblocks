@@ -1,0 +1,80 @@
+# Auto-generated MANIFEST.in
+include pyproject.toml
+include README.md
+include LICENSE
+recursive-include .github/workflows workflow.yml
+include .gitignore
+recursive-include docs custom_blocks.md
+recursive-include docs darts.md
+recursive-include docs fourier.md
+recursive-include docs/imgs darts_module.svg
+recursive-include docs/imgs darts_module_logo.svg
+recursive-include docs/imgs foreblocks_inkscape_compatible.svg
+recursive-include docs/imgs forecasting_model_diagram.svg
+recursive-include docs/imgs fourier_blocks_diagram.svg
+recursive-include docs/imgs moe_architecture_diagram.svg
+recursive-include docs/imgs multi_attention_diagram.svg
+recursive-include docs/imgs preprocessing_module.svg
+recursive-include docs/imgs time_series_forecasting_concept.svg
+recursive-include docs/imgs timeseriespreprocessor_logo.svg
+recursive-include docs/imgs transformer_diagram_fixed.svg
+recursive-include docs moe.md
+recursive-include docs preprocessor.md
+recursive-include docs transformer.md
+recursive-include docs wavelets.md
+recursive-include examples explainability.ipynb
+recursive-include examples fourier_block.ipynb
+recursive-include examples nha_block.ipynb
+recursive-include examples other_blocks.ipynb
+recursive-include examples pipeline.ipynb
+recursive-include examples preprocessing.ipynb
+recursive-include examples seq2seq.ipynb
+recursive-include examples times_block.ipynb
+recursive-include foreblocks __init__.py
+recursive-include foreblocks att.py
+recursive-include foreblocks aux.py
+recursive-include foreblocks/blocks __init__.py
+recursive-include foreblocks/blocks attention.py
+recursive-include foreblocks/blocks famous.py
+recursive-include foreblocks/blocks fourier.py
+recursive-include foreblocks/blocks graph.py
+recursive-include foreblocks/blocks mamba.py
+recursive-include foreblocks/blocks multiscale.py
+recursive-include foreblocks/blocks nha.py
+recursive-include foreblocks/blocks ode.py
+recursive-include foreblocks/blocks simple.py
+recursive-include foreblocks/blocks wavelets.py
+recursive-include foreblocks core.py
+recursive-include foreblocks/darts __init__.py
+recursive-include foreblocks/darts darts.py
+recursive-include foreblocks/darts darts_base.py
+recursive-include foreblocks/darts darts_metrics.py
+recursive-include foreblocks/darts darts_plot.py
+recursive-include foreblocks/darts darts_run.py
+recursive-include foreblocks enc_dec.py
+recursive-include foreblocks fengine.py
+recursive-include foreblocks pipeline.py
+recursive-include foreblocks/pre __init__.py
+recursive-include foreblocks/pre ewt.py
+recursive-include foreblocks/pre filters.py
+recursive-include foreblocks/pre impute.py
+recursive-include foreblocks/pre outlier.py
+recursive-include foreblocks preprocessing.py
+recursive-include foreblocks quantization.py
+recursive-include foreblocks/tf embeddings.py
+recursive-include foreblocks/tf fed.py
+recursive-include foreblocks/tf transformer.py
+recursive-include foreblocks/tf transformer_att.py
+recursive-include foreblocks/tf transformer_aux.py
+recursive-include foreblocks/tf transformer_moe.py
+recursive-include foreblocks/third_party flash_softpick_attn.py
+recursive-include foreblocks/third_party vsgd.py
+recursive-include foreblocks/tuner foretuner.py
+recursive-include foreblocks/tuner foretuner_aux.py
+recursive-include foreblocks/tuner foretuner_plot.py
+recursive-include foreblocks utils.py
+recursive-include foretools fenginner.py
+recursive-include foretools vmd.py
+include logo_dark.svg
+include logo_light.svg
+include requirements.txt

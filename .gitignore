@@ -36,3 +36,4 @@ test*
 *.pdf
 *backup*
 work/
+generate_manifest.sh
