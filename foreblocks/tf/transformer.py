@@ -199,8 +199,8 @@ class TransformerDecoderLayer(BaseTransformerLayer):
         use_adaptive_ln: str = "layer",
         informer_like: bool = False,
         use_moe: bool = False,
-        num_experts: int = 8,
-        top_k: int = 2,
+        num_experts: int = 10,
+        top_k: int = 5,
         moe_capacity_factor: float = 1.25,
     ):
         super().__init__(

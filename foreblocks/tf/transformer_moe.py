@@ -1,3 +1,4 @@
+import math
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -17,6 +18,7 @@ except ImportError:
 ################################################################################
 
 if TRITON_AVAILABLE:
+
     @triton.jit
     def swiglu_kernel(
         x_ptr,
@@ -65,7 +67,9 @@ if TRITON_AVAILABLE:
             up_w_ptrs = (
                 gate_up_weight_ptr + (D_FF + offs_k[:, None]) * D_FF + offs_ff[None, :]
             )
-            up_w = tl.load(up_w_ptrs, mask=mask_k[:, None] & mask_ff[None, :], other=0.0)
+            up_w = tl.load(
+                up_w_ptrs, mask=mask_k[:, None] & mask_ff[None, :], other=0.0
+            )
 
             # Accumulate matrix multiplications
             acc_gate += tl.dot(x_chunk, gate_w, allow_tf32=True)
@@ -101,10 +105,11 @@ if TRITON_AVAILABLE:
                     acc_out[:, i] = out_chunk[:, i]
 
         # Store final output
-        out_ptrs = out_ptr + offs_m[:, None] * stride_out + tl.arange(0, D_MODEL)[None, :]
+        out_ptrs = (
+            out_ptr + offs_m[:, None] * stride_out + tl.arange(0, D_MODEL)[None, :]
+        )
         final_mask = mask_m[:, None] & (tl.arange(0, D_MODEL)[None, :] < D_MODEL)
         tl.store(out_ptrs, acc_out, mask=final_mask)
-
 
     def triton_swiglu_forward(x, gate_up_weight, down_weight):
         """Optimized SwiGLU forward with better kernel launch configuration"""
@@ -137,12 +142,10 @@ if TRITON_AVAILABLE:
         )
         return out
 
-
     @triton.jit
     def moe_dispatch_kernel(
         x_ptr,
         top_k_probs_ptr,
-        top_k_indices_ptr,
         expert_row_indices_ptr,
         expert_input_ptr,
         N,
@@ -151,8 +154,6 @@ if TRITON_AVAILABLE:
         stride_x_d,
         stride_probs_n,
         stride_probs_k,
-        stride_indices_n,
-        stride_indices_k,
         stride_expert_indices_n,
         stride_expert_indices_k,
         stride_expert_input_n,
@@ -160,45 +161,44 @@ if TRITON_AVAILABLE:
         K: tl.constexpr,
         BLOCK_D: tl.constexpr,
     ):
-        """Optimized MoE dispatch kernel"""
-        pid = tl.program_id(0)
+        """SOTA parallel MoE dispatch kernel with (token_id, k) unrolled in grid"""
 
-        # Each program handles one token
-        token_id = pid
+        pid = tl.program_id(0)
+        token_id = pid // K
+        k = pid % K
+
         if token_id >= N:
             return
 
         offs_d = tl.arange(0, BLOCK_D)
         mask_d = offs_d < D
 
-        # Load input for this token
+        # Load x[token_id, :]
         x_ptrs = x_ptr + token_id * stride_x_n + offs_d * stride_x_d
-        x_vec = tl.load(x_ptrs, mask=mask_d, other=0.0)
+        x_vec = tl.load(x_ptrs, mask=mask_d, other=tl.zeros([BLOCK_D], dtype=tl.float32))
 
-        # Process each expert assignment for this token
-        for k in tl.static_range(K):
-            # Load probability for this token and expert k
-            prob_ptr = top_k_probs_ptr + token_id * stride_probs_n + k * stride_probs_k
-            prob = tl.load(prob_ptr)
+        # Load prob[token_id, k]
+        prob_ptr = top_k_probs_ptr + token_id * stride_probs_n + k * stride_probs_k
+        prob = tl.load(prob_ptr)
+        prob = tl.maximum(prob, 1e-6)  # clamp for numerical stability
 
-            # Load expert row index
-            expert_row_ptr = (
-                expert_row_indices_ptr
-                + token_id * stride_expert_indices_n
-                + k * stride_expert_indices_k
-            )
-            expert_row = tl.load(expert_row_ptr)
+        # Load expert_row_indices[token_id, k]
+        expert_row_ptr = (
+            expert_row_indices_ptr + token_id * stride_expert_indices_n + k * stride_expert_indices_k
+        )
+        expert_row = tl.load(expert_row_ptr)
 
-            # Apply gating and store to expert buffer
-            weighted_x = x_vec * prob
+        # Compute weighted input
+        weighted_x = x_vec * prob
 
-            # Store to expert buffer
-            expert_ptrs = (
-                expert_input_ptr
-                + expert_row * stride_expert_input_n
-                + offs_d * stride_expert_input_d
-            )
-            tl.store(expert_ptrs, weighted_x, mask=mask_d)
+        # Store into expert_input[expert_row, :]
+        expert_ptrs = (
+            expert_input_ptr
+            + expert_row * stride_expert_input_n
+            + offs_d * stride_expert_input_d
+        )
+        tl.store(expert_ptrs, weighted_x, mask=mask_d)
+
 
 class TritonMoEDispatcher:
     def __init__(self, d_model: int, top_k: int, block_d: int = 64):
@@ -244,91 +244,48 @@ class TritonMoEDispatcher:
         return row_indices.view(N, K)
 
     def dispatch(
-        self, x: torch.Tensor, top_k_probs: torch.Tensor, top_k_indices: torch.Tensor
+        self,
+        x: torch.Tensor,
+        top_k_probs: torch.Tensor,
+        top_k_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Optimized dispatch with adaptive kernel selection"""
+        """SOTA parallel dispatch with enhanced Triton grid and safety checks"""
         N, D = x.shape
         K = self.top_k
 
-        # Compute expert assignments
         flat_indices = top_k_indices.view(-1)
         expert_counts = torch.bincount(flat_indices, minlength=top_k_probs.size(-1))
-        expert_row_indices = self.compute_expert_row_indices(
-            top_k_indices, expert_counts
-        )
+        expert_row_indices = self.compute_expert_row_indices(top_k_indices, expert_counts)
 
         total_rows = expert_counts.sum().item()
         expert_input = self._get_or_create_buffer(total_rows, D, x.device, x.dtype)
 
-        # Adaptive kernel selection based on problem size and hardware
-        use_triton = (
-            TRITON_AVAILABLE and x.is_cuda and N >= 32 and D >= 64 and total_rows > 0
+        BLOCK_D = min(self.block_d, triton.next_power_of_2(D))
+
+        # Grid is now (N * K,) to parallelize over token-expert pairs
+        grid = (N * K,)
+
+        moe_dispatch_kernel[grid](
+            x_ptr=x,
+            top_k_probs_ptr=top_k_probs,
+            expert_row_indices_ptr=expert_row_indices,
+            expert_input_ptr=expert_input,
+            N=N,
+            D=D,
+            stride_x_n=x.stride(0),
+            stride_x_d=x.stride(1),
+            stride_probs_n=top_k_probs.stride(0),
+            stride_probs_k=top_k_probs.stride(1),
+            stride_expert_indices_n=expert_row_indices.stride(0),
+            stride_expert_indices_k=expert_row_indices.stride(1),
+            stride_expert_input_n=expert_input.stride(0),
+            stride_expert_input_d=expert_input.stride(1),
+            K=K,
+            BLOCK_D=BLOCK_D,
         )
-
-        if use_triton:
-            # Use optimized Triton kernel for large problems
-            BLOCK_D = min(self.block_d, triton.next_power_of_2(D))
-
-            grid = (N,)  # One program per token
-
-            moe_dispatch_kernel[grid](
-                x_ptr=x,
-                top_k_probs_ptr=top_k_probs,
-                top_k_indices_ptr=top_k_indices,
-                expert_row_indices_ptr=expert_row_indices,
-                expert_input_ptr=expert_input,
-                N=N,
-                D=D,
-                stride_x_n=x.stride(0),
-                stride_x_d=x.stride(1),
-                stride_probs_n=top_k_probs.stride(0),
-                stride_probs_k=top_k_probs.stride(1),
-                stride_indices_n=top_k_indices.stride(0),
-                stride_indices_k=top_k_indices.stride(1),
-                stride_expert_indices_n=expert_row_indices.stride(0),
-                stride_expert_indices_k=expert_row_indices.stride(1),
-                stride_expert_input_n=expert_input.stride(0),
-                stride_expert_input_d=expert_input.stride(1),
-                K=K,  # Now passed as constexpr
-                BLOCK_D=BLOCK_D,
-            )
-        else:
-            # Optimized PyTorch fallback with vectorization
-            self._dispatch_pytorch_optimized(
-                x, top_k_probs, expert_row_indices, expert_input, N, K
-            )
 
         return expert_input[:total_rows], expert_row_indices
 
-    def _dispatch_pytorch_optimized(
-        self,
-        x: torch.Tensor,
-        top_k_probs: torch.Tensor,
-        expert_row_indices: torch.Tensor,
-        expert_input: torch.Tensor,
-        N: int,
-        K: int,
-    ) -> None:
-        """Optimized PyTorch fallback using vectorized operations"""
-        # Vectorized approach - process all assignments at once
-        token_indices = (
-            torch.arange(N, device=x.device).unsqueeze(1).expand(-1, K).reshape(-1)
-        )
-        k_indices = (
-            torch.arange(K, device=x.device).unsqueeze(0).expand(N, -1).reshape(-1)
-        )
-        expert_rows = expert_row_indices.view(-1)
-        probs = top_k_probs.view(-1)
-
-        # Filter out any invalid expert rows (shouldn't happen but safety check)
-        valid_mask = expert_rows < expert_input.size(0)
-        if not valid_mask.all():
-            token_indices = token_indices[valid_mask]
-            expert_rows = expert_rows[valid_mask]
-            probs = probs[valid_mask]
-
-        # Vectorized assignment using advanced indexing
-        expert_input[expert_rows] = x[token_indices] * probs.unsqueeze(-1)
 
     def _get_or_create_buffer(
         self, total_rows: int, D: int, device: torch.device, dtype: torch.dtype
@@ -388,20 +345,29 @@ class LearnedRouter(nn.Module):
             nn.init.constant_(self.router.bias, 0.0)
 
     def forward(self, x):
+        if x.numel() == 0:
+            return (
+                torch.zeros_like(x[..., : self.num_experts]),
+                torch.zeros_like(x[..., : self.num_experts]),
+                {"router_entropy": torch.tensor(0.0, device=x.device)},
+            )
+
         if self.dropout is not None:
             x = self.dropout(x)
+
         logits = self.router(x)
 
         if self.training and self.jitter > 0:
-            if self.use_switch_gating:
-                noise = torch.randn_like(logits) * self.jitter
-                logits = logits + noise
-            else:
-                logits = logits + torch.randn_like(logits) * self.jitter
+            noise = torch.randn_like(logits) * self.jitter
+            logits = logits + noise.detach()
 
-        probs = F.softmax(logits, dim=-1)
-        aux = {"router_entropy": -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()}
-        return logits, probs, aux
+        logits = torch.clamp(logits, -1e4, 1e4)  # Clamp logits before softmax
+
+        probs = F.softmax(logits - logits.max(dim=-1, keepdim=True).values, dim=-1)
+        probs = torch.clamp(probs, 1e-8, 1.0)  # Prevent log(0)
+        entropy = -(probs * torch.log(probs)).sum(dim=-1).mean()
+
+        return logits, probs, {"router_entropy": entropy}
 
 
 class HashRouter(nn.Module):
@@ -414,11 +380,21 @@ class HashRouter(nn.Module):
         )
 
     def forward(self, x):
+        if x.numel() == 0:
+            return (
+                torch.zeros(x.size(0), self.num_experts, device=x.device),
+                torch.zeros(x.size(0), self.num_experts, device=x.device),
+                {},
+            )
+
         hash_values = torch.matmul(x, self.hash_weights.t())
         hash_indices = torch.argmax(hash_values, dim=-1) % self.num_experts
+
         probs = torch.zeros(x.size(0), self.num_experts, device=x.device)
         probs.scatter_(1, hash_indices.unsqueeze(1), 1.0)
-        logits = torch.log(probs + 1e-8)
+        probs = torch.clamp(probs, 1e-8, 1.0)
+        logits = torch.log(probs)
+
         return logits, probs, {}
 
 
@@ -428,9 +404,19 @@ class RandomRouter(nn.Module):
         self.num_experts = num_experts
 
     def forward(self, x):
-        probs = torch.rand(x.size(0), self.num_experts, device=x.device)
-        probs = F.softmax(probs, dim=-1)
-        logits = torch.log(probs + 1e-8)
+        if x.numel() == 0:
+            return (
+                torch.zeros(x.size(0), self.num_experts, device=x.device),
+                torch.zeros(x.size(0), self.num_experts, device=x.device),
+                {},
+            )
+
+        logits = torch.rand(x.size(0), self.num_experts, device=x.device)
+        logits = torch.clamp(logits, -1e4, 1e4)
+        probs = F.softmax(logits - logits.max(dim=-1, keepdim=True).values, dim=-1)
+        probs = torch.clamp(probs, 1e-8, 1.0)
+        logits = torch.log(probs)
+
         return logits, probs, {}
 
 
@@ -443,37 +429,27 @@ class MoEFeedForward(nn.Module):
         top_k: int = 2,
         dropout: float = 0.1,
         capacity_factor: float = 1.25,
-        expert_dropout: float = 0.0,
         min_capacity: int = 4,
         use_swiglu: bool = True,
         activation: str = "gelu",
-        shared_expert_ratio: float = 0.25,
-        use_shared_expert: bool = True,
-        load_balancing_loss_weight: float = 1e-2,
+        load_balance_weight: float = 1e-2,
         z_loss_weight: float = 1e-3,
+        router_type: str = "learned",
+        router_temperature: float = 1.0,
         router_init_std: float = 0.02,
-        use_capacity_factor: bool = True,
         use_bias: bool = False,
         normalize_router_weights: bool = True,
-        router_temperature: float = 1.0,
-        router_type: str = "learned",
-        # State-of-the-art optimizations
         use_switch_gating: bool = True,
         use_expert_choice: bool = False,
         expert_choice_k: int = 4,
         use_gradient_checkpointing: bool = False,
         use_mixed_precision: bool = True,
-        use_adaptive_capacity: bool = True,
-        use_router_z_loss: bool = True,
         use_cosine_router: bool = False,
-        expert_dropout_strategy: str = "random",
-        use_auxiliary_loss_scheduling: bool = True,
-        warmup_aux_loss_factor: float = 0.1,
-        use_expert_regularization: bool = True,
+        expert_dropout: float = 0.0,
+        router_noise_std: float = 0.0,
         expert_diversity_weight: float = 1e-4,
     ):
         super().__init__()
-
         self.d_model = d_model
         self.d_ff = d_ff
         self.num_experts = num_experts
@@ -481,410 +457,227 @@ class MoEFeedForward(nn.Module):
         self.capacity_factor = capacity_factor
         self.min_capacity = min_capacity
         self.expert_dropout = expert_dropout
-        self.shared_expert_ratio = shared_expert_ratio
-        self.use_shared_expert = use_shared_expert
-        self.load_balancing_loss_weight = load_balancing_loss_weight
+        self.load_balance_weight = load_balance_weight
         self.z_loss_weight = z_loss_weight
-        self.use_capacity_factor = use_capacity_factor
+        self.expert_diversity_weight = expert_diversity_weight
+        self.router_type = router_type
         self.router_temperature = router_temperature
-
-        # State-of-the-art parameters
+        self.use_cosine_router = use_cosine_router
+        self.router_noise_std = router_noise_std
+        self.normalize_router_weights = normalize_router_weights
         self.use_switch_gating = use_switch_gating
         self.use_expert_choice = use_expert_choice
         self.expert_choice_k = expert_choice_k
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_mixed_precision = use_mixed_precision
-        self.use_adaptive_capacity = use_adaptive_capacity
-        self.use_router_z_loss = use_router_z_loss
-        self.use_cosine_router = use_cosine_router
-        self.expert_dropout_strategy = expert_dropout_strategy
-        self.use_auxiliary_loss_scheduling = use_auxiliary_loss_scheduling
-        self.warmup_aux_loss_factor = warmup_aux_loss_factor
-        self.use_expert_regularization = use_expert_regularization
-        self.expert_diversity_weight = expert_diversity_weight
 
-        # Training step counter for scheduling
-        self.register_buffer("training_step", torch.tensor(0))
-
-        # Pre-compute boolean flags
-        self._needs_load_balancing = load_balancing_loss_weight > 0
+        self._needs_load_balance = load_balance_weight > 0
         self._needs_z_loss = z_loss_weight > 0
-        self._needs_expert_dropout = expert_dropout > 0
-        self._needs_capacity_enforcement = use_capacity_factor and capacity_factor > 0
-        self._router_temp_not_one = abs(router_temperature - 1.0) > 1e-6
+        self._has_router_temp = abs(router_temperature - 1.0) > 1e-6
 
-        # Router initialization
+        self.input_norm = nn.LayerNorm(d_model)
+
         if router_type == "learned":
-            self.router = LearnedRouter(
-                d_model,
-                num_experts,
-                use_bias=use_bias,
-                use_switch_gating=use_switch_gating,
-            )
+            self.router = LearnedRouter(d_model, num_experts, use_bias, use_switch_gating)
         elif router_type == "hash":
             self.router = HashRouter(d_model, num_experts)
         elif router_type == "random":
             self.router = RandomRouter(num_experts)
-        else:
+        elif router_type == "linear":
             self.router = nn.Linear(d_model, num_experts, bias=use_bias)
             if normalize_router_weights:
                 nn.init.normal_(self.router.weight, mean=0.0, std=router_init_std)
             else:
                 nn.init.kaiming_normal_(self.router.weight, mode="fan_in")
-
-        # Cosine router enhancement
-        if self.use_cosine_router and not isinstance(
-            self.router, (HashRouter, RandomRouter)
-        ):
-            self.router_scale = nn.Parameter(torch.tensor(1.0))
-
-        # Normalization layers
-        self.input_norm = nn.LayerNorm(d_model)
-        self.router_norm = nn.LayerNorm(d_model) if router_type == "learned" else None
-
-        # Expert creation
-        if use_shared_expert:
-            shared_d_ff = int(d_ff * shared_expert_ratio)
-            self.shared_expert = self._create_expert(
-                d_model, shared_d_ff, dropout, use_swiglu, activation
-            )
-            routed_d_ff = d_ff - shared_d_ff
         else:
-            self.shared_expert = None
-            routed_d_ff = d_ff
+            raise ValueError(f"Unknown router_type: {router_type}")
 
-        self.experts = nn.ModuleList(
-            [
-                self._create_expert(
-                    d_model, routed_d_ff, dropout, use_swiglu, activation
-                )
-                for _ in range(num_experts)
-            ]
-        )
+        if self.use_cosine_router and not isinstance(self.router, (HashRouter, RandomRouter)):
+            self.router_scale = nn.Parameter(torch.tensor(math.log(num_experts)))
 
-        # Capacity management
-        if self._needs_capacity_enforcement:
-            if self.use_adaptive_capacity:
-                self.register_buffer("capacity_history", torch.zeros(100))
-                self.register_buffer("capacity_idx", torch.tensor(0))
-            self.expert_capacity = max(
-                min_capacity, int(capacity_factor * d_model / num_experts)
-            )
+        self.experts = nn.ModuleList([
+            self._create_expert(d_model, d_ff, dropout, use_swiglu, activation)
+            for _ in range(num_experts)
+        ])
+
+        if TRITON_AVAILABLE:
+            self.dispatcher = TritonMoEDispatcher(d_model, top_k)
         else:
-            self.expert_capacity = None
+            self.dispatcher = None
+
+        self.register_buffer("_eps", torch.tensor(1e-8))
+        self.register_buffer("expert_usage", torch.zeros(num_experts))
+        self.register_buffer("momentum", torch.tensor(0.999))
 
         self.aux_loss = 0.0
-        self.dispatcher = TritonMoEDispatcher(d_model=d_model, top_k=top_k)
 
-        # Buffers and cache
-        self.register_buffer("_eps", torch.tensor(1e-8))
-        self._last_batch_size = 0
-        self._token_indices_cache = None
-        self.register_buffer("expert_utilization", torch.zeros(num_experts))
-        self.register_buffer("utilization_momentum", torch.tensor(0.9))
-
-    def _create_expert(
-        self, d_model: int, d_ff: int, dropout: float, use_swiglu: bool, activation: str
-    ) -> nn.Module:
+    def _create_expert(self, d_model, d_ff, dropout, use_swiglu, activation):
         if use_swiglu:
             return MoE_SwiGLUExpert(d_model, d_ff, dropout)
-        else:
-            return MoE_FFNExpert(d_model, d_ff, dropout, activation)
+        return MoE_FFNExpert(d_model, d_ff, dropout, activation)
 
-    def _compute_router_probs(self, x):
-        """Enhanced router computation"""
-        x_router = self.router_norm(x) if self.router_norm is not None else x
+    def compute_capacity(self, num_tokens: int) -> int:
+        return max(
+            self.min_capacity,
+            int(math.ceil(self.capacity_factor * num_tokens * self.top_k / self.num_experts))
+        )
 
+    def _compute_router_logits(self, x: torch.Tensor) -> torch.Tensor:
         if isinstance(self.router, (LearnedRouter, HashRouter, RandomRouter)):
-            return self.router(x_router)
+            out = self.router(x)
+            return out[0] if isinstance(out, (tuple, list)) else out
+
+        if self.use_cosine_router and hasattr(self, "router_scale"):
+            x_norm = F.normalize(x, dim=-1)
+            w_norm = F.normalize(self.router.weight, dim=-1)
+            logits = F.linear(x_norm, w_norm) * self.router_scale.exp()
         else:
-            logits = self.router(x_router)
+            logits = self.router(x)
 
-            # Cosine similarity routing
-            if self.use_cosine_router:
-                x_norm = F.normalize(x_router, dim=-1)
-                w_norm = F.normalize(self.router.weight, dim=-1)
-                logits = F.linear(x_norm, w_norm) * self.router_scale
+        if self._has_router_temp:
+            logits /= self.router_temperature
 
-            if self._router_temp_not_one:
-                logits = logits / self.router_temperature
+        if self.training and self.router_noise_std > 0:
+            logits += torch.randn_like(logits) * self.router_noise_std
 
-            # Router z-loss
-            router_aux = {}
-            if self.use_router_z_loss and self.training:
-                z_loss = torch.logsumexp(logits, dim=-1).square().mean()
-                router_aux["z_loss"] = z_loss
+        return logits
+    
+    def _token_choice_routing(self, x: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+        """Token Choice routing: tokens choose their experts."""
+        original_shape = x.shape
+        x_flat = x.view(-1, self.d_model)
+        probs_flat = probs.view(-1, self.num_experts)
 
-            probs = F.softmax(logits, dim=-1)
-            return logits, probs, router_aux
+        if self.use_switch_gating and self.top_k == 1:
+            top_probs, top_indices = torch.max(probs_flat, dim=-1, keepdim=True)
+        else:
+            top_probs, top_indices = torch.topk(probs_flat, self.top_k, dim=-1)
 
-    def _expert_choice_routing(
-        self, x: torch.Tensor, router_probs: torch.Tensor
-    ) -> torch.Tensor:
-        """Expert Choice routing"""
-        flat_probs = router_probs.view(-1, self.num_experts)
-        output = torch.zeros_like(x.view(-1, self.d_model))
+        if self.training and self.expert_dropout > 0:
+            top_probs = F.dropout(top_probs, p=self.expert_dropout, training=True)
+            top_probs /= top_probs.sum(dim=-1, keepdim=True) + self._eps
 
-        for expert_id in range(self.num_experts):
-            expert_probs = flat_probs[:, expert_id]
-            top_tokens = torch.topk(
-                expert_probs, min(self.expert_choice_k, len(expert_probs))
-            )[1]
+        if self.training:
+            usage = torch.zeros(self.num_experts, device=x.device)
+            for k in range(self.top_k):
+                eid = top_indices[:, k]
+                weight = top_probs[:, k]
+                usage += torch.bincount(eid, weights=weight, minlength=self.num_experts)
+            self.expert_usage = self.momentum * self.expert_usage + (1 - self.momentum) * (usage / (usage.sum() + self._eps))
 
-            if len(top_tokens) > 0:
-                expert_input = x.view(-1, self.d_model)[top_tokens]
-                expert_output = self.experts[expert_id](expert_input)
-                output[top_tokens] += expert_output
+        routed = self._route_tokens_to_experts(x_flat, top_probs, top_indices)
+        return routed.view(*original_shape[:-1], self.d_model)
 
+    def _route_tokens_to_experts(self, x: torch.Tensor, probs: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        if self.dispatcher and self._dispatcher_is_compatible(indices):
+            return self._dispatch_with_triton(x, probs, indices)
+        return self._standard_routing(x, probs, indices)
+
+    def _dispatcher_is_compatible(self, indices: torch.Tensor) -> bool:
+        return indices.dim() == 2 and indices.size(1) == self.top_k
+
+    def _dispatch_with_triton(self, x, probs, indices):
+        expert_input_buf, expert_row_indices = self.dispatcher.dispatch(x, probs, indices)
+        expert_output_buf = torch.empty_like(expert_input_buf)
+        expert_counts = torch.bincount(indices.flatten(), minlength=self.num_experts)
+        self._process_experts(expert_input_buf, expert_output_buf, expert_counts)
+
+        output = torch.zeros_like(x)
+        if expert_output_buf.size(0) > 0:
+            token_indices = torch.arange(x.size(0), device=x.device).unsqueeze(1).expand(-1, self.top_k).flatten()
+            output.index_add_(0, token_indices, expert_output_buf[expert_row_indices.view(-1)])
         return output
 
-    def _adaptive_expert_dropout(self, router_probs: torch.Tensor) -> torch.Tensor:
-        """Adaptive expert dropout"""
-        if not self._needs_expert_dropout or not self.training:
-            return router_probs
-
-        if self.expert_dropout_strategy == "balanced":
-            expert_usage = router_probs.mean(dim=0)
-            avg_usage = expert_usage.mean()
-            dropout_mask = (expert_usage > 1.5 * avg_usage) & (
-                torch.rand_like(expert_usage) < self.expert_dropout
-            )
-            router_probs = router_probs * (~dropout_mask).float()
-        elif self.expert_dropout_strategy == "adaptive":
-            confidence = router_probs.max(dim=-1)[0]
-            dropout_prob = self.expert_dropout * (1 - confidence).unsqueeze(-1)
-            dropout_mask = torch.bernoulli(dropout_prob).bool()
-            router_probs = router_probs * (~dropout_mask).float()
-        else:  # random
-            if torch.rand(1).item() < self.expert_dropout:
-                expert_to_drop = torch.randint(0, self.num_experts, (1,)).item()
-                router_probs[:, expert_to_drop] = 0
-
-        return router_probs / (router_probs.sum(dim=-1, keepdim=True) + self._eps)
-
-    def _update_adaptive_capacity(self, actual_usage: torch.Tensor):
-        """Update capacity based on usage"""
-        if not self.use_adaptive_capacity:
-            return
-
-        avg_usage = actual_usage.float().mean()
-        idx = self.capacity_idx % 100
-        self.capacity_history[idx] = avg_usage
-        self.capacity_idx += 1
-
-        if self.capacity_idx > 10:
-            recent_avg = self.capacity_history[: min(100, self.capacity_idx)].mean()
-            if recent_avg > 0.8 * self.expert_capacity:
-                self.expert_capacity = int(self.expert_capacity * 1.1)
-            elif recent_avg < 0.4 * self.expert_capacity:
-                self.expert_capacity = max(
-                    self.min_capacity, int(self.expert_capacity * 0.9)
-                )
-
-    def _get_token_indices(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """Cache token indices"""
-        if (
-            self._token_indices_cache is None
-            or self._last_batch_size != batch_size
-            or self._token_indices_cache.device != device
-        ):
-
-            self._token_indices_cache = (
-                torch.arange(batch_size, device=device)
-                .unsqueeze(1)
-                .expand(-1, self.top_k)
-                .reshape(-1)
-            )
-            self._last_batch_size = batch_size
-
-        return self._token_indices_cache
-
-    def _optimized_expert_forward(
-        self, x: torch.Tensor, router_probs: torch.Tensor
-    ) -> torch.Tensor:
-        """Optimized expert forward pass"""
-        router_probs = self._adaptive_expert_dropout(router_probs)
-
-        if self.use_expert_choice:
-            return self._expert_choice_routing(x, router_probs)
-
-        # Token choice routing
-        if self.use_switch_gating and self.top_k == 1:
-            top_expert_idx = torch.argmax(router_probs, dim=-1)
-            top_expert_probs = router_probs.gather(1, top_expert_idx.unsqueeze(1))
-            top_k_indices = top_expert_idx.unsqueeze(1)
-            top_k_probs = top_expert_probs
-        else:
-            top_k_probs, top_k_indices = torch.topk(router_probs, self.top_k, dim=-1)
-
-        top_k_probs = top_k_probs / (top_k_probs.sum(dim=-1, keepdim=True) + self._eps)
-
-        # Update utilization tracking
-        if self.training:
-            expert_counts = torch.bincount(
-                top_k_indices.view(-1), minlength=self.num_experts
-            ).float()
-            self.expert_utilization = (
-                self.utilization_momentum * self.expert_utilization
-                + (1 - self.utilization_momentum) * expert_counts / expert_counts.sum()
-            )
-            self._update_adaptive_capacity(expert_counts)
-
-        # Dispatch and process
-        with torch.amp.autocast("cuda", enabled=self.use_mixed_precision):
-            expert_input_buf, expert_row_indices = self.dispatcher.dispatch(
-                x, top_k_probs, top_k_indices
-            )
-            expert_counts = torch.bincount(
-                top_k_indices.view(-1), minlength=self.num_experts
-            )
-            expert_output_buf = torch.empty_like(expert_input_buf)
-
-            if expert_input_buf.size(0) > 0:
-                if self.use_gradient_checkpointing and self.training:
-                    self._process_experts_with_checkpointing(
-                        expert_input_buf, expert_output_buf, expert_counts
-                    )
-                else:
-                    self._process_experts_vectorized(
-                        expert_input_buf, expert_output_buf, expert_counts
-                    )
-
-        # Combine outputs
-        flat_output = torch.zeros_like(x)
-        if expert_input_buf.size(0) > 0:
-            expert_row_flat = expert_row_indices.view(-1)
-            token_indices = self._get_token_indices(x.size(0), x.device)
-            flat_output.index_add_(0, token_indices, expert_output_buf[expert_row_flat])
-
-        return flat_output
-
-    def _process_experts_with_checkpointing(
-        self,
-        expert_input_buf: torch.Tensor,
-        expert_output_buf: torch.Tensor,
-        expert_counts: torch.Tensor,
-    ):
-        """Expert processing with gradient checkpointing"""
+    def _process_experts(self, expert_input_buf, expert_output_buf, expert_counts):
         offset = 0
-        for expert_id, count in enumerate(expert_counts):
+        for eid, count in enumerate(expert_counts):
             if count > 0:
-                end_offset = offset + count
-                expert_input = expert_input_buf[offset:end_offset]
-                expert_output_buf[offset:end_offset] = (
-                    torch.utils.checkpoint.checkpoint(
-                        self.experts[expert_id], expert_input, use_reentrant=False
-                    )
-                )
-                offset = end_offset
+                end = offset + count
+                inp = expert_input_buf[offset:end]
+                out = self.experts[eid](inp) if not self.use_gradient_checkpointing or not self.training \
+                    else torch.utils.checkpoint.checkpoint(self.experts[eid], inp, use_reentrant=False)
+                expert_output_buf[offset:end] = out
+                offset = end
 
-    def _process_experts_vectorized(
-        self,
-        expert_input_buf: torch.Tensor,
-        expert_output_buf: torch.Tensor,
-        expert_counts: torch.Tensor,
-    ):
-        """Vectorized expert processing"""
-        offset = 0
-        for expert_id, count in enumerate(expert_counts):
-            if count > 0:
-                end_offset = offset + count
-                expert_input = expert_input_buf[offset:end_offset]
-                expert_output_buf[offset:end_offset] = self.experts[expert_id](
-                    expert_input
-                )
-                offset = end_offset
+    def _standard_routing(self, x: torch.Tensor, probs: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        B, D = x.shape
+        K = indices.shape[1]
+        x_flat = x.unsqueeze(1).expand(-1, K, -1).reshape(-1, D)
+        probs_flat = probs.reshape(-1, 1)
+        indices_flat = indices.reshape(-1)
 
-    def _compute_aux_loss_optimized(
-        self,
-        router_logits: torch.Tensor,
-        router_probs: torch.Tensor,
-        top_k_indices: torch.Tensor,
-        router_aux: Dict[str, torch.Tensor],
-    ) -> torch.Tensor:
-        """Optimized auxiliary loss computation"""
+        output = torch.zeros_like(x)
+        for eid in range(self.num_experts):
+            mask = indices_flat == eid
+            if not mask.any(): continue
+            x_e = x_flat[mask]
+            p_e = probs_flat[mask]
+            out_e = self.experts[eid](x_e) if not self.use_gradient_checkpointing or not self.training \
+                else torch.utils.checkpoint.checkpoint(self.experts[eid], x_e, use_reentrant=False)
+            out_e *= p_e
+            token_ids = mask.nonzero(as_tuple=False).squeeze(1) // K
+            output.index_add_(0, token_ids, out_e)
+        return output
+
+    def _compute_auxiliary_loss(self, logits, probs, indices) -> torch.Tensor:
         if not self.training:
-            return torch.tensor(0.0, device=router_logits.device, requires_grad=False)
+            return torch.tensor(0.0, device=logits.device)
 
-        aux_loss = torch.tensor(0.0, device=router_logits.device)
+        aux = torch.tensor(0.0, device=logits.device)
+        if self._needs_load_balance:
+            counts = torch.bincount(indices.flatten(), minlength=self.num_experts).float()
+            usage = counts / (counts.sum() + self._eps)
+            mean_probs = probs.mean(dim=0)
+            aux += self.load_balance_weight * torch.sum(usage * mean_probs) * self.num_experts
 
-        # Auxiliary loss scheduling
-        if self.use_auxiliary_loss_scheduling:
-            warmup_factor = min(1.0, float(self.training_step) / 1000.0)
-            aux_weight = (
-                self.warmup_aux_loss_factor
-                + (1.0 - self.warmup_aux_loss_factor) * warmup_factor
-            )
-        else:
-            aux_weight = 1.0
+            if self.expert_diversity_weight > 0:
+                var = probs.var(dim=0).mean()
+                aux += self.expert_diversity_weight * (-var)
 
-        if self._needs_load_balancing:
-            num_tokens = router_probs.size(0)
-            flat_indices = top_k_indices.view(-1)
-            usage_counts = torch.bincount(
-                flat_indices, minlength=self.num_experts
-            ).float()
-            expert_usage = usage_counts / (num_tokens * self.top_k + self._eps)
-            router_prob_means = router_probs.mean(dim=0)
-
-            load_loss = torch.dot(expert_usage, router_prob_means) * self.num_experts
-
-            if self.use_expert_regularization:
-                prob_std = router_probs.std(dim=0).mean()
-                diversity_loss = -prob_std
-                load_loss += self.expert_diversity_weight * diversity_loss
-
-            aux_loss += aux_weight * self.load_balancing_loss_weight * load_loss
+            expected = self.compute_capacity(probs.size(0))
+            penalty = ((counts - expected) ** 2).mean()
+            aux += self.load_balance_weight * 0.01 * penalty
 
         if self._needs_z_loss:
-            z_loss = torch.logsumexp(router_logits, dim=-1).square().mean()
-            aux_loss += aux_weight * self.z_loss_weight * z_loss
+            z = torch.logsumexp(logits, dim=-1).pow(2).mean()
+            aux += self.z_loss_weight * z
 
-        if "z_loss" in router_aux:
-            aux_loss += aux_weight * self.z_loss_weight * router_aux["z_loss"]
+        return aux
 
-        return aux_loss
-
-    def forward(self, x: torch.Tensor, return_aux_loss: bool = True) -> torch.Tensor:
-        """Enhanced forward pass"""
-        if self.training:
-            self.training_step += 1
-
-        original_shape = x.shape
+    def forward(self, x: torch.Tensor, return_aux_loss: bool = True):
         x_norm = self.input_norm(x)
-        x_flat = x_norm.view(-1, self.d_model)
+        logits = self._compute_router_logits(x_norm)
+        probs = F.softmax(logits, dim=-1)
 
-        router_logits, router_probs, router_aux = self._compute_router_probs(x_flat)
-        expert_output = self._optimized_expert_forward(x_flat, router_probs)
+        output = self._token_choice_routing(x_norm, probs)
+        _, top_indices = torch.topk(probs.view(-1, self.num_experts), self.top_k, dim=-1)
 
-        if self.use_shared_expert:
-            if self.use_gradient_checkpointing and self.training:
-                shared_output = torch.utils.checkpoint.checkpoint(
-                    self.shared_expert, x_flat, use_reentrant=False
-                )
-            else:
-                shared_output = self.shared_expert(x_flat)
-            expert_output = expert_output + shared_output
-
-        output = expert_output.view(original_shape)
-
-        if return_aux_loss and self.training:
-            top_k_probs, top_k_indices = torch.topk(router_probs, self.top_k, dim=-1)
-            self.aux_loss = self._compute_aux_loss_optimized(
-                router_logits, router_probs, top_k_indices, router_aux
-            )
-        else:
-            self.aux_loss = 0.0
+        self.aux_loss = self._compute_auxiliary_loss(
+            logits.view(-1, self.num_experts),
+            probs.view(-1, self.num_experts),
+            top_indices,
+        ) if return_aux_loss and self.training else 0.0
 
         return (output, self.aux_loss) if return_aux_loss else output
 
-    def reset_cache(self):
-        """Reset internal caches"""
-        self._token_indices_cache = None
-        self._last_batch_size = 0
-        if hasattr(self.dispatcher, "cleanup_buffers"):
-            self.dispatcher.cleanup_buffers()
-        self.expert_utilization.zero_()
+    def get_expert_stats(self) -> Dict[str, torch.Tensor]:
+        entropy = -torch.sum(self.expert_usage * torch.log(self.expert_usage + self._eps))
+        return {
+            "expert_usage": self.expert_usage.clone(),
+            "usage_entropy": entropy,
+            "max_usage": self.expert_usage.max(),
+            "min_usage": self.expert_usage.min(),
+        }
+
+    def log_imbalance(self):
+        imbalance = self.expert_usage.max() / (self.expert_usage.mean() + self._eps)
+        print(f"[MoEFeedForward] Expert imbalance ratio: {imbalance:.3f}")
+
+    def reset_stats(self):
+        self.expert_usage.zero_()
+        self.aux_loss = 0.0
+        if hasattr(self.router, "reset_stats"):
+            self.router.reset_stats()
 
 
 class MoE_SwiGLUExpert(nn.Module):
@@ -967,9 +760,6 @@ class MoE_FFNExpert(nn.Module):
 # End of MoE
 ############################################################
 
-import torch
-import torch.nn as nn
-
 
 class _StandardFeedForwardBlock(nn.Module):
     """
@@ -1019,6 +809,7 @@ class _StandardFeedForwardBlock(nn.Module):
             x = self.activation(x)
             x = self.dropout(x)
             return self.linear2(x)
+
 
 class FeedForwardBlock(nn.Module):
     """

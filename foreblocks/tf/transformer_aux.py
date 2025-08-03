@@ -107,104 +107,64 @@ if TRITON_AVAILABLE:
             if beta is not None:
                 out = out + beta
             return out
-
-
 class AdaptiveRMSNorm(nn.Module):
-    """Optimized Adaptive RMSNorm with automatic backend selection"""
-
     def __init__(self, d_model, eps=1e-5, use_bias=False):
         super().__init__()
-        self.eps = eps
-        self.use_bias = use_bias
         self.d_model = d_model
+        self.register_buffer("eps", torch.tensor(eps, dtype=torch.float32))
 
-        # Parameters (keeping original names for compatibility)
         self.alpha = nn.Parameter(torch.ones(d_model))
-        if use_bias:
-            self.beta = nn.Parameter(torch.zeros(d_model))
-        else:
-            self.beta = None
+        self.beta = nn.Parameter(torch.zeros(d_model)) if use_bias else None
 
-        # Cache configuration for faster runtime checks
         self._triton_threshold = 4096
-
-        print(f"[Normalization] AdaptiveRMSNorm (Triton available: {TRITON_AVAILABLE})")
+        self._use_triton = TRITON_AVAILABLE
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Optimized forward with smart backend selection"""
-        # Use optimized backend selection logic
         if (
-            TRITON_AVAILABLE
-            and x.is_cuda
+            self._use_triton and x.is_cuda
             and x.numel() > self._triton_threshold
             and not torch.jit.is_scripting()
         ):
-            # Try Triton path
-            return triton_fused_norm_scale(x, self.alpha, self.beta, self.eps)
+            return triton_fused_norm_scale(x, self.alpha, self.beta, self.eps.item())
 
-        # Optimized PyTorch fallback
-        variance = x.pow(2).mean(dim=-1, keepdim=True)
-        inv_rms = torch.rsqrt(variance + self.eps)
+        var = x.pow(2).mean(dim=-1, keepdim=True)
+        inv_rms = torch.rsqrt(var + self.eps)
         out = x * inv_rms * self.alpha
 
-        if self.use_bias and self.beta is not None:
+        if self.beta is not None:
             out = out + self.beta
-
         return out
 
 
 class AdaptiveLayerNorm(nn.Module):
-    """Optimized Adaptive LayerNorm with better performance"""
-
     def __init__(self, d_model, eps=1e-5, use_bias=False):
         super().__init__()
-
-        # Use PyTorch's highly optimized LayerNorm as base
-        self.norm = nn.LayerNorm(d_model, eps=eps)
-
-        # Adaptive scaling parameters (keeping original names)
+        self.d_model = d_model
+        self.eps = eps
         self.alpha = nn.Parameter(torch.ones(d_model))
-        self.use_bias = use_bias
+        self.beta = nn.Parameter(torch.zeros(d_model)) if use_bias else None
 
-        if use_bias:
-            self.beta = nn.Parameter(torch.zeros(d_model))
-        else:
-            self.beta = None
+        self.norm = nn.LayerNorm(d_model, eps=eps)
+        self._triton_threshold = 8192
+        self._use_triton = TRITON_AVAILABLE
 
-        # Cache for faster runtime checks
-        self._triton_threshold = (
-            8192  # Higher threshold for LayerNorm since it's already optimized
-        )
-
-        print(
-            f"[Normalization] Adaptive LayerNorm (Triton available: {TRITON_AVAILABLE})"
-        )
-
-    def forward(self, x):
-        """Optimized forward with efficient scaling"""
-        # Apply standard LayerNorm (already highly optimized)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         normed = self.norm(x)
-
-        # Apply adaptive scaling efficiently
         if (
-            TRITON_AVAILABLE
-            and x.is_cuda
+            self._use_triton and x.is_cuda
             and x.numel() > self._triton_threshold
             and not torch.jit.is_scripting()
         ):
-            # Use Triton for scaling if beneficial
             try:
                 return triton_fused_norm_scale(
-                    normed, self.alpha, self.beta if self.use_bias else None, eps=0.0
+                    normed, self.alpha, self.beta, self.eps
                 )
             except Exception:
-                pass  # Fall through to PyTorch version
+                pass  # fallback to PyTorch
 
-        # Optimized PyTorch scaling
         out = normed * self.alpha
-        if self.use_bias and self.beta is not None:
+        if self.beta is not None:
             out = out + self.beta
-
         return out
 
 

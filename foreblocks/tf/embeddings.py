@@ -1,5 +1,5 @@
 import math
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -20,10 +20,7 @@ except ImportError:
 
 class PositionalEncoding(nn.Module):
     """
-    Optimized positional encoding with support for:
-    - Standard sinusoidal encoding
-    - Scaled injection
-    - Dynamic dimension handling
+    Optimized sinusoidal positional encoding with caching, scaling, and dynamic fallback.
     """
 
     def __init__(
@@ -32,102 +29,82 @@ class PositionalEncoding(nn.Module):
         dropout: float = 0.1,
         max_len: int = 10000,
         scale: float = 1.0,
+        cache_limit: int = 8,
     ):
         super().__init__()
         self.d_model = d_model
         self.scale = scale
         self.max_len = max_len
+        self.cache_limit = cache_limit
 
-        # Use nn.Dropout with inplace for memory efficiency
-        self.dropout = nn.Dropout(p=dropout, inplace=True) if dropout > 0 else None
-
-        # Precompute sinusoidal encoding with better numerical stability
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else None
         self._build_pe_cache(d_model, max_len)
 
-        # Cache for dynamic dimensions
         self._pe_cache: Dict[int, torch.Tensor] = {}
 
     def _build_pe_cache(self, d_model: int, max_len: int):
-        """Build positional encoding cache with optimized computation"""
-        # Use log-space computation for better numerical stability
         position = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
-
-        # Optimized div_term computation
         div_term = torch.exp(
-            torch.arange(0, d_model, 2, dtype=torch.float32)
+            torch.arange(0, d_model, 2, dtype=torch.float32) * (-math.log(10000.0) / d_model)
+        )
+
+        pe = torch.empty(max_len, d_model, dtype=torch.float32)
+        angles = position * div_term
+        pe[:, 0::2] = torch.sin(angles)
+        if d_model % 2 == 1:
+            pe[:, 1::2] = torch.cos(angles[:, :-1])
+            pe[:, -1] = 0
+        else:
+            pe[:, 1::2] = torch.cos(angles)
+
+        self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
+
+    def _create_pe_for_dim(self, d_model: int, seq_len: int, device: torch.device) -> torch.Tensor:
+        if d_model in self._pe_cache:
+            cached_pe = self._pe_cache[d_model]
+            if cached_pe.size(1) >= seq_len:
+                return cached_pe[:, :seq_len]
+
+        position = torch.arange(seq_len, dtype=torch.float32, device=device).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, dtype=torch.float32, device=device)
             * (-math.log(10000.0) / d_model)
         )
 
-        # Pre-allocate with correct size
-        sinusoid = torch.empty(max_len, d_model, dtype=torch.float32)
-
-        # Vectorized sine/cosine computation
+        pe = torch.empty(seq_len, d_model, dtype=torch.float32, device=device)
         angles = position * div_term
-        sinusoid[:, 0::2] = torch.sin(angles)
+        pe[:, 0::2] = torch.sin(angles)
         if d_model % 2 == 1:
-            # Handle odd dimensions
-            sinusoid[:, 1::2] = torch.cos(angles[:, :-1])
-            sinusoid[:, -1] = 0  # Set last dimension to 0 for odd d_model
+            pe[:, 1::2] = torch.cos(angles[:, :-1])
+            pe[:, -1] = 0
         else:
-            sinusoid[:, 1::2] = torch.cos(angles)
+            pe[:, 1::2] = torch.cos(angles)
 
-        self.register_buffer("pe", sinusoid.unsqueeze(0), persistent=False)
+        # Cache with eviction
+        if d_model <= 2048:
+            if len(self._pe_cache) >= self.cache_limit:
+                self._pe_cache.pop(next(iter(self._pe_cache)))
+            self._pe_cache[d_model] = pe.unsqueeze(0)
 
-    def _create_pe_for_dim(
-        self, d_model: int, seq_len: int, device: torch.device
-    ) -> torch.Tensor:
-        """Create PE for different dimensions with caching"""
-        cache_key = d_model
+        return pe.unsqueeze(0)
 
-        if cache_key not in self._pe_cache:
-            # Create PE for this dimension
-            position = torch.arange(
-                seq_len, dtype=torch.float32, device=device
-            ).unsqueeze(1)
-            div_term = torch.exp(
-                torch.arange(0, d_model, 2, dtype=torch.float32, device=device)
-                * (-math.log(10000.0) / d_model)
-            )
-
-            pe = torch.empty(seq_len, d_model, dtype=torch.float32, device=device)
-            angles = position * div_term
-            pe[:, 0::2] = torch.sin(angles)
-
-            if d_model % 2 == 1:
-                pe[:, 1::2] = torch.cos(angles[:, :-1])
-                pe[:, -1] = 0
-            else:
-                pe[:, 1::2] = torch.cos(angles)
-
-            # Cache only if reasonable size
-            if d_model <= 2048:  # Prevent memory explosion
-                self._pe_cache[cache_key] = pe.unsqueeze(0)
-
-            return pe.unsqueeze(0)
-
-        cached_pe = self._pe_cache[cache_key]
-        if cached_pe.size(1) >= seq_len:
-            return cached_pe[:, :seq_len]
-        else:
-            # Need to extend cache
-            return self._create_pe_for_dim(d_model, seq_len, device)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Optimized forward with minimal overhead"""
+    def forward(self, x: torch.Tensor, pos: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        x: (B, T, D)
+        pos: Optional position index tensor for advanced use (e.g., decoding)
+        """
         B, T, D = x.shape
 
         if D == self.d_model and T <= self.max_len:
-            # Fast path: use pre-computed PE
             pe = self.pe[:, :T]
         else:
-            # Slow path: create PE on-demand
             pe = self._create_pe_for_dim(D, T, x.device)
 
-        # Use fused operation
-        x = x.add_(pe, alpha=self.scale)  # In-place addition with scaling
+        if pos is not None:
+            pe = pe[:, pos]  # Use dynamic position indexing
 
-        return self.dropout(x) if self.dropout is not None else x
-
+        x = x.add_(pe, alpha=self.scale)
+        return self.dropout(x) if self.dropout else x
 
 class InformerTimeEmbedding(nn.Module):
     """Optimized time embedding with better memory efficiency"""
@@ -193,10 +170,9 @@ class InformerTimeEmbedding(nn.Module):
         # Apply normalization
         return embs * self.norm_factor
 
-
 class RotaryEmbedding(nn.Module):
     """
-    Optimized Rotary position embeddings (RoPE) with better caching.
+    Optimized Rotary position embeddings (RoPE) with improved caching, optional interpolation, and memory control.
     """
 
     def __init__(self, dim: int, base: int = 10000, max_seq_len: int = 8192):
@@ -204,59 +180,32 @@ class RotaryEmbedding(nn.Module):
         self.dim = dim
         self.base = base
         self.max_seq_len = max_seq_len
-
-        # Pre-compute and cache frequencies for common sequence lengths
         self._precompute_freqs(max_seq_len)
 
     def _precompute_freqs(self, max_seq_len: int):
-        """Pre-compute frequencies for better performance"""
         theta = 1.0 / (self.base ** (torch.arange(0, self.dim, 2) / self.dim))
         seq_idx = torch.arange(max_seq_len).float().unsqueeze(1)
         freqs = seq_idx * theta
-
-        # Pre-compute cos and sin
         cos_freqs = freqs.cos()
         sin_freqs = freqs.sin()
-
-        # Store as buffers for automatic device handling
         self.register_buffer("cos_cached", cos_freqs, persistent=False)
         self.register_buffer("sin_cached", sin_freqs, persistent=False)
 
-    def _get_freqs(self, seq_len: int, device: torch.device):
-        """Get frequencies with fallback for longer sequences"""
+    def _get_freqs(self, seq_len: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
         if seq_len <= self.max_seq_len:
             return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
         else:
-            # Fallback for longer sequences
-            theta = 1.0 / (
-                self.base ** (torch.arange(0, self.dim, 2, device=device) / self.dim)
-            )
+            theta = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, device=device) / self.dim))
             seq_idx = torch.arange(seq_len, device=device).float().unsqueeze(1)
             freqs = seq_idx * theta
             return freqs.cos(), freqs.sin()
 
     @staticmethod
-    def apply_rotary_pos_emb(
-        x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-    ) -> torch.Tensor:
-        """Optimized rotary embedding application"""
-        # Reshape for broadcasting
+    def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         cos = cos.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim/2]
         sin = sin.unsqueeze(0).unsqueeze(0)
-
-        # Split into even and odd
         x1, x2 = x[..., 0::2], x[..., 1::2]
-
-        # Apply rotation
-        rotated_x1 = x1 * cos - x2 * sin
-        rotated_x2 = x1 * sin + x2 * cos
-
-        # Interleave back
-        rotated_x = torch.empty_like(x)
-        rotated_x[..., 0::2] = rotated_x1
-        rotated_x[..., 1::2] = rotated_x2
-
-        return rotated_x
+        return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
 
     def forward(
         self,
@@ -264,62 +213,50 @@ class RotaryEmbedding(nn.Module):
         k: torch.Tensor,
         q_pos: Optional[torch.Tensor] = None,
         k_pos: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        rotary_dim: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Optimized forward pass
-        q, k: [batch, heads, seq_len, head_dim]
+        q, k: [B, H, T, D]
+        q_pos/k_pos: Optional position indices [T] or [B, T]
         """
         *_, q_len, head_dim = q.shape
         _, _, k_len, _ = k.shape
 
-        # Only apply to rotary dimensions
-        rotary_dim = min(head_dim, self.dim)
+        rotary_dim = rotary_dim or min(self.dim, head_dim)
+        assert rotary_dim % 2 == 0, "Rotary dimension must be even"
 
-        if rotary_dim == head_dim:
-            # Full rotation
-            q_rot, k_rot = q, k
-            q_pass = k_pass = None
-        else:
-            # Partial rotation
-            q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
-            k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+        # Slice for rotation and pass-through
+        q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+        k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
 
-        # Get frequencies
-        max_len = max(q_len, k_len)
-        cos_freqs, sin_freqs = self._get_freqs(max_len, q.device)
+        cos_freqs, sin_freqs = self._get_freqs(max(q_len, k_len), q.device)
 
-        # Handle custom positions
-        if q_pos is not None:
-            q_cos = cos_freqs[q_pos]
-            q_sin = sin_freqs[q_pos]
-        else:
-            q_cos = cos_freqs[:q_len]
-            q_sin = sin_freqs[:q_len]
+        def index_freqs(pos, cos, sin):
+            if pos is not None:
+                if not pos.dtype.is_floating_point:
+                    pos = pos.long()
+                return cos[pos], sin[pos]
+            return cos[: pos.shape[-1] if pos is not None else q_len], sin[: pos.shape[-1] if pos is not None else q_len]
 
-        if k_pos is not None:
-            k_cos = cos_freqs[k_pos]
-            k_sin = sin_freqs[k_pos]
-        else:
-            k_cos = cos_freqs[:k_len]
-            k_sin = sin_freqs[:k_len]
+        q_cos, q_sin = index_freqs(q_pos, cos_freqs, sin_freqs)
+        k_cos, k_sin = index_freqs(k_pos, cos_freqs, sin_freqs)
 
-        # Apply rotary embedding
         q_rot = self.apply_rotary_pos_emb(q_rot, q_cos, q_sin)
         k_rot = self.apply_rotary_pos_emb(k_rot, k_cos, k_sin)
 
-        # Concatenate with non-rotated parts if needed
-        if q_pass is not None:
-            q_out = torch.cat([q_rot, q_pass], dim=-1)
-            k_out = torch.cat([k_rot, k_pass], dim=-1)
-        else:
-            q_out, k_out = q_rot, k_rot
+        q_out = torch.cat([q_rot, q_pass], dim=-1) if q_pass.numel() > 0 else q_rot
+        k_out = torch.cat([k_rot, k_pass], dim=-1) if k_pass.numel() > 0 else k_rot
 
         return q_out, k_out
 
-    def clear_cache(self):
-        """Clear dynamic cache to free memory"""
-        # Only persistent buffers remain
-        pass
+    def clear_cache(self, full: bool = False):
+        """
+        Optional method to clear cached frequencies.
+        If full=True, clears all precomputed buffers (not recommended unless you need memory).
+        """
+        if full:
+            del self.cos_cached
+            del self.sin_cached
 
 
 if HAVE_TRITON:
