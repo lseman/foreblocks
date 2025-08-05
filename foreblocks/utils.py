@@ -260,6 +260,12 @@ class Trainer:
                 total_loss += kl_weight * kl_div
                 loss_components["kl_loss"] = (kl_weight * kl_div).item()
 
+        aux_loss = self.model.get_aux_loss() if hasattr(self.model, "get_aux_loss") else None
+        # print(f"Auxiliary loss: {aux_loss}")
+
+        loss_components["aux_loss"] = aux_loss.item() if aux_loss is not None else 0.0
+        total_loss += loss_components["aux_loss"]
+        
         self.last_loss_components = loss_components
         return total_loss
 

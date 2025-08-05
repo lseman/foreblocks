@@ -26,36 +26,27 @@ if TRITON_AVAILABLE:
         use_bias: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
-        """Optimized fused normalization + scaling kernel"""
+        """Triton kernel: Fused RMSNorm + scaling + optional bias"""
         row_id = tl.program_id(0)
-
-        # Load data
         col_offsets = tl.arange(0, BLOCK_SIZE)
         mask = col_offsets < hidden_size
 
-        x_row_ptr = x_ptr + row_id * hidden_size
-        out_row_ptr = out_ptr + row_id * hidden_size
+        x_row = x_ptr + row_id * hidden_size
+        out_row = out_ptr + row_id * hidden_size
 
-        # Load input row
-        x = tl.load(x_row_ptr + col_offsets, mask=mask, other=0.0)
-
-        # Compute RMS normalization
+        x = tl.load(x_row + col_offsets, mask=mask, other=0.0)
         x_squared = x * x
         mean_x_squared = tl.sum(x_squared, axis=0) / hidden_size
         inv_rms = tl.rsqrt(mean_x_squared + eps)
 
-        # Load scale parameters
         alpha = tl.load(alpha_ptr + col_offsets, mask=mask, other=1.0)
-
-        # Apply normalization and scaling
         out = x * inv_rms * alpha
 
         if use_bias:
             beta = tl.load(beta_ptr + col_offsets, mask=mask, other=0.0)
-            out = out + beta
+            out += beta
 
-        # Store result
-        tl.store(out_row_ptr + col_offsets, out, mask=mask)
+        tl.store(out_row + col_offsets, out, mask=mask)
 
     def triton_fused_norm_scale(
         x: torch.Tensor,
@@ -63,125 +54,202 @@ if TRITON_AVAILABLE:
         beta: Optional[torch.Tensor] = None,
         eps: float = 1e-5,
     ) -> torch.Tensor:
-        """Optimized Triton-based fused normalization + scaling"""
-        if not TRITON_AVAILABLE or not x.is_cuda or x.numel() < 4096:
-            # Fallback to optimized PyTorch implementation
-            variance = x.pow(2).mean(dim=-1, keepdim=True)
-            inv_rms = torch.rsqrt(variance + eps)
+        """Torch wrapper for Triton fused norm kernel"""
+        if not TRITON_AVAILABLE or not x.is_cuda or x.numel() < 2048:
+            var = x.pow(2).mean(dim=-1, keepdim=True)
+            inv_rms = torch.rsqrt(var + eps)
             out = x * inv_rms * alpha
             if beta is not None:
-                out = out + beta
+                out += beta
             return out
 
-        try:
-            batch_size, seq_len, hidden_size = x.shape
-            batch_seq_size = batch_size * seq_len
+        batch_size, seq_len, hidden_size = x.shape
+        flat = x.view(-1, hidden_size).contiguous()
+        out = torch.empty_like(flat)
 
-            # Reshape for kernel processing
-            x_flat = x.view(batch_seq_size, hidden_size)
-            out = torch.empty_like(x_flat)
+        BLOCK_SIZE = triton.next_power_of_2(min(hidden_size, 1024))
+        grid = (flat.shape[0],)
 
-            # Launch kernel
-            grid = (batch_seq_size,)
-            BLOCK_SIZE = triton.next_power_of_2(min(hidden_size, 1024))
+        fused_norm_scale_kernel[grid](
+            flat,
+            alpha,
+            beta,
+            out,
+            flat.shape[0],
+            hidden_size,
+            eps=eps,
+            use_bias=beta is not None,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
 
-            fused_norm_scale_kernel[grid](
-                x_flat,
-                alpha,
-                beta,
-                out,
-                batch_seq_size,
-                hidden_size,
-                eps=eps,
-                use_bias=beta is not None,
-                BLOCK_SIZE=BLOCK_SIZE,
-            )
+        return out.view_as(x)
 
-            return out.view_as(x)
 
-        except Exception:
-            # Fallback to PyTorch if Triton fails
-            variance = x.pow(2).mean(dim=-1, keepdim=True)
-            inv_rms = torch.rsqrt(variance + eps)
-            out = x * inv_rms * alpha
-            if beta is not None:
-                out = out + beta
-            return out
+def should_use_triton(x: torch.Tensor, threshold: int = 2048) -> bool:
+    return (
+        TRITON_AVAILABLE
+        and x.is_cuda
+        and x.numel() > threshold
+        and not torch.jit.is_scripting()
+    )
+
+
 class AdaptiveRMSNorm(nn.Module):
-    def __init__(self, d_model, eps=1e-5, use_bias=False):
+    def __init__(
+        self,
+        d_model: int,
+        eps: float = 1e-5,
+        use_bias: bool = False,
+        dropout: float = 0.0,
+        global_rms: bool = False,
+    ):
+        """
+        Adaptive RMSNorm with optional bias and Triton acceleration.
+        Args:
+            d_model: number of features
+            eps: numerical stability
+            use_bias: add beta parameter
+            dropout: apply dropout after norm (0 = no dropout)
+            global_rms: use global RMSNorm across B, T
+        """
         super().__init__()
-        self.d_model = d_model
-        self.register_buffer("eps", torch.tensor(eps, dtype=torch.float32))
+        self.eps = torch.tensor(eps, dtype=torch.float32)
+        self.global_rms = global_rms
 
         self.alpha = nn.Parameter(torch.ones(d_model))
         self.beta = nn.Parameter(torch.zeros(d_model)) if use_bias else None
-
-        self._triton_threshold = 4096
-        self._use_triton = TRITON_AVAILABLE
+        self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if (
-            self._use_triton and x.is_cuda
-            and x.numel() > self._triton_threshold
-            and not torch.jit.is_scripting()
-        ):
-            return triton_fused_norm_scale(x, self.alpha, self.beta, self.eps.item())
+        if should_use_triton(x):
+            out = triton_fused_norm_scale(x, self.alpha, self.beta, self.eps.item())
+            return self.dropout(out)
 
-        var = x.pow(2).mean(dim=-1, keepdim=True)
+        if self.global_rms:
+            var = x.pow(2).mean(dim=(-2, -1), keepdim=True)
+        else:
+            var = x.pow(2).mean(dim=-1, keepdim=True)
+
         inv_rms = torch.rsqrt(var + self.eps)
         out = x * inv_rms * self.alpha
-
         if self.beta is not None:
-            out = out + self.beta
-        return out
+            out += self.beta
+        return self.dropout(out)
+
+    def forward_export(self, x: torch.Tensor) -> torch.Tensor:
+        return self.forward(x)
 
 
 class AdaptiveLayerNorm(nn.Module):
-    def __init__(self, d_model, eps=1e-5, use_bias=False):
+    def __init__(
+        self,
+        d_model: int,
+        eps: float = 1e-5,
+        use_bias: bool = False,
+        dropout: float = 0.0,
+    ):
+        """
+        Adaptive LayerNorm wrapper with optional bias and dropout.
+        Applies standard LayerNorm first, then scale/bias with Triton fallback.
+        """
         super().__init__()
-        self.d_model = d_model
         self.eps = eps
+        self.norm = nn.LayerNorm(d_model, eps=eps)
         self.alpha = nn.Parameter(torch.ones(d_model))
         self.beta = nn.Parameter(torch.zeros(d_model)) if use_bias else None
-
-        self.norm = nn.LayerNorm(d_model, eps=eps)
-        self._triton_threshold = 8192
-        self._use_triton = TRITON_AVAILABLE
+        self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        normed = self.norm(x)
-        if (
-            self._use_triton and x.is_cuda
-            and x.numel() > self._triton_threshold
-            and not torch.jit.is_scripting()
-        ):
+        x = self.norm(x)
+
+        if should_use_triton(x, threshold=8192):
             try:
-                return triton_fused_norm_scale(
-                    normed, self.alpha, self.beta, self.eps
-                )
+                x = triton_fused_norm_scale(x, self.alpha, self.beta, self.eps)
+                return self.dropout(x)
             except Exception:
-                pass  # fallback to PyTorch
+                pass
 
-        out = normed * self.alpha
+        out = x * self.alpha
         if self.beta is not None:
-            out = out + self.beta
-        return out
+            out += self.beta
+        return self.dropout(out)
+
+    def forward_export(self, x: torch.Tensor) -> torch.Tensor:
+        return self.forward(x)
+
+if TRITON_AVAILABLE:
+        
+    @triton.jit
+    def rms_norm_kernel(
+        x_ptr, out_ptr, weight_ptr,
+        eps, n_cols,
+        BLOCK_SIZE: tl.constexpr
+    ):
+        row_idx = tl.program_id(0)
+        col_offsets = tl.arange(0, BLOCK_SIZE)
+        x_row_ptr = x_ptr + row_idx * n_cols + col_offsets
+        out_row_ptr = out_ptr + row_idx * n_cols + col_offsets
+
+        mask = col_offsets < n_cols
+
+        x = tl.load(x_row_ptr, mask=mask, other=0.0)
+        x2 = x * x
+        x2 = tl.where(mask, x2, 0.0)
+        rms = tl.sqrt(tl.sum(x2, axis=0) / n_cols + eps)
+        x_norm = x / rms
+
+        weight = tl.load(weight_ptr + col_offsets, mask=mask)
+        y = x_norm * weight
+        tl.store(out_row_ptr, y, mask=mask)
 
 
-def create_norm_layer(norm_type: str, d_model: int, eps: float) -> nn.Module:
+    class RMSNorm(torch.nn.Module):
+        def __init__(self, d_model: int, eps: float = 1e-5):
+            super().__init__()
+            self.eps = eps
+            self.d_model = d_model
+            self.weight = nn.Parameter(torch.ones(d_model))
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            assert x.is_cuda, "Triton RMSNorm requires CUDA input"
+
+            orig_shape = x.shape
+            last_dim = orig_shape[-1]
+            x_flat = x.reshape(-1, last_dim)
+            y_flat = torch.empty_like(x_flat)
+
+            grid = lambda meta: (x_flat.shape[0],)
+            rms_norm_kernel[grid](
+                x_flat, y_flat, self.weight,
+                self.eps, last_dim,
+                BLOCK_SIZE=triton.next_power_of_2(last_dim),
+            )
+            return y_flat.view(orig_shape)
+else:
+    class RMSNorm(nn.Module):
+        def __init__(self, d_model: int, eps: float = 1e-5):
+            super().__init__()
+            self.eps = eps
+            self.weight = nn.Parameter(torch.ones(d_model))
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            var = x.pow(2).mean(dim=-1, keepdim=True)
+            normed = x * torch.rsqrt(var + self.eps)
+            return normed * self.weight
+
+
+def create_norm_layer(norm_type: str, d_model: int, eps: float = 1e-5) -> nn.Module:
     """
-    Optimized normalization layer factory (keeping original interface).
-    Now with better performance and smarter backend selection.
+    Factory for creating SOTA normalization layers.
+    Supports 'layer', 'rms', 'adaptive_layer', 'adaptive_rms'.
     """
-
     if norm_type == "layer":
         return nn.LayerNorm(d_model, eps=eps)
     elif norm_type == "rms":
-        return AdaptiveRMSNorm(d_model, eps=eps)
+        return RMSNorm(d_model, eps=eps)
     elif norm_type == "adaptive_layer":
         return AdaptiveLayerNorm(d_model, eps=eps)
     elif norm_type == "adaptive_rms":
         return AdaptiveRMSNorm(d_model, eps=eps)
     else:
-        # Default fallback
-        return nn.LayerNorm(d_model, eps=eps)
+        raise ValueError(f"Unsupported norm type: {norm_type}")

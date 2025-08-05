@@ -170,6 +170,7 @@ class InformerTimeEmbedding(nn.Module):
         # Apply normalization
         return embs * self.norm_factor
 
+
 class RotaryEmbedding(nn.Module):
     """
     Optimized Rotary position embeddings (RoPE) with improved caching, optional interpolation, and memory control.
@@ -183,8 +184,8 @@ class RotaryEmbedding(nn.Module):
         self._precompute_freqs(max_seq_len)
 
     def _precompute_freqs(self, max_seq_len: int):
-        theta = 1.0 / (self.base ** (torch.arange(0, self.dim, 2) / self.dim))
-        seq_idx = torch.arange(max_seq_len).float().unsqueeze(1)
+        theta = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
+        seq_idx = torch.arange(max_seq_len, dtype=torch.float32).unsqueeze(1)
         freqs = seq_idx * theta
         cos_freqs = freqs.cos()
         sin_freqs = freqs.sin()
@@ -195,16 +196,20 @@ class RotaryEmbedding(nn.Module):
         if seq_len <= self.max_seq_len:
             return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
         else:
-            theta = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, device=device) / self.dim))
+            theta = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, device=device).float() / self.dim))
             seq_idx = torch.arange(seq_len, device=device).float().unsqueeze(1)
             freqs = seq_idx * theta
             return freqs.cos(), freqs.sin()
 
     @staticmethod
     def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        cos = cos.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim/2]
+        """
+        x: [B, H, T, D], cos/sin: [1, 1, T, D//2]
+        """
+        cos = cos.unsqueeze(0).unsqueeze(0)
         sin = sin.unsqueeze(0).unsqueeze(0)
         x1, x2 = x[..., 0::2], x[..., 1::2]
+        assert x1.shape == cos.shape, f"x1 {x1.shape}, cos {cos.shape}"
         return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
 
     def forward(
@@ -231,15 +236,15 @@ class RotaryEmbedding(nn.Module):
 
         cos_freqs, sin_freqs = self._get_freqs(max(q_len, k_len), q.device)
 
-        def index_freqs(pos, cos, sin):
+        def index_freqs(pos, cos, sin, default_len):
             if pos is not None:
                 if not pos.dtype.is_floating_point:
                     pos = pos.long()
                 return cos[pos], sin[pos]
-            return cos[: pos.shape[-1] if pos is not None else q_len], sin[: pos.shape[-1] if pos is not None else q_len]
+            return cos[:default_len], sin[:default_len]
 
-        q_cos, q_sin = index_freqs(q_pos, cos_freqs, sin_freqs)
-        k_cos, k_sin = index_freqs(k_pos, cos_freqs, sin_freqs)
+        q_cos, q_sin = index_freqs(q_pos, cos_freqs, sin_freqs, q_len)
+        k_cos, k_sin = index_freqs(k_pos, cos_freqs, sin_freqs, k_len)
 
         q_rot = self.apply_rotary_pos_emb(q_rot, q_cos, q_sin)
         k_rot = self.apply_rotary_pos_emb(k_rot, k_cos, k_sin)
@@ -250,15 +255,34 @@ class RotaryEmbedding(nn.Module):
         return q_out, k_out
 
     def clear_cache(self, full: bool = False):
-        """
-        Optional method to clear cached frequencies.
-        If full=True, clears all precomputed buffers (not recommended unless you need memory).
-        """
+        """Clear cached cosine/sine frequencies (optional)."""
         if full:
-            del self.cos_cached
-            del self.sin_cached
+            if hasattr(self, "cos_cached"):
+                del self.cos_cached
+            if hasattr(self, "sin_cached"):
+                del self.sin_cached
 
 
+class RoPEPositionalEncoding(nn.Module):
+    """
+    Wrapper to make RoPE compatible with traditional positional encoding interface.
+    This allows drop-in replacement of PositionalEncoding.
+    """
+    
+    def __init__(self, d_model: int, max_len: int = 5000, scale: float = 1.0):
+        super().__init__()
+        self.d_model = d_model
+        self.scale = scale
+        # RoPE will be applied later in attention, so this is just a placeholder
+        self.rope = RotaryEmbedding(d_model, max_seq_len=max_len)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Traditional interface: just return input scaled.
+        RoPE will be applied in the attention mechanism.
+        """
+        return x * self.scale
+    
 if HAVE_TRITON:
 
     @triton.jit

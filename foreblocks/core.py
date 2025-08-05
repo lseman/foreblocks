@@ -93,6 +93,20 @@ class BaseForecastingModel(nn.Module):
             enc_dim = getattr(encoder, "hidden_size", self.hidden_size)
             self.init_decoder_input_layer = nn.Linear(enc_dim, self.output_size)
 
+    def get_aux_loss(self) -> torch.Tensor:
+        loss = torch.tensor(0.0, device=getattr(self, "device", "cpu"))
+
+        if hasattr(self, "encoder") and hasattr(self.encoder, "aux_loss"):
+            loss = loss + self.encoder.aux_loss
+
+        if hasattr(self, "decoder") and hasattr(self.decoder, "aux_loss"):
+            loss = loss + self.decoder.aux_loss
+
+        if hasattr(self, "aux_loss"):
+            loss = loss + self.aux_loss
+
+        return loss
+
     # === Architecture Setup ===
     def _setup_architecture(self, encoder, decoder, input_processor_output_size):
         if self.multi_encoder_decoder:
@@ -226,15 +240,17 @@ class BaseForecastingModel(nn.Module):
         """Transformer-style autoregressive decoder"""
         batch_size = src.size(0)
         memory = self.encoder(src)
-        decoder_input = src[:, -self.label_len :, :] if self.label_len else src[:, -1:, :]
+        decoder_input = (
+            src[:, -self.label_len :, :] if self.label_len else src[:, -1:, :]
+        )
 
         outputs = []
         use_tf = self._should_use_teacher_forcing(targets, epoch)
 
         for t in range(self.pred_len):
             out = self.decoder(decoder_input, memory)
-            #print(f"Decoder output shape at step {t}: {out.shape}")
-            #saida = self.output_head(out)
+            # print(f"Decoder output shape at step {t}: {out.shape}")
+            # saida = self.output_head(out)
             out = self._finalize_output(out)
             outputs.append(out)
 
@@ -358,9 +374,9 @@ class BaseForecastingModel(nn.Module):
         Merge bidirectional RNN hidden states by summing forward and backward directions.
         Assumes hidden.shape[0] = num_layers * 2.
         """
-        assert (
-            hidden.size(0) % 2 == 0
-        ), "Expected even number of layers for bidirectional RNN"
+        assert hidden.size(0) % 2 == 0, (
+            "Expected even number of layers for bidirectional RNN"
+        )
         num_layers = hidden.size(0) // 2
         # safer reshape for FX-tracing and edge cases
         reshaped = hidden.reshape(num_layers, 2, *hidden.shape[1:])
@@ -454,8 +470,6 @@ class BaseForecastingModel(nn.Module):
 # ==================== FORECASTING MODEL WITH DISTILLATION ====================
 
 
-
-
 class ForecastingModel(BaseForecastingModel):
     """
     Forecasting model with knowledge distillation support.
@@ -480,9 +494,9 @@ class ForecastingModel(BaseForecastingModel):
         attention_distillation_layers: Optional[List[str]] = None,
         **kwargs,
     ):
-        assert (
-            distillation_mode in self.VALID_DISTILLATION_MODES
-        ), f"Invalid distillation mode: {distillation_mode}"
+        assert distillation_mode in self.VALID_DISTILLATION_MODES, (
+            f"Invalid distillation mode: {distillation_mode}"
+        )
 
         super().__init__(**kwargs)
 
@@ -679,9 +693,9 @@ class ForecastingModel(BaseForecastingModel):
                 self._setup_distillation()
 
     def enable_distillation(self, mode="output", teacher_model=None):
-        assert (
-            mode in self.VALID_DISTILLATION_MODES
-        ), f"Invalid distillation mode: {mode}"
+        assert mode in self.VALID_DISTILLATION_MODES, (
+            f"Invalid distillation mode: {mode}"
+        )
         self.distillation_mode = mode
         if teacher_model is not None:
             self.set_teacher_model(teacher_model)
@@ -750,6 +764,7 @@ class ForecastingModel(BaseForecastingModel):
 
 # ==================== QUANTIZED FORECASTING MODEL ====================
 
+
 class QuantizedForecastingModel(ForecastingModel):
     """
     Forecasting model with quantization support on top of distillation-enabled model.
@@ -766,8 +781,9 @@ class QuantizedForecastingModel(ForecastingModel):
         per_channel_quantization: bool = False,
         **kwargs,
     ):
-        assert quantization_mode in self.VALID_QUANTIZATION_MODES, \
+        assert quantization_mode in self.VALID_QUANTIZATION_MODES, (
             f"Invalid quantization mode: {quantization_mode}"
+        )
 
         super().__init__(**kwargs)
 
@@ -864,7 +880,10 @@ class QuantizedForecastingModel(ForecastingModel):
         self.eval()
         with torch.no_grad():
             for batch in dataloader:
-                src, targets = batch[0], batch[1] if isinstance(batch, (tuple, list)) else (batch, None)
+                src, targets = (
+                    batch[0],
+                    batch[1] if isinstance(batch, (tuple, list)) else (batch, None),
+                )
                 _ = self.forward(src, targets)
 
     def finalize_quantization(self):
@@ -889,7 +908,9 @@ class QuantizedForecastingModel(ForecastingModel):
         model = copy.deepcopy(self)
         for name, module in model.named_modules():
             if isinstance(module, nn.Linear):
-                quant_module = QuantLayerClass.from_float(module, self.quantization_config)
+                quant_module = QuantLayerClass.from_float(
+                    module, self.quantization_config
+                )
                 self._assign_module_by_name(model, name, quant_module)
         model.is_quantized = True
         return model
@@ -904,10 +925,19 @@ class QuantizedForecastingModel(ForecastingModel):
 
     # ==================== FORWARD / METRICS ====================
 
-    def forward(self, src, targets=None, time_features=None, epoch=None, return_teacher_outputs=False):
+    def forward(
+        self,
+        src,
+        targets=None,
+        time_features=None,
+        epoch=None,
+        return_teacher_outputs=False,
+    ):
         if self.quantization_mode in {"ptq", "qat", "static"}:
             src = self.quant(src)
-        output = super().forward(src, targets, time_features, epoch, return_teacher_outputs)
+        output = super().forward(
+            src, targets, time_features, epoch, return_teacher_outputs
+        )
         if self.quantization_mode in {"ptq", "qat", "static"}:
             if isinstance(output, tuple):
                 output = (self.dequant(output[0]), output[1])
@@ -921,7 +951,7 @@ class QuantizedForecastingModel(ForecastingModel):
         buffer_count = sum(b.numel() for b in self.buffers())
         element_count = param_count + buffer_count
         element_size = 1 if self.is_quantized else 4
-        size_mb = element_count * element_size / (1024 ** 2)
+        size_mb = element_count * element_size / (1024**2)
         return {
             "parameters": param_count,
             "buffers": buffer_count,
@@ -930,12 +960,16 @@ class QuantizedForecastingModel(ForecastingModel):
             "is_quantized": self.is_quantized,
         }
 
-    def benchmark_inference(self, input_tensor: torch.Tensor, num_runs=100, warmup_runs=10):
+    def benchmark_inference(
+        self, input_tensor: torch.Tensor, num_runs=100, warmup_runs=10
+    ):
         result = super().benchmark_inference(input_tensor, num_runs, warmup_runs)
-        result.update({
-            "quantization_mode": self.quantization_mode,
-            "is_quantized": self.is_quantized,
-        })
+        result.update(
+            {
+                "quantization_mode": self.quantization_mode,
+                "is_quantized": self.is_quantized,
+            }
+        )
         return result
 
     def get_quantization_info(self) -> Dict[str, Union[str, int, float, bool]]:
@@ -946,5 +980,7 @@ class QuantizedForecastingModel(ForecastingModel):
             "symmetric": self.symmetric_quantization,
             "per_channel": self.per_channel_quantization,
             "is_quantized": self.is_quantized,
-            "num_quantizable_layers": sum(isinstance(m, nn.Linear) for m in self.modules()),
+            "num_quantizable_layers": sum(
+                isinstance(m, nn.Linear) for m in self.modules()
+            ),
         }
