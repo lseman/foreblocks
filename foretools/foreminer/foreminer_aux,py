@@ -1,0 +1,259 @@
+import os
+import sys
+import traceback
+import warnings
+from abc import ABC, abstractmethod
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from functools import lru_cache, wraps
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from foreminer import *
+from scipy.spatial.distance import pdist, squareform
+from scipy.stats import (
+    anderson,
+    entropy,
+    jarque_bera,
+    ks_2samp,
+    kurtosis,
+    linregress,
+    normaltest,
+    shapiro,
+    skew,
+    wasserstein_distance,
+)
+from sklearn.cluster import DBSCAN, KMeans, SpectralClustering
+from sklearn.covariance import EllipticEnvelope, EmpiricalCovariance
+from sklearn.decomposition import PCA, FastICA, TruncatedSVD
+from sklearn.ensemble import IsolationForest
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.feature_selection import mutual_info_regression
+from sklearn.manifold import TSNE
+from sklearn.metrics import (
+    calinski_harabasz_score,
+    davies_bouldin_score,
+    silhouette_score,
+)
+from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.svm import OneClassSVM
+from statsmodels.tools.sm_exceptions import ValueWarning
+from statsmodels.tsa.seasonal import STL
+from statsmodels.tsa.stattools import acf, adfuller, kpss, pacf
+
+# Suppress known noise warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=ValueWarning)
+
+def _run_analysis_worker(strategy_name, strategy, df, config):
+    try:
+        result = strategy.analyze(df, config)
+        return strategy_name, result, None
+    except Exception as e:
+        tb = traceback.format_exc()
+        return strategy_name, None, f"{e}\n{tb}"
+# Optional imports with graceful fallbacks
+OPTIONAL_IMPORTS = {}
+for lib_name, import_stmt in [
+    ("phik", "import phik"),
+    ("networkx", "import networkx as nx"),
+    ("umap", "from umap import UMAP"),
+    ("hdbscan", "from hdbscan import HDBSCAN"),
+    ("hierarchy", "from scipy.cluster.hierarchy import dendrogram, linkage, fcluster"),
+    ("shap", "import shap"),
+    ("missingno", "import missingno as msno"),
+    ("mice", "from statsmodels.imputation.mice import MICEData"),
+]:
+    try:
+        exec(import_stmt)
+        OPTIONAL_IMPORTS[lib_name] = True
+    except ImportError:
+        OPTIONAL_IMPORTS[lib_name] = False
+
+
+def requires_library(lib_name: str):
+    """Decorator to check if optional library is available"""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if not OPTIONAL_IMPORTS.get(lib_name, False):
+                raise ImportError(
+                    f"{lib_name} not available. Install with: pip install {lib_name}"
+                )
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+# ============================================================================
+# CORE CONFIGURATION & UTILITIES
+# ============================================================================
+
+
+@dataclass
+class AnalysisConfig:
+    """Centralized configuration for analysis parameters"""
+
+    confidence_level: float = 0.05
+    max_clusters: int = 10
+    sample_size_threshold: int = 5000
+    correlation_threshold: float = 0.7
+    outlier_contamination: float = 0.1
+    time_series_min_periods: int = 24
+    plot_style: str = "seaborn-v0_8"
+    figure_size: Tuple[int, int] = (12, 8)
+    random_state: int = 42
+
+
+class AnalysisHooks:
+    """Hook system for extensible analysis pipeline"""
+
+    def __init__(self):
+        self._hooks: Dict[str, List[Callable]] = {}
+        self._plotters: Dict[str, List[Callable]] = {}
+
+    def register_hook(self, event: str, callback: Callable) -> None:
+        """Register a callback for an analysis event"""
+        if event not in self._hooks:
+            self._hooks[event] = []
+        self._hooks[event].append(callback)
+
+    def register_plotter(self, analysis_type: str, plotter: Callable) -> None:
+        """Register a plotter for an analysis type"""
+        if analysis_type not in self._plotters:
+            self._plotters[analysis_type] = []
+        self._plotters[analysis_type].append(plotter)
+
+    def trigger(self, event: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Trigger all hooks for an event"""
+        results = {}
+        for callback in self._hooks.get(event, []):
+            try:
+                result = callback(context)
+                if result:
+                    results[callback.__name__] = result
+            except Exception as e:
+                print(f"Hook {callback.__name__} failed: {e}")
+        return results
+
+    def plot(
+        self,
+        analysis_type: str,
+        data: Any,
+        original_df: pd.DataFrame,
+        config: AnalysisConfig,
+    ) -> None:
+        """Trigger all plotters for an analysis type"""
+        for plotter in self._plotters.get(analysis_type, []):
+            try:
+                plotter(data, original_df, config)
+            except Exception as e:
+                print(f"Plotter {plotter.__name__} failed: {e}")
+
+
+# ============================================================================
+# ANALYSIS STRATEGIES (Strategy Pattern)
+# ============================================================================
+
+
+class AnalysisStrategy(ABC):
+    """Base class for all analysis strategies"""
+
+    @abstractmethod
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+        pass
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        pass
+
+
+# ============================================================================
+# CORRELATION STRATEGIES
+# ============================================================================
+
+
+class CorrelationStrategy(ABC):
+    @abstractmethod
+    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
+        pass
+
+
+class PearsonCorrelation(CorrelationStrategy):
+    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
+        return data.corr(method="pearson")
+
+
+class SpearmanCorrelation(CorrelationStrategy):
+    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
+        return data.corr(method="spearman")
+
+
+class MutualInfoCorrelation(CorrelationStrategy):
+    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
+        n_features = len(data.columns)
+        mi_matrix = np.zeros((n_features, n_features))
+
+        for i, col_i in enumerate(data.columns):
+            for j, col_j in enumerate(data.columns):
+                if i == j:
+                    mi_matrix[i, j] = 1.0
+                else:
+                    X = data[[col_i]].fillna(data[col_i].median())
+                    y = data[col_j].fillna(data[col_j].median())
+                    mi_matrix[i, j] = mutual_info_regression(X, y, random_state=42)[0]
+
+        return pd.DataFrame(mi_matrix, index=data.columns, columns=data.columns)
+
+
+class DistanceCorrelation(CorrelationStrategy):
+    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
+        def dcorr(X: np.ndarray, Y: np.ndarray) -> float:
+            n = len(X)
+            a = squareform(pdist(X.reshape(-1, 1), "euclidean"))
+            b = squareform(pdist(Y.reshape(-1, 1), "euclidean"))
+
+            A = a - a.mean(axis=0) - a.mean(axis=1)[:, None] + a.mean()
+            B = b - b.mean(axis=0) - b.mean(axis=1)[:, None] + b.mean()
+
+            dcov2_xy = (A * B).sum() / (n * n)
+            dcov2_xx = (A * A).sum() / (n * n)
+            dcov2_yy = (B * B).sum() / (n * n)
+
+            return (
+                np.sqrt(dcov2_xy) / np.sqrt(np.sqrt(dcov2_xx * dcov2_yy))
+                if dcov2_xx * dcov2_yy > 0
+                else 0
+            )
+
+        n_features = len(data.columns)
+        matrix = np.zeros((n_features, n_features))
+
+        for i, col_i in enumerate(data.columns):
+            for j, col_j in enumerate(data.columns):
+                matrix[i, j] = dcorr(
+                    data[col_i].dropna().values, data[col_j].dropna().values
+                )
+
+        return pd.DataFrame(matrix, index=data.columns, columns=data.columns)
+
+
+@requires_library("phik")
+class PhiKCorrelation(CorrelationStrategy):
+    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
+        return data.phik_matrix()
+
