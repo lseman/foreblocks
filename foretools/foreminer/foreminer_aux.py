@@ -1,13 +1,9 @@
-import os
-import sys
 import traceback
 import warnings
 from abc import ABC, abstractmethod
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
-from functools import lru_cache, wraps
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass
+from functools import wraps
+from typing import Any, Callable, Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -15,37 +11,12 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy.spatial.distance import pdist, squareform
-from scipy.stats import (
-    anderson,
-    entropy,
-    jarque_bera,
-    ks_2samp,
-    kurtosis,
-    linregress,
-    normaltest,
-    shapiro,
-    skew,
-    wasserstein_distance,
-)
-from sklearn.cluster import DBSCAN, KMeans, SpectralClustering
-from sklearn.covariance import EllipticEnvelope, EmpiricalCovariance
-from sklearn.decomposition import PCA, FastICA, TruncatedSVD
-from sklearn.ensemble import IsolationForest
+from scipy.stats import kurtosis, skew
+from sklearn.decomposition import PCA
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.feature_selection import mutual_info_regression
-from sklearn.manifold import TSNE
-from sklearn.metrics import (
-    calinski_harabasz_score,
-    davies_bouldin_score,
-    silhouette_score,
-)
-from sklearn.mixture import GaussianMixture
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.preprocessing import RobustScaler, StandardScaler
-from sklearn.svm import OneClassSVM
+from sklearn.preprocessing import StandardScaler
 from statsmodels.tools.sm_exceptions import ValueWarning
-from statsmodels.tsa.seasonal import STL
-from statsmodels.tsa.stattools import acf, adfuller, kpss, pacf
 
 # Suppress known noise warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -96,6 +67,50 @@ def requires_library(lib_name: str):
         return wrapper
 
     return decorator
+
+warnings.filterwarnings("ignore")
+
+# Optional dependencies
+try:
+    HAS_PYOD = True
+except ImportError:
+    HAS_PYOD = False
+
+try:
+    HAS_HDBSCAN = True
+except ImportError:
+    HAS_HDBSCAN = False
+
+try:
+    HAS_KMEDOIDS = True
+except ImportError:
+    HAS_KMEDOIDS = False
+
+try:
+    HAS_PYCLUSTERING = True
+except ImportError:
+    HAS_PYCLUSTERING = False
+
+try:
+    HAS_UMAP = True
+except ImportError:
+    HAS_UMAP = False
+
+try:
+    HAS_OPENTSNE = True
+except ImportError:
+    HAS_OPENTSNE = False
+
+try:
+    HAS_TRIMAP = True
+except ImportError:
+    HAS_TRIMAP = False
+
+try:
+    HAS_MULTICORE_TSNE = True
+except ImportError:
+    HAS_MULTICORE_TSNE = False
+
 
 
 # ============================================================================
