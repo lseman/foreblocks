@@ -8,7 +8,6 @@ from typing import List, Optional, Tuple
 # Visualization
 # ============================
 import matplotlib.pyplot as plt
-
 # ============================
 # External Libraries - Core
 # ============================
@@ -18,7 +17,6 @@ import torch
 from joblib import Parallel, delayed
 from scipy.signal import find_peaks, welch
 from scipy.stats import entropy, kurtosis, skew
-
 # ============================
 # Scientific Computing & ML
 # ============================
@@ -29,7 +27,6 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 from .pre.ewt import *
-
 # ============================
 # Internal Imports
 # ============================
@@ -819,7 +816,6 @@ class TimeSeriesPreprocessor:
                 from fancyimpute import IterativeImputer as FancyIter
             except ImportError:
                 try:
-                    from sklearn.experimental import enable_iterative_imputer
                     from sklearn.impute import IterativeImputer as FancyIter
                 except ImportError:
                     raise ImportError("Iterative imputer not available.")
@@ -846,7 +842,7 @@ class TimeSeriesPreprocessor:
             Transformed data
         """
         try:
-            from ewtpy import EWT1D
+            pass
         except ImportError:
             warnings.warn("PyEWT not installed. Skipping EWT.")
             return data

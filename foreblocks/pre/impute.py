@@ -559,7 +559,6 @@ class SAITSImputer:
 
         # Training loop with progress bar
         best_loss = float("inf")
-        patience = 10
         patience_counter = 0
 
         with tqdm(range(self.epochs), desc="Training SAITS") as pbar:

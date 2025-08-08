@@ -9,7 +9,6 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import matplotlib.patches as patches
-
 # ─── Third-Party Libraries ────────────────────────────────────────
 import matplotlib.pyplot as plt
 import numpy as np

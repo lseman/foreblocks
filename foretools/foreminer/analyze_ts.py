@@ -218,15 +218,12 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                 # Hodrick-Prescott filter trend
                 try:
                     from statsmodels.tsa.filters.hp_filter import hpfilter
-
                     hp_cycle, hp_trend = hpfilter(series, lamb=1600)
                     hp_trend_strength = np.var(hp_trend) / np.var(series)
-                except:
+                except Exception:
                     hp_trend_strength = None
 
-                trend_classification = self._classify_trend(
-                    slope, p_value, series.std()
-                )
+                trend_classification = self._classify_trend(slope, p_value, series.std())
 
                 patterns[f"{col}_trend"] = {
                     "linear_slope": slope,
@@ -245,13 +242,13 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                 # Advanced seasonality detection with multiple methods
                 seasonality_results = {}
 
-                # STL decomposition
+                # STL decomposition (safe seasonal window)
                 try:
-                    # Auto-detect period or use default
-                    period = self._estimate_period(series)
-                    stl = STL(
-                        series, seasonal=min(period, len(series) // 3), period=period
-                    )
+                    period = max(2, self._estimate_period(series))
+                    seasonal = max(7, min(period, len(series) // 3))
+                    if seasonal % 2 == 0:
+                        seasonal += 1
+                    stl = STL(series, seasonal=seasonal, period=period)
                     stl_decomp = stl.fit()
 
                     seasonal_var = np.var(stl_decomp.seasonal)
@@ -272,7 +269,6 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                             ),
                         }
                     )
-
                 except Exception as e:
                     seasonality_results["stl_error"] = str(e)
 
@@ -281,7 +277,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                     if len(series) >= 36:  # Minimum for X-13
                         x13_arima_analysis(series)
                         seasonality_results["x13_seasonal_strength"] = "computed"
-                except:
+                except Exception:
                     pass
 
                 # Periodogram analysis for dominant frequencies
@@ -289,9 +285,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                     freqs, psd = periodogram(series, scaling="density")
                     dominant_freq_idx = np.argmax(psd[1:]) + 1  # Skip DC component
                     dominant_period = (
-                        1 / freqs[dominant_freq_idx]
-                        if freqs[dominant_freq_idx] > 0
-                        else None
+                        1 / freqs[dominant_freq_idx] if freqs[dominant_freq_idx] > 0 else None
                     )
                     seasonality_results.update(
                         {
@@ -299,7 +293,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                             "spectral_peak_power": psd[dominant_freq_idx],
                         }
                     )
-                except:
+                except Exception:
                     pass
 
                 patterns[f"{col}_seasonality"] = seasonality_results
@@ -308,33 +302,17 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                 volatility_results = {}
                 returns = series.pct_change().dropna()
                 if len(returns) > 20:
-                    # Multiple volatility measures
-                    rolling_vol = returns.rolling(
-                        window=min(10, len(returns) // 3)
-                    ).std()
+                    rolling_vol = returns.rolling(window=min(10, len(returns) // 3)).std()
 
                     # ARCH effects test
-                    returns**2
                     arch_lm_stat = self._arch_lm_test(returns)
 
                     # Volatility persistence
-                    vol_autocorr = (
-                        rolling_vol.dropna().autocorr(lag=1)
-                        if len(rolling_vol.dropna()) > 1
-                        else 0
-                    )
+                    rv = rolling_vol.dropna()
+                    vol_autocorr = rv.autocorr(lag=1) if len(rv) > 1 else 0
 
-                    # GARCH-like volatility clustering
-                    high_vol_periods = (
-                        (rolling_vol > rolling_vol.quantile(0.8)).sum()
-                        if len(rolling_vol.dropna()) > 0
-                        else 0
-                    )
-                    vol_clustering_score = (
-                        high_vol_periods / len(rolling_vol.dropna())
-                        if len(rolling_vol.dropna()) > 0
-                        else 0
-                    )
+                    high_vol_periods = (rv > rv.quantile(0.8)).sum() if len(rv) > 0 else 0
+                    vol_clustering_score = (high_vol_periods / len(rv)) if len(rv) > 0 else 0
 
                     volatility_results = {
                         "returns_volatility": returns.std(),
@@ -342,11 +320,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                         "vol_autocorr": vol_autocorr,
                         "arch_lm_statistic": arch_lm_stat,
                         "vol_clustering_score": vol_clustering_score,
-                        "volatility_persistent": (
-                            abs(vol_autocorr) > 0.3
-                            if not np.isnan(vol_autocorr)
-                            else False
-                        ),
+                        "volatility_persistent": (abs(vol_autocorr) > 0.3) if not np.isnan(vol_autocorr) else False,
                     }
 
                 patterns[f"{col}_volatility"] = volatility_results
@@ -355,12 +329,10 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                 break_results = {}
                 if len(series) > 50:
                     try:
-                        # Simple CUSUM test for structural breaks
                         cumsum = np.cumsum(series - series.mean())
                         max_cusum = np.max(np.abs(cumsum))
                         cusum_stat = max_cusum / (series.std() * np.sqrt(len(series)))
 
-                        # Find potential break points
                         break_point_idx = np.argmax(np.abs(cumsum))
                         break_point_pct = break_point_idx / len(series)
 
@@ -368,18 +340,10 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                             "cusum_statistic": cusum_stat,
                             "potential_break_point": break_point_pct,
                             "break_significant": cusum_stat > 1.5,  # Rough threshold
-                            "pre_break_mean": (
-                                series.iloc[:break_point_idx].mean()
-                                if break_point_idx > 10
-                                else None
-                            ),
-                            "post_break_mean": (
-                                series.iloc[break_point_idx:].mean()
-                                if len(series) - break_point_idx > 10
-                                else None
-                            ),
+                            "pre_break_mean": series.iloc[:break_point_idx].mean() if break_point_idx > 10 else None,
+                            "post_break_mean": series.iloc[break_point_idx:].mean() if len(series) - break_point_idx > 10 else None,
                         }
-                    except:
+                    except Exception:
                         pass
 
                 patterns[f"{col}_structural_breaks"] = break_results
@@ -388,6 +352,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                 print(f"Enhanced temporal pattern analysis failed for {col}: {e}")
 
         return patterns
+
 
     def _classify_trend(self, slope: float, p_value: float, std: float) -> str:
         """Classify trend direction and strength"""
@@ -1536,24 +1501,18 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                     from scipy.fft import fft, fftfreq
 
                     # Detrend the series
-                    detrended = (
-                        series - series.rolling(window=min(12, len(series) // 4)).mean()
-                    )
-                    detrended = detrended.dropna()
+                    dt = series - series.rolling(window=min(12, len(series) // 4)).mean()
+                    dt = dt.dropna()
 
-                    if len(detrended) > 20:
-                        # Compute FFT
-                        fft_vals = fft(detrended.values)
-                        freqs = fftfreq(len(detrended))
+                    if len(dt) > 20:
+                        fft_vals = fft(dt.values)
+                        freqs = fftfreq(len(dt))
 
-                        # Get power spectrum
                         power_spectrum = np.abs(fft_vals) ** 2
 
-                        # Find dominant frequencies (excluding DC component)
                         positive_freqs = freqs[: len(freqs) // 2][1:]  # Exclude DC
                         positive_power = power_spectrum[: len(power_spectrum) // 2][1:]
 
-                        # Find peaks in power spectrum
                         peak_indices = find_peaks(
                             positive_power, height=np.percentile(positive_power, 85)
                         )[0]
@@ -1569,8 +1528,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                                         "period": period,
                                         "frequency": freq,
                                         "power": power,
-                                        "power_normalized": power
-                                        / np.sum(positive_power),
+                                        "power_normalized": power / np.sum(positive_power),
                                     }
                                 )
 
@@ -1580,48 +1538,37 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                             ),
                             "total_cycles_detected": len(dominant_cycles),
                         }
-
-                except:
+                except Exception:
                     pass
 
                 # Wavelet Analysis (simplified)
                 try:
                     from scipy.signal import cwt, ricker
 
-                    # Use Ricker wavelets for different scales
                     scales = np.arange(2, min(50, len(series) // 4))
                     coefficients = cwt(series.values, ricker, scales)
 
-                    # Find scales with highest energy
                     energy_per_scale = np.sum(coefficients**2, axis=1)
                     dominant_scale_idx = np.argmax(energy_per_scale)
                     dominant_scale = scales[dominant_scale_idx]
 
                     cyclical_analysis["wavelet_analysis"] = {
                         "dominant_scale": dominant_scale,
-                        "energy_at_dominant_scale": energy_per_scale[
-                            dominant_scale_idx
-                        ],
+                        "energy_at_dominant_scale": energy_per_scale[dominant_scale_idx],
                         "scales_analyzed": len(scales),
                     }
-
-                except:
+                except Exception:
                     pass
 
-                # Business cycle detection (for economic data)
+                # Business cycle detection (HP filter)
                 try:
-                    # Hodrick-Prescott filter for cycle extraction
                     from statsmodels.tsa.filters.hp_filter import hpfilter
 
-                    hp_cycle, hp_trend = hpfilter(
-                        series, lamb=1600
-                    )  # Standard lambda for quarterly data
+                    hp_cycle, hp_trend = hpfilter(series, lamb=1600)
 
-                    # Analyze cycle characteristics
                     cycle_peaks = find_peaks(hp_cycle)[0]
                     cycle_troughs = find_peaks(-hp_cycle)[0]
 
-                    # Calculate cycle durations
                     cycle_durations = []
                     if len(cycle_peaks) > 1:
                         cycle_durations = np.diff(cycle_peaks)
@@ -1631,38 +1578,34 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                         "trend_component_std": hp_trend.std(),
                         "n_peaks": len(cycle_peaks),
                         "n_troughs": len(cycle_troughs),
-                        "avg_cycle_duration": (
-                            np.mean(cycle_durations) if cycle_durations else None
-                        ),
+                        "avg_cycle_duration": (np.mean(cycle_durations) if cycle_durations else None),
                         "cycle_amplitude": np.max(hp_cycle) - np.min(hp_cycle),
                     }
-
-                except:
+                except Exception:
                     pass
 
-                # Phase analysis
+                # Phase analysis (recompute detrended safely)
                 try:
-                    # Hilbert transform for instantaneous phase
-                    from scipy.signal import hilbert
+                    dt = series - series.rolling(window=min(12, len(series) // 4)).mean()
+                    dt = dt.dropna()
+                    if len(dt) > 20:
+                        from scipy.signal import hilbert
 
-                    analytic_signal = hilbert(detrended.values)
-                    instantaneous_phase = np.angle(analytic_signal)
-                    instantaneous_amplitude = np.abs(analytic_signal)
+                        analytic_signal = hilbert(dt.values)
+                        instantaneous_phase = np.angle(analytic_signal)
+                        instantaneous_amplitude = np.abs(analytic_signal)
 
-                    # Phase consistency measure
-                    phase_diff = np.diff(instantaneous_phase)
-                    phase_consistency = (
-                        1 - np.std(phase_diff) / np.pi
-                    )  # Normalized to [0,1]
+                        phase_diff = np.diff(instantaneous_phase)
+                        phase_consistency = 1 - np.std(phase_diff) / np.pi  # [0,1]
 
-                    cyclical_analysis["phase_analysis"] = {
-                        "phase_consistency": phase_consistency,
-                        "mean_amplitude": np.mean(instantaneous_amplitude),
-                        "amplitude_variability": np.std(instantaneous_amplitude)
-                        / np.mean(instantaneous_amplitude),
-                    }
-
-                except:
+                        cyclical_analysis["phase_analysis"] = {
+                            "phase_consistency": phase_consistency,
+                            "mean_amplitude": float(np.mean(instantaneous_amplitude)),
+                            "amplitude_variability": float(
+                                np.std(instantaneous_amplitude) / (np.mean(instantaneous_amplitude) + 1e-12)
+                            ),
+                        }
+                except Exception:
                     pass
 
                 cyclical_results[col] = cyclical_analysis
@@ -1684,109 +1627,62 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         try:
             from statsmodels.tsa.stattools import grangercausalitytests
 
-            # Test causality between all pairs of variables
-            for i, var1 in enumerate(
-                numeric_cols[:5]
-            ):  # Limit to first 5 for computational efficiency
-                for var2 in enumerate(numeric_cols[:5]):
-                    if var1 != var2 and var1 in data.columns and var2 in data.columns:
+            cols = numeric_cols[:5]  # limit for compute
+            for i, var1 in enumerate(cols):
+                for j in range(i + 1, len(cols)):
+                    var2 = cols[j]
+                    if var1 not in data.columns or var2 not in data.columns:
+                        continue
 
-                        # Prepare data
-                        pair_data = data[[var1, var2]].dropna()
-                        if len(pair_data) < 50:  # Need sufficient data
-                            continue
+                    # Prepare data
+                    pair_data = data[[var1, var2]].dropna()
+                    if len(pair_data) < 50:
+                        continue
 
-                        try:
-                            # Test both directions
-                            max_lag = min(12, len(pair_data) // 10)
+                    max_lag = min(12, len(pair_data) // 10)
 
-                            # var1 -> var2
-                            try:
-                                test_data_12 = pair_data[
-                                    [var2, var1]
-                                ].values  # Note: order matters in granger test
-                                gc_result_12 = grangercausalitytests(
-                                    test_data_12, maxlag=max_lag, verbose=False
-                                )
+                    # var1 -> var2 (note order: [dependent, exogenous])
+                    best_lag_12, best_p_val_12, causality_12 = None, 1.0, False
+                    try:
+                        res12 = grangercausalitytests(
+                            pair_data[[var2, var1]].values, maxlag=max_lag, verbose=False
+                        )
+                        pvals12 = {lag: res12[lag][0]["ssr_ftest"][1] for lag in res12}
+                        best_lag_12 = min(pvals12, key=pvals12.get)
+                        best_p_val_12 = pvals12[best_lag_12]
+                        causality_12 = best_p_val_12 < 0.05
+                    except Exception:
+                        pass
 
-                                # Extract p-values for different lags
-                                p_values_12 = {}
-                                for lag in range(1, max_lag + 1):
-                                    if lag in gc_result_12:
-                                        p_val = gc_result_12[lag][0]["ssr_ftest"][
-                                            1
-                                        ]  # F-test p-value
-                                        p_values_12[lag] = p_val
+                    # var2 -> var1
+                    best_lag_21, best_p_val_21, causality_21 = None, 1.0, False
+                    try:
+                        res21 = grangercausalitytests(
+                            pair_data[[var1, var2]].values, maxlag=max_lag, verbose=False
+                        )
+                        pvals21 = {lag: res21[lag][0]["ssr_ftest"][1] for lag in res21}
+                        best_lag_21 = min(pvals21, key=pvals21.get)
+                        best_p_val_21 = pvals21[best_lag_21]
+                        causality_21 = best_p_val_21 < 0.05
+                    except Exception:
+                        pass
 
-                                # Find best lag (lowest p-value)
-                                if p_values_12:
-                                    best_lag_12 = min(
-                                        p_values_12.keys(), key=lambda x: p_values_12[x]
-                                    )
-                                    best_p_val_12 = p_values_12[best_lag_12]
-                                    causality_12 = best_p_val_12 < 0.05
-                                else:
-                                    best_lag_12 = None
-                                    best_p_val_12 = 1.0
-                                    causality_12 = False
-
-                            except:
-                                best_lag_12 = None
-                                best_p_val_12 = 1.0
-                                causality_12 = False
-
-                            # var2 -> var1
-                            try:
-                                test_data_21 = pair_data[[var1, var2]].values
-                                gc_result_21 = grangercausalitytests(
-                                    test_data_21, maxlag=max_lag, verbose=False
-                                )
-
-                                p_values_21 = {}
-                                for lag in range(1, max_lag + 1):
-                                    if lag in gc_result_21:
-                                        p_val = gc_result_21[lag][0]["ssr_ftest"][1]
-                                        p_values_21[lag] = p_val
-
-                                if p_values_21:
-                                    best_lag_21 = min(
-                                        p_values_21.keys(), key=lambda x: p_values_21[x]
-                                    )
-                                    best_p_val_21 = p_values_21[best_lag_21]
-                                    causality_21 = best_p_val_21 < 0.05
-                                else:
-                                    best_lag_21 = None
-                                    best_p_val_21 = 1.0
-                                    causality_21 = False
-
-                            except:
-                                best_lag_21 = None
-                                best_p_val_21 = 1.0
-                                causality_21 = False
-
-                            # Store results if any causality detected
-                            if causality_12 or causality_21:
-                                pair_key = f"{var1}_vs_{var2}"
-                                causality_results[pair_key] = {
-                                    "var1_causes_var2": {
-                                        "significant": causality_12,
-                                        "best_lag": best_lag_12,
-                                        "p_value": best_p_val_12,
-                                    },
-                                    "var2_causes_var1": {
-                                        "significant": causality_21,
-                                        "best_lag": best_lag_21,
-                                        "p_value": best_p_val_21,
-                                    },
-                                    "bidirectional": causality_12 and causality_21,
-                                    "sample_size": len(pair_data),
-                                }
-
-                        except Exception as e:
-                            print(
-                                f"Granger causality test failed for {var1} vs {var2}: {e}"
-                            )
-                            continue
+                    if causality_12 or causality_21:
+                        key = f"{var1}_vs_{var2}"
+                        causality_results[key] = {
+                            "var1_causes_var2": {
+                                "significant": causality_12,
+                                "best_lag": best_lag_12,
+                                "p_value": best_p_val_12,
+                            },
+                            "var2_causes_var1": {
+                                "significant": causality_21,
+                                "best_lag": best_lag_21,
+                                "p_value": best_p_val_21,
+                            },
+                            "bidirectional": bool(causality_12 and causality_21),
+                            "sample_size": int(len(pair_data)),
+                        }
 
         except ImportError:
             print("statsmodels not available for Granger causality tests")

@@ -5,62 +5,45 @@ warnings.filterwarnings("ignore")
 # ============================================
 # ✅ Core Python & Concurrency
 # ============================================
-import functools
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from functools import lru_cache, partial
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from functools import lru_cache
+from typing import Callable, Dict, List, Tuple
 
 # ============================================
 # ✅ GPyTorch & BoTorch (Gaussian Processes)
 # ============================================
 import gpytorch
-
 # ============================================
 # ✅ Visualization
 # ============================================
 import matplotlib.pyplot as plt
-import numba
-
 # ============================================
 # ✅ Numerical & Scientific Computing
 # ============================================
 import numpy as np
 import pandas as pd
-
 # ============================================
 # ✅ PyTorch Core
 # ============================================
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from botorch.fit import fit_gpytorch_mll
 from botorch.models.approximate_gp import SingleTaskVariationalGP
-from botorch.models.transforms import Normalize, Standardize
-from botorch.models.transforms.outcome import Standardize as OutcomeStandardize
+from botorch.models.transforms import Standardize
 from gpytorch.constraints import GreaterThan
 from gpytorch.kernels import MaternKernel, ScaleKernel
 from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.means import ConstantMean
 from gpytorch.mlls import ExactMarginalLogLikelihood
-from gpytorch.mlls.exact_marginal_log_likelihood import (
-    ExactMarginalLogLikelihood as ExactMarginalLogLikelihoodExplicit,
-)
 from gpytorch.mlls.variational_elbo import VariationalELBO
 from gpytorch.models import ExactGP
 from gpytorch.settings import fast_pred_var
-from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy
-
+from gpytorch.variational import CholeskyVariationalDistribution
 # ============================================
 # ✅ Parallelism & Performance
 # ============================================
-from joblib import Parallel, delayed
-from numba import jit, prange
-from scipy.linalg import sqrtm
 from scipy.spatial.distance import cdist
-from scipy.stats import chi2, norm
-from scipy.stats.qmc import Sobol
+from scipy.stats import norm
 
 # ============================================
 # ✅ Project-Specific
@@ -296,6 +279,7 @@ def fit_exact_gp_model(model, likelihood, max_iter=75, patience=10):
     return model
 
 from torch.autograd import grad
+
 
 class SurrogateManager:
     """
@@ -725,12 +709,10 @@ def compute_region_spread(regions):
 
 
 import numpy as np
-from scipy.spatial import KDTree, cKDTree
 from scipy.spatial.distance import cdist
-from scipy.stats import chi2, norm
-from scipy.stats.qmc import Sobol
+from scipy.stats import norm
 
-import numpy as np
+
 class AcquisitionManager:
     def __init__(self, config, eta=0.3):
         self.config = config
@@ -879,13 +861,12 @@ class AcquisitionManager:
             "recent_rewards": self.recent_rewards.tolist()
         }
 
-import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import Counter
-import numpy as np
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import numpy as np
 from scipy.spatial.distance import cdist
+
 
 class CandidateGenerator:
     """
@@ -1137,7 +1118,6 @@ def compute_coverage(X, centers, radii):
 
 
 import numpy as np
-from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
 from scipy.stats import norm
 from sobol_seq import i4_sobol_generate
@@ -1158,9 +1138,6 @@ from scipy.spatial.distance import cdist
 from scipy.stats import norm
 from sobol_seq import i4_sobol_generate
 
-import numpy as np
-
-import numpy as np
 
 class TrustRegion:
     """
@@ -1382,10 +1359,12 @@ class TrustRegion:
         self.health_decay_factor *= factor
 
 
-import numpy as np
 import collections
-from scipy.stats import norm
+
+import numpy as np
 from scipy.spatial.distance import cdist
+from scipy.stats import norm
+
 
 def np_safe(x, default=0.0):
     """Replace NaNs/Infs with finite default."""

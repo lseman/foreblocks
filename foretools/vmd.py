@@ -1003,7 +1003,7 @@ def clear_memory_pool():
 # ==============================================
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    
+
     # Create test signal
     t = np.linspace(0, 8, 1500)
     fs = len(t)/(t[-1]-t[0])

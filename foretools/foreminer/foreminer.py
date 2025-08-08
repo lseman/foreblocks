@@ -383,1288 +383,683 @@ class DatasetAnalyzer:
 
     # ========================================================================
     # COMPREHENSIVE INSIGHTS AND REPORTING
-    # ========================================================================
-
+        # ========================================================================
     def print_detailed_insights(self):
-        """Print comprehensive detailed insights with specific recommendations"""
-        print("=" * 100)
-        print("🔬 DATASET ANALYSIS")
-        print("=" * 100)
+        """Generate a comprehensive, well-formatted dataset analysis report (cleaner/DRY)."""
 
-        # Dataset Overview
-        print(f"\n📊 DATASET OVERVIEW")
-        print("-" * 40)
-        print(f"   Shape: {self.df.shape[0]:,} rows × {self.df.shape[1]} columns")
-        print(f"   Numeric features: {len(self._numeric_cols)}")
-        print(f"   Categorical features: {len(self._categorical_cols)}")
-        print(
-            f"   Memory usage: {self.df.memory_usage(deep=True).sum() / (1024**2):.2f} MB"
-        )
+        # ----------------------- Formatting helpers -----------------------
+        def section(title, level=1):
+            bars = {1: "="*80, 2: "-"*50, 3: "-"*30, 4: "-"*30}
+            prefixes = {1: "📊 ", 2: "🔍 ", 3: "🔎 ", 4: "   🔍 "}
+            indent = "" if level < 4 else "   "
+            print()
+            if level == 1:
+                print(bars[1]); print(f"{prefixes[1]}{title.upper()}"); print(bars[1])
+            elif level == 2:
+                print(f"{prefixes[2]}{title.upper()}"); print(bars[2])
+            elif level == 3:
+                print(f"{prefixes[3]}{title}"); print("   " + bars[3])
+            else:
+                print(f"{prefixes[4]}{title}"); print("      " + bars[4])
 
-        missing_pct = (
-            self.df.isnull().sum().sum() / (self.df.shape[0] * self.df.shape[1])
-        ) * 100
-        print(f"   Missing values: {missing_pct:.2f}% of total dataset")
+        def metric(label, value, unit="", status=None, indent=0):
+            status_emoji = {"excellent":"🟢","good":"🟡","fair":"🟠","poor":"🔴","warning":"⚠️","info":"ℹ️"}
+            emoji = status_emoji.get(status, "")
+            print(f"{'   '*indent}• {label}: {value}{unit} {emoji}")
 
-        # Run analyses if not already cached
-        required_analyses = ["distributions", "correlations", "outliers", "patterns"]
-        for analysis in required_analyses:
-            if analysis not in self._results_cache:
+        def rec(text, priority="normal", indent=0):
+            icons = {"high":"🚨","medium":"⚠️","low":"💡","normal":"💡"}
+            print(f"{'   '*indent}{icons.get(priority,'💡')} {text}")
+
+        def pct(num, den, zeros_as="0.0%"):
+            if not den: return zeros_as
+            return f"{(num/den)*100:.1f}%"
+
+        def safe_get(name, key=None, default=None):
+            """Get a cached analysis result, running it if needed."""
+            if name not in self._results_cache:
                 try:
-                    result = self._strategies[analysis].analyze(self.df, self.config)
-                    self._results_cache[analysis] = result
+                    self._results_cache[name] = self._strategies[name].analyze(self.df, self.config)
                 except Exception as e:
-                    print(f"Failed to run {analysis}: {e}")
+                    self._results_cache[name] = {"error": str(e)}
+            res = self._results_cache[name]
+            return res if key is None else res.get(key, default)
 
-        # Distribution Analysis Insights
-        if "distributions" in self._results_cache:
-            dist_summary = self._results_cache["distributions"].get(
-                "summary", pd.DataFrame()
-            )
-            if not dist_summary.empty:
-                print(f"\n📈 DETAILED DISTRIBUTION ANALYSIS")
-                print("-" * 40)
+        def top_list(items, n=5):
+            items = list(items)
+            return ", ".join(items[:n]) + (f" ... and {len(items)-n} more" if len(items) > n else "")
 
-                gaussian_count = dist_summary["is_gaussian"].sum()
-                skewed_count = dist_summary["is_skewed"].sum()
-                heavy_tailed_count = dist_summary["is_heavy_tailed"].sum()
+        # Tunable thresholds in one place
+        TH = {
+            "missing": (1, 5, 15),            # excellent/good/fair/p poor %
+            "corr":    (0.7, 0.5),            # strong, moderate
+            "skew_hi": 2.0,
+            "outlier_hi_pct": 5.0,
+            "bimodal_bc": 0.55,
+            "sil_good": 0.5,
+            "sil_excellent": 0.7,
+        }
 
-                print(
-                    f"   ✓ Gaussian features: {gaussian_count}/{len(dist_summary)} ({gaussian_count / len(dist_summary) * 100:.1f}%)"
-                )
-                if gaussian_count > 0:
-                    gaussian_features = dist_summary[dist_summary["is_gaussian"]][
-                        "feature"
-                    ].tolist()
-                    print(f"     → {', '.join(gaussian_features[:5])}")
+        # ----------------------- Executive summary -----------------------
+        section("EXECUTIVE SUMMARY", 1)
+        print("Dataset Overview:")
+        metric("Shape", f"{self.df.shape[0]:,} rows × {self.df.shape[1]} columns")
+        metric("Memory Usage", f"{self.df.memory_usage(deep=True).sum()/(1024**2):.2f} MB")
+        metric("Numeric Features", len(self._numeric_cols))
+        metric("Categorical Features", len(self._categorical_cols))
 
-                print(
-                    f"   ⚠️  Skewed features: {skewed_count}/{len(dist_summary)} ({skewed_count / len(dist_summary) * 100:.1f}%)"
-                )
-                if skewed_count > 0:
-                    skewed_features = dist_summary[dist_summary["is_skewed"]][
-                        "feature"
-                    ].tolist()
-                    print(f"     → {', '.join(skewed_features[:5])}")
+        miss_pct = (self.df.isna().sum().sum() / (self.df.shape[0]*self.df.shape[1] or 1)) * 100
+        miss_status = "excellent" if miss_pct < TH["missing"][0] else \
+                    "good" if miss_pct < TH["missing"][1] else \
+                    "fair" if miss_pct < TH["missing"][2] else "poor"
+        metric("Missing Values", f"{miss_pct:.2f}%", status=miss_status)
 
-                print(
-                    f"   📏 Heavy-tailed features: {heavy_tailed_count}/{len(dist_summary)} ({heavy_tailed_count / len(dist_summary) * 100:.1f}%)"
-                )
+        # Warm up the analyses you rely on later (lazy-run + cache)
+        for a in ["distributions","correlations","outliers","patterns","clusters","timeseries","missingness","feature_engineering","dimensionality"]:
+            safe_get(a)  # ignore error here; handled when reading
 
-        # Correlation Insights
-        if "correlations" in self._results_cache:
-            correlations = self._results_cache["correlations"]
-            if "pearson" in correlations:
-                print(f"\n🔗 DETAILED CORRELATION ANALYSIS")
-                print("-" * 40)
+        # ----------------------- Distribution analysis -----------------------
+        dist_summary = safe_get("distributions","summary", pd.DataFrame())
+        if not dist_summary.empty:
+            section("DISTRIBUTION ANALYSIS", 1)
 
-                corr_matrix = correlations["pearson"]
-                strong_pos_pairs = []
-                strong_neg_pairs = []
+            total_features = len(dist_summary)
+            gaussian = int(dist_summary.get("is_gaussian", False).sum())
+            skewed = int(dist_summary.get("is_skewed", False).sum())
+            heavy = int(dist_summary.get("is_heavy_tailed", False).sum())
+            avg_out_pct = float(dist_summary.get("outlier_pct_z>3", pd.Series([0])).mean() or 0)
 
-                for i in range(len(corr_matrix.columns)):
-                    for j in range(i + 1, len(corr_matrix.columns)):
-                        corr_val = corr_matrix.iloc[i, j]
-                        feat1, feat2 = corr_matrix.columns[i], corr_matrix.columns[j]
+            print("Statistical Properties:")
+            metric("Normal Distributions", f"{gaussian}/{total_features} ({pct(gaussian,total_features)})")
+            metric("Skewed Distributions", f"{skewed}/{total_features} ({pct(skewed,total_features)})")
+            metric("Heavy-Tailed", f"{heavy}/{total_features} ({pct(heavy,total_features)})")
+            metric("Average Outlier Rate", f"{avg_out_pct:.2f}%")
 
-                        if corr_val > 0.7:
-                            strong_pos_pairs.append((feat1, feat2, corr_val))
-                        elif corr_val < -0.7:
-                            strong_neg_pairs.append((feat1, feat2, corr_val))
+            section("Feature Quality Assessment", 3)
+            if gaussian:
+                feats = dist_summary.loc[dist_summary["is_gaussian"], "feature"].tolist()
+                print(f"✅ Normal Distributions ({gaussian}):")
+                print(f"   {top_list(feats)}")
+                rec("Safe for parametric methods and linear models")
 
-                if strong_pos_pairs:
-                    print(f"   💚 STRONG POSITIVE CORRELATIONS (r > 0.7):")
-                    for feat1, feat2, corr in strong_pos_pairs[:5]:
-                        print(f"     → {feat1} ↔ {feat2}: {corr:.3f}")
+            hi_skew = dist_summary.loc[dist_summary["skewness"].abs() > TH["skew_hi"]]
+            if not hi_skew.empty:
+                print(f"\n⚠️ Highly Skewed Features ({len(hi_skew)}):")
+                for _, r in hi_skew.head(3).iterrows():
+                    direction = "right" if r["skewness"] > 0 else "left"
+                    print(f"   • {r['feature']}: {r['skewness']:.2f} ({direction}-skewed)")
+                rec("Apply log/sqrt transform or use robust methods", "medium")
 
-                if strong_neg_pairs:
-                    print(f"   💔 STRONG NEGATIVE CORRELATIONS (r < -0.7):")
-                    for feat1, feat2, corr in strong_neg_pairs[:5]:
-                        print(f"     → {feat1} ↔ {feat2}: {corr:.3f}")
-        # Pattern Detection Results
-        if "patterns" in self._results_cache:
-            patterns = self._results_cache["patterns"]
-            print(f"\n🔍 ADVANCED PATTERN DETECTION")
-            print("-" * 40)
+            hi_out = dist_summary.loc[dist_summary.get("outlier_pct_z>3", 0) > TH["outlier_hi_pct"]]
+            if not hi_out.empty:
+                print(f"\n🚨 High Outlier Rate Features ({len(hi_out)} > {TH['outlier_hi_pct']}%):")
+                for _, r in hi_out.head(3).iterrows():
+                    print(f"   • {r['feature']}: {r['outlier_pct_z>3']:.1f}% outliers")
+                rec("Apply robust scaling or outlier treatment", "high")
+
+            bi = dist_summary.loc[dist_summary.get("bimodality_coeff", 0) > TH["bimodal_bc"], "feature"]
+            if not bi.empty:
+                print(f"\n🔀 Potential Bimodal Distributions ({len(bi)}):")
+                print(f"   {top_list(bi.tolist(), 3)}")
+                rec("Investigate mixtures or stratify data")
+
+            section("Preprocessing Recommendations", 3)
+            normal_pct = gaussian / total_features * 100 if total_features else 0
+            if normal_pct > 70: rec("Dataset largely normal — parametric methods recommended")
+            elif normal_pct > 30: rec("Mixed distributions — use a hybrid approach")
+            else: rec("Non-normal dominant — consider robust/non-parametric methods")
+            if skewed > total_features * 0.5: rec("Many skewed features — batch transform", "medium")
+
+        # ----------------------- Correlation analysis -----------------------
+        corrs = safe_get("correlations") or {}
+        if isinstance(corrs, dict) and "pearson" in corrs and corrs["pearson"] is not None:
+            section("CORRELATION ANALYSIS", 1)
+            cm = corrs["pearson"]
+            strong_pos, strong_neg, mod = [], [], []
+            strong, moderate = TH["corr"]
+
+            cols = cm.columns
+            for i in range(len(cols)):
+                for j in range(i+1, len(cols)):
+                    v = cm.iloc[i, j]; f1, f2 = cols[i], cols[j]
+                    if v > strong: strong_pos.append((f1,f2,v))
+                    elif v < -strong: strong_neg.append((f1,f2,v))
+                    elif abs(v) > moderate: mod.append((f1,f2,v))
+
+            print("Correlation Summary:")
+            metric("Strong Positive (>0.7)", len(strong_pos))
+            metric("Strong Negative (<-0.7)", len(strong_neg))
+            metric("Moderate (0.5–0.7)", len(mod))
+
+            if strong_pos:
+                section("Strong Positive Correlations", 3)
+                for f1,f2,v in strong_pos[:5]:
+                    metric(f"{f1} ↔ {f2}", f"{v:.3f}")
+            if strong_neg:
+                section("Strong Negative Correlations", 3)
+                for f1,f2,v in strong_neg[:5]:
+                    metric(f"{f1} ↔ {f2}", f"{v:.3f}")
+            if strong_pos or strong_neg:
+                rec("Consider dimensionality reduction or feature selection", "medium")
+
+        # ----------------------- Pattern detection -----------------------
+        patt = safe_get("patterns") or {}
+        if patt:
+            section("ADVANCED PATTERN DETECTION", 1)
 
             # Feature types
-            if "feature_types" in patterns:
-                feature_types = patterns["feature_types"]
-                print("   📋 FEATURE TYPE CLASSIFICATION:")
-                for ftype, features in feature_types.items():
-                    if features:
-                        type_name = ftype.replace("_", " ").title()
-                        print(f"     → {type_name}: {len(features)} features")
-                        print(f"       ∘ Top: {', '.join(features[:5])}")
-
-                if feature_types.get("seasonal"):
-                    print(f"\n   ⏳ SEASONAL FEATURES:")
-                    print(f"     → {', '.join(feature_types['seasonal'][:5])}")
-
-                if feature_types.get("transformable_to_normal"):
-                    print(f"\n   🔄 TRANSFORMABLE TO GAUSSIAN:")
-                    print(
-                        f"     → {', '.join(feature_types['transformable_to_normal'][:5])}"
-                    )
-
-                if feature_types.get("bimodal") or feature_types.get("mixture_model"):
-                    print(f"\n   🔀 MIXTURE DISTRIBUTIONS:")
-                    if feature_types.get("bimodal"):
-                        print(
-                            f"     → Bimodal: {', '.join(feature_types['bimodal'][:5])}"
-                        )
-                    if feature_types.get("mixture_model"):
-                        print(
-                            f"     → Mixture Model: {', '.join(feature_types['mixture_model'][:5])}"
-                        )
+            ft = patt.get("feature_types", {})
+            if ft:
+                section("Feature Type Classification", 3)
+                for ftype, features in ft.items():
+                    if not features: continue
+                    label = ftype.replace("_"," ").title()
+                    metric(label, f"{len(features)} features")
+                    print(f"   {top_list(features)}")
+                if ft.get("seasonal"):
+                    section("Temporal Patterns", 3)
+                    print(f"🕐 Seasonal: {top_list(ft['seasonal'])}")
+                    rec("Engineer time features & use seasonal models")
+                if ft.get("transformable_to_normal"):
+                    section("Transformation Opportunities", 3)
+                    print(f"🔄 Transformable: {top_list(ft['transformable_to_normal'])}")
+                    rec("Apply Box-Cox or Yeo-Johnson")
 
             # Relationships
-            if "relationships" in patterns:
-                rel_patterns = patterns["relationships"]
-
-                if rel_patterns.get("nonlinear"):
-                    print(f"\n   🌀 NON-LINEAR RELATIONSHIPS DETECTED:")
-                    for rel in rel_patterns["nonlinear"][:3]:
-                        print(f"     → {rel['feature1']} ↔ {rel['feature2']}")
-                        print(
-                            f"       ∘ Nonlinearity score: {rel['nonlinearity_score']:.3f}"
-                        )
-
-                if rel_patterns.get("complex"):
-                    print(f"\n   🧬 COMPLEX RELATIONSHIPS (High MI, Low Linear):")
-                    for rel in rel_patterns["complex"][:3]:
-                        print(f"     → {rel['feature1']} ↔ {rel['feature2']}")
-                        print(f"       ∘ Mutual Info: {rel['mutual_info']:.3f}")
-
-                if rel_patterns.get("distance_corr"):
-                    print(f"\n   📐 DISTANCE CORRELATION PATTERNS:")
-                    for rel in rel_patterns["distance_corr"][:3]:
-                        print(f"     → {rel['feature1']} ↔ {rel['feature2']}")
-                        print(
-                            f"       ∘ DCor: {rel['distance_corr']:.3f}, Pearson: {rel['pearson']:.3f}"
-                        )
-
-                if rel_patterns.get("tail_dependence"):
-                    print(f"\n   🧪 TAIL DEPENDENCE DETECTED:")
-                    for rel in rel_patterns["tail_dependence"][:3]:
-                        print(f"     → {rel['feature1']} ↔ {rel['feature2']}")
-                        print(
-                            f"       ∘ Upper Tail Dependency: {rel['upper_tail_dep']:.2%}"
-                        )
+            rel = patt.get("relationships", {})
+            if rel:
+                section("Relationship Patterns", 3)
+                if rel.get("nonlinear"):
+                    print("🌀 Non-Linear:")
+                    for r in rel["nonlinear"][:3]:
+                        metric(f"{r['feature1']} ↔ {r['feature2']}", f"score: {r['nonlinearity_score']:.3f}")
+                    rec("Try polynomial/kernels")
+                if rel.get("complex"):
+                    print("\n🧬 High MI, low linear:")
+                    for r in rel["complex"][:3]:
+                        metric(f"{r['feature1']} ↔ {r['feature2']}", f"MI: {r['mutual_info']:.3f}")
+                    rec("Explore interactions / non-linear models")
 
             # Best-fit distributions
-            if "distributions" in patterns and patterns["distributions"]:
-                print(f"\n   📊 BEST-FIT DISTRIBUTIONS:")
-                for feature, fit_info in list(patterns["distributions"].items())[:5]:
-                    print(f"     → {feature}: {fit_info['distribution'].title()}")
-                    print(
-                        f"       ∘ AIC: {fit_info['aic']:.2f}, KS p-value: {fit_info['ks_pvalue']:.3f}"
-                    )
-                    if "_detailed" in fit_info and fit_info["_detailed"].get(
-                        "alternatives"
-                    ):
-                        alt_names = [
-                            alt["distribution"]
-                            for alt in fit_info["_detailed"]["alternatives"]
-                        ]
-                        print(f"       ∘ Alt fits: {', '.join(alt_names)}")
-
-        # Feature Engineering Suggestions
-        if "feature_engineering" in self._results_cache:
-            suggestions = self._results_cache["feature_engineering"]
-            details = suggestions.get("_detailed", {})
-            print(f"\n🛠️  FEATURE ENGINEERING RECOMMENDATIONS")
-            print("-" * 45)
-
-            # Transformations
-            feature_suggestions = {
-                k: v
-                for k, v in suggestions.items()
-                if k != "interactions" and not k.startswith("_")
-            }
-            if feature_suggestions:
-                print("   🔄 RECOMMENDED TRANSFORMATIONS:")
-                for feature, transforms in list(feature_suggestions.items())[:5]:
-                    print(f"     → {feature}")
-                    stats_info = (
-                        details.get("transformations", {})
-                        .get(feature, {})
-                        .get("stats", {})
-                    )
-                    if stats_info:
-                        print(
-                            f"       ∘ Skew: {stats_info.get('skewness', 0):.2f} | "
-                            f"Kurtosis: {stats_info.get('kurtosis', 0):.2f} | "
-                            f"Outliers: {stats_info.get('outliers_pct', 0):.1f}%"
-                        )
-                    for i, transform in enumerate(transforms[:3], 1):
-                        print(f"       {i}. {transform}")
-
-            # Feature Importance
-            if "feature_ranking" in details:
-                ranking = details["feature_ranking"]
-                if ranking:
-                    print("\n   🏆 TOP RANKED FEATURES:")
-                    for name, score in list(ranking.items())[:5]:
-                        if name != "shap_importance":
-                            print(f"     → {name}: importance = {score:.4f}")
-                    if "shap_importance" in ranking:
-                        print("     ∘ SHAP importance available.")
-
-            # Interactions
-            if "interactions" in suggestions:
-                interactions = suggestions["interactions"]
-                print(f"\n   🤝 INTERACTION FEATURES: {len(interactions)} suggested")
-                for i, interaction in enumerate(interactions[:10], 1):
-                    print(f"     {i}. {interaction}")
-                if len(interactions) > 10:
-                    print(f"     ...and {len(interactions)-10} more")
-
-        # Time Series Insights (if applicable)
-        if self.time_col and "timeseries" in self._results_cache:
-            ts_results = self._results_cache["timeseries"]
-            print(f"\n⏰ TIME SERIES ANALYSIS")
-            print("-" * 50)
-
-            # STATIONARITY
-            if "stationarity" in ts_results and not ts_results["stationarity"].empty:
-                stationarity = ts_results["stationarity"]
-                if "is_stationary" in stationarity.columns:
-                    stationary_mask = stationarity["is_stationary"]
-                elif "consensus_stationary" in stationarity.columns:
-                    stationary_mask = stationarity["consensus_stationary"]
-                else:
-                    stationary_mask = (
-                        stationarity["is_stationary_adf"]
-                        & stationarity["is_stationary_kpss"]
-                    )
-
-                stationary_count = stationary_mask.sum()
-                total_features = len(stationarity)
-
-                print(f"📈 Stationarity:")
-                print(
-                    f"   → {stationary_count}/{total_features} features are stationary"
-                )
-
-                # Breakdown by type
-                if "stationarity_type" in stationarity.columns:
-                    type_counts = stationarity["stationarity_type"].value_counts()
-                    for typ, count in type_counts.items():
-                        print(f"     ∘ {typ.replace('_', ' ').capitalize()}: {count}")
-
-                # Highlight non-stationary features
-                non_stationary = stationarity[~stationary_mask]
-                if not non_stationary.empty:
-                    print(
-                        f"\n   ⚠️ Features that may require differencing or transformation:"
-                    )
-                    for _, row in non_stationary.iterrows():
-                        print(
-                            f"     - {row['feature']} (ADF p={row.get('adf_pvalue', np.nan):.4f}, "
-                            f"KPSS p={row.get('kpss_pvalue', np.nan):.4f})"
-                        )
-
-            # LAG SUGGESTIONS
-            if "lag_suggestions" in ts_results and ts_results["lag_suggestions"]:
-                print(f"\n🔁 Lag Feature Suggestions:")
-                for feature, suggestion in list(ts_results["lag_suggestions"].items())[
-                    :5
-                ]:
-                    rec_lags = suggestion.get("recommended_lags", [])
-                    seasonal = suggestion.get("seasonal_lags", [])
-                    method = suggestion.get("lag_selection_method", "unknown")
-                    print(
-                        f"   → {feature}: Lags {rec_lags} "
-                        f"{'(seasonal: ' + str(seasonal) + ')' if seasonal else ''} "
-                        f"[{method}]"
-                    )
-
-            if (
-                "change_point_detection" in ts_results
-                and len(ts_results["change_point_detection"]) > 0
-            ):
-                print(f"\n🪓 Change Point Detection:")
-                for col, methods in ts_results["change_point_detection"].items():
-                    print(f"   → {col}:")
-                    for method, result in methods.items():
-                        if method == "cusum" and result.get("significant"):
-                            ts = result["change_point"]
-                            print(
-                                f"     ∘ CUSUM break at {ts} (Δ={result['magnitude']:.3f})"
-                            )
-                        if method == "page_hinkley":
-                            for cp in result["change_points"][:2]:
-                                print(f"     ∘ Page-Hinkley shift at {cp['timestamp']}")
-
-            if (
-                "regime_switching" in ts_results
-                and len(ts_results["regime_switching"]) > 0
-            ):
-                print(f"\n🔁 Regime Switching:")
-                for col, result in ts_results["regime_switching"].items():
-                    rs = result.get("markov_switching")
-                    if rs:
-                        print(
-                            f"   → {col}: {rs['n_regimes']} regimes detected (current: {rs['current_regime']})"
-                        )
-                    vs = result.get("volatility_switching")
-                    if vs:
-                        print(
-                            f"     ∘ Volatility regime: {vs['current_regime']} (switches: {vs['regime_switches']})"
-                        )
-
-            if (
-                "forecasting_readiness" in ts_results
-                and len(ts_results["forecasting_readiness"]) > 0
-            ):
-                print(f"\n📈 Forecasting Readiness:")
-                fr_scores = ts_results["forecasting_readiness"]
-                sorted_fr = sorted(
-                    fr_scores.items(), key=lambda x: -x[1]["overall_score"]
-                )
-                for name, val in sorted_fr[:3]:
-                    print(
-                        f"   → {name}: {val['readiness_level']} (score={val['overall_score']:.2f})"
-                    )
-                    if val["recommendations"]:
-                        print(
-                            f"     ∘ Suggestions: {', '.join(val['recommendations'])}"
-                        )
-
-            if (
-                "causality_analysis" in ts_results
-                and len(ts_results["causality_analysis"]) > 0
-            ):
-                print(f"\n📣 Granger Causality:")
-                for pair, result in ts_results["causality_analysis"].items():
-                    if result["var1_causes_var2"]["significant"]:
-                        print(
-                            f"   → {pair}: {pair.split('_vs_')[0]} causes {pair.split('_vs_')[1]} (p={result['var1_causes_var2']['p_value']:.4f})"
-                        )
-                    if result["var2_causes_var1"]["significant"]:
-                        print(
-                            f"   → {pair}: {pair.split('_vs_')[1]} causes {pair.split('_vs_')[0]} (p={result['var2_causes_var1']['p_value']:.4f})"
-                        )
-
-        if "clusters" in self._results_cache:
-            cluster_data = self._results_cache["clusters"]
-            print(f"\n🧩 CLUSTERING INSIGHTS")
-            print("-" * 40)
-
-            if not cluster_data or "error" in cluster_data:
-                error_msg = (
-                    cluster_data.get("error", "Unknown error")
-                    if isinstance(cluster_data, dict)
-                    else "No clustering results available"
-                )
-                print(f"   ⚠️  {error_msg}")
-            else:
-                # Summary statistics
-                if "summary" in cluster_data:
-                    summary = cluster_data["summary"]
-                    print(f"   📊 ANALYSIS SUMMARY:")
-                    print(
-                        f"     → Methods attempted: {summary.get('methods_attempted', 'N/A')}"
-                    )
-                    print(
-                        f"     → Successful methods: {summary.get('successful_methods', 'N/A')}"
-                    )
-                    if summary.get("best_method"):
-                        print(f"     ⭐ Best method: {summary['best_method'].upper()}")
-
-                # Data characteristics
-                if "data_characteristics" in cluster_data:
-                    chars = cluster_data["data_characteristics"]
-                    print(f"\n   📈 DATA CHARACTERISTICS:")
-                    print(f"     → Samples: {chars.get('n_samples', 'N/A'):,}")
-                    print(f"     → Features: {chars.get('n_features', 'N/A'):,}")
-
-                    # Data quality indicators
-                    variance = chars.get("data_variance", 0)
-                    spread = chars.get("data_spread", 0)
-                    if variance > 0:
-                        print(f"     → Data variance: {variance:.3f}")
-                    if spread > 0:
-                        print(f"     → Data range: {spread:.3f}")
-
-                # Optimal k analysis
-                if "optimal_k_analysis" in cluster_data:
-                    k_info = cluster_data["optimal_k_analysis"]
-                    print(f"\n   🎯 OPTIMAL CLUSTERS ANALYSIS:")
-                    print(
-                        f"     → Estimated optimal k: {k_info.get('optimal_k', 'N/A')}"
-                    )
-                    print(
-                        f"     → Confidence level: {k_info.get('confidence', 'N/A').title()}"
-                    )
-
-                    if "methods" in k_info and k_info["methods"]:
-                        print(
-                            f"     → Method agreement: {k_info.get('method_agreement', 'N/A')} different values"
-                        )
-                        method_results = k_info["methods"]
-                        print(f"     → Individual estimates:")
-                        for method, k_val in method_results.items():
-                            print(f"        ∘ {method.title()}: {k_val}")
-
-                # Preprocessing information
-                if "preprocessing_info" in cluster_data:
-                    prep = cluster_data["preprocessing_info"]
-                    print(f"\n   🔧 PREPROCESSING APPLIED:")
-                    print(
-                        f"     → Scaling method: {prep.get('scaling_method', 'unknown').replace('_', ' ').title()}"
-                    )
-
-                    outlier_pct = prep.get("outlier_percentage", 0)
-                    if outlier_pct > 0:
-                        print(
-                            f"     → Outliers detected: {prep.get('outliers_detected', 0)} ({outlier_pct:.1f}%)"
-                        )
-
-                    if prep.get("pca_applied", False):
-                        var_exp = prep.get("pca_variance_explained", 0)
-                        final_dims = prep.get("final_dimensions", "N/A")
-                        print(
-                            f"     → PCA dimensionality reduction: {final_dims} components ({var_exp:.1%} variance)"
-                        )
-
-                    if prep.get("curse_of_dimensionality_risk", False):
-                        print(f"     ⚠️ High dimensionality risk detected")
-
-                # Individual clustering results
-                if "clustering_results" in cluster_data:
-                    clustering_results = cluster_data["clustering_results"]
-                    evaluations = cluster_data.get("evaluations", {})
-
-                    print(f"\n   🔍 CLUSTERING METHODS RESULTS:")
-
-                    # Group methods by type
-                    method_groups = {
-                        "Centroid-based": [],
-                        "Hierarchical": [],
-                        "Density-based": [],
-                        "Probabilistic": [],
-                        "Spectral & Others": [],
-                        "Ensemble": [],
-                    }
-
-                    for method_name, result in clustering_results.items():
-                        method_type = result.get("method_type", "unknown")
-                        if "centroid" in method_type or method_name == "kmeans":
-                            method_groups["Centroid-based"].append(
-                                (method_name, result)
-                            )
-                        elif "hierarchical" in method_type:
-                            method_groups["Hierarchical"].append((method_name, result))
-                        elif "density" in method_type:
-                            method_groups["Density-based"].append((method_name, result))
-                        elif (
-                            "probabilistic" in method_type or "bayesian" in method_type
-                        ):
-                            method_groups["Probabilistic"].append((method_name, result))
-                        elif method_type == "ensemble":
-                            method_groups["Ensemble"].append((method_name, result))
-                        else:
-                            method_groups["Spectral & Others"].append(
-                                (method_name, result)
-                            )
-
-                    # Display results by group
-                    for group_name, methods in method_groups.items():
-                        if not methods:
-                            continue
-
-                        print(f"\n     📂 {group_name}:")
-                        for method_name, result in methods:
-                            print(f"       🔹 {method_name.upper()}:")
-
-                            # Basic cluster information
-                            n_clusters = result.get(
-                                "n_clusters", result.get("best_k", 0)
-                            )
-                            if n_clusters > 0:
-                                print(f"         → Clusters found: {n_clusters}")
-
-                            # Noise points for density-based methods
-                            if "noise_points" in result:
-                                noise_count = result["noise_points"]
-                                noise_pct = (
-                                    evaluations.get(method_name, {}).get(
-                                        "noise_ratio", 0
-                                    )
-                                    * 100
-                                )
-                                print(
-                                    f"         → Noise points: {noise_count} ({noise_pct:.1f}%)"
-                                )
-
-                            # Quality scores
-                            eval_data = evaluations.get(method_name, {})
-                            if "silhouette_score" in eval_data:
-                                sil_score = eval_data["silhouette_score"]
-                                if sil_score > 0.7:
-                                    quality_indicator = "Excellent 🟢"
-                                elif sil_score > 0.5:
-                                    quality_indicator = "Good 🟡"
-                                elif sil_score > 0.25:
-                                    quality_indicator = "Fair 🟠"
-                                else:
-                                    quality_indicator = "Poor 🔴"
-                                print(
-                                    f"         → Silhouette: {sil_score:.3f} ({quality_indicator})"
-                                )
-
-                            # Additional quality metrics
-                            if "cluster_balance" in eval_data:
-                                balance = eval_data["cluster_balance"]
-                                print(f"         → Cluster balance: {balance:.3f}")
-
-                            if "separation_ratio" in eval_data:
-                                separation = eval_data["separation_ratio"]
-                                print(f"         → Separation ratio: {separation:.2f}")
-
-                            # Method-specific information
-                            if (
-                                method_name == "kmeans"
-                                and "stability_score" in eval_data
-                            ):
-                                stability = eval_data["stability_score"]
-                                print(f"         → Stability: {stability:.3f}")
-
-                            if (
-                                method_name == "hierarchical"
-                                and "best_linkage_method" in result
-                            ):
-                                linkage_method = result["best_linkage_method"]
-                                print(f"         → Best linkage: {linkage_method}")
-
-                            if "gmm" in method_name and "model_comparison" in result:
-                                best_bic = result.get("best_bic", 0)
-                                cov_type = result.get("covariance_type", "unknown")
-                                print(
-                                    f"         → Best BIC: {best_bic:.2f} ({cov_type} covariance)"
-                                )
-
-                            if (
-                                "bayesian" in method_name
-                                and "effective_components" in result
-                            ):
-                                eff_comp = result["effective_components"]
-                                print(f"         → Effective components: {eff_comp}")
-
-                            if (
-                                method_name == "ensemble"
-                                and "participating_methods" in result
-                            ):
-                                n_methods = len(result["participating_methods"])
-                                print(f"         → Consensus from {n_methods} methods")
-
-                            # Cluster size distribution
-                            if "cluster_sizes" in result and result["cluster_sizes"]:
-                                sizes = result["cluster_sizes"]
-                                if isinstance(sizes, dict):
-                                    sum(sizes.values())
-                                    largest_cluster = max(sizes.values())
-                                    smallest_cluster = min(sizes.values())
-                                    print(
-                                        f"         → Size range: {smallest_cluster}-{largest_cluster} points"
-                                    )
-
-                                    # Show distribution for small number of clusters
-                                    if len(sizes) <= 5:
-                                        size_str = ", ".join(
-                                            [
-                                                f"C{k}:{v}"
-                                                for k, v in sorted(sizes.items())
-                                            ]
-                                        )
-                                        print(f"         → Distribution: {size_str}")
-
-                            # Uncertainty for probabilistic methods
-                            if "mean_assignment_entropy" in eval_data:
-                                entropy = eval_data["mean_assignment_entropy"]
-                                uncertainty = eval_data.get("assignment_uncertainty", 0)
-                                print(
-                                    f"         → Assignment entropy: {entropy:.3f} ±{uncertainty:.3f}"
-                                )
-
-                # Top recommendations
-                if (
-                    "recommendations" in cluster_data
-                    and cluster_data["recommendations"]
-                ):
-                    print(f"\n   💡 KEY RECOMMENDATIONS:")
-                    for i, rec in enumerate(
-                        cluster_data["recommendations"][:4], 1
-                    ):  # Show top 4
-                        # Clean up recommendation formatting
-                        clean_rec = (
-                            rec.replace("🏆", "")
-                            .replace("⚠️", "")
-                            .replace("✅", "")
-                            .replace("📊", "")
-                            .replace("🌳", "")
-                            .replace("🤝", "")
-                            .strip()
-                        )
-                        if clean_rec.startswith("Best method:"):
-                            print(f"     {i}. 🏆 {clean_rec}")
-                        elif (
-                            "noise" in clean_rec.lower()
-                            or "uncertainty" in clean_rec.lower()
-                        ):
-                            print(f"     {i}. ⚠️ {clean_rec}")
-                        elif (
-                            "evidence" in clean_rec.lower()
-                            or "confident" in clean_rec.lower()
-                        ):
-                            print(f"     {i}. ✅ {clean_rec}")
-                        else:
-                            print(f"     {i}. 💭 {clean_rec}")
-
-                # Performance summary
-                if "evaluations" in cluster_data:
-                    successful_methods = len(
-                        [
-                            e
-                            for e in cluster_data["evaluations"].values()
-                            if "silhouette_score" in e
-                        ]
-                    )
-                    total_methods = len(cluster_data.get("clustering_results", {}))
-
-                    # Calculate average silhouette across all methods
-                    silhouette_scores = [
-                        e["silhouette_score"]
-                        for e in cluster_data["evaluations"].values()
-                        if "silhouette_score" in e and e["silhouette_score"] > 0
-                    ]
-
-                    print(f"\n   📊 PERFORMANCE SUMMARY:")
-                    print(
-                        f"     → Methods evaluated: {successful_methods}/{total_methods}"
-                    )
-
-                    if silhouette_scores:
-                        avg_sil = np.mean(silhouette_scores)
-                        best_sil = max(silhouette_scores)
-                        print(f"     → Average silhouette: {avg_sil:.3f}")
-                        print(f"     → Best silhouette: {best_sil:.3f}")
-
-                        # Overall clustering quality assessment
-                        if best_sil > 0.7:
-                            overall_quality = (
-                                "Excellent clustering structure detected 🎯"
-                            )
-                        elif best_sil > 0.5:
-                            overall_quality = "Good clustering structure found 👍"
-                        elif best_sil > 0.25:
-                            overall_quality = "Moderate clustering structure present 🤔"
-                        else:
-                            overall_quality = "Weak clustering structure detected 😐"
-
-                        print(f"     → Overall assessment: {overall_quality}")
-
-        # Outlier Insights
-        if "outliers" in self._results_cache:
-            outlier_data = self._results_cache["outliers"]
-            print(f"\n🚨 OUTLIER DETECTION SUMMARY")
-            print("-" * 40)
-
-            if not outlier_data or "error" in outlier_data:
-                error_msg = (
-                    outlier_data.get("error", "Unknown error")
-                    if isinstance(outlier_data, dict)
-                    else "No outlier results available"
-                )
-                print(f"   ⚠️  {error_msg}")
-            else:
-                # Analysis summary
-                if "summary" in outlier_data:
-                    summary = outlier_data["summary"]
-                    print(f"   📊 ANALYSIS OVERVIEW:")
-                    print(
-                        f"     → Methods attempted: {summary.get('methods_attempted', 'N/A')}"
-                    )
-                    print(
-                        f"     → Successful methods: {summary.get('successful_methods', 'N/A')}"
-                    )
-                    print(
-                        f"     → Overall outlier rate: {summary.get('overall_outlier_rate', 0):.1%}"
-                    )
-                    if summary.get("best_method"):
-                        print(f"     ⭐ Best method: {summary['best_method'].upper()}")
-
-                # Data characteristics
-                if "data_characteristics" in outlier_data:
-                    chars = outlier_data["data_characteristics"]
-                    print(f"\n   📈 DATA CHARACTERISTICS:")
-                    print(
-                        f"     → Total samples: {chars.get('total_samples', 'N/A'):,}"
-                    )
-                    print(
-                        f"     → Analyzed samples: {chars.get('analyzed_samples', 'N/A'):,}"
-                    )
-
-                    missing_samples = chars.get("missing_samples", 0)
-                    if missing_samples > 0:
-                        missing_pct = (
-                            missing_samples / chars.get("total_samples", 1) * 100
-                        )
-                        print(
-                            f"     → Missing data: {missing_samples:,} samples ({missing_pct:.1f}%)"
-                        )
-
-                    print(f"     → Features analyzed: {chars.get('n_features', 'N/A')}")
-                    print(
-                        f"     → Target contamination: {chars.get('contamination_rate', 0):.1%}"
-                    )
-
-                # Preprocessing information
-                if "preprocessing_info" in outlier_data:
-                    prep = outlier_data["preprocessing_info"]
-                    print(f"\n   🔧 PREPROCESSING APPLIED:")
-                    print(
-                        f"     → Scaling method: {prep.get('scaling_method', 'unknown').replace('_', ' ').title()}"
-                    )
-                    print(
-                        f"     → Missing data strategy: {prep.get('handling_strategy', 'unknown').replace('_', ' ').title()}"
-                    )
-
-                    skewness = prep.get("data_skewness", 0)
-                    if skewness > 0:
-                        if skewness > 3:
-                            skew_desc = "Highly skewed 🔴"
-                        elif skewness > 1.5:
-                            skew_desc = "Moderately skewed 🟡"
-                        else:
-                            skew_desc = "Low skewness 🟢"
-                        print(f"     → Data skewness: {skewness:.2f} ({skew_desc})")
-
-                    cond_num = prep.get("condition_number")
-                    if cond_num:
-                        if cond_num < 100:
-                            cond_desc = "Well-conditioned 🟢"
-                        elif cond_num < 1000:
-                            cond_desc = "Acceptable 🟡"
-                        else:
-                            cond_desc = "Poorly conditioned 🔴"
-                        print(f"     → Data condition: {cond_num:.1e} ({cond_desc})")
-
-                # Individual method results
-                if "outlier_results" in outlier_data:
-                    outlier_results = outlier_data["outlier_results"]
-                    evaluations = outlier_data.get("evaluations", {})
-
-                    print(f"\n   🔍 DETECTION METHODS RESULTS:")
-
-                    # Group methods by type
-                    method_groups = {
-                        "Statistical": [],
-                        "Distance-based": [],
-                        "Machine Learning": [],
-                        "Advanced": [],
-                        "Ensemble": [],
-                    }
-
-                    for method_name, result in outlier_results.items():
-                        method_type = result.get("method_type", "unknown")
-                        if method_type == "statistical":
-                            method_groups["Statistical"].append((method_name, result))
-                        elif "distance" in method_type or "density" in method_type:
-                            method_groups["Distance-based"].append(
-                                (method_name, result)
-                            )
-                        elif method_type in [
-                            "ensemble",
-                            "boundary_based",
-                            "covariance_based",
-                        ]:
-                            method_groups["Machine Learning"].append(
-                                (method_name, result)
-                            )
-                        elif method_type in ["histogram_based", "cluster_based"]:
-                            method_groups["Advanced"].append((method_name, result))
-                        elif method_type == "ensemble":
-                            method_groups["Ensemble"].append((method_name, result))
-                        else:
-                            method_groups["Advanced"].append((method_name, result))
-
-                    # Track for consensus calculation
-                    consensus_votes = np.zeros(
-                        outlier_data["data_characteristics"].get("total_samples", 0)
-                    )
-                    valid_methods = 0
-
-                    # Display results by group
-                    for group_name, methods in method_groups.items():
-                        if not methods:
-                            continue
-
-                        print(f"\n     📂 {group_name}:")
-                        for method_name, result in methods:
-                            print(f"       🔹 {method_name.replace('_', ' ').title()}:")
-
-                            # Basic detection statistics
-                            count = result.get("count", 0)
-                            pct = result.get("percentage", 0)
-                            print(f"         → Outliers found: {count:,} ({pct:.2f}%)")
-
-                            # Add to consensus
-                            if "outliers" in result:
-                                consensus_votes += result["outliers"].astype(int)
-                                valid_methods += 1
-
-                            # Quality metrics
-                            eval_data = evaluations.get(method_name, {})
-                            if "score_separation" in eval_data:
-                                separation = eval_data["score_separation"]
-                                if separation > 1.0:
-                                    sep_desc = "Excellent 🟢"
-                                elif separation > 0.5:
-                                    sep_desc = "Good 🟡"
-                                else:
-                                    sep_desc = "Moderate 🟠"
-                                print(
-                                    f"         → Separation quality: {separation:.3f} ({sep_desc})"
-                                )
-
-                            if "isolation_score" in eval_data:
-                                isolation = eval_data["isolation_score"]
-                                print(f"         → Isolation score: {isolation:.3f}")
-
-                            if "score_overlap" in eval_data:
-                                overlap = eval_data["score_overlap"]
-                                print(f"         → Score overlap: {overlap:.3f}")
-
-                            # Method-specific details
-                            if method_name == "knn_distance" and "k" in result:
-                                print(f"         → K neighbors: {result['k']}")
-
-                            if method_name == "dbscan" and "eps" in result:
-                                print(f"         → Epsilon: {result['eps']:.3f}")
-
-                            if "one_class_svm" in method_name and "kernel" in result:
-                                print(f"         → Kernel: {result['kernel']}")
-
-                            if (
-                                method_name == "ensemble"
-                                and "participating_methods" in result
-                            ):
-                                n_methods = len(result["participating_methods"])
-                                print(f"         → Combined {n_methods} methods")
-
-                                # Show consensus strength if available
-                                if (
-                                    "consensus_strength" in result
-                                    and len(result["consensus_strength"]) > 0
-                                ):
-                                    avg_consensus = np.mean(
-                                        result["consensus_strength"]
-                                    )
-                                    if avg_consensus < 0.3:
-                                        consensus_desc = "High agreement 🎯"
-                                    elif avg_consensus < 0.5:
-                                        consensus_desc = "Moderate agreement 👍"
-                                    else:
-                                        consensus_desc = "Low agreement 🤔"
-                                    print(
-                                        f"         → Method consensus: {avg_consensus:.3f} ({consensus_desc})"
-                                    )
-
-                # Consensus analysis
-                if valid_methods >= 2:
-                    print(f"\n   🎯 CONSENSUS ANALYSIS:")
-
-                    for threshold in [2, 3, max(2, valid_methods // 2)]:
-                        if threshold <= valid_methods:
-                            consensus_outliers = (consensus_votes >= threshold).sum()
-                            consensus_pct = (
-                                consensus_outliers / len(consensus_votes) * 100
-                                if len(consensus_votes) > 0
-                                else 0
-                            )
-
-                            if threshold == 2:
-                                confidence_desc = "Moderate confidence"
-                            elif threshold == 3:
-                                confidence_desc = "High confidence"
-                            else:
-                                confidence_desc = "Very high confidence"
-
-                            print(
-                                f"     → ≥{threshold} methods agree: {consensus_outliers:,} outliers ({consensus_pct:.2f}%) - {confidence_desc}"
-                            )
-
-                    # Show most reliable outliers
-                    max_votes = (
-                        int(consensus_votes.max()) if len(consensus_votes) > 0 else 0
-                    )
-                    if max_votes > 0:
-                        unanimous = (consensus_votes == max_votes).sum()
-                        print(
-                            f"     → Unanimous detection: {unanimous:,} outliers ({unanimous/len(consensus_votes)*100:.2f}%)"
-                        )
-
-                # Top recommendations
-                if (
-                    "recommendations" in outlier_data
-                    and outlier_data["recommendations"]
-                ):
-                    print(f"\n   💡 KEY RECOMMENDATIONS:")
-                    for i, rec in enumerate(
-                        outlier_data["recommendations"][:4], 1
-                    ):  # Show top 4
-                        # Clean up recommendation formatting
-                        clean_rec = (
-                            rec.replace("🏆", "")
-                            .replace("⚠️", "")
-                            .replace("✅", "")
-                            .replace("📊", "")
-                            .replace("🔍", "")
-                            .strip()
-                        )
-                        if clean_rec.startswith("Best method:"):
-                            print(f"     {i}. 🏆 {clean_rec}")
-                        elif "high" in clean_rec.lower() and (
-                            "rate" in clean_rec.lower()
-                            or "outlier" in clean_rec.lower()
-                        ):
-                            print(f"     {i}. ⚠️ {clean_rec}")
-                        elif (
-                            "excellent" in clean_rec.lower()
-                            or "good" in clean_rec.lower()
-                        ):
-                            print(f"     {i}. ✅ {clean_rec}")
-                        elif (
-                            "skewed" in clean_rec.lower()
-                            or "robust" in clean_rec.lower()
-                        ):
-                            print(f"     {i}. 🔧 {clean_rec}")
-                        else:
-                            print(f"     {i}. 💭 {clean_rec}")
-
-                # Performance summary
-                if "evaluations" in outlier_data:
-                    evaluations = outlier_data["evaluations"]
-                    successful_evals = len(
-                        [e for e in evaluations.values() if "error" not in e]
-                    )
-
-                    # Calculate quality metrics across methods
-                    separation_scores = [
-                        e.get("score_separation", 0)
-                        for e in evaluations.values()
-                        if "score_separation" in e and e["score_separation"] > 0
-                    ]
-
-                    outlier_rates = [
-                        r.get("percentage", 0) / 100 for r in outlier_results.values()
-                    ]
-
-                    print(f"\n   📊 DETECTION QUALITY SUMMARY:")
-                    print(
-                        f"     → Methods evaluated: {successful_evals}/{len(outlier_results)}"
-                    )
-
-                    if separation_scores:
-                        avg_separation = np.mean(separation_scores)
-                        best_separation = max(separation_scores)
-                        print(f"     → Average separation: {avg_separation:.3f}")
-                        print(f"     → Best separation: {best_separation:.3f}")
-
-                    if outlier_rates:
-                        rate_std = np.std(outlier_rates)
-                        if rate_std < 0.02:
-                            consistency_desc = "Very consistent 🎯"
-                        elif rate_std < 0.05:
-                            consistency_desc = "Consistent 👍"
-                        else:
-                            consistency_desc = "Variable 📊"
-                        print(
-                            f"     → Rate consistency: σ={rate_std:.3f} ({consistency_desc})"
-                        )
-
-                    # Overall assessment
-                    if separation_scores and max(separation_scores) > 1.0:
-                        overall_quality = "Excellent outlier detection quality 🌟"
-                    elif separation_scores and max(separation_scores) > 0.5:
-                        overall_quality = "Good outlier detection quality 👍"
-                    elif successful_evals >= len(outlier_results) * 0.7:
-                        overall_quality = "Satisfactory detection coverage 📊"
+            fits = patt.get("distributions", {})
+            if fits:
+                section("Statistical Distribution Fitting", 3)
+                for feat, info in list(fits.items())[:5]:
+                    ks = info.get("ks_pvalue", 0)
+                    quality = ("Excellent","excellent") if ks > 0.1 else \
+                            ("Good","good") if ks > 0.05 else \
+                            ("Fair","fair") if ks > 0.01 else ("Poor","poor")
+                    print(f"   • {feat}: {info['distribution'].title()}")
+                    metric("AIC", f"{info.get('aic', float('nan')):.2f}", indent=1)
+                    metric("KS p-value", f"{ks:.4f}", status=quality[1], indent=1)
+                    print(f"     Fit Quality: {quality[0]}")
+
+        # ----------------------- Outlier detection -----------------------
+        out = safe_get("outliers") or {}
+        section("OUTLIER DETECTION ANALYSIS", 1)
+        if not out or "error" in out:
+            print(f"⚠️ {out.get('error','No outlier results') if isinstance(out, dict) else 'No outlier results'}")
+        else:
+            # Summary
+            summary = out.get("summary", {})
+            if summary:
+                print("Analysis Overview:")
+                metric("Methods Attempted", summary.get("methods_attempted","N/A"))
+                metric("Successful Methods", summary.get("successful_methods","N/A"))
+                rate = summary.get("overall_outlier_rate", 0.0)
+                status = "warning" if rate > 0.10 else "good" if rate > 0.05 else "excellent"
+                metric("Overall Outlier Rate", f"{rate:.1%}", status=status)
+                if summary.get("best_method"): metric("Best Method", summary["best_method"].upper())
+
+            # Preprocessing info
+            chars = out.get("data_characteristics", {})
+            if chars:
+                section("Analysis Scope", 3)
+                metric("Total Samples", f"{chars.get('total_samples',0):,}")
+                metric("Analyzed Samples", f"{chars.get('analyzed_samples',0):,}")
+                metric("Features Analyzed", chars.get("n_features","N/A"))
+                ms = chars.get("missing_samples", 0)
+                if ms:
+                    metric("Missing Data", f"{ms:,} ({(ms/(chars.get('total_samples',1)))*100:.1f}%)")
+
+            prep = out.get("preprocessing_info", {})
+            if prep:
+                section("Data Preprocessing", 3)
+                metric("Scaling Method", prep.get("scaling_method","unknown").replace("_"," ").title())
+                metric("Missing Data Strategy", prep.get("handling_strategy","unknown").replace("_"," ").title())
+                skew = prep.get("data_skewness", 0)
+                if skew:
+                    status = "poor" if skew > 3 else "fair" if skew > 1.5 else "good"
+                    desc = "Highly skewed" if skew > 3 else "Moderately skewed" if skew > 1.5 else "Low skewness"
+                    metric("Data Skewness", f"{skew:.2f} ({desc})", status=status)
+
+            # Per-method results (compact)
+            methods = out.get("outlier_results", {})
+            evals = out.get("evaluations", {})
+            if methods:
+                section("Detailed Method Results", 2)
+                for mname, res in methods.items():
+                    print(f"\n   🔹 {mname.replace('_',' ').title()}:")
+                    cnt, pct_val = res.get("count", 0), res.get("percentage", 0.0)
+                    rate_status = "warning" if pct_val > 10 else "fair" if pct_val > 5 else "good" if pct_val > 1 else "excellent"
+                    metric("Outliers Detected", f"{cnt:,} ({pct_val:.2f}%)", status=rate_status, indent=1)
+                    ev = evals.get(mname, {})
+                    if "score_separation" in ev:
+                        sep = ev["score_separation"]
+                        st = "excellent" if sep > 1.0 else "good" if sep > 0.5 else "fair"
+                        metric("Separation Quality", f"{sep:.3f}", status=st, indent=1)
+                    if "isolation_score" in ev:
+                        metric("Isolation Score", f"{ev['isolation_score']:.3f}", indent=1)
+                    if "score_overlap" in ev:
+                        ov = ev["score_overlap"]
+                        st = "excellent" if ov < 0.1 else "good" if ov < 0.3 else "fair"
+                        metric("Score Overlap", f"{ov:.3f}", status=st, indent=1)
+
+            # Recommendations
+            recs = out.get("recommendations", [])
+            if recs:
+                section("Outlier Treatment Recommendations", 2)
+                for i, r in enumerate(recs[:5], 1):
+                    clean = r.replace("🏆","").replace("⚠️","").replace("✅","").strip()
+                    pr = "high" if "best method" in clean.lower() else "medium" if "high" in clean.lower() and ("rate" in clean.lower() or "outlier" in clean.lower()) else "normal"
+                    rec(f"{i}. {clean}", pr)
+
+        # ----------------------- Clustering -----------------------
+        cl = safe_get("clusters") or {}
+        section("CLUSTERING ANALYSIS", 1)
+
+        if not cl or "error" in cl:
+            print(f"⚠️ {cl.get('error','No clustering results') if isinstance(cl, dict) else 'No clustering results'}")
+        else:
+            # --- Summary ---
+            if cl.get("summary"):
+                s = cl["summary"]
+                print("Analysis Summary:")
+                metric("Methods Attempted", s.get("methods_attempted", "N/A"))
+                metric("Successful Methods", s.get("successful_methods", "N/A"))
+                if s.get("best_method"):
+                    bm = s["best_method"]
+                    metric("Best Method", bm.upper())
+
+            # --- Optimal k ---
+            ok = cl.get("optimal_k_analysis", {})
+            if ok:
+                section("Optimal Cluster Analysis", 3)
+                metric("Estimated Optimal K", ok.get("optimal_k", "N/A"))
+                conf = ok.get("confidence", "N/A")
+                metric("Confidence Level", conf.title() if isinstance(conf, str) else conf)
+
+            # --- Method performance ---
+            res = cl.get("clustering_results", {}) or {}
+            evals = cl.get("evaluations", {}) or {}
+            if res:
+                section("Method Performance", 3)
+                for mname, r in list(res.items())[:5]:
+                    section(mname.replace("_", " ").title(), 4)
+
+                    # Clusters found (do NOT use truthiness)
+                    ncl = r.get("n_clusters", r.get("best_k"))
+                    if ncl is not None:
+                        metric("Clusters Found", ncl, indent=1)
+                        if isinstance(ncl, int) and ncl <= 1:
+                            print("   ⓘ Single or no cluster detected (silhouette may be undefined).")
+
+                    # Cluster sizes
+                    sizes = r.get("cluster_sizes")
+                    if isinstance(sizes, dict) and len(sizes) > 0:
+                        largest, smallest = max(sizes.values()), min(sizes.values())
+                        # Handle edge cases safely
+                        balance = (smallest / largest) if largest else 0.0
+                        metric("Size Range", f"{smallest}-{largest} points", indent=1)
+                        st = "excellent" if balance > 0.7 else "good" if balance > 0.5 else "fair"
+                        metric("Balance Ratio", f"{balance:.2f}", status=st, indent=1)
                     else:
-                        overall_quality = "Limited detection reliability ⚠️"
+                        print("   ⓘ No per-cluster size breakdown available.")
 
-                    print(f"     → Overall assessment: {overall_quality}")
-        # Missingness Analysis
-        if "missingness" in self._results_cache:
-            missing = self._results_cache["missingness"]
-            print(f"\n📉 MISSINGNESS ANALYSIS")
-            print("-" * 45)
+                    # Silhouette (prefer evaluated; fall back to result)
+                    sil = None
+                    if mname in evals:
+                        sil = evals[mname].get("silhouette_score")
+                    if sil is None:
+                        sil = r.get("silhouette")
 
-            # Missing rate summary
-            if "missing_rate" in missing and not missing["missing_rate"].empty:
-                print("   ❗ MISSING VALUE RATES:")
-                for col, rate in missing["missing_rate"].items():
-                    print(f"     → {col}: {rate:.1%}")
-
-            # MNAR diagnostics
-            if "missing_vs_target" in missing and missing["missing_vs_target"]:
-                print("\n   🧪 MNAR DEPENDENCE ON TARGET:")
-                for col, stats in missing["missing_vs_target"].items():
-                    if "ttest_p" in stats:
-                        print(
-                            f"     → {col}: t-test p = {stats['ttest_p']:.4f}, KS p = {stats['ks_p']:.4f}, AUC = {stats.get('auc', 0):.2f}"
-                        )
-                    elif "chi2_p" in stats:
-                        print(
-                            f"     → {col}: Chi² p = {stats['chi2_p']:.4f}, "
-                            f"Cramér's V = {stats.get('cramers_v', 0):.2f}, "
-                            f"MI = {stats.get('mutual_info', 0):.3f}"
-                        )
-                    if stats.get("suggested_mnar"):
-                        print("       ∘ ⚠️ Likely MNAR (target-dependent missingness)")
-
-            # Correlated missingness (Pearson)
-            if "missingness_correlation" in missing:
-                corr = missing["missingness_correlation"]
-                upper = np.triu(np.ones_like(corr, dtype=bool), k=1)
-                corr_pairs = corr.where(upper).stack().sort_values(ascending=False)
-                corr_pairs = corr_pairs[corr_pairs > 0.3]
-                if not corr_pairs.empty:
-                    print("\n   🔗 CORRELATED MISSINGNESS (Pearson > 0.3):")
-                    for (col1, col2), val in corr_pairs[:5].items():
-                        print(f"     → {col1} ↔ {col2}: corr = {val:.2f}")
-
-            # Jaccard similarity (optional)
-            if "missingness_jaccard" in missing:
-                jac = missing["missingness_jaccard"].copy()
-                upper = np.triu(np.ones_like(jac, dtype=bool), k=1)
-                jac_pairs = jac.where(upper).stack().sort_values(ascending=False)
-                jac_pairs = jac_pairs[jac_pairs > 0.1]
-                if not jac_pairs.empty:
-                    print("\n   🧬 JACCARD SIMILARITY (Missing Co-occurrence > 0.1):")
-                    for (col1, col2), val in jac_pairs[:5].items():
-                        print(f"     → {col1} ∩ {col2}: Jaccard = {val:.2f}")
-
-            # Clustering results
-            if "missingness_clusters" in missing:
-                cluster_map = missing["missingness_clusters"]
-                print("\n   🧩 MISSINGNESS CLUSTERS:")
-                from collections import defaultdict
-
-                cluster_dict = defaultdict(list)
-                for col, cluster_id in cluster_map.items():
-                    cluster_dict[cluster_id].append(col)
-                for cid, members in sorted(cluster_dict.items()):
-                    print(
-                        f"     • Cluster {cid}: {', '.join(members[:5])}"
-                        + (f" (+{len(members) - 5} more)" if len(members) > 5 else "")
-                    )
-
-        # Dimensionality Reduction Summary
-        if "dimensionality" in self._results_cache:
-            dimred = self._results_cache["dimensionality"]
-            print(f"\n🧮 DIMENSIONALITY REDUCTION")
-            print("-" * 40)
-
-            if not dimred or "error" in dimred:
-                error_msg = (
-                    dimred.get("error", "Unknown error")
-                    if isinstance(dimred, dict)
-                    else "No dimensionality results available"
-                )
-                print(f"   ⚠️  {error_msg}")
-            else:
-                # Data characteristics summary
-                if "data_characteristics" in dimred:
-                    chars = dimred["data_characteristics"]
-                    print(f"   📊 DATA CHARACTERISTICS:")
-                    print(f"     → Samples: {chars.get('n_samples', 'N/A'):,}")
-                    print(f"     → Features: {chars.get('n_features', 'N/A'):,}")
-                    print(
-                        f"     → Effective rank: {chars.get('effective_rank', 'N/A')}"
-                    )
-
-                    # Data quality indicators
-                    cond_num = chars.get("condition_number", 0)
-                    if cond_num > 0:
-                        if cond_num < 100:
-                            quality = "Excellent 🟢"
-                        elif cond_num < 1000:
-                            quality = "Good 🟡"
-                        else:
-                            quality = "Poor (ill-conditioned) 🔴"
-                        print(f"     → Data quality: {quality} (cond: {cond_num:.1e})")
-
-                # Preprocessing info
-                if "preprocessing_info" in dimred:
-                    prep = dimred["preprocessing_info"]
-                    print(f"\n   🔧 PREPROCESSING APPLIED:")
-                    print(
-                        f"     → Scaling method: {prep.get('scaling_method', 'unknown').replace('_', ' ').title()}"
-                    )
-                    if prep.get("features_removed", 0) > 0:
-                        print(
-                            f"     → Features removed (low variance): {prep['features_removed']}"
-                        )
-                    if "sampling_method" in prep:
-                        print(f"     → Sampling: {prep['sampling_method'].title()}")
-
-                # Method results
-                if "embeddings" in dimred:
-                    embeddings = dimred["embeddings"]
-                    print(f"\n   🔍 REDUCTION METHODS SUCCESSFULLY APPLIED:")
-
-                    # Separate linear and nonlinear methods
-                    linear_methods = []
-                    nonlinear_methods = []
-
-                    for method, result in embeddings.items():
-                        if result.get("method_type") == "linear":
-                            linear_methods.append((method, result))
-                        else:
-                            nonlinear_methods.append((method, result))
-
-                    # Display linear methods
-                    if linear_methods:
-                        print("     📐 Linear Methods:")
-                        for method, result in linear_methods:
-                            emb = result["embedding"]
-                            print(f"       → {method.upper()}: {emb.shape}")
-
-                            # Show explained variance for PCA-like methods
-                            if "total_variance_explained" in result:
-                                var_exp = result["total_variance_explained"]
-                                print(f"         ∘ Variance explained: {var_exp:.1%}")
-
-                            # Show sample values for 2D embeddings
-                            if emb.shape[1] == 2 and emb.shape[0] > 0:
-                                print(
-                                    f"         ∘ Sample point: [{emb[0,0]:.2f}, {emb[0,1]:.2f}]"
-                                )
-                            else:
-                                print(f"         ∘ Components: {emb.shape[1]}")
-
-                    # Display nonlinear methods
-                    if nonlinear_methods:
-                        print("     🌀 Nonlinear Methods:")
-                        for method, result in nonlinear_methods:
-                            emb = result["embedding"]
-                            print(f"       → {method.upper()}: {emb.shape}")
-
-                            # Show method-specific parameters
-                            if "perplexity" in result:
-                                print(f"         ∘ Perplexity: {result['perplexity']}")
-                            if "n_neighbors" in result and result["n_neighbors"]:
-                                print(f"         ∘ Neighbors: {result['n_neighbors']}")
-
-                            # Show sample values for 2D embeddings
-                            if emb.shape[1] == 2 and emb.shape[0] > 0:
-                                print(
-                                    f"         ∘ Sample point: [{emb[0,0]:.2f}, {emb[0,1]:.2f}]"
-                                )
-
-                # Quality evaluation
-                if "evaluation" in dimred and dimred["evaluation"]:
-                    print(f"\n   📈 QUALITY EVALUATION:")
-                    evaluations = dimred["evaluation"]
-
-                    # Find best method based on combined score
-                    best_method = None
-                    best_score = -float("inf")
-
-                    for method, metrics in evaluations.items():
-                        if metrics:  # Only consider methods with evaluation metrics
-                            score = 0
-                            score_components = []
-
-                            if "silhouette_score" in metrics:
-                                sil_score = metrics["silhouette_score"]
-                                score += sil_score * 0.4
-                                score_components.append(f"silhouette: {sil_score:.3f}")
-
-                            if "neighborhood_preservation" in metrics:
-                                neigh_score = metrics["neighborhood_preservation"]
-                                score += neigh_score * 0.4
-                                score_components.append(
-                                    f"preservation: {neigh_score:.3f}"
-                                )
-
-                            if "embedding_stability" in metrics:
-                                stab_score = metrics["embedding_stability"]
-                                score += stab_score * 0.2
-                                score_components.append(f"stability: {stab_score:.3f}")
-
-                            print(
-                                f"     → {method.upper()}: {', '.join(score_components)}"
+                    if sil is not None:
+                        if np.isfinite(sil):
+                            st = (
+                                "excellent" if sil > TH["sil_excellent"]
+                                else "good" if sil > TH["sil_good"]
+                                else "fair"
                             )
+                            metric("Silhouette Score", f"{sil:.3f}", status=st, indent=1)
+                        else:
+                            print("   ⓘ Silhouette not defined for this labeling.")
 
-                            if score > best_score:
-                                best_score = score
-                                best_method = method
+                    # Method-specific extras
+                    if "eps" in r:
+                        metric("Epsilon (DBSCAN)", f"{r['eps']:.3f}", indent=1)
+                    if "min_samples" in r:
+                        metric("Min Samples (DBSCAN)", r["min_samples"], indent=1)
+                    if "best_k" in r and r.get("best_k") is not None:
+                        metric("Best K (internal)", r["best_k"], indent=1)
 
-                    if best_method:
-                        print(f"     ⭐ Best performing: {best_method.upper()}")
+            # --- Recommendations ---
+            recs = cl.get("recommendations") or []
+            if recs:
+                section("Recommendations", 2)
+                for _rec in recs:
+                    # Keep it tidy: strip emojis if you want, or leave as-is
+                    print(f"💡 {_rec}")
 
-                # Recommendations
-                if "recommendations" in dimred and dimred["recommendations"]:
-                    print(f"\n   💡 RECOMMENDATIONS:")
-                    for i, rec in enumerate(
-                        dimred["recommendations"][:3], 1
-                    ):  # Show top 3 recommendations
-                        print(f"     {i}. {rec}")
+        # ----------------------- Time series -----------------------
+        ts = safe_get("timeseries") or {}
+        if ts:
+            section("TIME SERIES ANALYSIS", 1)
+            stationarity_df = ts.get("stationarity", pd.DataFrame())
+            readiness = ts.get("forecasting_readiness", {})
+            temporal = ts.get("temporal_patterns", {})
 
-                # Summary statistics
-                total_methods = len(dimred.get("embeddings", {}))
-                successful_evals = len(
-                    [m for m in dimred.get("evaluation", {}).values() if m]
-                )
-                print(
-                    f"\n   📝 SUMMARY: {total_methods} methods applied, {successful_evals} evaluated for quality"
-                )
+            if not stationarity_df.empty:
+                total = len(stationarity_df)
+                stationary = int(stationarity_df["is_stationary"].sum())
+                ready = sum(1 for v in readiness.values() if v.get("readiness_level") in {"excellent","good"})
+                print("Analysis Overview:")
+                metric("Total Series", total)
+                metric("Stationary Series", f"{stationary}/{total} ({pct(stationary,total)})")
+                metric("Forecast-Ready", f"{ready}/{total} ({pct(ready,total)})")
 
-        # Data Quality Assessment
-        print(f"\n✅ DATA QUALITY ASSESSMENT")
-        print("-" * 40)
+                section("Stationarity Assessment", 3)
+                st_feats = stationarity_df.loc[stationarity_df["is_stationary"], "feature"].tolist()
+                non_st = stationarity_df.loc[~stationarity_df["is_stationary"]]
+                if st_feats:
+                    print(f"✅ Stationary ({len(st_feats)}):")
+                    for f in st_feats[:3]:
+                        row = stationarity_df[stationarity_df["feature"] == f].iloc[0]
+                        metric(f, f"ADF p={row['adf_pvalue']:.4f}", indent=1)
+                    if len(st_feats) > 3: print(f"   ... and {len(st_feats)-3} more")
+                if not non_st.empty:
+                    print(f"\n⚠️ Non-Stationary ({len(non_st)}):")
+                    for _, r in non_st.head(3).iterrows():
+                        metric(r["feature"], r["stationarity_type"], indent=1)
 
-        completeness = (
-            1 - self.df.isnull().sum().sum() / (self.df.shape[0] * self.df.shape[1])
-        ) * 100
-        uniqueness = len(self.df.drop_duplicates()) / len(self.df) * 100
+                # Trends & seasonality (compact)
+                section("Temporal Patterns", 3)
+                trends = {k:v for k,v in temporal.items() if k.endswith("_trend")}
+                seas = {k:v for k,v in temporal.items() if k.endswith("_seasonality")}
+                strong_trends = []
+                for k,v in trends.items():
+                    if v.get("linear_significant") and v.get("trend_direction") not in {"no_trend","stable"}:
+                        strong_trends.append((k.replace("_trend",""), v.get("linear_r_squared",0)))
+                if strong_trends:
+                    print("📈 Significant Trends:")
+                    for f, r2 in sorted(strong_trends, key=lambda x: -x[1])[:3]:
+                        metric(f, f"R²={r2:.3f}", indent=1)
 
-        print(f"   📊 Completeness: {completeness:.1f}%")
-        print(f"   🔍 Uniqueness: {uniqueness:.1f}%")
+                seas_list = []
+                for k,v in seas.items():
+                    cls = v.get("stl_classification","none")
+                    if cls in {"moderate","strong"}:
+                        seas_list.append((k.replace("_seasonality",""), v.get("stl_seasonal_strength",0)))
+                if seas_list:
+                    print("\n🔄 Seasonal Patterns:")
+                    for f, s in sorted(seas_list, key=lambda x: -x[1])[:3]:
+                        metric(f, f"strength={s:.3f}", indent=1)
+
+                section("Time Series Recommendations", 3)
+                if total:
+                    if (stationary/total*100) < 50: rec("Apply differencing to achieve stationarity", "medium")
+                    fr = (ready/total*100)
+                    if fr > 70: rec("Well-suited for forecasting")
+                    elif fr < 30: rec("Significant preprocessing needed before forecasting", "medium")
+                if seas_list: rec("Use seasonal models (SARIMA, STL).")
+                if strong_trends: rec("Include trend terms or detrend.")
+
+        # ----------------------- Feature engineering -----------------------
+        fe = safe_get("feature_engineering") or {}
+        if fe:
+            section("FEATURE ENGINEERING RECOMMENDATIONS", 1)
+            details = fe.get("_detailed", {})
+            trans = details.get("transformations", {})
+            inter = details.get("interactions", [])
+            enc = details.get("encodings", {})
+            rank = details.get("feature_ranking", {})
+
+            print("Engineering Scope:")
+            metric("Numeric Features", len(trans))
+            metric("Categorical Features", len(enc))
+            metric("Interaction Candidates", len(inter))
+
+            if trans:
+                section("Priority Transformations", 3)
+                def score_item(st):
+                    s = 0
+                    skew = abs(st.get("skewness",0)); kurt = st.get("kurtosis",0); out = st.get("outliers_pct",0); cv = st.get("cv",0)
+                    if skew > 2: s += 3
+                    elif skew > 1: s += 2
+                    if kurt > 3: s += 2
+                    elif kurt < -1: s += 1
+                    if out > 10: s += 3
+                    elif out > 5: s += 1
+                    if cv > 3: s += 1
+                    return s
+
+                scored = []
+                for f, d in trans.items():
+                    st = d.get("stats", {})
+                    scored.append((f, score_item(st), d))
+                scored.sort(key=lambda x: -x[1])
+                hi = [x for x in scored if x[1] >= 5][:3]
+                md = [x for x in scored if 2 <= x[1] < 5][:3]
+
+                if hi:
+                    print("🚨 High Priority:")
+                    for f, _, d in hi:
+                        issues = []
+                        st = d.get("stats", {})
+                        if abs(st.get("skewness",0)) > 2: issues.append(f"skew={st.get('skewness',0):.2f}")
+                        if st.get("kurtosis",0) > 3: issues.append(f"kurtosis={st.get('kurtosis',0):.2f}")
+                        if st.get("outliers_pct",0) > 5: issues.append(f"outliers={st.get('outliers_pct',0):.1f}%")
+                        print(f"   📌 {f}")
+                        if issues: print(f"      Issues: {', '.join(issues)}")
+                        if d.get("recommended"):
+                            print("      Top transforms:")
+                            for i, t in enumerate(d["recommended"][:2], 1):
+                                print(f"        {i}. {t}")
+                if md:
+                    print("\n⚠️ Medium Priority:")
+                    for f, _, d in md:
+                        st = d.get("stats", {})
+                        issues = []
+                        if abs(st.get("skewness",0)) > 1: issues.append(f"skew={st.get('skewness',0):.2f}")
+                        if st.get("outliers_pct",0) > 5: issues.append(f"outliers={st.get('outliers_pct',0):.1f}%")
+                        first = (d.get("recommended") or ["Standard scaling"])[0]
+                        metric(f, f"{', '.join(issues)} → {first}", indent=1)
+
+            if rank:
+                section("Feature Importance Analysis", 3)
+                main = {k:v for k,v in rank.items() if k != "shap_importance"}
+                if main:
+                    top = list(main.items())[:8]
+                    hi = [(f,s) for f,s in top if s > 0.1]
+                    md = [(f,s) for f,s in top if 0.05 <= s <= 0.1]
+                    lo = [(f,s) for f,s in top if s < 0.05]
+                    if hi:
+                        print("🥇 High Value (>0.1):")
+                        for f,s in hi[:3]: metric(f, f"{s:.4f}", indent=1)
+                    if md:
+                        print("\n🥈 Medium (0.05–0.1):")
+                        for f,s in md[:3]: metric(f, f"{s:.4f}", indent=1)
+                    if lo:
+                        print(f"\n📉 Low Value: {len(lo)} features < 0.05 (consider removal)")
+
+            if enc:
+                section("Categorical Encoding Strategy", 3)
+                simple, complex_, high = [], [], []
+                for f, info in enc.items():
+                    card = info.get("cardinality", 0); nullp = info.get("null_percentage", 0.0)
+                    strat = (info.get("strategies") or ["OneHot"])[0]
+                    if card <= 5: simple.append((f,card,strat,nullp))
+                    elif card <= 20: complex_.append((f,card,strat,nullp))
+                    else: high.append((f,card,strat,nullp))
+                if simple:
+                    print("✅ Simple (≤5):")
+                    for f,c,s,n in simple[:3]:
+                        metric(f, f"{c} cats{', ' + f'{n:.1f}% null' if n>0 else ''} → {s}", indent=1)
+                if complex_:
+                    print("\n🔄 Advanced (6–20):")
+                    for f,c,s,n in complex_[:3]:
+                        metric(f, f"{c} cats{', ' + f'{n:.1f}% null' if n>0 else ''} → {s}", indent=1)
+                if high:
+                    print("\n🔀 High Cardinality (>20):")
+                    for f,c,s,_ in high[:3]:
+                        metric(f, f"{c} categories → {s}", indent=1)
+                        if c > 100: rec("Consider hashing or rare-category grouping", "medium", 1)
+
+            if inter:
+                section("Interaction Features", 3)
+                metric("Total Candidates", len(inter))
+                rec(f"Start with top {min(10,len(inter))} interactions by importance")
+
+
+        # ----------------------- Missingness -----------------------
+        miss = safe_get("missingness") or {}
+        if miss:
+            section("MISSINGNESS ANALYSIS", 1)
+            rates = miss.get("missing_rate", pd.Series(dtype=float))
+            if hasattr(rates, "empty") and not rates.empty:
+                section("Missing Value Rates", 3)
+                rates = rates.sort_values(ascending=False)
+                hi = ((rates > 0.5) | (rates > 0.2)).sum()
+                mid = ((rates <= 0.2) & (rates > 0.05)).sum()
+                for col, r in rates.items():
+                    if r <= 0: continue
+                    st = "poor" if r > 0.5 else "fair" if r > 0.2 else "good" if r > 0.05 else "excellent"
+                    metric(col, f"{r:.1%}", status=st)
+                if hi: rec(f"{hi} features with >20% missing", "high")
+                if mid: rec(f"{mid} features with 5–20% missing", "medium")
+
+            if miss.get("missing_vs_target"):
+                section("Target-Dependent Missingness (MNAR Detection)", 3)
+                for col, st in miss["missing_vs_target"].items():
+                    if not st.get("suggested_mnar"): continue
+                    if "ttest_p" in st:
+                        metric(f"{col} (numeric)", f"t-test p={st['ttest_p']:.4f}, AUC={st.get('auc',0):.2f}", indent=1)
+                    elif "chi2_p" in st:
+                        metric(f"{col} (categorical)", f"Chi² p={st['chi2_p']:.4f}, Cramér's V={st.get('cramers_v',0):.2f}", indent=1)
+                    print("     ⚠️ Likely MNAR")
+                rec("Use MNAR-aware imputation where flagged", "high")
+
+            corr_miss = miss.get("missingness_correlation")
+            if corr_miss is not None and hasattr(corr_miss, "values"):
+                upper = np.triu(np.ones_like(corr_miss, dtype=bool), 1)
+                pairs = corr_miss.where(upper).stack().sort_values(ascending=False)
+                strong = pairs[pairs > 0.5]
+                if not strong.empty:
+                    section("Correlated Missingness Patterns", 3)
+                    print("Strong correlations (>0.5) in missingness:")
+                    for (c1,c2), v in strong[:5].items():
+                        metric(f"{c1} ↔ {c2}", f"{v:.2f}", indent=1)
+                    rec("Consider joint imputation for correlated missing patterns")
+
+        # ----------------------- Data quality assessment -----------------------
+        section("COMPREHENSIVE DATA QUALITY ASSESSMENT", 1)
+        completeness = (1 - self.df.isna().sum().sum() / (self.df.size or 1)) * 100
+        uniqueness = (len(self.df.drop_duplicates()) / (len(self.df) or 1)) * 100
+        consistency = 80.0
+        ds = safe_get("distributions","summary", pd.DataFrame())
+        if not ds.empty:
+            gaussian_pct = (ds.get("is_gaussian", False).sum() / len(ds)) * 100
+            consistency = min(100, 60 + gaussian_pct * 0.4)
+        validity = 95.0
+        out_sum = safe_get("outliers","summary", {})
+        if out_sum:
+            validity = max(50, 100 - (out_sum.get("overall_outlier_rate",0)*500))
+
+        def band(x): return "excellent" if x>95 else "good" if x>85 else "fair" if x>70 else "poor"
+        print("Quality Dimensions:")
+        metric("Completeness", f"{completeness:.1f}%", status=band(completeness))
+        metric("Uniqueness", f"{uniqueness:.1f}%", status=band(uniqueness))
+        metric("Consistency", f"{consistency:.1f}%", status=band(consistency))
+        metric("Validity", f"{validity:.1f}%", status=band(validity))
 
         if self._categorical_cols:
-            print(f"   📋 Categorical Feature Cardinality:")
-            for col in self._categorical_cols[:5]:
-                unique_count = self.df[col].nunique()
-                unique_pct = unique_count / len(self.df) * 100
-                print(f"     → {col}: {unique_count} unique values ({unique_pct:.1f}%)")
+            section("Categorical Feature Health", 3)
+            issues = []
+            n = len(self.df)
+            for col in self._categorical_cols[:8]:
+                u = self.df[col].nunique(); up = (u/(n or 1))*100; nullp = self.df[col].isna().mean()*100
+                if up > 95: st, desc = "warning", "Very high cardinality"; issues.append(f"{col}: {desc}")
+                elif up > 50: st, desc = "fair", "High cardinality"
+                elif u < 2: st, desc = "poor", "Constant/near-constant"; issues.append(f"{col}: {desc}")
+                else: st, desc = "good", "Appropriate cardinality"
+                print(f"   • {col}:")
+                metric("Unique Values", f"{u} ({up:.1f}%)", status=st, indent=1)
+                if nullp>0: metric("Missing", f"{nullp:.1f}%", status=band(100-nullp), indent=1)
+            if issues:
+                section("Categorical Issues", 3)
+                for it in issues: rec(it, "medium")
 
-        overall_quality = (completeness + uniqueness) / 2
-        quality_status = (
-            "Excellent"
-            if overall_quality > 95
-            else (
-                "Good"
-                if overall_quality > 85
-                else "Fair" if overall_quality > 70 else "Poor"
-            )
-        )
-        quality_emoji = (
-            "🟢"
-            if overall_quality > 95
-            else (
-                "🟡" if overall_quality > 85 else "🟠" if overall_quality > 70 else "🔴"
-            )
-        )
+        overall = (completeness + uniqueness + consistency + validity)/4
+        section("Overall Quality Summary", 3)
+        metric("Overall Quality Score", f"{overall:.1f}%")
+        label = "Excellent - analysis-ready" if overall>90 else \
+                "Good - minor preprocessing" if overall>80 else \
+                "Fair - moderate preprocessing" if overall>70 else \
+                "Poor - extensive preprocessing"
+        print(f"   {'🟢' if overall>90 else '🟡' if overall>80 else '🟠' if overall>70 else '🔴'} {label}")
 
-        print(
-            f"   {quality_emoji} Overall Quality Score: {overall_quality:.1f}% ({quality_status})"
-        )
+        # ----------------------- Executive recommendations -----------------------
+        section("EXECUTIVE RECOMMENDATIONS", 1)
+        recs = []
+        if completeness < 95: recs.append(("Handle missing data (impute/repair patterns)" if completeness>=80 else "Address critical missing data patterns", "high" if completeness<80 else "medium"))
+        if uniqueness < 95: recs.append(("Investigate and handle duplicate records","medium"))
+        if not ds.empty:
+            skewed = int(ds.get("is_skewed", False).sum()); total = len(ds)
+            if total and skewed > total*0.5: recs.append(("Apply transformations to address widespread skewness","high"))
+            elif total and skewed > total*0.3: recs.append(("Consider transformations for skewed features","medium"))
+        if out_sum:
+            rate = out_sum.get("overall_outlier_rate",0)
+            if rate>0.1: recs.append(("Implement robust outlier detection and treatment","high"))
+            elif rate>0.05: recs.append(("Review and validate detected outliers","medium"))
+        cl_evals = (safe_get("clusters") or {}).get("evaluations", {})
+        if cl_evals:
+            best_sil = max([e.get("silhouette_score",0) for e in cl_evals.values()] + [0])
+            if best_sil > 0.7: recs.append(("Strong clustering structure — consider segmentation","low"))
+            elif best_sil > 0.5: recs.append(("Moderate clustering potential — explore segmentation","low"))
+
+        prio = {"high":1,"medium":2,"low":3}
+        recs.sort(key=lambda x: prio[x[1]])
+        section("Action Items by Priority", 3)
+        current = None
+        icons = {"high":"🚨","medium":"⚠️","low":"💡"}
+        for text, p in recs:
+            if p != current:
+                current = p; print(f"\n   {icons[p]} {p.upper()} PRIORITY:")
+            rec(text, p, 1)
+        if not recs: rec("Dataset in excellent condition — proceed with modeling", "low")
+
+        # ----------------------- Completion summary -----------------------
+        section("ANALYSIS COMPLETION SUMMARY", 1)
+        mapping = {
+            "distributions":"Distribution Analysis","correlations":"Correlation Analysis",
+            "patterns":"Pattern Detection","feature_engineering":"Feature Engineering",
+            "timeseries":"Time Series Analysis","clusters":"Clustering Analysis",
+            "outliers":"Outlier Detection","missingness":"Missingness Analysis",
+            "dimensionality":"Dimensionality Reduction"
+        }
+        completed = [v for k,v in mapping.items() if k in self._results_cache]
+        print(f"✅ Completed Analyses: {len(completed)}")
+        for name in completed: print(f"   • {name}")
+        print(f"\n📊 Dataset Shape: {self.df.shape[0]:,} rows × {self.df.shape[1]} columns")
+        print(f"💾 Memory Usage: {self.df.memory_usage(deep=True).sum()/(1024**2):.2f} MB")
+        print(f"🎯 Overall Quality: {overall:.1f}% ({label.split(' - ')[0]})")
+
+        print("\n" + "="*80)
+        print("📋 COMPREHENSIVE DATASET ANALYSIS COMPLETE")
+        print("="*80)
+        print("🔍 Use these insights to guide preprocessing and modeling.")
+        print("📈 Consider the priority recommendations for optimal results.")
+        print("="*80)
+
 
     # ========================================================================
     # EXTENSIBILITY METHODS

@@ -5,11 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .embeddings import (
-    InformerTimeEmbedding,
-    PositionalEncoding,
-    RoPEPositionalEncoding,
-)
+from .embeddings import (InformerTimeEmbedding, PositionalEncoding,
+                         RoPEPositionalEncoding)
 from .transformer_att import MultiAttention
 from .transformer_aux import *
 from .transformer_moe import *

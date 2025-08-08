@@ -1,6 +1,6 @@
 import warnings
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,15 +8,15 @@ import pandas as pd
 import seaborn as sns
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from scipy import fft
 from scipy.stats import skew
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import KMeans
-from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
-from sklearn.preprocessing import KBinsDiscretizer, OneHotEncoder, QuantileTransformer
+from sklearn.feature_selection import (mutual_info_classif,
+                                       mutual_info_regression)
+from sklearn.preprocessing import (KBinsDiscretizer, OneHotEncoder,
+                                   QuantileTransformer)
 from sklearn.utils.validation import check_is_fitted
-from torch.utils.data import DataLoader, TensorDataset
 
 
 class AutoencoderWrapper(nn.Module):

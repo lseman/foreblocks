@@ -1,6 +1,5 @@
 from copy import deepcopy
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -65,7 +64,7 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         # Apply RoPE before attention
-        x_pos = self.pos(x)
+        self.pos(x)
 
         # Pre-norm architecture with residual connections
         normed = self.norm1(x)

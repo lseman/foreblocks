@@ -293,7 +293,7 @@ class FourierFeatures(nn.Module):
         Optimized for memory efficiency and numerical stability.
         """
         batch, seq_len, in_dim = x.shape
-        device = x.device
+        x.device
 
         assert (
             in_dim == self.input_size

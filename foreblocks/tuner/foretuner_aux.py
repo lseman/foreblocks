@@ -3,42 +3,20 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # Core Python
-import functools
-import threading
 
 # Parallelism & Concurrency
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from functools import lru_cache, partial
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-# Numba JIT
-import numba
 
 # Numerical & Scientific Computing
 import numpy as np
+# BoTorch & GPyTorch (Gaussian Processes)
+from numba import jit
+
+# Numba JIT
+
 
 # PyTorch Core
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from botorch.fit import fit_gpytorch_mll
 
-# BoTorch & GPyTorch (Gaussian Processes)
-from botorch.models.approximate_gp import SingleTaskVariationalGP
-from botorch.models.transforms import Normalize, Standardize
-from botorch.models.transforms.outcome import Standardize as OutcomeStandardize
-from gpytorch.kernels import MaternKernel, ScaleKernel
-from gpytorch.means import ConstantMean
-from gpytorch.mlls import ExactMarginalLogLikelihood, exact_marginal_log_likelihood
-from gpytorch.mlls.exact_marginal_log_likelihood import (
-    ExactMarginalLogLikelihood as ExactMarginalLogLikelihoodExplicit,
-)
-from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy
-from numba import jit, prange
-from scipy.linalg import sqrtm
-from scipy.stats import chi2, norm
-from scipy.stats.qmc import Sobol
 
 
 @dataclass
@@ -145,7 +123,7 @@ def compute_coverage(X, centers, radii):
 
     n_points = X.shape[0]
     n_regions = centers.shape[0]
-    n_dims = X.shape[1]
+    X.shape[1]
 
     covered_count = 0
 
@@ -328,7 +306,3 @@ def dpp_select(X, scores, batch_size=5, lengthscale=0.5):
 
 
 import numpy as np
-from scipy.spatial import cKDTree
-from scipy.spatial.distance import cdist
-from scipy.stats import norm
-from sobol_seq import i4_sobol_generate

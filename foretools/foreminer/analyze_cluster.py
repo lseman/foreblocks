@@ -1,4 +1,3 @@
-
 from collections import Counter
 from typing import Any, Dict, List, Tuple
 
@@ -6,17 +5,25 @@ import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist, squareform
-from sklearn.cluster import (DBSCAN, AgglomerativeClustering, KMeans,
-                             MeanShift, SpectralClustering)
+from sklearn.cluster import (
+    DBSCAN,
+    AgglomerativeClustering,
+    KMeans,
+    MeanShift,
+    SpectralClustering,
+)
 from sklearn.decomposition import PCA
-from sklearn.metrics import (adjusted_rand_score, calinski_harabasz_score,
-                             davies_bouldin_score, silhouette_score)
+from sklearn.metrics import (
+    adjusted_rand_score,
+    calinski_harabasz_score,
+    davies_bouldin_score,
+    silhouette_score,
+)
 from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
 from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import (PowerTransformer, RobustScaler,
-                                   StandardScaler)
+from sklearn.preprocessing import PowerTransformer, RobustScaler, StandardScaler
 
-from .foreminer_aux import *
+from .foreminer_aux import *  # expects HAS_HDBSCAN and config attrs like max_clusters
 
 
 class ClusterAnalyzer(AnalysisStrategy):
@@ -26,827 +33,566 @@ class ClusterAnalyzer(AnalysisStrategy):
     def name(self) -> str:
         return "clusters"
 
+    # --------------------------- Helpers ---------------------------
+    def _count_clusters(self, labels: np.ndarray) -> int:
+        """Count clusters ignoring noise label -1."""
+        u = set(labels)
+        return int(len(u) - (1 if -1 in u else 0))
+
+    # --------------------------- Preprocessing ---------------------------
     def _adaptive_preprocessing(
         self, data: pd.DataFrame, config: AnalysisConfig
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Enhanced preprocessing with outlier detection and feature scaling"""
-        numeric_data = data.select_dtypes(include=[np.number]).dropna()
-
-        if numeric_data.empty:
+        numeric = data.select_dtypes(include=[np.number]).dropna()
+        if numeric.empty or numeric.shape[1] == 0:
             raise ValueError("No numeric data available for clustering")
 
-        preprocessing_info = {}
+        info: Dict[str, Any] = {}
 
-        # Outlier detection using IQR method
-        Q1 = numeric_data.quantile(0.25)
-        Q3 = numeric_data.quantile(0.75)
-        IQR = Q3 - Q1
-        outlier_mask = (
-            (numeric_data < (Q1 - 1.5 * IQR)) | (numeric_data > (Q3 + 1.5 * IQR))
-        ).any(axis=1)
-        n_outliers = outlier_mask.sum()
-        preprocessing_info["outliers_detected"] = int(n_outliers)
-        preprocessing_info["outlier_percentage"] = float(
-            n_outliers / len(numeric_data) * 100
-        )
+        # IQR outlier flag (row-level)
+        q1, q3 = numeric.quantile(0.25), numeric.quantile(0.75)
+        iqr = q3 - q1
+        outlier_mask = ((numeric < (q1 - 1.5 * iqr)) | (numeric > (q3 + 1.5 * iqr))).any(axis=1)
+        n_out = int(outlier_mask.sum())
+        info["outliers_detected"] = n_out
+        info["outlier_percentage"] = float(n_out / max(len(numeric), 1) * 100.0)
 
-        # Adaptive scaling based on data characteristics
-        skewness = numeric_data.skew().abs().mean()
-        outlier_fraction = n_outliers / len(numeric_data)
-
-        if skewness > 2 or outlier_fraction > 0.1:
-            try:
-                scaler = PowerTransformer(method="yeo-johnson", standardize=True)
-                scaled_data = scaler.fit_transform(numeric_data)
-                preprocessing_info["scaling_method"] = "power_transform"
-            except:
-                scaler = RobustScaler()
-                scaled_data = scaler.fit_transform(numeric_data)
-                preprocessing_info["scaling_method"] = "robust"
-        else:
-            scaler = StandardScaler()
-            scaled_data = scaler.fit_transform(numeric_data)
-            preprocessing_info["scaling_method"] = "standard"
-
-        # Dimensionality assessment
-        n_samples, n_features = scaled_data.shape
-        preprocessing_info["curse_of_dimensionality_risk"] = n_features > n_samples / 3
-
-        # PCA for high-dimensional data
-        if n_features > 50 and n_samples > n_features:
-            pca = PCA(
-                n_components=min(50, n_samples // 2), random_state=config.random_state
-            )
-            scaled_data = pca.fit_transform(scaled_data)
-            preprocessing_info["pca_applied"] = True
-            preprocessing_info["pca_variance_explained"] = float(
-                pca.explained_variance_ratio_.sum()
-            )
-            preprocessing_info["final_dimensions"] = scaled_data.shape[1]
-        else:
-            preprocessing_info["pca_applied"] = False
-
-        preprocessing_info["final_shape"] = scaled_data.shape
-        return scaled_data, preprocessing_info
-
-    def _estimate_optimal_clusters(
-        self, data: np.ndarray, max_k: int = 15
-    ) -> Dict[str, Any]:
-        """Multi-method optimal cluster number estimation"""
-        n_samples = len(data)
-        max_k = min(max_k, n_samples // 3)
-
-        if max_k < 2:
-            return {"optimal_k": 2, "methods": {}, "confidence": "low"}
-
-        methods_results = {}
-
-        # 1. Elbow Method (Within-cluster sum of squares)
-        wcss = []
-        k_range = range(1, max_k + 1)
-        for k in k_range:
-            if k == 1:
-                wcss.append(np.sum(np.var(data, axis=0)) * len(data))
-            else:
-                kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-                kmeans.fit(data)
-                wcss.append(kmeans.inertia_)
-
-        # Find elbow using second derivative
-        if len(wcss) >= 3:
-            second_diff = np.diff(np.diff(wcss))
-            elbow_k = np.argmax(second_diff) + 2  # +2 because of double diff
-            methods_results["elbow"] = min(max_k, max(2, elbow_k))
-
-        # 2. Silhouette Analysis
-        silhouette_scores = []
-        for k in range(2, max_k + 1):
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-            labels = kmeans.fit_predict(data)
-            score = silhouette_score(data, labels)
-            silhouette_scores.append((k, score))
-
-        if silhouette_scores:
-            best_sil_k = max(silhouette_scores, key=lambda x: x[1])[0]
-            methods_results["silhouette"] = best_sil_k
-
-        # 3. Calinski-Harabasz Index
-        ch_scores = []
-        for k in range(2, max_k + 1):
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-            labels = kmeans.fit_predict(data)
-            score = calinski_harabasz_score(data, labels)
-            ch_scores.append((k, score))
-
-        if ch_scores:
-            best_ch_k = max(ch_scores, key=lambda x: x[1])[0]
-            methods_results["calinski_harabasz"] = best_ch_k
-
-        # 4. Davies-Bouldin Index (lower is better)
-        db_scores = []
-        for k in range(2, max_k + 1):
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-            labels = kmeans.fit_predict(data)
-            score = davies_bouldin_score(data, labels)
-            db_scores.append((k, score))
-
-        if db_scores:
-            best_db_k = min(db_scores, key=lambda x: x[1])[0]
-            methods_results["davies_bouldin"] = best_db_k
-
-        # 5. Gap Statistic (simplified version)
+        # Scaling choice
+        skewness = float(numeric.skew().abs().mean())
+        outlier_frac = n_out / max(len(numeric), 1)
         try:
-            gap_stats = []
+            if (skewness > 2.0) or (outlier_frac > 0.10):
+                scaler = PowerTransformer(method="yeo-johnson", standardize=True)
+                info["scaling_method"] = "power_transform"
+            else:
+                scaler = StandardScaler()
+                info["scaling_method"] = "standard"
+            X = scaler.fit_transform(numeric)
+        except Exception:
+            scaler = RobustScaler()
+            X = scaler.fit_transform(numeric)
+            info["scaling_method"] = "robust"
+
+        n_samples, n_features = X.shape
+        info["curse_of_dimensionality_risk"] = bool(n_features > n_samples / 3)
+
+        # PCA for high-dim dense data
+        if (n_features > 50) and (n_samples > n_features):
+            try:
+                pca = PCA(n_components=min(50, n_samples // 2), random_state=getattr(config, "random_state", 42))
+                X = pca.fit_transform(X)
+                info["pca_applied"] = True
+                info["pca_variance_explained"] = float(pca.explained_variance_ratio_.sum())
+                info["final_dimensions"] = int(X.shape[1])
+            except Exception:
+                info["pca_applied"] = False
+        else:
+            info["pca_applied"] = False
+
+        info["final_shape"] = tuple(X.shape)
+        return X, info
+
+    # --------------------------- Estimate k ---------------------------
+    def _estimate_optimal_clusters(self, data: np.ndarray, max_k: int = 15) -> Dict[str, Any]:
+        """Multi-method optimal cluster number estimation"""
+        n_samples = data.shape[0]
+        max_k = int(min(max_k, max(2, n_samples // 3)))
+        if max_k < 2:
+            return {"optimal_k": 2, "methods": {}, "confidence": "low", "method_agreement": 0}
+
+        methods: Dict[str, int] = {}
+
+        # 1) Elbow on WCSS
+        wcss = []
+        for k in range(1, max_k + 1):
+            if k == 1:
+                wcss.append(float(np.var(data, axis=0, ddof=1).sum() * n_samples))
+            else:
+                km = KMeans(n_clusters=k, random_state=42, n_init=10, algorithm="lloyd")
+                km.fit(data)
+                wcss.append(float(km.inertia_))
+        if len(wcss) >= 3:
+            d2 = np.diff(np.diff(wcss))
+            elbow_k = int(np.argmax(d2) + 2)  # +2 for second diff offset
+            methods["elbow"] = int(np.clip(elbow_k, 2, max_k))
+
+        # 2) Silhouette / 3) Calinski–Harabasz / 4) Davies–Bouldin
+        sil_best, ch_best, db_best = (None, -np.inf), (None, -np.inf), (None, np.inf)
+        for k in range(2, max_k + 1):
+            km = KMeans(n_clusters=k, random_state=42, n_init=10, algorithm="lloyd")
+            labels = km.fit_predict(data)
+            if len(np.unique(labels)) < 2:
+                continue
+            sil = silhouette_score(data, labels)
+            ch = calinski_harabasz_score(data, labels)
+            db = davies_bouldin_score(data, labels)
+            if sil > sil_best[1]: sil_best = (k, sil)
+            if ch > ch_best[1]: ch_best = (k, ch)
+            if db < db_best[1]: db_best = (k, db)
+
+        if sil_best[0] is not None: methods["silhouette"] = sil_best[0]
+        if ch_best[0] is not None: methods["calinski_harabasz"] = ch_best[0]
+        if db_best[0] is not None: methods["davies_bouldin"] = db_best[0]
+
+        # 5) Gap statistic (lightweight)
+        try:
+            gaps: List[Tuple[int, float]] = []
+            mins, maxs = data.min(axis=0), data.max(axis=0)
             for k in range(1, max_k + 1):
                 if k == 1:
-                    intra_disp = np.sum(np.var(data, axis=0)) * len(data)
+                    intra = float(np.var(data, axis=0, ddof=1).sum() * n_samples)
                 else:
-                    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-                    kmeans.fit(data)
-                    intra_disp = kmeans.inertia_
+                    km = KMeans(n_clusters=k, random_state=42, n_init=10)
+                    km.fit(data)
+                    intra = float(km.inertia_)
 
-                # Reference distribution (uniform random)
-                ref_disps = []
-                for _ in range(5):  # Reduced iterations for speed
-                    random_data = np.random.uniform(
-                        data.min(axis=0), data.max(axis=0), size=data.shape
-                    )
+                ref = []
+                for _ in range(5):
+                    rand = np.random.uniform(mins, maxs, size=data.shape)
                     if k == 1:
-                        ref_disp = np.sum(np.var(random_data, axis=0)) * len(
-                            random_data
-                        )
+                        ref.append(float(np.var(rand, axis=0, ddof=1).sum() * n_samples))
                     else:
-                        ref_kmeans = KMeans(n_clusters=k, random_state=42, n_init=5)
-                        ref_kmeans.fit(random_data)
-                        ref_disp = ref_kmeans.inertia_
-                    ref_disps.append(ref_disp)
-
-                gap = np.log(np.mean(ref_disps)) - np.log(intra_disp)
-                gap_stats.append((k, gap))
-
-            # Find k where gap(k) >= gap(k+1) - std(gap(k+1))
-            for i in range(len(gap_stats) - 1):
-                k, gap_k = gap_stats[i]
-                k_plus_1, gap_k_plus_1 = gap_stats[i + 1]
-                if gap_k >= gap_k_plus_1 - 0.1:  # Simplified std approximation
-                    methods_results["gap_statistic"] = k
+                        kmr = KMeans(n_clusters=k, random_state=42, n_init=5)
+                        kmr.fit(rand)
+                        ref.append(float(kmr.inertia_))
+                gap = float(np.log(np.mean(ref) + 1e-12) - np.log(intra + 1e-12))
+                gaps.append((k, gap))
+            for (k, gk), (_, gk1) in zip(gaps[:-1], gaps[1:]):
+                if gk >= gk1 - 0.1:  # crude std proxy
+                    methods["gap_statistic"] = k
                     break
-
         except Exception as e:
             print(f"Gap statistic calculation failed: {e}")
 
-        # Consensus estimation
-        if methods_results:
-            method_values = list(methods_results.values())
-            # Weight different methods
-            weights = {
-                "silhouette": 0.3,
-                "calinski_harabasz": 0.25,
-                "davies_bouldin": 0.2,
-                "elbow": 0.15,
-                "gap_statistic": 0.1,
-            }
-
-            weighted_sum = sum(
-                weights.get(method, 0.2) * k for method, k in methods_results.items()
-            )
-            optimal_k = max(2, min(max_k, int(np.round(weighted_sum))))
-
-            # Calculate confidence based on agreement
-            variance = np.var(method_values)
-            if variance < 0.5:
-                confidence = "high"
-            elif variance < 2.0:
-                confidence = "medium"
-            else:
-                confidence = "low"
+        if methods:
+            weights = {"silhouette": 0.3, "calinski_harabasz": 0.25, "davies_bouldin": 0.2, "elbow": 0.15, "gap_statistic": 0.1}
+            wsum = sum(weights.get(m, 0.2) * k for m, k in methods.items())
+            opt_k = int(np.clip(np.round(wsum), 2, max_k))
+            vals = list(methods.values())
+            var = float(np.var(vals)) if len(vals) > 1 else 0.0
+            conf = "high" if var < 0.5 else "medium" if var < 2.0 else "low"
+            return {"optimal_k": opt_k, "methods": methods, "confidence": conf, "method_agreement": len(set(vals))}
         else:
-            optimal_k = min(3, max_k)
-            confidence = "low"
+            return {"optimal_k": min(3, max_k), "methods": {}, "confidence": "low", "method_agreement": 0}
 
-        return {
-            "optimal_k": optimal_k,
-            "methods": methods_results,
-            "confidence": confidence,
-            "method_agreement": len(set(method_values)) if methods_results else 0,
-        }
-
+    # --------------------------- KMeans (enhanced) ---------------------------
     def _enhanced_kmeans_analysis(
         self, data: np.ndarray, config: AnalysisConfig, optimal_k_info: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Enhanced K-means with multiple initializations and stability analysis"""
-        max_k = min(config.max_clusters, len(data) // 3)
+        max_k = int(min(getattr(config, "max_clusters", 10), max(2, len(data) // 3)))
         k_range = range(2, max_k + 1)
 
-        all_results = []
-        best_model = None
-        best_k = optimal_k_info["optimal_k"]
-        best_score = -1
+        all_results: List[Dict[str, Any]] = []
+        best_model, best_k, best_score = None, int(optimal_k_info["optimal_k"]), -1.0
 
         for k in k_range:
-            # Multiple runs with different initializations
             stability_scores = []
             models = []
-
-            for init_method in ["k-means++", "random"]:
+            for init_method in ("k-means++", "random"):
                 try:
-                    kmeans = KMeans(
-                        n_clusters=k,
-                        init=init_method,
-                        n_init=20,
-                        max_iter=500,
-                        random_state=config.random_state,
-                        algorithm="lloyd",
-                    )
-                    labels = kmeans.fit_predict(data)
+                    km = KMeans(n_clusters=k, init=init_method, n_init=20, max_iter=500,
+                                random_state=getattr(config, "random_state", 42), algorithm="lloyd")
+                    labels = km.fit_predict(data)
 
-                    # Stability check: run again and compare
-                    kmeans_stable = KMeans(
-                        n_clusters=k,
-                        init=init_method,
-                        n_init=20,
-                        max_iter=500,
-                        random_state=config.random_state + 1,
-                    )
-                    labels_stable = kmeans_stable.fit_predict(data)
-                    stability = adjusted_rand_score(labels, labels_stable)
-                    stability_scores.append(stability)
-                    models.append((kmeans, labels))
-
+                    km2 = KMeans(n_clusters=k, init=init_method, n_init=20, max_iter=500,
+                                 random_state=getattr(config, "random_state", 42) + 1, algorithm="lloyd")
+                    labels2 = km2.fit_predict(data)
+                    stability_scores.append(adjusted_rand_score(labels, labels2))
+                    models.append((km, labels))
                 except Exception as e:
                     print(f"K-means failed for k={k}, init={init_method}: {e}")
-                    continue
 
             if not models:
                 continue
 
-            # Select best model for this k
-            best_model_k = max(
-                models,
-                key=lambda x: (
-                    silhouette_score(data, x[1]) if len(set(x[1])) > 1 else -1
-                ),
-            )
-            kmeans, labels = best_model_k
-
-            # Comprehensive scoring
+            km, labels = max(models, key=lambda t: silhouette_score(data, t[1]) if len(set(t[1])) > 1 else -1)
             try:
-                sil_score = silhouette_score(data, labels)
-                ch_score = calinski_harabasz_score(data, labels)
-                db_score = davies_bouldin_score(data, labels)
-                avg_stability = np.mean(stability_scores) if stability_scores else 0
+                sil = silhouette_score(data, labels) if len(set(labels)) > 1 else -1
+                ch = calinski_harabasz_score(data, labels) if len(set(labels)) > 1 else 0
+                db = davies_bouldin_score(data, labels) if len(set(labels)) > 1 else np.inf
+                avg_stab = float(np.mean(stability_scores)) if stability_scores else 0.0
 
-                # Cluster balance score (penalize very unbalanced clusters)
-                cluster_sizes = np.bincount(labels)
-                balance_score = 1 - np.std(cluster_sizes) / np.mean(cluster_sizes)
+                counts = np.bincount(labels)
+                balance = float(1 - np.std(counts) / (np.mean(counts) + 1e-12))
 
-                result = {
+                entry = {
                     "k": k,
-                    "silhouette": sil_score,
-                    "calinski_harabasz": ch_score,
-                    "davies_bouldin": db_score,
-                    "inertia": kmeans.inertia_,
-                    "stability": avg_stability,
-                    "balance": balance_score,
+                    "silhouette": sil,
+                    "calinski_harabasz": ch,
+                    "davies_bouldin": db,
+                    "inertia": float(km.inertia_),
+                    "stability": avg_stab,
+                    "balance": balance,
                     "cluster_sizes": dict(Counter(labels)),
-                    "model": kmeans,
+                    "model": km,
                     "labels": labels,
                 }
+                all_results.append(entry)
 
-                all_results.append(result)
-
-                # Update best model based on composite score
-                composite_score = (
-                    sil_score * 0.4
-                    + avg_stability * 0.3
-                    + balance_score * 0.2
-                    + (1 - db_score / 10) * 0.1
-                )
-
-                if composite_score > best_score:
-                    best_score = composite_score
-                    best_k = k
-                    best_model = kmeans
-
+                composite = sil * 0.4 + avg_stab * 0.3 + balance * 0.2 + (0.1 * (1 - min(db / 10.0, 1.0)))
+                if composite > best_score:
+                    best_score, best_k, best_model = composite, k, km
             except Exception as e:
                 print(f"Scoring failed for k={k}: {e}")
-                continue
 
-        final_labels = (
-            best_model.fit_predict(data) if best_model else np.zeros(len(data))
-        )
+        final_labels = best_model.fit_predict(data) if best_model is not None else np.zeros(len(data), dtype=int)
 
         return {
             "labels": final_labels,
             "model": best_model,
             "scores": all_results,
             "best_k": best_k,
-            "centers": best_model.cluster_centers_ if best_model else None,
+            "n_clusters": self._count_clusters(final_labels),  # unified
+            "centers": (best_model.cluster_centers_ if best_model is not None else None),
             "cluster_sizes": dict(Counter(final_labels)),
             "method_type": "centroid_based",
         }
 
+    # --------------------------- Hierarchical ---------------------------
     def _hierarchical_clustering_analysis(
         self, data: np.ndarray, config: AnalysisConfig, optimal_k_info: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Comprehensive hierarchical clustering with multiple linkage methods"""
-        results = {}
-        n_samples = len(data)
+        n = data.shape[0]
+        idx = np.random.choice(n, size=min(n, 1000), replace=False)
+        sample = data[idx]
 
-        if n_samples > 1000:
-            # For large datasets, use a sample for linkage computation
-            sample_idx = np.random.choice(n_samples, 1000, replace=False)
-            sample_data = data[sample_idx]
-        else:
-            sample_data = data
-            sample_idx = np.arange(n_samples)
+        methods = ["ward", "complete", "average", "single"]
+        results: Dict[str, Any] = {}
+        best_link, best_sil = None, -np.inf
 
-        linkage_methods = ["ward", "complete", "average", "single"]
-        best_linkage = None
-        best_score = -1
-
-        for method in linkage_methods:
+        for method in methods:
             try:
-                # Compute linkage matrix
+                # IMPORTANT: Ward expects observations directly and 'euclidean' metric.
                 if method == "ward":
-                    distance_matrix = pdist(sample_data, metric="euclidean")
+                    Z = linkage(sample, method=method, metric="euclidean")
                 else:
-                    distance_matrix = pdist(sample_data, metric="euclidean")
+                    d = pdist(sample, metric="euclidean")
+                    Z = linkage(d, method=method)
 
-                linkage_matrix = linkage(distance_matrix, method=method)
-
-                # Get clusters for optimal k
-                optimal_k = optimal_k_info["optimal_k"]
-                cluster_labels_sample = fcluster(
-                    linkage_matrix, optimal_k, criterion="maxclust"
+                k = int(optimal_k_info["optimal_k"])
+                # Use Agglomerative on full data for labels with same linkage
+                agg = AgglomerativeClustering(
+                    n_clusters=k,
+                    linkage=method,
+                    metric="euclidean",          # never None (fixes ward error)
+                    compute_distances=True,
                 )
 
-                # Apply to full dataset using AgglomerativeClustering
-                agg_clustering = AgglomerativeClustering(
-                    n_clusters=optimal_k, linkage=method, compute_distances=True
-                )
-                full_labels = agg_clustering.fit_predict(data)
+                full_labels = agg.fit_predict(data)
 
-                # Evaluate clustering quality
-                sil_score = silhouette_score(data, full_labels)
-                ch_score = calinski_harabasz_score(data, full_labels)
-                db_score = davies_bouldin_score(data, full_labels)
+                sil = silhouette_score(data, full_labels) if len(np.unique(full_labels)) > 1 else -1
+                ch = calinski_harabasz_score(data, full_labels) if sil > -1 else 0
+                db = davies_bouldin_score(data, full_labels) if sil > -1 else np.inf
 
                 result = {
                     "linkage_method": method,
                     "labels": full_labels,
-                    "silhouette": sil_score,
-                    "calinski_harabasz": ch_score,
-                    "davies_bouldin": db_score,
+                    "silhouette": sil,
+                    "calinski_harabasz": ch,
+                    "davies_bouldin": db,
+                    "n_clusters": self._count_clusters(full_labels),  # unified
                     "cluster_sizes": dict(Counter(full_labels)),
-                    "model": agg_clustering,
-                    "linkage_matrix": linkage_matrix,
+                    "model": agg,
+                    "linkage_matrix": Z,
                     "method_type": "hierarchical",
                 }
-
                 results[f"hierarchical_{method}"] = result
-
-                if sil_score > best_score:
-                    best_score = sil_score
-                    best_linkage = method
-
+                if sil > best_sil:
+                    best_sil, best_link = sil, method
             except Exception as e:
                 print(f"Hierarchical clustering with {method} failed: {e}")
-                continue
 
-        # Return best hierarchical clustering result
-        best_result = results.get(f"hierarchical_{best_linkage}", {})
-        if best_result:
-            best_result["best_linkage_method"] = best_linkage
+        best = results.get(f"hierarchical_{best_link}", {})
+        if best:
+            best["best_linkage_method"] = best_link
+        return best
 
-        return best_result
+    # --------------------------- Density-based ---------------------------
+    def _density_based_clustering(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+        results: Dict[str, Any] = {}
 
-    def _density_based_clustering(
-        self, data: np.ndarray, config: AnalysisConfig
-    ) -> Dict[str, Any]:
-        """Enhanced density-based clustering with parameter optimization"""
-        results = {}
-
-        # DBSCAN with automated parameter selection
+        # DBSCAN (eps knee)
         try:
-            # Estimate eps using k-distance graph
-            k = min(4, len(data) // 10)
-            nbrs = NearestNeighbors(n_neighbors=k).fit(data)
-            distances, indices = nbrs.kneighbors(data)
-            distances = np.sort(distances[:, k - 1], axis=0)
+            k = max(2, min(4, len(data) // 10))
+            nn = NearestNeighbors(n_neighbors=k).fit(data)
+            dist, _ = nn.kneighbors(data)
+            kth = np.sort(dist[:, k - 1])
+            diff = np.diff(kth)
+            eps = float(kth[np.argmax(diff)]) if len(diff) else float(np.median(kth))
+            min_samples = int(max(2, k))
 
-            # Use knee/elbow detection for eps
-            diff = np.diff(distances)
-            if len(diff) > 0:
-                eps = distances[np.argmax(diff)]
-            else:
-                eps = np.median(distances)
+            db = DBSCAN(eps=eps, min_samples=min_samples)
+            labels = db.fit_predict(data)
+            n_clusters = int(len(set(labels)) - (1 if -1 in labels else 0))
+            noise = int((labels == -1).sum())
 
-            min_samples = max(2, k)
-
-            dbscan = DBSCAN(eps=eps, min_samples=min_samples)
-            labels = dbscan.fit_predict(data)
-
-            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            noise_points = int((labels == -1).sum())
-
-            result = {
+            entry = {
                 "labels": labels,
-                "model": dbscan,
+                "model": db,
                 "n_clusters": n_clusters,
-                "noise_points": noise_points,
+                "noise_points": noise,
                 "eps": eps,
                 "min_samples": min_samples,
                 "cluster_sizes": dict(Counter(labels[labels != -1])),
                 "method_type": "density_based",
             }
-
-            # Calculate silhouette only for non-noise points
-            if n_clusters > 1:
-                valid_mask = labels != -1
-                if valid_mask.sum() > 1:
-                    valid_data = data[valid_mask]
-                    valid_labels = labels[valid_mask]
-                    result["silhouette"] = silhouette_score(valid_data, valid_labels)
-
-            results["dbscan"] = result
-
+            if n_clusters > 1 and (labels != -1).sum() > 1:
+                mask = labels != -1
+                entry["silhouette"] = float(silhouette_score(data[mask], labels[mask]))
+            results["dbscan"] = entry
         except Exception as e:
             print(f"DBSCAN clustering failed: {e}")
 
-        # HDBSCAN if available
-        if HAS_HDBSCAN:
+        # HDBSCAN (if available)
+        if "HAS_HDBSCAN" in globals() and HAS_HDBSCAN:
             try:
+                import hdbscan
                 min_cluster_size = max(5, len(data) // 50)
                 min_samples = max(1, min_cluster_size // 2)
-
-                hdbscan_model = hdbscan.HDBSCAN(
+                model = hdbscan.HDBSCAN(
                     min_cluster_size=min_cluster_size,
                     min_samples=min_samples,
-                    cluster_selection_epsilon=0.0,
                     cluster_selection_method="eom",
                 )
-                labels = hdbscan_model.fit_predict(data)
+                labels = model.fit_predict(data)
+                n_clusters = int(len(set(labels)) - (1 if -1 in labels else 0))
+                noise = int((labels == -1).sum())
 
-                n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-                noise_points = int((labels == -1).sum())
-
-                result = {
+                entry = {
                     "labels": labels,
-                    "model": hdbscan_model,
+                    "model": model,
                     "n_clusters": n_clusters,
-                    "noise_points": noise_points,
-                    "min_cluster_size": min_cluster_size,
+                    "noise_points": noise,
+                    "min_cluster_size": int(min_cluster_size),
                     "cluster_sizes": dict(Counter(labels[labels != -1])),
                     "method_type": "density_based",
-                    "probabilities": (
-                        hdbscan_model.probabilities_.tolist()
-                        if hasattr(hdbscan_model, "probabilities_")
-                        else None
-                    ),
+                    "probabilities": (model.probabilities_.tolist() if hasattr(model, "probabilities_") else None),
                 }
-
-                if n_clusters > 1:
-                    valid_mask = labels != -1
-                    if valid_mask.sum() > 1:
-                        valid_data = data[valid_mask]
-                        valid_labels = labels[valid_mask]
-                        result["silhouette"] = silhouette_score(
-                            valid_data, valid_labels
-                        )
-
-                results["hdbscan"] = result
-
+                if n_clusters > 1 and (labels != -1).sum() > 1:
+                    mask = labels != -1
+                    entry["silhouette"] = float(silhouette_score(data[mask], labels[mask]))
+                results["hdbscan"] = entry
             except Exception as e:
                 print(f"HDBSCAN clustering failed: {e}")
 
         return results
 
+    # --------------------------- Probabilistic ---------------------------
     def _probabilistic_clustering(
         self, data: np.ndarray, config: AnalysisConfig, optimal_k_info: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Advanced probabilistic clustering with model selection"""
-        results = {}
-        max_k = min(config.max_clusters, len(data) // 2)
+        results: Dict[str, Any] = {}
+        max_k = int(min(getattr(config, "max_clusters", 10), max(2, len(data) // 2)))
 
-        # Gaussian Mixture Models with comprehensive model selection
+        # GMM grid (k x covariance_type)
         try:
-            covariance_types = ["full", "tied", "diag", "spherical"]
-            best_bic = np.inf
-            np.inf
-            best_gmm = None
-            best_k = optimal_k_info["optimal_k"]
-            model_comparison = []
+            cov_types = ("full", "tied", "diag", "spherical")
+            best_bic, best_gmm, best_k = np.inf, None, int(optimal_k_info["optimal_k"])
+            comparison: List[Dict[str, Any]] = []
 
-            for cov_type in covariance_types:
+            for cov in cov_types:
                 for k in range(2, max_k + 1):
                     try:
                         gmm = GaussianMixture(
-                            n_components=k,
-                            covariance_type=cov_type,
-                            max_iter=200,
-                            n_init=3,
-                            random_state=config.random_state,
-                        )
-                        gmm.fit(data)
-
-                        bic = gmm.bic(data)
-                        aic = gmm.aic(data)
-                        log_likelihood = gmm.score(data)
-
-                        model_info = {
-                            "k": k,
-                            "covariance_type": cov_type,
-                            "bic": bic,
-                            "aic": aic,
-                            "log_likelihood": log_likelihood,
-                            "converged": gmm.converged_,
-                        }
-                        model_comparison.append(model_info)
-
-                        if bic < best_bic and gmm.converged_:
-                            best_bic = bic
-                            best_gmm = gmm
-                            best_k = k
-
+                            n_components=k, covariance_type=cov, max_iter=300, n_init=3,
+                            random_state=getattr(config, "random_state", 42)
+                        ).fit(data)
+                        bic = float(gmm.bic(data))
+                        aic = float(gmm.aic(data))
+                        ll = float(gmm.score(data))
+                        comparison.append({"k": k, "covariance_type": cov, "bic": bic, "aic": aic,
+                                           "log_likelihood": ll, "converged": bool(gmm.converged_)})
+                        if gmm.converged_ and bic < best_bic:
+                            best_bic, best_gmm, best_k = bic, gmm, k
                     except Exception:
                         continue
 
             if best_gmm is not None:
                 labels = best_gmm.predict(data)
                 probs = best_gmm.predict_proba(data)
-
-                result = {
+                entry = {
                     "labels": labels,
                     "probabilities": probs.tolist(),
                     "model": best_gmm,
-                    "best_k": best_k,
-                    "best_bic": best_bic,
-                    "model_comparison": model_comparison,
+                    "best_k": int(best_k),
+                    "n_clusters": self._count_clusters(labels),  # unified
+                    "best_bic": float(best_bic),
+                    "model_comparison": comparison,
                     "cluster_sizes": dict(Counter(labels)),
-                    "silhouette": silhouette_score(data, labels),
+                    "silhouette": float(silhouette_score(data, labels)) if len(np.unique(labels)) > 1 else -1,
                     "method_type": "probabilistic",
                     "covariance_type": best_gmm.covariance_type,
                     "means": best_gmm.means_.tolist(),
                     "covariances": best_gmm.covariances_.tolist(),
                 }
-                results["gmm"] = result
-
+                results["gmm"] = entry
         except Exception as e:
             print(f"GMM clustering failed: {e}")
 
-        # Bayesian Gaussian Mixture (if computational resources allow)
+        # Bayesian GMM (smaller datasets)
         try:
-            if len(data) <= 5000:  # Only for smaller datasets due to computational cost
+            if len(data) <= 5000:
                 bgmm = BayesianGaussianMixture(
-                    n_components=min(10, max_k),
-                    covariance_type="full",
-                    max_iter=200,
-                    random_state=config.random_state,
-                )
-                bgmm.fit(data)
+                    n_components=min(10, max_k), covariance_type="full", max_iter=300,
+                    random_state=getattr(config, "random_state", 42)
+                ).fit(data)
                 labels = bgmm.predict(data)
-
-                # Count effective components (with significant weight)
-                effective_components = np.sum(bgmm.weights_ > 0.01)
-
-                result = {
+                eff = int(np.sum(bgmm.weights_ > 0.01))
+                entry = {
                     "labels": labels,
                     "probabilities": bgmm.predict_proba(data).tolist(),
                     "model": bgmm,
-                    "effective_components": int(effective_components),
+                    "effective_components": eff,
+                    "n_clusters": self._count_clusters(labels),  # unified
                     "weights": bgmm.weights_.tolist(),
                     "cluster_sizes": dict(Counter(labels)),
-                    "silhouette": silhouette_score(data, labels),
+                    "silhouette": float(silhouette_score(data, labels)) if len(np.unique(labels)) > 1 else -1,
                     "method_type": "bayesian_probabilistic",
                 }
-                results["bayesian_gmm"] = result
-
+                results["bayesian_gmm"] = entry
         except Exception as e:
             print(f"Bayesian GMM clustering failed: {e}")
 
         return results
 
-    def _ensemble_clustering(
-        self, all_results: Dict[str, Any], data: np.ndarray
-    ) -> Dict[str, Any]:
-        """Ensemble clustering using consensus from multiple methods"""
+    # --------------------------- Ensemble ---------------------------
+    def _ensemble_clustering(self, all_results: Dict[str, Any], data: np.ndarray) -> Dict[str, Any]:
+        """Consensus clustering via co-association + average-linkage"""
         if not all_results:
             return {}
-
         try:
-            # Collect all label assignments
             label_sets = []
-            method_weights = {}
-
-            for method_name, result in all_results.items():
-                if "labels" in result and len(result["labels"]) == len(data):
-                    labels = np.array(result["labels"])
-                    label_sets.append(labels)
-
-                    # Weight methods based on their silhouette scores
-                    sil_score = result.get("silhouette", 0)
-                    method_weights[method_name] = max(0, sil_score)
+            for name, res in all_results.items():
+                lab = res.get("labels")
+                if lab is not None and len(lab) == len(data):
+                    label_sets.append(np.asarray(lab))
 
             if len(label_sets) < 2:
                 return {}
 
-            # Create co-association matrix
-            n_samples = len(data)
-            co_assoc = np.zeros((n_samples, n_samples))
+            n = len(data)
+            co = np.zeros((n, n), dtype=float)
 
-            for labels in label_sets:
-                for i in range(n_samples):
-                    for j in range(i + 1, n_samples):
-                        if (
-                            labels[i] == labels[j] and labels[i] != -1
-                        ):  # Ignore noise points
-                            co_assoc[i, j] += 1
-                            co_assoc[j, i] += 1
+            # Build co-association (ignore noise)
+            for lab in label_sets:
+                valid = (lab != -1)
+                for c in np.unique(lab[valid]):
+                    inds = np.where(lab == c)[0]
+                    if len(inds) > 1:
+                        co[np.ix_(inds, inds)] += 1.0
 
-            # Normalize co-association matrix
-            co_assoc /= len(label_sets)
+            co /= len(label_sets)
+            np.fill_diagonal(co, 1.0)
+            dist = 1.0 - co
+            dist = (dist + dist.T) / 2.0
+            np.fill_diagonal(dist, 0.0)
 
-            # Apply hierarchical clustering on co-association matrix
-            # Convert co-association to distance matrix (1 - similarity)
-            distance_matrix = 1 - co_assoc
+            Z = linkage(squareform(dist), method="average")
 
-            # Ensure diagonal is exactly zero (fix floating point precision issues)
-            np.fill_diagonal(distance_matrix, 0)
+            # Choose k by plurality of non-noise cluster counts among methods
+            counts = []
+            for lab in label_sets:
+                u = np.unique(lab[lab != -1])
+                if len(u) > 1:
+                    counts.append(len(u))
+            k = (Counter(counts).most_common(1)[0][0] if counts else 3)
 
-            # Ensure matrix is symmetric
-            distance_matrix = (distance_matrix + distance_matrix.T) / 2
+            consensus = fcluster(Z, k, criterion="maxclust") - 1
+            sil = float(silhouette_score(data, consensus)) if len(np.unique(consensus)) > 1 else -1
 
-            # Convert to condensed form for linkage
-            condensed_distance = squareform(distance_matrix)
-            linkage_matrix = linkage(condensed_distance, method="average")
-
-            # Determine optimal number of clusters for consensus
-            cluster_counts = []
-            for labels in label_sets:
-                # Convert to numpy array for consistent handling
-                labels_array = np.array(labels)
-                # Get unique non-noise labels
-                unique_labels = np.unique(labels_array[labels_array != -1])
-                n_clusters = len(unique_labels)
-                if n_clusters > 1:  # Only count valid clusterings
-                    cluster_counts.append(n_clusters)
-
-            if not cluster_counts:
-                # Fallback: use 3 clusters if no valid clusterings
-                optimal_k = 3
-            else:
-                # Use most common cluster count
-                from collections import Counter
-
-                cluster_counter = Counter(cluster_counts)
-                optimal_k = cluster_counter.most_common(1)[0][0]
-
-            # Get consensus clustering
-            consensus_labels = (
-                fcluster(linkage_matrix, optimal_k, criterion="maxclust") - 1
-            )
-
-            # Evaluate consensus clustering
-            consensus_result = {
-                "labels": consensus_labels,
+            return {
+                "labels": consensus,
                 "n_methods": len(label_sets),
-                "co_association_matrix": co_assoc.tolist(),
-                "consensus_k": optimal_k,
-                "cluster_sizes": dict(Counter(consensus_labels)),
-                "silhouette": silhouette_score(data, consensus_labels),
+                "co_association_matrix": co.tolist(),
+                "consensus_k": int(k),
+                "n_clusters": int(k),  # unified
+                "cluster_sizes": dict(Counter(consensus)),
+                "silhouette": sil,
                 "method_type": "ensemble",
                 "participating_methods": list(all_results.keys()),
             }
-
-            return consensus_result
-
         except Exception as e:
             print(f"Ensemble clustering failed: {e}")
-            # Return empty dict instead of error to avoid breaking the analysis
             return {}
 
-    def _evaluate_clustering_results(
-        self, all_results: Dict[str, Any], data: np.ndarray
-    ) -> Dict[str, Any]:
-        """Comprehensive evaluation of clustering results"""
-        evaluations = {}
-
-        for method_name, result in all_results.items():
-            if "labels" not in result:
+    # --------------------------- Evaluation ---------------------------
+    def _evaluate_clustering_results(self, all_results: Dict[str, Any], data: np.ndarray) -> Dict[str, Any]:
+        evaluations: Dict[str, Any] = {}
+        for name, res in all_results.items():
+            lab = res.get("labels")
+            if lab is None or len(lab) != len(data):
                 continue
 
-            labels = np.array(result["labels"])
-            evaluation = {}
-
+            evald: Dict[str, Any] = {}
             try:
-                # Basic metrics
-                unique_labels = set(labels)
-                n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
+                labels = np.asarray(lab)
+                uniq = set(labels)
+                n_clusters = len(uniq) - (1 if -1 in uniq else 0)
                 n_noise = int((labels == -1).sum())
 
-                evaluation.update(
-                    {
-                        "n_clusters": n_clusters,
-                        "n_noise_points": n_noise,
-                        "noise_ratio": n_noise / len(labels),
-                    }
-                )
+                evald.update({
+                    "n_clusters": n_clusters,
+                    "n_noise_points": n_noise,
+                    "noise_ratio": float(n_noise / max(len(labels), 1)),
+                })
 
-                # Silhouette analysis (skip if already computed)
-                if "silhouette" not in result and n_clusters > 1:
-                    valid_mask = labels != -1
-                    if valid_mask.sum() > 1:
-                        valid_data = data[valid_mask]
-                        valid_labels = labels[valid_mask]
-                        evaluation["silhouette_score"] = silhouette_score(
-                            valid_data, valid_labels
-                        )
-                else:
-                    evaluation["silhouette_score"] = result.get("silhouette", 0)
+                # Silhouette
+                if "silhouette" in res:
+                    evald["silhouette_score"] = res["silhouette"]
+                elif n_clusters > 1:
+                    mask = labels != -1
+                    if mask.sum() > 1:
+                        evald["silhouette_score"] = float(silhouette_score(data[mask], labels[mask]))
 
-                # Additional metrics for non-noise clusters
+                # Extra metrics
                 if n_clusters > 1:
-                    valid_mask = labels != -1
-                    valid_data = data[valid_mask]
-                    valid_labels = labels[valid_mask]
+                    mask = labels != -1
+                    if mask.sum() > 1:
+                        Xv, yv = data[mask], labels[mask]
+                        evald["calinski_harabasz_score"] = float(calinski_harabasz_score(Xv, yv))
+                        evald["davies_bouldin_score"] = float(davies_bouldin_score(Xv, yv))
 
-                    if len(valid_data) > 0:
-                        evaluation.update(
-                            {
-                                "calinski_harabasz_score": calinski_harabasz_score(
-                                    valid_data, valid_labels
-                                ),
-                                "davies_bouldin_score": davies_bouldin_score(
-                                    valid_data, valid_labels
-                                ),
-                            }
-                        )
+                        sizes = np.bincount(yv)
+                        balance = float(1 - np.std(sizes) / (np.mean(sizes) + 1e-12))
+                        evald["cluster_balance"] = balance
 
-                        # Cluster balance and separation
-                        cluster_sizes = np.bincount(valid_labels)
-                        balance_score = (
-                            1 - np.std(cluster_sizes) / np.mean(cluster_sizes)
-                            if np.mean(cluster_sizes) > 0
-                            else 0
-                        )
-                        evaluation["cluster_balance"] = balance_score
+                        # Separation ratio
+                        uniqv = np.unique(yv)
+                        if len(uniqv) >= 2:
+                            intra, inter = [], []
+                            for c in uniqv:
+                                pts = Xv[yv == c]
+                                if len(pts) > 1:
+                                    intra.extend(pdist(pts))
+                                    other = Xv[yv != c]
+                                    if len(other) > 0:
+                                        for p in pts:
+                                            inter.extend(np.linalg.norm(other - p, axis=1))
+                            if intra and inter:
+                                mi = float(np.mean(intra))
+                                Mo = float(np.mean(inter))
+                                evald["separation_ratio"] = (Mo / mi) if mi > 0 else 0.0
 
-                        # Intra-cluster vs inter-cluster distance ratio
-                        unique_valid_labels = np.unique(valid_labels)
-                        if len(unique_valid_labels) >= 2:
-                            intra_distances = []
-                            inter_distances = []
+                if "stability" in res:
+                    evald["stability_score"] = res["stability"]
 
-                            for label in unique_valid_labels:
-                                cluster_mask = valid_labels == label
-                                cluster_data = valid_data[cluster_mask]
+                evald["method_type"] = res.get("method_type", "unknown")
 
-                                if len(cluster_data) > 1:
-                                    # Intra-cluster distances
-                                    intra_dist = pdist(cluster_data)
-                                    intra_distances.extend(intra_dist)
-
-                                    # Inter-cluster distances
-                                    other_data = valid_data[~cluster_mask]
-                                    if len(other_data) > 0:
-                                        for point in cluster_data:
-                                            distances_to_others = np.linalg.norm(
-                                                other_data - point, axis=1
-                                            )
-                                            inter_distances.extend(distances_to_others)
-
-                            if intra_distances and inter_distances:
-                                mean_intra = np.mean(intra_distances)
-                                mean_inter = np.mean(inter_distances)
-                                separation_ratio = (
-                                    mean_inter / mean_intra if mean_intra > 0 else 0
-                                )
-                                evaluation["separation_ratio"] = separation_ratio
-
-                # Stability metrics (if multiple runs were performed)
-                if "stability" in result:
-                    evaluation["stability_score"] = result["stability"]
-
-                # Method-specific metrics
-                method_type = result.get("method_type", "unknown")
-                evaluation["method_type"] = method_type
-
-                if method_type == "probabilistic" and "probabilities" in result:
-                    # Entropy of cluster assignments (uncertainty)
-                    probs = np.array(result["probabilities"])
-                    entropy = -np.sum(probs * np.log(probs + 1e-10), axis=1)
-                    evaluation["mean_assignment_entropy"] = float(np.mean(entropy))
-                    evaluation["assignment_uncertainty"] = float(np.std(entropy))
-
+                if evald["method_type"] == "probabilistic" and "probabilities" in res:
+                    probs = np.asarray(res["probabilities"])
+                    ent = -np.sum(probs * np.log(probs + 1e-10), axis=1)
+                    evald["mean_assignment_entropy"] = float(np.mean(ent))
+                    evald["assignment_uncertainty"] = float(np.std(ent))
             except Exception as e:
-                print(f"Evaluation failed for {method_name}: {e}")
-                evaluation["error"] = str(e)
+                print(f"Evaluation failed for {name}: {e}")
+                evald["error"] = str(e)
 
-            evaluations[method_name] = evaluation
-
+            evaluations[name] = evald
         return evaluations
 
+    # --------------------------- Recommendations ---------------------------
     def _generate_clustering_recommendations(
         self,
         all_results: Dict[str, Any],
@@ -854,272 +600,166 @@ class ClusterAnalyzer(AnalysisStrategy):
         optimal_k_info: Dict[str, Any],
         preprocessing_info: Dict[str, Any],
     ) -> List[str]:
-        """Generate intelligent recommendations based on clustering results"""
-        recommendations = []
+        recs: List[str] = []
 
-        # Find best performing method
-        method_scores = {}
-        for method_name, eval_metrics in evaluations.items():
-            if "error" in eval_metrics:
-                continue
+        # Score & pick winner
+        weights = {"silhouette_score": 0.3, "cluster_balance": 0.2, "separation_ratio": 0.2, "stability_score": 0.2}
+        scores: Dict[str, float] = {}
+        for name, mets in evaluations.items():
+            if "error" in mets: continue
+            s, wsum = 0.0, 0.0
+            for k, w in weights.items():
+                if k in mets and np.isfinite(mets[k]):
+                    val = mets[k] if k != "separation_ratio" else min(mets[k] / 5.0, 1.0)
+                    s += w * val
+                    wsum += w
+            s -= mets.get("noise_ratio", 0.0) * 0.1
+            wsum += 0.1
+            if wsum > 0:
+                scores[name] = s / wsum
 
-            score = 0
-            weight_sum = 0
-
-            # Weighted scoring
-            if "silhouette_score" in eval_metrics:
-                score += eval_metrics["silhouette_score"] * 0.3
-                weight_sum += 0.3
-
-            if "cluster_balance" in eval_metrics:
-                score += eval_metrics["cluster_balance"] * 0.2
-                weight_sum += 0.2
-
-            if "separation_ratio" in eval_metrics:
-                # Normalize separation ratio (higher is better, but cap at reasonable value)
-                norm_sep = min(eval_metrics["separation_ratio"] / 5.0, 1.0)
-                score += norm_sep * 0.2
-                weight_sum += 0.2
-
-            if "stability_score" in eval_metrics:
-                score += eval_metrics["stability_score"] * 0.2
-                weight_sum += 0.2
-
-            # Penalize excessive noise
-            noise_penalty = eval_metrics.get("noise_ratio", 0)
-            score -= noise_penalty * 0.1
-            weight_sum += 0.1
-
-            if weight_sum > 0:
-                method_scores[method_name] = score / weight_sum
-
-        if method_scores:
-            best_method = max(method_scores, key=method_scores.get)
-            best_score = method_scores[best_method]
-            recommendations.append(
-                f"🏆 Best method: {best_method.upper()} (score: {best_score:.3f})"
-            )
-
-            # Method-specific recommendations
-            best_result = all_results.get(best_method, {})
-            method_type = best_result.get("method_type", "")
-
-            if "density" in method_type:
-                noise_ratio = evaluations[best_method].get("noise_ratio", 0)
-                if noise_ratio > 0.1:
-                    recommendations.append(
-                        f"⚠️ High noise ratio ({noise_ratio:.1%}) - consider adjusting density parameters"
-                    )
+        best_method = max(scores, key=scores.get) if scores else None
+        if best_method:
+            recs.append(f"🏆 Best method: {best_method.upper()} (score: {scores[best_method]:.3f})")
+            mtype = all_results.get(best_method, {}).get("method_type", "")
+            if "density" in mtype:
+                nr = evaluations[best_method].get("noise_ratio", 0.0)
+                if nr > 0.10:
+                    recs.append(f"⚠️ High noise ratio ({nr:.1%}) - consider tuning eps/min_samples")
                 else:
-                    recommendations.append(
-                        "✅ Density-based clustering effectively identified cluster structure"
-                    )
+                    recs.append("✅ Density-based clustering effectively identified cluster structure")
+            elif mtype == "probabilistic":
+                unct = evaluations[best_method].get("assignment_uncertainty", 0.0)
+                recs.append("🔀 High assignment uncertainty suggests overlapping clusters" if unct > 0.5
+                            else "📊 Probabilistic clustering shows confident cluster assignments")
+            elif mtype == "hierarchical":
+                recs.append(f"🌳 Hierarchical clustering with {all_results.get(best_method, {}).get('best_linkage_method', 'unknown')} linkage worked best")
+            elif mtype == "ensemble":
+                recs.append(f"🤝 Ensemble of {all_results.get(best_method, {}).get('n_methods', 0)} methods achieved robust consensus")
 
-            elif method_type == "probabilistic":
-                uncertainty = evaluations[best_method].get("assignment_uncertainty", 0)
-                if uncertainty > 0.5:
-                    recommendations.append(
-                        "🔀 High assignment uncertainty suggests overlapping clusters"
-                    )
-                else:
-                    recommendations.append(
-                        "📊 Probabilistic clustering shows confident cluster assignments"
-                    )
-
-            elif method_type == "hierarchical":
-                linkage_method = best_result.get("best_linkage_method", "unknown")
-                recommendations.append(
-                    f"🌳 Hierarchical clustering with {linkage_method} linkage worked best"
-                )
-
-            elif method_type == "ensemble":
-                n_methods = best_result.get("n_methods", 0)
-                recommendations.append(
-                    f"🤝 Ensemble of {n_methods} methods achieved robust consensus"
-                )
-
-        # Data-specific recommendations
         if preprocessing_info.get("curse_of_dimensionality_risk", False):
-            recommendations.append(
-                "📏 High-dimensional data detected - consider dimensionality reduction"
-            )
-
+            recs.append("📏 High-dimensional data detected - consider dimensionality reduction")
         if preprocessing_info.get("outlier_percentage", 0) > 10:
-            recommendations.append(
-                "🎯 Many outliers detected - density-based methods recommended"
-            )
+            recs.append("🎯 Many outliers detected - density-based methods recommended")
 
-        # Optimal k analysis
-        k_confidence = optimal_k_info.get("confidence", "low")
-        optimal_k = optimal_k_info.get("optimal_k", 2)
-
-        if k_confidence == "high":
-            recommendations.append(f"✨ Strong evidence for {optimal_k} clusters")
-        elif k_confidence == "medium":
-            recommendations.append(
-                f"🤔 Moderate evidence for {optimal_k} clusters - consider range {optimal_k-1}-{optimal_k+1}"
-            )
+        k, conf = optimal_k_info.get("optimal_k", 2), optimal_k_info.get("confidence", "low")
+        if conf == "high":
+            recs.append(f"✨ Strong evidence for {k} clusters")
+        elif conf == "medium":
+            recs.append(f"🤔 Moderate evidence for {k} clusters - consider range {k-1}-{k+1}")
         else:
-            recommendations.append(
-                "❓ Unclear optimal cluster number - try multiple values"
-            )
+            recs.append("❓ Unclear optimal cluster number - try multiple values")
 
-        # Performance recommendations
-        successful_methods = len([r for r in all_results.values() if "labels" in r])
-        if successful_methods <= 2:
-            recommendations.append(
-                "⚡ Consider trying additional clustering algorithms for comparison"
-            )
+        succ = len([r for r in all_results.values() if "labels" in r])
+        if succ <= 2:
+            recs.append("⚡ Consider trying additional clustering algorithms for comparison")
 
-        # Cluster interpretability
-        if best_method in evaluations:
-            n_clusters = evaluations[best_method].get("n_clusters", 0)
-            if n_clusters > 10:
-                recommendations.append(
-                    "📊 Many clusters found - consider hierarchical visualization"
-                )
-            elif n_clusters < 2:
-                recommendations.append(
-                    "🔍 No clear clusters found - data may not have cluster structure"
-                )
+        if best_method and evaluations.get(best_method, {}).get("n_clusters", 0) > 10:
+            recs.append("📊 Many clusters found - consider hierarchical visualization")
+        elif best_method and evaluations.get(best_method, {}).get("n_clusters", 0) < 2:
+            recs.append("🔍 No clear clusters found - data may not have cluster structure")
 
-        return recommendations[:5]  # Limit to top 5 recommendations
+        return recs[:5]
 
+    # --------------------------- Main ---------------------------
     def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
-        """Main clustering analysis with comprehensive methods and evaluation"""
         try:
-            # Enhanced preprocessing
-            scaled_data, preprocessing_info = self._adaptive_preprocessing(data, config)
+            X, prep = self._adaptive_preprocessing(data, config)
+            optk = self._estimate_optimal_clusters(X, getattr(config, "max_clusters", 10))
 
-            # Estimate optimal number of clusters
-            optimal_k_info = self._estimate_optimal_clusters(
-                scaled_data, config.max_clusters
-            )
+            results: Dict[str, Any] = {}
 
-            # Apply different clustering methods
-            all_results = {}
-
-            # 1. Enhanced K-means
+            # K-means
             try:
-                kmeans_result = self._enhanced_kmeans_analysis(
-                    scaled_data, config, optimal_k_info
-                )
-                if kmeans_result:
-                    all_results["kmeans"] = kmeans_result
+                km = self._enhanced_kmeans_analysis(X, config, optk)
+                if km: results["kmeans"] = km
             except Exception as e:
                 print(f"Enhanced K-means failed: {e}")
 
-            # 2. Hierarchical clustering
+            # Hierarchical
             try:
-                hier_result = self._hierarchical_clustering_analysis(
-                    scaled_data, config, optimal_k_info
-                )
-                if hier_result:
-                    all_results["hierarchical"] = hier_result
+                h = self._hierarchical_clustering_analysis(X, config, optk)
+                if h: results["hierarchical"] = h
             except Exception as e:
                 print(f"Hierarchical clustering failed: {e}")
 
-            # 3. Density-based clustering
+            # Density-based
             try:
-                density_results = self._density_based_clustering(scaled_data, config)
-                all_results.update(density_results)
+                results.update(self._density_based_clustering(X, config))
             except Exception as e:
                 print(f"Density-based clustering failed: {e}")
 
-            # 4. Probabilistic clustering
+            # Probabilistic
             try:
-                prob_results = self._probabilistic_clustering(
-                    scaled_data, config, optimal_k_info
-                )
-                all_results.update(prob_results)
+                results.update(self._probabilistic_clustering(X, config, optk))
             except Exception as e:
                 print(f"Probabilistic clustering failed: {e}")
 
-            # 5. Additional methods if available
-            # Spectral clustering for non-convex clusters
+            # Spectral (smaller datasets)
             try:
-                if len(scaled_data) <= 2000:  # Computationally expensive
-                    spectral = SpectralClustering(
-                        n_clusters=optimal_k_info["optimal_k"],
-                        random_state=config.random_state,
+                if len(X) <= 2000:
+                    spec = SpectralClustering(
+                        n_clusters=int(optk["optimal_k"]),
+                        random_state=getattr(config, "random_state", 42),
                         affinity="rbf",
                         gamma=1.0,
+                        assign_labels="kmeans",
                     )
-                    spectral_labels = spectral.fit_predict(scaled_data)
-
-                    all_results["spectral"] = {
-                        "labels": spectral_labels,
-                        "model": spectral,
-                        "n_clusters": optimal_k_info["optimal_k"],
-                        "cluster_sizes": dict(Counter(spectral_labels)),
-                        "silhouette": silhouette_score(scaled_data, spectral_labels),
+                    sl = spec.fit_predict(X)
+                    results["spectral"] = {
+                        "labels": sl,
+                        "model": spec,
+                        "n_clusters": self._count_clusters(sl),  # unified
+                        "cluster_sizes": dict(Counter(sl)),
+                        "silhouette": float(silhouette_score(X, sl)) if len(np.unique(sl)) > 1 else -1,
                         "method_type": "spectral",
                     }
             except Exception as e:
                 print(f"Spectral clustering failed: {e}")
 
-            # Mean Shift for automatic cluster detection
+            # Mean Shift (small datasets)
             try:
-                if len(scaled_data) <= 1000:  # Computationally expensive
-                    mean_shift = MeanShift()
-                    ms_labels = mean_shift.fit_predict(scaled_data)
-                    n_clusters_ms = len(set(ms_labels))
-
-                    if n_clusters_ms > 1:
-                        all_results["mean_shift"] = {
+                if len(X) <= 1000:
+                    ms = MeanShift()
+                    ms_labels = ms.fit_predict(X)
+                    n_ms = self._count_clusters(ms_labels)
+                    if n_ms > 1:
+                        results["mean_shift"] = {
                             "labels": ms_labels,
-                            "model": mean_shift,
-                            "n_clusters": n_clusters_ms,
+                            "model": ms,
+                            "n_clusters": n_ms,
                             "cluster_sizes": dict(Counter(ms_labels)),
-                            "silhouette": silhouette_score(scaled_data, ms_labels),
+                            "silhouette": float(silhouette_score(X, ms_labels)),
                             "method_type": "mean_shift",
                         }
             except Exception as e:
                 print(f"Mean Shift clustering failed: {e}")
 
-            # 6. Ensemble clustering
-            ensemble_result = self._ensemble_clustering(all_results, scaled_data)
-            if ensemble_result:
-                all_results["ensemble"] = ensemble_result
+            # Ensemble consensus
+            ens = self._ensemble_clustering(results, X)
+            if ens:
+                results["ensemble"] = ens
 
-            # Comprehensive evaluation
-            evaluations = self._evaluate_clustering_results(all_results, scaled_data)
+            evals = self._evaluate_clustering_results(results, X)
+            recs = self._generate_clustering_recommendations(results, evals, optk, prep)
 
-            # Generate recommendations
-            recommendations = self._generate_clustering_recommendations(
-                all_results, evaluations, optimal_k_info, preprocessing_info
-            )
-
-            # Compile final results
-            final_results = {
-                "clustering_results": all_results,
-                "evaluations": evaluations,
-                "optimal_k_analysis": optimal_k_info,
-                "preprocessing_info": preprocessing_info,
+            return {
+                "clustering_results": results,
+                "evaluations": evals,
+                "optimal_k_analysis": optk,
+                "preprocessing_info": prep,
                 "data_characteristics": {
-                    "n_samples": scaled_data.shape[0],
-                    "n_features": scaled_data.shape[1],
-                    "data_variance": float(np.var(scaled_data)),
-                    "data_spread": float(np.ptp(scaled_data)),
+                    "n_samples": int(X.shape[0]),
+                    "n_features": int(X.shape[1]),
+                    "data_variance": float(np.var(X)),
+                    "data_spread": float(np.ptp(X)),
                 },
-                "recommendations": recommendations,
+                "recommendations": recs,
                 "summary": {
-                    "methods_attempted": len(all_results),
-                    "successful_methods": len(
-                        [r for r in all_results.values() if "labels" in r]
-                    ),
-                    "best_method": (
-                        max(
-                            evaluations.keys(),
-                            key=lambda x: evaluations[x].get("silhouette_score", -1),
-                        )
-                        if evaluations
-                        else None
-                    ),
+                    "methods_attempted": len(results),
+                    "successful_methods": len([r for r in results.values() if "labels" in r]),
+                    "best_method": (max(evals.keys(), key=lambda k: evals[k].get("silhouette_score", -1)) if evals else None),
                 },
             }
-
-            return final_results
-
         except Exception as e:
-            return {"error": f"Clustering analysis failed: {str(e)}"}
+            return {"error": f"Clustering analysis failed: {e}"}

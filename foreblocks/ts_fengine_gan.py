@@ -1,8 +1,6 @@
 
 from copy import deepcopy
 
-import numpy as np
-
 # =============== GAN FOR SIGNAL AUGMENTATION ===============
 import torch
 import torch.nn as nn

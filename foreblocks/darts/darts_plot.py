@@ -1,12 +1,10 @@
 import warnings
-from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import torch
 import torch.nn.functional as F
 from matplotlib.gridspec import GridSpec
 from scipy import stats
@@ -621,7 +619,7 @@ class StreamlinedDARTSAnalyzer:
         overall_counts = [encoder_data[enc]["overall"] for enc in encoders]
         top_counts = [encoder_data[enc]["top_candidates"] for enc in encoders]
         trained_counts = [encoder_data[enc]["trained"] for enc in encoders]
-        avg_weights = [encoder_data[enc]["avg_weight"] for enc in encoders]
+        [encoder_data[enc]["avg_weight"] for enc in encoders]
 
         x = np.arange(len(encoders))
         width = 0.25
@@ -682,7 +680,7 @@ class StreamlinedDARTSAnalyzer:
         overall_counts = [decoder_data[dec]["overall"] for dec in decoders]
         top_counts = [decoder_data[dec]["top_candidates"] for dec in decoders]
         trained_counts = [decoder_data[dec]["trained"] for dec in decoders]
-        avg_weights = [decoder_data[dec]["avg_weight"] for dec in decoders]
+        [decoder_data[dec]["avg_weight"] for dec in decoders]
 
         x = np.arange(len(decoders))
         width = 0.25
@@ -799,7 +797,7 @@ class StreamlinedDARTSAnalyzer:
 
         encoder_names = list(encoders.keys())
         encoder_counts = list(encoders.values())
-        weights = [encoder_weights.get(name, 0) for name in encoder_names]
+        [encoder_weights.get(name, 0) for name in encoder_names]
 
         bars = ax.bar(
             range(len(encoder_names)), encoder_counts, alpha=0.8, color="lightblue"

@@ -3,16 +3,13 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
-from sklearn.decomposition import (NMF, PCA, FactorAnalysis, FastICA,
-                                   TruncatedSVD)
+from sklearn.decomposition import NMF, PCA, FactorAnalysis, FastICA, TruncatedSVD
 from sklearn.feature_selection import VarianceThreshold
-from sklearn.manifold import (TSNE, Isomap, LocallyLinearEmbedding,
-                              SpectralEmbedding)
+from sklearn.manifold import TSNE, Isomap, LocallyLinearEmbedding, SpectralEmbedding
 from sklearn.metrics import silhouette_score
-from sklearn.preprocessing import (PowerTransformer, RobustScaler,
-                                   StandardScaler)
+from sklearn.preprocessing import PowerTransformer, RobustScaler, StandardScaler
 
-from .foreminer_aux import *
+from .foreminer_aux import *  # assumes HAS_UMAP, HAS_TRIMAP, HAS_OPENTSNE, HAS_MULTICORE_TSNE, etc.
 
 
 class DimensionalityAnalyzer(AnalysisStrategy):
@@ -22,254 +19,216 @@ class DimensionalityAnalyzer(AnalysisStrategy):
     def name(self) -> str:
         return "dimensionality"
 
+    # --------------------------- Public API ---------------------------
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+        try:
+            scaled_data, preprocessing_info = self._adaptive_preprocessing(data, config)
+            embeddings = self._enhanced_dimensionality_reduction(scaled_data, config)
+            if not embeddings:
+                return {"error": "All dimensionality reduction methods failed"}
+
+            evaluation_results = self._evaluate_embeddings(embeddings, scaled_data)
+
+            # Stable condition number (regularize Gram)
+            gram = scaled_data.T @ scaled_data
+            eps = 1e-8 * np.trace(gram) / max(1, gram.shape[0])
+            cond_num = np.linalg.cond(gram + eps * np.eye(gram.shape[0]))
+
+            results = {
+                "embeddings": embeddings,
+                "evaluation": evaluation_results,
+                "preprocessing_info": preprocessing_info,
+                "data_characteristics": {
+                    "n_samples": scaled_data.shape[0],
+                    "n_features": scaled_data.shape[1],
+                    "condition_number": cond_num,
+                    "effective_rank": int(np.linalg.matrix_rank(scaled_data)),
+                },
+                "recommendations": self._generate_recommendations(
+                    embeddings, evaluation_results, preprocessing_info
+                ),
+            }
+            return results
+
+        except Exception as e:
+            return {"error": f"Dimensionality analysis failed: {e}"}
+
+    # --------------------------- Preprocessing ---------------------------
     def _adaptive_preprocessing(
         self, data: pd.DataFrame, config: AnalysisConfig
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """Advanced preprocessing with automatic method selection"""
-        numeric_data = data.select_dtypes(include=[np.number]).dropna()
+        """Advanced preprocessing with automatic method selection."""
+        rng = np.random.default_rng(getattr(config, "random_state", 42))
 
-        if numeric_data.empty or numeric_data.shape[1] < 2:
+        numeric = data.select_dtypes(include=[np.number]).dropna()
+        if numeric.empty or numeric.shape[1] < 2:
             raise ValueError("Insufficient numeric data for dimensionality reduction")
 
-        preprocessing_info = {}
+        info: Dict[str, Any] = {}
 
-        # Remove low-variance features
-        var_threshold = VarianceThreshold(threshold=0.01)
-        numeric_data = pd.DataFrame(
-            var_threshold.fit_transform(numeric_data),
-            columns=numeric_data.columns[var_threshold.get_support()],
-            index=numeric_data.index,
+        # 1) Remove low-variance features
+        vt = VarianceThreshold(threshold=0.01)
+        X = pd.DataFrame(
+            vt.fit_transform(numeric),
+            columns=numeric.columns[vt.get_support()],
+            index=numeric.index,
         )
-        preprocessing_info["features_removed"] = (~var_threshold.get_support()).sum()
+        info["features_removed"] = int((~vt.get_support()).sum())
 
-        # Adaptive sampling with stratification if possible
-        if len(numeric_data) > config.sample_size_threshold:
-            # Try to preserve data distribution
+        # 2) Adaptive sampling (cluster-stratified if possible)
+        sample_cap = int(getattr(config, "sample_size_threshold", 2000))
+        if len(X) > sample_cap:
             try:
-                # Simple clustering-based stratified sampling
-                kmeans = KMeans(
-                    n_clusters=min(10, len(numeric_data) // 100),
-                    random_state=config.random_state,
-                )
-                clusters = kmeans.fit_predict(
-                    StandardScaler().fit_transform(numeric_data)
-                )
+                n_clusters = int(np.clip(len(X) // 100, 2, 10))
+                Z = StandardScaler().fit_transform(X)
+                km = KMeans(n_clusters=n_clusters, random_state=getattr(config, "random_state", 42), n_init=10)
+                clusters = km.fit_predict(Z)
 
-                sample_indices = []
-                for cluster_id in np.unique(clusters):
-                    cluster_indices = np.where(clusters == cluster_id)[0]
-                    n_samples = max(
-                        1,
-                        int(
-                            config.sample_size_threshold
-                            * len(cluster_indices)
-                            / len(numeric_data)
-                        ),
-                    )
-                    sample_indices.extend(
-                        np.random.choice(
-                            cluster_indices,
-                            min(n_samples, len(cluster_indices)),
-                            replace=False,
-                        )
-                    )
+                indices: List[int] = []
+                for cid in np.unique(clusters):
+                    idx = np.flatnonzero(clusters == cid)
+                    n_take = max(1, int(sample_cap * len(idx) / len(X)))
+                    indices.extend(rng.choice(idx, size=min(n_take, len(idx)), replace=False))
+                X = X.iloc[indices[:sample_cap]]
+                info["sampling_method"] = "stratified"
+            except Exception:
+                idx = rng.choice(len(X), size=sample_cap, replace=False)
+                X = X.iloc[idx]
+                info["sampling_method"] = "random"
 
-                numeric_data = numeric_data.iloc[
-                    sample_indices[: config.sample_size_threshold]
-                ]
-                preprocessing_info["sampling_method"] = "stratified"
-            except:
-                # Fallback to random sampling
-                sample_idx = np.random.choice(
-                    len(numeric_data), config.sample_size_threshold, replace=False
-                )
-                numeric_data = numeric_data.iloc[sample_idx]
-                preprocessing_info["sampling_method"] = "random"
+        # 3) Intelligent scaling selection
+        # Decide among Power(YJ), Robust, Standard by conditioning & variance homogeneity.
+        scalers = []
+        skewness = X.skew().abs().mean()
+        outlier_frac = ((X - X.mean()).abs() > 3 * X.std(ddof=0)).sum().sum() / X.size
 
-        # Intelligent scaling method selection
-        scaling_methods = []
-
-        # Check for normality and outliers
-        skewness = numeric_data.skew().abs().mean()
-        outlier_fraction = (
-            (numeric_data - numeric_data.mean()).abs() > 3 * numeric_data.std()
-        ).sum().sum() / numeric_data.size
-
-        if skewness > 2 or outlier_fraction > 0.1:
-            # Heavy tails or many outliers - use robust methods
-            scaling_methods = [
-                (
-                    "power_transform",
-                    PowerTransformer(method="yeo-johnson", standardize=True),
-                ),
+        if (skewness > 2) or (outlier_frac > 0.10):
+            scalers = [
+                ("power_transform", PowerTransformer(method="yeo-johnson", standardize=True)),
                 ("robust", RobustScaler()),
                 ("standard", StandardScaler()),
             ]
         else:
-            # Well-behaved data
-            scaling_methods = [
+            scalers = [
                 ("standard", StandardScaler()),
                 ("robust", RobustScaler()),
             ]
 
-        # Try scaling methods and pick the best one
-        best_scaler = None
-        best_score = -np.inf
+        def _score_scaled(arr: np.ndarray) -> float:
+            # higher is better; guard zeros
+            v = np.var(arr, axis=0)
+            vmin = max(np.min(v), 1e-12)
+            vmax = max(np.max(v), 1e-12)
+            var_ratio = vmax / vmin
+            cov = np.cov(arr.T)
+            # regularize for stability
+            lam = 1e-8 * np.trace(cov) / max(1, cov.shape[0])
+            cond = np.linalg.cond(cov + lam * np.eye(cov.shape[0]))
+            return -np.log(cond + 1e-12) - np.log(var_ratio + 1e-12)
 
-        for name, scaler in scaling_methods:
+        best_name, best_scaler, best_score = None, None, -np.inf
+        for name, scaler in scalers:
             try:
-                scaled = scaler.fit_transform(numeric_data)
-                # Score based on condition number and variance homogeneity
-                cond_number = np.linalg.cond(np.cov(scaled.T))
-                var_ratio = np.var(scaled, axis=0).max() / np.var(scaled, axis=0).min()
-                score = -np.log(cond_number) - np.log(var_ratio)
-
-                if score > best_score:
-                    best_score = score
-                    best_scaler = scaler
-                    preprocessing_info["scaling_method"] = name
-            except:
+                scaled = scaler.fit_transform(X)
+                s = _score_scaled(scaled)
+                if s > best_score:
+                    best_name, best_scaler, best_score = name, scaler, s
+            except Exception:
                 continue
 
         if best_scaler is None:
-            best_scaler = StandardScaler()
-            preprocessing_info["scaling_method"] = "standard_fallback"
+            best_name, best_scaler = "standard_fallback", StandardScaler()
 
-        scaled_data = best_scaler.fit_transform(numeric_data)
-        preprocessing_info["final_shape"] = scaled_data.shape
+        info["scaling_method"] = best_name
+        scaled_X = best_scaler.fit_transform(X)
+        info["final_shape"] = tuple(scaled_X.shape)
+        return scaled_X, info
 
-        return scaled_data, preprocessing_info
-
-    def _compute_optimal_components(
-        self, scaled_data: np.ndarray, max_components: int = 10
-    ) -> int:
-        """Determine optimal number of components using multiple criteria"""
+    # --------------------------- Component selection ---------------------------
+    def _compute_optimal_components(self, scaled_data: np.ndarray, max_components: int = 10) -> int:
+        """Determine optimal n_components using multiple criteria."""
         n_samples, n_features = scaled_data.shape
-        max_comp = min(max_components, n_features, n_samples // 2)
-
+        max_comp = int(min(max_components, n_features, max(2, n_samples // 2)))
         if max_comp < 2:
             return min(2, n_features)
 
-        # PCA explained variance analysis
-        pca_full = PCA().fit(scaled_data)
+        pca_full = PCA(random_state=0).fit(scaled_data)
         cumvar = np.cumsum(pca_full.explained_variance_ratio_)
+        eig = pca_full.explained_variance_
 
-        # Multiple criteria for component selection
-        criteria_results = {}
+        crit: Dict[str, int] = {}
+        crit["var_95"] = int(np.argmax(cumvar >= 0.95) + 1) if np.any(cumvar >= 0.95) else max_comp
 
-        # 1. Explained variance threshold (95%)
-        criteria_results["var_95"] = np.argmax(cumvar >= 0.95) + 1
+        if len(eig) >= 3:
+            d1 = np.diff(eig)
+            d2 = np.diff(d1)
+            if len(d2) > 0:
+                crit["elbow"] = int(np.argmax(d2) + 2)
 
-        # 2. Elbow method on eigenvalues
-        eigenvals = pca_full.explained_variance_
-        if len(eigenvals) >= 3:
-            diffs = np.diff(eigenvals)
-            second_diffs = np.diff(diffs)
-            if len(second_diffs) > 0:
-                criteria_results["elbow"] = np.argmax(second_diffs) + 2
+        crit["kaiser"] = int(np.sum(eig > 1.0))
 
-        # 3. Kaiser criterion (eigenvalues > 1)
-        criteria_results["kaiser"] = np.sum(eigenvals > 1)
+        # Parallel analysis (approx.)
+        rand_eigs = []
+        for _ in range(5):
+            rnd = np.random.randn(*scaled_data.shape)
+            rand_eigs.append(PCA(random_state=0).fit(rnd).explained_variance_)
+        mean_rand = np.mean(rand_eigs, axis=0)
+        crit["parallel"] = int(np.sum(eig[: len(mean_rand)] > mean_rand[: len(eig)]))
 
-        # 4. Parallel analysis approximation
-        random_eigenvals = []
-        for _ in range(5):  # Reduced iterations for speed
-            random_data = np.random.randn(*scaled_data.shape)
-            random_pca = PCA().fit(random_data)
-            random_eigenvals.append(random_pca.explained_variance_)
+        # Combine (weighted)
+        weights = {"var_95": 0.3, "elbow": 0.2, "kaiser": 0.2, "parallel": 0.3}
+        vals = {k: v for k, v in crit.items() if 0 < v <= max_comp}
+        if vals:
+            wsum = sum(weights.get(k, 0.25) * v for k, v in vals.items())
+            return max(2, min(max_comp, int(np.round(wsum))))
+        return min(3, max_comp)
 
-        mean_random_eigenvals = np.mean(random_eigenvals, axis=0)
-        criteria_results["parallel"] = np.sum(
-            eigenvals > mean_random_eigenvals[: len(eigenvals)]
-        )
-
-        # Combine criteria with weights
-        valid_results = {
-            k: v for k, v in criteria_results.items() if v > 0 and v <= max_comp
-        }
-
-        if valid_results:
-            # Weighted average, favoring conservative estimates
-            weights = {"var_95": 0.3, "elbow": 0.2, "kaiser": 0.2, "parallel": 0.3}
-            weighted_sum = sum(
-                weights.get(k, 0.25) * v for k, v in valid_results.items()
-            )
-            optimal = max(2, min(max_comp, int(np.round(weighted_sum))))
-        else:
-            optimal = min(3, max_comp)
-
-        return optimal
-
+    # --------------------------- DR Methods ---------------------------
     def _enhanced_dimensionality_reduction(
         self, scaled_data: np.ndarray, config: AnalysisConfig
     ) -> Dict[str, Any]:
-        """Apply state-of-the-art dimensionality reduction techniques"""
-        results = {}
+        """Apply state-of-the-art dimensionality reduction techniques."""
+        results: Dict[str, Any] = {}
         n_samples, n_features = scaled_data.shape
-        optimal_components = self._compute_optimal_components(scaled_data)
+        n_comp = self._compute_optimal_components(scaled_data)
+        rs = getattr(config, "random_state", 42)
 
         # Linear methods
         linear_methods = {
-            "pca": PCA(
-                n_components=optimal_components, random_state=config.random_state
-            ),
-            "ica": FastICA(
-                n_components=optimal_components,
-                random_state=config.random_state,
-                max_iter=1000,
-                tol=1e-4,
-            ),
-            "factor_analysis": FactorAnalysis(
-                n_components=optimal_components, random_state=config.random_state
-            ),
+            "pca": PCA(n_components=n_comp, random_state=rs),
+            "ica": FastICA(n_components=n_comp, random_state=rs, max_iter=1000, tol=1e-4),
+            "factor_analysis": FactorAnalysis(n_components=n_comp, random_state=rs),
         }
 
-        # Add NMF for non-negative data
-        if (scaled_data >= 0).all():
-            linear_methods["nmf"] = NMF(
-                n_components=optimal_components,
-                random_state=config.random_state,
-                max_iter=1000,
-                tol=1e-4,
-            )
+        # NMF only if non-negative
+        if np.all(scaled_data >= 0):
+            linear_methods["nmf"] = NMF(n_components=n_comp, random_state=rs, max_iter=1000, tol=1e-4)
 
-        # SVD for high-dimensional sparse data
         if n_features > 100:
-            linear_methods["truncated_svd"] = TruncatedSVD(
-                n_components=optimal_components, random_state=config.random_state
-            )
+            linear_methods["truncated_svd"] = TruncatedSVD(n_components=n_comp, random_state=rs)
 
         for name, method in linear_methods.items():
             try:
-                embedding = method.fit_transform(scaled_data)
-                results[name] = {
-                    "embedding": embedding,
-                    "method_type": "linear",
-                    "n_components": optimal_components,
-                }
-
-                # Add explained variance for methods that support it
+                emb = method.fit_transform(scaled_data)
+                entry = {"embedding": emb, "method_type": "linear", "n_components": n_comp}
                 if hasattr(method, "explained_variance_ratio_"):
-                    results[name][
-                        "explained_variance_ratio"
-                    ] = method.explained_variance_ratio_
-                    results[name][
-                        "total_variance_explained"
-                    ] = method.explained_variance_ratio_.sum()
-
+                    evr = method.explained_variance_ratio_
+                    entry["explained_variance_ratio"] = evr
+                    entry["total_variance_explained"] = float(np.sum(evr))
+                results[name] = entry
             except Exception as e:
                 print(f"Linear method {name} failed: {e}")
 
-        # Non-linear methods with adaptive parameters
-        target_dim = 2  # For visualization
-        perplexity = min(30, max(5, n_samples // 4))
-        n_neighbors = min(15, max(3, n_samples // 10))
+        # Nonlinear methods (2D for viz)
+        target_dim = 2
+        # Perplexity must be < n_samples/3 and >= 5
+        perplexity = int(np.clip(n_samples // 3 - 1, 5, 50))
+        n_neighbors = int(np.clip(n_samples // 10, 3, 50))
 
-        # Standard t-SNE
         tsne_params = {
             "n_components": target_dim,
-            "random_state": config.random_state,
-            "perplexity": perplexity,
+            "random_state": rs,
+            "perplexity": min(perplexity, max(5, n_samples // 4, 5), max(5, n_samples - 2)),
             "init": "pca",
             "learning_rate": "auto",
             "n_iter": 1000,
@@ -277,57 +236,57 @@ class DimensionalityAnalyzer(AnalysisStrategy):
             "min_grad_norm": 1e-7,
         }
 
-        # Use best available t-SNE implementation
-        if HAS_OPENTSNE and n_samples > 1000:
+        # OpenTSNE / MulticoreTSNE / sklearn TSNE
+        if 'HAS_OPENTSNE' in globals() and HAS_OPENTSNE and n_samples > 1000:
             try:
-                tsne = OpenTSNE(**tsne_params, n_jobs=4, negative_sample_rate=5)
-                results["tsne_openai"] = {
+                from openTSNE import TSNE as OpenTSNE
+                tsne = OpenTSNE(**tsne_params, n_jobs=4, negative_gradient_method="fft")
+                results["tsne_opentsne"] = {
                     "embedding": tsne.fit(scaled_data),
                     "method_type": "nonlinear",
-                    "perplexity": perplexity,
+                    "perplexity": tsne_params["perplexity"],
                 }
             except Exception as e:
                 print(f"OpenTSNE failed: {e}")
-
-        elif HAS_MULTICORE_TSNE:
+        elif 'HAS_MULTICORE_TSNE' in globals() and HAS_MULTICORE_TSNE:
             try:
+                from MulticoreTSNE import MulticoreTSNE
                 tsne = MulticoreTSNE(n_jobs=4, **tsne_params)
                 results["tsne_multicore"] = {
                     "embedding": tsne.fit_transform(scaled_data),
                     "method_type": "nonlinear",
-                    "perplexity": perplexity,
+                    "perplexity": tsne_params["perplexity"],
                 }
             except Exception as e:
                 print(f"MulticoreTSNE failed: {e}")
 
-        # Fallback to standard t-SNE
-        if not any("tsne" in k for k in results.keys()):
+        if not any(k.startswith("tsne") for k in results):
             try:
                 tsne = TSNE(**tsne_params)
                 results["tsne"] = {
                     "embedding": tsne.fit_transform(scaled_data),
                     "method_type": "nonlinear",
-                    "perplexity": perplexity,
+                    "perplexity": tsne_params["perplexity"],
                 }
             except Exception as e:
                 print(f"Standard t-SNE failed: {e}")
 
-        # UMAP with optimized parameters
-        if HAS_UMAP:
+        # UMAP
+        if 'HAS_UMAP' in globals() and HAS_UMAP:
             try:
-                umap_params = {
-                    "n_components": target_dim,
-                    "random_state": config.random_state,
-                    "n_neighbors": n_neighbors,
-                    "min_dist": 0.1,
-                    "metric": "euclidean",
-                    "spread": 1.0,
-                    "low_memory": n_samples > 10000,
-                    "n_epochs": None,  # Auto-determine
-                    "learning_rate": 1.0,
-                    "repulsion_strength": 1.0,
-                }
-
+                from umap import UMAP
+                umap_params = dict(
+                    n_components=target_dim,
+                    random_state=rs,
+                    n_neighbors=n_neighbors,
+                    min_dist=0.1,
+                    metric="euclidean",
+                    spread=1.0,
+                    low_memory=(n_samples > 10_000),
+                    n_epochs=None,
+                    learning_rate=1.0,
+                    repulsion_strength=1.0,
+                )
                 umap_reducer = UMAP(**umap_params)
                 results["umap"] = {
                     "embedding": umap_reducer.fit_transform(scaled_data),
@@ -337,9 +296,10 @@ class DimensionalityAnalyzer(AnalysisStrategy):
             except Exception as e:
                 print(f"UMAP failed: {e}")
 
-        # TriMap (if available)
-        if HAS_TRIMAP and n_samples >= 100:
+        # TriMap
+        if 'HAS_TRIMAP' in globals() and HAS_TRIMAP and n_samples >= 100:
             try:
+                from trimap import trimap
                 trimap_embedding = trimap.TRIMAP(
                     n_dims=target_dim,
                     n_inliers=max(3, n_neighbors // 2),
@@ -348,35 +308,23 @@ class DimensionalityAnalyzer(AnalysisStrategy):
                     lr=1000.0,
                     n_iters=1200,
                 ).fit_transform(scaled_data)
-
-                results["trimap"] = {
-                    "embedding": trimap_embedding,
-                    "method_type": "nonlinear",
-                }
+                results["trimap"] = {"embedding": trimap_embedding, "method_type": "nonlinear"}
             except Exception as e:
                 print(f"TriMap failed: {e}")
 
-        # Other manifold learning methods
-        manifold_methods = {
+        # Other manifold learners
+        manifold = {
             "isomap": Isomap(n_components=target_dim, n_neighbors=n_neighbors),
             "lle": LocallyLinearEmbedding(
-                n_components=target_dim,
-                n_neighbors=n_neighbors,
-                random_state=config.random_state,
-                method="standard",
+                n_components=target_dim, n_neighbors=n_neighbors, random_state=rs, method="standard"
             ),
-            "spectral": SpectralEmbedding(
-                n_components=target_dim,
-                random_state=config.random_state,
-                n_neighbors=n_neighbors,
-            ),
+            "spectral": SpectralEmbedding(n_components=target_dim, n_neighbors=n_neighbors, random_state=rs),
         }
-
-        for name, method in manifold_methods.items():
+        for name, method in manifold.items():
             try:
-                embedding = method.fit_transform(scaled_data)
+                emb = method.fit_transform(scaled_data)
                 results[name] = {
-                    "embedding": embedding,
+                    "embedding": emb,
                     "method_type": "nonlinear",
                     "n_neighbors": getattr(method, "n_neighbors", None),
                 }
@@ -385,165 +333,96 @@ class DimensionalityAnalyzer(AnalysisStrategy):
 
         return results
 
+    # --------------------------- Evaluation ---------------------------
     def _evaluate_embeddings(
         self, embeddings: Dict[str, Any], scaled_data: np.ndarray
     ) -> Dict[str, Any]:
-        """Evaluate embedding quality using multiple metrics"""
-        evaluation_results = {}
+        """Evaluate embedding quality using multiple metrics."""
+        evals: Dict[str, Any] = {}
+        rng = np.random.default_rng(42)
 
-        for name, result in embeddings.items():
-            if "embedding" not in result:
+        for name, res in embeddings.items():
+            emb = res.get("embedding")
+            if emb is None or getattr(emb, "shape", (0, 0))[0] < 10:
                 continue
 
-            embedding = result["embedding"]
-            if embedding.shape[0] < 10:  # Need minimum samples for evaluation
-                continue
+            metrics: Dict[str, float] = {}
 
-            metrics = {}
-
+            # Silhouette with KMeans clusters
             try:
-                # Silhouette score using k-means clustering
-                n_clusters = min(8, max(2, embedding.shape[0] // 10))
-                if n_clusters >= 2:
-                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-                    cluster_labels = kmeans.fit_predict(embedding)
-                    if len(np.unique(cluster_labels)) > 1:
-                        metrics["silhouette_score"] = silhouette_score(
-                            embedding, cluster_labels
-                        )
-            except:
+                n_clusters = int(np.clip(emb.shape[0] // 10, 2, 8))
+                km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                labels = km.fit_predict(emb)
+                if len(np.unique(labels)) > 1:
+                    metrics["silhouette_score"] = float(silhouette_score(emb, labels))
+            except Exception:
                 pass
 
+            # Neighborhood preservation (sampled)
             try:
-                # Neighborhood preservation (for nonlinear methods)
-                if (
-                    result.get("method_type") == "nonlinear"
-                    and scaled_data.shape[0] <= 1000
-                ):
+                if res.get("method_type") == "nonlinear" and scaled_data.shape[0] <= 1000:
                     from scipy.spatial.distance import pdist, squareform
                     from scipy.stats import spearmanr
 
-                    # Sample for computational efficiency
-                    n_sample = min(200, embedding.shape[0])
-                    indices = np.random.choice(
-                        embedding.shape[0], n_sample, replace=False
-                    )
+                    n_sample = min(200, emb.shape[0])
+                    idx = rng.choice(emb.shape[0], size=n_sample, replace=False)
 
-                    orig_dist = squareform(pdist(scaled_data[indices]))
-                    embed_dist = squareform(pdist(embedding[indices]))
-
-                    # Spearman correlation between distance matrices
-                    correlation, _ = spearmanr(
-                        orig_dist.flatten(), embed_dist.flatten()
-                    )
-                    metrics["neighborhood_preservation"] = correlation
-            except:
+                    D0 = squareform(pdist(scaled_data[idx]))
+                    D1 = squareform(pdist(emb[idx]))
+                    rho, _ = spearmanr(D0.ravel(), D1.ravel())
+                    metrics["neighborhood_preservation"] = float(rho)
+            except Exception:
                 pass
 
+            # Simple stability proxy
             try:
-                # Local continuity
-                embedding_std = np.std(embedding, axis=0)
-                metrics["embedding_stability"] = 1.0 / (1.0 + np.mean(embedding_std))
-            except:
+                metrics["embedding_stability"] = float(1.0 / (1.0 + np.mean(np.std(emb, axis=0))))
+            except Exception:
                 pass
 
-            evaluation_results[name] = metrics
+            evals[name] = metrics
 
-        return evaluation_results
+        return evals
 
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
-        """Main analysis method with comprehensive dimensionality reduction"""
-        try:
-            # Advanced preprocessing
-            scaled_data, preprocessing_info = self._adaptive_preprocessing(data, config)
-
-            # Enhanced dimensionality reduction
-            embeddings = self._enhanced_dimensionality_reduction(scaled_data, config)
-
-            if not embeddings:
-                return {"error": "All dimensionality reduction methods failed"}
-
-            # Evaluate embedding quality
-            evaluation_results = self._evaluate_embeddings(embeddings, scaled_data)
-
-            # Compile final results
-            results = {
-                "embeddings": embeddings,
-                "evaluation": evaluation_results,
-                "preprocessing_info": preprocessing_info,
-                "data_characteristics": {
-                    "n_samples": scaled_data.shape[0],
-                    "n_features": scaled_data.shape[1],
-                    "condition_number": np.linalg.cond(scaled_data.T @ scaled_data),
-                    "effective_rank": np.linalg.matrix_rank(scaled_data),
-                },
-                "recommendations": self._generate_recommendations(
-                    embeddings, evaluation_results, preprocessing_info
-                ),
-            }
-
-            return results
-
-        except Exception as e:
-            return {"error": f"Dimensionality analysis failed: {str(e)}"}
-
+    # --------------------------- Recommendations ---------------------------
     def _generate_recommendations(
         self,
         embeddings: Dict[str, Any],
         evaluations: Dict[str, Any],
         preprocessing_info: Dict[str, Any],
     ) -> List[str]:
-        """Generate intelligent recommendations based on results"""
-        recommendations = []
+        recs: List[str] = []
 
-        # Find best performing methods
-        method_scores = {}
-        for name, metrics in evaluations.items():
-            score = 0
-            if "silhouette_score" in metrics:
-                score += metrics["silhouette_score"] * 0.4
-            if "neighborhood_preservation" in metrics:
-                score += metrics["neighborhood_preservation"] * 0.4
-            if "embedding_stability" in metrics:
-                score += metrics["embedding_stability"] * 0.2
-            method_scores[name] = score
+        # Score combination (same idea, explicit weights)
+        weights = {"silhouette_score": 0.4, "neighborhood_preservation": 0.4, "embedding_stability": 0.2}
+        scores: Dict[str, float] = {}
+        for name, mets in evaluations.items():
+            score = 0.0
+            for k, w in weights.items():
+                if k in mets and np.isfinite(mets[k]):
+                    score += w * mets[k]
+            scores[name] = score
 
-        if method_scores:
-            best_method = max(method_scores, key=method_scores.get)
-            recommendations.append(f"Best performing method: {best_method}")
+        if scores:
+            best = max(scores, key=scores.get)
+            recs.append(f"Best performing method: {best}")
+            if "umap" in best:
+                recs.append("UMAP preserves both local and global structure well")
+            elif "tsne" in best:
+                recs.append("t-SNE excels at revealing local cluster structure")
+            elif best == "pca":
+                recs.append("PCA indicates linear relationships dominate the data")
 
-            # Method-specific recommendations
-            if "umap" in best_method:
-                recommendations.append(
-                    "UMAP preserves both local and global structure well"
-                )
-            elif "tsne" in best_method:
-                recommendations.append(
-                    "t-SNE excels at revealing local cluster structure"
-                )
-            elif best_method == "pca":
-                recommendations.append(
-                    "PCA indicates linear relationships dominate the data"
-                )
-
-        # Data-specific recommendations
+        # Data-specific notes
         if preprocessing_info.get("features_removed", 0) > 0:
-            recommendations.append(
-                f"Removed {preprocessing_info['features_removed']} low-variance features"
-            )
+            recs.append(f"Removed {preprocessing_info['features_removed']} low-variance features")
 
         if preprocessing_info.get("scaling_method") == "power_transform":
-            recommendations.append(
-                "Applied power transformation due to skewed data distribution"
-            )
+            recs.append("Applied power transformation due to skewed data distribution")
 
-        if len(
-            [k for k in embeddings if embeddings[k].get("method_type") == "linear"]
-        ) > len(
-            [k for k in embeddings if embeddings[k].get("method_type") == "nonlinear"]
-        ):
-            recommendations.append(
-                "Consider nonlinear methods for more complex pattern discovery"
-            )
+        n_linear = sum(1 for k in embeddings if embeddings[k].get("method_type") == "linear")
+        n_nonlinear = sum(1 for k in embeddings if embeddings[k].get("method_type") == "nonlinear")
+        if n_linear > n_nonlinear:
+            recs.append("Consider nonlinear methods for more complex pattern discovery")
 
-        return recommendations
+        return recs

@@ -7,8 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import wandb
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 

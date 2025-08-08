@@ -1,19 +1,15 @@
 import random
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pywt
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 from scipy.interpolate import interp1d
 from scipy.signal import hilbert, resample, welch
 from scipy.stats import kurtosis, skew
 from sklearn.feature_selection import mutual_info_classif
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import MinMaxScaler
 
 from .ts_fengine_gan import *
 from .ts_fengine_vae import *
@@ -862,7 +858,7 @@ class SignalAugmentor:
         """Generate frequency-targeted perturbations."""
         # Target specific frequency bands
         fft_signal = np.fft.rfft(signal)
-        freqs = np.fft.rfftfreq(len(signal), 1/self.fs)
+        np.fft.rfftfreq(len(signal), 1/self.fs)
         
         # Focus perturbation on high-energy frequency bands
         power = np.abs(fft_signal)

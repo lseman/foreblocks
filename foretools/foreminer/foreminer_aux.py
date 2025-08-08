@@ -69,47 +69,92 @@ def requires_library(lib_name: str):
     return decorator
 
 warnings.filterwarnings("ignore")
-
-# Optional dependencies
+# Optional dependencies with corrected import names
 try:
+    import pyod
     HAS_PYOD = True
 except ImportError:
     HAS_PYOD = False
 
 try:
+    import hdbscan
     HAS_HDBSCAN = True
 except ImportError:
     HAS_HDBSCAN = False
 
+# K-medoids - multiple possible implementations
 try:
+    from sklearn_extra.cluster import KMedoids
     HAS_KMEDOIDS = True
+    KMEDOIDS_SOURCE = 'sklearn_extra'
 except ImportError:
-    HAS_KMEDOIDS = False
+    try:
+        from pyclustering.cluster.kmedoids import kmedoids
+        HAS_KMEDOIDS = True
+        KMEDOIDS_SOURCE = 'pyclustering'
+    except ImportError:
+        try:
+            import kmedoids
+            HAS_KMEDOIDS = True
+            KMEDOIDS_SOURCE = 'kmedoids'
+        except ImportError:
+            HAS_KMEDOIDS = False
+            KMEDOIDS_SOURCE = None
 
+# PyClustering - import specific algorithms as needed
 try:
+    from pyclustering.cluster.dbscan import dbscan
+    from pyclustering.cluster.kmeans import kmeans
     HAS_PYCLUSTERING = True
 except ImportError:
     HAS_PYCLUSTERING = False
 
+# UMAP - install as 'umap-learn', import as 'umap'
 try:
+    import umap
     HAS_UMAP = True
 except ImportError:
     HAS_UMAP = False
 
 try:
+    import openTSNE
     HAS_OPENTSNE = True
 except ImportError:
     HAS_OPENTSNE = False
 
 try:
+    import trimap
     HAS_TRIMAP = True
 except ImportError:
     HAS_TRIMAP = False
 
 try:
+    from MulticoreTSNE import MulticoreTSNE
     HAS_MULTICORE_TSNE = True
 except ImportError:
     HAS_MULTICORE_TSNE = False
+
+# Optional: Print available libraries for debugging
+def print_available_libraries():
+    """Print which optional libraries are available."""
+    libraries = {
+        'PyOD (Outlier Detection)': HAS_PYOD,
+        'HDBSCAN': HAS_HDBSCAN,
+        'K-medoids': f"{HAS_KMEDOIDS} ({KMEDOIDS_SOURCE})" if HAS_KMEDOIDS else False,
+        'PyClustering': HAS_PYCLUSTERING,
+        'UMAP': HAS_UMAP,
+        'OpenTSNE': HAS_OPENTSNE,
+        'TriMap': HAS_TRIMAP,
+        'MulticoreTSNE': HAS_MULTICORE_TSNE,
+    }
+    
+    print("Available optional libraries:")
+    for lib, status in libraries.items():
+        status_str = "✓" if status else "✗"
+        print(f"  {status_str} {lib}: {status}")
+
+if __name__ == "__main__":
+    print_available_libraries()
 
 
 
@@ -195,82 +240,6 @@ class AnalysisStrategy(ABC):
     @abstractmethod
     def name(self) -> str:
         pass
-
-
-# ============================================================================
-# CORRELATION STRATEGIES
-# ============================================================================
-
-
-class CorrelationStrategy(ABC):
-    @abstractmethod
-    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
-        pass
-
-
-class PearsonCorrelation(CorrelationStrategy):
-    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
-        return data.corr(method="pearson")
-
-
-class SpearmanCorrelation(CorrelationStrategy):
-    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
-        return data.corr(method="spearman")
-
-
-class MutualInfoCorrelation(CorrelationStrategy):
-    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
-        n_features = len(data.columns)
-        mi_matrix = np.zeros((n_features, n_features))
-
-        for i, col_i in enumerate(data.columns):
-            for j, col_j in enumerate(data.columns):
-                if i == j:
-                    mi_matrix[i, j] = 1.0
-                else:
-                    X = data[[col_i]].fillna(data[col_i].median())
-                    y = data[col_j].fillna(data[col_j].median())
-                    mi_matrix[i, j] = mutual_info_regression(X, y, random_state=42)[0]
-
-        return pd.DataFrame(mi_matrix, index=data.columns, columns=data.columns)
-
-
-class DistanceCorrelation(CorrelationStrategy):
-    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
-        def dcorr(X: np.ndarray, Y: np.ndarray) -> float:
-            n = len(X)
-            a = squareform(pdist(X.reshape(-1, 1), "euclidean"))
-            b = squareform(pdist(Y.reshape(-1, 1), "euclidean"))
-
-            A = a - a.mean(axis=0) - a.mean(axis=1)[:, None] + a.mean()
-            B = b - b.mean(axis=0) - b.mean(axis=1)[:, None] + b.mean()
-
-            dcov2_xy = (A * B).sum() / (n * n)
-            dcov2_xx = (A * A).sum() / (n * n)
-            dcov2_yy = (B * B).sum() / (n * n)
-
-            return (
-                np.sqrt(dcov2_xy) / np.sqrt(np.sqrt(dcov2_xx * dcov2_yy))
-                if dcov2_xx * dcov2_yy > 0
-                else 0
-            )
-
-        n_features = len(data.columns)
-        matrix = np.zeros((n_features, n_features))
-
-        for i, col_i in enumerate(data.columns):
-            for j, col_j in enumerate(data.columns):
-                matrix[i, j] = dcorr(
-                    data[col_i].dropna().values, data[col_j].dropna().values
-                )
-
-        return pd.DataFrame(matrix, index=data.columns, columns=data.columns)
-
-
-@requires_library("phik")
-class PhiKCorrelation(CorrelationStrategy):
-    def compute(self, data: pd.DataFrame) -> pd.DataFrame:
-        return data.phik_matrix()
 
 
 # ============================================================================
@@ -368,34 +337,57 @@ class PlotHelper:
     def plot_outliers_pca(
         data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
     ):
-        """Plot outlier detection results using PCA projection"""
+        """Plot outlier detection results using PCA projection (robust)."""
         if not data:
             return
 
-        # Get the first available method
-        method = list(data.keys())[0]
-        outlier_info = data[method]
-        outliers = np.asarray(outlier_info["outliers"])
+        # If caller passed the whole outlier block, dive into the methods dict.
+        if "outlier_results" in data and isinstance(data["outlier_results"], dict):
+            data = data["outlier_results"]
 
-        # Ensure alignment: drop rows with NaNs and filter outliers accordingly
-        numeric_data = original_df.select_dtypes(include=[np.number])
-        mask = numeric_data.notna().all(axis=1)
-        clean_data = numeric_data[mask]
-        aligned_outliers = outliers[mask.values]  # Filter outliers to match clean_data
+        # Pick the first method that contains an 'outliers' mask
+        method = None
+        outliers = None
+        for k, v in data.items():
+            if isinstance(v, dict) and "outliers" in v:
+                outliers = np.asarray(v["outliers"], dtype=bool)
+                method = k
+                break
+
+        if method is None or outliers is None:
+            print("No outlier mask available to plot.")
+            return
+
+        # Numeric data + NaN alignment
+        numeric = original_df.select_dtypes(include=[np.number])
+        mask = numeric.notna().all(axis=1)
+        clean = numeric[mask]
+
+        # If lengths mismatch, try to trim to min length
+        if len(outliers) != len(numeric):
+            m = min(len(outliers), len(numeric))
+            outliers = outliers[:m]
+            mask = mask.iloc[:m]
+            clean = numeric.iloc[:m][mask.iloc[:m]]
+
+        aligned_outliers = outliers[mask.values]
+
+        if len(aligned_outliers) != len(clean):
+            # As a last resort: bail gracefully
+            print("Outlier mask length does not align with cleaned data.")
+            return
 
         # PCA projection
         pca = PCA(n_components=2, random_state=config.random_state)
-        pca_data = pca.fit_transform(StandardScaler().fit_transform(clean_data))
+        pca_data = pca.fit_transform(StandardScaler().fit_transform(clean))
 
         plt.figure(figsize=config.figure_size)
-        colors = ["red" if x else "blue" for x in aligned_outliers]
-
+        colors = np.where(aligned_outliers, "red", "blue")
         plt.scatter(pca_data[:, 0], pca_data[:, 1], c=colors, alpha=0.6, s=50)
         plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.1%} variance)")
         plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.1%} variance)")
         plt.title(f"Outlier Detection: {method.replace('_', ' ').title()}")
 
-        # Legend
         handles = [
             plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="blue", markersize=8, label="Normal"),
             plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="red", markersize=8, label="Outlier"),
@@ -408,42 +400,68 @@ class PlotHelper:
     def plot_clusters(
         data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
     ):
-        """Plot comprehensive clustering results"""
+        """Plot clustering results (robust to missing labels/mismatch)."""
         if not data:
             return
 
-        clean_data = original_df.select_dtypes(include=[np.number]).dropna()
+        clean = original_df.select_dtypes(include=[np.number]).dropna()
+        X2 = PCA(n_components=2, random_state=config.random_state).fit_transform(
+            StandardScaler().fit_transform(clean)
+        )
 
-        # PCA for visualization
-        pca = PCA(n_components=2, random_state=config.random_state)
-        pca_data = pca.fit_transform(StandardScaler().fit_transform(clean_data))
+        # Only keep methods that have a valid labels array of matching length
+        usable = []
+        for method, res in data.items():
+            if not isinstance(res, dict):
+                continue
+            labels = res.get("labels")
+            if labels is None:
+                continue
+            labels = np.asarray(labels)
+            if labels.ndim != 1:
+                continue
+            # Match length to X2 if needed (defensive)
+            if len(labels) != len(X2):
+                m = min(len(labels), len(X2))
+                if m < 2:
+                    continue
+                labels = labels[:m]
+                X2m = X2[:m]
+            else:
+                X2m = X2
 
-        n_methods = len(data)
+            usable.append((method, res, labels, X2m))
+
+        if not usable:
+            print("No cluster labels available to plot.")
+            return
+
+        n_methods = len(usable)
         fig, axes = plt.subplots(1, n_methods, figsize=(6 * n_methods, 5))
         axes = np.atleast_1d(axes)
 
-        for i, (method, result) in enumerate(data.items()):
+        for i, (method, res, labels, X2m) in enumerate(usable):
             scatter = axes[i].scatter(
-                pca_data[:, 0],
-                pca_data[:, 1],
-                c=result["labels"],
-                cmap="viridis",
-                alpha=0.7,
-                s=50,
+                X2m[:, 0], X2m[:, 1],
+                c=labels, cmap="viridis", alpha=0.7, s=50
             )
 
-            title = f"{method.title()}\n"
-            if "best_k" in result:
-                title += f"k={result['best_k']}"
-            elif "n_clusters" in result:
-                title += f"clusters={result['n_clusters']}"
+            # Compute cluster count if not present
+            if "n_clusters" in res:
+                ncl = res["n_clusters"]
+            elif "best_k" in res:
+                ncl = res["best_k"]
+            else:
+                u = np.unique(labels)
+                ncl = int(len(u) - (1 if -1 in u else 0))
 
-            if "silhouette" in result:
-                title += f"\nSilhouette: {result['silhouette']:.3f}"
+            title = f"{method.replace('_',' ').title()} • clusters={ncl}"
+            if "silhouette" in res and isinstance(res["silhouette"], (int, float)):
+                title += f"\nSilhouette: {res['silhouette']:.3f}"
 
             axes[i].set_title(title)
-            axes[i].set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.1%})")
-            axes[i].set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.1%})")
+            axes[i].set_xlabel("PC1")
+            axes[i].set_ylabel("PC2")
             plt.colorbar(scatter, ax=axes[i])
 
         plt.tight_layout()
@@ -451,34 +469,99 @@ class PlotHelper:
 
     @staticmethod
     def plot_dimensionality(
-        data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
+        data: Dict[str, Any],
+        original_df: pd.DataFrame,
+        config: "AnalysisConfig",
+        label_key: str = "labels",  # or "cluster_labels" if that's what you use
     ):
-        """Plot dimensionality reduction results"""
-        if not data:
+        """
+        Plot available 2D embeddings from the dimensionality analyzer.
+        Supports keys: 'pca', 'umap', 'tsne', each with data[k]['embedding'] = (n, d<=2+).
+        Gracefully handles 1D embeddings and missing labels.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Collect available embeddings
+        candidates = []
+        for name in ["pca", "umap", "tsne"]:
+            if name in data and isinstance(data[name], dict) and "embedding" in data[name]:
+                X = np.asarray(data[name]["embedding"])
+                if X.size == 0:
+                    continue
+                # Ensure 2D array shape (n, d)
+                if X.ndim == 1:
+                    X = X.reshape(-1, 1)
+                candidates.append((name.upper(), X, data[name]))
+
+        if not candidates:
+            print("No dimensionality embeddings found to plot.")
             return
 
-        n_methods = len(data)
-        cols = min(3, n_methods)
-        rows = (n_methods + cols - 1) // cols
+        # Optional labels (same length as rows in embeddings)
+        labels = None
+        if label_key in data and data[label_key] is not None:
+            labels = np.asarray(data[label_key])
+        elif label_key in original_df.columns:
+            labels = original_df[label_key].to_numpy()
 
-        fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 5 * rows))
-        axes = np.atleast_1d(axes).flatten()
+        # Style
+        try:
+            plt.style.use(getattr(config, "plot_style", "default"))
+        except Exception:
+            pass
 
-        for i, (method, reduced_data) in enumerate(data.items()):
-            scatter = axes[i].scatter(
-                reduced_data[:, 0],
-                reduced_data[:, 1],
-                alpha=0.6,
-                s=30,
-                c=range(len(reduced_data)),
-                cmap="viridis",
-            )
-            axes[i].set_title(f"{method.upper()}")
-            axes[i].set_xlabel("Component 1")
-            axes[i].set_ylabel("Component 2")
-            axes[i].grid(True, alpha=0.3)
+        n = len(candidates)
+        ncols = min(3, n)
+        nrows = (n + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
+        axes = np.atleast_1d(axes).ravel()
 
-        # Hide unused subplots
+        def _scatter2d(ax, X2d, y=None, title=""):
+            # If embedding is 1D, pad a zero column to avoid "tuple index out of range"
+            if X2d.shape[1] == 1:
+                X2d = np.c_[X2d[:, 0], np.zeros(len(X2d))]
+            elif X2d.shape[1] > 2:
+                X2d = X2d[:, :2]
+
+            if y is None or (hasattr(y, "__len__") and len(y) != len(X2d)):
+                ax.scatter(X2d[:, 0], X2d[:, 1], s=10, alpha=0.8)
+            else:
+                # Categorical coloring without seaborn
+                y_arr = np.asarray(y)
+                # Make sure it's same length
+                if len(y_arr) != len(X2d):
+                    y_arr = None
+                    ax.scatter(X2d[:, 0], X2d[:, 1], s=10, alpha=0.8)
+                else:
+                    # Encode categories to ints for coloring
+                    _, y_codes = np.unique(y_arr, return_inverse=True)
+                    sc = ax.scatter(X2d[:, 0], X2d[:, 1], c=y_codes, s=10, alpha=0.85)
+                    # Optional legend with up to 10 classes
+                    uniq = np.unique(y_arr)
+                    if len(uniq) <= 10:
+                        handles = []
+                        for i, u in enumerate(uniq[:10]):
+                            handles.append(plt.Line2D([0], [0], marker="o", linestyle="",
+                                                      label=str(u)))
+                        ax.legend(handles=handles, title="labels", loc="best", fontsize=8)
+
+            ax.set_title(title)
+            ax.set_xlabel("dim-1"); ax.set_ylabel("dim-2"); ax.grid(True, alpha=0.2)
+
+        for i, (name, X, meta) in enumerate(candidates):
+            ax = axes[i]
+            title = name
+            # Add explained variance info if PCA
+            if name == "PCA" and "explained_variance_ratio" in meta:
+                r = np.asarray(meta["explained_variance_ratio"])
+                if r.size >= 2:
+                    title += f" ({r[:2].sum():.2%} var)"
+                elif r.size == 1:
+                    title += f" ({r[0]:.2%} var)"
+            _scatter2d(ax, X, labels, title)
+
+        # Hide any extra axes
         for j in range(i + 1, len(axes)):
             axes[j].set_visible(False)
 

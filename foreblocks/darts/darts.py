@@ -1346,7 +1346,6 @@ class TimeSeriesDARTS(nn.Module):
         # Process through enhanced DARTS cells
         current_input = x_emb
         cell_outputs = []
-        total_efficiency_penalty = 0
 
         for i, (cell, proj, scale, res_weight, importance) in enumerate(
             zip(self.cells, self.cell_proj, self.layer_scales, 

@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from matplotlib import cm
 from pandas.plotting import parallel_coordinates
 
 # Optional: mplcursors for interactive plots (Jupyter)

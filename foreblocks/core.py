@@ -131,7 +131,7 @@ class BaseForecastingModel(nn.Module):
 
         encoder_hidden = self._get_attr(self.encoder, "hidden_size", self.hidden_size)
         decoder_hidden = self._get_attr(self.decoder, "hidden_size", self.hidden_size)
-        decoder_output = self._get_attr(self.decoder, "output_size", self.output_size)
+        self._get_attr(self.decoder, "output_size", self.output_size)
 
         # Final output projection
         out_dim = (

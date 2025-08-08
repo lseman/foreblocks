@@ -1281,7 +1281,6 @@ class FixedEncoder(nn.Module):
 
     def set_temperature(self, temp: float):
         """No-op for fixed encoder"""
-        pass
 
 
 class FixedDecoder(nn.Module):
@@ -1400,7 +1399,6 @@ class FixedDecoder(nn.Module):
 
     def set_temperature(self, temp: float):
         """No-op for fixed decoder"""
-        pass
 
 
 class RotaryPositionalEncoding(nn.Module):

@@ -10,18 +10,15 @@ import torch.nn.functional as F
 def _get_available_backends():
     backends = {"flash": False, "xformers": False, "sdp": False, "softpick": False}
     try:
-        from flash_attn import flash_attn_func
         backends["flash"] = True
     except ImportError:
         pass
     try:
-        import xformers.ops
         backends["xformers"] = True
     except ImportError:
         pass
     backends["sdp"] = hasattr(F, "scaled_dot_product_attention")
     try:
-        from ..third_party.flash_softpick_attn import parallel_softpick_attn
         backends["softpick"] = True
     except ImportError:
         pass
