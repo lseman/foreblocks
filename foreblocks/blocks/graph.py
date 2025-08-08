@@ -12,7 +12,7 @@ from torch.nn.utils import spectral_norm
 
 # from flash_attn import flash_attn_qkvpacked_func
 try:
-    pass
+    from flash_attn import flash_attn_qkvpacked_func
 
     FLASH_AVAILABLE = True
 except ImportError:
@@ -350,7 +350,7 @@ class MessagePassing(nn.Module):
 
         # Check xFormers availability
         try:
-            pass
+            from xformers.ops import memory_efficient_attention
 
             self.xformers_available = True
         except ImportError:

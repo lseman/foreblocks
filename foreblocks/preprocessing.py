@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 # Visualization
 # ============================
 import matplotlib.pyplot as plt
+
 # ============================
 # External Libraries - Core
 # ============================
@@ -17,6 +18,7 @@ import torch
 from joblib import Parallel, delayed
 from scipy.signal import find_peaks, welch
 from scipy.stats import entropy, kurtosis, skew
+
 # ============================
 # Scientific Computing & ML
 # ============================
@@ -27,6 +29,7 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 from .pre.ewt import *
+
 # ============================
 # Internal Imports
 # ============================
@@ -842,7 +845,7 @@ class TimeSeriesPreprocessor:
             Transformed data
         """
         try:
-            pass
+            from ewtpy import EWT1D
         except ImportError:
             warnings.warn("PyEWT not installed. Skipping EWT.")
             return data
