@@ -1,4 +1,5 @@
 import warnings
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional
@@ -16,6 +17,7 @@ from .analyze_correlation import CorrelationAnalyzer
 from .analyze_dimension import DimensionalityAnalyzer
 from .analyze_distribution import DistributionAnalyzer
 from .analyze_feat import FeatureEngineeringAnalyzer
+from .analyze_graph import GraphAnalyzer
 from .analyze_group import CategoricalGroupAnalyzer
 from .analyze_missing import MissingnessAnalyzer
 from .analyze_outlier import OutlierAnalyzer
@@ -122,6 +124,7 @@ class DatasetAnalyzer:
             FeatureEngineeringAnalyzer(),
             SHAPAnalyzer(),
             CategoricalGroupAnalyzer(),
+            GraphAnalyzer(),
         ]
 
         # Add time series analyzer if time column is provided
@@ -921,68 +924,174 @@ class DatasetAnalyzer:
                     print(f"💡 {_rec}")
 
         # ----------------------- Time series -----------------------
-        ts = safe_get("timeseries") or {}
+        ts: Dict[str, Any] = safe_get("timeseries") or {}
         if ts:
-            section("TIME SERIES ANALYSIS", 1)
-            stationarity_df = ts.get("stationarity", pd.DataFrame())
-            readiness = ts.get("forecasting_readiness", {})
-            temporal = ts.get("temporal_patterns", {})
 
+            section("TIME SERIES ANALYSIS", 1)
+
+            stationarity_df: pd.DataFrame = ts.get("stationarity", pd.DataFrame())
+            readiness: Dict[str, Any] = ts.get("forecasting_readiness", {}) or {}
+            temporal: Dict[str, Any] = ts.get("temporal_patterns", {}) or {}
+
+            # ---------- Overview ----------
             if not stationarity_df.empty:
                 total = len(stationarity_df)
                 stationary = int(stationarity_df["is_stationary"].sum())
-                ready = sum(1 for v in readiness.values() if v.get("readiness_level") in {"excellent","good"})
+                ready = sum(1 for v in readiness.values()
+                            if v.get("readiness_level") in {"excellent", "good"})
+
                 print("Analysis Overview:")
                 metric("Total Series", total)
-                metric("Stationary Series", f"{stationary}/{total} ({pct(stationary,total)})")
-                metric("Forecast-Ready", f"{ready}/{total} ({pct(ready,total)})")
+                metric("Stationary Series", f"{stationary}/{total} ({pct(stationary, total)})")
+                metric("Forecast-Ready", f"{ready}/{total} ({pct(ready, total)})")
 
+                # ---------- Stationarity ----------
                 section("Stationarity Assessment", 3)
                 st_feats = stationarity_df.loc[stationarity_df["is_stationary"], "feature"].tolist()
                 non_st = stationarity_df.loc[~stationarity_df["is_stationary"]]
+
                 if st_feats:
                     print(f"✅ Stationary ({len(st_feats)}):")
                     for f in st_feats[:3]:
                         row = stationarity_df[stationarity_df["feature"] == f].iloc[0]
-                        metric(f, f"ADF p={row['adf_pvalue']:.4f}", indent=1)
-                    if len(st_feats) > 3: print(f"   ... and {len(st_feats)-3} more")
+                        metric(f, f"ADF p={row.get('adf_pvalue', np.nan):.4f}", indent=1)
+                    if len(st_feats) > 3:
+                        print(f"   ... and {len(st_feats)-3} more")
+
                 if not non_st.empty:
                     print(f"\n⚠️ Non-Stationary ({len(non_st)}):")
                     for _, r in non_st.head(3).iterrows():
-                        metric(r["feature"], r["stationarity_type"], indent=1)
+                        metric(r["feature"], str(r.get("stationarity_type", "unknown")), indent=1)
 
-                # Trends & seasonality (compact)
-                section("Temporal Patterns", 3)
-                trends = {k:v for k,v in temporal.items() if k.endswith("_trend")}
-                seas = {k:v for k,v in temporal.items() if k.endswith("_seasonality")}
+                # ---------- Trends & Seasonality (compact) ----------
+                trends = {k: v for k, v in temporal.items() if k.endswith("_trend")}
+                seas   = {k: v for k, v in temporal.items() if k.endswith("_seasonality")}
+
                 strong_trends = []
-                for k,v in trends.items():
-                    if v.get("linear_significant") and v.get("trend_direction") not in {"no_trend","stable"}:
-                        strong_trends.append((k.replace("_trend",""), v.get("linear_r_squared",0)))
+                for k, v in trends.items():
+                    if v.get("linear_significant") and v.get("trend_direction") not in {"no_trend", "stable"}:
+                        r2 = v.get("linear_r_squared", 0) or 0
+                        strong_trends.append((k.replace("_trend", ""), r2))
+
+                seas_list = []
+                for k, v in seas.items():
+                    cls = v.get("stl_classification", "none")
+                    if cls in {"moderate", "strong"}:
+                        seas_list.append((k.replace("_seasonality", ""), v.get("stl_seasonal_strength", 0) or 0))
+
+                if strong_trends or seas_list:
+                    section("Detected Temporal Patterns", 3)
+
                 if strong_trends:
                     print("📈 Significant Trends:")
                     for f, r2 in sorted(strong_trends, key=lambda x: -x[1])[:3]:
                         metric(f, f"R²={r2:.3f}", indent=1)
 
-                seas_list = []
-                for k,v in seas.items():
-                    cls = v.get("stl_classification","none")
-                    if cls in {"moderate","strong"}:
-                        seas_list.append((k.replace("_seasonality",""), v.get("stl_seasonal_strength",0)))
                 if seas_list:
                     print("\n🔄 Seasonal Patterns:")
                     for f, s in sorted(seas_list, key=lambda x: -x[1])[:3]:
                         metric(f, f"strength={s:.3f}", indent=1)
 
-                section("Time Series Recommendations", 3)
-                if total:
-                    if (stationary/total*100) < 50: rec("Apply differencing to achieve stationarity", "medium")
-                    fr = (ready/total*100)
-                    if fr > 70: rec("Well-suited for forecasting")
-                    elif fr < 30: rec("Significant preprocessing needed before forecasting", "medium")
-                if seas_list: rec("Use seasonal models (SARIMA, STL).")
-                if strong_trends: rec("Include trend terms or detrend.")
+                # ---------- Lag & Seasonality Suggestions (per-series + summary) ----------
+                lag_sugg: Dict[str, Any] = ts.get("lag_suggestions", {}) or {}
 
+                # Build compact per-series rows:
+                #   feature -> rec_lags, seasonal_lags, stl_period, stl_strength
+                lag_rows = []
+                # Ensure we cover features that have either lag_suggestions or seasonality info
+                candidate_feats = set(lag_sugg.keys()) | {k.replace("_seasonality", "") for k in seas.keys()}
+                for f in sorted(candidate_feats):
+                    ls = lag_sugg.get(f, {}) or {}
+                    seas_info = temporal.get(f"{f}_seasonality", {}) if temporal else {}
+
+                    rec_lags = ls.get("recommended_lags", []) or []
+                    seas_lags = ls.get("seasonal_lags", []) or []
+                    stl_period = seas_info.get("stl_period", None)
+                    seas_strength = seas_info.get("stl_seasonal_strength", None)
+
+                    # Only show if something interesting exists
+                    if rec_lags or seas_lags or stl_period is not None or seas_strength is not None:
+                        lag_rows.append({
+                            "feature": f,
+                            "rec_lags": rec_lags,
+                            "seas_lags": seas_lags,
+                            "stl_period": int(stl_period) if isinstance(stl_period, (int, float, np.integer)) and not pd.isna(stl_period) else None,
+                            "seas_strength": float(seas_strength) if isinstance(seas_strength, (int, float)) and not pd.isna(seas_strength) else None,
+                        })
+
+                if lag_rows:
+                    section("Lag & Seasonality Suggestions", 3)
+
+                    # Rank rows: prefer those with a period, then stronger seasonality, then more lags
+                    def _rank_key(r):
+                        return (
+                            0 if r["stl_period"] is None else -1,
+                            0 if r["seas_strength"] is None else -r["seas_strength"],
+                            -len(r["rec_lags"]),
+                        )
+
+                    lag_rows_sorted = sorted(lag_rows, key=_rank_key)
+
+                    N = 6  # cap per-series prints
+                    print("Per-series:")
+                    for r in lag_rows_sorted[:N]:
+                        parts = []
+                        if r["rec_lags"]:
+                            parts.append(f"lags={r['rec_lags']}")
+                        if r["seas_lags"]:
+                            parts.append(f"seasonal_lags={r['seas_lags']}")
+                        if r["stl_period"] is not None:
+                            parts.append(f"P={r['stl_period']}")
+                        if r["seas_strength"] is not None:
+                            parts.append(f"strength={r['seas_strength']:.3f}")
+                        metric(r["feature"], " | ".join(parts) if parts else "—", indent=1)
+
+                    if len(lag_rows_sorted) > N:
+                        print(f"   ... and {len(lag_rows_sorted) - N} more")
+
+                    # Summary of most common lags/periods
+                    all_rec_lags   = [lag for r in lag_rows for lag in (r["rec_lags"] or [])]
+                    all_seas_lags  = [lag for r in lag_rows for lag in (r["seas_lags"] or [])]
+                    period_counts  = Counter([r["stl_period"] for r in lag_rows if r["stl_period"] is not None])
+                    rec_counts     = Counter(all_rec_lags)
+                    seaslag_counts = Counter(all_seas_lags)
+
+                    summary_bits = []
+                    if rec_counts:
+                        most_rec = ", ".join(f"{k}({v})" for k, v in rec_counts.most_common(3))
+                        summary_bits.append(f"Top lags: {most_rec}")
+                    if seaslag_counts:
+                        most_seas = ", ".join(f"{k}({v})" for k, v in seaslag_counts.most_common(3))
+                        summary_bits.append(f"Top seasonal lags: {most_seas}")
+                    if period_counts:
+                        most_p = ", ".join(f"P={k}({v})" for k, v in period_counts.most_common(3))
+                        summary_bits.append(f"Top periods: {most_p}")
+
+                    if summary_bits:
+                        print("\nSummary:")
+                        for sline in summary_bits:
+                            metric("", sline, indent=1)
+
+                # ---------- Recommendations ----------
+                if strong_trends or seas_list or not stationarity_df.empty:
+                    section("Time Series Recommendations", 3)
+
+                if not stationarity_df.empty:
+                    frac_st = (stationary / max(1, len(stationarity_df))) * 100
+                    if frac_st < 50:
+                        rec("Apply differencing to achieve stationarity", "medium")
+
+                fr = (ready / max(1, len(stationarity_df))) * 100 if not stationarity_df.empty else 0
+                if fr > 70:
+                    rec("Well-suited for forecasting")
+                elif fr < 30:
+                    rec("Significant preprocessing needed before forecasting", "medium")
+
+                if seas_list:
+                    rec("Use seasonal models (e.g., SARIMA, STL)")
+                if strong_trends:
+                    rec("Include trend terms or detrend")
+                    
         # ----------------------- Feature engineering -----------------------
         fe = safe_get("feature_engineering") or {}
         if fe:
@@ -1415,6 +1524,305 @@ class DatasetAnalyzer:
             # No group analysis was performed
             pass
 
+        # ----------------------- Graph Network Analysis -----------------------
+        graph_results = safe_get("graph_analysis") or {}
+        if graph_results and "error" not in graph_results:
+            section("GRAPH NETWORK ANALYSIS", 1)
+            
+            # Data Overview
+            data_info = graph_results.get("data_info", {})
+            if data_info:
+                section("Network Construction Overview", 3)
+                
+                original_shape = data_info.get("original_shape", (0, 0))
+                analyzed_shape = data_info.get("analyzed_shape", (0, 0))
+                
+                metric("Original Data", f"{original_shape[0]} samples × {original_shape[1]} features")
+                metric("Analyzed Data", f"{analyzed_shape[0]} samples × {analyzed_shape[1]} features")
+                
+                if data_info.get("was_subsampled", False):
+                    metric("Subsampling", "Applied for performance", status="warning", indent=1)
+                
+                constant_removed = len(data_info.get("constant_columns_removed", []))
+                if constant_removed > 0:
+                    metric("Constant Columns Removed", str(constant_removed), status="warning", indent=1)
+            
+            # Summary and Best Graph
+            summary = graph_results.get("summary", {})
+            if summary:
+                section("Network Summary", 3)
+                
+                successful = summary.get("successful_constructions", 0)
+                total = summary.get("total_attempted", 0)
+                success_rate = (successful / total * 100) if total > 0 else 0
+                
+                success_status = "excellent" if success_rate == 100 else "good" if success_rate >= 80 else "warning"
+                metric("Graph Construction Success", f"{successful}/{total} ({success_rate:.0f}%)", status=success_status)
+                
+                best_graph = summary.get("best_graph_type")
+                if best_graph:
+                    print(f"   🏆 Best Network Type: {best_graph.replace('_', ' ').title()}")
+                    
+                    # Best graph metrics
+                    best_nodes = summary.get("best_graph_nodes", 0)
+                    best_edges = summary.get("best_graph_edges", 0)
+                    best_density = summary.get("best_graph_density", 0)
+                    best_connected = summary.get("best_graph_connected", False)
+                    best_clustering = summary.get("best_graph_clustering", 0)
+                    
+                    metric("Network Size", f"{best_nodes} nodes, {best_edges} edges", indent=1)
+                    
+                    density_status = "excellent" if 0.1 <= best_density <= 0.7 else "good" if best_density > 0 else "warning"
+                    metric("Network Density", f"{best_density:.3f}", status=density_status, indent=1)
+                    
+                    connection_status = "excellent" if best_connected else "warning"
+                    metric("Connectivity", "Fully Connected" if best_connected else "Disconnected", status=connection_status, indent=1)
+                    
+                    clustering_status = "excellent" if best_clustering > 0.5 else "good" if best_clustering > 0.3 else "fair"
+                    metric("Clustering Coefficient", f"{best_clustering:.3f}", status=clustering_status, indent=1)
+            
+            # Network Topology Analysis
+            topology_results = graph_results.get("network_topology", {})
+            if topology_results and best_graph and best_graph in topology_results:
+                section("Network Topology Analysis", 3)
+                
+                topology = topology_results[best_graph]
+                if "error" not in topology:
+                    
+                    # Connectivity Details
+                    print("🔗 Connectivity Analysis:")
+                    if topology.get("is_connected", False):
+                        diameter = topology.get("diameter", 0)
+                        avg_path = topology.get("average_path_length", 0)
+                        radius = topology.get("radius", 0)
+                        
+                        metric("Network Diameter", str(diameter), indent=1)
+                        metric("Average Path Length", f"{avg_path:.2f}", indent=1)
+                        metric("Network Radius", str(radius), indent=1)
+                        
+                        if avg_path <= 3:
+                            print("     └─ ⚡ Efficient information flow")
+                        elif avg_path > 5:
+                            print("     └─ 🌉 Long communication paths")
+                    else:
+                        n_components = topology.get("n_components", 0)
+                        largest_size = topology.get("largest_component_size", 0)
+                        metric("Connected Components", str(n_components), indent=1)
+                        metric("Largest Component", f"{largest_size} nodes", indent=1)
+                    
+                    # Small World Properties
+                    if topology.get("is_small_world", False):
+                        sigma = topology.get("small_world_sigma", 0)
+                        print(f"\n🌍 Small World Network:")
+                        metric("Small-world σ", f"{sigma:.2f}", status="excellent", indent=1)
+                        print("     └─ ✅ Efficient global connectivity with local clustering")
+                    
+                    # Degree Statistics
+                    degree_stats = topology.get("degree_stats", {})
+                    if degree_stats:
+                        print(f"\n📊 Degree Distribution:")
+                        metric("Mean Degree", f"{degree_stats.get('mean', 0):.1f}", indent=1)
+                        metric("Degree Range", f"{degree_stats.get('min', 0)} - {degree_stats.get('max', 0)}", indent=1)
+                        metric("Degree Std Dev", f"{degree_stats.get('std', 0):.1f}", indent=1)
+                    
+                    # Assortativity
+                    assortativity = topology.get("degree_assortativity")
+                    if assortativity is not None:
+                        assort_status = "good" if abs(assortativity) < 0.3 else "warning"
+                        metric("Degree Assortativity", f"{assortativity:.3f}", status=assort_status, indent=1)
+                        if assortativity > 0.1:
+                            print("     └─ 📈 Similar-degree nodes tend to connect")
+                        elif assortativity < -0.1:
+                            print("     └─ 📉 Dissimilar-degree nodes tend to connect")
+            
+            # Community Detection Results
+            community_results = graph_results.get("communities", {})
+            if community_results and best_graph and best_graph in community_results:
+                section("Community Structure Analysis", 3)
+                
+                communities = community_results[best_graph]
+                successful_methods = [method for method in communities.keys() if "error" not in communities[method]]
+                
+                if successful_methods:
+                    # Find best community detection method
+                    best_method = None
+                    best_modularity = -1
+                    
+                    for method in successful_methods:
+                        comm_info = communities[method]
+                        modularity = comm_info.get("modularity", -1)
+                        if modularity > best_modularity:
+                            best_modularity = modularity
+                            best_method = method
+                    
+                    if best_method:
+                        comm_info = communities[best_method]
+                        n_communities = comm_info.get("n_communities", 0)
+                        
+                        print(f"🏘️ Community Detection Results:")
+                        metric("Best Method", best_method.replace("_", " ").title(), indent=1)
+                        metric("Communities Found", str(n_communities), indent=1)
+                        
+                        modularity_status = "excellent" if best_modularity > 0.5 else "good" if best_modularity > 0.3 else "fair"
+                        metric("Modularity Score", f"{best_modularity:.3f}", status=modularity_status, indent=1)
+                        
+                        if best_modularity > 0.5:
+                            print("     └─ 🎯 Strong community structure detected")
+                        elif best_modularity > 0.3:
+                            print("     └─ 📊 Moderate community structure")
+                        elif best_modularity > 0:
+                            print("     └─ 🔍 Weak community structure")
+                        else:
+                            print("     └─ 🌐 No clear community structure")
+                    
+                    # Show all successful methods
+                    if len(successful_methods) > 1:
+                        print("   📋 All Community Detection Results:")
+                        for method in successful_methods:
+                            comm_info = communities[method]
+                            n_comm = comm_info.get("n_communities", 0)
+                            modularity = comm_info.get("modularity", 0)
+                            print(f"     • {method.replace('_', ' ').title()}: {n_comm} communities (Q={modularity:.3f})")
+                else:
+                    print("🏘️ Community Detection:")
+                    print("   ❌ No successful community detection methods")
+            
+            # Centrality Analysis
+            centrality_results = graph_results.get("centralities", {})
+            if centrality_results and best_graph and best_graph in centrality_results:
+                section("Node Importance Analysis", 3)
+                
+                centralities = centrality_results[best_graph]
+                
+                # Most important nodes by different measures
+                print("⭐ Most Important Variables:")
+                
+                for centrality_type in ["degree", "pagerank", "betweenness", "eigenvector", "closeness"]:
+                    if centrality_type in centralities and "error" not in centralities[centrality_type]:
+                        cent_info = centralities[centrality_type]
+                        top_nodes = cent_info.get("top_nodes", [])
+                        description = cent_info.get("description", "")
+                        
+                        if top_nodes:
+                            top_node = top_nodes[0]
+                            node_name = top_node[0]
+                            score = top_node[1]
+                            
+                            centrality_name = centrality_type.replace("_", " ").title()
+                            print(f"   • {centrality_name}: {node_name} ({score:.3f})")
+                            if len(description) > 0 and centrality_type == "degree":
+                                print(f"     └─ {description}")
+                
+                # Show top 3 most central nodes overall
+                if "pagerank" in centralities and "error" not in centralities["pagerank"]:
+                    print("\n👑 Top 3 Most Influential Variables:")
+                    top_pagerank = centralities["pagerank"].get("top_nodes", [])[:3]
+                    for i, (node, score) in enumerate(top_pagerank, 1):
+                        print(f"     {i}. {node} (PageRank: {score:.4f})")
+            
+            # Network Embeddings
+            embedding_results = graph_results.get("embeddings", {})
+            if embedding_results and best_graph and best_graph in embedding_results:
+                section("Network Embeddings Analysis", 3)
+                
+                embeddings = embedding_results[best_graph]
+                successful_embeddings = [method for method in embeddings.keys() if "error" not in embeddings[method]]
+                
+                if successful_embeddings:
+                    print("🧠 Available Embeddings:")
+                    
+                    for method in successful_embeddings:
+                        emb_info = embeddings[method]
+                        dimensions = emb_info.get("dimensions", 0)
+                        method_name = emb_info.get("method", method)
+                        description = emb_info.get("description", "")
+                        
+                        metric(method_name, f"{dimensions}D embedding", indent=1)
+                        if description:
+                            print(f"     └─ {description}")
+                    
+                    # Show most similar pairs for Node2Vec
+                    if "node2vec" in embeddings and "error" not in embeddings["node2vec"]:
+                        similar_pairs = embeddings["node2vec"].get("most_similar_pairs", [])
+                        if similar_pairs:
+                            print("\n🔗 Most Similar Variable Pairs (Node2Vec):")
+                            for i, (var1, var2, similarity) in enumerate(similar_pairs[:3], 1):
+                                print(f"     {i}. {var1} ↔ {var2} (similarity: {similarity:.3f})")
+                else:
+                    print("🧠 Network Embeddings:")
+                    print("   ❌ No successful embedding methods")
+            
+            # Graph Construction Methods Comparison
+            graphs = graph_results.get("graphs", {})
+            if len(graphs) > 1:
+                section("Graph Construction Methods Comparison", 3)
+                
+                print("📊 Network Construction Results:")
+                for graph_type, graph_info in graphs.items():
+                    if "error" not in graph_info:
+                        nodes = graph_info.get("n_nodes", 0)
+                        edges = graph_info.get("n_edges", 0)
+                        edge_types = graph_info.get("edge_types", [])
+                        
+                        method_name = graph_type.replace("_", " ").title()
+                        print(f"   • {method_name}: {nodes} nodes, {edges} edges")
+                        
+                        if edge_types:
+                            edge_type_str = ", ".join(edge_types)
+                            print(f"     └─ Edge types: {edge_type_str}")
+                        
+                        # Add density info from topology if available
+                        if graph_type in topology_results:
+                            density = topology_results[graph_type].get("density", 0)
+                            print(f"     └─ Density: {density:.3f}")
+                    else:
+                        error_msg = graph_info.get("error", "Unknown error")
+                        print(f"   • {graph_type.replace('_', ' ').title()}: ❌ Failed ({error_msg})")
+            
+            # Key Recommendations
+            recommendations = graph_results.get("recommendations", [])
+            if recommendations:
+                section("Key Insights & Recommendations", 3)
+                for i, _rec in enumerate(recommendations[:6], 1):
+                    print(f"   {i}. {_rec}")
+            
+            # Final Summary
+            if summary and best_graph:
+                section("🎯 NETWORK ANALYSIS CONCLUSION", 3)
+                
+                best_nodes = summary.get("best_graph_nodes", 0)
+                best_edges = summary.get("best_graph_edges", 0)
+                best_connected = summary.get("best_graph_connected", False)
+                
+                if best_edges > 0:
+                    if best_connected and best_nodes >= 5:
+                        print(f"   🌟 STRONG network structure detected with {best_nodes} interconnected variables")
+                        print(f"   🔗 Rich connectivity ({best_edges} relationships) enables advanced graph-based analysis")
+                    elif best_edges >= best_nodes:
+                        print(f"   ✅ MODERATE network structure with {best_edges} relationships among {best_nodes} variables")
+                        print(f"   📊 Suitable for community analysis and centrality-based feature ranking")
+                    else:
+                        print(f"   📈 SPARSE network with {best_edges} key relationships identified")
+                        print(f"   🔍 Focus on high-centrality variables for feature selection")
+                    
+                    # Advanced analysis recommendations
+                    if best_nodes >= 10 and best_edges >= 20:
+                        print(f"   🚀 Network is complex enough for graph machine learning algorithms")
+                    
+                    if embedding_results.get(best_graph, {}).get("node2vec") and "error" not in embedding_results[best_graph]["node2vec"]:
+                        print(f"   🧠 Node embeddings available - excellent for feature engineering")
+                else:
+                    print(f"   ❌ NO significant network structure detected")
+                    print(f"   💡 Variables appear to be largely independent - traditional analysis may be more suitable")
+
+        elif graph_results and "error" in graph_results:
+            section("GRAPH NETWORK ANALYSIS - ERROR", 1)
+            print(f"❌ Analysis failed: {graph_results.get('error', 'Unknown error')}")
+            print("💡 Ensure you have at least 2 numeric columns with sufficient variance")
+
+        else:
+            # No graph analysis was performed
+            pass
         # ----------------------- Data quality assessment -----------------------
         section("COMPREHENSIVE DATA QUALITY ASSESSMENT", 1)
         completeness = (1 - self.df.isna().sum().sum() / (self.df.size or 1)) * 100

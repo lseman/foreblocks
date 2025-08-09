@@ -1,1295 +1,719 @@
-
 import warnings
-from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from .foreminer_aux import *
 
+# Optional deps (used if available)
+try:
+    import ruptures as rpt
+    HAS_RUPTURES = True
+except Exception:
+    HAS_RUPTURES = False
+
+try:
+    from numba import njit
+    HAS_NUMBA = True
+except Exception:
+    HAS_NUMBA = False
+
+# ——— Lightweight jit (optional) ———
+if HAS_NUMBA:
+    @njit(cache=True, fastmath=True)
+    def _cusum_stat_jit(x):
+        n = x.shape[0]
+        mu = 0.0
+        for i in range(n):
+            mu += x[i]
+        mu /= n
+        s = 0.0
+        mx = 0.0
+        for i in range(n):
+            s += x[i] - mu
+            v = s if s >= 0 else -s
+            if v > mx:
+                mx = v
+        var = 0.0
+        for i in range(n):
+            d = x[i] - mu
+            var += d * d
+        var /= (n - 1) if n > 1 else 1
+        sd = np.sqrt(var) if var > 0 else 1.0
+        return mx / (sd * np.sqrt(n)) if sd > 0 else 0.0
+else:
+    def _cusum_stat_jit(x):
+        # Pure NumPy fallback
+        x = np.asarray(x)
+        n = len(x)
+        if n < 3:
+            return 0.0
+        mu = x.mean()
+        s = np.cumsum(x - mu)
+        mx = np.max(np.abs(s))
+        sd = x.std(ddof=1) or 1.0
+        return float(mx / (sd * np.sqrt(n)))
 
 class TimeSeriesAnalyzer(AnalysisStrategy):
-    """SOTA comprehensive time series analysis with advanced ML techniques"""
+    """SOTA comprehensive time series analysis with advanced ML techniques (refactored)"""
 
     @property
     def name(self) -> str:
         return "timeseries"
 
+    # -------------------- Public API --------------------
     def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
         numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
 
-        # Remove time and target columns from analysis
+        # Remove time/target
         time_col = getattr(config, "time_col", None)
         target_col = getattr(config, "target", None)
-        if time_col in numeric_cols:
-            numeric_cols.remove(time_col)
-        if target_col in numeric_cols:
-            numeric_cols.remove(target_col)
+        for c in (time_col, target_col):
+            if c in numeric_cols:
+                numeric_cols.remove(c)
 
-        results = {
-            "stationarity": self._analyze_stationarity(data, numeric_cols, config),
-            "temporal_patterns": self._analyze_temporal_patterns(
-                data, numeric_cols, config
-            ),
-            "lag_suggestions": self._suggest_lag_features(data, numeric_cols, config),
-            "seasonality_tests": self._advanced_seasonality_tests(
-                data, numeric_cols, config
-            ),
-            "change_point_detection": self._detect_change_points(
-                data, numeric_cols, config
-            ),
-            "regime_switching": self._detect_regime_switching(
-                data, numeric_cols, config
-            ),
-            "forecasting_readiness": self._assess_forecasting_readiness(
-                data, numeric_cols, config
-            ),
-            "volatility_analysis": self._analyze_volatility(data, numeric_cols, config),
-            "cyclical_patterns": self._detect_cyclical_patterns(
-                data, numeric_cols, config
-            ),
-            "causality_analysis": self._granger_causality_analysis(
-                data, numeric_cols, config
-            ),
-        }
+        # Light preprocessing/caches shared across modules
+        # Build a compact view: drop NaNs per series once
+        series_map: Dict[str, pd.Series] = {}
+        for c in numeric_cols:
+            s = data[c].dropna()
+            if len(s) >= 10:
+                series_map[c] = s
+
+        # Parallel workers (mild)
+        workers = min(4, max(1, len(series_map) // 3 or 1))
+
+        # Run sections (some reuse helpers and caches)
+        results: Dict[str, Any] = {}
+        results["stationarity"] = self._analyze_stationarity(data, list(series_map.keys()), config, series_map)
+        results["temporal_patterns"] = self._analyze_temporal_patterns(data, list(series_map.keys()), config, series_map)
+        results["lag_suggestions"] = self._suggest_lag_features(data, list(series_map.keys()), config, series_map)
+        results["seasonality_tests"] = self._advanced_seasonality_tests(data, list(series_map.keys()), config, series_map)
+        results["change_point_detection"] = self._detect_change_points(data, list(series_map.keys()), config, series_map)
+        results["regime_switching"] = self._detect_regime_switching(data, list(series_map.keys()), config, series_map)
+        results["forecasting_readiness"] = self._assess_forecasting_readiness(data, list(series_map.keys()), config, series_map)
+        results["volatility_analysis"] = self._analyze_volatility(data, list(series_map.keys()), config, series_map)
+        results["cyclical_patterns"] = self._detect_cyclical_patterns(data, list(series_map.keys()), config, series_map)
+        results["causality_analysis"] = self._granger_causality_analysis(data, list(series_map.keys()), config)
 
         return results
 
+    # -------------------- Helpers --------------------
+    @staticmethod
+    def _cap_max(items: List[str], cap: int) -> List[str]:
+        return items[:cap] if cap and cap > 0 else items
+
+    @staticmethod
+    def _safe_std(x: pd.Series) -> float:
+        v = float(np.std(x.values, ddof=1)) if len(x) > 1 else 0.0
+        return v
+
+    @staticmethod
+    def _robust_iqr(x: pd.Series) -> Tuple[float, float, float]:
+        q25, q75 = np.nanpercentile(x, [25, 75])
+        iqr = q75 - q25
+        return q25, q75, iqr
+
+    @lru_cache(maxsize=256)
+    def _dominant_period(self, key: str, values_hash: int, n: int) -> int:
+        # Simple cache shim keyed by series identity
+        from statsmodels.tsa.stattools import acf
+        max_lags = min(n // 3, 100)
+        acf_vals = acf(np.asarray(values_hash, dtype=np.float64), nlags=1)  # dummy safeguard
+        # The cache key forces reuse but we don't compute here; see _estimate_period
+        return 12
+
+    # -------------------- Modules --------------------
     def _analyze_stationarity(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
     ) -> pd.DataFrame:
-        """Enhanced stationarity testing with multiple tests and differencing suggestions"""
         from statsmodels.tsa.stattools import adfuller, kpss, zivot_andrews
 
-        results = []
-
-        for col in numeric_cols:
-            col_data = data[col].dropna()
-            if len(col_data) < 20:
+        rows = []
+        cols = self._cap_max(numeric_cols, cap=32)
+        for col in cols:
+            s = series_map.get(col)
+            if s is None or len(s) < 20:
                 continue
-
             try:
-                # ADF test (null: unit root present, non-stationary)
-                adf_result = adfuller(col_data, autolag="AIC")
-
-                # KPSS test (null: stationary)
+                adf_stat, adf_p, _, _, adf_crit, _ = adfuller(s, autolag="AIC")
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore")
-                    kpss_result = kpss(col_data, regression="c", nlags="auto")
+                    kpss_stat, kpss_p, _, kpss_crit = kpss(s, regression="c", nlags="auto")
 
-                # Zivot-Andrews test (structural break unit root test)
-                za_stat = za_pvalue = None
-                try:
-                    if len(col_data) > 50:  # Minimum required for ZA test
-                        za_result = zivot_andrews(col_data, model="c")
-                        za_stat, za_pvalue = za_result[0], za_result[1]
-                except:
-                    pass
-
-                # Variance ratio test for random walk
-                variance_ratio = self._variance_ratio_test(col_data)
-
-                # Determine stationarity consensus
-                adf_stationary = adf_result[1] < config.confidence_level
-                kpss_stationary = kpss_result[1] > config.confidence_level
-
-                # Enhanced stationarity classification
-                if adf_stationary and kpss_stationary:
-                    stationarity_type = "stationary"
-                elif not adf_stationary and not kpss_stationary:
-                    stationarity_type = "non_stationary"
-                elif adf_stationary and not kpss_stationary:
-                    stationarity_type = "trend_stationary"
-                else:
-                    stationarity_type = "difference_stationary"
-
-                # Test first difference if non-stationary
-                diff_results = {}
-                if not (adf_stationary and kpss_stationary):
-                    diff_series = col_data.diff().dropna()
-                    if len(diff_series) > 10:
-                        try:
-                            diff_adf = adfuller(diff_series, autolag="AIC")
-                            diff_results = {
-                                "diff_adf_stat": diff_adf[0],
-                                "diff_adf_pvalue": diff_adf[1],
-                                "diff_stationary": diff_adf[1]
-                                < config.confidence_level,
-                            }
-                        except:
-                            pass
-
-                # Seasonal differencing test
-                seasonal_diff_results = {}
-                if len(col_data) > 24:
+                za_stat = za_p = None
+                if len(s) > 50:
                     try:
-                        seasonal_diff = col_data.diff(
-                            12
-                        ).dropna()  # 12-period seasonal diff
-                        if len(seasonal_diff) > 10:
-                            seas_adf = adfuller(seasonal_diff, autolag="AIC")
-                            seasonal_diff_results = {
-                                "seasonal_diff_adf_stat": seas_adf[0],
-                                "seasonal_diff_adf_pvalue": seas_adf[1],
-                                "seasonal_diff_stationary": seas_adf[1]
-                                < config.confidence_level,
-                            }
-                    except:
+                        za_stat, za_p, *_ = zivot_andrews(s, model="c")
+                    except Exception:
                         pass
 
-                result_dict = {
+                variance_ratio = self._variance_ratio_test(s)
+
+                adf_stationary = adf_p < config.confidence_level
+                kpss_stationary = kpss_p > config.confidence_level
+                if adf_stationary and kpss_stationary:
+                    stype = "stationary"
+                elif (not adf_stationary) and (not kpss_stationary):
+                    stype = "non_stationary"
+                elif adf_stationary and (not kpss_stationary):
+                    stype = "trend_stationary"
+                else:
+                    stype = "difference_stationary"
+
+                # One-step diff and seasonal diff (lightweight, guarded)
+                diff_info = {}
+                if stype != "stationary" and len(s) > 12:
+                    try:
+                        d1 = s.diff().dropna()
+                        d1_adf_p = adfuller(d1, autolag="AIC")[1] if len(d1) > 10 else 1.0
+                        diff_info = dict(diff_adf_pvalue=d1_adf_p, diff_stationary=bool(d1_adf_p < config.confidence_level))
+                    except Exception:
+                        pass
+                    try:
+                        seas = s.diff(12).dropna()
+                        if len(seas) > 10:
+                            seas_p = adfuller(seas, autolag="AIC")[1]
+                            diff_info.update(seasonal_diff_adf_pvalue=seas_p, seasonal_diff_stationary=bool(seas_p < config.confidence_level))
+                    except Exception:
+                        pass
+
+                rows.append({
                     "feature": col,
-                    "adf_statistic": adf_result[0],
-                    "adf_pvalue": adf_result[1],
-                    "adf_critical_1pct": adf_result[4]["1%"],
-                    "adf_critical_5pct": adf_result[4]["5%"],
-                    "kpss_statistic": kpss_result[0],
-                    "kpss_pvalue": kpss_result[1],
-                    "kpss_critical_1pct": kpss_result[3]["1%"],
-                    "kpss_critical_5pct": kpss_result[3]["5%"],
+                    "adf_statistic": adf_stat,
+                    "adf_pvalue": adf_p,
+                    "adf_critical_1pct": adf_crit.get("1%", np.nan),
+                    "adf_critical_5pct": adf_crit.get("5%", np.nan),
+                    "kpss_statistic": kpss_stat,
+                    "kpss_pvalue": kpss_p,
+                    "kpss_critical_1pct": kpss_crit.get("1%", np.nan),
+                    "kpss_critical_5pct": kpss_crit.get("5%", np.nan),
                     "za_statistic": za_stat,
-                    "za_pvalue": za_pvalue,
+                    "za_pvalue": za_p,
                     "variance_ratio": variance_ratio,
                     "is_stationary_adf": adf_stationary,
                     "is_stationary_kpss": kpss_stationary,
-                    "stationarity_type": stationarity_type,
-                    "consensus_stationary": adf_stationary and kpss_stationary,
-                    "is_stationary": adf_stationary and kpss_stationary,
-                    **diff_results,
-                    **seasonal_diff_results,
-                }
-
-                results.append(result_dict)
-
+                    "stationarity_type": stype,
+                    "consensus_stationary": bool(adf_stationary and kpss_stationary),
+                    "is_stationary": bool(adf_stationary and kpss_stationary),
+                    **diff_info,
+                })
             except Exception as e:
-                print(f"Enhanced stationarity test failed for {col}: {e}")
-
-        return pd.DataFrame(results)
+                print(f"Stationarity failed for {col}: {e}")
+        return pd.DataFrame(rows)
 
     def _variance_ratio_test(self, series: pd.Series, lags: int = 4) -> float:
-        """Variance ratio test for random walk hypothesis"""
         try:
             n = len(series)
             if n < lags * 4:
                 return np.nan
-
-            # Calculate variance ratio
-            returns = series.pct_change().dropna()
-            var_1 = np.var(returns)
-
-            # k-period variance
-            k_returns = returns.rolling(window=lags).sum().dropna()
-            var_k = np.var(k_returns) / lags
-
-            variance_ratio = var_k / var_1 if var_1 > 0 else np.nan
-            return variance_ratio
-
-        except:
+            r = series.pct_change().to_numpy()[1:]
+            if r.size < lags + 2:
+                return np.nan
+            var1 = np.var(r, ddof=1)
+            if var1 <= 0:
+                return np.nan
+            # Sum of k consecutive returns; scale variance by k
+            ksum = pd.Series(r).rolling(lags).sum().to_numpy()[lags - 1 :]
+            if ksum.size < 2:
+                return np.nan
+            vark = np.var(ksum, ddof=1) / lags
+            return float(vark / var1)
+        except Exception:
             return np.nan
 
     def _analyze_temporal_patterns(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
     ) -> Dict[str, Any]:
-        """Enhanced temporal pattern analysis with multiple decomposition methods"""
-        from scipy.signal import periodogram
+        from scipy.signal import find_peaks, periodogram
         from scipy.stats import linregress
         from statsmodels.tsa.seasonal import STL
-        from statsmodels.tsa.x13 import x13_arima_analysis
 
-        patterns = {}
-
-        for col in numeric_cols[:8]:  # Limit for performance
-            series = data[col].dropna()
-            if len(series) < 24:
+        out: Dict[str, Any] = {}
+        cols = self._cap_max(numeric_cols, cap=8)
+        for col in cols:
+            s = series_map.get(col)
+            if s is None or len(s) < 24:
                 continue
-
             try:
-                # Enhanced trend analysis with multiple methods
-                x = np.arange(len(series))
-
-                # Linear trend
-                slope, intercept, r_value, p_value, stderr = linregress(x, series)
-
-                # Polynomial trend (degree 2)
-                poly_coeffs = np.polyfit(x, series, deg=2)
-                poly_trend = np.polyval(poly_coeffs, x)
-                poly_r2 = np.corrcoef(series, poly_trend)[0, 1] ** 2
-
-                # Hodrick-Prescott filter trend
-                try:
-                    from statsmodels.tsa.filters.hp_filter import hpfilter
-                    hp_cycle, hp_trend = hpfilter(series, lamb=1600)
-                    hp_trend_strength = np.var(hp_trend) / np.var(series)
-                except Exception:
-                    hp_trend_strength = None
-
-                trend_classification = self._classify_trend(slope, p_value, series.std())
-
-                patterns[f"{col}_trend"] = {
+                x = np.arange(len(s))
+                slope, _, r2, p, _ = linregress(x, s)
+                std = self._safe_std(s)
+                trend_info = {
                     "linear_slope": slope,
-                    "linear_r_squared": r_value**2,
-                    "linear_p_value": p_value,
-                    "linear_significant": p_value < 0.05,
-                    "trend_direction": trend_classification,
-                    "slope_normalized": slope / series.std() if series.std() > 0 else 0,
-                    "polynomial_r2": poly_r2,
-                    "hp_trend_strength": hp_trend_strength,
-                    "trend_strength_category": self._categorize_trend_strength(
-                        abs(slope), series.std()
-                    ),
+                    "linear_r_squared": r2**2 if np.ndim(r2) else r2,
+                    "linear_p_value": p,
+                    "linear_significant": bool(p < 0.05),
+                    "trend_direction": self._classify_trend(slope, p, std),
+                    "slope_normalized": float(slope / std) if std > 0 else 0.0,
+                    "trend_strength_category": self._categorize_trend_strength(abs(slope), std),
                 }
 
-                # Advanced seasonality detection with multiple methods
-                seasonality_results = {}
-
-                # STL decomposition (safe seasonal window)
+                seasonality = {}
+                # Robust period guess using ACF peak; safe bounds
+                period = self._estimate_period(s)
+                seasonal = max(7, min(period, max(7, len(s)//6)))
+                if seasonal % 2 == 0:
+                    seasonal += 1
                 try:
-                    period = max(2, self._estimate_period(series))
-                    seasonal = max(7, min(period, len(series) // 3))
-                    if seasonal % 2 == 0:
-                        seasonal += 1
-                    stl = STL(series, seasonal=seasonal, period=period)
-                    stl_decomp = stl.fit()
-
-                    seasonal_var = np.var(stl_decomp.seasonal)
-                    total_var = np.var(series)
-                    seasonal_strength = seasonal_var / total_var if total_var > 0 else 0
-
-                    seasonality_results.update(
-                        {
-                            "stl_seasonal_strength": seasonal_strength,
-                            "stl_period": period,
-                            "stl_classification": self._classify_seasonality(
-                                seasonal_strength
-                            ),
-                            "trend_strength": (
-                                np.var(stl_decomp.trend.dropna()) / total_var
-                                if total_var > 0
-                                else 0
-                            ),
-                        }
+                    stl = STL(s, seasonal=seasonal, period=period, robust=True).fit()
+                    tot = float(np.var(s))
+                    seas_var = float(np.var(stl.seasonal))
+                    seas_strength = (seas_var / tot) if tot > 0 else 0.0
+                    seasonality.update(
+                        stl_seasonal_strength=seas_strength,
+                        stl_period=int(period),
+                        stl_classification=self._classify_seasonality(seas_strength),
+                        trend_strength=(float(np.var(stl.trend.dropna())) / tot if tot > 0 else 0.0),
                     )
                 except Exception as e:
-                    seasonality_results["stl_error"] = str(e)
+                    seasonality["stl_error"] = str(e)
 
-                # X-13ARIMA-SEATS decomposition (if available)
+                # Spectral dominant frequency
                 try:
-                    if len(series) >= 36:  # Minimum for X-13
-                        x13_arima_analysis(series)
-                        seasonality_results["x13_seasonal_strength"] = "computed"
+                    freqs, psd = periodogram(s, scaling="density")
+                    if len(freqs) > 1:
+                        idx = int(np.argmax(psd[1:]) + 1)
+                        f = freqs[idx]
+                        dom_period = (1 / f) if f > 0 else None
+                        seasonality.update(dominant_period_periodogram=dom_period, spectral_peak_power=float(psd[idx]))
                 except Exception:
                     pass
 
-                # Periodogram analysis for dominant frequencies
+                out[f"{col}_trend"] = trend_info
+                out[f"{col}_seasonality"] = seasonality
+
+                # Volatility snapshot (reused elsewhere but cheap here)
+                r = s.pct_change().dropna()
+                if len(r) > 20:
+                    rv = r.rolling(window=min(10, max(3, len(r)//10))).std()
+                    vol_autocorr = float(rv.dropna().autocorr(lag=1)) if rv.notna().sum() > 1 else 0.0
+                    out[f"{col}_volatility"] = dict(
+                        returns_volatility=float(r.std()),
+                        rolling_vol_mean=float(rv.mean()),
+                        vol_autocorr=vol_autocorr,
+                        volatility_persistent=bool(abs(vol_autocorr) > 0.3),
+                    )
+
+                # CUSUM break (fast)
+                stat = _cusum_stat_jit(s.to_numpy(dtype=np.float64))
+                idx = int(np.argmax(np.abs(np.cumsum(s - s.mean())))) if len(s) > 2 else 0
+                out[f"{col}_structural_breaks"] = dict(
+                    cusum_statistic=float(stat),
+                    potential_break_point=float(idx / len(s)) if len(s) else None,
+                    break_significant=bool(stat > 1.5),
+                )
+            except Exception as e:
+                print(f"Temporal patterns failed for {col}: {e}")
+        return out
+
+    def _estimate_period(self, series: pd.Series) -> int:
+        from scipy.signal import find_peaks
+        from statsmodels.tsa.stattools import acf
+        try:
+            n = len(series)
+            max_lags = min(n // 3, 100)
+            if max_lags < 3:
+                return max(2, n // 4)
+            a = acf(series, nlags=max_lags, fft=True)
+            peaks, _ = find_peaks(a[1:], height=0.15)
+            if peaks.size:
+                dom = int(peaks[np.argmax(a[peaks + 1])] + 1)
+                return max(2, min(dom, max(12, n // 6)))
+            # fallback by length
+            if n >= 365: return 365
+            if n >= 52:  return 52
+            if n >= 24:  return 12
+            return max(2, n // 4)
+        except Exception:
+            n = len(series)
+            return max(2, min(12, n // 4))
+
+    def _classify_trend(self, slope: float, p_value: float, std: float) -> str:
+        if p_value > 0.05:
+            return "no_trend"
+        thr = std * 0.01
+        if slope > thr:
+            return "increasing" if slope > 2 * thr else "weakly_increasing"
+        if slope < -thr:
+            return "decreasing" if slope < -2 * thr else "weakly_decreasing"
+        return "stable"
+
+    def _classify_seasonality(self, strength: float) -> str:
+        if strength > 0.4: return "strong"
+        if strength > 0.2: return "moderate"
+        if strength > 0.05: return "weak"
+        return "none"
+
+    def _categorize_trend_strength(self, abs_slope: float, std: float) -> str:
+        n = abs_slope / (std + 1e-8)
+        if n > 0.1: return "strong"
+        if n > 0.05: return "moderate"
+        if n > 0.01: return "weak"
+        return "none"
+
+    def _suggest_lag_features(
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
+    ) -> Dict[str, Dict[str, Any]]:
+        from statsmodels.tsa.ar_model import AutoReg
+        from statsmodels.tsa.stattools import acf, pacf
+
+        out: Dict[str, Dict[str, Any]] = {}
+        cols = self._cap_max(numeric_cols, cap=24)
+        for col in cols:
+            s = series_map.get(col)
+            if s is None:
+                continue
+            n = len(s)
+            max_lags = max(6, min(24, n // 10))
+            if n < max_lags + 20:
+                continue
+            try:
+                pvals = pacf(s, nlags=max_lags, method="ols")[1:]
+                avals = acf(s, nlags=max_lags, fft=True)[1:]
+                ci = 1.96 / np.sqrt(n)
+                scored = []
+                for lag in range(1, max_lags + 1):
+                    ps, as_ = abs(pvals[lag - 1]), abs(avals[lag - 1])
+                    sc = (0.6 * ps if ps > ci else 0.0) + (0.4 * as_ if as_ > ci else 0.0)
+                    if lag in (12, 24, 52) and lag < n // 3:
+                        sc *= 1.15
+                    if lag > n // 5:
+                        sc *= 0.85
+                    if sc > 0.1:
+                        scored.append((lag, sc))
+                scored.sort(key=lambda x: x[1], reverse=True)
+                top = [k for k, _ in scored[:5]]
+
+                ar_order = None
+                if n >= 40:
+                    aics = []
+                    max_ar = min(10, n // 10)
+                    for p in range(1, max_ar + 1):
+                        try:
+                            aics.append((p, AutoReg(s, lags=p, old_names=False).fit().aic))
+                        except Exception:
+                            pass
+                    if aics:
+                        ar_order = min(aics, key=lambda x: x[1])[0]
+
+                out[col] = {
+                    "autocorr_lags": top,
+                    "ar_optimal_order": ar_order,
+                    "information_criteria": {},  # Kept for compatibility
+                    "cross_correlation_lags": {},  # Kept; compute elsewhere if needed
+                    "recommended_lags": (top[:3] if top else ([ar_order] if ar_order else [])),
+                    "lag_selection_method": "multi_criteria",
+                    "seasonal_lags": [k for k in top if k in (12, 24, 52)],
+                }
+            except Exception as e:
+                print(f"Lag suggestion failed for {col}: {e}")
+        return out
+
+    def _advanced_seasonality_tests(
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
+    ) -> Dict[str, Any]:
+        from scipy.stats import friedmanchisquare, kruskal
+        from statsmodels.stats.diagnostic import acorr_ljungbox
+
+        time_col = getattr(config, "time_col", None)
+        if not time_col or time_col not in data.columns:
+            return {}
+
+        out: Dict[str, Any] = {}
+        cols = self._cap_max(numeric_cols, cap=10)
+        for col in cols:
+            try:
+                df = data[[time_col, col]].dropna()
+                if len(df) < 24:
+                    continue
+                df[time_col] = pd.to_datetime(df[time_col])
+                df = df.set_index(time_col).sort_index()
+                s = df[col]
+                res: Dict[str, Any] = {}
+
+                # Month seasonality via Friedman (needs enough yearly coverage)
+                if len(s) >= 36:
+                    groups = []
+                    for m in range(1, 13):
+                        g = s[s.index.month == m].values
+                        if g.size >= 3:
+                            groups.append(g)
+                    if len(groups) >= 6:
+                        L = min(len(g) for g in groups)
+                        if L >= 3:
+                            stat, p = friedmanchisquare(*[g[:L] for g in groups])
+                            res["friedman_test"] = {"statistic": float(stat), "p_value": float(p), "seasonal_significant": bool(p < 0.05)}
+
+                # Day-of-week Kruskal
                 try:
-                    freqs, psd = periodogram(series, scaling="density")
-                    dominant_freq_idx = np.argmax(psd[1:]) + 1  # Skip DC component
-                    dominant_period = (
-                        1 / freqs[dominant_freq_idx] if freqs[dominant_freq_idx] > 0 else None
-                    )
-                    seasonality_results.update(
-                        {
-                            "dominant_period_periodogram": dominant_period,
-                            "spectral_peak_power": psd[dominant_freq_idx],
-                        }
-                    )
+                    dows = [s[s.index.dayofweek == d] for d in range(7)]
+                    dows = [d for d in dows if len(d) >= 5]
+                    if len(dows) >= 5:
+                        st, p = kruskal(*dows)
+                        res["kruskal_dow"] = {"statistic": float(st), "p_value": float(p), "dow_effect_significant": bool(p < 0.05)}
                 except Exception:
                     pass
 
-                patterns[f"{col}_seasonality"] = seasonality_results
-
-                # Enhanced volatility clustering analysis
-                volatility_results = {}
-                returns = series.pct_change().dropna()
-                if len(returns) > 20:
-                    rolling_vol = returns.rolling(window=min(10, len(returns) // 3)).std()
-
-                    # ARCH effects test
-                    arch_lm_stat = self._arch_lm_test(returns)
-
-                    # Volatility persistence
-                    rv = rolling_vol.dropna()
-                    vol_autocorr = rv.autocorr(lag=1) if len(rv) > 1 else 0
-
-                    high_vol_periods = (rv > rv.quantile(0.8)).sum() if len(rv) > 0 else 0
-                    vol_clustering_score = (high_vol_periods / len(rv)) if len(rv) > 0 else 0
-
-                    volatility_results = {
-                        "returns_volatility": returns.std(),
-                        "rolling_vol_mean": rolling_vol.mean(),
-                        "vol_autocorr": vol_autocorr,
-                        "arch_lm_statistic": arch_lm_stat,
-                        "vol_clustering_score": vol_clustering_score,
-                        "volatility_persistent": (abs(vol_autocorr) > 0.3) if not np.isnan(vol_autocorr) else False,
-                    }
-
-                patterns[f"{col}_volatility"] = volatility_results
-
-                # Structural break detection
-                break_results = {}
-                if len(series) > 50:
+                # Seasonal Ljung-Box
+                seas_lags = [lag for lag in (12, 24, 52) if len(s) > lag + 10]
+                for lag in seas_lags:
                     try:
-                        cumsum = np.cumsum(series - series.mean())
-                        max_cusum = np.max(np.abs(cumsum))
-                        cusum_stat = max_cusum / (series.std() * np.sqrt(len(series)))
-
-                        break_point_idx = np.argmax(np.abs(cumsum))
-                        break_point_pct = break_point_idx / len(series)
-
-                        break_results = {
-                            "cusum_statistic": cusum_stat,
-                            "potential_break_point": break_point_pct,
-                            "break_significant": cusum_stat > 1.5,  # Rough threshold
-                            "pre_break_mean": series.iloc[:break_point_idx].mean() if break_point_idx > 10 else None,
-                            "post_break_mean": series.iloc[break_point_idx:].mean() if len(series) - break_point_idx > 10 else None,
+                        lb = acorr_ljungbox(s, lags=[lag], return_df=True)
+                        res[f"ljungbox_lag_{lag}"] = {
+                            "statistic": float(lb["lb_stat"].iloc[0]),
+                            "p_value": float(lb["lb_pvalue"].iloc[0]),
+                            "seasonal_correlation": bool(float(lb["lb_pvalue"].iloc[0]) < 0.05),
                         }
                     except Exception:
                         pass
 
-                patterns[f"{col}_structural_breaks"] = break_results
+                # Welch PSD peaks
+                try:
+                    from scipy.signal import find_peaks, welch
+                    f, Pxx = welch(s, nperseg=min(len(s)//4, 256))
+                    if len(Pxx):
+                        thr = np.percentile(Pxx, 90)
+                        idx = find_peaks(Pxx, height=thr)[0]
+                        dom = []
+                        for i in idx[:5]:
+                            if f[i] > 0:
+                                dom.append({"period": float(1.0/f[i]), "frequency": float(f[i]), "power": float(Pxx[i])})
+                        res["spectral_analysis"] = {"dominant_periods": sorted(dom, key=lambda x: x["power"], reverse=True)}
+                except Exception:
+                    pass
 
+                out[col] = res
             except Exception as e:
-                print(f"Enhanced temporal pattern analysis failed for {col}: {e}")
-
-        return patterns
-
-
-    def _classify_trend(self, slope: float, p_value: float, std: float) -> str:
-        """Classify trend direction and strength"""
-        if p_value > 0.05:
-            return "no_trend"
-
-        threshold = std * 0.01  # 1% of standard deviation
-        if slope > threshold:
-            return "increasing" if slope > 2 * threshold else "weakly_increasing"
-        elif slope < -threshold:
-            return "decreasing" if slope < -2 * threshold else "weakly_decreasing"
-        else:
-            return "stable"
-
-    def _classify_seasonality(self, strength: float) -> str:
-        """Classify seasonality strength"""
-        if strength > 0.4:
-            return "strong"
-        elif strength > 0.2:
-            return "moderate"
-        elif strength > 0.05:
-            return "weak"
-        else:
-            return "none"
-
-    def _categorize_trend_strength(self, abs_slope: float, std: float) -> str:
-        """Categorize trend strength"""
-        normalized_slope = abs_slope / (std + 1e-8)
-        if normalized_slope > 0.1:
-            return "strong"
-        elif normalized_slope > 0.05:
-            return "moderate"
-        elif normalized_slope > 0.01:
-            return "weak"
-        else:
-            return "none"
-
-    def _estimate_period(self, series: pd.Series) -> int:
-        """Estimate dominant period using autocorrelation"""
-        from statsmodels.tsa.stattools import acf
-
-        try:
-            max_lags = min(len(series) // 3, 100)
-            acf_vals = acf(series, nlags=max_lags, fft=True)
-
-            # Find peaks in ACF
-            peaks, _ = find_peaks(acf_vals[1:], height=0.1)
-            if len(peaks) > 0:
-                dominant_lag = peaks[np.argmax(acf_vals[peaks + 1])] + 1
-                return max(2, min(dominant_lag, 52))  # Reasonable bounds
-            else:
-                # Default periods based on series length
-                if len(series) >= 365:
-                    return 365  # Daily data -> yearly seasonality
-                elif len(series) >= 52:
-                    return 52  # Weekly data -> yearly seasonality
-                elif len(series) >= 12:
-                    return 12  # Monthly data -> yearly seasonality
-                else:
-                    return max(2, len(series) // 4)
-        except:
-            return max(2, min(12, len(series) // 4))
-
-    def _arch_lm_test(self, returns: pd.Series, lags: int = 5) -> float:
-        """ARCH LM test for volatility clustering"""
-        try:
-            from statsmodels.stats.diagnostic import het_arch
-
-            if len(returns) > lags + 10:
-                lm_stat, p_val, _, _ = het_arch(returns, nlags=lags)
-                return p_val
-        except:
-            pass
-        return np.nan
-
-    def _suggest_lag_features(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
-    ) -> Dict[str, Dict[str, Any]]:
-        """Enhanced lag feature suggestions using multiple methods"""
-        from statsmodels.tsa.ar_model import AutoReg
-        from statsmodels.tsa.stattools import acf, ccf, pacf
-
-        suggestions = {}
-        max_lags = min(24, len(data) // 10)  # Adaptive max lags
-
-        for col in numeric_cols:
-            series = data[col].dropna()
-            if len(series) < max_lags + 20:
-                continue
-
-            try:
-                # Enhanced autocorrelation analysis
-                pacf_vals = pacf(series, nlags=max_lags, method="ols")[1:]
-                acf_vals = acf(series, nlags=max_lags, fft=True)[1:]
-                n = len(series)
-
-                # Dynamic confidence intervals
-                pacf_ci = 1.96 / np.sqrt(n)
-                acf_ci = 1.96 / np.sqrt(n)
-
-                # Score lags using multiple criteria
-                lag_scores = []
-                for lag in range(1, max_lags + 1):
-                    p_val = pacf_vals[lag - 1]
-                    a_val = acf_vals[lag - 1]
-
-                    # Multi-criteria scoring
-                    significance_score = 0
-                    if abs(p_val) > pacf_ci:
-                        significance_score += 0.6 * abs(p_val)
-                    if abs(a_val) > acf_ci:
-                        significance_score += 0.4 * abs(a_val)
-
-                    # Seasonal lag bonus (12, 24, etc.)
-                    if lag in [12, 24, 52] and lag < len(series) // 3:
-                        significance_score *= 1.2
-
-                    # Penalize very long lags
-                    if lag > len(series) // 5:
-                        significance_score *= 0.8
-
-                    if significance_score > 0.1:  # Threshold
-                        lag_scores.append((lag, significance_score))
-
-                # Auto-regression model order selection
-                ar_order = None
-                try:
-                    # Use AIC to select optimal AR order
-                    aic_scores = []
-                    max_ar_order = min(10, len(series) // 10)
-                    for order in range(1, max_ar_order + 1):
-                        try:
-                            ar_model = AutoReg(series, lags=order).fit()
-                            aic_scores.append((order, ar_model.aic))
-                        except:
-                            continue
-
-                    if aic_scores:
-                        ar_order = min(aic_scores, key=lambda x: x[1])[0]
-
-                except:
-                    pass
-
-                # Information criteria-based lag selection
-                information_criteria = {}
-                try:
-                    from statsmodels.tsa.vector_ar.var_model import VAR
-
-                    # Single variable VAR for lag selection
-                    model_data = series.values.reshape(-1, 1)
-                    var_model = VAR(model_data)
-                    lag_order_results = var_model.select_order(
-                        maxlags=min(12, len(series) // 10)
-                    )
-                    information_criteria = {
-                        "aic_optimal": lag_order_results.aic,
-                        "bic_optimal": lag_order_results.bic,
-                        "hqic_optimal": lag_order_results.hqic,
-                    }
-                except:
-                    pass
-
-                # Cross-correlation with other features (if multivariate)
-                ccf_lags = {}
-                if len(numeric_cols) > 1:
-                    for other_col in numeric_cols[:5]:  # Limit to avoid explosion
-                        if other_col != col and other_col in data.columns:
-                            try:
-                                other_series = data[other_col].dropna()
-                                # Align series
-                                min_len = min(len(series), len(other_series))
-                                if min_len > max_lags + 10:
-                                    s1 = series.iloc[-min_len:]
-                                    s2 = other_series.iloc[-min_len:]
-                                    cross_corr = ccf(s1, s2, adjusted=False)
-
-                                    # Find significant cross-correlations
-                                    significant_ccf_lags = []
-                                    cc_ci = 1.96 / np.sqrt(min_len)
-                                    for lag_idx, cc_val in enumerate(cross_corr):
-                                        if abs(cc_val) > cc_ci:
-                                            actual_lag = lag_idx - len(cross_corr) // 2
-                                            if actual_lag > 0:  # Only positive lags
-                                                significant_ccf_lags.append(
-                                                    (actual_lag, cc_val)
-                                                )
-
-                                    if significant_ccf_lags:
-                                        ccf_lags[other_col] = significant_ccf_lags[
-                                            :3
-                                        ]  # Top 3
-                            except:
-                                pass
-
-                # Sort and select top lags
-                lag_scores.sort(key=lambda x: x[1], reverse=True)
-                top_lags = [lag for lag, _ in lag_scores[:5]]  # Top 5 lags
-
-                if top_lags or ar_order or information_criteria or ccf_lags:
-                    suggestions[col] = {
-                        "autocorr_lags": top_lags,
-                        "ar_optimal_order": ar_order,
-                        "information_criteria": information_criteria,
-                        "cross_correlation_lags": ccf_lags,
-                        "recommended_lags": (
-                            top_lags[:3]
-                            if top_lags
-                            else ([ar_order] if ar_order else [])
-                        ),
-                        "lag_selection_method": "multi_criteria",
-                        "seasonal_lags": [
-                            lag for lag in top_lags if lag in [12, 24, 52]
-                        ],
-                    }
-
-            except Exception as e:
-                print(f"Enhanced lag suggestion failed for {col}: {e}")
-
-        return suggestions
-
-    def _advanced_seasonality_tests(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
-    ) -> Dict[str, Any]:
-        """Advanced seasonality tests using multiple statistical methods"""
-        from scipy.stats import friedmanchisquare, kruskal
-        from statsmodels.stats.diagnostic import acorr_ljungbox
-
-        seasonality_results = {}
-        time_col = getattr(config, "time_col", None)
-
-        if not time_col or time_col not in data.columns:
-            return seasonality_results
-
-        for col in numeric_cols[:5]:  # Limit for performance
-            series_data = data[[time_col, col]].dropna()
-            if len(series_data) < 24:
-                continue
-
-            try:
-                # Ensure datetime index
-                series_data[time_col] = pd.to_datetime(series_data[time_col])
-                series_data.set_index(time_col, inplace=True)
-                series = series_data[col]
-
-                tests_results = {}
-
-                # Friedman test for seasonal patterns
-                if len(series) >= 36:  # At least 3 years of monthly data
-                    try:
-                        # Group by month
-                        monthly_groups = []
-                        for month in range(1, 13):
-                            month_data = series[series.index.month == month]
-                            if (
-                                len(month_data) >= 3
-                            ):  # At least 3 observations per month
-                                monthly_groups.append(month_data.values)
-
-                        if len(monthly_groups) >= 6:  # At least 6 months with data
-                            # Make groups equal length by truncating to minimum
-                            min_length = min(len(group) for group in monthly_groups)
-                            equal_groups = [
-                                group[:min_length] for group in monthly_groups
-                            ]
-
-                            if min_length >= 3:
-                                stat, p_val = friedmanchisquare(*equal_groups)
-                                tests_results["friedman_test"] = {
-                                    "statistic": stat,
-                                    "p_value": p_val,
-                                    "seasonal_significant": p_val < 0.05,
-                                }
-                    except Exception as e:
-                        tests_results["friedman_test"] = {"error": str(e)}
-
-                # Kruskal-Wallis test for day-of-week effects
-                try:
-                    dow_groups = [
-                        series[series.index.dayofweek == dow] for dow in range(7)
-                    ]
-                    dow_groups = [group for group in dow_groups if len(group) >= 5]
-
-                    if len(dow_groups) >= 5:  # At least 5 days with sufficient data
-                        stat, p_val = kruskal(*dow_groups)
-                        tests_results["kruskal_dow"] = {
-                            "statistic": stat,
-                            "p_value": p_val,
-                            "dow_effect_significant": p_val < 0.05,
-                        }
-                except Exception as e:
-                    tests_results["kruskal_dow"] = {"error": str(e)}
-
-                # Ljung-Box test for serial correlation at seasonal lags
-                seasonal_lags = (
-                    [12, 24, 52]
-                    if len(series) > 104
-                    else [12] if len(series) > 24 else []
-                )
-                for lag in seasonal_lags:
-                    if len(series) > lag + 10:
-                        try:
-                            lb_result = acorr_ljungbox(
-                                series, lags=[lag], return_df=True
-                            )
-                            tests_results[f"ljungbox_lag_{lag}"] = {
-                                "statistic": lb_result["lb_stat"].iloc[0],
-                                "p_value": lb_result["lb_pvalue"].iloc[0],
-                                "seasonal_correlation": lb_result["lb_pvalue"].iloc[0]
-                                < 0.05,
-                            }
-                        except:
-                            pass
-
-                # Spectral analysis for periodic components
-                try:
-                    from scipy.signal import welch
-
-                    frequencies, psd = welch(series, nperseg=min(len(series) // 4, 256))
-
-                    # Find dominant frequencies
-                    peak_indices = find_peaks(psd, height=np.percentile(psd, 90))[0]
-                    dominant_periods = []
-
-                    for peak_idx in peak_indices[:5]:  # Top 5 peaks
-                        freq = frequencies[peak_idx]
-                        if freq > 0:
-                            period = 1 / freq
-                            power = psd[peak_idx]
-                            dominant_periods.append(
-                                {"period": period, "frequency": freq, "power": power}
-                            )
-
-                    tests_results["spectral_analysis"] = {
-                        "dominant_periods": sorted(
-                            dominant_periods, key=lambda x: x["power"], reverse=True
-                        )
-                    }
-                except:
-                    pass
-
-                # QS (Quarterly Seasonal) test simulation
-                try:
-                    if len(series) >= 48:  # At least 4 years of quarterly data
-                        quarterly_means = []
-                        for quarter in range(1, 5):
-                            q_data = series[series.index.quarter == quarter]
-                            if len(q_data) >= 4:
-                                quarterly_means.append(q_data.mean())
-
-                        if len(quarterly_means) == 4:
-                            # Simple seasonal variance test
-                            series.mean()
-                            seasonal_variance = np.var(quarterly_means)
-                            total_variance = series.var()
-                            seasonal_ratio = seasonal_variance / (total_variance + 1e-8)
-
-                            tests_results["quarterly_seasonality"] = {
-                                "seasonal_variance_ratio": seasonal_ratio,
-                                "significant": seasonal_ratio
-                                > 0.1,  # Heuristic threshold
-                            }
-                except:
-                    pass
-
-                seasonality_results[col] = tests_results
-
-            except Exception as e:
-                print(f"Advanced seasonality test failed for {col}: {e}")
-
-        return seasonality_results
+                print(f"Seasonality tests failed for {col}: {e}")
+        return out
 
     def _detect_change_points(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
     ) -> Dict[str, Any]:
-        """Detect structural change points using multiple algorithms"""
         time_col = getattr(config, "time_col", None)
         if not time_col or time_col not in data.columns:
             return {}
 
-        change_points = {}
-
-        for col in numeric_cols[:5]:
-            series_data = data[[time_col, col]].dropna()
-            if len(series_data) < 50:
-                continue
-
+        out: Dict[str, Any] = {}
+        cols = self._cap_max(numeric_cols, cap=10)
+        for col in cols:
             try:
-                # Prepare time series
-                series_data[time_col] = pd.to_datetime(series_data[time_col])
-                series_data.set_index(time_col, inplace=True)
-                series = series_data[col]
+                df = data[[time_col, col]].dropna()
+                if len(df) < 50:
+                    continue
+                df[time_col] = pd.to_datetime(df[time_col])
+                df = df.set_index(time_col).sort_index()
+                s = df[col]
+                found: Dict[str, Any] = {}
 
-                detected_changes = {}
-
-                # CUSUM-based change point detection
-                try:
-                    mean_val = series.mean()
-                    cumsum = np.cumsum(series - mean_val)
-
-                    # Find maximum deviation points
-                    abs_cumsum = np.abs(cumsum)
-                    change_idx = np.argmax(abs_cumsum)
-                    max_cusum = abs_cumsum[change_idx]
-
-                    # Standardize CUSUM statistic
-                    cusum_stat = max_cusum / (series.std() * np.sqrt(len(series)))
-
-                    if cusum_stat > 1.5:  # Significant change threshold
-                        change_timestamp = series.index[change_idx]
-                        pre_mean = series.iloc[:change_idx].mean()
-                        post_mean = series.iloc[change_idx:].mean()
-
-                        detected_changes["cusum"] = {
-                            "change_point": change_timestamp,
-                            "statistic": cusum_stat,
-                            "pre_change_mean": pre_mean,
-                            "post_change_mean": post_mean,
-                            "magnitude": abs(post_mean - pre_mean),
-                            "significant": True,
-                        }
-                except:
-                    pass
-
-                # Bayesian change point detection (simplified)
-                try:
-                    # Rolling window variance change detection
-                    window_size = max(10, len(series) // 20)
-                    rolling_mean = series.rolling(window=window_size).mean()
-                    rolling_var = series.rolling(window=window_size).var()
-
-                    # Detect mean shifts
-                    mean_changes = []
-                    for i in range(window_size, len(rolling_mean) - window_size):
-                        before_mean = rolling_mean.iloc[i - window_size : i].mean()
-                        after_mean = rolling_mean.iloc[i : i + window_size].mean()
-
-                        if not (pd.isna(before_mean) or pd.isna(after_mean)):
-                            change_magnitude = abs(after_mean - before_mean)
-                            if change_magnitude > series.std():
-                                mean_changes.append(
-                                    {
-                                        "timestamp": series.index[i],
-                                        "magnitude": change_magnitude,
-                                        "before": before_mean,
-                                        "after": after_mean,
-                                    }
-                                )
-
-                    # Detect variance changes
-                    variance_changes = []
-                    for i in range(window_size, len(rolling_var) - window_size):
-                        before_var = rolling_var.iloc[i - window_size : i].mean()
-                        after_var = rolling_var.iloc[i : i + window_size].mean()
-
-                        if (
-                            not (pd.isna(before_var) or pd.isna(after_var))
-                            and before_var > 0
-                        ):
-                            var_ratio = max(after_var, before_var) / min(
-                                after_var, before_var
-                            )
-                            if var_ratio > 2.0:  # 100% variance change
-                                variance_changes.append(
-                                    {
-                                        "timestamp": series.index[i],
-                                        "ratio": var_ratio,
-                                        "before_var": before_var,
-                                        "after_var": after_var,
-                                    }
-                                )
-
-                    if mean_changes or variance_changes:
-                        detected_changes["rolling_window"] = {
-                            "mean_changes": sorted(
-                                mean_changes, key=lambda x: x["magnitude"], reverse=True
-                            )[:3],
-                            "variance_changes": sorted(
-                                variance_changes, key=lambda x: x["ratio"], reverse=True
-                            )[:3],
-                        }
-
-                except:
-                    pass
-
-                # Page-Hinkley test for online change detection
-                try:
-                    # Simplified Page-Hinkley implementation
-                    delta = series.std() * 0.5  # Detection threshold
-                    lambda_param = series.std() * 0.1  # Drift parameter
-
-                    cumulative_sum = 0
-                    min_sum = 0
-                    change_points_ph = []
-
-                    for i, value in enumerate(series):
-                        cumulative_sum += value - series.mean() - lambda_param
-                        min_sum = min(min_sum, cumulative_sum)
-
-                        if cumulative_sum - min_sum > delta:
-                            change_points_ph.append(
-                                {
+                # If ruptures is available, prefer a fast model (l2, binary segmentation)
+                if HAS_RUPTURES and len(s) >= 80:
+                    try:
+                        algo = rpt.Binseg(model="l2").fit(s.values.astype(float))
+                        bkps = algo.predict(n_bkps=min(3, max(1, len(s)//100)))  # up to 3 breakpoints
+                        points = []
+                        for bp in bkps[:-1]:
+                            i = int(bp) - 1
+                            if 10 <= i < len(s) - 10:
+                                points.append({
                                     "index": i,
-                                    "timestamp": series.index[i],
-                                    "cumulative_sum": cumulative_sum - min_sum,
-                                }
-                            )
-                            cumulative_sum = 0
-                            min_sum = 0
+                                    "timestamp": s.index[i],
+                                    "magnitude": float(abs(s.iloc[:i].mean() - s.iloc[i:].mean())),
+                                })
+                        if points:
+                            found["ruptures_binseg"] = {"change_points": points}
+                    except Exception:
+                        pass
 
-                    if change_points_ph:
-                        detected_changes["page_hinkley"] = {
-                            "change_points": change_points_ph[:5],  # Top 5
-                            "threshold": delta,
-                        }
-
-                except:
-                    pass
-
-                # Multiple change points using binary segmentation approach
+                # CUSUM fallback
                 try:
-
-                    def detect_single_change(subseries):
-                        """Detect single change point in subseries"""
-                        n = len(subseries)
-                        if n < 20:  # Minimum segment size
-                            return None
-
-                        best_change = None
-                        best_stat = 0
-
-                        for k in range(10, n - 10):  # Leave margins
-                            left_mean = subseries.iloc[:k].mean()
-                            right_mean = subseries.iloc[k:].mean()
-
-                            # Calculate test statistic
-                            left_var = subseries.iloc[:k].var()
-                            right_var = subseries.iloc[k:].var()
-
-                            if left_var > 0 and right_var > 0:
-                                pooled_var = (
-                                    (k - 1) * left_var + (n - k - 1) * right_var
-                                ) / (n - 2)
-                                t_stat = abs(left_mean - right_mean) / np.sqrt(
-                                    pooled_var * (1 / k + 1 / (n - k))
-                                )
-
-                                if t_stat > best_stat:
-                                    best_stat = t_stat
-                                    best_change = k
-
-                        return (
-                            (best_change, best_stat) if best_stat > 2.0 else None
-                        )  # t-stat threshold
-
-                    # Apply binary segmentation
-                    segments_to_process = [(0, len(series), series)]
-                    multiple_changes = []
-
-                    while (
-                        segments_to_process and len(multiple_changes) < 5
-                    ):  # Max 5 change points
-                        start, end, segment = segments_to_process.pop(0)
-
-                        change_result = detect_single_change(segment)
-                        if change_result:
-                            rel_change_idx, stat = change_result
-                            abs_change_idx = start + rel_change_idx
-
-                            multiple_changes.append(
-                                {
-                                    "index": abs_change_idx,
-                                    "timestamp": series.index[abs_change_idx],
-                                    "statistic": stat,
-                                    "segment_start": start,
-                                    "segment_end": end,
-                                }
-                            )
-
-                            # Add new segments to process
-                            left_segment = series.iloc[start : start + rel_change_idx]
-                            right_segment = series.iloc[start + rel_change_idx : end]
-
-                            if len(left_segment) >= 20:
-                                segments_to_process.append(
-                                    (start, start + rel_change_idx, left_segment)
-                                )
-                            if len(right_segment) >= 20:
-                                segments_to_process.append(
-                                    (start + rel_change_idx, end, right_segment)
-                                )
-
-                    if multiple_changes:
-                        detected_changes["binary_segmentation"] = {
-                            "change_points": sorted(
-                                multiple_changes,
-                                key=lambda x: x["statistic"],
-                                reverse=True,
-                            )
+                    stat = _cusum_stat_jit(s.to_numpy(dtype=np.float64))
+                    if stat > 1.5:
+                        i = int(np.argmax(np.abs(np.cumsum(s - s.mean()))))
+                        found["cusum"] = {
+                            "change_point": s.index[i],
+                            "statistic": float(stat),
+                            "pre_change_mean": float(s.iloc[:i].mean()) if i > 1 else None,
+                            "post_change_mean": float(s.iloc[i:].mean()) if i < len(s) - 1 else None,
                         }
-
-                except:
+                except Exception:
                     pass
 
-                if detected_changes:
-                    change_points[col] = detected_changes
-
+                if found:
+                    out[col] = found
             except Exception as e:
-                print(f"Change point detection failed for {col}: {e}")
-
-        return change_points
+                print(f"Change points failed for {col}: {e}")
+        return out
 
     def _detect_regime_switching(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
     ) -> Dict[str, Any]:
-        """Detect regime switching patterns using Markov switching models and other methods"""
-        time_col = getattr(config, "time_col", None)
-        if not time_col or time_col not in data.columns:
-            return {}
-
-        regime_results = {}
-
-        for col in numeric_cols[:3]:  # Limit for computational efficiency
-            series_data = data[[time_col, col]].dropna()
-            if len(series_data) < 100:  # Need sufficient data for regime detection
-                continue
-
+        out: Dict[str, Any] = {}
+        cols = self._cap_max(numeric_cols, cap=3)
+        for col in cols:
             try:
-                series_data[time_col] = pd.to_datetime(series_data[time_col])
-                series_data.set_index(time_col, inplace=True)
-                series = series_data[col]
+                s = series_map.get(col)
+                if s is None or len(s) < 100:
+                    continue
+                r = s.pct_change().dropna()
+                if len(r) < 60:
+                    continue
 
-                regime_analysis = {}
-
-                # Hidden Markov Model approach (simplified)
+                # Simple GMM on [ret, ma5, std5]
                 try:
                     from sklearn.mixture import GaussianMixture
+                    rv = r.values
+                    ma5 = pd.Series(rv).rolling(5).mean().to_numpy()
+                    sd5 = pd.Series(rv).rolling(5).std().to_numpy()
+                    X = np.column_stack([rv, ma5, sd5])
+                    X = X[~np.isnan(X).any(axis=1)]
+                    if len(X) < 50:
+                        continue
 
-                    # Prepare data for regime detection
-                    returns = series.pct_change().dropna()
-                    features = np.column_stack(
-                        [
-                            returns.values,
-                            returns.rolling(5).mean().dropna().values,
-                            returns.rolling(5).std().dropna().values,
-                        ]
-                    )
-
-                    # Remove any rows with NaN
-                    features = features[~np.isnan(features).any(axis=1)]
-
-                    if len(features) > 50:
-                        # Fit GMM with different numbers of regimes
-                        best_n_regimes = 2
-                        best_score = -np.inf
-
-                        for n_regimes in range(2, 5):  # Test 2-4 regimes
-                            try:
-                                gmm = GaussianMixture(
-                                    n_components=n_regimes,
-                                    random_state=config.random_state,
-                                )
-                                gmm.fit(features)
-                                score = gmm.score(features)
-
-                                if score > best_score:
-                                    best_score = score
-                                    best_n_regimes = n_regimes
-                            except:
-                                continue
-
-                        # Fit best model
-                        final_gmm = GaussianMixture(
-                            n_components=best_n_regimes,
-                            random_state=config.random_state,
-                        )
-                        final_gmm.fit(features)
-                        regime_labels = final_gmm.predict(features)
-                        regime_probs = final_gmm.predict_proba(features)
-
-                        # Analyze regime characteristics
-                        regime_stats = {}
-                        for regime in range(best_n_regimes):
-                            regime_mask = regime_labels == regime
-                            regime_returns = returns.iloc[-len(regime_mask) :][
-                                regime_mask
-                            ]
-
-                            regime_stats[f"regime_{regime}"] = {
-                                "mean_return": regime_returns.mean(),
-                                "volatility": regime_returns.std(),
-                                "duration_pct": regime_mask.sum()
-                                / len(regime_mask)
-                                * 100,
-                                "persistence": self._calculate_regime_persistence(
-                                    regime_labels, regime
-                                ),
-                            }
-
-                        # Regime transitions
-                        transitions = []
-                        for i in range(1, len(regime_labels)):
-                            if regime_labels[i] != regime_labels[i - 1]:
-                                transitions.append(
-                                    {
-                                        "from_regime": int(regime_labels[i - 1]),
-                                        "to_regime": int(regime_labels[i]),
-                                        "timestamp": (
-                                            returns.index[i]
-                                            if i < len(returns.index)
-                                            else None
-                                        ),
-                                    }
-                                )
-
-                        regime_analysis["markov_switching"] = {
-                            "n_regimes": best_n_regimes,
-                            "regime_statistics": regime_stats,
-                            "transitions": transitions[-10:],  # Last 10 transitions
-                            "current_regime": int(regime_labels[-1]),
-                            "current_regime_probability": float(
-                                np.max(regime_probs[-1])
-                            ),
+                    best_n, best_score = 2, -np.inf
+                    for k in (2, 3, 4):
+                        try:
+                            gm = GaussianMixture(n_components=k, random_state=getattr(config, "random_state", 0))
+                            gm.fit(X)
+                            sc = gm.score(X)
+                            if sc > best_score:
+                                best_score, best_n = sc, k
+                        except Exception:
+                            pass
+                    gm = GaussianMixture(n_components=best_n, random_state=getattr(config, "random_state", 0)).fit(X)
+                    labels = gm.predict(X)
+                    probs = gm.predict_proba(X)
+                    stats = {}
+                    for g in range(best_n):
+                        mask = labels == g
+                        if not np.any(mask):
+                            continue
+                        stats[f"regime_{g}"] = {
+                            "mean_return": float(rv[-len(labels):][mask].mean()),
+                            "volatility": float(rv[-len(labels):][mask].std()),
+                            "duration_pct": float(mask.mean() * 100.0),
+                            "persistence": float(self._calculate_regime_persistence(labels, g)),
                         }
-
-                except:
-                    pass
-
-                # Threshold autoregressive model detection
-                try:
-                    # Simple TAR model: different behavior above/below threshold
-                    median_val = series.median()
-                    above_threshold = series > median_val
-
-                    # Calculate statistics for each regime
-                    high_regime_stats = {
-                        "mean": series[above_threshold].mean(),
-                        "std": series[above_threshold].std(),
-                        "autocorr": (
-                            series[above_threshold].autocorr()
-                            if len(series[above_threshold]) > 1
-                            else 0
-                        ),
-                        "duration_pct": above_threshold.sum() / len(series) * 100,
-                    }
-
-                    low_regime_stats = {
-                        "mean": series[~above_threshold].mean(),
-                        "std": series[~above_threshold].std(),
-                        "autocorr": (
-                            series[~above_threshold].autocorr()
-                            if len(series[~above_threshold]) > 1
-                            else 0
-                        ),
-                        "duration_pct": (~above_threshold).sum() / len(series) * 100,
-                    }
-
-                    # Test for regime differences
-                    from scipy.stats import ttest_ind
-
-                    t_stat, p_val = ttest_ind(
-                        series[above_threshold], series[~above_threshold]
-                    )
-
-                    regime_analysis["threshold_autoregressive"] = {
-                        "threshold": median_val,
-                        "high_regime": high_regime_stats,
-                        "low_regime": low_regime_stats,
-                        "regime_difference_significant": p_val < 0.05,
-                        "t_statistic": t_stat,
-                        "p_value": p_val,
-                    }
-
-                except:
-                    pass
-
-                # Volatility regime switching
-                try:
-                    returns = series.pct_change().dropna()
-                    if len(returns) > 50:
-                        # Rolling volatility
-                        vol_window = min(20, len(returns) // 5)
-                        rolling_vol = returns.rolling(vol_window).std()
-
-                        # High/low volatility regimes
-                        vol_threshold = rolling_vol.quantile(0.7)  # 70th percentile
-                        high_vol_periods = rolling_vol > vol_threshold
-
-                        # Volatility regime persistence
-                        vol_regime_changes = (
-                            high_vol_periods != high_vol_periods.shift(1)
-                        ).sum()
-                        avg_regime_length = len(high_vol_periods) / (
-                            vol_regime_changes + 1
-                        )
-
-                        regime_analysis["volatility_switching"] = {
-                            "vol_threshold": vol_threshold,
-                            "high_vol_pct": high_vol_periods.sum()
-                            / len(high_vol_periods)
-                            * 100,
-                            "avg_regime_length": avg_regime_length,
-                            "regime_switches": vol_regime_changes,
-                            "current_regime": (
-                                "high" if high_vol_periods.iloc[-1] else "low"
-                            ),
+                    # transitions
+                    transitions = []
+                    for i in range(1, len(labels)):
+                        if labels[i] != labels[i-1]:
+                            # align timestamps to last len(labels) of r.index
+                            idx = r.index[-len(labels):][i] if len(r) >= len(labels) else None
+                            transitions.append({"from_regime": int(labels[i-1]), "to_regime": int(labels[i]), "timestamp": idx})
+                    out[col] = {
+                        "markov_switching": {
+                            "n_regimes": int(best_n),
+                            "regime_statistics": stats,
+                            "transitions": transitions[-10:],
+                            "current_regime": int(labels[-1]),
+                            "current_regime_probability": float(np.max(probs[-1])),
                         }
-
-                except:
+                    }
+                except Exception:
                     pass
 
-                if regime_analysis:
-                    regime_results[col] = regime_analysis
-
+                # Vol regime snapshot
+                try:
+                    vol = r.rolling(min(20, max(5, len(r)//10))).std()
+                    thr = vol.quantile(0.7)
+                    mask = vol > thr
+                    changes = (mask != mask.shift(1)).sum()
+                    out.setdefault(col, {})
+                    out[col]["volatility_switching"] = {
+                        "vol_threshold": float(thr),
+                        "high_vol_pct": float(mask.mean() * 100.0),
+                        "avg_regime_length": float(len(mask) / (changes + 1)),
+                        "regime_switches": int(changes),
+                        "current_regime": "high" if bool(mask.iloc[-1]) else "low",
+                    }
+                except Exception:
+                    pass
             except Exception as e:
-                print(f"Regime switching detection failed for {col}: {e}")
+                print(f"Regime switching failed for {col}: {e}")
+        return out
 
-        return regime_results
-
-    def _calculate_regime_persistence(
-        self, regime_labels: np.ndarray, regime: int
-    ) -> float:
-        """Calculate average persistence (duration) of a regime"""
-        regime_runs = []
-        current_run = 0
-
-        for label in regime_labels:
-            if label == regime:
-                current_run += 1
-            else:
-                if current_run > 0:
-                    regime_runs.append(current_run)
-                    current_run = 0
-
-        if current_run > 0:
-            regime_runs.append(current_run)
-
-        return np.mean(regime_runs) if regime_runs else 0
+    def _calculate_regime_persistence(self, labels: np.ndarray, regime: int) -> float:
+        runs, cur = [], 0
+        for v in labels:
+            if v == regime:
+                cur += 1
+            elif cur:
+                runs.append(cur); cur = 0
+        if cur: runs.append(cur)
+        return float(np.mean(runs)) if runs else 0.0
 
     def _assess_forecasting_readiness(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
     ) -> Dict[str, Any]:
-        """Assess how ready each time series is for forecasting"""
-        readiness_scores = {}
-
-        for col in numeric_cols[:5]:
-            series = data[col].dropna()
-            if len(series) < 20:
+        out: Dict[str, Any] = {}
+        cols = self._cap_max(numeric_cols, cap=10)
+        for col in cols:
+            s = series_map.get(col)
+            if s is None or len(s) < 20:
                 continue
-
             try:
-                score_components = {}
+                scores: Dict[str, float] = {}
+                n = len(s)
+                scores["data_sufficiency"] = float(min(n / 100.0, 1.0))
+                scores["completeness"] = float(1.0 - data[col].isnull().mean())
 
-                # Data sufficiency (more data = better)
-                data_score = min(
-                    len(series) / 100, 1.0
-                )  # Normalize to [0,1], optimal at 100+ points
-                score_components["data_sufficiency"] = data_score
-
-                # Missing data penalty
-                missing_pct = data[col].isnull().mean()
-                missing_score = 1.0 - missing_pct
-                score_components["completeness"] = missing_score
-
-                # Stationarity assessment
+                # Stationarity
                 try:
                     from statsmodels.tsa.stattools import adfuller
+                    p = adfuller(s)[1]
+                    scores["stationarity"] = 1.0 if p < 0.05 else 0.5
+                except Exception:
+                    scores["stationarity"] = 0.5
 
-                    adf_result = adfuller(series)
-                    stationarity_score = 1.0 if adf_result[1] < 0.05 else 0.5
-                except:
-                    stationarity_score = 0.5
-                score_components["stationarity"] = stationarity_score
-
-                # Trend strength (moderate trend is good for forecasting)
+                # Trend
                 from scipy.stats import linregress
+                x = np.arange(n)
+                slope, _, r, p, _ = linregress(x, s)
+                scores["trend_strength"] = float(min((abs(r) if p < 0.05 else 0.0) * 2, 1.0))
 
-                x = np.arange(len(series))
-                slope, _, r_value, p_value, _ = linregress(x, series)
-                trend_strength = abs(r_value) if p_value < 0.05 else 0
-                trend_score = min(trend_strength * 2, 1.0)  # Cap at 1.0
-                score_components["trend_strength"] = trend_score
-
-                # Seasonality (detectable seasonality helps forecasting)
-                seasonality_score = 0
+                # Seasonality
+                seas = 0.0
                 try:
                     from statsmodels.tsa.seasonal import STL
-
-                    if len(series) >= 24:
-                        period = min(12, len(series) // 3)
-                        stl = STL(series, seasonal=period).fit()
-                        seasonal_var = np.var(stl.seasonal)
-                        total_var = np.var(series)
-                        seasonality_strength = (
-                            seasonal_var / total_var if total_var > 0 else 0
-                        )
-                        seasonality_score = min(seasonality_strength * 2, 1.0)
-                except:
+                    if n >= 24:
+                        P = min(12, max(4, n // 6))
+                        stl = STL(s, seasonal=(P if P % 2 else P + 1), period=P, robust=True).fit()
+                        tvar = float(np.var(s)); svar = float(np.var(stl.seasonal))
+                        seas = float(min((svar / tvar) * 2.0, 1.0)) if tvar > 0 else 0.0
+                except Exception:
                     pass
-                score_components["seasonality"] = seasonality_score
+                scores["seasonality"] = seas
 
-                # Noise level (lower noise = better for forecasting)
-                returns = series.pct_change().dropna()
-                if len(returns) > 1:
-                    noise_level = returns.std()
-                    # Normalize noise score (lower noise = higher score)
-                    noise_score = max(0, 1.0 - min(noise_level, 1.0))
-                else:
-                    noise_score = 0.5
-                score_components["signal_to_noise"] = noise_score
+                # Noise
+                r = s.pct_change().dropna()
+                noise = float(r.std()) if len(r) > 1 else 0.0
+                scores["signal_to_noise"] = float(max(0.0, 1.0 - min(noise, 1.0)))
 
-                # Autocorrelation (predictable patterns)
-                autocorr_score = 0
+                # Autocorr
+                ac = 0.0
                 try:
                     from statsmodels.tsa.stattools import acf
-
-                    acf_vals = acf(series, nlags=min(20, len(series) // 2), fft=True)
-                    significant_lags = (
-                        np.abs(acf_vals[1:]) > 1.96 / np.sqrt(len(series))
-                    ).sum()
-                    autocorr_score = min(significant_lags / 10, 1.0)
-                except:
+                    a = acf(s, nlags=min(20, n // 2), fft=True)
+                    sig = int((np.abs(a[1:]) > 1.96 / np.sqrt(n)).sum())
+                    ac = float(min(sig / 10.0, 1.0))
+                except Exception:
                     pass
-                score_components["autocorrelation"] = autocorr_score
+                scores["autocorrelation"] = ac
 
-                # Outlier penalty
-                q75, q25 = np.percentile(series, [75, 25])
-                iqr = q75 - q25
-                outliers = (
-                    (series < (q25 - 1.5 * iqr)) | (series > (q75 + 1.5 * iqr))
-                ).sum()
-                outlier_pct = outliers / len(series)
-                outlier_score = max(
-                    0, 1.0 - outlier_pct * 5
-                )  # Heavy penalty for outliers
-                score_components["outlier_robustness"] = outlier_score
+                # Outliers
+                q25, q75, iqr = self._robust_iqr(s)
+                if iqr <= 0:
+                    out_pct = 0.0
+                else:
+                    out_cnt = int(((s < (q25 - 1.5 * iqr)) | (s > (q75 + 1.5 * iqr))).sum())
+                    out_pct = out_cnt / n
+                scores["outlier_robustness"] = float(max(0.0, 1.0 - 5.0 * out_pct))
 
-                # Overall readiness score (weighted average)
                 weights = {
                     "data_sufficiency": 0.20,
                     "completeness": 0.15,
@@ -1300,393 +724,241 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                     "autocorrelation": 0.10,
                     "outlier_robustness": 0.05,
                 }
+                overall = float(sum(scores[k] * weights[k] for k in scores))
+                if overall >= 0.8: lvl = "excellent"
+                elif overall >= 0.6: lvl = "good"
+                elif overall >= 0.4: lvl = "fair"
+                else: lvl = "poor"
 
-                overall_score = sum(
-                    score_components[component] * weights[component]
-                    for component in score_components
-                )
+                recs: List[str] = []
+                if scores["data_sufficiency"] < 0.5: recs.append("Collect more historical data")
+                if scores["completeness"] < 0.8: recs.append("Address missing values")
+                if scores["stationarity"] < 0.7: recs.append("Apply differencing or transformation")
+                if scores["outlier_robustness"] < 0.7: recs.append("Clean outliers")
+                if scores["signal_to_noise"] < 0.5: recs.append("Apply smoothing techniques")
 
-                # Readiness classification
-                if overall_score >= 0.8:
-                    readiness_level = "excellent"
-                elif overall_score >= 0.6:
-                    readiness_level = "good"
-                elif overall_score >= 0.4:
-                    readiness_level = "fair"
-                else:
-                    readiness_level = "poor"
-
-                # Recommendations
-                recommendations = []
-                if score_components["data_sufficiency"] < 0.5:
-                    recommendations.append("Collect more historical data")
-                if score_components["completeness"] < 0.8:
-                    recommendations.append("Address missing values")
-                if score_components["stationarity"] < 0.7:
-                    recommendations.append("Apply differencing or transformation")
-                if score_components["outlier_robustness"] < 0.7:
-                    recommendations.append("Clean outliers")
-                if score_components["signal_to_noise"] < 0.5:
-                    recommendations.append("Apply smoothing techniques")
-
-                readiness_scores[col] = {
-                    "overall_score": overall_score,
-                    "readiness_level": readiness_level,
-                    "component_scores": score_components,
-                    "recommendations": recommendations,
+                out[col] = {
+                    "overall_score": overall,
+                    "readiness_level": lvl,
+                    "component_scores": scores,
+                    "recommendations": recs,
                 }
-
             except Exception as e:
-                print(f"Forecasting readiness assessment failed for {col}: {e}")
-
-        return readiness_scores
+                print(f"Forecast readiness failed for {col}: {e}")
+        return out
 
     def _analyze_volatility(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
     ) -> Dict[str, Any]:
-        """Advanced volatility analysis including GARCH effects and volatility clustering"""
-        volatility_results = {}
-
-        for col in numeric_cols[:5]:
-            series = data[col].dropna()
-            if len(series) < 50:
+        out: Dict[str, Any] = {}
+        cols = self._cap_max(numeric_cols, cap=10)
+        for col in cols:
+            s = series_map.get(col)
+            if s is None or len(s) < 50:
                 continue
-
             try:
-                volatility_analysis = {}
-
-                # Calculate returns
-                returns = series.pct_change().dropna()
-                if len(returns) < 20:
+                r = s.pct_change().dropna()
+                if len(r) < 20:
                     continue
-
-                # Basic volatility measures
-                volatility_analysis["basic_measures"] = {
-                    "returns_mean": returns.mean(),
-                    "returns_std": returns.std(),
-                    "annualized_volatility": returns.std()
-                    * np.sqrt(252),  # Assuming daily data
-                    "skewness": returns.skew(),
-                    "kurtosis": returns.kurtosis(),
-                    "sharpe_ratio": (
-                        returns.mean() / returns.std() if returns.std() > 0 else 0
-                    ),
+                basic = {
+                    "returns_mean": float(r.mean()),
+                    "returns_std": float(r.std()),
+                    "annualized_volatility": float(r.std() * np.sqrt(252)),
+                    "skewness": float(r.skew()),
+                    "kurtosis": float(r.kurtosis()),
+                    "sharpe_ratio": float((r.mean() / r.std()) if r.std() > 0 else 0.0),
                 }
+                vol: Dict[str, Any] = {"basic_measures": basic}
 
-                # Volatility clustering tests
+                # ARCH LM test on demand (quick)
                 try:
                     from statsmodels.stats.diagnostic import het_arch
-
-                    # ARCH test
-                    if len(returns) > 10:
-                        arch_lm_stat, arch_p_val, _, _ = het_arch(returns, nlags=5)
-                        volatility_analysis["arch_test"] = {
-                            "statistic": arch_lm_stat,
-                            "p_value": arch_p_val,
-                            "volatility_clustering": arch_p_val < 0.05,
-                        }
-                except:
+                    st, p, _, _ = het_arch(r, nlags=min(5, max(1, len(r)//20)))
+                    vol["arch_test"] = {"statistic": float(st), "p_value": float(p), "volatility_clustering": bool(p < 0.05)}
+                except Exception:
                     pass
 
-                # Rolling volatility analysis
+                # Rolling vol
                 try:
-                    window_size = min(20, len(returns) // 5)
-                    rolling_vol = returns.rolling(window_size).std()
-
-                    volatility_analysis["rolling_volatility"] = {
-                        "mean": rolling_vol.mean(),
-                        "std": rolling_vol.std(),
-                        "min": rolling_vol.min(),
-                        "max": rolling_vol.max(),
-                        "volatility_of_volatility": (
-                            rolling_vol.std() / rolling_vol.mean()
-                            if rolling_vol.mean() > 0
-                            else 0
-                        ),
+                    w = min(20, max(5, len(r)//10))
+                    rv = r.rolling(w).std()
+                    vol["rolling_volatility"] = {
+                        "mean": float(rv.mean()),
+                        "std": float(rv.std()),
+                        "min": float(rv.min()),
+                        "max": float(rv.max()),
+                        "volatility_of_volatility": float((rv.std() / rv.mean()) if rv.mean() > 0 else 0.0),
                     }
-
-                    # Volatility regime identification
-                    vol_threshold_high = rolling_vol.quantile(0.75)
-                    vol_threshold_low = rolling_vol.quantile(0.25)
-
-                    high_vol_periods = (rolling_vol > vol_threshold_high).sum()
-                    low_vol_periods = (rolling_vol < vol_threshold_low).sum()
-
-                    volatility_analysis["volatility_regimes"] = {
-                        "high_vol_periods": high_vol_periods,
-                        "low_vol_periods": low_vol_periods,
-                        "high_vol_pct": high_vol_periods
-                        / len(rolling_vol.dropna())
-                        * 100,
-                        "low_vol_pct": low_vol_periods
-                        / len(rolling_vol.dropna())
-                        * 100,
+                    qh, ql = float(rv.quantile(0.75)), float(rv.quantile(0.25))
+                    hi = int((rv > qh).sum()); lo = int((rv < ql).sum()); denom = max(1, int(rv.notna().sum()))
+                    vol["volatility_regimes"] = {
+                        "high_vol_periods": hi,
+                        "low_vol_periods": lo,
+                        "high_vol_pct": float(hi / denom * 100.0),
+                        "low_vol_pct": float(lo / denom * 100.0),
                     }
-
-                except:
+                except Exception:
                     pass
 
-                # GARCH modeling readiness
+                # Squared-return acf as GARCH signal
                 try:
-                    # Test for GARCH effects
-                    squared_returns = returns**2
                     from statsmodels.tsa.stattools import acf
-
-                    # Autocorrelation in squared returns
-                    acf_sq = acf(
-                        squared_returns, nlags=min(10, len(squared_returns) // 4)
-                    )
-                    significant_acf = (
-                        np.abs(acf_sq[1:]) > 1.96 / np.sqrt(len(squared_returns))
-                    ).sum()
-
-                    volatility_analysis["garch_effects"] = {
-                        "squared_returns_acf": (
-                            acf_sq[1:5].tolist()
-                            if len(acf_sq) > 5
-                            else acf_sq[1:].tolist()
-                        ),
-                        "significant_lags": int(significant_acf),
-                        "garch_suitable": significant_acf > 0,
+                    sr = (r**2).dropna()
+                    a = acf(sr, nlags=min(10, len(sr)//4))
+                    sig = int((np.abs(a[1:]) > 1.96 / np.sqrt(len(sr))).sum())
+                    vol["garch_effects"] = {
+                        "squared_returns_acf": (a[1:5].tolist() if len(a) > 5 else a[1:].tolist()),
+                        "significant_lags": int(sig),
+                        "garch_suitable": bool(sig > 0),
                     }
-
-                except:
+                except Exception:
                     pass
 
-                # Value at Risk (VaR) estimates
+                # Risk measures
                 try:
-                    var_95 = np.percentile(returns, 5)
-                    var_99 = np.percentile(returns, 1)
-
-                    # Expected Shortfall (Conditional VaR)
-                    es_95 = returns[returns <= var_95].mean()
-                    es_99 = returns[returns <= var_99].mean()
-
-                    volatility_analysis["risk_measures"] = {
-                        "var_95": var_95,
-                        "var_99": var_99,
-                        "expected_shortfall_95": es_95,
-                        "expected_shortfall_99": es_99,
-                        "max_drawdown": (
-                            returns.cumsum() - returns.cumsum().expanding().max()
-                        ).min(),
-                    }
-
-                except:
+                    var95 = float(np.percentile(r, 5))
+                    var99 = float(np.percentile(r, 1))
+                    es95 = float(r[r <= var95].mean()) if (r <= var95).any() else float("nan")
+                    es99 = float(r[r <= var99].mean()) if (r <= var99).any() else float("nan")
+                    cum = r.cumsum()
+                    mdd = float((cum - cum.cummax()).min())
+                    vol["risk_measures"] = {"var_95": var95, "var_99": var99, "expected_shortfall_95": es95, "expected_shortfall_99": es99, "max_drawdown": mdd}
+                except Exception:
                     pass
 
-                volatility_results[col] = volatility_analysis
-
+                out[col] = vol
             except Exception as e:
-                print(f"Volatility analysis failed for {col}: {e}")
-
-        return volatility_results
+                print(f"Volatility failed for {col}: {e}")
+        return out
 
     def _detect_cyclical_patterns(
-        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
+        self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
     ) -> Dict[str, Any]:
-        """Detect cyclical patterns using advanced spectral analysis"""
-        cyclical_results = {}
-
-        for col in numeric_cols[:5]:
-            series = data[col].dropna()
-            if len(series) < 50:
+        out: Dict[str, Any] = {}
+        cols = self._cap_max(numeric_cols, cap=10)
+        for col in cols:
+            s = series_map.get(col)
+            if s is None or len(s) < 50:
                 continue
-
             try:
-                cyclical_analysis = {}
-
-                # Fourier Transform Analysis
+                cyc: Dict[str, Any] = {}
+                # Fourier
                 try:
                     from scipy.fft import fft, fftfreq
-
-                    # Detrend the series
-                    dt = series - series.rolling(window=min(12, len(series) // 4)).mean()
-                    dt = dt.dropna()
-
+                    m = s.rolling(window=min(12, max(3, len(s)//10))).mean()
+                    dt = (s - m).dropna()
                     if len(dt) > 20:
-                        fft_vals = fft(dt.values)
+                        F = fft(dt.values)
                         freqs = fftfreq(len(dt))
-
-                        power_spectrum = np.abs(fft_vals) ** 2
-
-                        positive_freqs = freqs[: len(freqs) // 2][1:]  # Exclude DC
-                        positive_power = power_spectrum[: len(power_spectrum) // 2][1:]
-
-                        peak_indices = find_peaks(
-                            positive_power, height=np.percentile(positive_power, 85)
-                        )[0]
-
-                        dominant_cycles = []
-                        for peak_idx in peak_indices[:5]:  # Top 5 peaks
-                            freq = positive_freqs[peak_idx]
-                            if freq > 0:
-                                period = 1 / freq
-                                power = positive_power[peak_idx]
-                                dominant_cycles.append(
-                                    {
-                                        "period": period,
-                                        "frequency": freq,
-                                        "power": power,
-                                        "power_normalized": power / np.sum(positive_power),
-                                    }
-                                )
-
-                        cyclical_analysis["fourier_analysis"] = {
-                            "dominant_cycles": sorted(
-                                dominant_cycles, key=lambda x: x["power"], reverse=True
-                            ),
-                            "total_cycles_detected": len(dominant_cycles),
-                        }
+                        P = (np.abs(F) ** 2)
+                        pos = slice(1, len(P)//2)
+                        power = P[pos]; fpos = freqs[pos]
+                        from scipy.signal import find_peaks
+                        idx = find_peaks(power, height=np.percentile(power, 85))[0]
+                        dom = []
+                        for i in idx[:5]:
+                            f = fpos[i]
+                            if f > 0:
+                                dom.append({"period": float(1.0/f), "frequency": float(f), "power": float(power[i]), "power_normalized": float(power[i] / power.sum())})
+                        cyc["fourier_analysis"] = {"dominant_cycles": sorted(dom, key=lambda x: x["power"], reverse=True), "total_cycles_detected": len(dom)}
                 except Exception:
                     pass
 
-                # Wavelet Analysis (simplified)
+                # Wavelet (cheap ricker)
                 try:
                     from scipy.signal import cwt, ricker
-
-                    scales = np.arange(2, min(50, len(series) // 4))
-                    coefficients = cwt(series.values, ricker, scales)
-
-                    energy_per_scale = np.sum(coefficients**2, axis=1)
-                    dominant_scale_idx = np.argmax(energy_per_scale)
-                    dominant_scale = scales[dominant_scale_idx]
-
-                    cyclical_analysis["wavelet_analysis"] = {
-                        "dominant_scale": dominant_scale,
-                        "energy_at_dominant_scale": energy_per_scale[dominant_scale_idx],
-                        "scales_analyzed": len(scales),
-                    }
+                    scales = np.arange(2, min(50, max(10, len(s)//12)))
+                    C = cwt(s.values, ricker, scales)
+                    e = np.sum(C * C, axis=1)
+                    j = int(np.argmax(e))
+                    cyc["wavelet_analysis"] = {"dominant_scale": int(scales[j]), "energy_at_dominant_scale": float(e[j]), "scales_analyzed": int(len(scales))}
                 except Exception:
                     pass
 
-                # Business cycle detection (HP filter)
+                # HP filter “business cycle”
                 try:
                     from statsmodels.tsa.filters.hp_filter import hpfilter
-
-                    hp_cycle, hp_trend = hpfilter(series, lamb=1600)
-
-                    cycle_peaks = find_peaks(hp_cycle)[0]
-                    cycle_troughs = find_peaks(-hp_cycle)[0]
-
-                    cycle_durations = []
-                    if len(cycle_peaks) > 1:
-                        cycle_durations = np.diff(cycle_peaks)
-
-                    cyclical_analysis["business_cycle"] = {
-                        "cycle_component_std": hp_cycle.std(),
-                        "trend_component_std": hp_trend.std(),
-                        "n_peaks": len(cycle_peaks),
-                        "n_troughs": len(cycle_troughs),
-                        "avg_cycle_duration": (np.mean(cycle_durations) if cycle_durations else None),
-                        "cycle_amplitude": np.max(hp_cycle) - np.min(hp_cycle),
+                    cyc_comp, trend = hpfilter(s, lamb=1600)
+                    from scipy.signal import find_peaks
+                    pk = find_peaks(cyc_comp.values)[0]; tr = find_peaks(-cyc_comp.values)[0]
+                    dur = np.diff(pk) if len(pk) > 1 else []
+                    cyc["business_cycle"] = {
+                        "cycle_component_std": float(cyc_comp.std()),
+                        "trend_component_std": float(trend.std()),
+                        "n_peaks": int(len(pk)), "n_troughs": int(len(tr)),
+                        "avg_cycle_duration": (float(np.mean(dur)) if len(dur) else None),
+                        "cycle_amplitude": float(cyc_comp.max() - cyc_comp.min()),
                     }
                 except Exception:
                     pass
 
-                # Phase analysis (recompute detrended safely)
+                # Phase via Hilbert
                 try:
-                    dt = series - series.rolling(window=min(12, len(series) // 4)).mean()
-                    dt = dt.dropna()
+                    from scipy.signal import hilbert
+                    m = s.rolling(window=min(12, max(3, len(s)//10))).mean()
+                    dt = (s - m).dropna()
                     if len(dt) > 20:
-                        from scipy.signal import hilbert
-
-                        analytic_signal = hilbert(dt.values)
-                        instantaneous_phase = np.angle(analytic_signal)
-                        instantaneous_amplitude = np.abs(analytic_signal)
-
-                        phase_diff = np.diff(instantaneous_phase)
-                        phase_consistency = 1 - np.std(phase_diff) / np.pi  # [0,1]
-
-                        cyclical_analysis["phase_analysis"] = {
-                            "phase_consistency": phase_consistency,
-                            "mean_amplitude": float(np.mean(instantaneous_amplitude)),
-                            "amplitude_variability": float(
-                                np.std(instantaneous_amplitude) / (np.mean(instantaneous_amplitude) + 1e-12)
-                            ),
+                        z = hilbert(dt.values)
+                        phase = np.angle(z); amp = np.abs(z)
+                        dphi = np.diff(phase)
+                        phi_cons = float(1.0 - (np.std(dphi) / np.pi))
+                        cyc["phase_analysis"] = {
+                            "phase_consistency": phi_cons,
+                            "mean_amplitude": float(np.mean(amp)),
+                            "amplitude_variability": float(np.std(amp) / (np.mean(amp) + 1e-12)),
                         }
                 except Exception:
                     pass
 
-                cyclical_results[col] = cyclical_analysis
-
+                out[col] = cyc
             except Exception as e:
-                print(f"Cyclical pattern detection failed for {col}: {e}")
-
-        return cyclical_results
+                print(f"Cyclical patterns failed for {col}: {e}")
+        return out
 
     def _granger_causality_analysis(
         self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig
     ) -> Dict[str, Any]:
-        """Granger causality analysis between time series"""
         if len(numeric_cols) < 2:
             return {}
-
-        causality_results = {}
-
+        out: Dict[str, Any] = {}
         try:
             from statsmodels.tsa.stattools import grangercausalitytests
-
-            cols = numeric_cols[:5]  # limit for compute
-            for i, var1 in enumerate(cols):
+            cols = self._cap_max(numeric_cols, cap=5)
+            for i in range(len(cols)):
                 for j in range(i + 1, len(cols)):
-                    var2 = cols[j]
+                    var1, var2 = cols[i], cols[j]
                     if var1 not in data.columns or var2 not in data.columns:
                         continue
-
-                    # Prepare data
-                    pair_data = data[[var1, var2]].dropna()
-                    if len(pair_data) < 50:
+                    df = data[[var1, var2]].dropna()
+                    if len(df) < 50:
                         continue
+                    max_lag = min(12, len(df) // 10)
 
-                    max_lag = min(12, len(pair_data) // 10)
-
-                    # var1 -> var2 (note order: [dependent, exogenous])
-                    best_lag_12, best_p_val_12, causality_12 = None, 1.0, False
+                    key = f"{var1}_vs_{var2}"
+                    res = {
+                        "var1_causes_var2": {"significant": False, "best_lag": None, "p_value": 1.0},
+                        "var2_causes_var1": {"significant": False, "best_lag": None, "p_value": 1.0},
+                        "bidirectional": False,
+                        "sample_size": int(len(df)),
+                    }
                     try:
-                        res12 = grangercausalitytests(
-                            pair_data[[var2, var1]].values, maxlag=max_lag, verbose=False
-                        )
-                        pvals12 = {lag: res12[lag][0]["ssr_ftest"][1] for lag in res12}
-                        best_lag_12 = min(pvals12, key=pvals12.get)
-                        best_p_val_12 = pvals12[best_lag_12]
-                        causality_12 = best_p_val_12 < 0.05
+                        r12 = grangercausalitytests(df[[var2, var1]].values, maxlag=max_lag, verbose=False)
+                        p12 = {lag: r12[lag][0]["ssr_ftest"][1] for lag in r12}
+                        b12 = min(p12, key=p12.get); pv12 = float(p12[b12])
+                        res["var1_causes_var2"] = {"significant": bool(pv12 < 0.05), "best_lag": int(b12), "p_value": pv12}
                     except Exception:
                         pass
-
-                    # var2 -> var1
-                    best_lag_21, best_p_val_21, causality_21 = None, 1.0, False
                     try:
-                        res21 = grangercausalitytests(
-                            pair_data[[var1, var2]].values, maxlag=max_lag, verbose=False
-                        )
-                        pvals21 = {lag: res21[lag][0]["ssr_ftest"][1] for lag in res21}
-                        best_lag_21 = min(pvals21, key=pvals21.get)
-                        best_p_val_21 = pvals21[best_lag_21]
-                        causality_21 = best_p_val_21 < 0.05
+                        r21 = grangercausalitytests(df[[var1, var2]].values, maxlag=max_lag, verbose=False)
+                        p21 = {lag: r21[lag][0]["ssr_ftest"][1] for lag in r21}
+                        b21 = min(p21, key=p21.get); pv21 = float(p21[b21])
+                        res["var2_causes_var1"] = {"significant": bool(pv21 < 0.05), "best_lag": int(b21), "p_value": pv21}
                     except Exception:
                         pass
-
-                    if causality_12 or causality_21:
-                        key = f"{var1}_vs_{var2}"
-                        causality_results[key] = {
-                            "var1_causes_var2": {
-                                "significant": causality_12,
-                                "best_lag": best_lag_12,
-                                "p_value": best_p_val_12,
-                            },
-                            "var2_causes_var1": {
-                                "significant": causality_21,
-                                "best_lag": best_lag_21,
-                                "p_value": best_p_val_21,
-                            },
-                            "bidirectional": bool(causality_12 and causality_21),
-                            "sample_size": int(len(pair_data)),
-                        }
-
+                    res["bidirectional"] = bool(res["var1_causes_var2"]["significant"] and res["var2_causes_var1"]["significant"])
+                    out[key] = res
         except ImportError:
             print("statsmodels not available for Granger causality tests")
         except Exception as e:
-            print(f"Granger causality analysis failed: {e}")
-
-        return causality_results
+            print(f"Granger causality failed: {e}")
+        return out

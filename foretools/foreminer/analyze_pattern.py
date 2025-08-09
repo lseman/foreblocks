@@ -308,10 +308,16 @@ class PatternDetector(AnalysisStrategy):
         rng = np.random.RandomState(rs)
 
         # ---------- Inputs ----------
-        correlations = CorrelationAnalyzer().analyze(data, config)
-        pearson = correlations.get("pearson")
-        if pearson is None:
+        numeric = data.select_dtypes(include=[np.number])
+        if numeric.shape[1] < 2:
             return {}
+        std = numeric.std(numeric_only=True)
+        numeric = numeric.loc[:, std > 1e-10]
+        n_samples, n_features = numeric.shape
+        if n_features < 2:
+            return {}
+        pearson = numeric.corr(method="pearson")
+  
 
         numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
         if len(numeric_cols) < 2:
