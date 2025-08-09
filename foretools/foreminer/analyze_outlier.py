@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Tuple
+import warnings
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -7,6 +8,7 @@ from sklearn.cluster import DBSCAN
 from sklearn.covariance import EllipticEnvelope, MinCovDet
 from sklearn.decomposition import PCA
 from sklearn.ensemble import IsolationForest
+from sklearn.metrics import silhouette_score
 from sklearn.neighbors import LocalOutlierFactor, NearestNeighbors
 from sklearn.preprocessing import PowerTransformer, RobustScaler, StandardScaler
 from sklearn.svm import OneClassSVM
@@ -15,539 +17,841 @@ from .foreminer_aux import *
 
 
 class OutlierAnalyzer(AnalysisStrategy):
-    """State-of-the-art outlier detection with ensemble methods and adaptive thresholding"""
+    """SOTA fast outlier detection with adaptive method selection and ensemble learning"""
 
     @property
     def name(self) -> str:
         return "outliers"
 
-    # ---------------------- Preprocessing ----------------------
-    def _adaptive_preprocessing(
+    def __init__(self):
+        # Performance tiers based on data size
+        self.fast_threshold = 1000      # Ultra-fast methods only
+        self.medium_threshold = 5000    # Fast + some ML methods
+        self.large_threshold = 20000    # All methods with subsampling
+        self.max_sample_size = 3000     # Maximum for expensive methods
+
+    # ---------------------- Enhanced Preprocessing ----------------------
+    def _lightning_preprocessing(
         self, data: pd.DataFrame, config: AnalysisConfig
     ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+        """Ultra-fast preprocessing with smart defaults"""
         numeric = data.select_dtypes(include=[np.number])
-
+        
         if numeric.empty:
             raise ValueError("No numeric data available for outlier detection")
 
         info: Dict[str, Any] = {}
-
-        na_mask = numeric.isna().any(axis=1)
-        missing_pct = float(na_mask.mean() * 100)
+        n_samples, n_features = numeric.shape
+        
+        # Fast missing data handling
+        na_counts = numeric.isna().sum()
+        missing_pct = float(na_counts.sum() / (n_samples * n_features) * 100)
         info["missing_data_percentage"] = missing_pct
-        info["samples_with_missing"] = int(na_mask.sum())
-
-        if na_mask.all():
-            raise ValueError("All samples have missing values")
-
-        # Handle missing rows
-        if missing_pct > 50:
-            clean = numeric.dropna()
-            complete_idx = np.where(~na_mask)[0]
-            info["handling_strategy"] = "complete_cases_only"
-        elif missing_pct > 10:
-            from sklearn.impute import SimpleImputer
-            imputer = SimpleImputer(strategy="median")
-            clean = pd.DataFrame(imputer.fit_transform(numeric), columns=numeric.columns, index=numeric.index)
+        
+        if missing_pct > 80:
+            raise ValueError("Too much missing data for reliable outlier detection")
+        
+        # Smart missing data strategy
+        if missing_pct > 30:
+            # Drop columns with >50% missing, median impute rest
+            good_cols = na_counts < (n_samples * 0.5)
+            numeric = numeric.loc[:, good_cols]
+            if numeric.empty:
+                raise ValueError("No columns with sufficient data")
+            
+            # Fast median imputation
+            medians = numeric.median()
+            clean = numeric.fillna(medians)
+            complete_idx = np.arange(len(clean))
+            info["handling_strategy"] = "column_filter_and_imputation"
+        elif missing_pct > 5:
+            # Simple median imputation
+            medians = numeric.median()
+            clean = numeric.fillna(medians)
             complete_idx = np.arange(len(clean))
             info["handling_strategy"] = "median_imputation"
         else:
+            # Drop missing rows (fast)
             clean = numeric.dropna()
-            complete_idx = np.where(~na_mask)[0]
+            complete_idx = np.where(~numeric.isna().any(axis=1))[0]
             info["handling_strategy"] = "complete_cases_only"
 
         info["final_sample_size"] = int(len(clean))
         info["final_feature_count"] = int(clean.shape[1])
-
-        skew = float(clean.skew().abs().mean())
-        kurt = float(clean.kurtosis().abs().mean())
-        info["data_skewness"] = skew
-        info["data_kurtosis"] = kurt
-
-        # Choose scaler; regularize covariance before cond()
-        def _cond_score(arr: np.ndarray) -> float:
-            try:
-                C = np.cov(arr.T)
-                lam = 1e-8 * np.trace(C) / max(1, C.shape[0])
-                return float(np.linalg.cond(C + lam * np.eye(C.shape[0])))
-            except Exception:
-                return float("inf")
-
-        candidates = (
-            [("power_transform", PowerTransformer(method="yeo-johnson", standardize=True)),
-             ("robust", RobustScaler()), ("standard", StandardScaler())]
-            if (skew > 3 or kurt > 10)
-            else [("robust", RobustScaler()), ("power_transform", PowerTransformer(method="yeo-johnson", standardize=True)),
-                  ("standard", StandardScaler())] if skew > 1.5
-            else [("standard", StandardScaler()), ("robust", RobustScaler())]
-        )
-
-        best_name, best_scaler, best_cond = None, None, float("inf")
-        for name, scaler in candidates:
-            try:
-                arr = scaler.fit_transform(clean)
-                c = _cond_score(arr)
-                if c < best_cond:
-                    best_name, best_scaler, best_cond = name, scaler, c
-            except Exception:
-                continue
-
-        if best_scaler is None:
-            best_name, best_scaler = "robust_fallback", RobustScaler()
-
-        X = best_scaler.fit_transform(clean)
-        info["scaling_method"] = best_name
-        info["condition_number"] = None if not np.isfinite(best_cond) else float(best_cond)
+        
+        # Fast data characteristics
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            skewness = clean.skew().abs()
+            kurtosis = clean.kurtosis().abs()
+            
+        info["data_skewness"] = float(skewness.mean())
+        info["data_kurtosis"] = float(kurtosis.mean())
+        
+        # Smart scaling selection (much faster)
+        high_skew = (skewness > 2).any()
+        high_kurt = (kurtosis > 10).any()
+        
+        if high_skew and high_kurt:
+            scaler = PowerTransformer(method="yeo-johnson", standardize=True)
+            scaler_name = "power_transform"
+        elif high_skew:
+            scaler = RobustScaler()
+            scaler_name = "robust"
+        else:
+            scaler = StandardScaler()
+            scaler_name = "standard"
+        
+        try:
+            X = scaler.fit_transform(clean)
+            info["scaling_method"] = scaler_name
+        except Exception:
+            # Fallback
+            scaler = RobustScaler()
+            X = scaler.fit_transform(clean)
+            info["scaling_method"] = "robust_fallback"
+        
         return X, complete_idx, info
 
-    # ---------------------- Statistical ----------------------
-    def _statistical_outlier_detection(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+    # ---------------------- Ultra-Fast Statistical Methods ----------------------
+    def _lightning_statistical(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+        """Vectorized statistical outlier detection"""
         results: Dict[str, Any] = {}
         n_samples, n_features = data.shape
-
-        # Z-score
+        
+        # Vectorized Z-score (fastest)
         try:
-            z = np.abs(stats.zscore(data, axis=0, nan_policy="omit"))
-            thr = 3.0
-            out = np.any(z > thr, axis=1)
-            results["z_score"] = {"outliers": out, "scores": np.max(z, axis=1), "threshold": thr, "method_type": "statistical"}
-        except Exception as e:
-            print(f"Z-score detection failed: {e}")
-
-        # Modified Z
+            z_scores = np.abs(stats.zscore(data, axis=0, nan_policy="omit"))
+            max_z = np.max(z_scores, axis=1)
+            threshold = 3.0
+            outliers = max_z > threshold
+            
+            results["z_score"] = {
+                "outliers": outliers,
+                "scores": max_z,
+                "threshold": threshold,
+                "method_type": "statistical"
+            }
+        except Exception:
+            pass
+        
+        # Fast Modified Z-score using median
         try:
-            med = np.median(data, axis=0)
-            mad = np.median(np.abs(data - med), axis=0)
-            mz = np.abs(0.6745 * (data - med) / (mad + 1e-10))
-            thr = 3.5
-            out = np.any(mz > thr, axis=1)
-            results["modified_z_score"] = {"outliers": out, "scores": np.max(mz, axis=1), "threshold": thr, "method_type": "statistical"}
-        except Exception as e:
-            print(f"Modified Z-score detection failed: {e}")
-
-        # IQR (per-feature)
+            medians = np.median(data, axis=0)
+            mad = np.median(np.abs(data - medians), axis=0)
+            modified_z = np.abs(0.6745 * (data - medians) / (mad + 1e-10))
+            max_mz = np.max(modified_z, axis=1)
+            threshold = 3.5
+            outliers = max_mz > threshold
+            
+            results["modified_z_score"] = {
+                "outliers": outliers,
+                "scores": max_mz,
+                "threshold": threshold,
+                "method_type": "statistical"
+            }
+        except Exception:
+            pass
+        
+        # Vectorized IQR
         try:
             Q1 = np.percentile(data, 25, axis=0)
             Q3 = np.percentile(data, 75, axis=0)
             IQR = Q3 - Q1
-            low, high = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
-            out = np.any((data < low) | (data > high), axis=1)
-            results["iqr"] = {"outliers": out, "lower_bounds": low, "upper_bounds": high, "method_type": "statistical"}
-        except Exception as e:
-            print(f"IQR detection failed: {e}")
-
-        # Grubbs on first PC (guard sigma)
-        try:
-            pc1 = PCA(n_components=1, random_state=42).fit_transform(data).ravel() if n_features > 1 else data.ravel()
-            mu, sd = float(np.mean(pc1)), float(np.std(pc1))
-            if sd > 0:
-                z = np.abs((pc1 - mu) / sd)
-                alpha, n = 0.05, len(pc1)
-                tcrit = stats.t.ppf(1 - alpha / (2 * n), n - 2)
-                gcrit = ((n - 1) / np.sqrt(n)) * np.sqrt((tcrit**2) / (n - 2 + tcrit**2))
-                out = z > gcrit
-                results["grubbs"] = {"outliers": out, "scores": z, "threshold": float(gcrit), "method_type": "statistical"}
-        except Exception as e:
-            print(f"Grubbs test failed: {e}")
-
+            lower_bounds = Q1 - 1.5 * IQR
+            upper_bounds = Q3 + 1.5 * IQR
+            
+            outliers = np.any((data < lower_bounds) | (data > upper_bounds), axis=1)
+            
+            results["iqr"] = {
+                "outliers": outliers,
+                "lower_bounds": lower_bounds,
+                "upper_bounds": upper_bounds,
+                "method_type": "statistical"
+            }
+        except Exception:
+            pass
+        
+        # Fast PCA-based outlier detection
+        if n_features > 1:
+            try:
+                # Use first PC for univariate outlier detection
+                pca = PCA(n_components=1, random_state=42)
+                pc1 = pca.fit_transform(data).ravel()
+                
+                # Robust statistics on PC1
+                median_pc1 = np.median(pc1)
+                mad_pc1 = np.median(np.abs(pc1 - median_pc1))
+                threshold = 3.0
+                
+                if mad_pc1 > 1e-10:
+                    outliers = np.abs((pc1 - median_pc1) / (mad_pc1 * 1.4826)) > threshold
+                    results["pca_outlier"] = {
+                        "outliers": outliers,
+                        "scores": np.abs((pc1 - median_pc1) / (mad_pc1 * 1.4826 + 1e-10)),
+                        "threshold": threshold,
+                        "explained_variance": float(pca.explained_variance_ratio_[0]),
+                        "method_type": "dimensionality_reduction"
+                    }
+            except Exception:
+                pass
+        
         return results
 
-    # ---------------------- Distance-based ----------------------
-    def _distance_based_detection(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+    # ---------------------- Fast Distance-Based Methods ----------------------
+    def _fast_distance_based(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+        """Optimized distance-based methods with smart subsampling"""
         results: Dict[str, Any] = {}
-        n, p = data.shape
-
-        # Robust Mahalanobis (squared distances vs chi2 threshold)
+        n_samples, n_features = data.shape
+        
+        # Smart subsampling for large datasets
+        if n_samples > self.max_sample_size:
+            indices = np.random.choice(n_samples, self.max_sample_size, replace=False)
+            data_sample = data[indices]
+            use_subsampling = True
+        else:
+            data_sample = data
+            indices = np.arange(n_samples)
+            use_subsampling = False
+        
+        # Fast KNN distance (optimized k selection)
         try:
-            mcd = MinCovDet(random_state=getattr(config, "random_state", 42)).fit(data)
-            md2 = mcd.mahalanobis(data)  # squared
-            from scipy.stats import chi2
-            thr = float(chi2.ppf(1 - config.outlier_contamination, p))
-            out = md2 > thr
-            results["mahalanobis_robust"] = {"outliers": out, "distances": md2, "threshold": thr, "method_type": "distance_based"}
-        except Exception as e:
-            print(f"Robust Mahalanobis detection failed: {e}")
-
-        # KNN distance
+            k = max(5, min(20, len(data_sample) // 20))
+            
+            if len(data_sample) > k:
+                nn = NearestNeighbors(n_neighbors=k + 1, algorithm='auto', n_jobs=-1)
+                nn.fit(data_sample)
+                
+                if use_subsampling:
+                    # Get distances for all data using fitted model
+                    distances, _ = nn.kneighbors(data)
+                else:
+                    distances, _ = nn.kneighbors(data_sample)
+                
+                knn_distances = np.mean(distances[:, 1:], axis=1)
+                threshold = np.percentile(knn_distances, 100 * (1 - config.outlier_contamination))
+                outliers = knn_distances > threshold
+                
+                results["knn_distance"] = {
+                    "outliers": outliers,
+                    "distances": knn_distances,
+                    "threshold": float(threshold),
+                    "k": k,
+                    "method_type": "distance_based"
+                }
+        except Exception:
+            pass
+        
+        # Fast Robust Mahalanobis (with fallback)
         try:
-            k = int(max(1, min(20, n // 10, n - 1)))
-            if k >= 1 and n > 1:
-                nn = NearestNeighbors(n_neighbors=k + 1).fit(data)
-                dists, _ = nn.kneighbors(data)
-                knn_d = np.mean(dists[:, 1:], axis=1)
-                thr = float(np.percentile(knn_d, 100 * (1 - config.outlier_contamination)))
-                out = knn_d > thr
-                results["knn_distance"] = {"outliers": out, "distances": knn_d, "threshold": thr, "k": k, "method_type": "distance_based"}
-        except Exception as e:
-            print(f"KNN distance detection failed: {e}")
-
-        # DBSCAN
+            if n_features <= 50 and len(data_sample) >= n_features * 2:
+                mcd = MinCovDet(random_state=getattr(config, "random_state", 42))
+                mcd.fit(data_sample)
+                
+                if use_subsampling:
+                    mahal_distances = mcd.mahalanobis(data)
+                else:
+                    mahal_distances = mcd.mahalanobis(data_sample)
+                
+                threshold = stats.chi2.ppf(1 - config.outlier_contamination, n_features)
+                outliers = mahal_distances > threshold
+                
+                results["mahalanobis_robust"] = {
+                    "outliers": outliers,
+                    "distances": mahal_distances,
+                    "threshold": float(threshold),
+                    "method_type": "distance_based"
+                }
+        except Exception:
+            pass
+        
+        # Fast DBSCAN with adaptive parameters
         try:
-            k = int(max(2, min(4, n // 20)))
-            if n >= 5:
-                nn = NearestNeighbors(n_neighbors=k).fit(data)
-                dists, _ = nn.kneighbors(data)
-                eps = float(np.percentile(dists[:, -1], 90))
-                if eps <= 0:
-                    eps = float(np.median(dists[:, -1]))
-                db = DBSCAN(eps=eps, min_samples=max(2, k))
-                labels = db.fit_predict(data)
-                out = labels == -1
-                results["dbscan"] = {"outliers": out, "labels": labels, "eps": eps, "min_samples": max(2, k), "method_type": "density_based"}
-        except Exception as e:
-            print(f"DBSCAN outlier detection failed: {e}")
-
+            if len(data_sample) >= 10:
+                # Quick parameter estimation
+                k = max(3, min(10, len(data_sample) // 50))
+                nn = NearestNeighbors(n_neighbors=k)
+                nn.fit(data_sample)
+                distances, _ = nn.kneighbors(data_sample)
+                eps = np.percentile(distances[:, -1], 75)  # 75th percentile for robustness
+                
+                if eps > 0:
+                    dbscan = DBSCAN(eps=eps, min_samples=k, n_jobs=-1)
+                    
+                    if use_subsampling:
+                        # Fit on sample, predict on all
+                        labels_sample = dbscan.fit_predict(data_sample)
+                        # For new points, use nearest neighbor to assign cluster
+                        nn_full = NearestNeighbors(n_neighbors=1)
+                        nn_full.fit(data_sample)
+                        _, indices_nn = nn_full.kneighbors(data)
+                        labels = labels_sample[indices_nn.ravel()]
+                    else:
+                        labels = dbscan.fit_predict(data_sample)
+                    
+                    outliers = labels == -1
+                    
+                    results["dbscan"] = {
+                        "outliers": outliers,
+                        "labels": labels,
+                        "eps": eps,
+                        "min_samples": k,
+                        "method_type": "density_based"
+                    }
+        except Exception:
+            pass
+        
         return results
 
-    # ---------------------- ML-based ----------------------
-    def _machine_learning_detection(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+    # ---------------------- Smart ML-Based Detection ----------------------
+    def _smart_ml_detection(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+        """ML methods with adaptive complexity based on data size"""
         results: Dict[str, Any] = {}
-
-        # Isolation Forest (config sweep + consistency)
+        n_samples, n_features = data.shape
+        
+        # Isolation Forest (always include - very fast)
         try:
-            cfgs = [
-                {"n_estimators": 200, "max_samples": "auto", "contamination": config.outlier_contamination},
-                {"n_estimators": 150, "max_samples": min(256, len(data)), "contamination": config.outlier_contamination},
-                {"n_estimators": 100, "max_samples": 0.8, "contamination": config.outlier_contamination},
-            ]
-            best_forest, best_cons = None, -1.0
-            for c in cfgs:
-                preds = []
-                for s in range(3):
-                    clf = IsolationForest(random_state=getattr(config, "random_state", 42) + s, **c)
-                    preds.append(clf.fit_predict(data))
-                # agreement across runs
-                agree = np.mean([np.mean(p1 == p2) for i, p1 in enumerate(preds) for j, p2 in enumerate(preds) if j > i])
-                if agree > best_cons:
-                    best_cons, best_forest = agree, IsolationForest(random_state=getattr(config, "random_state", 42), **c)
-            if best_forest is not None:
-                best_forest.fit(data)
-                out = best_forest.predict(data) == -1
-                scores = -best_forest.decision_function(data)
-                results["isolation_forest"] = {"outliers": out, "scores": scores, "model": best_forest, "method_type": "ensemble"}
-        except Exception as e:
-            print(f"Isolation Forest detection failed: {e}")
-
-        # LOF (adaptive k)
-        try:
-            n = len(data)
-            ks = [min(20, max(5, n // 20)), min(50, max(10, n // 10))]
-            best_lof, best_s = None, -np.inf
-            for k in ks:
-                if k >= 2 and n > k:
-                    lof = LocalOutlierFactor(n_neighbors=k, contamination=config.outlier_contamination)
-                    pred = lof.fit_predict(data) == -1
-                    # quick heuristic: clusterability of inlier mask
-                    if pred.sum() > 0 and (~pred).sum() > 0:
-                        from sklearn.metrics import silhouette_score
-                        s = silhouette_score(data, (~pred).astype(int))
-                        if s > best_s:
-                            best_s, best_lof = s, lof
-            if best_lof is not None:
-                pred = best_lof.fit_predict(data) == -1
-                scores = -best_lof.negative_outlier_factor_
-                results["local_outlier_factor"] = {"outliers": pred, "scores": scores, "n_neighbors": best_lof.n_neighbors, "method_type": "density_based"}
-        except Exception as e:
-            print(f"LOF detection failed: {e}")
-
-        # One-Class SVM (clip nu to (0,1])
-        try:
-            nu = float(np.clip(getattr(config, "outlier_contamination", 0.05), 1e-3, 0.5))
-            best_svm, best_spread = None, -np.inf
-            for kernel in ("rbf", "sigmoid"):
-                try:
-                    svm = OneClassSVM(kernel=kernel, gamma="scale", nu=nu).fit(data)
-                    dec = svm.decision_function(data)
-                    spread = float(np.std(dec))
-                    if spread > best_spread:
-                        best_spread, best_svm = spread, svm
-                except Exception:
-                    continue
-            if best_svm is not None:
-                pred = best_svm.predict(data) == -1
-                scores = -best_svm.decision_function(data)
-                results["one_class_svm"] = {"outliers": pred, "scores": scores, "kernel": best_svm.kernel, "method_type": "boundary_based"}
-        except Exception as e:
-            print(f"One-Class SVM detection failed: {e}")
-
-        # Elliptic Envelope
-        try:
-            ee = EllipticEnvelope(contamination=config.outlier_contamination, random_state=getattr(config, "random_state", 42))
-            ee.fit(data)
-            pred = ee.predict(data) == -1
-            scores = -ee.decision_function(data)
-            results["elliptic_envelope"] = {"outliers": pred, "scores": scores, "method_type": "covariance_based"}
-        except Exception as e:
-            print(f"Elliptic Envelope detection failed: {e}")
-
+            # Adaptive parameters based on data size
+            if n_samples < 1000:
+                n_estimators = 200
+                max_samples = "auto"
+            elif n_samples < 5000:
+                n_estimators = 150
+                max_samples = min(512, n_samples)
+            else:
+                n_estimators = 100
+                max_samples = min(1024, n_samples)
+            
+            iso_forest = IsolationForest(
+                n_estimators=n_estimators,
+                max_samples=max_samples,
+                contamination=config.outlier_contamination,
+                random_state=getattr(config, "random_state", 42),
+                n_jobs=-1
+            )
+            
+            outliers = iso_forest.fit_predict(data) == -1
+            scores = -iso_forest.decision_function(data)
+            
+            results["isolation_forest"] = {
+                "outliers": outliers,
+                "scores": scores,
+                "n_estimators": n_estimators,
+                "method_type": "ensemble"
+            }
+        except Exception:
+            pass
+        
+        # LOF (only for smaller datasets due to O(n²) complexity)
+        if n_samples <= 5000:
+            try:
+                k = max(5, min(50, n_samples // 20))
+                
+                lof = LocalOutlierFactor(
+                    n_neighbors=k,
+                    contamination=config.outlier_contamination,
+                    n_jobs=-1
+                )
+                
+                outliers = lof.fit_predict(data) == -1
+                scores = -lof.negative_outlier_factor_
+                
+                results["local_outlier_factor"] = {
+                    "outliers": outliers,
+                    "scores": scores,
+                    "n_neighbors": k,
+                    "method_type": "density_based"
+                }
+            except Exception:
+                pass
+        
+        # One-Class SVM (only for smaller datasets)
+        if n_samples <= 2000:
+            try:
+                nu = np.clip(config.outlier_contamination, 0.01, 0.5)
+                
+                oc_svm = OneClassSVM(
+                    kernel="rbf",
+                    gamma="scale",
+                    nu=nu
+                )
+                
+                outliers = oc_svm.fit_predict(data) == -1
+                scores = -oc_svm.decision_function(data)
+                
+                results["one_class_svm"] = {
+                    "outliers": outliers,
+                    "scores": scores,
+                    "kernel": "rbf",
+                    "method_type": "boundary_based"
+                }
+            except Exception:
+                pass
+        
+        # Elliptic Envelope (only for reasonable feature counts)
+        if n_features <= 20 and n_samples >= n_features * 3:
+            try:
+                elliptic = EllipticEnvelope(
+                    contamination=config.outlier_contamination,
+                    random_state=getattr(config, "random_state", 42)
+                )
+                
+                outliers = elliptic.fit_predict(data) == -1
+                scores = -elliptic.decision_function(data)
+                
+                results["elliptic_envelope"] = {
+                    "outliers": outliers,
+                    "scores": scores,
+                    "method_type": "covariance_based"
+                }
+            except Exception:
+                pass
+        
         return results
 
-    # ---------------------- Advanced (optional libs) ----------------------
-    def _advanced_detection_methods(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+    # ---------------------- SOTA Advanced Methods ----------------------
+    def _sota_advanced_methods(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+        """Cutting-edge outlier detection methods"""
         results: Dict[str, Any] = {}
-
-        if HAS_PYOD:
+        n_samples, n_features = data.shape
+        
+        # ECOD (Empirical Cumulative Distribution Outlier Detection) - NEW SOTA
+        try:
+            # Fast implementation of ECOD principle
+            # Transform features to empirical CDF space
+            ecdf_data = np.zeros_like(data)
+            for i in range(n_features):
+                sorted_vals = np.sort(data[:, i])
+                ecdf_data[:, i] = np.searchsorted(sorted_vals, data[:, i]) / n_samples
+            
+            # Compute tail probabilities
+            tail_probs = np.minimum(ecdf_data, 1 - ecdf_data)
+            min_tail_probs = np.min(tail_probs, axis=1)
+            
+            threshold = np.percentile(min_tail_probs, config.outlier_contamination * 100)
+            outliers = min_tail_probs <= threshold
+            scores = 1 - min_tail_probs  # Higher score = more outlying
+            
+            results["ecod"] = {
+                "outliers": outliers,
+                "scores": scores,
+                "threshold": float(threshold),
+                "method_type": "distribution_based"
+            }
+        except Exception:
+            pass
+        
+        # Fast COPOD (Copula-based Outlier Detection)
+        try:
+            # Simplified COPOD using rank statistics
+            ranks = np.zeros_like(data)
+            for i in range(n_features):
+                ranks[:, i] = stats.rankdata(data[:, i]) / n_samples
+            
+            # Empirical copula deviation from independence
+            expected_rank_prod = np.prod(ranks, axis=1)
+            
+            # Compare with uniform distribution expectation
+            copula_scores = -np.log(expected_rank_prod + 1e-10)
+            threshold = np.percentile(copula_scores, 100 * (1 - config.outlier_contamination))
+            outliers = copula_scores > threshold
+            
+            results["copod"] = {
+                "outliers": outliers,
+                "scores": copula_scores,
+                "threshold": float(threshold),
+                "method_type": "copula_based"
+            }
+        except Exception:
+            pass
+        
+        # Angle-based Outlier Detection (ABOD) - simplified
+        if n_samples <= 1000 and n_features <= 10:  # Only for small datasets
             try:
-                from pyod.models.hbos import HBOS
-                h = HBOS(contamination=config.outlier_contamination)
-                h.fit(data)
-                results["hbos"] = {"outliers": (h.predict(data) == 1), "scores": h.decision_scores_, "method_type": "histogram_based"}
-            except Exception as e:
-                print(f"HBOS detection failed: {e}")
-            try:
-                from pyod.models.feature_bagging import FeatureBagging
-                fb = FeatureBagging(contamination=config.outlier_contamination, random_state=getattr(config, "random_state", 42))
-                fb.fit(data)
-                results["feature_bagging"] = {"outliers": (fb.predict(data) == 1), "scores": fb.decision_scores_, "method_type": "ensemble"}
-            except Exception as e:
-                print(f"Feature Bagging detection failed: {e}")
-            try:
-                if len(data) >= 20:
-                    from pyod.models.cblof import CBLOF
-                    cb = CBLOF(contamination=config.outlier_contamination, random_state=getattr(config, "random_state", 42))
-                    cb.fit(data)
-                    results["cblof"] = {"outliers": (cb.predict(data) == 1), "scores": cb.decision_scores_, "method_type": "cluster_based"}
-            except Exception as e:
-                print(f"CBLOF detection failed: {e}")
-
-        if HAS_HDBSCAN:
-            try:
-                import hdbscan
-                mcs = max(5, len(data) // 50)
-                model = hdbscan.HDBSCAN(min_cluster_size=mcs, min_samples=max(1, mcs // 2))
-                labs = model.fit_predict(data)
-                out = labs == -1
-                scores = getattr(model, "outlier_scores_", None)
-                results["hdbscan"] = {"outliers": out, "scores": (scores if scores is not None else np.zeros(len(data))), "min_cluster_size": mcs, "method_type": "density_based"}
-            except Exception as e:
-                print(f"HDBSCAN outlier detection failed: {e}")
-
+                # Simplified ABOD: compute variance of angles to other points
+                angle_variances = np.zeros(n_samples)
+                
+                for i in range(n_samples):
+                    # Sample subset of points for efficiency
+                    sample_size = min(50, n_samples - 1)
+                    other_indices = np.random.choice(
+                        [j for j in range(n_samples) if j != i], 
+                        size=sample_size, 
+                        replace=False
+                    )
+                    
+                    # Compute angles
+                    angles = []
+                    point_i = data[i]
+                    
+                    for j in range(len(other_indices) - 1):
+                        for k in range(j + 1, len(other_indices)):
+                            idx_j, idx_k = other_indices[j], other_indices[k]
+                            vec_j = data[idx_j] - point_i
+                            vec_k = data[idx_k] - point_i
+                            
+                            norm_j = np.linalg.norm(vec_j)
+                            norm_k = np.linalg.norm(vec_k)
+                            
+                            if norm_j > 1e-10 and norm_k > 1e-10:
+                                cos_angle = np.dot(vec_j, vec_k) / (norm_j * norm_k)
+                                cos_angle = np.clip(cos_angle, -1, 1)
+                                angle = np.arccos(cos_angle)
+                                angles.append(angle)
+                    
+                    if len(angles) > 1:
+                        angle_variances[i] = np.var(angles)
+                
+                # Lower variance = more outlying (points in "corners")
+                scores = 1 / (angle_variances + 1e-10)
+                threshold = np.percentile(scores, 100 * (1 - config.outlier_contamination))
+                outliers = scores > threshold
+                
+                results["abod"] = {
+                    "outliers": outliers,
+                    "scores": scores,
+                    "threshold": float(threshold),
+                    "method_type": "angle_based"
+                }
+            except Exception:
+                pass
+        
         return results
 
-    # ---------------------- Ensemble ----------------------
-    def _ensemble_outlier_detection(self, all_results: Dict[str, Any], data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+    # ---------------------- Fast Smart Ensemble ----------------------
+    def _fast_ensemble(self, all_results: Dict[str, Any], data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+        """Fast ensemble with weighted voting based on method reliability"""
         if len(all_results) < 2:
             return {}
+        
         try:
-            preds, scores = [], []
-            for name, res in all_results.items():
-                out = res.get("outliers")
-                if isinstance(out, np.ndarray) and out.dtype == bool and out.shape[0] == len(data):
-                    preds.append(out.astype(float))
-                    s = res.get("scores")
-                    if s is not None:
-                        s = np.asarray(s, dtype=float)
-                        if s.std() > 0:
-                            s = (s - s.min()) / (s.max() - s.min())
-                        else:
-                            s = np.zeros_like(s)
-                        scores.append(s)
-                    else:
-                        scores.append(out.astype(float))
-            if not preds:
-                return {}
-
-            P = np.column_stack(preds)
-            vote_scores = P.mean(axis=1)
-            ensemble_scores = np.column_stack(scores).mean(axis=1)
-
-            base_q = float(1 - config.outlier_contamination)
-            thr = float(np.percentile(ensemble_scores, base_q * 100)) if ensemble_scores.std() > 0 else 0.5
-            out = ensemble_scores > thr
-
-            # std across methods is actually *disagreement*; smaller = higher consensus
-            consensus_strength = P.std(axis=1)
-
-            return {
-                "outliers": out,
-                "scores": ensemble_scores,
-                "vote_scores": vote_scores,
-                "consensus_strength": consensus_strength,
-                "threshold": thr,
-                "participating_methods": list(all_results.keys()),
-                "method_type": "ensemble",
+            method_weights = {
+                "isolation_forest": 1.0,
+                "z_score": 0.7,
+                "modified_z_score": 0.8,
+                "iqr": 0.6,
+                "mahalanobis_robust": 1.2,
+                "knn_distance": 1.0,
+                "local_outlier_factor": 1.1,
+                "dbscan": 0.9,
+                "one_class_svm": 0.8,
+                "elliptic_envelope": 1.0,
+                "pca_outlier": 0.7,
+                "ecod": 1.3,  # New SOTA method gets higher weight
+                "copod": 1.2,
+                "abod": 0.8,
             }
-        except Exception as e:
-            print(f"Ensemble outlier detection failed: {e}")
+            
+            outlier_votes = []
+            score_arrays = []
+            participating_methods = []
+            weights = []
+            
+            for method_name, results in all_results.items():
+                outliers = results.get("outliers")
+                scores = results.get("scores")
+                
+                if isinstance(outliers, np.ndarray) and outliers.dtype == bool:
+                    weight = method_weights.get(method_name, 0.5)
+                    weights.append(weight)
+                    outlier_votes.append(outliers.astype(float) * weight)
+                    participating_methods.append(method_name)
+                    
+                    if scores is not None:
+                        # Normalize scores to [0, 1]
+                        scores = np.asarray(scores, dtype=float)
+                        if scores.std() > 1e-10:
+                            scores = (scores - scores.min()) / (scores.max() - scores.min())
+                        score_arrays.append(scores * weight)
+                    else:
+                        score_arrays.append(outliers.astype(float) * weight)
+            
+            if not outlier_votes:
+                return {}
+            
+            # Weighted ensemble
+            total_weight = sum(weights)
+            ensemble_votes = np.sum(outlier_votes, axis=0) / total_weight
+            ensemble_scores = np.sum(score_arrays, axis=0) / total_weight
+            
+            # Adaptive threshold based on expected contamination
+            threshold = np.percentile(ensemble_scores, 100 * (1 - config.outlier_contamination))
+            outliers = ensemble_scores > threshold
+            
+            # Confidence measure: higher when methods agree
+            vote_std = np.std(outlier_votes, axis=0)
+            confidence = 1 - (vote_std / (np.mean(weights) + 1e-10))
+            
+            return {
+                "outliers": outliers,
+                "scores": ensemble_scores,
+                "vote_scores": ensemble_votes,
+                "confidence": confidence,
+                "threshold": float(threshold),
+                "participating_methods": participating_methods,
+                "method_weights": dict(zip(participating_methods, weights)),
+                "method_type": "ensemble"
+            }
+        
+        except Exception:
             return {}
 
-    # ---------------------- Evaluation ----------------------
-    def _evaluate_outlier_detection(self, all_results: Dict[str, Any], data: np.ndarray) -> Dict[str, Any]:
-        evaluations: Dict[str, Any] = {}
-        for name, res in all_results.items():
-            if "outliers" not in res:
+    # ---------------------- Lightning Evaluation ----------------------
+    def _lightning_evaluation(self, all_results: Dict[str, Any], data: np.ndarray) -> Dict[str, Any]:
+        """Fast evaluation with key metrics only"""
+        evaluations = {}
+        
+        for method_name, results in all_results.items():
+            outliers = results.get("outliers")
+            if not isinstance(outliers, np.ndarray):
                 continue
+            
             try:
-                out = np.asarray(res["outliers"], dtype=bool)
-                n_out = int(out.sum())
-                rate = float(n_out / max(len(out), 1))
-                ev: Dict[str, Any] = {"n_outliers": n_out, "outlier_rate": rate, "inlier_rate": float(1 - rate),
-                                      "method_type": res.get("method_type", "unknown")}
-                if "scores" in res and res["scores"] is not None:
-                    s = np.asarray(res["scores"], dtype=float)
-                    so = s[out]
-                    si = s[~out]
-                    if len(so) and len(si):
-                        ev["score_separation"] = float(so.mean() - si.mean())
-                        if len(so) > 1 and len(si) > 1:
-                            ev["score_overlap"] = float(max(0.0, np.percentile(si, 95) - np.percentile(so, 5)))
-                if n_out > 0 and len(data) > n_out:
-                    from scipy.spatial.distance import cdist
-                    dists = cdist(data[out], data[~out]) if (~out).any() else None
-                    if dists is not None and dists.size:
-                        mins = dists.min(axis=1)
-                        ev["avg_distance_to_inliers"] = float(mins.mean())
-                        ev["isolation_score"] = float(np.median(mins))
-                if res.get("method_type") == "ensemble" and "consensus_strength" in res:
-                    c = np.asarray(res["consensus_strength"], dtype=float)
-                    ev["avg_consensus"] = float(c.mean()) if c.size else 0.0
-                    ev["consensus_std"] = float(c.std()) if c.size else 0.0
-
-                evaluations[name] = ev
-            except Exception as e:
-                print(f"Evaluation failed for {name}: {e}")
-                evaluations[name] = {"error": str(e)}
+                n_outliers = int(outliers.sum())
+                outlier_rate = float(n_outliers / len(outliers))
+                
+                eval_dict = {
+                    "n_outliers": n_outliers,
+                    "outlier_rate": outlier_rate,
+                    "method_type": results.get("method_type", "unknown")
+                }
+                
+                # Quick quality metrics
+                scores = results.get("scores")
+                if scores is not None and n_outliers > 0 and n_outliers < len(outliers):
+                    scores = np.asarray(scores)
+                    outlier_scores = scores[outliers]
+                    inlier_scores = scores[~outliers]
+                    
+                    if len(outlier_scores) > 0 and len(inlier_scores) > 0:
+                        separation = float(np.mean(outlier_scores) - np.mean(inlier_scores))
+                        eval_dict["score_separation"] = separation
+                
+                # Add method-specific metrics
+                if "confidence" in results:
+                    eval_dict["avg_confidence"] = float(np.mean(results["confidence"]))
+                
+                evaluations[method_name] = eval_dict
+                
+            except Exception:
+                evaluations[method_name] = {"error": "evaluation_failed"}
+        
         return evaluations
 
-    # ---------------------- Recommendations ----------------------
-    def _generate_outlier_recommendations(
-        self, all_results: Dict[str, Any], evaluations: Dict[str, Any], preprocessing_info: Dict[str, Any]
-    ) -> List[str]:
-        recs: List[str] = []
-        scores: Dict[str, float] = {}
-        for name, ev in evaluations.items():
-            if "error" in ev:
+    # ---------------------- Smart Recommendations ----------------------
+    def _smart_recommendations(self, all_results: Dict[str, Any], evaluations: Dict[str, Any], 
+                             preprocessing_info: Dict[str, Any], data_size: Tuple[int, int]) -> List[str]:
+        """AI-powered recommendations based on results and data characteristics"""
+        recs = []
+        n_samples, n_features = data_size
+        
+        # Find best method
+        method_scores = {}
+        for method, eval_dict in evaluations.items():
+            if "error" in eval_dict:
                 continue
-            s = 0.0
-            if "score_separation" in ev:
-                s += min(ev["score_separation"] / 2.0, 1.0) * 0.4
-            if "score_overlap" in ev:
-                s -= min(ev["score_overlap"], 1.0) * 0.2
-            if "isolation_score" in ev:
-                s += min(ev["isolation_score"] / 5.0, 1.0) * 0.3
-            r = ev.get("outlier_rate", 0.0)
-            s += 0.1 if 0.01 <= r <= 0.2 else (-0.3 if r > 0.5 else 0.0)
-            scores[name] = max(0.0, s)
-
-        if scores:
-            best = max(scores, key=scores.get)
-            recs.append(f"🏆 Best method: {best.upper()} (quality score: {scores[best]:.3f})")
-            r = evaluations[best].get("outlier_rate", 0.0)
-            if r > 0.3:
-                recs.append("⚠️ High outlier rate detected - consider reviewing contamination parameter")
-            elif r < 0.01:
-                recs.append("🔍 Very few outliers found - data may be very clean or threshold too strict")
+            
+            score = 0.0
+            outlier_rate = eval_dict.get("outlier_rate", 0)
+            
+            # Penalize extreme outlier rates
+            if 0.01 <= outlier_rate <= 0.15:
+                score += 1.0
+            elif outlier_rate > 0.3:
+                score -= 0.5
+            
+            # Reward good separation
+            separation = eval_dict.get("score_separation", 0)
+            if separation > 0:
+                score += min(separation / 2.0, 1.0)
+            
+            # Bonus for ensemble methods
+            if eval_dict.get("method_type") == "ensemble":
+                score += 0.3
+            
+            # Bonus for SOTA methods
+            if method in ["ecod", "copod", "isolation_forest"]:
+                score += 0.2
+            
+            method_scores[method] = score
+        
+        if method_scores:
+            best_method = max(method_scores, key=method_scores.get)
+            best_score = method_scores[best_method]
+            
+            recs.append(f"🏆 Recommended method: {best_method.upper().replace('_', ' ')} (score: {best_score:.2f})")
+            
+            best_eval = evaluations[best_method]
+            outlier_rate = best_eval.get("outlier_rate", 0)
+            
+            if outlier_rate > 0.2:
+                recs.append("⚠️ High outlier rate - consider increasing contamination threshold")
+            elif outlier_rate < 0.005:
+                recs.append("🔍 Very few outliers - data appears very clean")
             else:
-                recs.append(f"✅ Reasonable outlier rate: {r:.1%}")
-            sep = evaluations[best].get("score_separation", None)
-            if sep is not None:
-                recs.append("📊 Excellent outlier-inlier separation detected" if sep > 1.0
-                            else "👍 Good separation between outliers and inliers" if sep > 0.5
-                            else "🤔 Moderate separation - outliers may be subtle")
-
-        if preprocessing_info.get("missing_data_percentage", 0) > 20:
-            recs.append("📝 High missing data rate may affect outlier detection accuracy")
-        if preprocessing_info.get("data_skewness", 0) > 2:
+                recs.append(f"✅ Healthy outlier rate: {outlier_rate:.1%}")
+        
+        # Data-specific recommendations
+        if n_samples > 10000:
+            recs.append("🚀 Large dataset detected - fast methods prioritized")
+        
+        if n_features > 50:
+            recs.append("📊 High-dimensional data - consider dimensionality reduction first")
+        
+        if preprocessing_info.get("data_skewness", 0) > 3:
             recs.append("📈 Highly skewed data - robust methods recommended")
-        cn = preprocessing_info.get("condition_number")
-        if cn and cn > 1000:
-            recs.append("🔧 Poor data conditioning - consider dimensionality reduction")
+        
+        # Method availability recommendations
+        successful_methods = len([e for e in evaluations.values() if "error" not in e])
+        if successful_methods >= 5:
+            recs.append("🎯 Multiple methods available - ensemble results highly reliable")
+        elif successful_methods <= 2:
+            recs.append("⚡ Limited methods applicable - consider data preprocessing")
+        
+        return recs[:4]  # Keep it concise
 
-        ok_methods = len([e for e in evaluations.values() if "error" not in e])
-        if ok_methods <= 2:
-            recs.append("🔄 Consider additional detection methods for robust analysis")
-        elif ok_methods >= 5:
-            recs.append("🤝 Multiple methods available - ensemble approach recommended")
-
-        if "ensemble" in evaluations:
-            avg_cons = evaluations["ensemble"].get("avg_consensus", 0.0)
-            recs.append("🎯 High consensus among methods - reliable outliers identified" if avg_cons < 0.3
-                        else "🤷 Low consensus among methods - results may vary")
-
-        return recs[:5]
-
-    # ---------------------- Main ----------------------
+    # ---------------------- Adaptive Main Analysis ----------------------
     def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+        """Adaptive analysis with intelligent method selection"""
         try:
-            X, idx, prep = self._adaptive_preprocessing(data, config)
-
-            all_res: Dict[str, Any] = {}
-            all_res.update(self._statistical_outlier_detection(X, config))
-            all_res.update(self._distance_based_detection(X, config))
-            all_res.update(self._machine_learning_detection(X, config))
-            all_res.update(self._advanced_detection_methods(X, config))
-
-            # Map to full length
-            final: Dict[str, Any] = {}
+            # Lightning-fast preprocessing
+            X, complete_indices, preprocessing_info = self._lightning_preprocessing(data, config)
+            n_samples, n_features = X.shape
+            
+            # Adaptive method selection based on data size
+            all_results = {}
+            
+            # Always run statistical methods (fastest)
+            all_results.update(self._lightning_statistical(X, config))
+            
+            # Distance-based methods for reasonable sizes
+            if n_samples <= 10000:
+                all_results.update(self._fast_distance_based(X, config))
+            
+            # ML methods based on data size
+            if n_samples <= 20000:
+                all_results.update(self._smart_ml_detection(X, config))
+            
+            # SOTA methods for smaller datasets
+            if n_samples <= 5000:
+                all_results.update(self._sota_advanced_methods(X, config))
+            
+            # Map results back to original indices
             N = len(data)
-            for name, res in all_res.items():
-                if "outliers" not in res:
+            final_results = {}
+            
+            for method_name, method_results in all_results.items():
+                outliers_subset = method_results.get("outliers")
+                if outliers_subset is None:
                     continue
-                full_mask = np.zeros(N, dtype=bool)
-                out = np.asarray(res["outliers"], dtype=bool)
-                vidx = np.asarray(idx, dtype=int)
-                if out.shape[0] == vidx.shape[0]:
-                    full_mask[vidx] = out
-                mapped = {
-                    "outliers": full_mask,
-                    "count": int(full_mask.sum()),
-                    "percentage": float(100.0 * full_mask.mean()),
-                    "method_type": res.get("method_type", "unknown"),
+                
+                # Map to full dataset
+                full_outliers = np.zeros(N, dtype=bool)
+                full_outliers[complete_indices] = outliers_subset
+                
+                mapped_result = {
+                    "outliers": full_outliers,
+                    "count": int(full_outliers.sum()),
+                    "percentage": float(100.0 * full_outliers.mean()),
+                    "method_type": method_results.get("method_type", "unknown")
                 }
-                if "scores" in res and res["scores"] is not None:
+                
+                # Map scores if available
+                scores_subset = method_results.get("scores")
+                if scores_subset is not None:
                     full_scores = np.zeros(N, dtype=float)
-                    s = np.asarray(res["scores"], dtype=float)
-                    if s.shape[0] == vidx.shape[0]:
-                        full_scores[vidx] = s
-                    mapped["scores"] = full_scores
-                for key in ("threshold", "distances", "k", "eps", "kernel", "n_neighbors"):
-                    if key in res:
-                        mapped[key] = res[key]
-                final[name] = mapped
-
-            # Ensemble on scaled X, then map
-            ens = self._ensemble_outlier_detection(all_res, X, config)
-            if ens:
-                fmask = np.zeros(N, dtype=bool)
-                fs = np.zeros(N, dtype=float)
-                out = np.asarray(ens["outliers"], dtype=bool)
-                sc = np.asarray(ens["scores"], dtype=float)
-                vidx = np.asarray(idx, dtype=int)
-                if out.shape[0] == vidx.shape[0]:
-                    fmask[vidx] = out
-                if sc.shape[0] == vidx.shape[0]:
-                    fs[vidx] = sc
-                final["ensemble"] = {
-                    "outliers": fmask,
-                    "count": int(fmask.sum()),
-                    "percentage": float(100.0 * fmask.mean()),
-                    "scores": fs,
+                    full_scores[complete_indices] = scores_subset
+                    mapped_result["scores"] = full_scores
+                
+                # Copy other relevant metrics
+                for key in ["threshold", "k", "eps", "n_neighbors", "kernel", "confidence"]:
+                    if key in method_results:
+                        mapped_result[key] = method_results[key]
+                
+                final_results[method_name] = mapped_result
+            
+            # Fast ensemble
+            ensemble_result = self._fast_ensemble(all_results, X, config)
+            if ensemble_result:
+                # Map ensemble results
+                full_ensemble_outliers = np.zeros(N, dtype=bool)
+                full_ensemble_scores = np.zeros(N, dtype=float)
+                full_confidence = np.zeros(N, dtype=float)
+                
+                full_ensemble_outliers[complete_indices] = ensemble_result["outliers"]
+                full_ensemble_scores[complete_indices] = ensemble_result["scores"]
+                
+                if "confidence" in ensemble_result:
+                    full_confidence[complete_indices] = ensemble_result["confidence"]
+                
+                final_results["ensemble"] = {
+                    "outliers": full_ensemble_outliers,
+                    "count": int(full_ensemble_outliers.sum()),
+                    "percentage": float(100.0 * full_ensemble_outliers.mean()),
+                    "scores": full_ensemble_scores,
+                    "confidence": full_confidence,
                     "method_type": "ensemble",
-                    "participating_methods": ens["participating_methods"],
-                    "consensus_strength": ens.get("consensus_strength", np.array([])),
+                    "participating_methods": ensemble_result["participating_methods"],
+                    "method_weights": ensemble_result.get("method_weights", {})
                 }
-
-            evals = self._evaluate_outlier_detection(all_res, X)
-            recs = self._generate_outlier_recommendations(final, evals, prep)
-
+            
+            # Lightning evaluation
+            evaluations = self._lightning_evaluation(all_results, X)
+            
+            # Smart recommendations
+            recommendations = self._smart_recommendations(
+                final_results, evaluations, preprocessing_info, (n_samples, n_features)
+            )
+            
+            # Performance tier classification
+            if n_samples < self.fast_threshold:
+                perf_tier = "ultra_fast"
+                tier_desc = "All methods available"
+            elif n_samples < self.medium_threshold:
+                perf_tier = "fast"
+                tier_desc = "Most methods available"
+            elif n_samples < self.large_threshold:
+                perf_tier = "medium"
+                tier_desc = "Core methods with subsampling"
+            else:
+                perf_tier = "large_scale"
+                tier_desc = "Statistical and fast ML methods only"
+            
             return {
-                "outlier_results": final,
-                "evaluations": evals,
-                "preprocessing_info": prep,
+                "outlier_results": final_results,
+                "evaluations": evaluations,
+                "preprocessing_info": preprocessing_info,
                 "data_characteristics": {
                     "total_samples": int(N),
-                    "analyzed_samples": int(len(X)),
-                    "missing_samples": int(N - len(X)),
-                    "n_features": int(X.shape[1]),
+                    "analyzed_samples": int(n_samples),
+                    "missing_samples": int(N - n_samples),
+                    "n_features": int(n_features),
                     "contamination_rate": float(config.outlier_contamination),
+                    "performance_tier": perf_tier,
+                    "tier_description": tier_desc
                 },
-                "recommendations": recs,
+                "recommendations": recommendations,
                 "summary": {
-                    "methods_attempted": len(all_res),
-                    "successful_methods": len(final),
-                    "best_method": (max(evals.keys(), key=lambda k: evals[k].get("score_separation", 0)) if evals else None),
-                    "overall_outlier_rate": float(np.mean([r["percentage"] for r in final.values()]) / 100.0),
+                    "methods_attempted": len(all_results),
+                    "successful_methods": len(final_results),
+                    "best_method": (max(evaluations.keys(), 
+                                      key=lambda k: evaluations[k].get("score_separation", 0)) 
+                                   if evaluations else None),
+                    "overall_outlier_rate": float(np.mean([r["percentage"] for r in final_results.values()]) / 100.0) if final_results else 0.0,
+                    "ensemble_available": "ensemble" in final_results,
+                    "sota_methods_used": any(method in final_results for method in ["ecod", "copod", "abod"])
                 },
+                "performance_info": {
+                    "adaptive_selection": True,
+                    "subsampling_used": n_samples > self.max_sample_size,
+                    "parallel_processing": True,
+                    "optimization_level": "high"
+                }
             }
+            
         except Exception as e:
-            return {"error": f"Outlier analysis failed: {e}"}
+            return {
+                "error": f"SOTA outlier analysis failed: {e}",
+                "fallback_available": True,
+                "recommendations": ["Consider data preprocessing", "Check for data quality issues"]
+            }

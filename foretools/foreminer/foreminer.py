@@ -16,6 +16,7 @@ from .analyze_correlation import CorrelationAnalyzer
 from .analyze_dimension import DimensionalityAnalyzer
 from .analyze_distribution import DistributionAnalyzer
 from .analyze_feat import FeatureEngineeringAnalyzer
+from .analyze_group import CategoricalGroupAnalyzer
 from .analyze_missing import MissingnessAnalyzer
 from .analyze_outlier import OutlierAnalyzer
 from .analyze_pattern import PatternDetector
@@ -120,6 +121,7 @@ class DatasetAnalyzer:
             MissingnessAnalyzer(),
             FeatureEngineeringAnalyzer(),
             SHAPAnalyzer(),
+            CategoricalGroupAnalyzer(),
         ]
 
         # Add time series analyzer if time column is provided
@@ -240,18 +242,18 @@ class DatasetAnalyzer:
         # Generate comprehensive insights report
         self.print_detailed_insights()
 
-        # Generate all plots
-        self.plot()
+        # # Generate all plots
+        # self.plot()
 
-        # Special network plot if available
-        if "correlations" in results and OPTIONAL_IMPORTS["networkx"]:
-            try:
-                self.plot_correlation_network()
-            except Exception as e:
-                print(f"Network plot failed: {e}")
+        # # Special network plot if available
+        # if "correlations" in results and OPTIONAL_IMPORTS["networkx"]:
+        #     try:
+        #         self.plot_correlation_network()
+        #     except Exception as e:
+        #         print(f"Network plot failed: {e}")
 
-        self._log("🎉 Comprehensive analysis complete!")
-        return results
+        # self._log("🎉 Comprehensive analysis complete!")
+        # return results
 
     # ========================================================================
     # SPECIALIZED METHODS (Preserved from original)
@@ -541,8 +543,8 @@ class DatasetAnalyzer:
                     metric(f"{f1} ↔ {f2}", f"{v:.3f}")
             if strong_pos or strong_neg:
                 rec("Consider dimensionality reduction or feature selection", "medium")
-
-        # ----------------------- Pattern detection -----------------------
+    
+        # ----------------------- Enhanced Pattern detection -----------------------
         patt = safe_get("patterns") or {}
         if patt:
             section("ADVANCED PATTERN DETECTION", 1)
@@ -552,8 +554,9 @@ class DatasetAnalyzer:
             if ft:
                 section("Feature Type Classification", 3)
                 for ftype, features in ft.items():
-                    if not features: continue
-                    label = ftype.replace("_"," ").title()
+                    if not features:
+                        continue
+                    label = ftype.replace("_", " ").title()
                     metric(label, f"{len(features)} features")
                     print(f"   {top_list(features)}")
                 if ft.get("seasonal"):
@@ -565,34 +568,201 @@ class DatasetAnalyzer:
                     print(f"🔄 Transformable: {top_list(ft['transformable_to_normal'])}")
                     rec("Apply Box-Cox or Yeo-Johnson")
 
-            # Relationships
+            # Relationship patterns
             rel = patt.get("relationships", {})
             if rel:
                 section("Relationship Patterns", 3)
-                if rel.get("nonlinear"):
-                    print("🌀 Non-Linear:")
-                    for r in rel["nonlinear"][:3]:
-                        metric(f"{r['feature1']} ↔ {r['feature2']}", f"score: {r['nonlinearity_score']:.3f}")
-                    rec("Try polynomial/kernels")
-                if rel.get("complex"):
-                    print("\n🧬 High MI, low linear:")
-                    for r in rel["complex"][:3]:
-                        metric(f"{r['feature1']} ↔ {r['feature2']}", f"MI: {r['mutual_info']:.3f}")
-                    rec("Explore interactions / non-linear models")
 
-            # Best-fit distributions
+                # Spec for each pattern type
+                pattern_specs = {
+                    "nonlinear": {
+                        "label": "🌀 Non-Linear Relationships",
+                        "fields": [("nonlinearity_score", "score", 3)],
+                        "extras": lambda r: (
+                            f"Best fit: {r['functional_form'].title()} (R²={r['functional_r2']:.3f})"
+                            if r.get("functional_form") != "none" and r.get("functional_r2", 0) > 0.3 else None
+                        ),
+                        "rec": "Try polynomial/kernels or specific functional forms"
+                    },
+                    "complex": {
+                        "label": "🧬 Complex Dependencies (High MI, Low Linear)",
+                        "fields": [("mutual_info", "MI", 3)],
+                        "extras": lambda r: [
+                            f"Ensemble strength: {r['ensemble_score']:.3f}" if r.get("ensemble_score") else None,
+                            f"Copula dependence: {r['copula_tau']:.3f}" if r.get("copula_tau", 0) > 0.2 else None
+                        ],
+                        "rec": "Explore interactions, non-linear models, or copula-based approaches"
+                    },
+                    "regime_switching": {
+                        "label": "🔄 Regime-Switching Relationships",
+                        "fields": [("regime_diff", "regime diff", 3)],
+                        "extras": lambda r: [
+                            f"Low regime corr: {r['regime1_corr']:.3f}",
+                            f"High regime corr: {r['regime2_corr']:.3f}",
+                            f"Split at: {r['split_point']:.2f}",
+                            f"Strength: {r.get('regime_strength', 'unknown')}"
+                        ],
+                        "rec": "Consider regime-aware models, mixture models, or threshold effects"
+                    },
+                    "functional_forms": {
+                        "label": "📐 Detected Functional Relationships",
+                        "fields": [("r2_score", "R²", 3)],
+                        "extras": lambda r: [
+                            f"Complexity: {r.get('complexity', 'moderate')}",
+                            (
+                                f"Alternatives: {', '.join([f'{k}({v:.2f})' 
+                                                            for k, v in r.get('all_forms', {}).items() 
+                                                            if k != r['functional_form'] and v > r['r2_score'] - 0.1][:2])}"
+
+                            )
+                        ],
+                        "rec": "Use detected functional forms for feature engineering or model selection"
+                    },
+                    "ensemble_strong": {
+                        "label": "🎯 Strong Multi-Method Dependencies",
+                        "fields": [("ensemble_score", "ensemble", 3)],
+                        "extras": lambda r: [
+                            f"Pearson: {r.get('pearson', 0):.3f}",
+                            f"Spearman: {r.get('spearman', 0):.3f}",
+                            f"Distance: {r['distance_corr']:.3f}" if r.get("distance_corr", 0) > 0 else None,
+                            f"MI: {r['mutual_info']:.3f}" if r.get("mutual_info", 0) > 0 else None,
+                            f"Strength: {r.get('strength', 'strong')}"
+                        ],
+                        "rec": "High-confidence relationships - prioritize for modeling"
+                    },
+                    "tail_dependence": {
+                        "label": "🎭 Tail Dependence Patterns",
+                        "fields": [("tail_type", "type", None)],
+                        "extras": lambda r: [
+                            f"Upper tail: {r['upper_tail_dep']:.3f}",
+                            f"Lower tail: {r.get('lower_tail_dep', 0):.3f}" if r.get("lower_tail_dep", 0) > 0 else None,
+                            (
+                                f"Asymmetric: +{r['asymmetric_pos']:.3f}, -{r['asymmetric_neg']:.3f}"
+                                if max(r.get("asymmetric_pos", 0), r.get("asymmetric_neg", 0)) > 0.02 else None
+                            )
+                        ],
+                        "rec": "Consider copulas, extreme value models, or tail-aware approaches"
+                    },
+                    "copula_dependence": {
+                        "label": "🔗 Copula-Based Dependencies",
+                        "fields": [("kendall_tau", "τ", 3)],
+                        "extras": lambda r: [
+                            f"Type: {r.get('dependence_type', 'body')} dependence",
+                            f"Tail coefficient: {r.get('tail_dep', 0):.3f}" if r.get("tail_dep", 0) > 0 else None
+                        ],
+                        "rec": "Consider copula models for capturing rank-based dependencies"
+                    },
+                    "monotonic": {
+                        "label": "📈 Monotonic Relationships",
+                        "fields": [("kendall_tau", "τ", 3)],
+                        "extras": lambda r: [
+                            f"Type: {r.get('relationship_type', 'monotonic')}",
+                            f"Spearman: {r.get('spearman', 0):.3f}" if r.get("spearman", 0) > 0 else None
+                        ],
+                        "rec": "Monotonic transforms, rank-based methods, or ordinal approaches"
+                    },
+                    "distance_corr": {
+                        "label": "🌐 Distance Correlation Patterns",
+                        "fields": [("distance_corr", "dcor", 3)],
+                        "extras": lambda r: [
+                            f"vs Pearson: {r['pearson']:.3f}",
+                            f"Strength: {r.get('strength', 'moderate')}"
+                        ],
+                        "rec": "Non-linear dependence detected - try kernel methods or GAMs"
+                    }
+                }
+
+                # Generic printer
+                for ptype, spec in pattern_specs.items():
+                    if not rel.get(ptype):
+                        continue
+                    print(f"\n{spec['label']}:")
+                    for r in rel[ptype][:3]:
+                        # Main metric
+                        f1, f2 = r['feature1'], r['feature2']
+                        for field, label, prec in spec["fields"]:
+                            if field in r:
+                                val = r[field]
+                                fmt_val = f"{val:.{prec}f}" if isinstance(val, (int, float)) and prec else str(val)
+                                metric(f"{f1} ↔ {f2}", f"{label}: {fmt_val}")
+                                break
+                        # Extras
+                        extras = spec["extras"](r)
+                        if extras:
+                            if isinstance(extras, str):
+                                extras = [extras]
+                            for ex in extras:
+                                if ex:
+                                    print(f"     └─ {ex}")
+                    rec(spec["rec"])
+
+
+            # Best-fit distributions (enhanced)
             fits = patt.get("distributions", {})
             if fits:
                 section("Statistical Distribution Fitting", 3)
                 for feat, info in list(fits.items())[:5]:
                     ks = info.get("ks_pvalue", 0)
-                    quality = ("Excellent","excellent") if ks > 0.1 else \
-                            ("Good","good") if ks > 0.05 else \
-                            ("Fair","fair") if ks > 0.01 else ("Poor","poor")
-                    print(f"   • {feat}: {info['distribution'].title()}")
-                    metric("AIC", f"{info.get('aic', float('nan')):.2f}", indent=1)
-                    metric("KS p-value", f"{ks:.4f}", status=quality[1], indent=1)
-                    print(f"     Fit Quality: {quality[0]}")
+                    aic = info.get("aic", float('nan'))
+                    distribution = info.get("distribution", "unknown")
+                    
+                    # Enhanced quality assessment
+                    if ks > 0.1:
+                        quality, status = "Excellent", "excellent"
+                        quality_emoji = "✅"
+                    elif ks > 0.05:
+                        quality, status = "Good", "good"
+                        quality_emoji = "✅"
+                    elif ks > 0.01:
+                        quality, status = "Fair", "fair"
+                        quality_emoji = "⚠️"
+                    else:
+                        quality, status = "Poor", "poor"
+                        quality_emoji = "❌"
+                    
+                    print(f"   • {feat}: {distribution.title()} {quality_emoji}")
+                    metric("AIC", f"{aic:.2f}" if not np.isnan(aic) else "N/A", indent=1)
+                    metric("KS p-value", f"{ks:.4f}", status=status, indent=1)
+                    print(f"     └─ Fit Quality: {quality}")
+                    
+                    # Add parameter info if available
+                    params = info.get("parameters", {})
+                    if params:
+                        param_str = ", ".join([f"{k}={v:.2f}" for k, v in list(params.items())[:3]])
+                        print(f"     └─ Parameters: {param_str}")
+                
+                rec("Use fitted distributions for simulation, anomaly detection, or Bayesian priors")
+
+            # NEW: Summary statistics and recommendations
+            total_patterns = sum(len(patterns) for patterns in rel.values() if patterns)
+            if total_patterns > 0:
+                section("Pattern Summary", 3)
+                metric("Total Relationship Patterns", str(total_patterns))
+                
+                # Count pattern types
+                pattern_counts = {k: len(v) for k, v in rel.items() if v}
+                top_pattern_types = sorted(pattern_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+                
+                print("   Most Common Pattern Types:")
+                for pattern_type, count in top_pattern_types:
+                    pattern_label = pattern_type.replace("_", " ").title()
+                    print(f"   • {pattern_label}: {count} relationships")
+                
+                # Advanced recommendations
+                print("\n📋 Advanced Modeling Recommendations:")
+                
+                if rel.get("regime_switching"):
+                    print("   • Consider regime-switching models (Markov switching, threshold VAR)")
+                if rel.get("functional_forms"):
+                    print("   • Leverage detected functional forms for feature engineering")
+                if rel.get("tail_dependence") or rel.get("copula_dependence"):
+                    print("   • Explore copula-based models for dependency modeling")
+                if rel.get("ensemble_strong"):
+                    print("   • High-confidence relationships - prioritize for interaction terms")
+                if total_patterns > 10:
+                    print("   • Rich relationship structure - consider ensemble methods")
+                if any(r.get("ensemble_score", 0) > 0.7 for patterns in rel.values() for r in patterns):
+                    print("   • Very strong dependencies detected - check for potential data leakage")
 
         # ----------------------- Outlier detection -----------------------
         out = safe_get("outliers") or {}
@@ -959,6 +1129,291 @@ class DatasetAnalyzer:
                     for (c1,c2), v in strong[:5].items():
                         metric(f"{c1} ↔ {c2}", f"{v:.2f}", indent=1)
                     rec("Consider joint imputation for correlated missing patterns")
+
+        # ----------------------- Categorical Group Analysis -----------------------
+        group_results = safe_get("categorical_groups") or {}
+        if group_results and "error" not in group_results:
+            section("CATEGORICAL GROUP ANALYSIS", 1)
+            
+            # Group Overview
+            group_info = group_results.get("group_info", {})
+            if group_info:
+                categorical_col = group_info.get("categorical_column", "Unknown")
+                section(f"Group Overview: {categorical_col}", 3)
+                
+                metric("Total Groups", str(group_info.get("n_groups", 0)))
+                metric("Total Samples", str(group_info.get("total_samples", 0)))
+                
+                # Group sizes
+                group_sizes = group_info.get("group_sizes", {})
+                if group_sizes:
+                    print("   Group Sizes:")
+                    for group, size in group_sizes.items():
+                        print(f"     • {group}: {size} samples")
+                
+                # Balance assessment
+                balanced = group_info.get("balanced_groups", True)
+                balance_status = "excellent" if balanced else "warning"
+                metric("Groups Balanced", "Yes" if balanced else "No", status=balance_status, indent=1)
+                
+                if group_info.get("missing_percentage", 0) > 10:
+                    metric("Missing Data", f"{group_info['missing_percentage']:.1f}%", status="warning", indent=1)
+            
+            # Summary of significant findings
+            summary = group_results.get("summary", {})
+            if summary:
+                section("Analysis Summary", 3)
+                
+                total_vars = summary.get("total_variables_tested", 0)
+                significant_vars = summary.get("significant_variables", [])
+                n_significant = len(significant_vars)
+                
+                metric("Variables Tested", str(total_vars))
+                
+                if n_significant > 0:
+                    significance_status = "excellent" if n_significant > total_vars * 0.3 else "good"
+                    metric("Significant Variables", f"{n_significant}/{total_vars}", status=significance_status)
+                    
+                    if significant_vars:
+                        print("   Variables with significant differences:")
+                        for var in significant_vars[:5]:  # Show top 5
+                            print(f"     • {var}")
+                        if len(significant_vars) > 5:
+                            print(f"     • ... and {len(significant_vars) - 5} more")
+                else:
+                    metric("Significant Variables", "0", status="warning")
+            
+            # Variable-specific analyses
+            variable_analyses = group_results.get("variable_analyses", {})
+            if variable_analyses:
+                section("Variable-by-Variable Analysis", 3)
+                
+                for var_name, var_results in list(variable_analyses.items())[:3]:  # Show top 3 variables
+                    print(f"\n🔍 Analysis for: {var_name}")
+                    
+                    # Descriptive statistics summary
+                    descriptives = var_results.get("descriptive_statistics", {})
+                    if descriptives:
+                        print("   Group Statistics:")
+                        for group_name, stats in descriptives.items():
+                            mean_val = stats.get("mean", 0)
+                            std_val = stats.get("std", 0)
+                            n_val = stats.get("n", 0)
+                            print(f"     • {group_name}: μ={mean_val:.3f} (±{std_val:.3f}), n={n_val}")
+                    
+                    # Best test result
+                    all_tests = {}
+                    all_tests.update(var_results.get("parametric_tests", {}))
+                    all_tests.update(var_results.get("nonparametric_tests", {}))
+                    all_tests.update(var_results.get("modern_methods", {}))
+                    
+                    # Find most reliable significant test
+                    best_test = None
+                    best_reliability = 0
+                    
+                    for test_name, test_result in all_tests.items():
+                        if isinstance(test_result, dict) and "error" not in test_result:
+                            significant = test_result.get("significant", False)
+                            p_value = test_result.get("p_value", 1.0)
+                            assumption_met = test_result.get("assumption_met", True)
+                            
+                            # Calculate reliability score
+                            reliability = 1.0
+                            if "bootstrap" in test_name or "permutation" in test_name:
+                                reliability *= 1.2
+                            if "welch" in test_name:
+                                reliability *= 1.1
+                            if not assumption_met:
+                                reliability *= 0.7
+                            if significant:
+                                reliability *= 1.5
+                            
+                            if reliability > best_reliability:
+                                best_reliability = reliability
+                                best_test = (test_name, test_result)
+                    
+                    if best_test:
+                        test_name, test_result = best_test
+                        method_name = test_result.get("method", test_name.replace("_", " ").title())
+                        p_value = test_result.get("p_value", 1.0)
+                        significant = test_result.get("significant", False)
+                        
+                        status = "excellent" if significant and p_value < 0.01 else "good" if significant else "fair"
+                        metric("Best Test", method_name, status=status, indent=1)
+                        metric("P-value", f"{p_value:.6f}", status=status, indent=2)
+                        
+                        # Effect size information
+                        effect_info = ""
+                        if "cohens_d" in test_result:
+                            effect_size = test_result.get("effect_size", "unknown")
+                            cohens_d = test_result["cohens_d"]
+                            effect_info = f"Cohen's d = {cohens_d:.3f} ({effect_size})"
+                        elif "eta_squared" in test_result:
+                            effect_size = test_result.get("effect_size", "unknown")
+                            eta_sq = test_result["eta_squared"]
+                            effect_info = f"η² = {eta_sq:.3f} ({effect_size})"
+                        elif "rank_biserial_correlation" in test_result:
+                            effect_size = test_result.get("effect_size", "unknown")
+                            rbc = test_result["rank_biserial_correlation"]
+                            effect_info = f"r = {rbc:.3f} ({effect_size})"
+                        
+                        if effect_info:
+                            metric("Effect Size", effect_info, indent=2)
+                        
+                        # Result interpretation
+                        if significant:
+                            print(f"     └─ ✅ Significant difference detected")
+                            if "groups_compared" in test_result:
+                                groups = test_result["groups_compared"]
+                                print(f"     └─ Between: {' vs '.join(groups)}")
+                        else:
+                            print(f"     └─ ❌ No significant difference")
+                    
+                    # Show specific recommendations for this variable
+                    var_recommendations = var_results.get("recommendations", [])
+                    if var_recommendations:
+                        print("   Key Insights:")
+                        for _rec in var_recommendations[:2]:  # Show top 2 recommendations
+                            print(f"     • {_rec}")
+            
+            # Categorical associations
+            categorical_associations = group_results.get("categorical_associations", {})
+            if categorical_associations:
+                section("Categorical Variable Associations", 3)
+                
+                for cat_var, assoc_results in categorical_associations.items():
+                    chi_square = assoc_results.get("chi_square", {})
+                    if chi_square and "error" not in chi_square:
+                        p_value = chi_square.get("p_value", 1.0)
+                        significant = chi_square.get("significant", False)
+                        cramers_v = chi_square.get("cramers_v", 0)
+                        effect_size = chi_square.get("effect_size", "unknown")
+                        
+                        print(f"\n📊 {categorical_col} ↔ {cat_var}")
+                        
+                        status = "excellent" if significant and p_value < 0.01 else "good" if significant else "fair"
+                        metric("Chi-square p-value", f"{p_value:.6f}", status=status, indent=1)
+                        metric("Cramér's V", f"{cramers_v:.3f} ({effect_size})", indent=1)
+                        
+                        if significant:
+                            print("     └─ ✅ Significant association detected")
+                        else:
+                            print("     └─ ❌ No significant association")
+                        
+                        # Fisher's exact test for 2x2 tables
+                        fisher_exact = assoc_results.get("fisher_exact", {})
+                        if fisher_exact and "error" not in fisher_exact:
+                            odds_ratio = fisher_exact.get("odds_ratio", 1.0)
+                            fisher_p = fisher_exact.get("p_value", 1.0)
+                            metric("Fisher's Exact p-value", f"{fisher_p:.6f}", indent=1)
+                            metric("Odds Ratio", f"{odds_ratio:.3f}", indent=1)
+            
+            # Method performance overview
+            if variable_analyses:
+                section("Statistical Methods Performance", 3)
+                
+                # Count method usage and success rates
+                method_counts = {}
+                method_significant = {}
+                
+                for var_results in variable_analyses.values():
+                    all_tests = {}
+                    all_tests.update(var_results.get("parametric_tests", {}))
+                    all_tests.update(var_results.get("nonparametric_tests", {}))
+                    all_tests.update(var_results.get("modern_methods", {}))
+                    
+                    for test_name, test_result in all_tests.items():
+                        if isinstance(test_result, dict) and "error" not in test_result:
+                            method_name = test_result.get("method", test_name)
+                            method_counts[method_name] = method_counts.get(method_name, 0) + 1
+                            
+                            if test_result.get("significant", False):
+                                method_significant[method_name] = method_significant.get(method_name, 0) + 1
+                
+                print("   Method Usage and Success Rates:")
+                for method, count in sorted(method_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+                    significant_count = method_significant.get(method, 0)
+                    success_rate = (significant_count / count * 100) if count > 0 else 0
+                    print(f"     • {method}: {count} uses, {significant_count} significant ({success_rate:.0f}%)")
+            
+            # Overall recommendations
+            recommendations = group_results.get("recommendations", [])
+            if recommendations:
+                section("Key Recommendations", 3)
+                for i, _rec in enumerate(recommendations[:5], 1):
+                    print(f"   {i}. {_rec}")
+            
+            # Statistical assumptions summary
+            if variable_analyses:
+                section("Statistical Assumptions Summary", 3)
+                
+                normality_violations = 0
+                variance_violations = 0
+                total_variables = len(variable_analyses)
+                
+                for var_results in variable_analyses.values():
+                    assumptions = var_results.get("assumption_tests", {})
+                    
+                    if not assumptions.get("all_groups_normal", True):
+                        normality_violations += 1
+                    
+                    levene_test = assumptions.get("homogeneity_tests", {}).get("levene", {})
+                    if not levene_test.get("equal_variances", True):
+                        variance_violations += 1
+                
+                # Normality assessment
+                norm_pct = (total_variables - normality_violations) / total_variables * 100 if total_variables > 0 else 0
+                norm_status = "excellent" if norm_pct > 80 else "good" if norm_pct > 60 else "warning"
+                metric("Variables with Normal Distributions", f"{total_variables - normality_violations}/{total_variables} ({norm_pct:.0f}%)", status=norm_status)
+                
+                # Variance homogeneity assessment
+                var_pct = (total_variables - variance_violations) / total_variables * 100 if total_variables > 0 else 0
+                var_status = "excellent" if var_pct > 80 else "good" if var_pct > 60 else "warning"
+                metric("Variables with Equal Variances", f"{total_variables - variance_violations}/{total_variables} ({var_pct:.0f}%)", status=var_status)
+                
+                # Recommendations based on assumption violations
+                if normality_violations > total_variables * 0.5:
+                    print("   💡 Many variables violate normality - non-parametric methods recommended")
+                if variance_violations > total_variables * 0.5:
+                    print("   🔧 Many variables have unequal variances - use Welch's tests")
+            
+            # Final summary box
+            if summary.get("n_significant", 0) > 0:
+                section("🎯 CONCLUSION", 3)
+                n_sig = summary.get("n_significant", 0)
+                total_vars = summary.get("total_variables_tested", 0)
+                categorical_col = group_info.get("categorical_column", "groups")
+                
+                if n_sig == total_vars:
+                    print(f"   🌟 ALL variables show significant differences between {categorical_col}")
+                elif n_sig > total_vars * 0.5:
+                    print(f"   ✅ MAJORITY of variables ({n_sig}/{total_vars}) show significant differences between {categorical_col}")
+                else:
+                    print(f"   📊 SOME variables ({n_sig}/{total_vars}) show significant differences between {categorical_col}")
+                
+                print(f"   📈 Consider using {categorical_col} as a strong predictor in your models")
+            
+            else:
+                section("📋 CONCLUSION", 3)
+                categorical_col = group_info.get("categorical_column", "groups")
+                print(f"   ❌ NO significant differences found between {categorical_col}")
+                print(f"   🤔 {categorical_col} may not be a useful predictor for these variables")
+                
+                # Suggest potential reasons
+                min_group_size = group_info.get("min_group_size", 0)
+                if min_group_size < 30:
+                    print("   💡 Small sample sizes may limit statistical power")
+                if not group_info.get("balanced_groups", True):
+                    print("   ⚖️ Unbalanced groups may affect statistical power")
+
+        elif group_results and "error" in group_results:
+            section("CATEGORICAL GROUP ANALYSIS - ERROR", 1)
+            print(f"❌ Analysis failed: {group_results.get('error', 'Unknown error')}")
+            print("💡 Check your data quality and try again")
+
+        else:
+            # No group analysis was performed
+            pass
 
         # ----------------------- Data quality assessment -----------------------
         section("COMPREHENSIVE DATA QUALITY ASSESSMENT", 1)
