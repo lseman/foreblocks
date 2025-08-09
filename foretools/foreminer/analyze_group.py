@@ -1,7 +1,4 @@
-import warnings
-from collections import Counter
-from itertools import combinations
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -16,12 +13,10 @@ from scipy.stats import (
     kruskal,
     levene,
     mannwhitneyu,
-    normaltest,
     shapiro,
     trim_mean,
     ttest_ind,
 )
-from sklearn.preprocessing import LabelEncoder
 
 # Remove the import that's causing issues
 from .foreminer_aux import *
@@ -701,7 +696,7 @@ class CategoricalGroupAnalyzer:
                     boot_result["groups_compared"] = group_names
                     results["bootstrap_test"] = boot_result
                 
-            except Exception as e:
+            except Exception:
                 # Fallback to manual bootstrap
                 pass
         
@@ -775,7 +770,7 @@ class CategoricalGroupAnalyzer:
                     perm_result["groups_compared"] = group_names
                     results["permutation_test"] = perm_result
                 
-            except Exception as e:
+            except Exception:
                 # Fallback to manual permutation
                 pass
         

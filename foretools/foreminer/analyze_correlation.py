@@ -1,9 +1,9 @@
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.stats import kendalltau, rankdata
+from scipy.stats import rankdata
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import mutual_info_regression
 
@@ -12,12 +12,14 @@ from .foreminer_aux import *
 # Optional deps
 try:
     import phik
+
     HAS_PHIK = True
 except Exception:
     HAS_PHIK = False
 
 try:
     from dcor import distance_correlation as dcor_lib
+
     HAS_DCOR = True
 except Exception:
     HAS_DCOR = False
@@ -120,7 +122,9 @@ class CorrelationAnalyzer(AnalysisStrategy):
             X = df.to_numpy(dtype=float)
             X = X - np.nanmean(X, axis=0, keepdims=True)
             X = np.nan_to_num(X, nan=0.0)
-            pc1 = PCA(n_components=1, random_state=self.random_state).fit_transform(X)[:, 0]
+            pc1 = PCA(n_components=1, random_state=self.random_state).fit_transform(X)[
+                :, 0
+            ]
             s = pd.Series(pc1, index=df.index)
         except Exception:
             s = df.iloc[:, 0]
@@ -166,7 +170,9 @@ class CorrelationAnalyzer(AnalysisStrategy):
     def _kendall_correlation(self, df: pd.DataFrame) -> pd.DataFrame:
         # Keep cost bounded
         if len(df) > 600:
-            return pd.DataFrame(np.eye(len(df.columns)), index=df.columns, columns=df.columns)
+            return pd.DataFrame(
+                np.eye(len(df.columns)), index=df.columns, columns=df.columns
+            )
         return df.corr(method="kendall", min_periods=30)
 
     # -----------------------------
@@ -195,7 +201,14 @@ class CorrelationAnalyzer(AnalysisStrategy):
 
                 X = x.reshape(-1, 1)
                 try:
-                    mi = float(mutual_info_regression(X, y, random_state=self.random_state, discrete_features=False)[0])
+                    mi = float(
+                        mutual_info_regression(
+                            X,
+                            y,
+                            random_state=self.random_state,
+                            discrete_features=False,
+                        )[0]
+                    )
                 except Exception:
                     continue
 
@@ -217,7 +230,9 @@ class CorrelationAnalyzer(AnalysisStrategy):
             # Without the library, keep it small to avoid O(n^2) blowups
             df = self._smart_subsample(df, target_size=800)
         else:
-            df = self._smart_subsample(df, target_size=min(self.large_sample_size, 1200))
+            df = self._smart_subsample(
+                df, target_size=min(self.large_sample_size, 1200)
+            )
 
         scr = df.corr(method="pearson").abs()
 
@@ -286,7 +301,7 @@ class CorrelationAnalyzer(AnalysisStrategy):
             br = rankdata(b)[order]
             diffs = np.abs(np.diff(br))
             # ξ_n = 1 - (3 * sum|Δ|) / (n^2 - 1)
-            denom = (n * n - 1.0)
+            denom = n * n - 1.0
             if denom <= 0:
                 return np.nan
             val = 1.0 - (3.0 * diffs.sum()) / denom
@@ -321,10 +336,14 @@ class CorrelationAnalyzer(AnalysisStrategy):
 
     def _phik_correlation(self, df: pd.DataFrame) -> pd.DataFrame:
         try:
-            df_s = self._smart_subsample(df, target_size=min(self.large_sample_size, 2000))
+            df_s = self._smart_subsample(
+                df, target_size=min(self.large_sample_size, 2000)
+            )
             return df_s.phik_matrix()
         except Exception:
-            return pd.DataFrame(np.eye(len(df.columns)), index=df.columns, columns=df.columns)
+            return pd.DataFrame(
+                np.eye(len(df.columns)), index=df.columns, columns=df.columns
+            )
 
     # -----------------------------
     # Driver
@@ -373,7 +392,13 @@ class CorrelationAnalyzer(AnalysisStrategy):
 
             # Simple ensemble (abs-avg of Pearson, Spearman, best advanced present)
             ensemble_parts: List[pd.DataFrame] = []
-            for key in ("pearson", "spearman", "distance", "mutual_info", "robust_pearson"):
+            for key in (
+                "pearson",
+                "spearman",
+                "distance",
+                "mutual_info",
+                "robust_pearson",
+            ):
                 if key in results:
                     ensemble_parts.append(results[key].abs())
             if len(ensemble_parts) >= 2:
@@ -399,7 +424,9 @@ class CorrelationAnalyzer(AnalysisStrategy):
                             tri.append(row)
                     long_df = pd.DataFrame(tri)
                     sort_key = "ensemble" if "ensemble" in long_df else "spearman"
-                    long_df = long_df.sort_values(by=sort_key, ascending=False, na_position="last")
+                    long_df = long_df.sort_values(
+                        by=sort_key, ascending=False, na_position="last"
+                    )
                     results["longform"] = long_df.reset_index(drop=True)
 
             # Metadata
@@ -408,9 +435,9 @@ class CorrelationAnalyzer(AnalysisStrategy):
                 "n_samples": n_samples,
                 "methods_computed": [k for k in results.keys() if k != "_metadata"],
                 "performance_tier": (
-                    "fast" if n_samples < self.fast_threshold
-                    else "medium" if n_samples < self.medium_threshold
-                    else "large"
+                    "fast"
+                    if n_samples < self.fast_threshold
+                    else "medium" if n_samples < self.medium_threshold else "large"
                 ),
                 "screen_abs_spearman": self.candidate_screen_abs_spearman,
                 "random_state": self.random_state,

@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import scipy.stats as sps
 
-from .analyze_correlation import CorrelationAnalyzer
 from .analyze_distribution import DistributionAnalyzer
 from .foreminer_aux import *
 

@@ -1,7 +1,6 @@
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -228,7 +227,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
     def _analyze_temporal_patterns(
         self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig, series_map: Dict[str, pd.Series]
     ) -> Dict[str, Any]:
-        from scipy.signal import find_peaks, periodogram
+        from scipy.signal import periodogram
         from scipy.stats import linregress
         from statsmodels.tsa.seasonal import STL
 

@@ -1,12 +1,11 @@
 import warnings
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.optimize import linear_sum_assignment
-from scipy.spatial.distance import pdist, squareform
+from scipy.spatial.distance import pdist
 from sklearn.cluster import (
     DBSCAN,
     AgglomerativeClustering,
@@ -34,6 +33,7 @@ def _rng(config: AnalysisConfig) -> np.random.Generator:
     rs = getattr(config, "random_state", 42)
     return np.random.default_rng(rs if rs is not None else 42)
 
+
 def _is_constant(col: np.ndarray, tol: float = 1e-12) -> bool:
     # permit NaNs
     if len(col) == 0:
@@ -42,112 +42,119 @@ def _is_constant(col: np.ndarray, tol: float = 1e-12) -> bool:
     cmax = np.nanmax(col)
     return not np.isfinite(cmin) or not np.isfinite(cmax) or (cmax - cmin) <= tol
 
+
 def _winsorize_inplace(X: np.ndarray, q: float = 0.001) -> None:
     """Robust winsorization with better edge case handling"""
     if X.size == 0:
         return
-    
+
     lo = np.nanquantile(X, q, axis=0)
     hi = np.nanquantile(X, 1 - q, axis=0)
-    
+
     # Handle edge cases where quantiles might be the same
     valid_mask = np.isfinite(lo) & np.isfinite(hi) & (hi > lo)
     if np.any(valid_mask):
         np.clip(X[:, valid_mask], lo[valid_mask], hi[valid_mask], out=X[:, valid_mask])
 
-def _safe_silhouette(X: np.ndarray, labels: np.ndarray, max_points: int = 4000) -> float:
+
+def _safe_silhouette(
+    X: np.ndarray, labels: np.ndarray, max_points: int = 4000
+) -> float:
     """Improved silhouette calculation with better sampling"""
     labs = np.asarray(labels)
     uniq = np.unique(labs[labs != -1])
     if uniq.size < 2:
         return -1.0
-    
+
     n = len(labs)
     if n > max_points:
         # Better stratified sampling to maintain cluster proportions
         rng = np.random.default_rng(42)
         per_cluster = max(10, max_points // len(uniq))
-        
+
         indices = []
         for cluster_id in uniq:
             cluster_indices = np.where(labs == cluster_id)[0]
             if len(cluster_indices) == 0:
                 continue
-            
+
             # Sample from this cluster
             n_sample = min(per_cluster, len(cluster_indices))
             if n_sample > 0:
                 sampled = rng.choice(cluster_indices, n_sample, replace=False)
                 indices.extend(sampled)
-        
+
         if len(indices) < 2:
             return -1.0
-            
+
         idx = np.array(indices)
         return float(silhouette_score(X[idx], labs[idx]))
-    
+
     return float(silhouette_score(X, labs))
+
 
 def _median_heuristic_gamma(sample: np.ndarray) -> float:
     """More robust gamma calculation for RBF kernels"""
     if sample.shape[0] < 2:
         return 1.0
-    
+
     # Subsample if too large
     if sample.shape[0] > 1000:
         rng = np.random.default_rng(42)
         idx = rng.choice(sample.shape[0], 1000, replace=False)
         sample = sample[idx]
-    
+
     d = pdist(sample)
     if d.size == 0:
         return 1.0
-        
+
     med = np.median(d)
     if med <= 0 or not np.isfinite(med):
         # Fallback to mean distance
         med = np.mean(d)
         if med <= 0 or not np.isfinite(med):
             return 1.0
-    
-    return 1.0 / (med ** 2)
+
+    return 1.0 / (med**2)
+
 
 def _kneedle_idx(y: np.ndarray) -> int:
     """Improved knee detection using normalized curve analysis"""
-    if y.size < 3: 
+    if y.size < 3:
         return int(np.argmax(y))
-    
+
     # Normalize y values to [0, 1]
     y_min, y_max = np.min(y), np.max(y)
     if y_max - y_min < 1e-10:
         return len(y) // 2
-    
+
     y_norm = (y - y_min) / (y_max - y_min)
     x_norm = np.linspace(0, 1, len(y))
-    
+
     # Find point with maximum distance from line connecting endpoints
     line_y = np.linspace(y_norm[0], y_norm[-1], len(y_norm))
     distances = np.abs(y_norm - line_y)
-    
+
     return int(np.argmax(distances))
+
 
 def _better_gap_statistic(X: np.ndarray, max_k: int = 10, B: int = 5) -> int:
     """More robust gap statistic implementation"""
     n, d = X.shape
     if n < 10 or max_k < 2:
         return 2
-    
+
     gaps = []
     s_k = []
-    
+
     # Reference distribution bounds
     x_min, x_max = X.min(axis=0), X.max(axis=0)
-    
+
     # Ensure we have variation in each dimension
     valid_dims = (x_max - x_min) > 1e-10
     if not np.any(valid_dims):
         return 2
-    
+
     for k in range(1, max_k + 1):
         # Observed within-cluster dispersion
         try:
@@ -160,11 +167,13 @@ def _better_gap_statistic(X: np.ndarray, max_k: int = 10, B: int = 5) -> int:
                 for i in range(k):
                     cluster_points = X[labels == i]
                     if len(cluster_points) > 1:
-                        w_k += np.sum(np.var(cluster_points, axis=0)) * len(cluster_points)
+                        w_k += np.sum(np.var(cluster_points, axis=0)) * len(
+                            cluster_points
+                        )
                 w_k = np.log(w_k + 1e-10)
         except Exception:
             continue
-        
+
         # Reference distribution
         w_kb_star = []
         for b in range(B):
@@ -174,38 +183,42 @@ def _better_gap_statistic(X: np.ndarray, max_k: int = 10, B: int = 5) -> int:
                 X_ref[:, valid_dims] = np.random.uniform(
                     x_min[valid_dims], x_max[valid_dims], (n, np.sum(valid_dims))
                 )
-                
+
                 if k == 1:
                     w_ref = np.log(np.sum(np.var(X_ref, axis=0)) * n + 1e-10)
                 else:
-                    kmeans_ref = KMeans(n_clusters=k, random_state=42 + b, n_init=1, max_iter=50)
+                    kmeans_ref = KMeans(
+                        n_clusters=k, random_state=42 + b, n_init=1, max_iter=50
+                    )
                     labels_ref = kmeans_ref.fit_predict(X_ref)
                     w_ref = 0
                     for i in range(k):
                         cluster_points = X_ref[labels_ref == i]
                         if len(cluster_points) > 1:
-                            w_ref += np.sum(np.var(cluster_points, axis=0)) * len(cluster_points)
+                            w_ref += np.sum(np.var(cluster_points, axis=0)) * len(
+                                cluster_points
+                            )
                     w_ref = np.log(w_ref + 1e-10)
-                
+
                 w_kb_star.append(w_ref)
             except Exception:
                 continue
-        
+
         if len(w_kb_star) == 0:
             continue
-            
+
         gap = np.mean(w_kb_star) - w_k
-        s_k.append(np.std(w_kb_star) * np.sqrt(1 + 1/B))
+        s_k.append(np.std(w_kb_star) * np.sqrt(1 + 1 / B))
         gaps.append(gap)
-    
+
     if len(gaps) < 2:
         return 2
-    
+
     # Find optimal k using gap(k) >= gap(k+1) - s(k+1)
     for k in range(len(gaps) - 1):
         if gaps[k] >= gaps[k + 1] - s_k[k + 1]:
             return k + 1  # Convert to 1-based indexing
-    
+
     return min(len(gaps), max_k)
 
 
@@ -249,7 +262,7 @@ class ClusterAnalyzer(AnalysisStrategy):
             col = numeric[c].to_numpy()
             if not _is_constant(col):
                 keep.append(c)
-        
+
         dropped = len(numeric.columns) - len(keep)
         if dropped > 0:
             numeric = numeric[keep]
@@ -277,11 +290,11 @@ class ClusterAnalyzer(AnalysisStrategy):
                         skew_val = pd.Series(col_data).skew()
                         if np.isfinite(skew_val):
                             skewness_values.append(abs(skew_val))
-                
+
                 skew_mean = float(np.mean(skewness_values)) if skewness_values else 0.0
         except Exception:
             skew_mean = 0.0
-        
+
         info["skewness_mean_abs"] = skew_mean
 
         # scaling choice with better error handling
@@ -312,18 +325,21 @@ class ClusterAnalyzer(AnalysisStrategy):
 
         # dimensionality guard with improved logic
         info["curse_of_dimensionality_risk"] = bool(X.shape[1] > X.shape[0] / 3)
-        
+
         if X.shape[1] > 50 and X.shape[0] > X.shape[1] * 2:
             try:
                 # More conservative PCA approach
                 n_components = min(50, X.shape[0] // 3, X.shape[1])
-                pca = PCA(n_components=n_components, random_state=getattr(config, "random_state", 42))
+                pca = PCA(
+                    n_components=n_components,
+                    random_state=getattr(config, "random_state", 42),
+                )
                 Z = pca.fit_transform(X)
-                
+
                 cumvar = np.cumsum(pca.explained_variance_ratio_)
                 # Look for 95% variance or significant drop in eigenvalues
                 k95 = int(np.argmax(cumvar >= 0.95) + 1)
-                
+
                 # Only apply PCA if it significantly reduces dimensionality
                 if k95 < X.shape[1] * 0.7 and k95 >= 2:
                     X = Z[:, :k95]
@@ -345,7 +361,12 @@ class ClusterAnalyzer(AnalysisStrategy):
         n_samples = data.shape[0]
         max_k = int(min(max_k, max(3, n_samples // 5)))
         if max_k < 3:
-            return {"optimal_k": 2, "methods": {}, "confidence": "low", "method_agreement": 0}
+            return {
+                "optimal_k": 2,
+                "methods": {},
+                "confidence": "low",
+                "method_agreement": 0,
+            }
 
         rng = np.random.default_rng(42)
         if n_samples > 2000:
@@ -363,11 +384,16 @@ class ClusterAnalyzer(AnalysisStrategy):
                 if k == 1:
                     inertias.append(float(np.sum(np.var(Xs, axis=0)) * len(Xs)))
                 else:
-                    km = MiniBatchKMeans(n_clusters=k, random_state=42, n_init=3, 
-                                       batch_size=min(1000, len(Xs)), max_iter=100)
+                    km = MiniBatchKMeans(
+                        n_clusters=k,
+                        random_state=42,
+                        n_init=3,
+                        batch_size=min(1000, len(Xs)),
+                        max_iter=100,
+                    )
                     km.fit(Xs)
                     inertias.append(float(km.inertia_))
-            
+
             if len(inertias) >= 4:
                 k_elbow = _kneedle_idx(np.array(inertias))
                 methods["elbow"] = int(np.clip(k_elbow + 1, 2, max_k))
@@ -379,8 +405,13 @@ class ClusterAnalyzer(AnalysisStrategy):
             ks = range(2, min(max_k + 1, 8))
             best = None
             for k in ks:
-                km = MiniBatchKMeans(n_clusters=k, random_state=42, n_init=3, 
-                                   batch_size=min(500, len(Xs)), max_iter=100)
+                km = MiniBatchKMeans(
+                    n_clusters=k,
+                    random_state=42,
+                    n_init=3,
+                    batch_size=min(500, len(Xs)),
+                    max_iter=100,
+                )
                 lab = km.fit_predict(Xs)
                 if np.unique(lab).size > 1:
                     s = _safe_silhouette(Xs, lab, max_points=2000)
@@ -395,7 +426,9 @@ class ClusterAnalyzer(AnalysisStrategy):
         try:
             best = None
             for k in range(2, min(max_k + 1, 6)):
-                km = MiniBatchKMeans(n_clusters=k, random_state=42, n_init=2, max_iter=100)
+                km = MiniBatchKMeans(
+                    n_clusters=k, random_state=42, n_init=2, max_iter=100
+                )
                 lab = km.fit_predict(Xs)
                 if np.unique(lab).size > 1:
                     s = calinski_harabasz_score(Xs, lab)
@@ -417,8 +450,13 @@ class ClusterAnalyzer(AnalysisStrategy):
         try:
             best = None
             for k in range(2, min(max_k + 1, 8)):
-                g = GaussianMixture(n_components=k, covariance_type="diag", n_init=1, 
-                                  max_iter=100, random_state=42)
+                g = GaussianMixture(
+                    n_components=k,
+                    covariance_type="diag",
+                    n_init=1,
+                    max_iter=100,
+                    random_state=42,
+                )
                 g.fit(Xs)
                 if g.converged_:
                     bic = g.bic(Xs)
@@ -430,8 +468,13 @@ class ClusterAnalyzer(AnalysisStrategy):
             pass
 
         if len(methods) >= 2:
-            weights = {"silhouette": 0.35, "calinski_harabasz": 0.25, "elbow": 0.20, 
-                      "gap_statistic": 0.10, "gmm_bic": 0.10}
+            weights = {
+                "silhouette": 0.35,
+                "calinski_harabasz": 0.25,
+                "elbow": 0.20,
+                "gap_statistic": 0.10,
+                "gmm_bic": 0.10,
+            }
             wsum = sum(weights.get(m, 0.15) * k for m, k in methods.items())
             wtot = sum(weights.get(m, 0.15) for m in methods)
             kopt = int(np.round(wsum / max(wtot, 1e-9)))
@@ -443,7 +486,12 @@ class ClusterAnalyzer(AnalysisStrategy):
         else:
             kopt, conf, agree = min(3, max_k), "low", 0
 
-        return {"optimal_k": kopt, "methods": methods, "confidence": conf, "method_agreement": agree}
+        return {
+            "optimal_k": kopt,
+            "methods": methods,
+            "confidence": conf,
+            "method_agreement": agree,
+        }
 
     # --------------------------- SOTA KMeans with Stability ---------------------------
     def _sota_kmeans_analysis(
@@ -460,7 +508,9 @@ class ClusterAnalyzer(AnalysisStrategy):
         for k in k_range:
             try:
                 if len(data) > 10000:
-                    KM, extra = MiniBatchKMeans, {"batch_size": min(2000, len(data) // 5)}
+                    KM, extra = MiniBatchKMeans, {
+                        "batch_size": min(2000, len(data) // 5)
+                    }
                 else:
                     KM, extra = KMeans, {}
 
@@ -468,8 +518,14 @@ class ClusterAnalyzer(AnalysisStrategy):
                 models = []
                 for init in ["k-means++", "random"]:
                     try:
-                        km = KM(n_clusters=k, init=init, n_init=10 if len(data) < 5000 else 5,
-                                max_iter=300, random_state=getattr(config, "random_state", 42), **extra)
+                        km = KM(
+                            n_clusters=k,
+                            init=init,
+                            n_init=10 if len(data) < 5000 else 5,
+                            max_iter=300,
+                            random_state=getattr(config, "random_state", 42),
+                            **extra,
+                        )
                         lab = km.fit_predict(data)
                         labels_runs.append(lab)
                         models.append((km, lab))
@@ -484,12 +540,20 @@ class ClusterAnalyzer(AnalysisStrategy):
                 boot = 5 if len(data) <= 10000 else 3
                 for _ in range(boot):
                     try:
-                        idx = rng.choice(len(data), size=min(len(data), 2000), replace=False)
+                        idx = rng.choice(
+                            len(data), size=min(len(data), 2000), replace=False
+                        )
                         labs = []
                         for init in ["k-means++", "random"]:
                             try:
-                                km = KM(n_clusters=k, init=init, n_init=1, max_iter=100,
-                                        random_state=int(rng.integers(1_000_000)), **extra)
+                                km = KM(
+                                    n_clusters=k,
+                                    init=init,
+                                    n_init=1,
+                                    max_iter=100,
+                                    random_state=int(rng.integers(1_000_000)),
+                                    **extra,
+                                )
                                 labs.append(km.fit_predict(data[idx]))
                             except Exception:
                                 continue
@@ -497,22 +561,40 @@ class ClusterAnalyzer(AnalysisStrategy):
                             stab_scores.append(adjusted_rand_score(labs[0], labs[1]))
                     except Exception:
                         continue
-                
+
                 avg_stab = float(np.mean(stab_scores)) if stab_scores else 0.0
 
                 # choose best by silhouette
-                model, labels = max(models, key=lambda x: _safe_silhouette(data, x[1]) if np.unique(x[1]).size > 1 else -1)
+                model, labels = max(
+                    models,
+                    key=lambda x: (
+                        _safe_silhouette(data, x[1]) if np.unique(x[1]).size > 1 else -1
+                    ),
+                )
                 s = _safe_silhouette(data, labels)
-                
+
                 try:
-                    ch = calinski_harabasz_score(data, labels) if np.unique(labels).size > 1 else 0.0
-                    db = davies_bouldin_score(data, labels) if np.unique(labels).size > 1 else np.inf
+                    ch = (
+                        calinski_harabasz_score(data, labels)
+                        if np.unique(labels).size > 1
+                        else 0.0
+                    )
+                    db = (
+                        davies_bouldin_score(data, labels)
+                        if np.unique(labels).size > 1
+                        else np.inf
+                    )
                 except Exception:
                     ch, db = 0.0, np.inf
 
                 sizes = np.bincount(labels)
                 balance = 1 - (np.std(sizes) / (np.mean(sizes) + 1e-10))
-                comp = s * 0.35 + avg_stab * 0.25 + balance * 0.20 + (1 - min(db / 10.0, 1.0)) * 0.20
+                comp = (
+                    s * 0.35
+                    + avg_stab * 0.25
+                    + balance * 0.20
+                    + (1 - min(db / 10.0, 1.0)) * 0.20
+                )
 
                 res = {
                     "k": int(k),
@@ -547,12 +629,18 @@ class ClusterAnalyzer(AnalysisStrategy):
             except Exception:
                 return {}
 
-        best_result.update({
-            "best_k": int(best_result.get("k", optimal_k)),
-            "centers": best_result["model"].cluster_centers_ if hasattr(best_result["model"], "cluster_centers_") else None,
-            "method_type": "centroid_based",
-            "all_k_results": all_results,
-        })
+        best_result.update(
+            {
+                "best_k": int(best_result.get("k", optimal_k)),
+                "centers": (
+                    best_result["model"].cluster_centers_
+                    if hasattr(best_result["model"], "cluster_centers_")
+                    else None
+                ),
+                "method_type": "centroid_based",
+                "all_k_results": all_results,
+            }
+        )
         return best_result
 
     # --------------------------- Fast Hierarchical ---------------------------
@@ -570,7 +658,9 @@ class ClusterAnalyzer(AnalysisStrategy):
         best, best_s = None, -1
         for method in ["ward", "complete", "average"]:
             try:
-                agg = AgglomerativeClustering(n_clusters=kopt, linkage=method, metric="euclidean")
+                agg = AgglomerativeClustering(
+                    n_clusters=kopt, linkage=method, metric="euclidean"
+                )
                 if n > 1500:
                     lab_s = agg.fit_predict(Xs)
                     # Use nearest neighbor assignment for full dataset
@@ -580,12 +670,16 @@ class ClusterAnalyzer(AnalysisStrategy):
                         lab = lab_s[nn_idx.ravel()]
                     except Exception:
                         # Fallback: assign based on closest centroid
-                        centroids = np.array([Xs[lab_s == i].mean(axis=0) for i in np.unique(lab_s)])
-                        distances = np.linalg.norm(data[:, None, :] - centroids[None, :, :], axis=2)
+                        centroids = np.array(
+                            [Xs[lab_s == i].mean(axis=0) for i in np.unique(lab_s)]
+                        )
+                        distances = np.linalg.norm(
+                            data[:, None, :] - centroids[None, :, :], axis=2
+                        )
                         lab = np.argmin(distances, axis=1)
                 else:
                     lab = agg.fit_predict(data)
-                
+
                 s = _safe_silhouette(data, lab)
                 if s > best_s:
                     best_s = s
@@ -612,10 +706,12 @@ class ClusterAnalyzer(AnalysisStrategy):
         return best if best else {}
 
     # --------------------------- Smart Density-Based ---------------------------
-    def _smart_density_clustering(self, data: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+    def _smart_density_clustering(
+        self, data: np.ndarray, config: AnalysisConfig
+    ) -> Dict[str, Any]:
         results = {}
         n, d = data.shape
-        
+
         # DBSCAN with improved parameter selection
         try:
             k = max(3, min(int(np.sqrt(d) * 2), n // 20, 10))
@@ -624,25 +720,25 @@ class ClusterAnalyzer(AnalysisStrategy):
                 Xs = data[idx]
             else:
                 Xs = data
-                
+
             nn = NearestNeighbors(n_neighbors=k).fit(Xs)
             dist, _ = nn.kneighbors(Xs)
             kdist = np.sort(dist[:, k - 1])
-            
+
             # Better eps selection using knee detection
             eps_idx = _kneedle_idx(kdist)
             eps = float(kdist[eps_idx])
-            
+
             if eps <= 0 or not np.isfinite(eps):
                 eps = float(np.percentile(kdist, 90))  # Use 90th percentile as fallback
-                
+
             min_samples = max(3, k)
-            
+
             db = DBSCAN(eps=eps, min_samples=min_samples)
             labels = db.fit_predict(data)
             nc = self._count_clusters(labels)
             n_noise = int((labels == -1).sum())
-            
+
             res = {
                 "labels": labels,
                 "model": db,
@@ -654,7 +750,7 @@ class ClusterAnalyzer(AnalysisStrategy):
                 "cluster_sizes": dict(Counter(labels[labels != -1])),
                 "method_type": "density_based",
             }
-            
+
             if nc > 1 and n_noise < len(labels):
                 mask = labels != -1
                 if mask.sum() > 1 and np.unique(labels[mask]).size > 1:
@@ -666,15 +762,20 @@ class ClusterAnalyzer(AnalysisStrategy):
         # HDBSCAN optional (improved error handling)
         try:
             import hdbscan
+
             if n <= 10000:
                 mcs = max(5, n // 100)
                 ms = max(1, mcs // 3)
-                clusterer = hdbscan.HDBSCAN(min_cluster_size=mcs, min_samples=ms, 
-                                          cluster_selection_method="eom", core_dist_n_jobs=1)
+                clusterer = hdbscan.HDBSCAN(
+                    min_cluster_size=mcs,
+                    min_samples=ms,
+                    cluster_selection_method="eom",
+                    core_dist_n_jobs=1,
+                )
                 lab = clusterer.fit_predict(data)
                 nc = self._count_clusters(lab)
                 n_noise = int((lab == -1).sum())
-                
+
                 res = {
                     "labels": lab,
                     "model": clusterer,
@@ -711,14 +812,22 @@ class ClusterAnalyzer(AnalysisStrategy):
 
         # GMM (capped search) with improved error handling
         try:
-            cov_types = ["diag", "spherical"] if (d > 20 or n < d * 5) else ["full", "diag"]
+            cov_types = (
+                ["diag", "spherical"] if (d > 20 or n < d * 5) else ["full", "diag"]
+            )
             best_gmm, best_bic, best_labels = None, np.inf, None
-            
+
             for cov in cov_types:
                 for k in k_range:
                     try:
-                        g = GaussianMixture(n_components=k, covariance_type=cov, max_iter=100, n_init=2,
-                                            random_state=getattr(config, "random_state", 42), reg_covar=1e-6)
+                        g = GaussianMixture(
+                            n_components=k,
+                            covariance_type=cov,
+                            max_iter=100,
+                            n_init=2,
+                            random_state=getattr(config, "random_state", 42),
+                            reg_covar=1e-6,
+                        )
                         g.fit(data)
                         if g.converged_:
                             bic = g.bic(data)
@@ -727,7 +836,7 @@ class ClusterAnalyzer(AnalysisStrategy):
                                 best_labels = g.predict(data)
                     except Exception:
                         continue
-                        
+
             if best_gmm is not None:
                 try:
                     probs = best_gmm.predict_proba(data)
@@ -755,14 +864,17 @@ class ClusterAnalyzer(AnalysisStrategy):
         # Bayesian GMM (small n) with improved handling
         if n <= 3000:
             try:
-                bg = BayesianGaussianMixture(n_components=min(15, max_k * 2), 
-                                             covariance_type="diag" if d > 10 else "full",
-                                             max_iter=100, random_state=getattr(config, "random_state", 42),
-                                             reg_covar=1e-6)
+                bg = BayesianGaussianMixture(
+                    n_components=min(15, max_k * 2),
+                    covariance_type="diag" if d > 10 else "full",
+                    max_iter=100,
+                    random_state=getattr(config, "random_state", 42),
+                    reg_covar=1e-6,
+                )
                 bg.fit(data)
                 lab = bg.predict(data)
                 eff = int(np.sum(bg.weights_ > 0.01))
-                
+
                 res = {
                     "labels": lab,
                     "probabilities": bg.predict_proba(data).tolist(),
@@ -782,7 +894,9 @@ class ClusterAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- SOTA Advanced Methods ---------------------------
-    def _sota_advanced_clustering(self, data: np.ndarray, config: AnalysisConfig, optimal_k_info: Dict[str, Any]) -> Dict[str, Any]:
+    def _sota_advanced_clustering(
+        self, data: np.ndarray, config: AnalysisConfig, optimal_k_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
         results = {}
         n = data.shape[0]
         kopt = int(optimal_k_info["optimal_k"])
@@ -791,14 +905,23 @@ class ClusterAnalyzer(AnalysisStrategy):
         if n <= 2000:
             try:
                 sample_size = min(500, n)
-                sample = data[:sample_size] if n == sample_size else data[np.random.choice(n, sample_size, replace=False)]
+                sample = (
+                    data[:sample_size]
+                    if n == sample_size
+                    else data[np.random.choice(n, sample_size, replace=False)]
+                )
                 gamma = _median_heuristic_gamma(sample)
-                
-                sp = SpectralClustering(n_clusters=kopt, affinity="rbf", gamma=gamma,
-                                        random_state=getattr(config, "random_state", 42), 
-                                        assign_labels="kmeans", n_jobs=1)
+
+                sp = SpectralClustering(
+                    n_clusters=kopt,
+                    affinity="rbf",
+                    gamma=gamma,
+                    random_state=getattr(config, "random_state", 42),
+                    assign_labels="kmeans",
+                    n_jobs=1,
+                )
                 lab = sp.fit_predict(data)
-                
+
                 res = {
                     "labels": lab,
                     "model": sp,
@@ -820,9 +943,15 @@ class ClusterAnalyzer(AnalysisStrategy):
 
                 # Use a subset for bandwidth estimation if data is large
                 sample_size = min(300, n)
-                sample_data = data[:sample_size] if n == sample_size else data[np.random.choice(n, sample_size, replace=False)]
-                
-                bw = estimate_bandwidth(sample_data, quantile=0.2, n_samples=sample_size)
+                sample_data = (
+                    data[:sample_size]
+                    if n == sample_size
+                    else data[np.random.choice(n, sample_size, replace=False)]
+                )
+
+                bw = estimate_bandwidth(
+                    sample_data, quantile=0.2, n_samples=sample_size
+                )
                 if np.isfinite(bw) and bw > 0:
                     ms = MeanShift(bandwidth=bw, n_jobs=1)
                     lab = ms.fit_predict(data)
@@ -849,17 +978,25 @@ class ClusterAnalyzer(AnalysisStrategy):
 
                 # Better preference estimation
                 sample_size = min(200, n)
-                sample_data = data[:sample_size] if n == sample_size else data[np.random.choice(n, sample_size, replace=False)]
-                
+                sample_data = (
+                    data[:sample_size]
+                    if n == sample_size
+                    else data[np.random.choice(n, sample_size, replace=False)]
+                )
+
                 # Use negative median distance as preference
                 if sample_size > 1:
                     distances = pdist(sample_data)
                     pref = -np.median(distances) if len(distances) > 0 else -1.0
                 else:
                     pref = -1.0
-                
-                ap = AffinityPropagation(preference=pref, max_iter=200, convergence_iter=15,
-                                         random_state=getattr(config, "random_state", 42))
+
+                ap = AffinityPropagation(
+                    preference=pref,
+                    max_iter=200,
+                    convergence_iter=15,
+                    random_state=getattr(config, "random_state", 42),
+                )
                 lab = ap.fit_predict(data)
                 nc = self._count_clusters(lab)
                 if nc > 1 and nc < n // 3:  # Reasonable number of clusters
@@ -868,7 +1005,11 @@ class ClusterAnalyzer(AnalysisStrategy):
                         "model": ap,
                         "n_clusters": nc,
                         "cluster_sizes": dict(Counter(lab)),
-                        "n_exemplars": 0 if ap.cluster_centers_indices_ is None else int(len(ap.cluster_centers_indices_)),
+                        "n_exemplars": (
+                            0
+                            if ap.cluster_centers_indices_ is None
+                            else int(len(ap.cluster_centers_indices_))
+                        ),
                         "preference": float(pref),
                         "method_type": "exemplar_based",
                     }
@@ -880,7 +1021,9 @@ class ClusterAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- Improved Ensemble Method ---------------------------
-    def _lightning_ensemble(self, all_results: Dict[str, Any], data: np.ndarray) -> Dict[str, Any]:
+    def _lightning_ensemble(
+        self, all_results: Dict[str, Any], data: np.ndarray
+    ) -> Dict[str, Any]:
         """Simplified but robust ensemble voting method"""
         if len(all_results) < 2:
             return {}
@@ -891,7 +1034,9 @@ class ClusterAnalyzer(AnalysisStrategy):
             if "labels" in res and len(res["labels"]) == len(data):
                 labels = np.asarray(res["labels"])
                 # Skip if too much noise or degenerate clustering
-                if (labels == -1).mean() < 0.7 and len(np.unique(labels[labels != -1])) > 1:
+                if (labels == -1).mean() < 0.7 and len(
+                    np.unique(labels[labels != -1])
+                ) > 1:
                     valid_results[name] = labels
 
         if len(valid_results) < 2:
@@ -901,15 +1046,15 @@ class ClusterAnalyzer(AnalysisStrategy):
         # Use simple majority voting with label alignment
         ref_name = next(iter(valid_results.keys()))
         ref_labels = valid_results[ref_name]
-        
+
         # Simple ensemble: for each point, find the most common cluster assignment
         # First, align all labelings to the reference using Hungarian algorithm
         aligned_results = {ref_name: ref_labels}
-        
+
         for name, labels in valid_results.items():
             if name == ref_name:
                 continue
-                
+
             try:
                 # Align labels to reference
                 aligned = self._align_labels(labels, ref_labels)
@@ -917,41 +1062,41 @@ class ClusterAnalyzer(AnalysisStrategy):
             except Exception:
                 # Skip if alignment fails
                 continue
-        
+
         if len(aligned_results) < 2:
             return {}
-        
+
         # Majority voting
         final_labels = np.full(n, -1, dtype=int)
         consensus_strength = np.zeros(n)
-        
+
         for i in range(n):
             votes = {}
             total_votes = 0
-            
+
             for labels in aligned_results.values():
                 label = labels[i]
                 if label != -1:  # Don't count noise votes
                     votes[label] = votes.get(label, 0) + 1
                     total_votes += 1
-            
+
             if votes:
                 best_label = max(votes, key=votes.get)
                 final_labels[i] = best_label
                 consensus_strength[i] = votes[best_label] / max(1, total_votes)
-        
+
         # Calculate overall metrics
         nc = self._count_clusters(final_labels)
         if nc < 2:
             return {}
-            
+
         try:
             sil = _safe_silhouette(data, final_labels)
         except Exception:
             sil = -1.0
-        
+
         avg_consensus = float(np.mean(consensus_strength))
-        
+
         return {
             "labels": final_labels,
             "n_clusters": nc,
@@ -963,47 +1108,53 @@ class ClusterAnalyzer(AnalysisStrategy):
             "participating_methods": list(aligned_results.keys()),
             "method_type": "ensemble",
         }
-    
-    def _align_labels(self, labels_to_align: np.ndarray, reference_labels: np.ndarray) -> np.ndarray:
+
+    def _align_labels(
+        self, labels_to_align: np.ndarray, reference_labels: np.ndarray
+    ) -> np.ndarray:
         """Align cluster labels using Hungarian algorithm"""
         # Only consider non-noise points for alignment
         mask = (labels_to_align != -1) & (reference_labels != -1)
         if not np.any(mask):
             return labels_to_align.copy()
-        
+
         la_clean = labels_to_align[mask]
         ref_clean = reference_labels[mask]
-        
+
         # Get unique labels
         la_unique = np.unique(la_clean)
         ref_unique = np.unique(ref_clean)
-        
+
         if len(la_unique) == 0 or len(ref_unique) == 0:
             return labels_to_align.copy()
-        
+
         # Build confusion matrix
         confusion = np.zeros((len(la_unique), len(ref_unique)))
         for i, la_label in enumerate(la_unique):
             for j, ref_label in enumerate(ref_unique):
-                confusion[i, j] = np.sum((la_clean == la_label) & (ref_clean == ref_label))
-        
+                confusion[i, j] = np.sum(
+                    (la_clean == la_label) & (ref_clean == ref_label)
+                )
+
         # Hungarian algorithm to find optimal mapping
         row_idx, col_idx = linear_sum_assignment(-confusion)
-        
+
         # Create mapping
         mapping = {}
         for i, j in zip(row_idx, col_idx):
             mapping[la_unique[i]] = ref_unique[j]
-        
+
         # Apply mapping
         aligned = labels_to_align.copy()
         for old_label, new_label in mapping.items():
             aligned[labels_to_align == old_label] = new_label
-        
+
         return aligned
 
     # --------------------------- Fast Evaluation ---------------------------
-    def _fast_evaluation(self, all_results: Dict[str, Any], data: np.ndarray) -> Dict[str, Any]:
+    def _fast_evaluation(
+        self, all_results: Dict[str, Any], data: np.ndarray
+    ) -> Dict[str, Any]:
         evaluations: Dict[str, Any] = {}
         for name, res in all_results.items():
             lab = res.get("labels")
@@ -1014,14 +1165,14 @@ class ClusterAnalyzer(AnalysisStrategy):
                 uniq = set(L)
                 n_clusters = len(uniq) - (1 if -1 in uniq else 0)
                 n_noise = int((L == -1).sum())
-                
+
                 ev = {
                     "n_clusters": int(n_clusters),
                     "n_noise_points": n_noise,
                     "noise_ratio": float(n_noise / len(L)),
                     "method_type": res.get("method_type", "unknown"),
                 }
-                
+
                 # Add silhouette score
                 if "silhouette" in res:
                     ev["silhouette_score"] = float(res["silhouette"])
@@ -1029,89 +1180,104 @@ class ClusterAnalyzer(AnalysisStrategy):
                     mask = L != -1
                     if mask.sum() > 1 and np.unique(L[mask]).size > 1:
                         ev["silhouette_score"] = _safe_silhouette(data[mask], L[mask])
-                
+
                 # Add cluster balance metric
                 if n_clusters > 1:
                     nz = L[L != -1]
                     if nz.size > 0:
                         cs = np.bincount(nz)
                         if len(cs) > 1:
-                            ev["cluster_balance"] = float(1 - (np.std(cs) / (np.mean(cs) + 1e-10)))
-                
+                            ev["cluster_balance"] = float(
+                                1 - (np.std(cs) / (np.mean(cs) + 1e-10))
+                            )
+
                 # Add stability if available
                 if "stability" in res:
                     ev["stability_score"] = float(res["stability"])
-                
+
                 # Add consensus strength if available
                 if "consensus_strength" in res:
                     ev["consensus_strength"] = float(res["consensus_strength"])
-                    
+
                 evaluations[name] = ev
             except Exception as e:
                 evaluations[name] = {"error": str(e)}
-                
+
         return evaluations
 
     # --------------------------- Smart Recommendations ---------------------------
     def _smart_recommendations(
-        self, all_results: Dict[str, Any], evaluations: Dict[str, Any],
-        optimal_k_info: Dict[str, Any], preprocessing_info: Dict[str, Any]
+        self,
+        all_results: Dict[str, Any],
+        evaluations: Dict[str, Any],
+        optimal_k_info: Dict[str, Any],
+        preprocessing_info: Dict[str, Any],
     ) -> List[str]:
         recs: List[str] = []
         scores = {}
-        
+
         # Calculate composite scores for each method
         for m, ev in evaluations.items():
             if "error" in ev:
                 continue
-            
+
             sc = 0.0
             sil = ev.get("silhouette_score", -1)
             if sil > 0:
                 sc += sil * 0.4
-            
+
             sc += ev.get("cluster_balance", 0) * 0.2
             sc += ev.get("stability_score", 0) * 0.2
             sc -= ev.get("noise_ratio", 0) * 0.3
-            
+
             # Bonus for ensemble methods
             if ev.get("method_type") == "ensemble":
                 sc += 0.1
-            
+
             # Bonus for optimal k agreement
             nk = ev.get("n_clusters", 0)
             ok = optimal_k_info.get("optimal_k", 3)
             if abs(nk - ok) <= 1:
                 sc += 0.1
-                
+
             scores[m] = max(0.0, sc)
 
         # Generate recommendations based on best method and data characteristics
         if scores:
             best = max(scores, key=scores.get)
-            recs.append(f"Best method: {best.upper().replace('_', ' ')} (score: {scores[best]:.3f})")
-            
+            recs.append(
+                f"Best method: {best.upper().replace('_', ' ')} (score: {scores[best]:.3f})"
+            )
+
             ev = evaluations[best]
             typ = ev.get("method_type", "")
-            
+
             # Method-specific recommendations
             if "density" in typ:
                 if ev.get("noise_ratio", 0) > 0.15:
-                    recs.append("High noise ratio detected — consider tuning eps/min_samples or revisiting preprocessing.")
+                    recs.append(
+                        "High noise ratio detected — consider tuning eps/min_samples or revisiting preprocessing."
+                    )
                 else:
-                    recs.append("Density clustering effectively separated noise from structure.")
+                    recs.append(
+                        "Density clustering effectively separated noise from structure."
+                    )
             elif typ == "probabilistic":
                 br = all_results.get(best, {})
                 if "mean_certainty" in br:
                     c = br["mean_certainty"]
                     if c > 0.8:
-                        recs.append("High assignment certainty indicates well-separated clusters.")
+                        recs.append(
+                            "High assignment certainty indicates well-separated clusters."
+                        )
                     else:
                         recs.append("Moderate certainty suggests overlapping clusters.")
             elif typ == "ensemble":
                 cs = ev.get("consensus_strength", 0)
                 if cs > 0.7:
-                    recs.append("Strong cross-method consensus validates clustering structure.")
+                    recs.append(
+                        "Strong cross-method consensus validates clustering structure."
+                    )
                 else:
                     recs.append("Moderate consensus — inspect method disagreements.")
             elif typ == "spectral":
@@ -1119,17 +1285,21 @@ class ClusterAnalyzer(AnalysisStrategy):
 
         # Data-specific recommendations
         if preprocessing_info.get("curse_of_dimensionality_risk", False):
-            recs.append("High dimensionality detected — consider PCA or feature selection.")
-        
+            recs.append(
+                "High dimensionality detected — consider PCA or feature selection."
+            )
+
         conf = optimal_k_info.get("confidence", "low")
         ok = optimal_k_info.get("optimal_k", 3)
-        
+
         if conf == "high":
             recs.append(f"Strong evidence supports {ok} clusters.")
         elif conf == "medium":
             recs.append(f"Consider testing {ok-1} to {ok+1} clusters for validation.")
         else:
-            recs.append("Unclear cluster structure — verify if clustering is appropriate for this data.")
+            recs.append(
+                "Unclear cluster structure — verify if clustering is appropriate for this data."
+            )
 
         return recs[:5]
 
@@ -1139,7 +1309,9 @@ class ClusterAnalyzer(AnalysisStrategy):
             X, preprocessing_info = self._lightning_preprocessing(data, config)
             n_samples, n_features = X.shape
 
-            optimal_k_info = self._fast_optimal_k(X, getattr(config, "max_clusters", 12))
+            optimal_k_info = self._fast_optimal_k(
+                X, getattr(config, "max_clusters", 12)
+            )
 
             clustering_results: Dict[str, Any] = {}
 
@@ -1171,7 +1343,9 @@ class ClusterAnalyzer(AnalysisStrategy):
             # Probabilistic for medium datasets
             if n_samples <= self.medium_threshold:
                 try:
-                    prob = self._fast_probabilistic_clustering(X, config, optimal_k_info)
+                    prob = self._fast_probabilistic_clustering(
+                        X, config, optimal_k_info
+                    )
                     clustering_results.update(prob)
                 except Exception:
                     pass
@@ -1194,11 +1368,16 @@ class ClusterAnalyzer(AnalysisStrategy):
                     pass
 
             evaluations = self._fast_evaluation(clustering_results, X)
-            recommendations = self._smart_recommendations(clustering_results, evaluations, optimal_k_info, preprocessing_info)
+            recommendations = self._smart_recommendations(
+                clustering_results, evaluations, optimal_k_info, preprocessing_info
+            )
 
             # Determine performance tier
             if n_samples < self.fast_threshold:
-                perf_tier, tier_desc = "comprehensive", "All clustering methods available"
+                perf_tier, tier_desc = (
+                    "comprehensive",
+                    "All clustering methods available",
+                )
             elif n_samples < self.medium_threshold:
                 perf_tier, tier_desc = "standard", "Core and probabilistic methods"
             elif n_samples < self.large_threshold:
@@ -1221,10 +1400,24 @@ class ClusterAnalyzer(AnalysisStrategy):
                 },
                 "recommendations": recommendations,
                 "summary": {
-                    "methods_attempted": len([r for r in clustering_results.values() if isinstance(r, dict)]),
-                    "successful_methods": len([r for r in clustering_results.values() if isinstance(r, dict) and "labels" in r]),
-                    "best_method": (max(evaluations.keys(), key=lambda k: evaluations[k].get("silhouette_score", -1))
-                                    if evaluations else None),
+                    "methods_attempted": len(
+                        [r for r in clustering_results.values() if isinstance(r, dict)]
+                    ),
+                    "successful_methods": len(
+                        [
+                            r
+                            for r in clustering_results.values()
+                            if isinstance(r, dict) and "labels" in r
+                        ]
+                    ),
+                    "best_method": (
+                        max(
+                            evaluations.keys(),
+                            key=lambda k: evaluations[k].get("silhouette_score", -1),
+                        )
+                        if evaluations
+                        else None
+                    ),
                     "ensemble_available": "ensemble" in clustering_results,
                     "adaptive_selection": True,
                 },
@@ -1240,5 +1433,9 @@ class ClusterAnalyzer(AnalysisStrategy):
             return {
                 "error": f"Clustering analysis failed: {str(e)}",
                 "fallback_available": True,
-                "recommendations": ["Consider data preprocessing", "Check data quality", "Verify numeric data availability"],
+                "recommendations": [
+                    "Consider data preprocessing",
+                    "Check data quality",
+                    "Verify numeric data availability",
+                ],
             }

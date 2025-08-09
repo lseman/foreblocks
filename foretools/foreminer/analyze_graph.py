@@ -1,16 +1,9 @@
-import warnings
-from collections import Counter, defaultdict
-from itertools import combinations
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from collections import defaultdict
+from typing import Any, Dict
 
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
-import seaborn as sns
-from scipy import stats
-from scipy.sparse import csr_matrix
-from scipy.spatial.distance import pdist, squareform
 from sklearn.cluster import SpectralClustering
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.preprocessing import StandardScaler
