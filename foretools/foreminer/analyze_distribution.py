@@ -1,4 +1,5 @@
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List
 
 import numpy as np
@@ -15,141 +16,97 @@ from scipy.stats import (
 from sklearn.exceptions import ConvergenceWarning
 from statsmodels.tools.sm_exceptions import ValueWarning
 
-from .foreminer_aux import *
-
-# —————————— Warnings ——————————
+# Suppress warnings
 for cat in (RuntimeWarning, FutureWarning, UserWarning, ConvergenceWarning, ValueWarning):
     warnings.filterwarnings("ignore", category=cat)
 
 
-class DistributionAnalyzer(AnalysisStrategy):
-    """SOTA Distribution Analyzer with advanced statistical diagnostics."""
+class DistributionAnalyzer:
+    """Optimized Distribution Analyzer with batched + parallel computations."""
 
     @property
     def name(self) -> str:
         return "distributions"
 
-    # —————————— Public API ——————————
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
-        numeric_cols: List[str] = data.select_dtypes(include=[np.number]).columns.tolist()
-        rows: List[Dict[str, Any]] = []
-
-        for col in numeric_cols:
-            x = data[col].dropna()
-            if len(x) < 8:
-                continue
-            try:
-                rows.append(self._compute_stats(x, col, config))
-            except Exception as e:
-                # Keep the same behavior: log and continue
-                print(f"[⚠️] Failed to analyze {col}: {e}")
-
-            # Optional: if you want to be quieter, just pass
-            # except Exception:
-            #     pass
-
+    def analyze(self, data: pd.DataFrame, config) -> Dict[str, Any]:
+        numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
+        
+        # Pre-filter columns with sufficient data
+        valid_cols = [c for c in numeric_cols if data[c].count() >= 8]
+        if not valid_cols:
+            return {"summary": pd.DataFrame()}
+        
+        # Parallel compute stats
+        rows = self._batch_compute_stats(data[valid_cols], config)
         return {"summary": pd.DataFrame(rows)}
 
-    # —————————— Helpers ——————————
-    @staticmethod
-    def _freedman_bins(x: pd.Series, max_bins: int = 80) -> int:
-        """Freedman–Diaconis rule, capped for stability."""
-        q1, q3 = x.quantile([0.25, 0.75])
-        iqr = float(q3 - q1)
+    def _batch_compute_stats(self, data: pd.DataFrame, cfg) -> List[Dict[str, Any]]:
+        """Parallel batch compute statistics for all columns."""
+        results = []
+        with ThreadPoolExecutor() as ex:
+            futures = {ex.submit(self._compute_one_col, data[col], col, cfg): col for col in data.columns}
+            for fut in as_completed(futures):
+                results.append(fut.result())
+        return results
+
+    def _compute_one_col(self, series: pd.Series, col: str, cfg) -> Dict[str, Any]:
+        """Compute stats for a single column."""
+        x = series.dropna()
         n = len(x)
-        if iqr <= 0 or n <= 1:
-            return 30  # fallback
-        bin_width = 2 * iqr / (n ** (1 / 3))
-        if bin_width <= 0:
-            return 30
-        bins = int(np.ceil((x.max() - x.min()) / bin_width))
-        return int(np.clip(bins, 10, max_bins))
+        x_values = x.to_numpy(dtype=np.float64, copy=False)
 
-    @staticmethod
-    def _hist_entropy(x: pd.Series) -> float:
-        """Histogram-based entropy with small epsilon for numerical stability."""
-        bins = DistributionAnalyzer._freedman_bins(x)
-        hist, _ = np.histogram(x, bins=bins, density=True)
-        hist = hist.astype(float) + 1e-12
-        return float(entropy(hist, base=2))
+        # Quantiles (NumPy version is faster than pandas)
+        q05, q25, q50, q75, q95 = np.quantile(x_values, [0.05, 0.25, 0.5, 0.75, 0.95])
 
-    @staticmethod
-    def _normality_tests(x: pd.Series, sample: pd.Series) -> Dict[str, float]:
-        """Run multiple normality tests safely; return NaN on failure."""
-        def _safe(callable_):
-            try:
-                return float(callable_())
-            except Exception:
-                return float("nan")
+        # Basic stats
+        mean_val = float(np.mean(x_values))
+        std_val = float(np.std(x_values, ddof=1))
+        min_val = float(np.min(x_values))
+        max_val = float(np.max(x_values))
 
-        p_norm = _safe(lambda: normaltest(x)[1])
-        p_shap = _safe(lambda: shapiro(sample)[1])
-        p_jb = _safe(lambda: jarque_bera(x)[1])
-        anderson_stat = _safe(lambda: anderson(x).statistic)
-
-        return {
-            "normaltest_p": p_norm,
-            "shapiro_p": p_shap,
-            "jarque_bera_p": p_jb,
-            "anderson_stat": anderson_stat,
-        }
-
-    @staticmethod
-    def _z_outlier_pct(x: pd.Series, mean: float, std: float, thr: float = 3.0) -> float:
-        if not np.isfinite(std) or std == 0:
-            return 0.0
-        z = (x - mean) / std
-        return float((z.abs() > thr).mean() * 100)
-
-    # —————————— Core computation ——————————
-    def _compute_stats(self, x: pd.Series, col: str, cfg: AnalysisConfig) -> Dict[str, Any]:
-        x = x.dropna()
-        n = len(x)
-        sample = x.sample(min(n, 5000), random_state=cfg.random_state)
-
-        # Central tendency & dispersion
-        mean = float(x.mean())
-        std = float(x.std())
-        min_val = float(x.min())
-        max_val = float(x.max())
+        # Pre-compute common values
         value_range = max_val - min_val
-        cv = (std / abs(mean)) if mean != 0 else np.nan
+        cv = (std_val / abs(mean_val)) if mean_val != 0 else np.nan
+        iqr = float(q75 - q25)
 
-        # Shape
-        skew_val = float(skew(x))
-        kurt_val = float(kurtosis(x, fisher=False))
+        # Shape statistics
+        skew_val = float(skew(x_values))
+        kurt_val = float(kurtosis(x_values, fisher=False))
         excess_kurt = kurt_val - 3.0
         bimodality_coeff = (skew_val**2 + 1.0) / kurt_val if kurt_val != 0 else np.nan
 
-        # Entropy (histogram)
-        ent = self._hist_entropy(x)
+        # Entropy
+        ent = self._fast_hist_entropy(x_values)
 
-        # Quantiles and tails
-        q1, q2, q3 = x.quantile([0.25, 0.5, 0.75])
-        iqr = float(q3 - q1)
-        lower_5 = float(x.quantile(0.05))
-        upper_95 = float(x.quantile(0.95))
-        denom = (lower_5 - min_val)
-        tail_ratio = ((max_val - upper_95) / (denom + 1e-12)) if denom > 0 else np.nan
+        # Tail ratio
+        denom = q05 - min_val
+        tail_ratio = ((max_val - q95) / (denom + 1e-12)) if denom > 0 else np.nan
 
-        # Normality tests
-        norm_tests = self._normality_tests(x, sample)
+        # Normality tests (sample if needed)
+        sample_size = min(n, 5000)
+        if sample_size < n:
+            sample_idx = np.random.RandomState(cfg.random_state).choice(n, sample_size, replace=False)
+            sample = x_values[sample_idx]
+        else:
+            sample = x_values
+        norm_tests = self._fast_normality_tests(x_values, sample)
 
-        # Flags (keep same logic)
+        # Flags
         is_gaussian = (
-            norm_tests["normaltest_p"] > cfg.confidence_level and abs(skew_val) < 1
+            norm_tests["normaltest_p"] > getattr(cfg, 'confidence_level', 0.05) and 
+            abs(skew_val) < 1
         )
         is_skewed = abs(skew_val) > 1
         is_heavy_tailed = kurt_val > 3
 
-        # Outliers (z > 3)
-        outlier_pct = self._z_outlier_pct(x, mean, std, thr=3.0)
+        # Outliers
+        outlier_pct = self._fast_z_outlier_pct(x_values, mean_val, std_val)
 
         return {
             "feature": col,
             "count": n,
-            "mean": mean,
-            "std": std,
+            "mean": mean_val,
+            "std": std_val,
             "min": min_val,
             "max": max_val,
             "range": value_range,
@@ -159,9 +116,9 @@ class DistributionAnalyzer(AnalysisStrategy):
             "excess_kurtosis": excess_kurt,
             "bimodality_coeff": bimodality_coeff,
             "entropy": ent,
-            "q1": float(q1),
-            "median": float(q2),
-            "q3": float(q3),
+            "q1": float(q25),
+            "median": float(q50),
+            "q3": float(q75),
             "iqr": iqr,
             "tail_ratio": float(tail_ratio),
             **norm_tests,
@@ -170,3 +127,40 @@ class DistributionAnalyzer(AnalysisStrategy):
             "is_heavy_tailed": bool(is_heavy_tailed),
             "outlier_pct_z>3": outlier_pct,
         }
+
+    @staticmethod
+    def _fast_hist_entropy(x_values: np.ndarray) -> float:
+        """Fast histogram entropy using numpy operations."""
+        try:
+            n = len(x_values)
+            bins = max(10, min(int(np.sqrt(n)), 80))
+            hist, _ = np.histogram(x_values, bins=bins, density=True)
+            hist = hist + 1e-12
+            return float(entropy(hist, base=2))
+        except Exception:
+            return np.nan
+
+    @staticmethod
+    def _fast_normality_tests(x: np.ndarray, sample: np.ndarray) -> Dict[str, float]:
+        """Optimized normality tests with better error handling."""
+        results = {}
+        tests = {
+            "normaltest_p": lambda: normaltest(x)[1],
+            "shapiro_p": lambda: shapiro(sample)[1] if len(sample) <= 5000 else np.nan,
+            "jarque_bera_p": lambda: jarque_bera(x)[1],
+            "anderson_stat": lambda: anderson(x).statistic,
+        }
+        for key, test_func in tests.items():
+            try:
+                results[key] = float(test_func())
+            except Exception:
+                results[key] = np.nan
+        return results
+
+    @staticmethod
+    def _fast_z_outlier_pct(x: np.ndarray, mean: float, std: float, thr: float = 3.0) -> float:
+        """Vectorized outlier percentage calculation."""
+        if not np.isfinite(std) or std == 0:
+            return 0.0
+        z = np.abs((x - mean) / std)
+        return float(np.mean(z > thr) * 100)

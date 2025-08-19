@@ -788,7 +788,8 @@ class DatasetAnalyzer:
                     print(f"\n{spec['label']}:")
                     for r in rel[ptype][:3]:
                         # Main metric
-                        f1, f2 = r["feature1"], r["feature2"]
+                        f1, f2 = r.get("feature1") or r.get("f1"), r.get("feature2") or r.get("f2")
+
                         for field, label, prec in spec["fields"]:
                             if field in r:
                                 val = r[field]
@@ -1917,37 +1918,32 @@ class DatasetAnalyzer:
             # Method performance overview
             if variable_analyses:
                 section("Statistical Methods Performance", 3)
-
                 # Count method usage and success rates
                 method_counts = {}
                 method_significant = {}
-
                 for var_results in variable_analyses.values():
-                    all_tests = {}
-                    all_tests.update(var_results.get("parametric_tests", {}))
-                    all_tests.update(var_results.get("nonparametric_tests", {}))
-                    all_tests.update(var_results.get("modern_methods", {}))
-
+                    # Updated to use the new structure
+                    all_tests = var_results.get("statistical_tests", {})
+                    
                     for test_name, test_result in all_tests.items():
                         if isinstance(test_result, dict) and "error" not in test_result:
                             method_name = test_result.get("method", test_name)
                             method_counts[method_name] = (
                                 method_counts.get(method_name, 0) + 1
                             )
-
                             if test_result.get("significant", False):
                                 method_significant[method_name] = (
                                     method_significant.get(method_name, 0) + 1
                                 )
-
-                print("   Method Usage and Success Rates:")
+                
+                print("📊 Method Usage and Success Rates:")
                 for method, count in sorted(
                     method_counts.items(), key=lambda x: x[1], reverse=True
                 )[:5]:
                     significant_count = method_significant.get(method, 0)
                     success_rate = (significant_count / count * 100) if count > 0 else 0
                     print(
-                        f"     • {method}: {count} uses, {significant_count} significant ({success_rate:.0f}%)"
+                        f"  • {method}: {count} uses, {significant_count} significant ({success_rate:.0f}%)"
                     )
 
             # Overall recommendations

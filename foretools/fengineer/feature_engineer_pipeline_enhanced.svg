@@ -1,0 +1,734 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600" viewBox="0 0 2400 1600">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+
+    <!-- Card gradients for each lane type -->
+    
+    <linearGradient id="cardGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.98"/>
+      <stop offset="100%" style="stop-color:#f8fafc;stop-opacity:0.92"/>
+    </linearGradient>
+    
+    <linearGradient id="numericalGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#dbeafe;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#bfdbfe;stop-opacity:0.5"/>
+    </linearGradient>
+    
+    <linearGradient id="categoricalGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fef3c7;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#fed7aa;stop-opacity:0.5"/>
+    </linearGradient>
+    
+    <linearGradient id="booleanGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#d1fae5;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#a7f3d0;stop-opacity:0.5"/>
+    </linearGradient>
+    
+    <linearGradient id="selectionGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e0e7ff;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#c7d2fe;stop-opacity:0.5"/>
+    </linearGradient>
+    
+    <linearGradient id="ingestGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f3f4f6;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#e5e7eb;stop-opacity:0.5"/>
+    </linearGradient>
+
+    <!-- Enhanced shadow filters -->
+    
+    <filter id="cardShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
+      <feOffset dx="0" dy="3" result="offset"/>
+      <feFlood flood-color="#000000" flood-opacity="0.12"/>
+      <feComposite in2="offset" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="laneShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="8"/>
+      <feOffset dx="0" dy="2" result="offset"/>
+      <feFlood flood-color="#000000" flood-opacity="0.08"/>
+      <feComposite in2="offset" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="headerShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
+      <feOffset dx="0" dy="2" result="offset"/>
+      <feFlood flood-color="#000000" flood-opacity="0.2"/>
+      <feComposite in2="offset" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Glow effect for active elements -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Modern arrow markers -->
+    <marker id="modernArrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto-start-reverse">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#3b82f6" stroke="#3b82f6" stroke-width="0.5"/>
+    </marker>
+
+    <marker id="glowArrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto-start-reverse">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#06b6d4" filter="url(#glow)"/>
+    </marker>
+
+    <!-- Grid pattern for background -->
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#334155" stroke-width="0.5" opacity="0.3"/>
+    </pattern>
+
+    <!-- Pattern for optional blocks -->
+    <pattern id="optionalPattern" patternUnits="userSpaceOnUse" width="8" height="8">
+      <rect width="8" height="8" fill="url(#cardGradient)"/>
+      <circle cx="4" cy="4" r="1" fill="#8b5cf6" opacity="0.4"/>
+    </pattern>
+  </defs>
+
+  <rect width="2400" height="1600" fill="url(#bgGradient)"/>
+  <rect width="2400" height="1600" fill="url(#grid)"/>
+
+  <g filter="url(#headerShadow)">
+    <text x="60" y="40" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="48" font-weight="800" fill="#ffffff" letter-spacing="-0.02em">
+      Feature Engineering Pipeline
+    </text>
+    <text x="60" y="75" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="18" font-weight="500" fill="#94a3b8">
+      State-of-the-art ML preprocessing with advanced mathematical transforms
+    </text>
+    <text x="60" y="98" font-family="JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace" font-size="14" fill="#64748b">
+      v2025.08 • Enhanced Pedagogical Architecture
+    </text>
+  </g>
+
+    <rect x="60" y="160" width="2280" height="140" rx="20" 
+          fill="url(#ingestGradient)" stroke="#06b6d4" stroke-width="2" 
+          filter="url(#laneShadow)" opacity="0.8"/>
+    <rect x="60" y="160" width="8" height="140" rx="20" fill="#06b6d4"/>
+    <text x="80" y="195" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="20" 
+          font-weight="700" fill="#06b6d4">Data Ingestion &amp; Type Inference</text>
+    
+    <rect x="60" y="320" width="2280" height="380" rx="20" 
+          fill="url(#numericalGradient)" stroke="#3b82f6" stroke-width="2" 
+          filter="url(#laneShadow)" opacity="0.8"/>
+    <rect x="60" y="320" width="8" height="380" rx="20" fill="#3b82f6"/>
+    <text x="80" y="355" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="20" 
+          font-weight="700" fill="#3b82f6">Numerical Feature Engineering</text>
+    
+    <rect x="60" y="720" width="2280" height="180" rx="20" 
+          fill="url(#categoricalGradient)" stroke="#f59e0b" stroke-width="2" 
+          filter="url(#laneShadow)" opacity="0.8"/>
+    <rect x="60" y="720" width="8" height="180" rx="20" fill="#f59e0b"/>
+    <text x="80" y="755" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="20" 
+          font-weight="700" fill="#f59e0b">Categorical Feature Processing</text>
+    
+    <rect x="60" y="920" width="2280" height="160" rx="20" 
+          fill="url(#booleanGradient)" stroke="#10b981" stroke-width="2" 
+          filter="url(#laneShadow)" opacity="0.8"/>
+    <rect x="60" y="920" width="8" height="160" rx="20" fill="#10b981"/>
+    <text x="80" y="955" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="20" 
+          font-weight="700" fill="#10b981">Boolean Feature Handling</text>
+    
+    <rect x="60" y="1120" width="2280" height="160" rx="20" 
+          fill="url(#selectionGradient)" stroke="#8b5cf6" stroke-width="2" 
+          filter="url(#laneShadow)" opacity="0.8"/>
+    <rect x="60" y="1120" width="8" height="160" rx="20" fill="#8b5cf6"/>
+    <text x="80" y="1155" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="20" 
+          font-weight="700" fill="#8b5cf6">Feature Selection &amp; Output</text>
+    
+    <rect x="80" y="210" width="320" height="110" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="100" y="238" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Raw Data Input</text>
+    
+        <rect x="320" y="198" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="355" y="214" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="100" y="260" font-family="JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace" font-size="13" 
+                      fill="#3b82f6" font-weight="500">X ∈ ℝⁿˣᵖ, y ∈ ℝⁿ</text>
+                
+                <text x="100" y="278" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Heterogeneous data types</text>
+                
+                <text x="100" y="296" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Missing value patterns</text>
+                
+                <text x="100" y="314" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Mixed numerical/categorical</text>
+                
+    <rect x="440" y="210" width="320" height="110" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="460" y="238" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Intelligent Type Inference</text>
+    
+        <rect x="680" y="198" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="715" y="214" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="460" y="260" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Numerical / Categorical detection</text>
+                
+                <text x="460" y="278" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• DateTime / Boolean recognition</text>
+                
+                <text x="460" y="296" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Robust dtype classification</text>
+                
+                <text x="460" y="314" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Domain-aware parsing</text>
+                
+    <line x1="400" y1="265" x2="440" y2="265" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <rect x="80" y="370" width="320" height="130" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="100" y="398" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Mathematical Transforms</text>
+    
+        <rect x="320" y="358" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="355" y="374" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="100" y="420" font-family="JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace" font-size="13" 
+                      fill="#3b82f6" font-weight="500">log(x+ε), √x, x⁻¹, x²</text>
+                
+                <text x="100" y="438" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">sin(2πft), cos(2πft)</text>
+                
+                <text x="100" y="456" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Domain-safe operations</text>
+                
+                <text x="100" y="474" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Cyclical time encoding</text>
+                
+                <text x="100" y="492" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Outlier-robust methods</text>
+                
+    <rect x="440" y="370" width="320" height="130" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="460" y="398" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Smart Feature Interactions</text>
+    
+        <rect x="680" y="358" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="715" y="374" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="460" y="420" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">f(x,y): x+y, x·y, x/y, x-y</text>
+                
+                <text x="460" y="438" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• XGBoost-screened candidates</text>
+                
+                <text x="460" y="456" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Mutual information filtering</text>
+                
+                <text x="460" y="474" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Limit ≤ 50 interactions</text>
+                
+                <text x="460" y="492" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Polynomial feature expansion</text>
+                
+    <rect x="800" y="370" width="320" height="130" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="820" y="398" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Adaptive Discretization</text>
+    
+        <rect x="1040" y="358" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="1075" y="374" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="820" y="420" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">Quantile-based binning (B=5)</text>
+                
+                <text x="820" y="438" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Information-preserving cuts</text>
+                
+                <text x="820" y="456" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Handles skewed distributions</text>
+                
+                <text x="820" y="474" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Skip constant features</text>
+                
+    <rect x="80" y="520" width="320" height="120" rx="16" 
+          fill="url(#optionalPattern)" stroke="#8b5cf6" stroke-width="2" stroke-dasharray="8,4"
+          filter="url(#cardShadow)"/>
+    
+    <text x="100" y="548" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">K-Means Feature Clustering</text>
+    
+        <rect x="320" y="508" width="70" height="24" rx="12" 
+              fill="#8b5cf6" opacity="0.1" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="355" y="524" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#8b5cf6">OPTIONAL</text>
+        
+                <text x="100" y="570" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Variance-ranked selection</text>
+                
+                <text x="100" y="588" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">cluster_id, dist_min, dist_centroid</text>
+                
+                <text x="100" y="606" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Dimensionality indication</text>
+                
+                <text x="100" y="624" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Density-based features</text>
+                
+    <rect x="440" y="520" width="320" height="120" rx="16" 
+          fill="url(#optionalPattern)" stroke="#8b5cf6" stroke-width="2" stroke-dasharray="8,4"
+          filter="url(#cardShadow)"/>
+    
+    <text x="460" y="548" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Statistical Aggregations</text>
+    
+        <rect x="680" y="508" width="70" height="24" rx="12" 
+              fill="#8b5cf6" opacity="0.1" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="715" y="524" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#8b5cf6">OPTIONAL</text>
+        
+                <text x="460" y="570" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">μ, σ, min, max, Q₁, Q₃</text>
+                
+                <text x="460" y="588" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">skewness, kurtosis, range</text>
+                
+                <text x="460" y="606" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Row-wise computations</text>
+                
+                <text x="460" y="624" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Missing value ratios</text>
+                
+    <rect x="800" y="520" width="320" height="120" rx="16" 
+          fill="url(#cardGradient)" stroke="#f59e0b" stroke-width="2" stroke-dasharray="8,4"
+          filter="url(#cardShadow)"/>
+    
+    <text x="820" y="548" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Spectral Features (FFT)</text>
+    
+        <rect x="1040" y="508" width="70" height="24" rx="12" 
+              fill="#f59e0b" opacity="0.1" stroke="#f59e0b" stroke-width="1"/>
+        <text x="1075" y="524" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#f59e0b">ADVANCED</text>
+        
+                <text x="820" y="570" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">FFT → |X(f)|, ∠X(f)</text>
+                
+                <text x="820" y="588" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Top-k frequency components</text>
+                
+                <text x="820" y="606" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Signal reconstruction error</text>
+                
+                <text x="820" y="624" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Temporal pattern extraction</text>
+                
+    <rect x="1160" y="370" width="320" height="130" rx="16" 
+          fill="url(#cardGradient)" stroke="#e2e8f0" stroke-width="1.5"
+          filter="url(#cardShadow)"/>
+    
+    <text x="1180" y="398" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Correlation Pruning</text>
+    
+                <text x="1180" y="420" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">|corr(xᵢ,xⱼ)| &gt; τ ⇒ drop lower var</text>
+                
+                <text x="1180" y="438" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">τ = 0.95 (configurable)</text>
+                
+                <text x="1180" y="456" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Multicollinearity removal</text>
+                
+                <text x="1180" y="474" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Variance preservation</text>
+                
+    <rect x="1520" y="370" width="320" height="130" rx="16" 
+          fill="url(#cardGradient)" stroke="#e2e8f0" stroke-width="1.5"
+          filter="url(#cardShadow)"/>
+    
+    <text x="1540" y="398" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Smart Imputation</text>
+    
+                <text x="1540" y="420" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">Skewness-adaptive strategy:</text>
+                
+                <text x="1540" y="438" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Median (skewed features)</text>
+                
+                <text x="1540" y="456" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Mean (symmetric features)</text>
+                
+                <text x="1540" y="474" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Mode (categorical-like)</text>
+                
+    <rect x="1880" y="370" width="320" height="130" rx="16" 
+          fill="url(#cardGradient)" stroke="#e2e8f0" stroke-width="1.5"
+          filter="url(#cardShadow)"/>
+    
+    <text x="1900" y="398" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Robust Scaling</text>
+    
+                <text x="1900" y="420" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">QuantileTransformer → 𝒩(0,1)</text>
+                
+                <text x="1900" y="438" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Outlier-resistant normalization</text>
+                
+                <text x="1900" y="456" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Fallback: StandardScaler</text>
+                
+                <text x="1900" y="474" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Per-feature adaptation</text>
+                
+    <rect x="1880" y="520" width="320" height="100" rx="16" 
+          fill="url(#cardGradient)" stroke="#f59e0b" stroke-width="2" stroke-dasharray="8,4"
+          filter="url(#cardShadow)"/>
+    
+    <text x="1900" y="548" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Autoencoder Latents</text>
+    
+        <rect x="2120" y="508" width="70" height="24" rx="12" 
+              fill="#f59e0b" opacity="0.1" stroke="#f59e0b" stroke-width="1"/>
+        <text x="2155" y="524" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#f59e0b">ADVANCED</text>
+        
+                <text x="1900" y="570" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">TabNet/MaskedAutoEncoder</text>
+                
+                <text x="1900" y="588" font-family="JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace" font-size="13" 
+                      fill="#3b82f6" font-weight="500">Latent embeddings z ∈ ℝᵏ</text>
+                
+                <text x="1900" y="606" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Self-supervised learning</text>
+                
+                <text x="1900" y="624" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Nonlinear feature extraction</text>
+                
+    <line x1="400" y1="435" x2="440" y2="435" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="760" y1="435" x2="800" y2="435" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="1120" y1="435" x2="1160" y2="435" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="1480" y1="435" x2="1520" y2="435" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="1840" y1="435" x2="1880" y2="435" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <path d="M 240.0 500 Q 240.0 470 240.0 520" 
+          fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <path d="M 600.0 500 Q 600.0 470 600.0 520" 
+          fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <path d="M 960.0 500 Q 960.0 470 960.0 520" 
+          fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="2040.0" y1="500" x2="2040.0" y2="520" 
+          stroke="#06b6d4" stroke-width="3" marker-end="url(#glowArrow)"/>
+    
+    <rect x="80" y="770" width="320" height="110" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="100" y="798" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Rare Category Handling</text>
+    
+        <rect x="320" y="758" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="355" y="774" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="100" y="820" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">p(category) &lt; 1% → 'OTHER'</text>
+                
+                <text x="100" y="838" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Frequency-based grouping</text>
+                
+                <text x="100" y="856" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Mode imputation strategy</text>
+                
+                <text x="100" y="874" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Preserve information density</text>
+                
+    <rect x="440" y="770" width="320" height="110" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="460" y="798" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Bayesian Target Encoding</text>
+    
+        <rect x="680" y="758" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="715" y="774" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="460" y="820" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">μc = (nc·ȳc + α·ȳ)/(nc + α)</text>
+                
+                <text x="460" y="838" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Regularized mean encoding</text>
+                
+                <text x="460" y="856" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• High-cardinality focus</text>
+                
+                <text x="460" y="874" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Cross-validation aware</text>
+                
+    <rect x="800" y="770" width="320" height="110" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="820" y="798" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">One-Hot Encoding</text>
+    
+        <rect x="1040" y="758" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="1075" y="774" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="820" y="820" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Binary feature expansion</text>
+                
+                <text x="820" y="838" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Handle unknown categories</text>
+                
+                <text x="820" y="856" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Drop redundant binary cols</text>
+                
+                <text x="820" y="874" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Sparse representation</text>
+                
+    <rect x="1160" y="770" width="320" height="110" rx="16" 
+          fill="url(#optionalPattern)" stroke="#8b5cf6" stroke-width="2" stroke-dasharray="8,4"
+          filter="url(#cardShadow)"/>
+    
+    <text x="1180" y="798" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Frequency Encoding</text>
+    
+        <rect x="1400" y="758" width="70" height="24" rx="12" 
+              fill="#8b5cf6" opacity="0.1" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="1435" y="774" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#8b5cf6">OPTIONAL</text>
+        
+                <text x="1180" y="820" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">p(x=c) per feature</text>
+                
+                <text x="1180" y="838" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Category occurrence rates</text>
+                
+                <text x="1180" y="856" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Distribution-aware features</text>
+                
+                <text x="1180" y="874" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Ordinal approximation</text>
+                
+    <line x1="400" y1="825" x2="440" y2="825" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="760" y1="825" x2="800" y2="825" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="1120" y1="825" x2="1160" y2="825" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <rect x="80" y="970" width="320" height="100" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="100" y="998" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Boolean Processing</text>
+    
+        <rect x="320" y="958" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="355" y="974" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="100" y="1020" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">fillna(mode) → {0,1}</text>
+                
+                <text x="100" y="1038" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Logical feature preservation</text>
+                
+                <text x="100" y="1056" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Missing pattern analysis</text>
+                
+    <rect x="80" y="1170" width="320" height="110" rx="16" 
+          fill="url(#cardGradient)" stroke="#f59e0b" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="100" y="1198" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Mutual Information Selection</text>
+    
+        <rect x="320" y="1158" width="70" height="24" rx="12" 
+              fill="#f59e0b" opacity="0.1" stroke="#f59e0b" stroke-width="1"/>
+        <text x="355" y="1174" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#f59e0b">ADVANCED</text>
+        
+                <text x="100" y="1220" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">I(x; y) adaptive estimator</text>
+                
+                <text x="100" y="1238" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">Keep MI &gt; 10⁻³</text>
+                
+                <text x="100" y="1256" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Non-linear dependencies</text>
+                
+                <text x="100" y="1274" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Continuous/discrete MI</text>
+                
+    <rect x="440" y="1170" width="320" height="110" rx="16" 
+          fill="url(#cardGradient)" stroke="#f59e0b" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="460" y="1198" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">SHAP-based Pruning</text>
+    
+        <rect x="680" y="1158" width="70" height="24" rx="12" 
+              fill="#f59e0b" opacity="0.1" stroke="#f59e0b" stroke-width="1"/>
+        <text x="715" y="1174" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#f59e0b">ADVANCED</text>
+        
+                <text x="460" y="1220" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">E[|φⱼ(x)|] &gt; θ</text>
+                
+                <text x="460" y="1238" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+                      fill="#64748b">θ = 10⁻³ (threshold)</text>
+                
+                <text x="460" y="1256" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Feature importance ranking</text>
+                
+                <text x="460" y="1274" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Model-agnostic selection</text>
+                
+<rect x="800" y="1170" width="380" height="110" rx="16" 
+      fill="#06b6d4" fill-opacity="0.1" 
+      stroke="#06b6d4" stroke-width="2" 
+      filter="url(#cardShadow)"/>
+<text x="820" y="1198" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+      font-weight="700" fill="#06b6d4">Feature Concatenation</text>
+<text x="820" y="1220" font-family="JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace" font-size="13" 
+      fill="#3b82f6">numerical ⊕ categorical ⊕ boolean</text>
+<text x="820" y="1240" font-family="JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace" font-size="13" 
+      fill="#3b82f6">→ X_final ∈ ℝⁿˣᵈ</text>
+<text x="820" y="1258" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="12" 
+      fill="#64748b">Unified feature matrix</text>
+
+    <rect x="1220" y="1170" width="320" height="110" rx="16" 
+          fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"
+          filter="url(#cardShadow)"/>
+    
+    <text x="1240" y="1198" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="16" 
+          font-weight="700" fill="#1e293b">Engineered Dataset</text>
+    
+        <rect x="1460" y="1158" width="70" height="24" rx="12" 
+              fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1"/>
+        <text x="1495" y="1174" text-anchor="middle" 
+              font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="10" font-weight="600" 
+              fill="#10b981">ACTIVE</text>
+        
+                <text x="1240" y="1220" font-family="JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace" font-size="13" 
+                      fill="#3b82f6" font-weight="500">X_final ∈ ℝⁿˣᵈ, y ∈ ℝⁿ</text>
+                
+                <text x="1240" y="1238" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Clean, encoded, scaled</text>
+                
+                <text x="1240" y="1256" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Ready for ML training</text>
+                
+                <text x="1240" y="1274" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" font-size="13" 
+                      fill="#475569">• Optimized feature space</text>
+                
+    <line x1="400" y1="1225" x2="440" y2="1225" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="760" y1="1225" x2="800" y2="1225" 
+          stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+    
+    <line x1="1180" y1="1225" x2="1220" y2="1225" 
+          stroke="#06b6d4" stroke-width="3" marker-end="url(#glowArrow)"/>
+    
+<g>
+  <rect x="1890" y="50" width="420" height="120" rx="16" 
+        fill="url(#cardGradient)" stroke="#e2e8f0" 
+        stroke-width="2" filter="url(#cardShadow)"/>
+  <text x="1910" y="75" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" 
+        font-size="16" font-weight="700" fill="#1e293b">Legend & Status Indicators</text>
+
+  <!-- Active indicator -->
+  <rect x="1910" y="90" width="30" height="16" rx="8" 
+        fill="url(#cardGradient)" stroke="#10b981" stroke-width="2"/>
+  <text x="1950" y="102" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" 
+        font-size="12" fill="#475569">Active Processing Block</text>
+
+  <!-- Optional indicator -->
+  <rect x="2110" y="90" width="30" height="16" rx="8" 
+        fill="url(#optionalPattern)" stroke="#8b5cf6" 
+        stroke-width="2" stroke-dasharray="4,2"/>
+  <text x="2150" y="102" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" 
+        font-size="12" fill="#475569">Optional/Conditional</text>
+
+  <!-- Data flow arrow -->
+  <line x1="1910" y1="130" x2="1940" y2="130"
+        stroke="#3b82f6" stroke-width="2" marker-end="url(#modernArrow)"/>
+  <text x="1950" y="135" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" 
+        font-size="12" fill="#475569">Data Flow</text>
+
+  <!-- Glow arrow -->
+  <line x1="2110" y1="130" x2="2140" y2="130"
+        stroke="#06b6d4" stroke-width="3" marker-end="url(#glowArrow)"/>
+  <text x="2150" y="135" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif" 
+        font-size="12" fill="#475569">Advanced/Latent Flow</text>
+</g>
+</svg>

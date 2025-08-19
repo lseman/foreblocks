@@ -2,7 +2,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import scipy.stats as sps
+from scipy.stats import jarque_bera, shapiro
+from sklearn.preprocessing import PowerTransformer, QuantileTransformer
 
+from ..aux.hsic import HSIC  # your class
 from .foreminer_aux import *
 
 
@@ -103,269 +107,260 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             **{k: getattr(config, k) for k in dir(config) if not k.startswith("_")}
         )
 
-    # -------------------- (1) Numeric transforms --------------------
     def _suggest_numeric_transforms(
         self, data: pd.DataFrame, numeric_cols: List[str], cfg: "_Cfg"
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        Suggest numeric transforms per column with robust stats + modern mappings.
+        Suggest numeric transforms per column with robust scoring.
         Returns (suggestions, details) where suggestions[col] is a short list (<=4)
         and details[col]["recommended"] respects cfg.max_numeric_transforms.
         """
-        import numpy as np
-        import pandas as pd
-        import scipy.stats as sps
-        from scipy.stats import jarque_bera, shapiro
+        rs = getattr(cfg, "random_state", 42)
+        rng = np.random.default_rng(rs)
 
-        # -------------------- helpers --------------------
-        rng = np.random.default_rng(getattr(cfg, "random_state", None))
+        short_list_k = 4
+        max_k       = getattr(cfg, "max_numeric_transforms", 8)
+        shapiro_cap = 5000
+        sample_cap  = getattr(cfg, "transform_score_sample_size", 5000)
+        qbins       = getattr(cfg, "transform_qcut_bins", 10)
+
+        # Optional target-aware scoring via HSIC
+        target_name   = getattr(cfg, "target_col", None)
+        y_series      = pd.to_numeric(data[target_name], errors="coerce") if target_name in (data.columns if target_name else []) else None
+        y_present     = y_series is not None and y_series.notna().sum() >= 5 and y_series.nunique() > 1
+        hsic_weight   = float(getattr(cfg, "transform_hsic_weight", 0.25))  # contributes to ranking if y_present
+        hsic_min_n    = getattr(cfg, "rank_hsic_min_samples", 50)
+        hsic_est      = getattr(cfg, "rank_hsic_estimator", "biased")
+        hsic_norm     = getattr(cfg, "rank_hsic_normalize", True)
+        hsic_kx       = getattr(cfg, "rank_hsic_kernel_x", "rbf")
+        hsic_ky       = getattr(cfg, "rank_hsic_kernel_y", "rbf")
+        hsic_use_numba= getattr(cfg, "rank_hsic_use_numba", True)
+        hsic_scorer   = HSIC(kernel_x=hsic_kx, kernel_y=hsic_ky, estimator=hsic_est, normalize=hsic_norm,
+                            use_numba=hsic_use_numba, random_state=rs) if y_present else None
 
         def _fmt(x: float) -> str:
-            # compact numeric literal for embedding in strings
-            if not np.isfinite(x):
-                return "np.nan"
+            if not np.isfinite(x): return "np.nan"
             return f"{x:.6g}"
 
-        def _sample_series(s: pd.Series, cap: int = 5000) -> np.ndarray:
-            a = s.to_numpy()
+        def _sample(a: np.ndarray, cap: int = sample_cap) -> np.ndarray:
             n = a.size
-            if n <= cap:
-                return a
+            if n <= cap: return a
             idx = rng.choice(n, size=cap, replace=False)
             return a[idx]
 
-        def _winsor_limits_from_iqr(
-            s: pd.Series, k: float = 3.0
-        ) -> Tuple[float, float]:
-            q1, q3 = np.percentile(s, [25, 75])
+        def _winsor_limits_from_iqr(a: np.ndarray, k: float = 3.0) -> Tuple[float, float]:
+            q1, q3 = np.percentile(a, [25, 75])
             iqr = q3 - q1
-            lo, hi = q1 - k * iqr, q3 + k * iqr
-            return float(lo), float(hi)
+            return float(q1 - k * iqr), float(q3 + k * iqr)
 
-        def _mad(arr: np.ndarray, med: float) -> float:
-            return float(np.median(np.abs(arr - med)) * 1.4826)
+        def _mad(a: np.ndarray, med: float) -> float:
+            return float(np.median(np.abs(a - med)) * 1.4826)
 
-        def _uniq_keep_order(xs: List[str]) -> List[str]:
-            seen = set()
-            out = []
-            for x in xs:
-                if x not in seen:
-                    seen.add(x)
-                    out.append(x)
-            return out
+        def _jb_p(a: np.ndarray) -> float:
+            try:
+                _, p = jarque_bera(a)
+                return float(p)
+            except Exception:
+                return np.nan
 
-        # -------------------- config-ish constants --------------------
-        short_list_k = 4  # back-compat
-        max_k = getattr(cfg, "max_numeric_transforms", 8)
-        shapiro_cap = 5000  # Shapiro not recommended for N>5000
-        quantile_bins = 10  # for qcut suggestions
-        rank_eps = 1e-9
+        def _sw_p(a: np.ndarray) -> float:
+            try:
+                if a.size <= shapiro_cap:
+                    _, p = shapiro(a)
+                    return float(p)
+                return np.nan
+            except Exception:
+                return np.nan
+
+        # concrete functions (for *scoring*); map to output strings for your executor
+        def signed_log1p(v):  # robust on R
+            return np.sign(v) * np.log1p(np.abs(v))
+
+        def asinh(v):
+            return np.arcsinh(v)
+
+        # Build transform catalog per column with safe guards; each item: (name_key, callable, string_repr)
+        def _catalog_for(col: str, a: np.ndarray) -> List[Tuple[str, callable, str]]:
+            out: List[Tuple[str, callable, str]] = []
+            n = a.size
+            med = float(np.median(a))
+            mad = _mad(a, med)
+            mean = float(np.mean(a))
+            std  = float(np.std(a, ddof=1)) if n > 1 else 0.0
+            lo_iqr3, hi_iqr3 = _winsor_limits_from_iqr(a, k=3.0)
+            pos_min = np.nanmin(a) if a.size else np.nan
+
+            # Rank and gauss-rank via sklearn (more stable), but mirror strings
+            qt_u = QuantileTransformer(output_distribution="uniform", n_quantiles=min(100, max(10, n)), random_state=rs, subsample=int(1e9))
+            qt_n = QuantileTransformer(output_distribution="normal",  n_quantiles=min(100, max(10, n)), random_state=rs, subsample=int(1e9))
+
+            # PowerTransforms
+            pt_yj = PowerTransformer(method="yeo-johnson", standardize=False)
+            # Box-Cox only if strictly positive and non-degenerate
+            can_boxcox = np.all(a > 0) and np.isfinite(a).sum() > 10
+
+            try:
+                # Fit objects on the *scoring* sample for stability
+                s = _sample(a)
+                qt_u.fit(s.reshape(-1,1))
+                qt_n.fit(s.reshape(-1,1))
+                pt_yj.fit(s.reshape(-1,1))
+            except Exception:
+                pass  # fall through; their callables may still raise and we guard later
+
+            # 1) rank/uniform & gauss-rank
+            out.append(("q_uniform", lambda v: qt_u.transform(v.reshape(-1,1)).ravel(),
+                        f"QuantileTransformer(output_distribution='uniform', n_quantiles=100, random_state={rs}).fit_transform({col}.values.reshape(-1,1)).ravel()"))
+            out.append(("q_normal",  lambda v: qt_n.transform(v.reshape(-1,1)).ravel(),
+                        f"QuantileTransformer(output_distribution='normal', n_quantiles=100, random_state={rs}).fit_transform({col}.values.reshape(-1,1)).ravel()"))
+
+            # 2) power / log family
+            out.append(("yeo_johnson", lambda v: pt_yj.transform(v.reshape(-1,1)).ravel(),
+                        f"PowerTransformer(method='yeo-johnson').fit_transform({col}.values.reshape(-1,1)).ravel()"))
+            if can_boxcox:
+                pt_bc = PowerTransformer(method="box-cox", standardize=False)
+                try:
+                    pt_bc.fit(_sample(a[a > 0]).reshape(-1,1))
+                    out.append(("box_cox", lambda v: pt_bc.transform(v.reshape(-1,1)).ravel(),
+                                f"PowerTransformer(method='box-cox').fit_transform({col}.values.reshape(-1,1)).ravel()"))
+                    out.append(("log1p", lambda v: np.log1p(v), f"np.log1p({col})"))
+                except Exception:
+                    # if BC fails, still allow log1p if strictly positive
+                    if np.all(a > 0):
+                        out.append(("log1p", lambda v: np.log1p(v), f"np.log1p({col})"))
+
+            # 3) robust monotone
+            out.append(("asinh",       asinh,             f"np.arcsinh({col})"))
+            if np.all(a >= 0):
+                out.append(("sqrt",    np.sqrt,           f"np.sqrt({col})"))
+            out.append(("cbrt",    np.cbrt,               f"np.cbrt({col})"))
+            out.append(("signed_log1p", signed_log1p,     f"np.sign({col})*np.log1p(np.abs({col}))"))
+
+            # 4) winsor / clip
+            out.append(("clip_iqr3",  lambda v: np.clip(v, lo_iqr3, hi_iqr3),
+                        f"np.clip({col}, {_fmt(lo_iqr3)}, {_fmt(hi_iqr3)})"))
+
+            # 5) discretizations
+            out.append(("qcut",       lambda v: pd.qcut(pd.Series(v), q=min(qbins, max(2, len(np.unique(v)))),
+                                                        labels=False, duplicates='drop').to_numpy(),
+                        f"pd.qcut({col}, q={qbins}, labels=False, duplicates='drop')"))
+
+            # 6) scalings
+            out.append(("zscore_mean_std", lambda v: (v - mean) / (std + 1e-12),
+                        f"({col}-{_fmt(mean)})/({_fmt(std)}+1e-12)"))
+            out.append(("zscore_med_mad",  lambda v: (v - med)  / (mad  + 1e-12),
+                        f"({col}-{_fmt(med)})/({_fmt(mad)}+1e-12)"))
+
+            # 7) inversion (dangerous; keep last/low priority; only if >0)
+            if np.all(a > 0):
+                out.append(("inverse", lambda v: 1.0/(v+1e-8), f"1/({col}+1e-8)"))
+
+            # dedup by name_key
+            seen = set(); uniq = []
+            for t in out:
+                if t[0] in seen: continue
+                seen.add(t[0]); uniq.append(t)
+            return uniq
+
+        # scoring: combine distribution-fixing + optional HSIC-to-target
+        def _score_transform(vec: np.ndarray, yvec: np.ndarray | None) -> Tuple[float, Dict[str, float]]:
+            v = vec[np.isfinite(vec)]
+            if v.size < 50:
+                return -np.inf, {"jb_p": np.nan, "skew": np.nan, "kurt": np.nan, "hsic": np.nan}
+            v = _sample(v)  # score on sample for speed
+            # stats before/after are handled in caller; here we return absolute stats only
+            jb = _jb_p(v)
+            sk = float(sps.skew(v, bias=False)) if v.size > 2 else np.nan
+            ku = float(sps.kurtosis(v, fisher=False, bias=False)) if v.size > 3 else np.nan
+            score = 0.0
+            # prefer high JB p, low |skew| and |kurt-3|
+            if np.isfinite(jb): score += np.clip(jb, 0.0, 1.0) * 1.0
+            if np.isfinite(sk): score += (1.0 / (1.0 + abs(sk))) * 0.5
+            if np.isfinite(ku): score += (1.0 / (1.0 + abs(ku - 3.0))) * 0.5
+
+            hs = np.nan
+            if y_present and yvec is not None:
+                # align to finite and sample together
+                m = np.isfinite(vec) & np.isfinite(yvec)
+                if m.sum() >= hsic_min_n:
+                    xs = _sample(vec[m]); ys = _sample(yvec[m])
+                    if xs.size >= hsic_min_n and ys.size >= hsic_min_n:
+                        try:
+                            hs = float(hsic_scorer.score(xs, ys))
+                            if np.isfinite(hs):
+                                score += hsic_weight * hs
+                        except Exception:
+                            hs = np.nan
+            return score, {"jb_p": jb, "skew": sk, "kurt": ku, "hsic": (hs if y_present else np.nan)}
 
         suggestions: Dict[str, Any] = {}
         details: Dict[str, Any] = {}
 
+        y_arr_full = y_series.to_numpy() if y_present else None
+
         for col in numeric_cols:
-            s: pd.Series = data[col].dropna()
+            s = pd.to_numeric(data[col], errors="coerce").dropna()
             if s.size < 10:
                 continue
-
             a = s.to_numpy()
             n = a.size
 
-            # ---- robust + classical stats
-            mean = float(np.mean(a))
-            std = float(np.std(a, ddof=1)) if n > 1 else 0.0
-            med = float(np.median(a))
-            mad = _mad(a, med)
-            q1, q3 = np.percentile(a, [25, 75])
-            iqr = float(q3 - q1)
-            cv = float(std / (abs(mean) + 1e-12)) if np.isfinite(std) else np.nan
-            rcv = float(iqr / (abs(med) + 1e-12))  # robust CV
-            skew = float(sps.skew(a, bias=False))
-            # fisher=False → Pearson definition (3 for normal)
-            kurt = float(sps.kurtosis(a, fisher=False, bias=False))
+            # baseline stats
+            mean = float(np.mean(a)); std = float(np.std(a, ddof=1)) if n > 1 else 0.0
+            med  = float(np.median(a)); mad = _mad(a, med)
+            q1, q3 = np.percentile(a, [25, 75]); iqr = float(q3 - q1)
+            skew0 = float(sps.skew(a, bias=False)); kurt0 = float(sps.kurtosis(a, fisher=False, bias=False))
+            jb0   = _jb_p(_sample(a)); sw0 = _sw_p(_sample(a))
 
-            # Outlier rates (IQR and robust MAD z>3.5)
-            iqr_lo, iqr_hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-            iqr_outlier_pct = float(((a < iqr_lo) | (a > iqr_hi)).mean() * 100.0)
-            mad_z = np.abs((a - med) / (mad + 1e-12))
-            mad_outlier_pct = float((mad_z > 3.5).mean() * 100.0)
-            outlier_pct = max(iqr_outlier_pct, mad_outlier_pct)
+            # build and evaluate catalog
+            cats = _catalog_for(col, a)
+            scored: List[Tuple[str, float, Dict[str, float]]] = []
 
-            # Normality tests on a sample (deterministic)
-            ss = _sample_series(s, cap=shapiro_cap)
-            try:
-                _, jb_p = jarque_bera(ss)
-                jb_p = float(jb_p)
-            except Exception:
-                jb_p = np.nan
-            try:
-                # Only if small enough
-                if ss.size <= shapiro_cap:
-                    _, sw_p = shapiro(ss)
-                    sw_p = float(sw_p)
-                else:
-                    sw_p = np.nan
-            except Exception:
-                sw_p = np.nan
+            # target vector aligned for this column (once)
+            y_aligned = None
+            if y_present:
+                # align using index of non-na a
+                y_aligned = y_arr_full[s.index]  # safe because s comes from data[col].dropna()
 
-            # ---- decision heuristics (priorities)
-            strongly_non_normal = (
-                (not np.isnan(jb_p) and jb_p < 1e-3)
-                or (abs(skew) > 2.0)
-                or (kurt > 6.0)
-            )
-            moderately_non_normal = (
-                (not np.isnan(jb_p) and jb_p < 0.05)
-                or (abs(skew) > 1.0)
-                or (kurt > 3.5)
-            )
+            for name_key, fn, as_str in cats:
+                try:
+                    vec = fn(a.copy())
+                    # Some transforms can return pandas (qcut). Ensure ndarray float where possible.
+                    if isinstance(vec, pd.Series): vec = vec.to_numpy()
+                    vec = np.asarray(vec)
+                    sc, meta = _score_transform(vec, y_aligned)
+                    # bonus for strong monotone transforms when very skewed
+                    if (abs(skew0) > 2.0 or kurt0 > 6.0) and any(k in name_key for k in ("yeo", "box", "log", "asinh", "q_normal")):
+                        sc += 0.05
+                    scored.append((as_str, sc, meta))
+                except Exception:
+                    continue
 
-            # ---- build transform menu (monotone & robust first)
-            T: List[str] = []
+            if not scored:
+                continue
 
-            # 1) Rank/Gauss rank (handles heavy tails & weird marginals)
-            #   - rank -> [0,1], gaussrank -> ~N(0,1)
-            T.append(f"(scipy.stats.rankdata({col})/(len({col})+{_fmt(rank_eps)}))")
-            T.append(
-                f"scipy.stats.norm.ppf((scipy.stats.rankdata({col})-0.5)/(len({col})+{_fmt(rank_eps)}))"
-            )
-
-            # 2) Power transforms
-            if s.min() > 0:
-                # Box-Cox (positive only) and log1p
-                T.append(
-                    f"PowerTransformer(method='box-cox').fit_transform({col}.values.reshape(-1,1)).ravel()"
-                )
-                T.append(f"np.log1p({col})")
-            # Yeo–Johnson works on R
-            T.append(
-                f"PowerTransformer(method='yeo-johnson').fit_transform({col}.values.reshape(-1,1)).ravel()"
-            )
-
-            # 3) Asinh / sqrt / cbrt (numerically gentle, defined on R or R+)
-            # asinh is robust alternative to log
-            T.append(f"np.arcsinh({col})")
-            if s.min() >= 0:
-                T.append(f"np.sqrt({col})")
-                T.append(f"np.cbrt({col})")
-
-            # 4) Winsorization / clipping (IQR-based)
-            lo_iqr3, hi_iqr3 = _winsor_limits_from_iqr(s, k=3.0)
-            T.append(f"np.clip({col}, {_fmt(lo_iqr3)}, {_fmt(hi_iqr3)})")
-            # SciPy mstats winsorize (5% each side) as a strong option
-            T.append(f"scipy.stats.mstats.winsorize({col}, limits=(0.05, 0.05))")
-
-            # 5) Quantile mapping & discretization
-            T.append(
-                f"pd.qcut({col}, q={quantile_bins}, labels=False, duplicates='drop')"
-            )
-            # QuantileTransformer to uniform and normal
-            T.append(
-                f"QuantileTransformer(output_distribution='uniform', n_quantiles=100, random_state={getattr(cfg, 'random_state', None)}).fit_transform({col}.values.reshape(-1,1)).ravel()"
-            )
-            T.append(
-                f"QuantileTransformer(output_distribution='normal', n_quantiles=100, random_state={getattr(cfg, 'random_state', None)}).fit_transform({col}.values.reshape(-1,1)).ravel()"
-            )
-
-            # 6) Variability-aware rescales
-            T.append(f"({col}-{_fmt(mean)})/({_fmt(std)}+1e-12)")
-            T.append(f"({col}-{_fmt(med)})/({_fmt(mad)}+1e-12)")
-            # Exponential dampening (kept from your version, but safer on mean≈0)
-            if abs(mean) > 1e-8:
-                T.append(f"np.exp(-{col}/({_fmt(mean)}+1e-12))")
-
-            # 7) Inversion (only if strictly positive and nonzero-heavy)
-            if s.min() > 0 and (abs(skew) > 1.0 or strongly_non_normal):
-                T.append(f"1/({col}+1e-8)")
-
-            # 8) Domain-aware: if CVs are huge, emphasize stabilizers
-            if cv > 3 or rcv > 1.5 or outlier_pct > 10:
-                # push robust-centered scaling
-                T.append(
-                    f"(np.clip({col}, {_fmt(lo_iqr3)}, {_fmt(hi_iqr3)})-{_fmt(med)})/({_fmt(mad)}+1e-12)"
-                )
-
-            # Re-rank priority: emphasize monotone mappings for non-normal marginals
-            if strongly_non_normal:
-                priority = [
-                    "PowerTransformer(method='yeo-johnson')",
-                    "PowerTransformer(method='box-cox')",
-                    "np.arcsinh(",
-                    "np.log1p(",
-                    "rankdata(",
-                    "norm.ppf(",
-                    "QuantileTransformer(output_distribution='normal'",
-                    "QuantileTransformer(output_distribution='uniform'",
-                    "winsorize(",
-                    "np.clip(",
-                    "pd.qcut(",
-                    "/(_mad",  # robust scale
-                    "/(_std",  # standard scale
-                ]
-            elif moderately_non_normal:
-                priority = [
-                    "PowerTransformer(method='yeo-johnson')",
-                    "np.arcsinh(",
-                    "rankdata(",
-                    "QuantileTransformer(output_distribution='normal'",
-                    "winsorize(",
-                    "np.clip(",
-                    "pd.qcut(",
-                    "PowerTransformer(method='box-cox')" if s.min() > 0 else "",
-                    "np.log1p(" if s.min() > 0 else "",
-                ]
-            else:
-                priority = [
-                    "/(_std",
-                    "/(_mad",
-                    "PowerTransformer(method='yeo-johnson')",
-                    "rankdata(",
-                    "np.arcsinh(",
-                    "QuantileTransformer(output_distribution='normal'",
-                    "np.clip(",
-                    "winsorize(",
-                ]
-            priority = [p for p in priority if p]
-
-            # Deduplicate and sort by simple priority key
-            T = _uniq_keep_order(T)
-
-            def _score(t: str) -> int:
-                for i, key in enumerate(priority):
-                    if key in t:
-                        return i
-                return len(priority) + 1
-
-            T.sort(key=_score)
-
-            recommended = T[:max_k]
-            suggestions[col] = T[:short_list_k]
+            # sort by score desc
+            scored.sort(key=lambda t: t[1], reverse=True)
+            rec = [s for s, _, _ in scored[:max_k]]
+            suggestions[col] = [s for s, _, _ in scored[:short_list_k]]
 
             details[col] = {
                 "stats": {
                     "count": int(n),
-                    "mean": mean,
-                    "std": std,
-                    "median": med,
-                    "mad": mad,
-                    "q1": float(q1),
-                    "q3": float(q3),
-                    "iqr": iqr,
-                    "cv": cv,
-                    "robust_cv": rcv,
-                    "skewness": skew,
-                    "kurtosis": kurt,
-                    "outliers_pct": outlier_pct,
-                    "normality_jb_p": jb_p,
-                    "normality_sw_p": sw_p,
+                    "mean": mean, "std": std, "median": med, "mad": mad,
+                    "q1": float(q1), "q3": float(q3), "iqr": iqr,
+                    "skewness": skew0, "kurtosis": kurt0,
+                    "normality_jb_p": float(jb0) if np.isfinite(jb0) else np.nan,
+                    "normality_sw_p": float(sw0) if np.isfinite(sw0) else np.nan,
                 },
-                "recommended": recommended,
+                "scored": [
+                    {"expr": s, "score": float(sc), **meta} for (s, sc, meta) in scored[:max_k]
+                ],
+                "recommended": rec,
             }
 
         return suggestions, details
-
-    # -------------------- (2) Ranking (+ SHAP opt, CV perm) --------------------
+        
     def _rank_features(
         self, data: pd.DataFrame, numeric_cols: List[str], cfg: "_Cfg"
     ) -> Dict[str, float]:
@@ -382,32 +377,36 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         from sklearn.linear_model import RidgeCV
         from sklearn.model_selection import KFold
 
-        rs = getattr(cfg, "random_state", 42)
-        n_splits = getattr(cfg, "rank_cv_splits", 5)
-        n_repeats = getattr(cfg, "rank_perm_repeats", 3)
-        max_n = getattr(cfg, "rank_sample_size", 20000)
+        from ..aux.hsic import HSIC
 
-        # weights for blending signals (sum need not be 1; we renormalize later)
-        w_imp = getattr(cfg, "w_impurity", 0.35)
-        w_perm = getattr(cfg, "w_permutation", 0.40)
-        w_mi = getattr(cfg, "w_mutual_info", 0.15)
-        w_lin = getattr(cfg, "w_linear", 0.10)
+        rs        = getattr(cfg, "random_state", 42)
+        n_splits  = getattr(cfg, "rank_cv_splits", 5)
+        n_repeats = getattr(cfg, "rank_perm_repeats", 3)
+        max_n     = getattr(cfg, "rank_sample_size", 20000)
+
+        # weights (we’ll add HSIC and renormalize later)
+        w_imp  = getattr(cfg, "w_impurity", 0.30)
+        w_perm = getattr(cfg, "w_permutation", 0.35)
+        w_mi   = getattr(cfg, "w_mutual_info", 0.10)
+        w_lin  = getattr(cfg, "w_linear", 0.10)
+        w_hsic = getattr(cfg, "w_hsic",  0.15)  # NEW
 
         # -------------------- Prep --------------------
-        X = data[numeric_cols].copy()
-        X = X.apply(pd.to_numeric, errors="coerce")
-        # Median impute per-column (OK for tree models, keeps scale for Ridge)
+        X = data[numeric_cols].copy().apply(pd.to_numeric, errors="coerce")
+        # Median impute per-column (works fine for trees; OK for Ridge if data roughly centered)
         X = X.fillna(X.median(numeric_only=True))
 
-        y = pd.to_numeric(data[getattr(cfg, "target_col")], errors="coerce")
-        if y.dtype.kind in "biufc":
-            y = y.fillna(y.median())
+        target_name = getattr(cfg, "target_col", None)
+        y = None
+        if target_name and target_name in data.columns:
+            y = pd.to_numeric(data[target_name], errors="coerce")
 
         # Optional subsample for speed (deterministic)
         if len(X) > max_n:
             idx = np.random.RandomState(rs).choice(len(X), size=max_n, replace=False)
             X = X.iloc[idx]
-            y = y.iloc[idx]
+            if y is not None:
+                y = y.iloc[idx]
 
         # Drop constant columns (avoid MI/perm issues)
         nunique = X.nunique(dropna=False)
@@ -417,7 +416,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         if len(numeric_cols) == 0:
             return {}
 
-        # Fast near-duplicate pruning (corr > 0.995 keep first)
+        # Fast near-duplicate pruning (|rho_spearman| > 0.995 keep first)
         with np.errstate(all="ignore"):
             cmat = X.corr(method="spearman")
         to_drop = set()
@@ -425,94 +424,132 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         for i, c in enumerate(cols_order):
             if c in to_drop:
                 continue
-            # only scan upper triangle
             corr_row = cmat.loc[c].iloc[i + 1 :]
             dups = corr_row.index[np.abs(corr_row.values) > 0.995]
-            for d in dups:
-                to_drop.add(d)
+            to_drop.update(dups)
         if to_drop:
             X = X.drop(columns=list(to_drop))
             numeric_cols = [c for c in numeric_cols if c not in to_drop]
             if len(numeric_cols) == 0:
                 return {}
 
+        # Prepare y after pruning (and guard degenerate cases)
+        y_present = y is not None
+        if y_present:
+            y = y.loc[X.index]
+            if y.notna().sum() < 5 or y.nunique() <= 1:
+                y_present = False
+            else:
+                y = y.fillna(y.median())
+                # Standardize y to stabilize HSIC / permutation
+                y = (y - y.mean()) / (y.std() + 1e-12)
+
         # -------------------- Model zoo --------------------
         model_zoo = [
-            ("rf", RandomForestRegressor(n_estimators=300, random_state=rs, n_jobs=-1)),
+            ("rf",  RandomForestRegressor(n_estimators=300, random_state=rs, n_jobs=-1)),
             ("etr", ExtraTreesRegressor(n_estimators=400, random_state=rs, n_jobs=-1)),
             ("gbr", GradientBoostingRegressor(n_estimators=200, random_state=rs)),
             ("hgb", HistGradientBoostingRegressor(max_depth=None, random_state=rs)),
         ]
         try:
             from lightgbm import LGBMRegressor
-
             model_zoo.append(("lgbm", LGBMRegressor(n_estimators=400, random_state=rs)))
         except Exception:
             pass
         try:
             from xgboost import XGBRegressor
-
-            model_zoo.append(
-                (
-                    "xgb",
-                    XGBRegressor(
-                        n_estimators=400, random_state=rs, n_jobs=-1, verbosity=0
-                    ),
-                )
-            )
+            model_zoo.append(("xgb", XGBRegressor(n_estimators=400, random_state=rs, n_jobs=-1, verbosity=0)))
         except Exception:
             pass
 
         # -------------------- Containers --------------------
         impurity: dict[str, list[float]] = {c: [] for c in numeric_cols}
-        permute: dict[str, list[float]] = {c: [] for c in numeric_cols}
+        permute:  dict[str, list[float]] = {c: [] for c in numeric_cols}
 
         # -------------------- CV loop: impurity + permutation on held-out --------------------
-        kf = KFold(n_splits=n_splits, shuffle=True, random_state=rs)
-        for train_idx, test_idx in kf.split(X):
-            Xtr, Xte = X.iloc[train_idx], X.iloc[test_idx]
-            ytr, yte = y.iloc[train_idx], y.iloc[test_idx]
+        if y_present:
+            kf = KFold(n_splits=n_splits, shuffle=True, random_state=rs)
+            for train_idx, test_idx in kf.split(X):
+                Xtr, Xte = X.iloc[train_idx], X.iloc[test_idx]
+                ytr, yte = y.iloc[train_idx], y.iloc[test_idx]
 
-            for name, m in model_zoo:
-                try:
-                    m.fit(Xtr, ytr)
-                    fi = getattr(m, "feature_importances_", None)
-                    if (
-                        fi is not None
-                        and np.all(np.isfinite(fi))
-                        and len(fi) == X.shape[1]
-                    ):
-                        for c, v in zip(X.columns, fi):
-                            impurity[c].append(float(max(v, 0.0)))
-                    # permutation importance on validation fold
+                for _, m in model_zoo:
                     try:
-                        pi = permutation_importance(
-                            m, Xte, yte, n_repeats=n_repeats, random_state=rs, n_jobs=-1
-                        )
-                        if len(pi.importances_mean) == X.shape[1]:
-                            for c, v in zip(X.columns, pi.importances_mean):
-                                permute[c].append(float(max(v, 0.0)))
+                        m.fit(Xtr, ytr)
+                        fi = getattr(m, "feature_importances_", None)
+                        if fi is not None and np.all(np.isfinite(fi)) and len(fi) == X.shape[1]:
+                            for c, v in zip(X.columns, fi):
+                                impurity[c].append(float(max(v, 0.0)))
+                        # permutation importance on validation fold
+                        try:
+                            pi = permutation_importance(m, Xte, yte, n_repeats=n_repeats, random_state=rs, n_jobs=-1)
+                            if len(pi.importances_mean) == X.shape[1]:
+                                for c, v in zip(X.columns, pi.importances_mean):
+                                    permute[c].append(float(max(v, 0.0)))
+                        except Exception:
+                            pass
                     except Exception:
-                        pass
-                except Exception:
-                    continue
+                        continue
+        else:
+            # No target: these channels will be zeroed
+            pass
 
         # -------------------- Mutual information --------------------
-        try:
-            mi_vals = mutual_info_regression(X, y, random_state=rs)
-            mi_map = {c: float(max(v, 0.0)) for c, v in zip(X.columns, mi_vals)}
-        except Exception:
+        if y_present:
+            try:
+                mi_vals = mutual_info_regression(X, y, random_state=rs)
+                mi_map = {c: float(max(v, 0.0)) for c, v in zip(X.columns, mi_vals)}
+            except Exception:
+                mi_map = {c: 0.0 for c in X.columns}
+        else:
             mi_map = {c: 0.0 for c in X.columns}
 
         # -------------------- Linear (Ridge) signal --------------------
         lin_map = {c: 0.0 for c in X.columns}
-        try:
-            ridge = RidgeCV(alphas=(1e-3, 1e-2, 1e-1, 1, 10))
-            ridge.fit(X, y)
-            for c, v in zip(X.columns, np.abs(ridge.coef_).astype(float)):
-                lin_map[c] = float(v)
-        except Exception:
-            pass
+        if y_present:
+            try:
+                ridge = RidgeCV(alphas=(1e-3, 1e-2, 1e-1, 1, 10))
+                ridge.fit(X, y)
+                for c, v in zip(X.columns, np.abs(ridge.coef_).astype(float)):
+                    lin_map[c] = float(v)
+            except Exception:
+                pass
+
+        # -------------------- HSIC-to-target (NEW) --------------------
+        # robust against huge n: optional subsample
+        hsic_map = {c: 0.0 for c in X.columns}
+        if y_present:
+            hsic_sample_n   = getattr(cfg, "rank_hsic_sample_size", 8000)
+            hsic_estimator  = getattr(cfg, "rank_hsic_estimator", "biased")   # or "unbiased"
+            hsic_normalize  = getattr(cfg, "rank_hsic_normalize", True)
+            hsic_kernel_x   = getattr(cfg, "rank_hsic_kernel_x", "rbf")
+            hsic_kernel_y   = getattr(cfg, "rank_hsic_kernel_y", "rbf")
+            hsic_min_n      = getattr(cfg, "rank_hsic_min_samples", 50)
+            use_numba       = getattr(cfg, "rank_hsic_use_numba", True)
+
+            y_arr = y.to_numpy()
+            idx = np.arange(len(X))
+            if len(idx) > hsic_sample_n:
+                rng = np.random.default_rng(rs)
+                idx = rng.choice(idx, size=hsic_sample_n, replace=False)
+            y_sub = y_arr[idx]
+
+            scorer = HSIC(kernel_x=hsic_kernel_x, kernel_y=hsic_kernel_y,
+                        estimator=hsic_estimator, normalize=hsic_normalize,
+                        use_numba=use_numba, random_state=rs)
+            for c in X.columns:
+                x_sub = X[c].to_numpy()[idx]
+                # guard tiny or constant slices
+                if np.isfinite(x_sub).sum() < hsic_min_n:
+                    continue
+                if np.std(x_sub) < 1e-12:
+                    continue
+                try:
+                    hsic_val = scorer.score(x_sub, y_sub)
+                    if np.isfinite(hsic_val):
+                        hsic_map[c] = float(max(0.0, hsic_val))
+                except Exception:
+                    continue
 
         # -------------------- Aggregate & robust-normalize channels --------------------
         def _avg(d: dict[str, list[float]]) -> dict[str, float]:
@@ -522,80 +559,65 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         perm_avg = _avg(permute)
 
         def _robust_norm(m: dict[str, float]) -> dict[str, float]:
-            """Normalize to [0,1] robustly via (x - q05)/(q95 - q05); fallback to max-norm."""
-            arr = np.array(list(m.values()), dtype=float)
-            if len(arr) == 0:
+            """Normalize to [0,1] via (x - q05)/(q95 - q05); fallback to max-norm."""
+            if not m:
                 return {}
+            arr = np.array(list(m.values()), dtype=float)
             q05, q95 = np.percentile(arr, [5, 95])
             scale = max(q95 - q05, 1e-12)
-            normed = {
-                k: float(np.clip((v - q05) / scale, 0.0, 1.0)) for k, v in m.items()
-            }
-            # if all zeros (degenerate), fallback to max-norm
+            normed = {k: float(np.clip((v - q05) / scale, 0.0, 1.0)) for k, v in m.items()}
             if sum(normed.values()) == 0.0:
                 mx = arr.max()
                 if mx > 0:
                     normed = {k: float(v / mx) for k, v in m.items()}
             return normed
 
-        imp_n = _robust_norm(imp_avg)
+        imp_n  = _robust_norm(imp_avg)
         perm_n = _robust_norm(perm_avg)
-        mi_n = _robust_norm(mi_map)
-        lin_n = _robust_norm(lin_map)
+        mi_n   = _robust_norm(mi_map)
+        lin_n  = _robust_norm(lin_map)
+        hsic_n = _robust_norm(hsic_map)
 
         # Blend (then renormalize blended scores to [0,1] for readability)
         blended_raw = {
-            c: w_imp * imp_n.get(c, 0.0)
+            c: w_imp  * imp_n.get(c, 0.0)
             + w_perm * perm_n.get(c, 0.0)
-            + w_mi * mi_n.get(c, 0.0)
-            + w_lin * lin_n.get(c, 0.0)
+            + w_mi   * mi_n.get(c, 0.0)
+            + w_lin  * lin_n.get(c, 0.0)
+            + w_hsic * hsic_n.get(c, 0.0)
             for c in X.columns
         }
-        # final min-max normalization for interpretability
         vals = np.array(list(blended_raw.values()), dtype=float)
         vmin, vmax = float(np.min(vals)), float(np.max(vals))
         if np.isfinite(vmax - vmin) and (vmax - vmin) > 1e-12:
-            blended = {
-                k: float((v - vmin) / (vmax - vmin)) for k, v in blended_raw.items()
-            }
+            blended = {k: float((v - vmin) / (vmax - vmin)) for k, v in blended_raw.items()}
         else:
             blended = blended_raw
 
         ranked = dict(sorted(blended.items(), key=lambda kv: kv[1], reverse=True))
 
         # -------------------- Optional SHAP side-info (does NOT affect ranking) --------------------
-        if getattr(cfg, "enable_shap", False) and len(X) < getattr(
-            cfg, "shap_max_n", 12000
-        ):
+        if getattr(cfg, "enable_shap", False) and y_present and len(X) < getattr(cfg, "shap_max_n", 12000):
             try:
                 import shap
-
-                # choose a strong tree model for SHAP if available
                 try:
                     from lightgbm import LGBMRegressor
-
                     model = LGBMRegressor(n_estimators=300, random_state=rs).fit(X, y)
                     explainer = shap.TreeExplainer(model)
                 except Exception:
-                    gbr = GradientBoostingRegressor(
-                        n_estimators=200, random_state=rs
-                    ).fit(X, y)
+                    gbr = GradientBoostingRegressor(n_estimators=200, random_state=rs).fit(X, y)
                     explainer = shap.TreeExplainer(gbr)
                 rng = np.random.default_rng(rs)
                 m = min(1024, len(X))
                 idx = rng.choice(len(X), size=m, replace=False)
                 sv = explainer.shap_values(X.iloc[idx])
                 shap_imp = np.mean(np.abs(sv), axis=0).astype(float)
-                # store side-info under a reserved key to avoid feature-name collisions
-                ranked["__shap_importance__"] = dict(
-                    zip(X.columns, map(float, shap_imp))
-                )
+                ranked["__shap_importance__"] = dict(zip(X.columns, map(float, shap_imp)))
             except Exception:
                 pass
 
         return ranked
-
-    # -------------------- (3) Interactions --------------------
+    
     def _suggest_interactions(
         self,
         data: pd.DataFrame,
@@ -603,319 +625,529 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         detailed: Dict[str, Any],
         cfg: "_Cfg",
     ) -> List[str]:
+        """
+        SOTA interaction proposer:
+        - HSIC-based pair screening (nonlinear, kernelized)
+        - (Conditional) HSIC-based target ranking of candidate expressions
+        - Target-gain filter
+        - Rich expression catalog (basic, poly, trig, statistical, fourier, target-proxies)
+        """
+        from functools import lru_cache
+        from itertools import combinations
+
         import numpy as np
         import pandas as pd
 
-        # ---------- Config (backward compatible, friendlier defaults) ----------
-        top_k = getattr(cfg, "top_rank_for_interactions", 12)
-        corr_gate = getattr(cfg, "corr_gate", 0.95)  # was 0.85
-        mi_gate = getattr(cfg, "mi_gate", 0.0)
-        dcor_gate = getattr(cfg, "dcor_gate", 0.0)  # was 0.05 (made opt-in)
-        hsic_gate = getattr(cfg, "hsic_gate", 0.0)
-        gain_gate = getattr(cfg, "target_gain_gate", 1e-4)  # was 0.002
-        max_pairs = getattr(cfg, "max_interactions", 64)
-        sample_n = getattr(cfg, "interaction_sample_size", 6000)
-        allow_angle = getattr(cfg, "allow_angle", True)
-        allow_minmax = getattr(cfg, "allow_minmax", True)
-        allow_log1p = getattr(cfg, "allow_log1p", True)
-        allow_rbf = getattr(cfg, "allow_rbf", False)
-        rbf_sigma_mode = getattr(cfg, "rbf_sigma_mode", "median")  # "median" | "var"
-        random_state = getattr(cfg, "random_state", 42)
+        from ..aux.hsic import HSIC
 
-        rng = np.random.default_rng(random_state)
+        rng = np.random.default_rng(getattr(cfg, "random_state", 42))
 
-        # Target handling (optional)
+        # ---------- Config ----------
+        top_k      = getattr(cfg, "top_rank_for_interactions", 12)
+        corr_gate  = getattr(cfg, "corr_gate", 0.95)
+        hsic_gate  = getattr(cfg, "hsic_gate", 0.10)     # minimal HSIC to keep a pair
+        max_pairs  = getattr(cfg, "max_interactions", 64)
+        sample_n   = getattr(cfg, "interaction_sample_size", 6000)
+
+        allow_basic        = getattr(cfg, "allow_basic_ops", True)
+        allow_poly         = getattr(cfg, "allow_polynomial", True)
+        allow_trig         = getattr(cfg, "allow_trigonometric", True)
+        allow_statistical  = getattr(cfg, "allow_statistical_moments", True)
+        allow_fourier      = getattr(cfg, "allow_fourier_features", True)
+        allow_target_proxies = getattr(cfg, "allow_target_encoding_proxies", True)
+
+        enable_hl       = getattr(cfg, "enable_high_level_interactions", True)
+        max_high_level  = getattr(cfg, "max_high_level", 16)
+        hl_seed_pairs_top = getattr(cfg, "hl_seed_pairs_top", 6)
+        hl_gain_gate    = getattr(cfg, "hl_gain_gate", 3e-4)
+
+        # HSIC options (plumbed from cfg)
+        hsic_kernel_x_pairs = getattr(cfg, "hsic_kernel_x_pairs", "rbf")
+        hsic_kernel_y_pairs = getattr(cfg, "hsic_kernel_y_pairs", "rbf")
+        hsic_kernel_x_tgt   = getattr(cfg, "hsic_kernel_x_tgt",   "rbf")
+        hsic_kernel_y_tgt   = getattr(cfg, "hsic_kernel_y_tgt",   "rbf")
+        hsic_estimator      = getattr(cfg, "hsic_estimator", "biased")   # "biased" | "unbiased" | "block" | "rff"...
+        hsic_normalize      = getattr(cfg, "hsic_normalize", True)
+        hsic_use_numba      = getattr(cfg, "hsic_use_numba", True)
+        hsic_min_samples    = getattr(cfg, "hsic_min_samples", 50)
+
+        # --- NEW: conditional HSIC controls ---
+        cond_on      = getattr(cfg, "hsic_condition_on", None)    # None | "others" | List[str]
+        cond_lam     = getattr(cfg, "hsic_cond_lambda", 1e-3)
+        cond_min_n   = getattr(cfg, "hsic_cond_min_samples", 120)
+        cond_std     = getattr(cfg, "hsic_cond_standardize", True)
+
+        # ---------- Target ----------
         target_col = getattr(cfg, "target_col", None)
         y = None
-        if target_col is not None and target_col in data.columns:
+        if target_col and target_col in data.columns:
             y = pd.to_numeric(data[target_col], errors="coerce")
 
-        # Use ranking if provided, else fallback to numeric cols
+        # ---------- Candidate features ----------
         ranked = list(detailed.get("feature_ranking", {}).keys())[:top_k]
         if not ranked:
             ranked = numeric_cols[:top_k]
-
         cols = [c for c in ranked if c in data.columns]
         if len(cols) < 2:
             return []
 
-        # Work on a sampled subset for robustness/speed
         work = data[cols].copy()
         if sample_n and len(work) > sample_n:
-            work = work.sample(sample_n, random_state=random_state)
+            work = work.sample(sample_n, random_state=getattr(cfg, "random_state", 42))
             if y is not None:
                 y = y.loc[work.index]
 
         work = work.apply(pd.to_numeric, errors="coerce")
         y = y.astype(float) if y is not None else None
 
-        # Precompute correlations (Pearson + Spearman)
+        # ---------- Correlation blocking ----------
+        min_periods = max(20, len(work) // 100)
         with np.errstate(all="ignore"):
-            pearson = work.corr(method="pearson", min_periods=20)
-            spearman = work.corr(method="spearman", min_periods=20)
+            corr_matrix = np.abs(work.corr(method="pearson", min_periods=min_periods).values)
+        np.fill_diagonal(corr_matrix, 0)
+        blocked_pairs = set()
+        for i, j in zip(*np.where(np.triu(corr_matrix >= corr_gate, 1))):
+            blocked_pairs.add((cols[i], cols[j]))
 
-        # ---------- Measures (aligned inputs) ----------
-        def _align_pair(
-            a_s: pd.Series, b_s: pd.Series
-        ) -> tuple[np.ndarray, np.ndarray]:
-            mask = a_s.notna() & b_s.notna()
-            if mask.sum() < 30:
-                return np.array([]), np.array([])
-            aa = a_s[mask].astype(float).to_numpy()
-            bb = b_s[mask].astype(float).to_numpy()
-            return aa, bb
+        # ---------- Preprocessing ----------
+        col_data = {}
+        for c in cols:
+            s = work[c].astype(float)
+            mask = s.notna().to_numpy()
+            arr = s.to_numpy()
+            if mask.sum() >= 2:
+                mu, std = np.mean(arr[mask]), np.std(arr[mask])
+                z_score = (arr - mu) / (std + 1e-12)
+            else:
+                z_score = np.zeros_like(arr)
+            col_data[c] = {"array": arr, "mask": mask, "z_score": z_score}
 
-        def _mi_disc_aligned(aa: np.ndarray, bb: np.ndarray, bins: int = 16) -> float:
-            # Discretized MI using quantile bins; robust and fast
-            n = min(aa.size, bb.size)
-            if n < 30:
+        y_data = None
+        if y is not None:
+            y_mask = y.notna().to_numpy()
+            y_arr = y.to_numpy()
+            if y_mask.sum() >= 2:
+                y_mu, y_std = np.mean(y_arr[y_mask]), np.std(y_arr[y_mask])
+                y_standardized = (y_arr - y_mu) / (y_std + 1e-12)
+            else:
+                y_standardized = np.zeros_like(y_arr)
+            y_data = {"array": y_arr, "mask": y_mask, "standardized": y_standardized}
+
+        # ---------- HSIC scorers ----------
+        hsic_pair = HSIC(kernel_x=hsic_kernel_x_pairs, kernel_y=hsic_kernel_y_pairs,
+                        estimator=hsic_estimator, normalize=hsic_normalize,
+                        use_numba=hsic_use_numba, random_state=getattr(cfg, "random_state", 42))
+        hsic_tgt  = HSIC(kernel_x=hsic_kernel_x_tgt, kernel_y=hsic_kernel_y_tgt,
+                        estimator=hsic_estimator, normalize=hsic_normalize,
+                        use_numba=hsic_use_numba, random_state=getattr(cfg, "random_state", 42))
+
+        # ---------- Core helpers ----------
+        @lru_cache(maxsize=128)
+        def _get_aligned_pair(a: str, b: str):
+            mask = col_data[a]["mask"] & col_data[b]["mask"]
+            if mask.sum() < hsic_min_samples:
+                return None, None, None
+            return col_data[a]["array"][mask], col_data[b]["array"][mask], mask
+
+        def _target_gain(a: str, b: str) -> float:
+            # keep your lightweight linear gain test
+            if y_data is None: return 0.0
+            aa, bb, mask = _get_aligned_pair(a, b)
+            if mask is None:
                 return 0.0
-            if n > 8000:
-                idx = rng.choice(n, 8000, replace=False)
-                aa = aa[idx]
-                bb = bb[idx]
-                n = 8000
-            qa = max(2, min(bins, len(np.unique(aa))))
-            qb = max(2, min(bins, len(np.unique(bb))))
+            mask = mask & y_data["mask"]
+            if mask.sum() < max(60, hsic_min_samples):
+                return 0.0
+            Xa = col_data[a]["z_score"][mask]
+            Xb = col_data[b]["z_score"][mask]
+            yv = y_data["standardized"][mask]
+            lam = 1e-3
             try:
-                aaq = pd.qcut(aa, q=qa, duplicates="drop").codes
-                bbq = pd.qcut(bb, q=qb, duplicates="drop").codes
-            except Exception:
-                # Fallback to rank-based bins if qcut fails
-                ra = pd.Series(aa).rank(method="average").to_numpy()
-                rb = pd.Series(bb).rank(method="average").to_numpy()
-                aaq = pd.qcut(ra, q=qa, duplicates="drop").codes
-                bbq = pd.qcut(rb, q=qb, duplicates="drop").codes
-            joint = pd.crosstab(aaq, bbq, normalize=True)
-            px = joint.sum(1).to_numpy()
-            py = joint.sum(0).to_numpy()
-            pij = joint.to_numpy()
-            with np.errstate(divide="ignore", invalid="ignore"):
-                mi_val = float(
-                    np.nansum(
-                        pij * np.log(pij / (px[:, None] * py[None, :] + 1e-12) + 1e-12)
-                    )
-                )
-            return max(mi_val, 0.0)
-
-        def _dcor_aligned(aa: np.ndarray, bb: np.ndarray) -> float:
-            # Unbiased distance correlation (O(n^2)), subsample if large
-            n = min(aa.size, bb.size)
-            if n < 30:
-                return 0.0
-            if n > 3000:
-                idx = rng.choice(n, 3000, replace=False)
-                aa = aa[idx]
-                bb = bb[idx]
-                n = 3000
-            A = np.abs(aa[:, None] - aa[None, :])
-            B = np.abs(bb[:, None] - bb[None, :])
-            A = A - A.mean(0)[None, :] - A.mean(1)[:, None] + A.mean()
-            B = B - B.mean(0)[None, :] - B.mean(1)[:, None] + B.mean()
-            dcov2 = (A * B).sum() / (n * n)
-            dvarx = (A * A).sum() / (n * n)
-            dvary = (B * B).sum() / (n * n)
-            denom = np.sqrt(max(dvarx, 1e-12) * max(dvary, 1e-12))
-            return float(np.sqrt(max(dcov2, 0.0)) / (denom + 1e-12))
-
-        def _hsic_gaussian_aligned(aa: np.ndarray, bb: np.ndarray) -> float:
-            # Normalized HSIC with median heuristic, subsampled
-            n = min(aa.size, bb.size)
-            if n < 80:
-                return 0.0
-            if n > 1200:
-                idx = rng.choice(n, 1200, replace=False)
-                aa = aa[idx]
-                bb = bb[idx]
-                n = 1200
-            a = aa.reshape(-1, 1)
-            b = bb.reshape(-1, 1)
-
-            def _med_sigma(x):
-                Dx = np.abs(x - x.T)
-                m = np.median(Dx[Dx > 0]) if np.any(Dx > 0) else 1.0
-                return m + 1e-12
-
-            sig_a = _med_sigma(a)
-            sig_b = _med_sigma(b)
-            Ka = np.exp(-((a - a.T) ** 2) / (2 * sig_a**2))
-            Kb = np.exp(-((b - b.T) ** 2) / (2 * sig_b**2))
-            H = np.eye(n) - np.ones((n, n)) / n
-            Ka = H @ Ka @ H
-            Kb = H @ Kb @ H
-            hsic = (Ka * Kb).sum() / ((n - 1) ** 2)
-            na = np.linalg.norm(Ka, "fro")
-            nb = np.linalg.norm(Kb, "fro")
-            return float(hsic / ((na * nb / (n - 1) ** 2) + 1e-12))
-
-        def _delta_r2(a_s: pd.Series, b_s: pd.Series, y_s: pd.Series) -> float:
-            # ΔR² between ridge on [a,b] vs [a,b,a*b]; standardize for stability
-            try:
-                df = pd.concat([a_s, b_s, y_s], axis=1).dropna()
-                if len(df) < 80:
-                    return 0.0
-                xa = df.iloc[:, 0].astype(float).to_numpy()
-                xb = df.iloc[:, 1].astype(float).to_numpy()
-                yy = df.iloc[:, 2].astype(float).to_numpy()
-
-                def _std(z):
-                    s = np.nanstd(z)
-                    return (z - np.nanmean(z)) / (s + 1e-12)
-
-                xa = _std(xa)
-                xb = _std(xb)
-                yy = _std(yy)
-                x1 = np.c_[xa, xb]
-                x2 = np.c_[xa, xb, xa * xb]
-                lam = 1e-3
-
-                def _ridge_r2(X, yv):
-                    XtX = X.T @ X
-                    XtX.flat[:: X.shape[1] + 1] += lam
-                    beta = np.linalg.solve(XtX, X.T @ yv)
-                    yhat = X @ beta
-                    ss_res = np.sum((yv - yhat) ** 2)
-                    ss_tot = np.sum((yv - yv.mean()) ** 2) + 1e-12
-                    return 1.0 - ss_res / ss_tot
-
-                r2_base = _ridge_r2(x1, yy)
-                r2_full = _ridge_r2(x2, yy)
-                return max(0.0, float(r2_full - r2_base))
+                Xbse = np.column_stack([Xa, Xb])
+                beta_b = np.linalg.solve(Xbse.T @ Xbse + lam*np.eye(2), Xbse.T @ yv)
+                r2_b = np.corrcoef(Xbse @ beta_b, yv)[0,1]**2
+                Xful = np.column_stack([Xa, Xb, Xa*Xb])
+                beta_f = np.linalg.solve(Xful.T @ Xful + lam*np.eye(3), Xful.T @ yv)
+                r2_f = np.corrcoef(Xful @ beta_f, yv)[0,1]**2
+                return max(0.0, r2_f - r2_b)
             except Exception:
                 return 0.0
 
-        # ---------- Scan pairs ----------
-        interactions: List[str] = []
-        for i, a in enumerate(cols):
-            for b in cols[i + 1 :]:
+        # --- NEW: helpers for conditional HSIC ---
+        def _finite_mask_cols(arr2d: np.ndarray) -> np.ndarray:
+            # arr2d: (n,d)
+            return np.isfinite(arr2d).all(axis=1)
+
+        def _build_Z(mask_base: np.ndarray, exclude: tuple) -> tuple:
+            """
+            Returns (Z_masked, final_mask) or (None, None).
+            - cond_on == "others": use all 'cols' except 'exclude'
+            - cond_on == list[str]: intersect with available df columns, excluding 'exclude'
+            - applies standardization if cond_std
+            """
+            if not cond_on:
+                return None, None
+            if cond_on == "others":
+                zcols = [c for c in cols if c not in exclude]
+            else:
+                zcols = [c for c in cond_on if c in data.columns and c not in exclude]
+            if not zcols:
+                return None, None
+
+            Z_full = data[zcols].to_numpy()
+            mZ = _finite_mask_cols(Z_full)
+            m = (mask_base if mask_base is not None else np.ones(len(Z_full), bool)) & mZ
+            if y_data is not None:
+                m = m & y_data["mask"]  # align with target availability
+            if m.sum() < cond_min_n:
+                return None, None
+
+            Zm = Z_full[m]
+            if cond_std:
+                mu = np.nanmean(Zm, axis=0, keepdims=True)
+                sd = np.nanstd(Zm, axis=0, keepdims=True)
+                Zm = (Zm - mu) / (sd + 1e-12)
+            return Zm, m
+
+        # ---------- Expression generator ----------
+        def _generate_expressions(a: str, b: str) -> List[str]:
+            exprs = []
+            if allow_basic:
+                exprs += [f"{a}*{b}", f"{a}/({b}+1e-8)", f"{b}/({a}+1e-8)",
+                        f"abs({a}-{b})", f"({a}+{b})/2", f"np.sqrt({a}**2+{b}**2)",
+                        f"np.minimum({a},{b})", f"np.maximum({a},{b})"]
+            if allow_poly:
+                exprs += [f"({a}+{b})**2", f"({a}-{b})**2", f"{a}**2+{b}**2",
+                        f"{a}**2*{b}", f"{a}*{b}**2", f"{a}**3+{b}**3", f"({a}*{b})**2"]
+            if allow_trig:
+                exprs += [f"np.sin({a})*np.cos({b})", f"np.sin({a}+{b})",
+                        f"np.cos({a}-{b})", f"np.arctan2({b},{a})",
+                        f"np.sin({a}**2+{b}**2)"]
+            if allow_statistical:
+                exprs += [f"({a}*{b})/np.sqrt(({a}**2+1)*({b}**2+1))",
+                        f"np.sign({a})*np.sign({b})*np.sqrt(abs({a}*{b}))",
+                        f"({a}**3+{b}**3)/({a}**2+{b}**2+1e-8)",
+                        f"({a}**4+{b}**4)/({a}**2+{b}**2+1e-8)**2",
+                        f"np.exp(-({a}-{b})**2/(np.var([{a},{b}])+1e-8))"]
+            if allow_fourier:
+                exprs += [f"np.cos(2*np.pi*({a}+{b}))", f"np.cos(2*np.pi*({a}-{b}))",
+                        f"np.cos(2*np.pi*{a})*np.cos(2*np.pi*{b})",
+                        f"np.sin(2*np.pi*{a})*np.sin(2*np.pi*{b})",
+                        f"np.cos(np.pi*{a})*np.sin(np.pi*{b})"]
+            if allow_target_proxies and y_data is not None:
+                exprs += [f"({a}*{b})*np.sign({a}+{b})",
+                        f"np.where({a}*{b}>0, np.log1p(abs({a}*{b})), -np.log1p(abs({a}*{b})))",
+                        f"({a}>np.median({a}))*({b}>np.median({b}))",
+                        f"np.tanh({a})*np.tanh({b})"]
+            return exprs
+
+        # ---------- Candidate scoring ----------
+        expr_candidates = {}
+        pair_scores = []
+
+        for a, b in combinations(cols, 2):
+            if (a, b) in blocked_pairs:
+                continue
+            aa, bb, mask = _get_aligned_pair(a, b)
+            if aa is None:
+                continue
+
+            # HSIC pair gate (nonlinear, kernel-based)
+            try:
+                hsic_pair_val = hsic_pair.score(aa, bb)
+            except Exception:
+                hsic_pair_val = 0.0
+            if not np.isfinite(hsic_pair_val) or hsic_pair_val < hsic_gate:
+                continue
+
+            gain_val = _target_gain(a, b)
+            score = hsic_pair_val + 10.0 * gain_val
+            if score <= 0:
+                continue
+
+            exprs = _generate_expressions(a, b)
+            for expr in exprs:
+                expr_candidates[expr] = (a, b, mask)  # store names+mask to build values later
+            pair_scores.append((a, b, score))
+
+        if not expr_candidates:
+            return []
+
+        # ---------- Rank expressions by HSIC(expression, target) ----------
+        expr_scores = []
+        expr_list = list(expr_candidates.keys())
+
+        if y_data is not None:
+            for expr in expr_list:
+                a, b, mask = expr_candidates[expr]
+                if mask is None:
+                    continue
+                mask_t = mask & y_data["mask"]
+                if mask_t.sum() < max(60, hsic_min_samples):
+                    continue
+
+                # locals for eval: a_vec, b_vec, np
+                a_vec = data[a].to_numpy()[mask_t]
+                b_vec = data[b].to_numpy()[mask_t]
                 try:
-                    # 1) Skip highly collinear pairs
-                    p = (
-                        float(pearson.loc[a, b])
-                        if not np.isnan(pearson.loc[a, b])
-                        else 0.0
-                    )
-                    s = (
-                        float(spearman.loc[a, b])
-                        if not np.isnan(spearman.loc[a, b])
-                        else 0.0
-                    )
-                    if max(abs(p), abs(s)) >= corr_gate:
+                    # evaluate candidate vector
+                    vec = eval(expr, {"np": np}, {a: a_vec, b: b_vec})
+                    vec = np.asarray(vec, dtype=float)
+                    yv  = y_data["array"][mask_t].astype(float)
+                    if vec.size != yv.size or vec.size < hsic_min_samples:
                         continue
 
-                    a_s = work[a].astype(float)
-                    b_s = work[b].astype(float)
-
-                    # Align once
-                    aa, bb = _align_pair(a_s, b_s)
-                    if aa.size == 0:
-                        continue
-
-                    # 2) Nonlinear dependence gates (opt-in by positive thresholds)
-                    keep_score = 0.0
-
-                    if mi_gate > 0:
-                        mi_val = _mi_disc_aligned(aa, bb)
-                        if mi_val >= mi_gate:
-                            keep_score += mi_val
-
-                    if dcor_gate > 0:
-                        dcor_val = _dcor_aligned(aa, bb)
-                        if dcor_val >= dcor_gate:
-                            keep_score += dcor_val
-
-                    if hsic_gate > 0:
-                        hsic_val = _hsic_gaussian_aligned(aa, bb)
-                        if hsic_val >= hsic_gate:
-                            keep_score += hsic_val
-
-                    if (
-                        mi_gate > 0 or dcor_gate > 0 or hsic_gate > 0
-                    ) and keep_score <= 0:
-                        # none fired
-                        continue
-
-                    # 3) Target-aware signal: allow bypass if strong
-                    gain = 0.0
-                    if y is not None:
-                        gain = _delta_r2(a_s, b_s, y)
-                        if gain >= gain_gate:
-                            keep_score = max(keep_score, gain)  # bypass the gate
-
-                    if (
-                        mi_gate > 0 or dcor_gate > 0 or hsic_gate > 0 or y is not None
-                    ) and (keep_score <= 0):
-                        continue
-
-                    # 4) Emit transforms (strings for downstream compatibility)
-                    cand = [
-                        f"{a}*{b}",
-                        f"{a}/({b}+1e-8)",
-                        f"{b}/({a}+1e-8)",
-                        f"np.sqrt(({a})**2+({b})**2)",
-                        f"abs({a}-{b})",
-                        f"({a}+{b})/2",
-                    ]
-                    if allow_minmax:
-                        cand += [f"np.minimum({a},{b})", f"np.maximum({a},{b})"]
-                    if allow_angle:
-                        cand += [f"np.arctan2({b},{a})"]
-                    if allow_log1p:
-                        cand += [f"np.log1p(abs({a})+abs({b}))"]
-                    if allow_rbf:
-                        if rbf_sigma_mode == "median":
-                            # median absolute deviation of (a-b) as scale
-                            cand += [
-                                f"np.exp(-(({a}-{b})**2)/(np.median(abs(({a}-{b})-np.median({a}-{b})))+1e-8)**2)"
-                            ]
+                    # ---- NEW: conditional HSIC if requested ----
+                    if cond_on:
+                        Zm, m_final = _build_Z(mask_t, exclude=(a, b))
+                        if Zm is not None:
+                            xf = vec[m_final]
+                            yf = yv[m_final]
+                            if xf.size >= max(hsic_min_samples, cond_min_n):
+                                try:
+                                    s = hsic_tgt.conditional_score(xf, yf, Zm, lam=cond_lam)
+                                except Exception:
+                                    s = hsic_tgt.score(vec, yv)  # safe fallback
+                            else:
+                                s = hsic_tgt.score(vec, yv)
                         else:
-                            cand += [f"np.exp(-(({a}-{b})**2)/(np.var({a}-{b})+1e-8))"]
+                            s = hsic_tgt.score(vec, yv)
+                    else:
+                        s = hsic_tgt.score(vec, yv)
 
-                    for expr in cand:
-                        interactions.append(expr)
-                        if len(interactions) >= max_pairs:
-                            return interactions
-
+                    if np.isfinite(s):
+                        expr_scores.append((expr, float(s)))
                 except Exception:
                     continue
 
-        return interactions
+            expr_scores.sort(key=lambda t: t[1], reverse=True)
+            selected = [e for e, _ in expr_scores[:max_pairs]]
+        else:
+            # fallback: keep top by pair score if no target
+            selected = [e for e in expr_list][:max_pairs]
+
+        final_expressions = selected[:max_pairs]
+
+        # ---------- High-level interactions (unchanged) ----------
+        if enable_hl and len(cols) >= 3 and y_data is not None and len(final_expressions) < max_pairs:
+            pair_scores.sort(key=lambda x: x[2], reverse=True)
+            triplet_count = 0
+            for a, b, _ in pair_scores[:hl_seed_pairs_top]:
+                for c in cols:
+                    if c in [a, b]:
+                        continue
+                    mask = col_data[a]['mask'] & col_data[b]['mask'] & col_data[c]['mask'] & y_data['mask']
+                    if mask.sum() < 100:
+                        continue
+                    x1, x2, x3 = (col_data[a]['z_score'][mask],
+                                col_data[b]['z_score'][mask],
+                                col_data[c]['z_score'][mask])
+                    yv = y_data['standardized'][mask]
+                    base_r2 = max(
+                        np.corrcoef(x1+x2, yv)[0,1]**2,
+                        np.corrcoef(x1+x3, yv)[0,1]**2,
+                        np.corrcoef(x2+x3, yv)[0,1]**2
+                    )
+                    candidates = {
+                        f"{a}*{b}*{c}": x1 * x2 * x3,
+                        f"({a}+{b}+{c})**2": (x1+x2+x3)**2,
+                        f"np.tanh({a}+{b}+{c})": np.tanh(x1+x2+x3),
+                        f"np.median([{a},{b},{c}], axis=0)": np.median(np.vstack([x1,x2,x3]), axis=0),
+                    }
+                    for expr, vec in candidates.items():
+                        try:
+                            r2 = np.corrcoef(vec, yv)[0,1]**2
+                        except Exception:
+                            r2 = 0
+                        if r2 - base_r2 >= hl_gain_gate:
+                            final_expressions.append(expr)
+                            triplet_count += 1
+                            if triplet_count >= max_high_level:
+                                break
+                if triplet_count >= max_high_level:
+                    break
+
+        return final_expressions[:max_pairs]
 
     # -------------------- (4) Cat encodings --------------------
     def _suggest_encodings(
         self, data: pd.DataFrame, categorical_cols: List[str], cfg: "_Cfg"
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Heuristic, target-aware encoder suggestions.
+        Returns:
+        suggestions[col]: short list (<=3)
+        details[col]: stats + full ranked strategy list + reason
+        """
         suggestions: Dict[str, Any] = {}
         details: Dict[str, Any] = {}
 
+        # ---- config / task ----
+        target_col: Optional[str] = getattr(cfg, "target_col", None)
+        task: str = getattr(cfg, "task", "auto")  # "regression" | "binary" | "multiclass" | "auto"
+        time_col: Optional[str] = getattr(cfg, "time_col", None)     # for leakage-safe encoders
+        group_col: Optional[str] = getattr(cfg, "group_col", None)   # group-aware CV, leakage guard
+        rs = getattr(cfg, "random_state", 42)
+
+        y = None
+        y_kind = None
+        if target_col and target_col in data.columns:
+            y = data[target_col]
+            # infer task if needed
+            if task == "auto":
+                if pd.api.types.is_numeric_dtype(y):
+                    # decide binary vs regression by #unique AFTER dropping nans
+                    nun = y.dropna().nunique()
+                    if nun == 2:
+                        y_kind = "binary"
+                    elif nun <= 15 and all(float(v).is_integer() for v in y.dropna().unique()):
+                        y_kind = "multiclass"
+                    else:
+                        y_kind = "regression"
+                else:
+                    nun = y.dropna().nunique()
+                    y_kind = "binary" if nun == 2 else "multiclass"
+            else:
+                y_kind = task
+        else:
+            y_kind = None
+
+        def _entropy(s: pd.Series) -> float:
+            vc = s.value_counts(dropna=False)
+            p = (vc / max(vc.sum(), 1)).to_numpy(dtype=float)
+            p = p[p > 0]
+            return float(-(p * np.log(p)).sum()) if p.size else 0.0
+
+        def _dominance(s: pd.Series) -> float:
+            vc = s.value_counts(dropna=True)
+            return float(vc.iloc[0] / max(vc.sum(), 1)) if len(vc) else 0.0
+
+        def _card_bucket(k: int) -> str:
+            if k <= 5: return "very_low"
+            if k <= 20: return "low"
+            if k <= 50: return "medium"
+            if k <= 200: return "high"
+            return "extreme"
+
         for col in categorical_cols:
-            nunique = int(data[col].nunique(dropna=True))
-            null_pct = float(data[col].isnull().mean() * 100.0)
+            s = data[col]
+            nunique = int(s.nunique(dropna=True))
+            null_pct = float(s.isna().mean() * 100.0)
+            ent = _entropy(s)
+            dom = _dominance(s)
+            bucket = _card_bucket(nunique)
 
             enc: List[str] = []
-            if 2 <= nunique <= 5:
-                enc.append("OneHot(drop_first=True)")
-            elif nunique <= 20:
-                enc += ["OrdinalEncoder"]
-                if cfg.target_col:
-                    enc += ["TargetEncoder (CV)", "WOEEncoder (CV)"]
-            else:
-                enc += ["HashingEncoder", "FrequencyEncoder"]
-                if cfg.target_col:
-                    enc += ["CatBoostEncoder (CV)"]
+            notes: List[str] = []
 
-            if nunique > 10:
+            # Always: suggest handling for missing/unseen
+            if null_pct > 0:
+                notes.append(f"Missing {null_pct:.1f}% → treat NaN as its own level + MissingIndicator.")
+            notes.append("Set handle_unknown='infrequent_if_exist' / 'ignore' to avoid errors.")
+            if group_col:
+                notes.append("Use GroupKFold/LeaveOneGroupOut for supervised encoders (group leakage).")
+            if time_col:
+                notes.append("Use time-based CV (purged CV) for supervised encoders (temporal leakage).")
+
+            # Baseline unsupervised picks by cardinality
+            if bucket == "very_low":
+                enc += ["OneHot(drop_first=True)", "OrdinalEncoder"]
+            elif bucket == "low":
+                enc += ["OneHot(drop_first=False)", "OrdinalEncoder", "BinaryEncoder"]
+            elif bucket == "medium":
+                enc += ["OneHot(drop_first=False)", "BinaryEncoder", "BaseNEncoder(base=4)"]
+            elif bucket == "high":
+                enc += ["FrequencyEncoder", "HashingEncoder(n_features≈min(2*k, 512))", "BinaryEncoder"]
+            else:  # extreme
+                enc += ["HashingEncoder(n_features≈max(1024, 2*k))", "FrequencyEncoder", "LeaveOneOutEncoder (CV)"]
+
+            # Adjust for imbalance / dominance
+            if dom >= 0.8:
+                enc.insert(0, "RareCategoryEncoder(threshold≈1%)")
+                notes.append("Strongly imbalanced categories → collapse rares first.")
+
+            # Target-aware augmentations
+            if y_kind is not None:
+                if y_kind == "regression":
+                    # CV Target encoders good; CatBoost handles high-cardinality well
+                    if bucket in {"low", "medium"}:
+                        enc = ["TargetEncoder (KFold CV, smoothing)"] + enc
+                    elif bucket in {"high", "extreme"}:
+                        enc = ["CatBoostEncoder (KFold CV, ordered)", "TargetEncoder (KFold CV, smoothing)"] + enc
+                elif y_kind == "binary":
+                    # WOE is principled for binary classification
+                    if nunique <= 50:
+                        enc = ["WOEEncoder (KFold CV, regularized)", "TargetEncoder (KFold CV, smoothing)"] + enc
+                    else:
+                        enc = ["CatBoostEncoder (KFold CV, ordered)", "TargetEncoder (KFold CV, smoothing)"] + enc
+                else:  # multiclass
+                    if bucket in {"low", "medium"}:
+                        enc = ["TargetEncoder (KFold CV, per-class)", "OneHot(drop_first=False)"] + enc
+                    else:
+                        enc = ["CatBoostEncoder (KFold CV, ordered)"] + enc
+
+            # Rare category handling for higher cardinalities
+            if nunique > 20 and "RareCategoryEncoder(threshold≈1%)" not in enc:
                 enc.append("RareCategoryEncoder(threshold≈1%)")
 
-            suggestions[col] = enc[:3]
+            # Uniqueness-heavy columns (IDs): avoid target encoders unless you have grouping/time CV
+            if nunique > 0.9 * len(s):
+                notes.append("Looks like an ID-like field → avoid supervised encoders; prefer hashing/frequency.")
+
+            # Rank lightly by “fit”
+            rank_keys = []
+            for e in enc:
+                score = 0
+                # Prefer CV target encoders when supervised
+                if "TargetEncoder" in e or "CatBoostEncoder" in e or "WOEEncoder" in e or "LeaveOneOut" in e:
+                    score += 2 if y_kind else -1
+                # Prefer hashing/frequency for high/extreme
+                if bucket in {"high", "extreme"} and ("Hashing" in e or "Frequency" in e):
+                    score += 2
+                # Prefer OHE for very_low/low
+                if bucket in {"very_low", "low"} and "OneHot" in e:
+                    score += 2
+                # Penalize OneHot in high-card
+                if bucket in {"high", "extreme"} and "OneHot" in e:
+                    score -= 3
+                # Bonus for RareCategory when imbalance
+                if dom >= 0.8 and "RareCategoryEncoder" in e:
+                    score += 2
+                # WOE only for binary
+                if "WOE" in e and y_kind != "binary":
+                    score -= 2
+                rank_keys.append((e, score))
+
+            rank_keys.sort(key=lambda t: t[1], reverse=True)
+            ranked = [e for e, _ in rank_keys]
+
+            suggestions[col] = ranked[:3]
             details[col] = {
                 "cardinality": nunique,
-                "null_percentage": null_pct,
-                "strategies": enc,
-                "note": "Use CV for supervised encoders to avoid leakage.",
+                "null_percentage": float(null_pct),
+                "dominant_category_pct": float(dom * 100.0),
+                "entropy": float(ent),
+                "strategies": ranked,
+                "task": y_kind or "unsupervised",
+                "notes": notes,
+                "leakage_advice": (
+                    "Use KFold(GroupKFold/TimeSeriesSplit) for supervised encoders; fit only on training folds."
+                    if y_kind else "Unsupervised encoders only (no target)."
+                ),
+                "params_hints": {
+                    "TargetEncoder": {"cv": "KFold/GroupKFold/TimeSeriesSplit", "smoothing": "1–50", "noise": "0.01–0.1"},
+                    "CatBoostEncoder": {"cv": "KFold, ordered", "prior": "mean", "noise": "ordered"},
+                    "WOEEncoder": {"binary_only": True, "min_samples": "≥50 per bin", "regularization": "strong"},
+                    "HashingEncoder": {"n_features": "choose to keep collision rate <5%"},
+                    "RareCategoryEncoder": {"threshold": "0.5%–2%", "merge": "to '__rare__'"},
+                    "OneHot": {"drop_first": "True for linear models; False for trees"},
+                    "OrdinalEncoder": {"handle_unknown": "use -1 or 'infrequent' bin"},
+                    "FrequencyEncoder": {"mapping": "count or normalized frequency"},
+                },
             }
 
         return suggestions, details
+
 
     # -------------------- (5) VIF --------------------
     def _vif_screen(self, data: pd.DataFrame, numeric_cols: List[str]) -> List[str]:

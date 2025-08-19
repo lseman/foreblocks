@@ -1,22 +1,11 @@
+import math
 import warnings
-
-warnings.filterwarnings("ignore")
-
-# Core Python
-
-# Parallelism & Concurrency
 from dataclasses import dataclass
 
-# Numerical & Scientific Computing
 import numpy as np
-# BoTorch & GPyTorch (Gaussian Processes)
-from numba import jit
+from numba import jit, vectorize
 
-# Numba JIT
-
-
-# PyTorch Core
-
+warnings.filterwarnings("ignore")
 
 
 @dataclass
@@ -67,13 +56,9 @@ class TurboConfig:
     max_age: int = 1000  # Maximum age of a region before it is considered for removal
 
 
-import numpy as np
-from numba import jit
-
-
 # === Sobol-like Quasi-Random Sequence ===
 @jit(nopython=True)
-def sobol_sequence(seed, n_points, n_dims):
+def sobol_sequence(n_points, n_dims, seed=0):
     """
     Numba-friendly quasi-random sequence generator with lightweight scrambling.
     Produces low-discrepancy points using golden ratio additive scrambling.
@@ -108,71 +93,75 @@ def safe_sqrt(x):
     return np.sqrt(x) if x > 0.0 else 0.0
 
 
+@jit(nopython=True)
 def compute_coverage(X, centers, radii):
     """
-    Compute coverage of points X by hyperspheres centered at centers with radius*2.
-    Returns fraction of points covered.
+    Fraction of points in X covered by any hypersphere of radius 2*r_j.
+    centers: (m,d), radii: (m,) or scalar
     """
+    centers = centers.astype(np.float64)
+    if radii.ndim == 0:
+        radii = np.full(centers.shape[0], float(radii))
+    else:
+        radii = radii.astype(np.float64)
 
-    # ✅ Ensure centers/radii are NumPy arrays
-    centers = np.asarray(centers, dtype=np.float64)
-    radii = np.asarray(radii, dtype=np.float64)
+    if centers.shape[0] == 0 or radii.shape[0] == 0:
+        return 0.0
 
-    if centers.size == 0 or radii.size == 0:
-        return 0.0  # no regions → no coverage
-
-    n_points = X.shape[0]
-    n_regions = centers.shape[0]
-    X.shape[1]
-
-    covered_count = 0
-
-    for i in range(n_points):
-        for j in range(n_regions):
-            # Compute squared distance manually (no sqrt)
-            dist_sq = np.sum((X[i] - centers[j]) ** 2)
-            if dist_sq <= (radii[j] * 2.0) ** 2:
-                covered_count += 1
-                break  # early exit once covered
-
-    return covered_count / n_points
+    n = X.shape[0]
+    m = centers.shape[0]
+    covered = 0
+    for i in range(n):
+        xi = X[i]
+        for j in range(m):
+            r = 2.0 * radii[j]
+            r2 = r * r
+            dist2 = 0.0
+            for k in range(xi.shape[0]):
+                diff = xi[k] - centers[j, k]
+                dist2 += diff * diff
+            if dist2 <= r2:
+                covered += 1
+                break
+    return covered / n
 
 
 def compute_coverage_mahalanobis(X, centers, radii, cov=None):
     """
-    Mahalanobis coverage fraction (non-jitted).
+    Fraction covered under Mahalanobis balls of radius 2*r.
+    Implemented by whitening: y = L^{-1} x, where LL^T=cov.
     """
+    X = np.asarray(X, dtype=np.float64)
+    centers = np.asarray(centers, dtype=np.float64)
+    radii = np.asarray(radii, dtype=np.float64)
+    if radii.ndim == 0:
+        radii = np.full(centers.shape[0], float(radii))
+
     if cov is None:
         cov = np.cov(X.T) + np.eye(X.shape[1]) * 1e-6
-    cov_inv = np.linalg.inv(cov)
 
-    covered = 0
-    for x in X:
-        dists = [np.sqrt((x - c) @ cov_inv @ (x - c).T) for c in centers]
-        if np.any(np.array(dists) <= radii * 2.0):
-            covered += 1
-    return covered / len(X)
+    L = np.linalg.cholesky(cov)  # cov = L L^T
+    Linv = np.linalg.inv(L)  # or solve triangular per batch
+
+    Xw = (Linv @ X.T).T  # whitened
+    Cw = (Linv @ centers.T).T
+
+    return compute_coverage(Xw, Cw, radii)  # reuse Euclidean version
 
 
 # ============================================================
 # Fast approximations for normal CDF & PDF (Numba-friendly)
 # ============================================================
 
-
-@jit(nopython=True, inline="always")
+@vectorize(["float64(float64)"], nopython=True)
 def norm_pdf(x):
-    """Numba-compatible standard normal PDF"""
-    return np.exp(-0.5 * x * x) / np.sqrt(2.0 * np.pi)
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
 
 
-@jit(nopython=True, inline="always")
+@vectorize(["float64(float64)"], nopython=True)
 def norm_cdf(x):
-    """
-    Fast Numba-compatible CDF approximation:
-    - uses tanh-based approximation of erf()
-    - sufficient for acquisition functions
-    """
-    return 0.5 * (1.0 + np.tanh(0.7978845608 * (x + 0.044715 * x**3)))
+    # 0.5 * [1 + erf(x / sqrt(2))]
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
 # ============================================================
@@ -182,11 +171,21 @@ def norm_cdf(x):
 
 @jit(nopython=True)
 def expected_improvement(mean, std, best_value):
-    """Vectorized Expected Improvement (EI)"""
-    std_safe = std + 1e-12  # avoid div by zero
-    improvement = best_value - mean
-    z = improvement / std_safe
-    return improvement * norm_cdf(z) + std_safe * norm_pdf(z)
+    std_safe = std + 1e-12
+    diff = best_value - mean
+    z = diff / std_safe
+    return diff * norm_cdf(z) + std_safe * norm_pdf(z)
+
+
+@jit(nopython=True)
+def probability_improvement(mean, std, best_value):
+    std_safe = std + 1e-12
+    return norm_cdf((best_value - mean) / std_safe)
+
+
+@jit(nopython=True)
+def upper_confidence_bound(mean, std, beta):
+    return -mean + beta * std
 
 
 def log_expected_improvement(mean, std, best_value, eps=1e-9):
@@ -201,21 +200,6 @@ def log_expected_improvement(mean, std, best_value, eps=1e-9):
     z = diff / std_safe
     ei = diff * norm.cdf(z) + std_safe * norm.pdf(z)
     return np.log(ei + eps)
-
-
-@jit(nopython=True)
-def upper_confidence_bound(mean, std, beta):
-    """UCB: -mean + beta * std (maximize exploration)"""
-    return -mean + beta * std
-
-
-@jit(nopython=True)
-def probability_improvement(mean, std, best_value):
-    """Probability of Improvement (PI)"""
-    std_safe = std + 1e-12
-    improvement = best_value - mean
-    z = improvement / std_safe
-    return norm_cdf(z)
 
 
 @jit(nopython=True)
@@ -234,75 +218,3 @@ def knowledge_gradient(mean, std, best_value):
     z = (best_value - mean) / std_safe
     kg = std_safe * norm_pdf(z) + (best_value - mean) * norm_cdf(z)
     return np.maximum(kg, 0.0)
-
-
-@jit(nopython=True)
-def noisy_expected_improvement(mean, std, best_value, noise):
-    """Noisy EI that accounts for observation noise"""
-    eff_std = np.sqrt(std * std + noise * noise)
-    return expected_improvement(mean, eff_std, best_value)
-
-
-# ============================================================
-# Diversity-aware Candidate Selection (DPP-like)
-# ============================================================
-
-
-@jit(nopython=True)
-def rbf_kernel_matrix(X, lengthscale=0.5):
-    """Compute an RBF kernel matrix (Numba-friendly)."""
-    n, d = X.shape
-    K = np.zeros((n, n))
-    inv_ls_sq = 1.0 / (lengthscale * lengthscale)
-
-    for i in range(n):
-        for j in range(n):
-            sqdist = 0.0
-            for k in range(d):
-                diff = X[i, k] - X[j, k]
-                sqdist += diff * diff
-            K[i, j] = np.exp(-0.5 * inv_ls_sq * sqdist)
-    return K
-
-
-def dpp_select(X, scores, batch_size=5, lengthscale=0.5):
-    """
-    Greedy DPP-like batch selection:
-    - Encourages diversity via RBF kernel.
-    - Selects high-score points while penalizing redundancy.
-    """
-    n = len(X)
-    if batch_size >= n:
-        return np.argsort(-scores)[:batch_size]
-
-    K = rbf_kernel_matrix(X, lengthscale)
-    selected = []
-    remaining = list(range(n))
-
-    for _ in range(batch_size):
-        best_idx = -1
-        best_gain = -1e9
-
-        for j in remaining:
-            # diversity penalty = sum of kernel similarities with already selected
-            diversity_penalty = 0.0
-            if len(selected) > 0:
-                diversity_penalty = np.sum(K[j, selected])
-
-            gain = scores[j] - 0.1 * diversity_penalty
-            if gain > best_gain:
-                best_gain = gain
-                best_idx = j
-
-        selected.append(best_idx)
-        remaining.remove(best_idx)
-
-    return np.array(selected)
-
-
-# ======================================================
-# === Upgraded AcquisitionManager (EXP3-IX, TS, entropy) ===
-# ======================================================
-
-
-import numpy as np

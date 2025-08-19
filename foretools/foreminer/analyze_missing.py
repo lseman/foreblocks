@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -21,22 +21,23 @@ class MissingnessAnalyzer(AnalysisStrategy):
         missing_rate = self._missing_rate(data)
         results["missing_rate"] = missing_rate[missing_rate > 0].sort_values(ascending=False)
 
-        # 2) Missing mask & correlation
-        missing_mask = data.isna().astype(int)
+        # 2) Missing mask
+        missing_mask = data.isna().astype(np.int8)
         if missing_mask.shape[1] < 2:
             return results
 
-        results["missingness_correlation"] = missing_mask.corr()
+        # (optional safeguard for very wide dataframes)
+        max_features = getattr(config, "max_features_for_pairwise", 2000)
+        if missing_mask.shape[1] <= max_features:
+            results["missingness_correlation"] = missing_mask.corr()
+            results["missingness_jaccard"] = self._compute_jaccard(missing_mask)
+            results["missingness_clusters"] = self._cluster_missingness(missing_mask)
+        else:
+            results["missingness_correlation"] = pd.DataFrame()
+            results["missingness_jaccard"] = pd.DataFrame()
+            results["missingness_clusters"] = {}
 
-        # 3) Jaccard similarity between feature-missingness
-        results["missingness_jaccard"] = self._compute_jaccard(missing_mask)
-
-        # 4) Clustering of features by missingness pattern
-        results["missingness_clusters"] = (
-            self._cluster_missingness(missing_mask) if missing_mask.shape[1] >= 2 else {}
-        )
-
-        # 5) Optional MNAR analysis vs a provided target
+        # 3) Optional MNAR analysis vs provided target
         target_col = getattr(config, "target", None)
         if target_col and target_col in data.columns:
             results["missing_vs_target"] = self._analyze_mnar(data, target_col, config)
@@ -46,6 +47,7 @@ class MissingnessAnalyzer(AnalysisStrategy):
     # --------------- Small helpers ---------------
     @staticmethod
     def _missing_rate(df: pd.DataFrame) -> pd.Series:
+        """Fraction of missing values per column."""
         return df.isna().mean()
 
     @staticmethod
@@ -53,17 +55,14 @@ class MissingnessAnalyzer(AnalysisStrategy):
         """
         Proper Jaccard for binary columns:
             J(i,j) = |Mi ∩ Mj| / |Mi ∪ Mj|
-                    = dot_ij / (sum_i + sum_j - dot_ij)
         """
-        # intersections
-        inter = missing_mask.T.dot(missing_mask).astype(float)  # (p x p)
-        sums = missing_mask.sum(axis=0).astype(float)           # (p,)
-        # broadcast sums to get unions
+        inter = missing_mask.T.dot(missing_mask).astype(float)  # intersections
+        sums = missing_mask.sum(axis=0).astype(float)
         union = sums.values[:, None] + sums.values[None, :] - inter.values
+
         with np.errstate(invalid="ignore", divide="ignore"):
             jacc = np.divide(inter.values, union, out=np.zeros_like(inter.values), where=union > 0)
 
-        # set diagonal to 1 where a column has at least one missing; else 0
         diag = (sums.values > 0).astype(float)
         np.fill_diagonal(jacc, diag)
 
@@ -72,19 +71,21 @@ class MissingnessAnalyzer(AnalysisStrategy):
     @staticmethod
     def _cluster_missingness(missing_mask: pd.DataFrame) -> Dict[str, int]:
         """
-        Cluster features by similarity of their missingness patterns using
+        Cluster features by similarity of missingness patterns using
         AgglomerativeClustering on a precomputed Hamming distance matrix.
         """
         try:
             from sklearn.cluster import AgglomerativeClustering
             from sklearn.metrics import pairwise_distances
 
-            # distance between feature-missingness vectors (columns)
-            dists = pairwise_distances(missing_mask.T, metric="hamming")
             n_features = len(missing_mask.columns)
+            if n_features < 2:
+                return {}
+
+            # Hamming distance between feature-missingness vectors (columns)
+            dists = pairwise_distances(missing_mask.T, metric="hamming")
             n_clusters = int(np.clip(n_features // 2, 2, 5))
 
-            # use precomputed distances with average linkage
             model = AgglomerativeClustering(
                 n_clusters=n_clusters,
                 linkage="average",
@@ -104,40 +105,40 @@ class MissingnessAnalyzer(AnalysisStrategy):
         insights: Dict[str, Any] = {}
         target = data[target_col]
 
+        # Pre-cache target array for logistic regression
+        target_arr = target.to_numpy()
+
         for col in data.columns:
             if col == target_col:
                 continue
             miss_indicator = data[col].isna().astype(int)
             msum = int(miss_indicator.sum())
-            if msum < 5:  # not enough missing entries to say anything meaningful
+            if msum < 5:
                 continue
 
             try:
                 result = {"suggested_mnar": False, "suggested_mnar_reason": ""}
 
-                # Numeric/continuous target
+                # Numeric / continuous target
                 if target.dtype.kind in "ifc":
                     g1 = target[miss_indicator == 1].dropna()
                     g0 = target[miss_indicator == 0].dropna()
                     if len(g1) > 5 and len(g0) > 5:
-                        # Welch t-test + KS
                         _, p_t = ttest_ind(g1, g0, equal_var=False)
                         _, p_ks = ks_2samp(g1, g0)
                         result.update({"ttest_p": p_t, "ks_p": p_ks})
 
-                        # Predict missingness from target (AUROC)
                         auc = np.nan
                         if miss_indicator.nunique() == 2:
                             try:
                                 lr = LogisticRegression(solver="liblinear")
-                                x = target.to_numpy().reshape(-1, 1)
+                                x = target_arr.reshape(-1, 1)
                                 lr.fit(x, miss_indicator)
                                 auc = roc_auc_score(miss_indicator, lr.predict_proba(x)[:, 1])
                             except Exception:
                                 pass
                         result["auc"] = auc
 
-                        # Heuristic MNAR suggestion
                         if (p_t < 0.05) or (p_ks < 0.05) or (np.isfinite(auc) and auc > 0.70):
                             result["suggested_mnar"] = True
                             reasons = []
@@ -149,12 +150,10 @@ class MissingnessAnalyzer(AnalysisStrategy):
                 # Categorical / low-cardinality target
                 elif target.dtype.name == "category" or target.nunique(dropna=True) < 15:
                     contingency = pd.crosstab(miss_indicator, target)
-                    # need both 0 and 1 rows in the indicator
                     if contingency.shape[0] == 2:
                         chi2, p_chi2, _, _ = chi2_contingency(contingency)
                         n = contingency.to_numpy().sum()
                         r, c = contingency.shape
-                        # Cramér's V (bias-unadjusted), safe for r,c >= 2
                         denom = n * (min(r - 1, c - 1) if min(r, c) > 1 else 1)
                         cramers_v = float(np.sqrt(chi2 / denom)) if denom > 0 else np.nan
                         mi = float(mutual_info_score(miss_indicator, target))
@@ -173,8 +172,7 @@ class MissingnessAnalyzer(AnalysisStrategy):
                             if mi > 0.05: reasons.append("mutual_info")
                             result["suggested_mnar_reason"] = ", ".join(reasons)
 
-                # record only if we computed something beyond defaults
-                if len(result) > 2:
+                if len(result) > 2:  # record if meaningful
                     insights[col] = result
 
             except Exception as e:
