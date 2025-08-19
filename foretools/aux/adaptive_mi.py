@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -13,6 +13,8 @@ class AdaptiveMI:
     Adaptive, fast mutual information estimator for 1D-1D pairs.
     Methods: KSG (kNN), Copula-Gaussian, Miller–Madow binned.
     Returns a bounded [0,1] 'MI-correlation' score: sqrt(1 - exp(-2*MI)).
+    
+    Enhanced with sklearn-style score() method for better usability.
     """
 
     def __init__(
@@ -31,8 +33,121 @@ class AdaptiveMI:
         self.n_bins = int(n_bins)
         self.random_state = int(random_state)
 
-    # ---------------- Public API ----------------
+    # ---------------- Enhanced Public API ----------------
+    
+    def score(self, x: Union[np.ndarray, pd.Series], y: Union[np.ndarray, pd.Series], 
+              return_raw_mi: bool = False) -> float:
+        """
+        Compute mutual information between two 1D variables.
+        
+        Parameters
+        ----------
+        x, y : array-like, shape (n_samples,)
+            Input variables
+        return_raw_mi : bool, default=False
+            If True, return raw MI in nats. If False, return [0,1] MI-correlation coefficient.
+            
+        Returns
+        -------
+        score : float
+            MI-correlation coefficient [0,1] (default) or raw MI in nats (if return_raw_mi=True)
+        """
+        # Handle pandas Series
+        if hasattr(x, 'values'):
+            x = x.values
+        if hasattr(y, 'values'):
+            y = y.values
+            
+        # Convert to numpy arrays
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        
+        # Validate inputs
+        if len(x) != len(y):
+            raise ValueError(f"x and y must have same length, got {len(x)} and {len(y)}")
+        
+        if len(x) == 0:
+            return 0.0
+            
+        # Remove invalid values
+        valid_mask = np.isfinite(x) & np.isfinite(y)
+        if valid_mask.sum() < self.min_overlap:
+            return 0.0
+            
+        x_clean = x[valid_mask]
+        y_clean = y[valid_mask]
+        
+        # Subsample if needed
+        if len(x_clean) > self.subsample:
+            rng = check_random_state(self.random_state)
+            idx = rng.choice(len(x_clean), size=self.subsample, replace=False)
+            x_clean = x_clean[idx]
+            y_clean = y_clean[idx]
+        
+        # Choose adaptive method
+        ties_x = self._tie_fraction(x_clean)
+        ties_y = self._tie_fraction(y_clean)
+        abs_rho = abs(self._safe_spearman(x_clean, y_clean))
+        
+        if max(ties_x, ties_y) > 0.05:
+            mi_raw = self._mi_binned_quantile(x_clean, y_clean, self.n_bins)
+        elif abs_rho >= 0.85:
+            mi_raw = self._mi_copula_gaussian(x_clean, y_clean)
+        else:
+            mi_raw = self._mi_ksg_avg(x_clean, y_clean, self.ks)
+        
+        if return_raw_mi:
+            return float(max(mi_raw, 0.0))
+        else:
+            # Convert to [0,1] MI-correlation coefficient
+            mi_corr = self._mi_to_coeff(mi_raw)
+            return float(np.clip(mi_corr, 0.0, 1.0)) if np.isfinite(mi_corr) else 0.0
+    
+    def score_pairwise(self, X: Union[np.ndarray, pd.DataFrame], y: Union[np.ndarray, pd.Series], 
+                       return_raw_mi: bool = False) -> np.ndarray:
+        """
+        Compute MI scores between each column of X and y.
+        
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Input features
+        y : array-like, shape (n_samples,)
+            Target variable
+        return_raw_mi : bool, default=False
+            If True, return raw MI in nats. If False, return [0,1] MI-correlation coefficients.
+            
+        Returns
+        -------
+        scores : ndarray, shape (n_features,)
+            MI scores for each feature
+        """
+        if hasattr(X, 'values'):
+            X = X.values
+        X = np.asarray(X)
+        
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+        
+        scores = np.zeros(X.shape[1])
+        for i in range(X.shape[1]):
+            scores[i] = self.score(X[:, i], y, return_raw_mi=return_raw_mi)
+        
+        return scores
+    
+    def fit_score(self, x: Union[np.ndarray, pd.Series], y: Union[np.ndarray, pd.Series],
+                  return_raw_mi: bool = False) -> float:
+        """
+        Fit and score in one step (for sklearn compatibility).
+        
+        Since MI estimation doesn't require fitting, this is equivalent to score().
+        """
+        return self.score(x, y, return_raw_mi=return_raw_mi)
+
     def matrix(self, df: pd.DataFrame, spearman_scr: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        """
+        Compute pairwise MI matrix for all columns in DataFrame.
+        """
         cols = list(df.columns)
         p = len(cols)
         if p < 2:
@@ -84,6 +199,53 @@ class AdaptiveMI:
                     out[i, j] = out[j, i] = float(np.clip(mi_corr, 0.0, 1.0))
 
         return pd.DataFrame(out, index=cols, columns=cols)
+
+    # --------------- Method Selection Utilities ---------------
+    
+    def explain_method_choice(self, x: Union[np.ndarray, pd.Series], y: Union[np.ndarray, pd.Series]) -> str:
+        """
+        Explain which MI estimation method would be chosen for the given data.
+        
+        Useful for understanding and debugging the adaptive selection.
+        """
+        # Handle pandas Series
+        if hasattr(x, 'values'):
+            x = x.values
+        if hasattr(y, 'values'):
+            y = y.values
+            
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        
+        # Remove invalid values
+        valid_mask = np.isfinite(x) & np.isfinite(y)
+        if valid_mask.sum() < self.min_overlap:
+            return f"Insufficient data: {valid_mask.sum()} valid samples < {self.min_overlap} minimum"
+            
+        x_clean = x[valid_mask]
+        y_clean = y[valid_mask]
+        
+        ties_x = self._tie_fraction(x_clean)
+        ties_y = self._tie_fraction(y_clean)
+        abs_rho = abs(self._safe_spearman(x_clean, y_clean))
+        
+        explanation = f"Data characteristics:\n"
+        explanation += f"  - Tie fraction X: {ties_x:.3f}\n"
+        explanation += f"  - Tie fraction Y: {ties_y:.3f}\n"
+        explanation += f"  - |Spearman ρ|: {abs_rho:.3f}\n"
+        explanation += f"  - Sample size: {len(x_clean)}\n\n"
+        
+        if max(ties_x, ties_y) > 0.05:
+            explanation += "Selected method: Binned Quantile\n"
+            explanation += "Reason: High tie fraction (>5%) detected, binning handles discrete/categorical data well"
+        elif abs_rho >= 0.85:
+            explanation += "Selected method: Copula-Gaussian\n"
+            explanation += "Reason: Strong linear correlation (|ρ|≥0.85), Gaussian copula is fast and accurate"
+        else:
+            explanation += "Selected method: KSG (k-Nearest Neighbors)\n"
+            explanation += "Reason: General case with moderate correlation and continuous-like data"
+        
+        return explanation
 
     # --------------- Estimators ---------------
     def _mi_ksg_avg(self, x: np.ndarray, y: np.ndarray, ks: Tuple[int, ...]) -> float:
@@ -220,7 +382,7 @@ class AdaptiveMI:
         order = np.argsort(v, kind="mergesort")
         s = v[order]
         # For each i (original order), find # within [s_i - eps_i, s_i + eps_i]
-        # We’ll compute on sorted index positions
+        # We'll compute on sorted index positions
         inv = np.empty(n, dtype=int)
         inv[order] = np.arange(n)
         pos = inv  # index of each point in sorted order
