@@ -8,10 +8,10 @@ from sklearn.decomposition import PCA
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import mutual_info_score
 
-from .adaptive_mi import AdaptiveMI
-from .distance_correlation import DistanceCorrelation
+from ..aux.adaptive_mi import AdaptiveMI
+from ..aux.distance_correlation import DistanceCorrelation
+from ..aux.hsic import HSIC
 from .foreminer_aux import *
-from .hsic import HSIC
 
 # Optional deps
 try:

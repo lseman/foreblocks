@@ -1390,7 +1390,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             'binning': BinningTransformer(self.config),
             'clustering': ClusteringTransformer(self.config),
             'statistical': StatisticalTransformer(self.config),
-            'fourier': FourierTransformer(self.config),
+            #'fourier': FourierTransformer(self.config),
             #'autoencoder': AutoencoderTransformer(self.config),
         }
         
