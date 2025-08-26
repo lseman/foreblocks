@@ -1,3 +1,4 @@
+# --- add inside TrustRegion ---
 from __future__ import annotations
 
 import collections
@@ -8,21 +9,22 @@ from dataclasses import dataclass
 # ============================================
 # ✅ Core Python & Concurrency
 # ============================================
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 # ============================================
 # ✅ Numerical & Scientific Computing
 # ============================================
 import numpy as np
+import numpy.typing as npt
 
 # Optimized with Numba JIT compilation for speed
-from numba import njit, prange
+from numba import jit, njit, prange
 from pykdtree.kdtree import KDTree
 
 # ============================================
 # ✅ Parallelism & Performance
 # ============================================
-from scipy.spatial.distance import cdist
+from scipy.spatial.distance import cdist  # if you already have this path, keep it
 from scipy.stats import norm
 from sobol_seq import i4_sobol_generate
 
@@ -32,9 +34,15 @@ from .foretuner_acq import *
 # ✅ Project-Specific
 # ============================================
 from .foretuner_aux import *
-from .foretuner_candidate import *
+from .foretuner_rl import *
 from .foretuner_sur import *
 
+try:
+    import torch
+
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 try:
     from pykdtree.kdtree import KDTree as _OriginalKDTree
 
@@ -79,197 +87,6 @@ warnings.filterwarnings("ignore")
 # - ReptileMetaLearner: optional few-shot meta-pretrain across tasks
 #
 # Safe fallbacks when torch is missing.
-
-
-try:
-    import torch
-    import torch.nn as nn
-    import torch.nn.functional as F
-
-    TORCH_AVAILABLE = True
-except Exception:
-    TORCH_AVAILABLE = False
-
-
-# ------------------------------
-# Small utilities
-# ------------------------------
-def _to_tensor(x, dtype=torch.float32, device="cpu"):
-    if isinstance(x, np.ndarray):
-        return torch.from_numpy(x).to(device=device, dtype=dtype)
-    return torch.tensor(x, device=device, dtype=dtype)
-
-
-def _softplus(x: float) -> float:
-    # numerically safe softplus
-    if x > 20:  # exp overflow guard
-        return x
-    return math.log1p(math.exp(x))
-
-
-# ------------------------------
-# Learnable modules (if torch)
-# ------------------------------
-if TORCH_AVAILABLE:
-
-    class RadiusPolicy(nn.Module):
-        """
-        Predicts Δlog r in [-delta_max, delta_max] from region feature vector.
-        new_radius = radius * exp(Δ)
-        """
-
-        def __init__(self, d_in: int, hidden: int = 48, delta_max: float = 0.15):
-            super().__init__()
-            self.net = nn.Sequential(
-                nn.LayerNorm(d_in),
-                nn.Linear(d_in, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, 1),
-            )
-            self.delta_max = float(delta_max)
-
-        @torch.no_grad()
-        def step(self, feats, radius: float, min_r: float, max_r: float):
-            x = feats if torch.is_tensor(feats) else _to_tensor(feats)
-            raw = self.net(x)  # (1,) or scalar
-            delta = torch.tanh(raw).item() * self.delta_max  # [-Δmax, Δmax]
-            new_r = float(radius * math.exp(delta))
-            new_r = float(max(min(new_r, max_r), min_r))
-            return new_r, float(delta)
-
-    class RegionAttention(nn.Module):
-        """
-        Self-attention over regions → weights for allocation/spawn/prune.
-        """
-
-        def __init__(self, d_in: int, d_model: int = 48, n_heads: int = 4):
-            super().__init__()
-            self.inp = nn.Linear(d_in, d_model)
-            self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-            self.out = nn.Linear(d_model, 1)
-
-        @torch.no_grad()
-        def scores(self, feats_batch: np.ndarray) -> np.ndarray:
-            # feats_batch: (R, d_in)
-            X = _to_tensor(feats_batch).unsqueeze(0)  # (1,R,d_in)
-            H = torch.silu(self.inp(X))
-            H2, _ = self.attn(H, H, H, need_weights=False)
-            s = self.out(H2).squeeze(0).squeeze(-1)  # (R,)
-            w = torch.softmax(s, dim=0).cpu().numpy()
-            return w
-
-    @dataclass
-    class RLConfig:
-        buffer_cap: int = 1024
-        lr: float = 1e-3
-        train_every: int = 1
-        steps_per_train: int = 64
-        batch: int = 64
-        delta_max: float = 0.15
-
-    class RadiusLearnerAgent:
-        """
-        Online self-supervised learner for radius changes.
-        Stores (features, delta_taken, reward) and regresses to good deltas.
-        """
-
-        def __init__(self, d_in: int, cfg: RLConfig | None = None, device: str = "cpu"):
-            self.cfg = cfg or RLConfig()
-            self.device = device
-            self.policy = RadiusPolicy(d_in, delta_max=self.cfg.delta_max).to(device)
-            self.opt = torch.optim.Adam(self.policy.parameters(), lr=self.cfg.lr)
-            self.buf: list[tuple[np.ndarray, float, float]] = []
-            self._ticks = 0
-
-        def push(self, feats: np.ndarray, delta: float, reward: float):
-            if not np.all(np.isfinite(feats)):  # keep buffer clean
-                return
-            self.buf.append((feats.astype(np.float32), float(delta), float(reward)))
-            if len(self.buf) > self.cfg.buffer_cap:
-                self.buf.pop(0)
-
-        def maybe_train(self):
-            self._ticks += 1
-            if self._ticks % self.cfg.train_every != 0:
-                return
-            if len(self.buf) < 64:
-                return
-            import random
-
-            for _ in range(self.cfg.steps_per_train):
-                B = random.sample(self.buf, min(self.cfg.batch, len(self.buf)))
-                X = torch.tensor(
-                    [b[0] for b in B], dtype=torch.float32, device=self.device
-                )
-                y = torch.tensor(
-                    [b[1] for b in B], dtype=torch.float32, device=self.device
-                ).unsqueeze(1)
-                rw = torch.tensor(
-                    [_softplus(max(0.0, b[2])) for b in B],
-                    dtype=torch.float32,
-                    device=self.device,
-                ).unsqueeze(1)
-
-                pred = torch.tanh(self.policy.net(X)) * self.policy.delta_max
-                loss = F.smooth_l1_loss(pred, y, reduction="none")
-                loss = (rw * loss).mean()
-                self.opt.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
-                self.opt.step()
-
-    class ReptileMetaLearner:
-        """
-        Simple Reptile meta-learning wrapper for RadiusPolicy (optional).
-        """
-
-        def __init__(self, policy: RadiusPolicy, lr_outer: float = 1e-2):
-            self.master = policy
-            self.lr_outer = lr_outer
-
-        @torch.no_grad()
-        def step(self, task_policy: RadiusPolicy):
-            for p_master, p_task in zip(
-                self.master.parameters(), task_policy.parameters()
-            ):
-                p_master.add_(self.lr_outer * (p_task - p_master))
-
-
-else:
-    # ------------------------------
-    # Fallback stubs if torch missing
-    # ------------------------------
-    class RadiusPolicy:
-        def __init__(self, d_in: int, hidden: int = 48, delta_max: float = 0.15):
-            self.delta_max = float(delta_max)
-
-        def step(self, feats, radius: float, min_r: float, max_r: float):
-            # neutral: no change
-            return float(max(min(radius, max_r), min_r)), 0.0
-
-    class RegionAttention:
-        def __init__(self, d_in: int, d_model: int = 48, n_heads: int = 4): ...
-        def scores(self, feats_batch: np.ndarray) -> np.ndarray:
-            # uniform weights
-            n = feats_batch.shape[0]
-            return np.ones(n, dtype=np.float64) / max(1, n)
-
-    class RLConfig:
-        def __init__(self, *args, **kwargs): ...
-
-    class RadiusLearnerAgent:
-        def __init__(self, d_in: int, cfg: RLConfig | None = None, device: str = "cpu"):
-            self.policy = RadiusPolicy(d_in)
-
-        def push(self, feats: np.ndarray, delta: float, reward: float): ...
-        def maybe_train(self): ...
-
-    class ReptileMetaLearner:
-        def __init__(self, policy: RadiusPolicy, lr_outer: float = 1e-2): ...
-        def step(self, task_policy: RadiusPolicy): ...
-
 
 try:
     import seaborn as sns
@@ -611,24 +428,6 @@ def _pareto_nondominated_mask(F):
     return _pareto_nondominated_mask_numba(F)
 
 
-def _try_kdtree(points, query):
-    """Optimized nearest neighbor search with better fallbacks."""
-    points = np.asarray(points)
-    query = np.asarray(query)
-
-    if points.shape[0] == 0:
-        return np.full(len(query), np.inf)
-
-    try:
-        # Use KDTree (Cython version) for better performance
-        tree = KDTree(points)
-        distances, _ = tree.query(query)
-        return distances
-    except ImportError:
-        # Fallback to direct computation
-        if points.size == 0:
-            return np.full(len(query), np.inf)
-        return np.min(cdist(query, points), axis=1)
 
 
 # Batch processing utilities for very large datasets
@@ -648,294 +447,6 @@ def compute_coverage_batch(X, centers, radii, batch_size=1000):
     return covered_count / n_points
 
 
-class TrustRegion:
-    """
-    CMA-like TrustRegion for TuRBO-M+++ (V2):
-    - Ellipsoidal covariance adaptation with forgetting + eigen-flooring
-    - Velocity/uncertainty-aware radius control (bounded multiplicative steps)
-    - Stable entropy from logdet(cov) vs isotropic reference
-    - Fully NaN-safe; health is always in [0,1]
-    """
-
-    def __init__(self, center, radius, region_id, n_dims, dtype=np.float64):
-        self.center = np.array(center, dtype=dtype)
-        self.radius = float(radius)
-        self.region_id = region_id
-        self.n_dims = int(n_dims)
-
-        # Performance metrics
-        self.best_value = np.inf
-        self.prev_best_value = np.inf
-        self.trial_count = 0
-        self.success_count = 0
-        self.consecutive_failures = 0
-        self.last_improvement = 0
-        self.stagnation_count = 0
-        self.restarts = 0
-
-        # Velocities
-        self.stagnation_velocity = 0.0  # EMA of non-improvement gap
-        self.improvement_velocity = 1.0  # EMA of improvement magnitude
-
-        # Ellipsoidal covariance (start isotropic)
-        self.cov = np.eye(self.n_dims, dtype=dtype) * (self.radius**2)
-        self.pca_basis = np.eye(self.n_dims, dtype=dtype)
-        self.pca_eigvals = np.ones(self.n_dims, dtype=dtype)
-        self.cov_updates_since_reset = 0
-
-        # Local archive
-        self.local_X = []
-        self.local_y = []
-
-        # Signals
-        self.local_entropy = 1.0
-        self.local_uncertainty = 1.0
-        self._unc_ema = 1.0
-        self._health_score_override = None
-        self.spawn_score = 0.0
-        self.exploration_bonus = 1.0
-        self.health_decay_factor = 1.0
-
-    # =====================================
-    # Core update per new sample
-    # =====================================
-    def update(self, x, y, config, surrogate_var=None):
-        self.trial_count += 1
-        improved = bool(y < self.best_value)
-        delta = max(0.0, float(self.best_value - y))
-
-        # Velocity EMAs
-        self.stagnation_velocity = 0.9 * self.stagnation_velocity + 0.1 * delta
-        if improved:
-            self.improvement_velocity = 0.8 * self.improvement_velocity + 0.2 * delta
-        else:
-            self.improvement_velocity *= 0.97
-
-        # Track/EMA local uncertainty if provided
-        if surrogate_var is not None and np.isfinite(surrogate_var):
-            self._unc_ema = 0.9 * self._unc_ema + 0.1 * abs(float(surrogate_var))
-            self.local_uncertainty = self._unc_ema
-
-        # Best bookkeeping
-        if improved:
-            self.prev_best_value = self.best_value
-            self.best_value = float(y)
-            self.success_count += 1
-            self.last_improvement = 0
-            self.stagnation_count = 0
-            self.consecutive_failures = 0
-        else:
-            self.consecutive_failures += 1
-            self.last_improvement += 1
-            if self.consecutive_failures > 4:
-                self.stagnation_count += 1
-
-        # Local archive & covariance update
-        self._update_local_archive(x, float(y), config.max_local_data)
-        self._rank_one_cov_update(x)
-
-        # Periodic PCA & entropy refresh
-        if self.trial_count % max(5, self.n_dims) == 0:
-            self._update_pca_from_cov()
-            self.local_entropy = self._compute_entropy()
-
-        # Adaptive radius (bounded)
-        if getattr(config, "local_radius_adaptation", True):
-            self._adaptive_radius(improved, delta, config)
-
-        # Spawn score combines age, entropy, velocity, uncertainty
-        self._update_spawn_score(config)
-
-    # =====================================
-    # Rank-one covariance update (with forgetting + PD repair)
-    # =====================================
-    def _rank_one_cov_update(self, x, alpha=0.12, floor=1e-9):
-        """
-        cov <- (1-alpha)*cov + alpha*(dx dx^T), with small eigen-flooring.
-        """
-        dx = (np.asarray(x, dtype=self.center.dtype) - self.center).reshape(-1, 1)
-        if not np.all(np.isfinite(dx)):
-            # keep at least a tiny jitter to avoid degeneration
-            self.cov += 1e-9 * np.eye(self.n_dims, dtype=self.cov.dtype)
-            return
-
-        # Exponential forgetting + rank-one add
-        self.cov = (1.0 - alpha) * self.cov + alpha * (dx @ dx.T)
-
-        # Numerical stabilization only when needed
-        # Ensure SPD via eigen-flooring and trace normalization
-        try:
-            # quick PD check: attempt cholesky
-            np.linalg.cholesky(self.cov + floor * np.eye(self.n_dims))
-        except np.linalg.LinAlgError:
-            self._repair_cov(floor=floor)
-
-        # Small jitter to keep PD in long runs
-        self.cov += floor * np.eye(self.n_dims, dtype=self.cov.dtype)
-        self.cov_updates_since_reset += 1
-
-    def _repair_cov(self, floor=1e-9, cap=1e9):
-        # Symmetrize
-        C = 0.5 * (self.cov + self.cov.T)
-        w, V = np.linalg.eigh(C)
-        w = np.clip(w, floor, cap)
-        C2 = (V * w) @ V.T
-
-        # Optional trace normalization towards radius^2 * n_dims
-        target_tr = (self.radius**2) * self.n_dims
-        tr = float(np.trace(C2))
-        if np.isfinite(tr) and tr > 0:
-            C2 *= target_tr / tr
-
-        self.cov = C2
-
-    def _update_pca_from_cov(self):
-        C = 0.5 * (self.cov + self.cov.T)
-        w, V = np.linalg.eigh(C)
-        w = np.clip(w, 1e-12, 1e12)
-        idx = np.argsort(w)[::-1]
-        self.pca_eigvals = w[idx]
-        self.pca_basis = V[:, idx]
-
-    # =====================================
-    # Adaptive radius update (bounded multiplicative step)
-    # =====================================
-    def _adaptive_radius(self, improved, delta, config):
-        """
-        Uses improvement and uncertainty to scale radius smoothly.
-        Prevents violent swings; keeps radius in [min_radius, max_radius].
-        """
-        # Base expand/contract multipliers
-        if improved:
-            base = float(getattr(config, "expansion_factor", 1.08))
-        else:
-            # penalize with stagnation velocity (less than 1)
-            st_pen = float(np.exp(-0.5 * self.stagnation_velocity))
-            base = float(getattr(config, "contraction_factor", 0.92)) * st_pen
-
-        # Uncertainty bonus (tapers with tanh)
-        unc_bonus = 1.0 + 0.3 * np.tanh(self.local_uncertainty)
-
-        # Improvement influence (bigger delta -> a bit more expansion)
-        imp_bonus = 1.0 + 0.15 * np.tanh(delta)
-
-        scale = base * unc_bonus * imp_bonus
-        # Bound the per-step change tightly
-        scale = float(np.clip(scale, 0.85, 1.15))
-
-        # Apply as multiplicative change to isotropic radius proxy
-        new_radius = self.radius * scale
-        new_radius = float(np.clip(new_radius, config.min_radius, config.max_radius))
-
-        # Optionally align covariance trace to radius (keeps ellipsoid volume in check)
-        tr_target = (new_radius**2) * self.n_dims
-        tr = float(np.trace(self.cov))
-        if np.isfinite(tr) and tr > 0:
-            self.cov *= tr_target / tr
-
-        # Update PCA cache after cov rescale
-        self._update_pca_from_cov()
-        self.radius = new_radius
-
-    # =====================================
-    # Local archive & entropy
-    # =====================================
-    def _update_local_archive(self, x, y, max_size):
-        if len(self.local_X) < max_size:
-            self.local_X.append(np.asarray(x, dtype=self.center.dtype).copy())
-            self.local_y.append(float(y))
-        else:
-            # reservoir-like replacement with bounded bias
-            idx = np.random.randint(0, self.trial_count + 1)
-            if idx < max_size:
-                self.local_X[idx] = np.asarray(x, dtype=self.center.dtype).copy()
-                self.local_y[idx] = float(y)
-
-    def _compute_entropy(self):
-        """
-        Entropy proxy: 0.5 * (logdet(cov) - logdet(r^2 I)) = log volume ratio.
-        Clipped and NaN-safe.
-        """
-        C = 0.5 * (self.cov + self.cov.T)
-        try:
-            w = np.linalg.eigvalsh(C)
-            w = np.clip(w, 1e-12, 1e12)
-            logdet = float(np.sum(np.log(w)))
-        except Exception:
-            # fallback via SVD
-            s = np.linalg.svd(C, compute_uv=False)
-            s = np.clip(s, 1e-12, 1e12)
-            logdet = float(np.sum(np.log(s)))
-
-        ref_logdet = self.n_dims * np.log(self.radius**2 + 1e-12)
-        val = 0.5 * (logdet - ref_logdet)
-        return float(np.nan_to_num(val, nan=1.0, posinf=1.0, neginf=1.0))
-
-    # =====================================
-    # Spawn score
-    # =====================================
-    def _update_spawn_score(self, config):
-        age_penalty = min(
-            1.0, self.last_improvement / max(1, getattr(config, "max_age", 50))
-        )
-        vel_term = np.tanh(self.stagnation_velocity)
-        entropy_term = np.tanh(self.local_entropy)
-        uncertainty_term = np.tanh(self.local_uncertainty)
-
-        val = (
-            0.3 * self.success_rate
-            + 0.3 * vel_term
-            + 0.2 * entropy_term
-            + 0.2 * uncertainty_term
-            - 0.3 * age_penalty
-        )
-        self.spawn_score = float(np.clip(np.nan_to_num(val, nan=0.0), 0.0, 1.0))
-        self.exploration_bonus = float(
-            np.clip(1.0 + 0.5 * (1.0 - np.tanh(self.improvement_velocity)), 0.8, 2.0)
-        )
-
-    # =====================================
-    # Properties
-    # =====================================
-    @property
-    def success_rate(self):
-        if self.trial_count <= 0:
-            return 0.0
-        return float(self.success_count) / float(max(1, self.trial_count))
-
-    @property
-    def is_active(self):
-        return bool(self.radius > 1e-8)
-
-    @property
-    def should_restart(self):
-        entropy_low = bool(self.local_entropy < 0.05)
-        return (self.stagnation_count > 15 or entropy_low) and (self.radius < 0.05)
-
-    @property
-    def health_score(self):
-        if self._health_score_override is not None:
-            return float(self._health_score_override)
-        raw = (
-            0.4 * self.success_rate
-            + 0.3 * (1.0 - float(self.local_entropy))
-            + 0.3 * float(np.tanh(self.local_uncertainty))
-        )
-        return float(
-            np.clip(np.nan_to_num(raw * self.health_decay_factor, nan=0.0), 0.0, 1.0)
-        )
-
-    @health_score.setter
-    def health_score(self, value):
-        self._health_score_override = float(
-            np.nan_to_num(value, nan=0.0, posinf=1.0, neginf=0.0)
-        )
-
-    def clear_health_override(self):
-        self._health_score_override = None
-
-    def decay_health(self, factor=0.98):
-        self.health_decay_factor *= float(factor)
 
 
 class RunningStats:
@@ -1038,143 +549,440 @@ def _min_dist_to_set(samples: np.ndarray, existing: np.ndarray) -> np.ndarray:
     d2 = np.einsum("nrd,nrd->nr", diffs, diffs)  # squared distances
     return np.sqrt(d2.min(axis=1, keepdims=False)).astype(np.float32)
 
+try:
+    from scipy.spatial import cKDTree as KDTreeFast
+    HAS_FAST_KD = True
+except Exception:
+    HAS_FAST_KD = False
 
-def filter_dominated_points(points):
-    """Remove dominated points from a set."""
-    if len(points) <= 1:
-        return points
-    
-    points = np.asarray(points)
-    n = len(points)
-    dominated = np.zeros(n, dtype=bool)
-    
-    for i in range(n):
-        if dominated[i]:
-            continue
-        for j in range(i + 1, n):
-            if dominated[j]:
-                continue
-            
-            # Check if i dominates j
-            if np.all(points[i] <= points[j]) and np.any(points[i] < points[j]):
-                dominated[j] = True
-            # Check if j dominates i  
-            elif np.all(points[j] <= points[i]) and np.any(points[j] < points[i]):
-                dominated[i] = True
-                break
-    
-    return points[~dominated]
 
-def hypervolume_4d_inclusion_exclusion(points, ref_point):
+
+
+class TrustRegion:
     """
-    4D hypervolume using inclusion-exclusion principle.
-    Efficient for small point sets (< 15 points).
+    Ellipsoidal Trust Region (CMA-lite) for TuRBO-style BO
+
+    Key features:
+      - Rank-1 EMA covariance (SPD, Cholesky-checked) with trace tied to radius^2 * n
+      - Log-radius update with burst-on-fail & catastrophic-fail handling
+      - Entropy from log |C| via Cholesky (cheap, NaN-safe)
+      - Novelty via mean Mahalanobis distance (archive vs center)
+      - Ring-buffer archive (O(1) memory)
+      - Exposes metric to candidate generator: metric_scales(), chol()
+      - Optional ridge direction memory for elongation: prev_dir_white
     """
-    points = filter_dominated_points(points)
-    if len(points) == 0:
-        return 0.0
-    
-    points = np.asarray(points)
-    ref_point = np.asarray(ref_point)
-    n = len(points)
-    
-    # For large point sets, use Monte Carlo approximation
-    if n > 12:
-        return hypervolume_4d_monte_carlo(points, ref_point)
-    
-    total_hv = 0.0
-    
-    # Iterate through all non-empty subsets using inclusion-exclusion
-    for i in range(1, 2**n):
-        subset_indices = []
-        for j in range(n):
-            if i & (1 << j):
-                subset_indices.append(j)
-        
-        subset = points[subset_indices]
-        
-        # Calculate hypervolume of intersection (supremum of subset)
-        intersection_point = np.maximum.reduce(subset)
-        
-        # Check if intersection point is valid (dominated by reference point)
-        if np.all(intersection_point < ref_point):
-            # Volume of this intersection
-            diff = ref_point - intersection_point
-            subset_hv = np.prod(np.maximum(diff, 0))
-            
-            # Apply inclusion-exclusion principle
-            if len(subset_indices) % 2 == 1:
-                total_hv += subset_hv
-            else:
-                total_hv -= subset_hv
-    
-    return max(0.0, total_hv)
 
-def hypervolume_4d_monte_carlo(points, ref_point, n_samples=50000):
-    """Monte Carlo approximation for 4D hypervolume."""
-    points = filter_dominated_points(points)
-    if len(points) == 0:
-        return 0.0
-    
-    points = np.asarray(points)
-    ref_point = np.asarray(ref_point)
-    
-    # Determine sampling bounds
-    min_bounds = np.minimum.reduce(points)
-    max_bounds = ref_point
-    
-    # Generate random samples in the bounding box
-    samples = np.random.uniform(min_bounds, max_bounds, size=(n_samples, 4))
-    
-    # Count samples that are dominated by at least one point
-    dominated_count = 0
-    for sample in samples:
-        for point in points:
-            if np.all(point <= sample):
-                dominated_count += 1
-                break
-    
-    # Estimate hypervolume
-    bounding_volume = np.prod(max_bounds - min_bounds)
-    return (dominated_count / n_samples) * bounding_volume
+    _defaults = dict(
+        # radius bounds
+        min_radius=1e-3, max_radius=1.0,
+        # covariance (EMA) + numerics
+        cov_alpha=0.12, cov_floor=1e-9, cov_cap=1e9, kappa_max=1e6,
+        # local archive
+        max_local_data=128,
+        # radius adaptation
+        local_radius_adaptation=True,
+        expansion_factor=1.08, contraction_factor=0.92,
+        radius_step_clip=(0.85, 1.15),
+        # restart / aging
+        max_age=50, restart_entropy_thresh=0.05,
+        restart_radius_thresh=0.05, restart_stagnation_steps=15,
+        # scores (weights)
+        novelty_weight=0.2, entropy_weight=0.2, uncertainty_weight=0.2,
+        velocity_weight=0.3, success_weight=0.3, age_penalty_weight=0.3,
+        # health
+        health_decay_init=1.0,
+        health_success_w=0.4, health_entropy_w=0.3, health_uncertainty_w=0.3,
+        # dtype
+        dtype=np.float64,
+        # ---- burst / catastrophic knobs ----
+        burst_on_fail=True,
+        burst_min_failures=6,
+        burst_factor=1.35,
+        burst_entropy_thresh=0.10,
+        burst_uncertainty_thresh=0.75,
+        burst_cooldown=10,
+        catastrophic_expand_factor=1.50,
+        catastrophic_reset_cov=True,
+        # direction memory (for elongation in whitened space)
+        dir_beta=0.35, dir_cap=3.0,
+    )
 
-def hypervolume_improvement_4d(existing_points, new_point, ref_point):
-    """Calculate 4D hypervolume improvement when adding a new point."""
-    new_point = np.asarray(new_point)
-    ref_point = np.asarray(ref_point)
-    
-    if len(existing_points) == 0:
-        # Single point hypervolume
-        diff = ref_point - new_point
-        if np.any(diff <= 0):
+    def __init__(self, center, radius, region_id: int, n_dims: int, **kwargs):
+        for k, v in {**self._defaults, **kwargs}.items():
+            setattr(self, k, v)
+
+        self.n = int(n_dims)
+        self.n_dims = self.n
+        self.center = np.asarray(center, dtype=self.dtype).reshape(-1)
+        assert self.center.shape[0] == self.n
+
+        self.radius = float(np.clip(radius, self.min_radius, self.max_radius))
+        self.region_id = int(region_id)
+
+        # perf counters
+        self.best_value = math.inf
+        self.prev_best_value = math.inf
+        self.trial_count = 0
+        self.success_count = 0
+        self.consecutive_failures = 0
+        self.last_improvement = 0
+        self.stagnation_count = 0
+        self.restarts = 0
+
+        # velocities
+        self.stagnation_velocity = 0.0
+        self.improvement_velocity = 1.0
+
+        # covariance (tie trace to radius^2 * n)
+        self.cov = np.eye(self.n, dtype=self.dtype) * (self.radius ** 2)
+        self._chol = np.linalg.cholesky(self.cov + self.cov_floor * np.eye(self.n, dtype=self.dtype))
+        self._logdet = 2.0 * float(np.sum(np.log(np.diag(self._chol))))  # log|C|
+        self.cov_updates_since_reset = 0
+
+        # archive (ring)
+        m = self.max_local_data
+        self.local_X = np.zeros((m, self.n), dtype=self.dtype)
+        self.local_y = np.full((m,), math.inf, dtype=self.dtype)
+        self._buf_size = 0
+        self._buf_ptr = 0
+
+        # signals
+        self.local_entropy = 1.0
+        self.local_uncertainty = 1.0
+        self._unc_ema = 1.0
+        self._health_score_override = None
+        self.spawn_score = 0.0
+        self.exploration_bonus = 1.0
+        self.health_decay_factor = self.health_decay_init
+
+        # internals
+        self._log_radius = self._safe_log(self.radius)
+        self._last_burst_trial = -10
+        self._trial_index = 0
+
+        # ridge direction memory for ellipsoidal elongation (whitened coords)
+        self.prev_dir_white = np.zeros(self.n, dtype=self.dtype)
+        self.radius_long = self.radius
+        self.radius_lat  = self.radius
+
+    # ---------------- core update ----------------
+    def update(self, x, y, surrogate_var: Optional[float] = None) -> Dict[str, float]:
+        self.trial_count += 1
+        self._trial_index += 1
+
+        x = np.asarray(x, dtype=self.dtype).reshape(-1)
+        y_is_finite = np.isfinite(y)
+        y_val = float(y) if y_is_finite else np.inf
+
+        improved = (y_val < self.best_value)
+        delta = max(0.0, float(self.best_value - y_val)) if np.isfinite(self.best_value) else 0.0
+
+        # velocities
+        self.stagnation_velocity = 0.9 * self.stagnation_velocity + 0.1 * delta
+        self.improvement_velocity = (0.8 * self.improvement_velocity + 0.2 * delta) if improved else (self.improvement_velocity * 0.97)
+
+        # uncertainty EMA
+        sv = self._to_float_maybe(surrogate_var)
+        if sv is not None and np.isfinite(sv):
+            self._unc_ema = 0.9 * self._unc_ema + 0.1 * abs(sv)
+            self.local_uncertainty = self._unc_ema
+
+        # best bookkeeping
+        if improved:
+            self.prev_best_value = self.best_value
+            self.best_value = y_val
+            self.success_count += 1
+            self.last_improvement = 0
+            self.stagnation_count = 0
+            self.consecutive_failures = 0
+        else:
+            self.consecutive_failures += 1
+            self.last_improvement += 1
+            if self.consecutive_failures > 4:
+                self.stagnation_count += 1
+
+        # archive + covariance
+        self._archive_push(x, y_val)
+        self._rank_one_cov_update(x)
+
+        # entropy from current Cholesky (vs isotropic of same radius)
+        self.local_entropy = self._entropy_from_chol()
+
+        # radius schedule + burst / catastrophic
+        if self.local_radius_adaptation:
+            self._adaptive_radius(improved, delta, catastrophic_fail=(not y_is_finite))
+
+        # spawn/bonus
+        self._update_spawn_score()
+
+        return {
+            "success_rate": self.success_rate,
+            "entropy": self.local_entropy,
+            "uncertainty": self.local_uncertainty,
+            "stagn_vel": self.stagnation_velocity,
+            "impr_vel": self.improvement_velocity,
+            "spawn_score": self.spawn_score,
+            "radius": self.radius,
+        }
+
+    # ---------------- covariance ----------------
+    def _rank_one_cov_update(self, x: np.ndarray):
+        alpha, floor = self.cov_alpha, self.cov_floor
+        dx = (x - self.center).reshape(-1, 1)
+
+        if not self._all_finite_array(dx):
+            self.cov += floor * np.eye(self.n, dtype=self.dtype)
+        else:
+            self.cov = (1.0 - alpha) * self.cov + alpha * (dx @ dx.T)
+            self.cov = 0.5 * (self.cov + self.cov.T)
+
+        # SPD & conditioning via Cholesky; repair if needed
+        self._ensure_spd(floor=floor)
+        self._align_cov_to_radius()
+        self.cov_updates_since_reset += 1
+
+    def _ensure_spd(self, floor: float):
+        C = 0.5 * (self.cov + self.cov.T) + floor * np.eye(self.n, dtype=self.dtype)
+        try:
+            L = np.linalg.cholesky(C)
+        except np.linalg.LinAlgError:
+            # eigen repair only when necessary
+            w, V = np.linalg.eigh(C)
+            w = np.clip(w, floor, self.cov_cap)
+            # cap condition number
+            w_max = float(np.max(w))
+            w_min = max(float(np.min(w)), floor)
+            if w_max / max(w_min, floor) > self.kappa_max:
+                w_min_new = max(w_max / self.kappa_max, floor)
+                w = np.maximum(w, w_min_new)
+            C = (V * w) @ V.T
+            L = np.linalg.cholesky(C)
+        self.cov = C
+        self._chol = L
+        self._logdet = 2.0 * float(np.sum(np.log(np.diag(L))))
+
+    def _align_cov_to_radius(self):
+        target_tr = float((self.radius ** 2) * self.n)
+        tr = float(np.trace(self.cov))
+        if np.isfinite(tr) and tr > 0.0:
+            s = target_tr / tr
+            self.cov *= s
+            self._chol *= math.sqrt(s)  # keep Cholesky in sync
+            self._logdet += self.n * math.log(s)
+
+    def _entropy_from_chol(self) -> float:
+        # entropy proxy: 0.5(log|C| - log|r^2 I|)
+        ref_logdet = self.n * self._safe_log(self.radius ** 2)
+        val = 0.5 * (self._logdet - ref_logdet)
+        return float(np.clip(val, -50.0, 50.0))
+
+    # ---------------- radius ----------------
+    def _adaptive_radius(self, improved: bool, delta: float, catastrophic_fail: bool = False):
+        if catastrophic_fail:
+            self.radius = float(np.clip(self.radius * self.catastrophic_expand_factor, self.min_radius, self.max_radius))
+            if self.catastrophic_reset_cov:
+                self._reset_cov_isotropic()
+            self._align_cov_to_radius()
+            return
+
+        base = self.expansion_factor if improved else (self.contraction_factor * math.exp(-0.5 * self.stagnation_velocity))
+        scale = base * (1.0 + 0.30 * self._safe_tanh(self.local_uncertainty)) * (1.0 + 0.15 * self._safe_tanh(delta))
+
+        # burst gate on repeated fails
+        burst_fired = False
+        if (self.burst_on_fail and not improved and
+            self.consecutive_failures >= self.burst_min_failures and
+            (self._trial_index - self._last_burst_trial) >= self.burst_cooldown):
+            stuck = (self.local_entropy < self.burst_entropy_thresh)
+            unsure = (self._safe_tanh(self.local_uncertainty) > self.burst_uncertainty_thresh)
+            if stuck or unsure:
+                scale = max(scale, self.burst_factor)
+                self._last_burst_trial = self._trial_index
+                burst_fired = True
+                # mild isotropization
+                self.cov = 0.8 * self.cov + 0.2 * (np.eye(self.n, dtype=self.dtype) * (self.radius ** 2))
+                self._ensure_spd(self.cov_floor)
+
+        lo, hi = self.radius_step_clip
+        if burst_fired:
+            hi = max(hi, self.burst_factor)
+        scale = float(np.clip(scale, lo, hi))
+
+        self._log_radius = self._safe_log(self.radius) + self._safe_log(scale)
+        self.radius = float(np.clip(math.exp(self._log_radius), self.min_radius, self.max_radius))
+        self._align_cov_to_radius()
+
+    def _reset_cov_isotropic(self):
+        self.cov[:] = 0.0
+        diag = (self.radius ** 2)
+        for i in range(self.n):
+            self.cov[i, i] = diag
+        self._chol = np.linalg.cholesky(self.cov + self.cov_floor * np.eye(self.n, dtype=self.dtype))
+        self._logdet = 2.0 * float(np.sum(np.log(np.diag(self._chol))))
+
+    # ---------------- archive / novelty ----------------
+    def _archive_push(self, x: np.ndarray, y: float):
+        m = self.max_local_data
+        i = self._buf_ptr
+        self.local_X[i, :] = x
+        self.local_y[i] = y
+        self._buf_ptr = (i + 1) % m
+        self._buf_size = min(self._buf_size + 1, m)
+
+    def _mean_mahalanobis(self) -> float:
+        k = self._buf_size
+        if k == 0:
             return 0.0
-        return np.prod(diff)
-    
-    existing_points = np.asarray(existing_points)
-    
-    # Quick check: is new point dominated?
-    for point in existing_points:
-        if np.all(point <= new_point) and np.any(point < new_point):
-            return 0.0
-    
-    # Calculate hypervolume before and after
-    hv_before = hypervolume_4d_inclusion_exclusion(existing_points, ref_point)
-    
-    extended_points = np.vstack([existing_points, new_point.reshape(1, -1)])
-    hv_after = hypervolume_4d_inclusion_exclusion(extended_points, ref_point)
-    
-    return max(0.0, hv_after - hv_before)
+        L = self._chol
+        dx = (self.local_X[:k, :] - self.center[None, :])
+        z = np.linalg.solve(L, dx.T)
+        d2 = np.sum(z * z, axis=0)
+        return float(np.mean(np.sqrt(np.maximum(d2, 0.0))))
 
+    # ---------------- scores ----------------
+    def _update_spawn_score(self):
+        age_penalty = min(1.0, self.last_improvement / max(1, self.max_age))
+        vel_term = self._safe_tanh(self.stagnation_velocity)
+        entropy_term = self._safe_tanh(self.local_entropy)
+        uncertainty_term = self._safe_tanh(self.local_uncertainty)
+        novelty_term = self._safe_tanh(self._mean_mahalanobis())
+        val = (
+            self.success_weight    * self.success_rate +
+            self.velocity_weight   * 0.5 * (vel_term + self.novelty_weight * novelty_term) +
+            self.entropy_weight    * entropy_term +
+            self.uncertainty_weight* uncertainty_term -
+            self.age_penalty_weight* age_penalty
+        )
+        self.spawn_score = float(np.clip(np.nan_to_num(val, nan=0.0), 0.0, 1.0))
+        self.exploration_bonus = float(np.clip(1.0 + 0.5 * (1.0 - self._safe_tanh(self.improvement_velocity)), 0.8, 2.0))
+
+    # ---------------- public: metric to sampler ----------------
+    def metric_scales(self) -> np.ndarray:
+        """
+        Return per-dimension Mahalanobis weights w_j ≈ 1 / ell_j^2 using diagonal(C)^-1.
+        Cheap and robust; use with batch diversity. For exact distances, use chol().
+        """
+        diag = np.clip(np.diag(self.cov), self.cov_floor, self.cov_cap)
+        return (1.0 / np.maximum(diag, self.cov_floor)).astype(self.dtype)
+
+    def chol(self) -> np.ndarray:
+        """Return Cholesky factor of current covariance (lower triangular)."""
+        return self._chol.copy()
+
+    # optional: let the sampler update ridge direction in whitened space
+    def update_direction(self, step_white: np.ndarray):
+        """Call this on success with step in whitened coords."""
+        g = np.asarray(step_white, dtype=self.dtype).reshape(-1)
+        nrm = float(np.linalg.norm(g))
+        if nrm < 1e-12:
+            return
+        u = g / nrm
+        beta = self.dir_beta
+        self.prev_dir_white = beta * u + (1.0 - beta) * self.prev_dir_white
+        nu = float(np.linalg.norm(self.prev_dir_white))
+        if nu > 1e-12:
+            self.prev_dir_white /= nu
+        # adjust elongation radii (sampler reads radius_long/lat)
+        self.radius_long = min(self.radius_long * 1.6, self.dir_cap * self.radius)
+        self.radius_lat  = max(self.radius_lat  / math.sqrt(1.6), 0.25 * self.radius)
+
+    def decay_direction(self):
+        """Call on failed step to relax elongation back toward isotropy."""
+        self.radius_long = self.radius
+        self.radius_lat  = self.radius
+
+    # ---------------- properties ----------------
+    @property
+    def success_rate(self) -> float:
+        return 0.0 if self.trial_count <= 0 else float(self.success_count) / float(self.trial_count)
+
+    @property
+    def is_active(self) -> bool:
+        return bool(self.radius > 1e-8)
+
+    @property
+    def should_restart(self) -> bool:
+        entropy_low = bool(self.local_entropy < self.restart_entropy_thresh)
+        small = (self.radius < self.restart_radius_thresh)
+        stuck = (self.stagnation_count > self.restart_stagnation_steps)
+        return (stuck or entropy_low) and small
+
+    # ---------------- helpers ----------------
+    @staticmethod
+    def _safe_tanh(x: float) -> float:
+        return float(np.tanh(np.nan_to_num(x, nan=0.0, posinf=50.0, neginf=-50.0)))
+
+    @staticmethod
+    def _safe_log(x: float) -> float:
+        return float(np.log(max(float(x), 1e-12)))
+
+    @staticmethod
+    def _to_float_maybe(x):
+        if x is None:
+            return None
+        try:
+            import torch  # type: ignore
+            if isinstance(x, torch.Tensor):
+                return float(x.detach().cpu().reshape(-1)[0])
+        except Exception:
+            pass
+        try:
+            arr = np.asarray(x)
+            if arr.size == 0:
+                return None
+            return float(arr.reshape(-1)[0])
+        except Exception:
+            return None
+
+    @staticmethod
+    def _all_finite_array(a: np.ndarray) -> bool:
+        try:
+            a = np.asarray(a, dtype=float)
+            return np.isfinite(a).all()
+        except Exception:
+            return False
+
+    # ------------- archive view / maintenance -------------
+    def local_len(self) -> int:
+        return int(self._buf_size)
+
+    def local_view(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return (X[:k], y[:k]) in time order (oldest→newest)."""
+        k, m, i = int(self._buf_size), int(self.local_X.shape[0]), int(self._buf_ptr)
+        if k <= 0:
+            return self.local_X[:0], self.local_y[:0]
+        if k < m or i == 0:
+            return self.local_X[:k], self.local_y[:k]
+        Xv = np.vstack((self.local_X[i:], self.local_X[:i]))
+        yv = np.concatenate((self.local_y[i:], self.local_y[:i]))
+        return Xv, yv
+
+    def clear_archive(self):
+        m = self.local_X.shape[0]
+        self.local_X[:] = 0.0
+        self.local_y[:] = np.inf
+        self._buf_size = 0
+        self._buf_ptr = 0
+
+# assume helpers exist in your codebase:
+# - safe_region_property, np_safe, exp_moving_avg, sigmoid
+# - compute_coverage_fraction, compute_mean_entropy_from_global_gp
+# - _eigen_floor_cov, _pareto_nondominated_mask, _min_dist_to_set
+# - i4_sobol_generate
+# - KDTree + HAS_KDTREE guard
+# - TORCH_AVAILABLE, RLConfig, RadiusLearnerAgent, RegionAttention
+# - TrustRegion (your fixed, ring-buffer version)
 
 class RegionManager:
     """
-    Fixed RegionManager for TuRBO-M+++ with robust NaN handling
-    - KDTree diversity (fallback to NumPy)
-    - Pareto-front spawn selection (EI/UCB/grad/div)
-    - Cholesky-based Mahalanobis assignment (no inverses)
-    - Covariance eigen-flooring + trace norm
-    - Robust radius & health adaptation with NaN protection
+    RegionManager for TuRBO-M+++ (fixed & faster)
+    - Archive-agnostic (list or ring-buffer ndarray)
+    - Never passes config into TrustRegion.update (bug fix)
+    - Covariance refresh uses ring buffer correctly
+    - Safer, slightly faster feature & diversity paths
+    - Restart/replace initialize ring buffer archives properly
     """
+
     def __init__(self, config, verbose=True):
         self.config  = config
         self.verbose = verbose
@@ -1186,14 +994,15 @@ class RegionManager:
 
         self._feat_dim = 9
 
-        # ---- NEW: feature gates
+        # ---- feature gates (unchanged interface)
         self.use_neural_radius    = getattr(config, "use_neural_radius", False)
         self.use_neural_attention = getattr(config, "use_neural_attention", False)
         self.neural_device        = getattr(config, "neural_device", "cpu")
+        print(f"[INFO] RegionManager: use_neural_radius={self.use_neural_radius}, use_neural_attention={self.use_neural_attention}, neural_device={self.neural_device}")
 
-        # ---- neural radius agent (if enabled & torch available)
         self.radius_agent = None
         if self.use_neural_radius and TORCH_AVAILABLE:
+            print("[INFO] Initializing neural radius agent...")
             try:
                 rl_config = RLConfig(
                     buffer_cap=max(2048, getattr(config, "max_evals", 1000) // 10),
@@ -1204,23 +1013,72 @@ class RegionManager:
                 )
             except Exception:
                 rl_config = RLConfig()
-            self.radius_agent = RadiusLearnerAgent(d_in=self._feat_dim,
-                                                   cfg=rl_config,
-                                                   device=self.neural_device)
+            self.radius_agent = RadiusLearnerAgent(d_in=self._feat_dim, cfg=rl_config, device=self.neural_device)
 
-        # ---- neural attention (if enabled & torch available)
         self.region_attn = None
         if self.use_neural_attention and TORCH_AVAILABLE:
             self.region_attn = RegionAttention(d_in=self._feat_dim, d_model=64, n_heads=8)
 
-        # rest as-is …
         self._feature_normalizer = None
         self._centers_cache = None
         self.use_hypervolume = getattr(config, "use_hypervolume", True)
-        self.verbose = True
 
+    # --------------- small archive helpers ---------------
+    @staticmethod
+    def _local_arrays(region):
+        """
+        Return (X_local, y_local, k) as numpy arrays.
+        Uses TrustRegion.local_view() / local_len() if available,
+        otherwise falls back to ring-buffer/list detection.
+        """
+        # Fast path: TrustRegion API
+        if hasattr(region, "local_view"):
+            Xl, yl = region.local_view()               # views; already sliced to k
+            k = Xl.shape[0]
+            if k <= 0:
+                return None, None, 0
+            # ensure contiguous/float for downstream libs
+            return (np.ascontiguousarray(Xl, dtype=float),
+                    np.ascontiguousarray(yl, dtype=float),
+                    k)
+
+        # Fallback: infer ring-buffer / list
+        lx = getattr(region, "local_X", None)
+        ly = getattr(region, "local_y", None)
+        if lx is None or ly is None:
+            return None, None, 0
+
+        if isinstance(lx, np.ndarray) and hasattr(region, "_buf_size"):
+            k = int(getattr(region, "_buf_size", lx.shape[0]))
+            if k <= 0:
+                return None, None, 0
+            return (np.ascontiguousarray(lx[:k], dtype=float),
+                    np.ascontiguousarray(ly[:k], dtype=float),
+                    k)
+
+        # list/tuple fallback
+        try:
+            k = len(lx)
+            if k <= 0:
+                return None, None, 0
+            return (np.ascontiguousarray(lx, dtype=float),
+                    np.ascontiguousarray(ly, dtype=float),
+                    k)
+        except Exception:
+            return None, None, 0
+
+
+    @staticmethod
+    def _len_local(region):
+        if hasattr(region, "local_len"):
+            return int(region.local_len())
+        _, _, k = RegionManager._local_arrays(region)
+        return int(k)
+
+    # -----------------------------
+    # Feature extraction
+    # -----------------------------
     def _region_features(self, r) -> np.ndarray:
-        # Pull raw values (allow missing), then one-shot sanitize
         init_radius = getattr(self.config, "init_radius", 0.1)
         n_dims = max(1, safe_region_property(r, "n_dims", 2))
         stagn_norm = max(10.0, 2.0 * n_dims)
@@ -1229,144 +1087,113 @@ class RegionManager:
 
         raw = np.array(
             [
-                self._iteration
-                / (getattr(self.config, "max_evals", 1000) + 1e-9),  # progress
-                safe_region_property(r, "success_rate", 0.0),  # success
-                safe_region_property(r, "stagnation_count", 0) / stagn_norm,  # stagn
-                safe_region_property(r, "local_entropy", 0.5),  # entropy
-                safe_region_property(r, "local_uncertainty", 1.0),  # uncertainty
-                safe_region_property(r, "improvement_velocity", 0.0),  # vel
-                current_radius / (init_radius + 1e-12),  # rel_radius
-                np.log(current_radius) - np.log(init_radius + 1e-12),  # logr
-                self._region_diversity_score(r) if self.regions else 1.0,  # diversity
+                self._iteration / (getattr(self.config, "max_evals", 1000) + 1e-9),
+                safe_region_property(r, "success_rate", 0.0),
+                safe_region_property(r, "stagnation_count", 0) / stagn_norm,
+                safe_region_property(r, "local_entropy", 0.5),
+                safe_region_property(r, "local_uncertainty", 1.0),
+                safe_region_property(r, "improvement_velocity", 0.0),
+                current_radius / (init_radius + 1e-12),
+                np.log(current_radius) - np.log(init_radius + 1e-12),
+                self._region_diversity_score(r) if self.regions else 1.0,
             ],
             dtype=np.float32,
         )
 
-        # Replace any bad values with configured safe defaults in one go
-        defaults = np.array(
-            [0.5, 0.0, 0.0, 0.5, 1.0, 0.0, 1.0, 0.0, 0.5], dtype=np.float32
-        )
+        defaults = np.array([0.5, 0.0, 0.0, 0.5, 1.0, 0.0, 1.0, 0.0, 0.5], dtype=np.float32)
         raw = np.where(np.isfinite(raw), raw, defaults)
 
-        # Init normalizer lazily
         if self._feature_normalizer is None:
             self._feature_normalizer = RunningStats(len(raw))
-
-        # Update stats (batched update accepts (B,F); here it’s a single row)
         self._feature_normalizer.update(raw)
 
-        # Normalize + bound
         z = self._feature_normalizer.normalize(raw)
         z = np.clip(z, -10.0, 10.0)
         z = np.tanh(z)
 
         if not np.isfinite(z).all():
             if self.verbose:
-                print(
-                    f"[WARNING] NaN features for region {safe_region_property(r, 'region_id', 'unknown')} → zeros"
-                )
+                rid = safe_region_property(r, 'region_id', 'unknown')
+                print(f"[WARNING] NaN features for region {rid} → zeros")
             z = np.zeros_like(z, dtype=np.float32)
         return z
 
+    # -----------------------------
+    # Reward
+    # -----------------------------
     def _compute_adaptive_reward(self, region, delta, old_radius):
-        """
-        Improved reward signal with robust NaN handling.
-        """
-        # Improvement component with safety checks
         prev_best = np_safe(safe_region_property(region, "prev_best_value", np.inf))
         current_best = np_safe(safe_region_property(region, "best_value", np.inf))
+        delta_impr = 0.0 if not (np.isfinite(prev_best) and np.isfinite(current_best)) else max(0.0, prev_best - current_best)
 
-        if not (np.isfinite(prev_best) and np.isfinite(current_best)):
-            delta_impr = 0.0
-        else:
-            delta_impr = max(0.0, prev_best - current_best)
-
-        # Scale by local data standard deviation if available
         scale = 1.0
-        if hasattr(region, "local_y") and len(region.local_y) > 5:
-            try:
-                local_std = np.std(region.local_y)
-                if np.isfinite(local_std) and local_std > 1e-12:
-                    scale = local_std
-            except:
-                scale = 1.0
+        Xl, yl, k = self._local_arrays(region)
+        if k > 5:
+            local_std = np.std(yl)
+            if np.isfinite(local_std) and local_std > 1e-12:
+                scale = local_std
 
         improvement_reward = np_safe(delta_impr / (scale + 1e-6))
-
-        # Stability penalty with safety
         trial_count = max(1, safe_region_property(region, "trial_count", 1))
         experience_factor = min(1.0, trial_count / 50.0)
         stability_penalty = np_safe(abs(delta) * experience_factor)
 
-        # Exploration bonus
         entropy = np_safe(safe_region_property(region, "local_entropy", 0.0))
         exploration_bonus = entropy * 0.2
 
-        # Diversity bonus
         try:
             diversity_bonus = np_safe(self._region_diversity_score(region) * 0.1)
         except:
             diversity_bonus = 0.0
 
-        # Combined reward with safety
         raw_reward = (
             math.tanh(improvement_reward)
             + exploration_bonus
             + diversity_bonus
             - 0.1 * stability_penalty
         )
+        return float(np.clip(np_safe(raw_reward), -10.0, 10.0))
 
-        # Final safety check
-        result = np_safe(raw_reward)
-
-        # Clip to reasonable range
-        result = float(np.clip(result, -10.0, 10.0))
-
-        return result
-
+    # -----------------------------
+    # Diversity score
+    # -----------------------------
     def _region_diversity_score(self, region):
-        """
-        Compute diversity score with robust error handling.
-        """
         if len(self.regions) <= 1:
             return 1.0
-
         try:
-            # Get centers of other regions
-            others = []
+            centers = []
+            Ls = []
             for r in self.regions:
-                if r is not region and hasattr(r, "center"):
-                    center = getattr(r, "center", None)
-                    if center is not None and np.all(np.isfinite(center)):
-                        others.append(center)
-
-            if not others:
+                if r is region:
+                    continue
+                c = getattr(r, "center", None)
+                if c is None or not np.all(np.isfinite(c)):
+                    continue
+                centers.append(np.asarray(c, dtype=float))
+                try:
+                    Ls.append(r.chol() if hasattr(r, "chol") else np.linalg.cholesky(r.cov + 1e-9 * np.eye(len(c))))
+                except Exception:
+                    Ls.append(None)
+            if not centers:
                 return 1.0
+            centers = np.stack(centers, axis=0)
+            rc = np.asarray(region.center, dtype=float)
+            # use region’s own metric if available, fallback to Euclidean
+            try:
+                L = region.chol() if hasattr(region, "chol") else np.linalg.cholesky(region.cov + 1e-9 * np.eye(len(rc)))
+                diffs = centers - rc[None, :]
+                Y = np.linalg.solve(L.T, diffs.T).T
+                d = np.sqrt(np.sum(Y * Y, axis=1))
+            except Exception:
+                d = np.linalg.norm(centers - rc[None, :], axis=1)
 
-            others = np.array(others)
-            region_center = getattr(region, "center", None)
-
-            if region_center is None or not np.all(np.isfinite(region_center)):
-                return 0.5  # Default for invalid center
-
-            # Compute distances safely
-            distances = np.linalg.norm(others - region_center, axis=1)
-
-            if len(distances) == 0 or not np.any(np.isfinite(distances)):
-                return 1.0
-
-            d = np.min(distances[np.isfinite(distances)])
-
-            # Normalize by local radius
+            dmin = float(np.min(d)) if d.size else 0.0
+            # scale by radius (unitless)
             radius = max(safe_region_property(region, "radius", 0.1), 1e-9)
-            result = d / radius
-
-            return np_safe(result, default=1.0)
-
+            return np_safe(dmin / radius, default=1.0)
         except Exception as e:
             if self.verbose:
-                print(f"[WARNING] Error in diversity score computation: {e}")
+                print(f"[WARNING] Diversity score error: {e}")
             return 1.0
 
     # ---------------------------------------------
@@ -1384,7 +1211,6 @@ class RegionManager:
         best_idx = int(np.argmin(y))
         selected_idx = [best_idx]
 
-        # perf + diversity greedy selection
         D = cdist(X, X)
         perf_w = np.exp(-0.05 * (y - np.min(y)))
         for _ in range(1, n_init):
@@ -1410,6 +1236,8 @@ class RegionManager:
     # Main lifecycle
     # ---------------------------------------------
     def manage_regions(self, bounds, n_dims, rng, global_X, global_y, iteration=0):
+        self._global_X = np.asarray(global_X) if global_X is not None else None
+        self._global_y = np.asarray(global_y) if global_y is not None else None
         self._iteration = iteration
         self._ema_progress = exp_moving_avg(
             self._ema_progress,
@@ -1422,54 +1250,53 @@ class RegionManager:
         self._adaptive_prune()
         self._refresh_centers_cache()
 
+    # ---------------------------------------------
+    # Adaptation
+    # ---------------------------------------------
     def _adapt_all(self, bounds, rng):
-        """
-        Improved adaptive region management with robust error handling.
-        (Neural radius adaptation is gated by self.use_neural_radius)
-        """
         dead = []
-
         for r in self.regions:
             try:
-                # --- EMA velocity
                 current_vel = np_safe(safe_region_property(r, "improvement_velocity", 0.0))
                 old_vel_ema = np_safe(safe_region_property(r, "vel_ema", 0.0))
                 r.vel_ema = exp_moving_avg(old_vel_ema, current_vel, alpha=0.3)
                 if not np.isfinite(r.vel_ema):
                     r.vel_ema = 0.0
 
-                # --- Covariance refresh from local archive
-                if hasattr(r, "local_X") and len(r.local_X) > max(
-                    8, safe_region_property(r, "n_dims", 2)
-                ):
-                    try:
-                        local_X_array = np.asarray(r.local_X)
-                        if np.all(np.isfinite(local_X_array)) and np.all(np.isfinite(r.center)):
-                            centered = local_X_array - r.center
-                            sample_cov = np.cov(centered.T) + 1e-9 * np.eye(r.n_dims)
-                            if np.all(np.isfinite(sample_cov)):
-                                sample_cov = _eigen_floor_cov(sample_cov, floor=1e-9)
-                                mix_rate = 0.3 if len(r.local_X) > 20 else 0.1
-                                if not np.all(np.isfinite(r.cov)):
-                                    r.cov = np.eye(r.n_dims) * (r.radius**2)
-                                r.cov = (1 - mix_rate) * r.cov + mix_rate * sample_cov
-                                if not np.all(np.isfinite(r.cov)):
-                                    r.cov = np.eye(r.n_dims) * (r.radius**2)
-                    except Exception as e:
-                        if self.verbose:
-                            print(f"[WARNING] Covariance update failed for region {r.region_id}: {e}")
-                        r.cov = np.eye(r.n_dims) * (r.radius**2)
+                # Covariance refresh from local archive (supports ring buffer)
+                # Optional archive-driven refresh (only if low entropy + enough points)
+                Xl, yl, k = self._local_arrays(r)
+                if k > max(8, safe_region_property(r, "n_dims", 2)):
+                    ent = np_safe(safe_region_property(r, "local_entropy", 0.5))
+                    if ent < 0.10:  # only steer geometry when the region collapsed
+                        try:
+                            centered = Xl - r.center
+                            S = np.cov(centered.T) + 1e-9 * np.eye(r.n_dims)
+                            S = _eigen_floor_cov(S, floor=1e-9)
+                            mix = 0.15 if k > 20 else 0.07
+                            C_new = (1 - mix) * getattr(r, "cov", np.eye(r.n_dims) * (r.radius**2)) + mix * S
+                            # keep SPD and align trace if TR exposes helpers
+                            if hasattr(r, "_ensure_spd"):
+                                r.cov = C_new
+                                r._ensure_spd(getattr(r, "cov_floor", 1e-9))
+                                if hasattr(r, "_align_cov_to_radius"):
+                                    r._align_cov_to_radius()
+                            else:
+                                r.cov = C_new
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"[WARNING] Covariance refresh failed R#{r.region_id}: {e}")
+                            r.cov = np.eye(r.n_dims) * (r.radius**2)
 
                 old_r = np_safe(r.radius, default=getattr(self.config, "init_radius", 0.1))
 
-                # ====== NEURAL vs CLASSIC RADIUS UPDATE ======
+                # Neural vs heuristic radius
                 new_radius, delta = None, 0.0
-
                 if self.use_neural_radius and (self.radius_agent is not None):
                     try:
                         feats = self._region_features(r)
                         if np.all(np.isfinite(feats)):
-                            new_radius, delta = self.radius_agent.policy.step(
+                            new_radius, delta = self.radius_agent.step(
                                 feats,
                                 old_r,
                                 getattr(self.config, "min_radius", 0.01),
@@ -1480,10 +1307,9 @@ class RegionManager:
                     except Exception as e:
                         if self.verbose:
                             print(f"[WARNING] Learned adaptation failed for region {r.region_id}: {e}")
-                        new_radius = None  # fall through
+                        new_radius = None
 
                 if new_radius is None:
-                    # Classic heuristic fallback (or primary if neural disabled)
                     v = np_safe(getattr(r, "vel_ema", 0.0), default=0.0)
                     if v < 0.01:
                         new_radius = min(old_r * 1.05, getattr(self.config, "max_radius", 1.0))
@@ -1505,7 +1331,7 @@ class RegionManager:
 
                 r.radius = float(new_radius)
 
-                # Align cov trace to new radius
+                # Align covariance trace to new radius
                 try:
                     tr_target = (r.radius**2) * r.n_dims
                     tr = float(np.trace(r.cov))
@@ -1520,7 +1346,6 @@ class RegionManager:
                 except Exception:
                     r.cov = np.eye(r.n_dims) * (r.radius**2)
 
-                # Update PCA cache
                 if hasattr(r, "_update_pca_from_cov"):
                     try:
                         r._update_pca_from_cov()
@@ -1543,8 +1368,8 @@ class RegionManager:
                         print(f"[WARNING] Health score update failed for region {r.region_id}: {e}")
                     r.health_score = 0.5
 
-                if self.verbose and abs(old_r - r.radius) > 1e-3:
-                    print(f"[ADAPT] R#{r.region_id} radius {old_r:.3f}→{r.radius:.3f}")
+                #if self.verbose and abs(old_r - r.radius) > 1e-3:
+                    #print(f"[ADAPT] R#{r.region_id} radius {old_r:.3f}→{r.radius:.3f}")
 
                 # Restart / death rules
                 should_restart = safe_region_property(r, "should_restart", False)
@@ -1563,7 +1388,7 @@ class RegionManager:
                 if (r.radius < 1.5 * getattr(self.config, "min_radius", 0.01)) and (health_score < 0.1):
                     dead.append(r)
 
-                # ====== Buffer training data only when neural adaptation is on ======
+                # Train buffer for neural policy
                 if self.use_neural_radius and (self.radius_agent is not None):
                     try:
                         reward = self._compute_adaptive_reward(r, delta, old_r)
@@ -1579,7 +1404,6 @@ class RegionManager:
                     print(f"[ERROR] Region {r.region_id} adaptation failed: {e}")
                 dead.append(r)
 
-        # Train policy (if enabled)
         if self.use_neural_radius and (self.radius_agent is not None):
             try:
                 self.radius_agent.maybe_train()
@@ -1587,7 +1411,6 @@ class RegionManager:
                 if self.verbose:
                     print(f"[WARNING] Training step failed: {e}")
 
-        # Replace dead regions if needed
         for r in dead:
             if hasattr(self, "_replace_dead_region"):
                 try:
@@ -1598,33 +1421,23 @@ class RegionManager:
                     self.regions = [rr for rr in self.regions if rr is not r]
 
     # ---------------------------------------------
-    # Spawning new regions (Pareto + scores)
+    # Spawning
     # ---------------------------------------------
     def _maybe_spawn(self, bounds, n_dims, rng, global_X, global_y):
         coverage = compute_coverage_fraction(global_X, self.regions)
         entropy = compute_mean_entropy_from_global_gp(self.surrogate_manager, global_X)
         self._entropy_buffer.append(np_safe(entropy))
-        sm_entropy = (
-            float(np.mean(self._entropy_buffer)) if self._entropy_buffer else 0.5
-        )
+        sm_entropy = float(np.mean(self._entropy_buffer)) if self._entropy_buffer else 0.5
 
         avg_health = (
-            np.mean(
-                [
-                    np_safe(safe_region_property(r, "health_score", 0.5))
-                    for r in self.regions
-                ]
-            )
-            if self.regions
-            else 1.0
+            np.mean([np_safe(safe_region_property(r, "health_score", 0.5)) for r in self.regions])
+            if self.regions else 1.0
         )
         exploration_pressure = (1.0 - coverage) + sm_entropy
         exploitation_pressure = self._ema_progress + avg_health
 
         trigger = sigmoid(3.0 * (exploration_pressure - exploitation_pressure)) > 0.45
-        dynamic_cap = int(
-            getattr(self.config, "n_regions", 5) * (1.0 + 0.5 * exploration_pressure)
-        )
+        dynamic_cap = int(getattr(self.config, "n_regions", 5) * (1.0 + 0.5 * exploration_pressure))
 
         if trigger and len(self.regions) < dynamic_cap:
             self._force_spawn(bounds, n_dims, rng, global_X, global_y)
@@ -1645,10 +1458,8 @@ class RegionManager:
             except:
                 pass
 
-        # fallback: just std
         if self.surrogate_manager is None:
             return np.ones(len(X))
-
         try:
             _, std = self.surrogate_manager.predict_global_cached(X)
             return np.nan_to_num(std)
@@ -1660,15 +1471,12 @@ class RegionManager:
             return np.ones(len(candidates), dtype=np.float32)
         existing = np.asarray([r.center for r in self.regions], dtype=np.float32)
         dmin = _min_dist_to_set(np.asarray(candidates, dtype=np.float32), existing)
-        # Avoid zeros; return as-is (bigger → better)
         return np.maximum(dmin, 1e-12)
 
     def _compute_spawn_radius(self, candidate, existing, global_X, k=8):
         if existing is None or existing.size == 0:
             return getattr(self.config, "init_radius", 0.1)
-        # spacing to existing centers
         d_near = np.median(np.linalg.norm(existing - candidate, axis=1))
-        # local data density via kNN distances on global_X
         if global_X is not None and len(global_X) > 0:
             if HAS_KDTREE and len(global_X) >= k:
                 try:
@@ -1682,227 +1490,60 @@ class RegionManager:
         else:
             d_local = d_near
         r = float(min(d_near, d_local))
-        return float(
-            np.clip(
-                r,
-                getattr(self.config, "min_radius", 0.01),
-                getattr(self.config, "init_radius", 0.1),
-            )
-        )
+        return float(np.clip(r, getattr(self.config, "min_radius", 0.01), getattr(self.config, "init_radius", 0.1)))
 
-
-    def _find_best_spawn_hypervolume(self, bounds, n_dims, rng, global_X, global_y):
-        """
-        Find best spawn location using 4D hypervolume improvement.
-        Objectives: -EI, UCB, -grad_bonus, -diversity (all minimized)
-        """
-        try:
-            sobol = i4_sobol_generate(n_dims, 512)
-            cand = bounds[:, 0] + sobol * (bounds[:, 1] - bounds[:, 0])
-
-            # Add jitters around healthy regions
-            if self.regions:
-                health = np.array([
-                    np_safe(safe_region_property(r, "health_score", 0.0))
-                    for r in self.regions
-                ])
-                top = np.argsort(-health)[:min(3, len(self.regions))]
-                for idx in top:
-                    c = self.regions[idx].center
-                    r = self.regions[idx].radius
-                    J = c + rng.normal(size=(64, n_dims)) * (0.25 * r)
-                    J = np.clip(J, bounds[:, 0], bounds[:, 1])
-                    cand = np.vstack([cand, J])
-
-            # Get surrogate predictions
-            mean, std = self.surrogate_manager.predict_global_cached(cand)
-            f_best = float(np.min(global_y)) if len(global_y) else float(np.min(mean))
-
-            # Compute all objectives (same as original but keep raw values)
-            z = (f_best - mean) / (std + 1e-12)
-            ei = (f_best - mean) * norm.cdf(z) + std * norm.pdf(z)
-            ucb = mean - 2.0 * std  # lower better
-            grad_bonus = self._estimate_grad_norms_batch(cand, eps=2e-3)
-            div = self._diversity_bonus(cand)
-
-            # Normalize objectives to [0,1] range for stable hypervolume calculation
-            def norm01(arr):
-                a = np.asarray(arr)
-                amin, amax = np.min(a), np.max(a)
-                if not np.isfinite(amin) or not np.isfinite(amax) or amax <= amin:
-                    return np.zeros_like(a)
-                return (a - amin) / (amax - amin)
-
-            # Create 4D objective matrix (all objectives to be minimized)
-            objectives = np.column_stack([
-                -norm01(ei),          # minimize -EI (maximize EI)
-                norm01(ucb),          # minimize UCB  
-                -norm01(grad_bonus),  # minimize -grad_bonus (maximize grad_bonus)
-                -norm01(div),         # minimize -diversity (maximize diversity)
-            ])
-            
-            # Reference point for hypervolume (nadir point)
-            ref_point = np.array([1.2, 1.2, 1.2, 1.2])  # Slightly beyond [0,1] range
-            
-            # Find current Pareto front in 4D objective space
-            pareto_mask = _pareto_nondominated_mask(objectives)
-            pareto_front = objectives[pareto_mask]
-            
-            if self.verbose and len(pareto_front) > 0:
-                print(f"[HV-SPAWN] Pareto front has {len(pareto_front)} points")
-            
-            # Calculate hypervolume improvement for each candidate
-            hv_improvements = []
-            
-            # For efficiency, only calculate HV improvement for promising candidates
-            # (Pareto front members + some additional high-potential points)
-            if len(pareto_front) > 8:
-                # If Pareto front is large, focus on front members and top EI candidates
-                ei_top_mask = (-objectives[:, 0]) >= np.percentile(-objectives[:, 0], 90)
-                candidate_mask = pareto_mask | ei_top_mask
-            else:
-                # Small front, evaluate all candidates
-                candidate_mask = np.ones(len(objectives), dtype=bool)
-            
-            for i, obj_vec in enumerate(objectives):
-                if not candidate_mask[i]:
-                    hv_improvements.append(0.0)
-                    continue
-                    
-                try:
-                    if pareto_mask[i]:
-                        # Point is on Pareto front, calculate its unique contribution
-                        other_points = pareto_front[~np.all(pareto_front == obj_vec, axis=1)]
-                        if len(other_points) > 0:
-                            hv_improvement = hypervolume_improvement_4d(other_points, obj_vec, ref_point)
-                        else:
-                            # Only point on front
-                            diff = ref_point - obj_vec
-                            hv_improvement = np.prod(np.maximum(diff, 0))
-                    else:
-                        # Point not on front, calculate improvement if added
-                        hv_improvement = hypervolume_improvement_4d(pareto_front, obj_vec, ref_point)
-                    
-                    hv_improvements.append(hv_improvement)
-                    
-                except Exception as e:
-                    if self.verbose:
-                        print(f"[WARNING] HV calculation failed for candidate {i}: {e}")
-                    hv_improvements.append(0.0)
-            
-            hv_improvements = np.array(hv_improvements)
-            
-            # Select candidate with maximum hypervolume improvement
-            if np.max(hv_improvements) > 1e-12:
-                best_idx = np.argmax(hv_improvements)
-                if self.verbose:
-                    print(f"[HV-SPAWN] Best HV improvement: {hv_improvements[best_idx]:.6f}")
-                    obj = objectives[best_idx]
-                    print(f"[HV-SPAWN] Objectives: EI={-obj[0]:.3f}, UCB={obj[1]:.3f}, "
-                        f"Grad={-obj[2]:.3f}, Div={-obj[3]:.3f}")
-                return cand[best_idx]
-            else:
-                # Fallback to best point on Pareto front (highest EI among front members)
-                if len(pareto_front) > 0:
-                    front_indices = np.where(pareto_mask)[0]
-                    ei_values = -objectives[front_indices, 0]  # Higher is better for EI
-                    best_front_idx = front_indices[np.argmax(ei_values)]
-                    if self.verbose:
-                        print("[HV-SPAWN] No HV improvement, using best EI from Pareto front")
-                    return cand[best_front_idx]
-                else:
-                    # Ultimate fallback: best EI point overall
-                    best_idx = np.argmax(-objectives[:, 0])
-                    if self.verbose:
-                        print("[HV-SPAWN] No Pareto front, using best EI")
-                    return cand[best_idx]
-
-        except Exception as e:
-            if self.verbose:
-                print(f"[WARNING] 4D Hypervolume spawn failed: {e}")
-            # Fallback to random
-            return bounds[:, 0] + rng.uniform(0, 1, n_dims) * (bounds[:, 1] - bounds[:, 0])
-
-    # Modified _find_best_spawn method for your RegionManager class:
     def _find_best_spawn(self, bounds, n_dims, rng, global_X, global_y):
-        """
-        Enhanced spawn finding with hypervolume improvement option.
-        Set use_hypervolume=True in config to enable hypervolume-based selection.
-        """
-        
-        if self.use_hypervolume:
-            return self._find_best_spawn_hypervolume(bounds, n_dims, rng, global_X, global_y)
-        
-        # Original Chebyshev implementation (keep as fallback)
-        try:
-            sobol = i4_sobol_generate(n_dims, 512)
-            cand = bounds[:, 0] + sobol * (bounds[:, 1] - bounds[:, 0])
+        sobol = i4_sobol_generate(n_dims, 512)
+        cand = bounds[:, 0] + sobol * (bounds[:, 1] - bounds[:, 0])
 
-            # local jitters around healthiest centers
-            if self.regions:
-                health = np.array([
-                    np_safe(safe_region_property(r, "health_score", 0.0))
-                    for r in self.regions
-                ])
-                top = np.argsort(-health)[: min(3, len(self.regions))]
-                for idx in top:
-                    c = self.regions[idx].center
-                    r = self.regions[idx].radius
-                    J = c + rng.normal(size=(64, n_dims)) * (0.25 * r)
-                    J = np.clip(J, bounds[:, 0], bounds[:, 1])
-                    cand = np.vstack([cand, J])
+        if self.regions:
+            health = np.array([np_safe(safe_region_property(r, "health_score", 0.0)) for r in self.regions])
+            top = np.argsort(-health)[: min(3, len(self.regions))]
+            for idx in top:
+                c = self.regions[idx].center
+                r = self.regions[idx].radius
+                J = c + rng.normal(size=(64, n_dims)) * (0.25 * r)
+                J = np.clip(J, bounds[:, 0], bounds[:, 1])
+                cand = np.vstack([cand, J])
 
-            mean, std = self.surrogate_manager.predict_global_cached(cand)
-            f_best = float(np.min(global_y)) if len(global_y) else float(np.min(mean))
+        mean, std = self.surrogate_manager.predict_global_cached(cand)
+        f_best = float(np.min(global_y)) if len(global_y) else float(np.min(mean))
 
-            z = (f_best - mean) / (std + 1e-12)
-            ei = (f_best - mean) * norm.cdf(z) + std * norm.pdf(z)
-            ucb = mean - 2.0 * std  # lower better
+        z = (f_best - mean) / (std + 1e-12)
+        ei = (f_best - mean) * norm.cdf(z) + std * norm.pdf(z)
+        ucb = mean - 2.0 * std
 
-            grad_bonus = self._estimate_grad_norms_batch(cand, eps=2e-3)
-            div = self._diversity_bonus(cand)
+        grad_bonus = self._estimate_grad_norms_batch(cand, eps=2e-3)
+        div = self._diversity_bonus(cand)
 
-            # In-place min-max normalization helpers
-            def norm01(arr):
-                a = np.asarray(arr)
-                amin, amax = np.min(a), np.max(a)
-                if not np.isfinite(amin) or not np.isfinite(amax) or amax <= amin:
-                    return np.zeros_like(a)
-                return (a - amin) / (amax - amin)
+        def norm01(a):
+            a = np.asarray(a)
+            amin, amax = np.min(a), np.max(a)
+            if not np.isfinite(amin) or not np.isfinite(amax) or amax <= amin:
+                return np.zeros_like(a)
+            return (a - amin) / (amax - amin)
 
-            F = np.column_stack([
-                -norm01(ei),  # maximize EI  → minimize -EI
-                norm01(ucb),  # minimize UCB
-                -norm01(grad_bonus),  # maximize grad bonus
-                -norm01(div),  # maximize diversity
-            ])
+        F = np.column_stack([
+            -norm01(ei),
+            norm01(ucb),
+            -norm01(grad_bonus),
+            -norm01(div),
+        ])
 
-            nd_mask = _pareto_nondominated_mask(F)
-            PF = F[nd_mask]
-            C = cand[nd_mask]
+        nd_mask = _pareto_nondominated_mask(F)
+        PF = F[nd_mask]
+        C = cand[nd_mask]
 
-            w = np.array([0.45, 0.25, 0.20, 0.10], dtype=np.float64)
-            # Chebyshev scalarization
-            PF_shift = PF - PF.min(axis=0, keepdims=True)
-            cheb = np.max(w * PF_shift, axis=1)
-            best_idx = int(np.argmin(cheb))
-            return C[best_idx]
+        w = np.array([0.45, 0.25, 0.20, 0.10], dtype=np.float64)
+        PF_shift = PF - PF.min(axis=0, keepdims=True)
+        cheb = np.max(w * PF_shift, axis=1)
+        best_idx = int(np.argmin(cheb))
+        return C[best_idx]
 
-        except Exception as e:
-            if self.verbose:
-                print(f"[WARNING] Best spawn search failed: {e}")
-            # Fallback to random
-            return bounds[:, 0] + rng.uniform(0, 1, n_dims) * (bounds[:, 1] - bounds[:, 0])
-        
     def _force_spawn(self, bounds, n_dims, rng, global_X, global_y):
         try:
             cand = self._find_best_spawn(bounds, n_dims, rng, global_X, global_y)
-
-            existing = (
-                np.array([r.center for r in self.regions])
-                if self.regions
-                else np.empty((0, n_dims))
-            )
+            existing = np.array([r.center for r in self.regions]) if self.regions else np.empty((0, n_dims))
             if existing.size > 0:
                 min_dist = float(np.min(np.linalg.norm(existing - cand, axis=1)))
                 if min_dist < 0.3 * getattr(self.config, "init_radius", 0.1):
@@ -1923,15 +1564,10 @@ class RegionManager:
     def _maximin_diverse(self, bounds, n_dims, rng, existing):
         try:
             samples = rng.uniform(bounds[:, 0], bounds[:, 1], size=(128, n_dims))
-            dmin = _min_dist_to_set(
-                samples.astype(np.float32), existing.astype(np.float32)
-            )
+            dmin = _min_dist_to_set(samples.astype(np.float32), existing.astype(np.float32))
             return samples[int(np.argmax(dmin))]
         except Exception:
-            # Fallback to uniform
-            return bounds[:, 0] + rng.uniform(0, 1, n_dims) * (
-                bounds[:, 1] - bounds[:, 0]
-            )
+            return bounds[:, 0] + rng.uniform(0, 1, n_dims) * (bounds[:, 1] - bounds[:, 0])
 
     # ---------------------------------------------
     # Adaptive pruning
@@ -1947,8 +1583,7 @@ class RegionManager:
             return
 
         pareto_score = [
-            0.6 * np_safe(safe_region_property(r, "health_score", 0.0))
-            + 0.4 * self._region_diversity_score(r)
+            0.6 * np_safe(safe_region_property(r, "health_score", 0.0)) + 0.4 * self._region_diversity_score(r)
             for r in self.regions
         ]
         order = np.argsort(pareto_score)  # worst first
@@ -1957,13 +1592,7 @@ class RegionManager:
             victim = self.regions[idx]
             if self.verbose:
                 print(f"[PRUNE] Region#{victim.region_id} pruned")
-            # pop by identity (keep IDs stable if you rely on them)
             self.regions = [r for r in self.regions if r is not victim]
-
-    def _len_local(self, region):
-        return (
-            len(region.local_X) if getattr(region, "local_X", None) is not None else 0
-        )
 
     # ---------------------------------------------
     # Diversity floor
@@ -1979,11 +1608,9 @@ class RegionManager:
     # Region weights
     # ---------------------------------------------
     def safe_region_weights(self, regions):
-        """Region weighting with optional neural attention; robust fallbacks."""
         if not regions:
             return np.array([], dtype=float)
 
-        # Neural attention path (gated)
         if self.use_neural_attention and TORCH_AVAILABLE and (self.region_attn is not None):
             try:
                 feats_batch = np.stack([self._region_features(r) for r in regions])
@@ -1994,7 +1621,6 @@ class RegionManager:
                 if self.verbose:
                     print(f"[WARNING] Attention failed: {e}")
 
-        # Heuristic fallback
         health = np.array([np_safe(safe_region_property(r, "health_score", 0.0)) for r in regions])
         diversity = np.array([self._region_diversity_score(r) for r in regions])
         age = np.array([1.0 / (1.0 + safe_region_property(r, "last_improvement", 0) / 10.0) for r in regions])
@@ -2003,7 +1629,7 @@ class RegionManager:
         return ex / (ex.sum() + 1e-12)
 
     # ---------------------------------------------
-    # Assign new data to regions (Cholesky Mahalanobis)
+    # Assign new data to regions (Cholesky Mahalanobis; no matrix inverses)
     # ---------------------------------------------
     def update_regions_with_new_data(self, X_new, y_new):
         if not self.regions:
@@ -2013,55 +1639,50 @@ class RegionManager:
             return
         try:
             n_dims = safe_region_property(active[0], "n_dims", 2)
-            centers = np.ascontiguousarray(
-                np.stack([r.center for r in active], axis=0), dtype=np.float64
-            )
+            centers = np.ascontiguousarray([r.center for r in active], dtype=np.float64)
 
-            # Build Cholesky factors (R, D, D)
-            L_list = []
+            # get each region’s Cholesky from the TR (much faster than recomputing)
+            L_stack = []
             eye = np.eye(n_dims)
             for r in active:
-                C = getattr(r, "cov", None)
-                if C is None or not np.isfinite(C).all():
-                    C = (r.radius**2 + 1e-9) * eye
                 try:
-                    L = np.linalg.cholesky(C + 1e-12 * eye)
+                    L = r.chol() if hasattr(r, "chol") else np.linalg.cholesky(r.cov + 1e-12 * eye)
                 except np.linalg.LinAlgError:
-                    C = _eigen_floor_cov(C, floor=1e-9)
+                    C = _eigen_floor_cov(getattr(r, "cov", (r.radius**2) * eye), floor=1e-9)
                     L = np.linalg.cholesky(C + 1e-12 * eye)
-                L_list.append(L)
-            L_stack = np.ascontiguousarray(np.stack(L_list, axis=0), dtype=np.float64)
+                L_stack.append(L)
+            L_stack = np.ascontiguousarray(np.stack(L_stack, axis=0), dtype=np.float64)
 
             X_new = np.ascontiguousarray(X_new, dtype=np.float64)
             diffs = X_new[:, None, :] - centers[None, :, :]  # (N, R, D)
 
-            # Compute Mahalanobis distances per region (R typically small → loop over R is fine)
+            # Mahalanobis distances using cached chol factors
             N, R, D = diffs.shape
             mahal_sq = np.empty((N, R), dtype=np.float64)
             for j in range(R):
-                # solve L y = diff^T → y^T = diff @ L^{-T}; since N can be large, do matmul once
-                # Use triangular solve via np.linalg.solve in chunks to keep memory sane
-                # Here: y = diff @ inv(L), then mahal^2 = ||y||^2
-                y = diffs[:, j, :].dot(np.linalg.inv(L_stack[j]))
-                mahal_sq[:, j] = np.einsum("nd,nd->n", y, y)
+                # solve L^T y = (x-c)  -> y = L^{-T}(x-c)
+                Y = np.linalg.solve(L_stack[j].T, diffs[:, j, :].T).T  # (N, D)
+                mahal_sq[:, j] = np.einsum("nd,nd->n", Y, Y)
 
+            # soft responsibilities
             avg_radius = float(np.mean([r.radius for r in active]))
-            beta = max(
-                3.0,
-                10.0
-                * (getattr(self.config, "init_radius", 0.1) / (avg_radius + 1e-12)),
-            )
+            beta = max(3.0, 10.0 * (getattr(self.config, "init_radius", 0.1) / (avg_radius + 1e-12)))
             with np.errstate(over="ignore"):
                 w = np.exp(-beta * mahal_sq)
-            w_sum = w.sum(axis=1, keepdims=True) + 1e-12
-            w /= w_sum
+            w /= (w.sum(axis=1, keepdims=True) + 1e-12)
 
-            # Assign & update
+            # update regions; pass predictive variance if available
             for i, (x, y) in enumerate(zip(X_new, y_new)):
                 rid = int(np.argmax(w[i]))
                 if w[i, rid] > 0.05:
-                    active[rid].update(x.astype(np.float32), float(y), self.config)
-
+                    s_var = None
+                    if self.surrogate_manager is not None:
+                        try:
+                            _, std = self.surrogate_manager.predict_global_cached(x[None, :])
+                            s_var = float(std[0] ** 2)
+                        except Exception:
+                            s_var = None
+                    active[rid].update(x.astype(np.float64), float(y), surrogate_var=s_var)
         except Exception as e:
             if self.verbose:
                 print(f"[WARNING] Region update failed: {e}")
@@ -2078,47 +1699,33 @@ class RegionManager:
         else:
             self._centers_cache = None
 
-    # --- RNG compat (Generator or RandomState) ---
     def _rng_uniform(self, rng, low, high, size):
         try:
             if hasattr(rng, "uniform"):
-                return rng.uniform(low, high, size=size)  # Generator
-            return low + (high - low) * rng.rand(*size)  # RandomState
+                return rng.uniform(low, high, size=size)
+            return low + (high - low) * rng.rand(*size)
         except:
-            # Fallback to numpy random
             return low + (high - low) * np.random.rand(*size)
 
-    # --- In-place restart of an existing region (keep same ID) ---
     def _restart_region(self, region, bounds, rng):
         try:
             n_dims = safe_region_property(region, "n_dims", 2)
             lo, hi = bounds[:, 0], bounds[:, 1]
-
-            # propose a new center: prefer diversity; fall back to uniform
             existing = np.array([r.center for r in self.regions if r is not region])
             if existing.size > 0:
                 cand = self._maximin_diverse(bounds, n_dims, rng, existing)
             else:
                 cand = self._rng_uniform(rng, lo, hi, size=(n_dims,))
 
-            # radius based on spacing & local density
             radius = self._compute_spawn_radius(
-                cand,
-                existing if existing.size > 0 else np.empty((0, n_dims)),
-                getattr(self, "_global_X", None)
-                if hasattr(self, "_global_X")
-                else None,
+                cand, existing if existing.size > 0 else np.empty((0, n_dims)),
+                getattr(self, "_global_X", None) if hasattr(self, "_global_X") else None
             )
 
-            # reset core state
+            # reset core stats
             region.center = cand.astype(float)
-            region.radius = float(
-                np.clip(
-                    radius,
-                    getattr(self.config, "min_radius", 0.01),
-                    getattr(self.config, "init_radius", 0.1),
-                )
-            )
+            region.radius = float(np.clip(radius, getattr(self.config, "min_radius", 0.01),
+                                          getattr(self.config, "init_radius", 0.1)))
             region.best_value = np.inf
             region.prev_best_value = np.inf
             region.trial_count = 0
@@ -2127,7 +1734,6 @@ class RegionManager:
             region.last_improvement = 0
             region.stagnation_count = 0
             region.restarts = getattr(region, "restarts", 0) + 1
-
             region.stagnation_velocity = 0.0
             region.improvement_velocity = 1.0
             region.local_entropy = 1.0
@@ -2138,42 +1744,41 @@ class RegionManager:
             region.exploration_bonus = 1.2
             region.health_decay_factor = 1.0
 
-            # clear local archive
-            region.local_X = []
-            region.local_y = []
+            # archive reset — prefer ring buffer API when available
+            if hasattr(region, "clear_archive"):
+                region.clear_archive()
+            else:
+                lx = getattr(region, "local_X", None)
+                # ring-buffer fallback
+                if isinstance(lx, np.ndarray) and hasattr(region, "_buf_size"):
+                    region.local_X[:] = 0.0
+                    region.local_y[:] = np.inf
+                    region._buf_size = 0
+                    region._buf_ptr  = 0
+                else:
+                    # legacy list/tuple fallback
+                    region.local_X = []
+                    region.local_y = []
 
-            # reset covariance to isotropic ellipsoid ~ r^2 I and PCA cache
+            # covariance & PCA
             r2 = region.radius**2
             region.cov = np.eye(n_dims) * r2
-            region.pca_basis = np.eye(n_dims)
-            region.pca_eigvals = np.ones(n_dims) * r2
+
             region.cov_updates_since_reset = 0
 
             if self.verbose:
-                print(
-                    f"[RESTART] Region#{region.region_id} → center={np.round(region.center, 3)}, r={region.radius:.3f}"
-                )
-
+                print(f"[RESTART] Region#{region.region_id} → center={np.round(region.center, 3)}, r={region.radius:.3f}")
         except Exception as e:
             if self.verbose:
                 print(f"[ERROR] Restart region failed: {e}")
 
-    # --- Replace a "dead" region with a fresh one (keeps list size) ---
     def _replace_dead_region(self, victim, bounds, rng):
         try:
             n_dims = safe_region_property(victim, "n_dims", 2)
-
-            # Try to spawn a strong candidate using your existing logic
             try:
-                cand = self._find_best_spawn(
-                    bounds,
-                    n_dims,
-                    rng,
-                    getattr(self, "_global_X", []),
-                    getattr(self, "_global_y", []),
-                )
+                cand = self._find_best_spawn(bounds, n_dims, rng, getattr(self, "_global_X", []),
+                                             getattr(self, "_global_y", []))
             except Exception:
-                # fallback: just diversify
                 existing = np.array([r.center for r in self.regions if r is not victim])
                 if existing.size > 0:
                     cand = self._maximin_diverse(bounds, n_dims, rng, existing)
@@ -2183,22 +1788,14 @@ class RegionManager:
 
             existing = np.array([r.center for r in self.regions if r is not victim])
             radius = self._compute_spawn_radius(
-                cand,
-                existing if existing.size > 0 else np.empty((0, n_dims)),
-                getattr(self, "_global_X", None)
-                if hasattr(self, "_global_X")
-                else None,
+                cand, existing if existing.size > 0 else np.empty((0, n_dims)),
+                getattr(self, "_global_X", None) if hasattr(self, "_global_X") else None
             )
 
-            # Re-initialize victim in place (keeps region_id stable)
+            # transplant into victim
             victim.center = cand.astype(float)
-            victim.radius = float(
-                np.clip(
-                    radius,
-                    getattr(self.config, "min_radius", 0.01),
-                    getattr(self.config, "init_radius", 0.1),
-                )
-            )
+            victim.radius = float(np.clip(radius, getattr(self.config, "min_radius", 0.01),
+                                          getattr(self.config, "init_radius", 0.1)))
             victim.best_value = np.inf
             victim.prev_best_value = np.inf
             victim.trial_count = 0
@@ -2207,7 +1804,6 @@ class RegionManager:
             victim.last_improvement = 0
             victim.stagnation_count = 0
             victim.restarts = getattr(victim, "restarts", 0) + 1
-
             victim.stagnation_velocity = 0.0
             victim.improvement_velocity = 1.0
             victim.local_entropy = 1.0
@@ -2217,8 +1813,24 @@ class RegionManager:
             victim.spawn_score = 0.0
             victim.exploration_bonus = 1.2
             victim.health_decay_factor = 1.0
-            victim.local_X = []
-            victim.local_y = []
+
+            # archive reset — prefer ring buffer API when available
+            if hasattr(victim, "clear_archive"):
+                victim.clear_archive()
+            else:
+                lx = getattr(victim, "local_X", None)
+                # ring-buffer fallback
+                if isinstance(lx, np.ndarray) and hasattr(victim, "_buf_size"):
+                    victim.local_X[:] = 0.0
+                    victim.local_y[:] = np.inf
+                    victim._buf_size = 0
+                    victim._buf_ptr  = 0
+                else:
+                    # legacy list/tuple fallback
+                    victim.local_X = []
+                    victim.local_y = []
+
+
             r2 = victim.radius**2
             victim.cov = np.eye(n_dims) * r2
             victim.pca_basis = np.eye(n_dims)
@@ -2226,10 +1838,7 @@ class RegionManager:
             victim.cov_updates_since_reset = 0
 
             if self.verbose:
-                print(
-                    f"[REPLACE] Region#{victim.region_id} → center={np.round(victim.center, 3)}, r={victim.radius:.3f}"
-                )
-
+                print(f"[REPLACE] Region#{victim.region_id} → center={np.round(victim.center, 3)}, r={victim.radius:.3f}")
         except Exception as e:
             if self.verbose:
                 print(f"[ERROR] Replace dead region failed: {e}")

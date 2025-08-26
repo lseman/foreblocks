@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import scipy.stats as sps
 
-from ..aux.adaptive_mi import AdaptiveMI
+from ..aux.adaptive_mi import AdaptiveMI, _mi_to_coeff, _spearman_fast
 from ..aux.distance_correlation import DistanceCorrelation
 from .analyze_distribution import DistributionAnalyzer
 from .foreminer_aux import *
@@ -367,16 +367,16 @@ class PatternDetector(AnalysisStrategy):
             # Selection logic mirrors AdaptiveMI.matrix():
             ties_x = ami._tie_fraction(x)
             ties_y = ami._tie_fraction(y)
-            abs_rho = abs(ami._safe_spearman(x, y))
+            abs_rho = abs(_spearman_fast(x, y))
 
             if max(ties_x, ties_y) > 0.05:
                 mi = ami._mi_binned_quantile(x, y, ami.n_bins)
             elif abs_rho >= 0.85:
                 mi = ami._mi_copula_gaussian(x, y)
             else:
-                mi = ami._mi_ksg_avg(x, y, ami.ks)
+                mi = ami._mi_ksg1_avg(x, y, ami.ks)
 
-            return float(np.clip(ami._mi_to_coeff(mi), 0.0, 1.0))
+            return float(np.clip(_mi_to_coeff(mi), 0.0, 1.0))
 
         def _dcor(
             x: np.ndarray,

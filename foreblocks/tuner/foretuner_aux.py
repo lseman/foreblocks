@@ -3,6 +3,7 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 from numba import jit, vectorize
 
 warnings.filterwarnings("ignore")
@@ -54,6 +55,23 @@ class TurboConfig:
     spawn_w_entropy: bool = True  # Use entropy for spawning new regions
 
     max_age: int = 1000  # Maximum age of a region before it is considered for removal
+
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    precision: str = "float32"  # Options: "float32", "float64"
+    exact_gp_max_size: int = 2000  # Switch to exact GP if data size <= this
+    ensemble_threshold: int = 5000  # Use ensemble if data size > this
+    use_saas: bool = False  # Use SAAS prior for high-dim Bayesian optimization
+    normalize_inputs: bool = True  # Normalize inputs to [0,1]
+    max_precond: int = 10000  # Max size for preconditioner in CG solver
+    max_root_decomp: int = 3000  # Max size for root decomposition in Lanczos
+    jitter: float = 1e-6  # Jitter for numerical stability
+    cg_tol: float = 1e-4  # Tolerance for Conjugate
+    max_fit_attempts: int = 3  # Max attempts to fit GP hyperparameters
+    max_fit_iter: int = 200  # Max iterations for fitting GP hyperparameters
+    fast_pred_var: bool = True  # Use fast predictive variance computation
+    cache_size: int = 2000  # Cache size for fast predictive variance
+
+    phase_jitter_strength   = 0.30  # 0..1
 
 
 # === Sobol-like Quasi-Random Sequence ===
@@ -202,14 +220,61 @@ def log_expected_improvement(mean, std, best_value, eps=1e-9):
     return np.log(ei + eps)
 
 
-@jit(nopython=True)
+
+@jit(nopython=True) 
 def predictive_entropy_search(mean, std, best_value):
     """
-    Predictive Entropy Search (PES) simplified:
-    - just returns std as exploration proxy.
+    Analytical approximation of Predictive Entropy Search.
+    
+    This is faster than the Monte Carlo version above and often
+    gives similar results for practical purposes.
+    
+    Args:
+        mean: Predicted mean values (N,)
+        std: Predicted standard deviations (N,)
+        best_value: Current best function value
+        
+    Returns:
+        PES acquisition values (N,)
     """
-    return std
-
+    n_points = len(mean)
+    pes_values = np.zeros(n_points)
+    
+    for i in range(n_points):
+        mu = mean[i]
+        sigma = std[i]
+        
+        if sigma < 1e-12:
+            pes_values[i] = 0.0
+            continue
+        
+        # Standardized improvement
+        z = (best_value - mu) / sigma
+        
+        # Probability of improvement
+        prob_improve = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+        
+        # Expected improvement
+        phi_z = (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * z * z)
+        Phi_z = prob_improve
+        expected_improve = sigma * (z * Phi_z + phi_z)
+        
+        # Information gain approximation
+        # Based on the idea that entropy reduction scales with:
+        # 1. Probability of improvement (exploration in promising areas)
+        # 2. Magnitude of expected improvement (exploitation)
+        # 3. Uncertainty (exploration in uncertain areas)
+        
+        # Entropy component (exploration)
+        entropy_term = sigma * phi_z
+        
+        # Improvement component (exploitation) 
+        improvement_term = expected_improve * prob_improve
+        
+        # Combined PES approximation
+        pes_values[i] = entropy_term + 0.5 * improvement_term
+    
+    return pes_values
 
 @jit(nopython=True)
 def knowledge_gradient(mean, std, best_value):

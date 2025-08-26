@@ -27,6 +27,314 @@ except ImportError:
     cp = None
 
 
+@njit
+def sum_missing_in_node(miss_idx: np.ndarray,
+                        mark_node: np.ndarray,  # uint8 bitset length n_samples
+                        g: np.ndarray,
+                        h: np.ndarray):
+    g_m = 0.0
+    h_m = 0.0
+    n_m = 0
+    for k in range(miss_idx.size):
+        idx = miss_idx[k]
+        if mark_node[idx] == 1:
+            g_m += g[idx]
+            h_m += h[idx]
+            n_m += 1
+    return g_m, h_m, n_m
+
+
+@njit
+def best_split_on_feature_list(sorted_ids_for_g: np.ndarray,  # ids in node, sorted by feature g
+                               v_seq: np.ndarray,             # X[sorted_ids_for_g, lf] (float64, non-decreasing)
+                               grad: np.ndarray,
+                               hess: np.ndarray,
+                               g_miss: float, h_miss: float, n_miss: int,
+                               min_samples_leaf: int, min_child_weight: float,
+                               lambda_reg: float, gamma: float,
+                               monotone_constraint: int = 0):
+    m = sorted_ids_for_g.size
+    if m < 2 * min_samples_leaf:
+        return -1.0, 0.0, False, 0, 0
+
+    # gather grads/hess in feature-sorted order for this node
+    g_seq = np.empty(m, dtype=np.float64)
+    h_seq = np.empty(m, dtype=np.float64)
+    for i in range(m):
+        idx = sorted_ids_for_g[i]
+        g_seq[i] = grad[idx]
+        h_seq[i] = hess[idx]
+
+    # prefix sums
+    for i in range(1, m):
+        g_seq[i] += g_seq[i - 1]
+        h_seq[i] += h_seq[i - 1]
+
+    total_g = g_seq[m - 1] + g_miss
+    total_h = h_seq[m - 1] + h_miss
+    parent = (total_g * total_g) / (total_h + lambda_reg) if (total_h + lambda_reg) > 0.0 else 0.0
+
+    best_gain = -1.0
+    best_thr = 0.0
+    best_mleft = False
+    best_nL = 0
+    best_nR = 0
+
+    prev = v_seq[0]
+    for i in range(1, m):
+        cur = v_seq[i]
+        if cur <= prev:
+            continue  # compress runs of equal values
+
+        nL_f = i
+        nR_f = m - i
+        if nL_f < min_samples_leaf or nR_f < min_samples_leaf:
+            prev = cur
+            continue
+
+        gL_f = g_seq[i - 1]
+        hL_f = h_seq[i - 1]
+        gR_f = g_seq[m - 1] - gL_f
+        hR_f = h_seq[m - 1] - hL_f
+
+        # try both missing directions
+        for mleft in (True, False):
+            if mleft:
+                gL = gL_f + g_miss; hL = hL_f + h_miss; nL = nL_f + n_miss
+                gR = gR_f;         hR = hR_f;           nR = nR_f
+            else:
+                gL = gL_f;         hL = hL_f;           nL = nL_f
+                gR = gR_f + g_miss; hR = hR_f + h_miss; nR = nR_f + n_miss
+
+            if hL < min_child_weight or hR < min_child_weight or nL < min_samples_leaf or nR < min_samples_leaf:
+                continue
+
+            left  = (gL * gL) / (hL + lambda_reg) if (hL + lambda_reg) > 0.0 else 0.0
+            right = (gR * gR) / (hR + lambda_reg) if (hR + lambda_reg) > 0.0 else 0.0
+            gain = 0.5 * (left + right - parent) - gamma
+            if gain <= best_gain:
+                continue
+
+            if monotone_constraint != 0:
+                wL = -gL / (hL + lambda_reg) if (hL + lambda_reg) > 0.0 else 0.0
+                wR = -gR / (hR + lambda_reg) if (hR + lambda_reg) > 0.0 else 0.0
+                if monotone_constraint * (wR - wL) < 0:
+                    continue
+
+            best_gain = gain
+            best_thr  = 0.5 * (prev + cur)
+            best_mleft = mleft
+            best_nL = nL
+            best_nR = nR
+
+        prev = cur
+
+    return best_gain, best_thr, best_mleft, best_nL, best_nR
+
+
+def _soft_threshold(g: float, alpha: float) -> float:
+    if alpha <= 0.0:
+        return g
+    if g > alpha:  return g - alpha
+    if g < -alpha: return g + alpha
+    return 0.0
+
+def _leaf_value_from_sums(g_sum: float, h_sum: float, reg_lambda: float, alpha: float, max_delta_step: float) -> float:
+    return float(calc_leaf_value_newton(g_sum, h_sum, reg_lambda, alpha, max_delta_step))
+
+def _leaf_objective_from_value(g_sum: float, h_sum: float, reg_lambda: float, alpha: float, v: float) -> float:
+    # Exact objective at chosen v (works with/without clipping)
+    return float(g_sum * v + 0.5 * (h_sum + reg_lambda) * v * v + alpha * abs(v))
+
+def _leaf_objective_optimal(g_sum: float, h_sum: float, reg_lambda: float, alpha: float, max_delta_step: float) -> float:
+    # Fast closed-form when not clipped; falls back to exact-at-v if clipping in play
+    if max_delta_step and max_delta_step > 0.0:
+        v = _leaf_value_from_sums(g_sum, h_sum, reg_lambda, alpha, max_delta_step)
+        return _leaf_objective_from_value(g_sum, h_sum, reg_lambda, alpha, v)
+    denom = h_sum + reg_lambda
+    if denom <= 0.0:
+        return 0.0
+    gsh = _soft_threshold(g_sum, alpha)
+    return -0.5 * (gsh * gsh) / denom
+
+
+
+
+@njit
+def find_best_split_feature_exact(
+    sorted_indices: np.ndarray,
+    values: np.ndarray,
+    gradients: np.ndarray,
+    hessians: np.ndarray,
+    node_membership: np.ndarray,
+    missing_indices: np.ndarray,
+    node_id: int,
+    min_samples_leaf: int,
+    min_child_weight: float,
+    lambda_reg: float,
+    gamma: float,
+    monotone_constraint: int = 0,
+) -> Tuple[float, float, bool, int, int]:
+    """
+    Numba-optimized split finding for a single feature.
+    Returns: (best_gain, best_threshold, best_missing_left, n_left, n_right)
+    """
+    # Filter indices to current node
+    node_samples = []
+    for idx in sorted_indices:
+        if node_membership[idx] == node_id:
+            node_samples.append(idx)
+
+    if len(node_samples) <= min_samples_leaf:
+        return -1.0, 0.0, False, 0, 0
+
+    node_samples = np.array(node_samples)
+    n_samples = len(node_samples)
+
+    # Get sorted values and gradients/hessians for this node
+    sorted_vals = values[node_samples]
+    sorted_grads = gradients[node_samples]
+    sorted_hess = hessians[node_samples]
+
+    # Handle missing values for this node
+    missing_g = 0.0
+    missing_h = 0.0
+    n_missing = 0
+    for idx in missing_indices:
+        if node_membership[idx] == node_id:
+            missing_g += gradients[idx]
+            missing_h += hessians[idx]
+            n_missing += 1
+
+    # Precompute cumulative sums
+    cum_g = np.cumsum(sorted_grads)
+    cum_h = np.cumsum(sorted_hess)
+    total_g = cum_g[-1]
+    total_h = cum_h[-1]
+
+    # Parent score
+    parent_score = (
+        (total_g + missing_g) ** 2 / (total_h + missing_h + lambda_reg)
+        if (total_h + missing_h + lambda_reg) > 0
+        else 0.0
+    )
+
+    best_gain = -1.0
+    best_threshold = 0.0
+    best_missing_left = False
+    best_n_left = 0
+    best_n_right = 0
+
+    # Find unique split points more efficiently
+    prev_val = sorted_vals[0]
+    for i in range(1, n_samples):
+        curr_val = sorted_vals[i]
+
+        # Only consider splits between different values
+        if curr_val <= prev_val:
+            continue
+
+        # Left side: samples [0, i)
+        n_left_finite = i
+        n_right_finite = n_samples - i
+
+        if n_left_finite < min_samples_leaf or n_right_finite < min_samples_leaf:
+            prev_val = curr_val
+            continue
+
+        g_left_finite = cum_g[i - 1]
+        h_left_finite = cum_h[i - 1]
+        g_right_finite = total_g - g_left_finite
+        h_right_finite = total_h - h_left_finite
+
+        # Try both missing directions
+        for missing_left in [True, False]:
+            if missing_left:
+                g_left = g_left_finite + missing_g
+                h_left = h_left_finite + missing_h
+                g_right = g_right_finite
+                h_right = h_right_finite
+                n_left = n_left_finite + n_missing
+                n_right = n_right_finite
+            else:
+                g_left = g_left_finite
+                h_left = h_left_finite
+                g_right = g_right_finite + missing_g
+                h_right = h_right_finite + missing_h
+                n_left = n_left_finite
+                n_right = n_right_finite + n_missing
+
+            if (
+                h_left < min_child_weight
+                or h_right < min_child_weight
+                or n_left < min_samples_leaf
+                or n_right < min_samples_leaf
+            ):
+                continue
+
+            # Calculate gain
+            left_score = (
+                g_left**2 / (h_left + lambda_reg) if (h_left + lambda_reg) > 0 else 0.0
+            )
+            right_score = (
+                g_right**2 / (h_right + lambda_reg)
+                if (h_right + lambda_reg) > 0
+                else 0.0
+            )
+            gain = 0.5 * (left_score + right_score - parent_score) - gamma
+
+            if gain <= best_gain:
+                continue
+
+            # Monotone constraint check
+            if monotone_constraint != 0:
+                left_pred = (
+                    -g_left / (h_left + lambda_reg)
+                    if (h_left + lambda_reg) > 0
+                    else 0.0
+                )
+                right_pred = (
+                    -g_right / (h_right + lambda_reg)
+                    if (h_right + lambda_reg) > 0
+                    else 0.0
+                )
+                if monotone_constraint * (right_pred - left_pred) < 0:
+                    continue
+
+            best_gain = gain
+            best_threshold = 0.5 * (prev_val + curr_val)
+            best_missing_left = missing_left
+            best_n_left = n_left
+            best_n_right = n_right
+
+        prev_val = curr_val
+
+    return best_gain, best_threshold, best_missing_left, best_n_left, best_n_right
+
+
+@njit
+def update_node_membership_exact(
+    indices: np.ndarray,
+    values: np.ndarray,
+    node_membership: np.ndarray,
+    old_node_id: int,
+    left_node_id: int,
+    right_node_id: int,
+    threshold: float,
+    missing_left: bool,
+):
+    """Numba-optimized node membership update."""
+    for idx in indices:
+        if node_membership[idx] == old_node_id:
+            val = values[idx]
+            if np.isnan(val):
+                node_membership[idx] = left_node_id if missing_left else right_node_id
+            else:
+                node_membership[idx] = (
+                    left_node_id if val <= threshold else right_node_id
+                )
+
+
 @njit(fastmath=True, cache=True)
 def calc_leaf_value_newton(g_sum, h_sum, reg_lambda, alpha=0.0, max_delta_step=0.0):
     """

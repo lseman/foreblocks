@@ -135,7 +135,7 @@ class CorrelationAnalyzer(AnalysisStrategy):
             n_bins=getattr(self, "mi_bins", 16),
             random_state=getattr(self, "random_state", 42),
         )
-        return ami.matrix(df, spearman_scr)
+        return ami.matrix(df)
 
     def _distance_correlation(
         self, df: pd.DataFrame, pearson_scr: pd.DataFrame

@@ -5,9 +5,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from boosting_aux import FeatureImportance, GPUAccelerator, prebin_data, prebin_edges
-from boosting_leaf import LeafWiseSingleTree
 from boosting_loss import HuberLoss, LogisticLoss, MSELoss, QuantileLoss
-from boosting_tree import SingleTree
+from boosting_tree import *
 
 
 # ================================================================
@@ -32,6 +31,41 @@ class SamplingConfig:
     goss_top_rate: float = 0.2
     goss_other_rate: float = 0.1
 
+
+try:
+    from numba import njit
+    HAS_NUMBA = True
+except Exception:
+    HAS_NUMBA = False
+
+if HAS_NUMBA:
+    @njit
+    def _goss_select(scores, top_k, rest_k):
+        n = scores.shape[0]
+        # argpartition for top_k
+        kth = n - top_k
+        idx = np.argpartition(scores, kth)
+        top_idx = idx[kth:]
+        # build mask
+        mask = np.ones(n, dtype=np.uint8)
+        for i in top_idx:
+            mask[i] = 0
+        rest_pool = np.empty(n - top_k, dtype=np.int64)
+        rp = 0
+        for i in range(n):
+            if mask[i] == 1:
+                rest_pool[rp] = i
+                rp += 1
+        if rest_k > rp:
+            rest_k = rp
+        # uniform sample rest_k without replacement (Fisher–Yates subset)
+        for i in range(rest_k):
+            j = i + np.random.randint(0, rp - i)
+            rest_pool[i], rest_pool[j] = rest_pool[j], rest_pool[i]
+        sel = np.empty(top_k + rest_k, dtype=np.int64)
+        sel[:top_k] = top_idx
+        sel[top_k:] = rest_pool[:rest_k]
+        return sel
 
 # ================================================================
 # BoostRegressor with corrected & fast DART
@@ -343,6 +377,7 @@ class BoostRegressor:
 
     # ----------------------------- sampling + batch build -----------------------------
     def _apply_goss_optimized(self, X, y, grad, hess):
+
         n = grad.shape[0]
         top_k  = int(self.sampling_config.goss_top_rate  * n)
         rest_k = int(self.sampling_config.goss_other_rate * n)
@@ -368,8 +403,11 @@ class BoostRegressor:
         # Uniform sample from the rest without replacement
         rest_idx = rest_pool[np.random.choice(rest_pool.size, size=rest_k, replace=False)]
 
-        # Concatenate so that first top_k are the top samples (needed for in-place scaling)
-        sel = np.concatenate([top_idx, rest_idx])
+        if HAS_NUMBA:
+            sel = _goss_select(scores.astype(np.float64), top_k, rest_k)
+        else:
+            # Concatenate so that first top_k are the top samples (needed for in-place scaling)
+            sel = np.concatenate([top_idx, rest_idx])
 
         # Slice & copy grads/hess for safe in-place scaling
         Xs, ys = X[sel], y[sel]
@@ -416,6 +454,8 @@ class BoostRegressor:
                 hess_sub,
                 feature_importance=self.feature_importance_,
             )
+            tree.post_prune_ccp(ccp_alpha=1e-4)
+
             trees.append((tree, feature_mask))
         return trees
 
@@ -494,6 +534,7 @@ class BoostRegressor:
                 delta_train += tree.predict(X[:, feat_mask])
             delta_train *= current_lr * forest_newtree_scale
             self._y_sum_train += delta_train
+
 
             if eval_set is not None:
                 delta_val = np.zeros_like(self._y_sum_val)
