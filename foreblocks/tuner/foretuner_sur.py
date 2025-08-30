@@ -1,497 +1,542 @@
-# ============================================
-# Simplified Surrogate Manager — BoTorch Style
-# ============================================
+from __future__ import annotations
+
+import math
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import gpytorch
 import numpy as np
 import torch
 import torch.nn.functional as F
 from botorch.fit import fit_gpytorch_mll
-
-# BoTorch imports
 from botorch.models import SingleTaskGP
 from botorch.models.transforms import Normalize, Standardize
 from gpytorch.constraints import GreaterThan
 from gpytorch.kernels import MaternKernel, ScaleKernel
 from gpytorch.means import ConstantMean
 from gpytorch.mlls import ExactMarginalLogLikelihood
+from gpytorch.priors import GammaPrior, LogNormalPrior
 from gpytorch.settings import fast_pred_var
+
+
+def _to_np(x: torch.Tensor) -> np.ndarray:
+    return x.detach().cpu().numpy()
+
+def _round_key(arr: np.ndarray, ndig: int = 6) -> int:
+    return hash(np.round(arr, ndig).tobytes())
 
 
 class SurrogateManager:
     """
-    Simplified surrogate manager following BoTorch patterns:
-    - Uses BoTorch's SingleTaskGP as the primary model
-    - Automatic input/output transforms
-    - Simplified caching strategy  
-    - Clean separation of global and local models
-    - Native BoTorch acquisition function support
+    Improved surrogate manager that fixes performance issues:
+    - Balanced priors that don't over-constrain
+    - Adaptive transforms based on data characteristics  
+    - Smart model selection based on problem dimensionality
+    - Better hyperparameter initialization
     """
-    
-    def __init__(self, config, device="cuda", normalize_inputs=True):
+
+    def __init__(
+        self,
+        config: Any,
+        device: str = "cuda",
+        dtype: torch.dtype = torch.double,
+        auto_transforms: bool = True,
+        adaptive_noise_floor: bool = True,
+    ):
         self.config = config
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.dtype = torch.double
-        self.normalize_inputs = normalize_inputs
-        
-        # Global model and data
+        self.device = torch.device(device if (device == "cuda" and torch.cuda.is_available()) else "cpu")
+        self.dtype = dtype
+        self.auto_transforms = auto_transforms
+        self.adaptive_noise_floor = adaptive_noise_floor
+
+        # Global data/model
+        self.global_X: Optional[torch.Tensor] = None
+        self.global_y: Optional[torch.Tensor] = None
         self.global_model = None
-        self.global_X = None
-        self.global_y = None
         self.global_mll = None
-        
-        # Local model cache (simple dict, no complex versioning)
-        self.local_cache = {}
-        self.cache_hits = 0
-        
-        # Simple prediction cache
-        self._pred_cache = {}
+
+        # Data characteristics (for adaptive behavior)
+        self._input_scales = None
+        self._output_scale = None
+        self._noise_estimate = None
+
+        # Caches
+        self._pred_cache: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
         self._cache_version = 0
-        
+        self.local_cache: Dict[Tuple[int, int], Any] = {}
+        self.cache_hits = 0
+        self._local_cache_cap = int(getattr(config, "local_cache_cap", 12))
+
     def update_global_data(self, X, y):
-        """Update global model with new data"""
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64).reshape(-1)
-        
-        # Convert to tensors
-        self.global_X = torch.tensor(X, dtype=self.dtype, device=self.device)
-        self.global_y = torch.tensor(y, dtype=self.dtype, device=self.device)
-        
-        # Fit global model if we have enough data
+
+        self.global_X = torch.as_tensor(X, dtype=self.dtype, device=self.device)
+        self.global_y = torch.as_tensor(y, dtype=self.dtype, device=self.device)
+
+        # Analyze data characteristics for adaptive behavior
+        self._analyze_data_characteristics(X, y)
+
         if len(y) >= 3:
             self._fit_global_model()
             self._cache_version += 1
             self._pred_cache.clear()
-    
+
+    def _analyze_data_characteristics(self, X: np.ndarray, y: np.ndarray):
+        """Analyze data to make adaptive modeling decisions"""
+        # Input scale analysis
+        self._input_scales = np.std(X, axis=0)
+        input_range = np.ptp(X, axis=0)  # peak-to-peak
+        
+        # Output scale analysis  
+        self._output_scale = np.std(y)
+        
+        # Noise estimation (using local variability)
+        if len(y) > 10:
+            # Estimate noise from nearest neighbor residuals
+            from scipy.spatial.distance import cdist
+            distances = cdist(X, X)
+            np.fill_diagonal(distances, np.inf)
+            
+            noise_estimates = []
+            for i in range(min(len(y), 50)):  # Sample for efficiency
+                nearest_idx = np.argmin(distances[i])
+                if distances[i, nearest_idx] < 0.1 * np.mean(input_range):
+                    noise_estimates.append(abs(y[i] - y[nearest_idx]))
+            
+            if noise_estimates:
+                self._noise_estimate = np.median(noise_estimates)
+            else:
+                self._noise_estimate = 0.01 * self._output_scale
+        else:
+            self._noise_estimate = 0.01 * self._output_scale
+
+    def _get_adaptive_noise_floor(self) -> float:
+        """Get noise floor adapted to data characteristics"""
+        if not self.adaptive_noise_floor or self._noise_estimate is None:
+            return 1e-6
+            
+        # Noise floor should be much smaller than estimated noise
+        return max(1e-8, min(1e-4, self._noise_estimate / 100))
+
+    def _should_normalize_inputs(self) -> bool:
+        """Decide whether to normalize inputs based on data characteristics"""
+        if not self.auto_transforms or self._input_scales is None:
+            return True  # Default safe choice
+            
+        # Normalize if scales vary significantly across dimensions
+        scale_ratio = np.max(self._input_scales) / (np.min(self._input_scales) + 1e-12)
+        return scale_ratio > 3.0
+
+    def _should_standardize_outputs(self) -> bool:
+        """Decide whether to standardize outputs"""
+        if not self.auto_transforms or self._output_scale is None:
+            return True  # Default safe choice
+            
+        # Standardize if output scale is far from 1
+        return abs(self._output_scale - 1.0) > 0.5
+
+    def _make_exact_gp(self, X: torch.Tensor, y: torch.Tensor):
+        """Create GP with balanced priors and adaptive transforms"""
+        d = X.shape[-1]
+        noise_floor = self._get_adaptive_noise_floor()
+        
+        # Balanced priors that don't over-constrain
+        # Lengthscale prior: less restrictive, adapted to problem scale
+        if d <= 5:
+            # Low-D: allow wider range of lengthscales
+            ls_prior = GammaPrior(1.5, 3.0)  # Less restrictive than original
+        else:
+            # High-D: mild preference for smaller lengthscales
+            ls_prior = GammaPrior(2.0, 4.0)
+
+        base = MaternKernel(
+            nu=2.5,
+            ard_num_dims=d,
+            lengthscale_prior=ls_prior,
+            lengthscale_constraint=GreaterThan(1e-5),
+        )
+        
+        # Outputscale prior: centered around reasonable values
+        covar = ScaleKernel(
+            base_kernel=base,
+            outputscale_prior=LogNormalPrior(0.0, 0.75),  # Less broad than original
+            outputscale_constraint=GreaterThan(1e-6),
+        )
+
+        # Adaptive transforms
+        input_transform = Normalize(d=d) if self._should_normalize_inputs() else None
+        outcome_transform = Standardize(m=1) if self._should_standardize_outputs() else None
+
+        class _AdaptiveGP(SingleTaskGP):
+            def __init__(self, X, Y, input_transform, outcome_transform, covar_module, noise_floor):
+                super().__init__(
+                    train_X=X,
+                    train_Y=Y,
+                    input_transform=input_transform,
+                    outcome_transform=outcome_transform,
+                )
+                self.mean_module = ConstantMean()
+                self.covar_module = covar_module
+
+                # Adaptive noise handling
+                self.likelihood.noise_covar.register_constraint("raw_noise", GreaterThan(noise_floor))
+                
+                # Noise prior adapted to estimated noise level
+                if hasattr(self, '_noise_estimate') and self._noise_estimate is not None:
+                    # Prior centered around estimated noise
+                    noise_prior_loc = math.log(max(noise_floor * 10, self._noise_estimate))
+                    noise_prior = LogNormalPrior(noise_prior_loc, 1.0)
+                else:
+                    # Default prior
+                    noise_prior = LogNormalPrior(-3.0, 1.0)
+                    
+                self.likelihood.noise_covar.register_prior("noise_prior", noise_prior, "noise")
+
+        gp = _AdaptiveGP(X, y.unsqueeze(-1), input_transform, outcome_transform, covar, noise_floor)
+        gp._noise_estimate = self._noise_estimate  # Store for noise prior
+        return gp
+
     def _fit_global_model(self):
-        """Fit global GP using BoTorch's SingleTaskGP"""
+        """Fit global model with better initialization and error handling"""
         try:
-            # Create model with automatic transforms
-            self.global_model = SingleTaskGP(
-                train_X=self.global_X,
-                train_Y=self.global_y.unsqueeze(-1),
-                input_transform=Normalize(d=self.global_X.shape[-1]) if self.normalize_inputs else None,
-                outcome_transform=Standardize(m=1),
-            )
+            self.global_model = self._make_exact_gp(self.global_X, self.global_y).to(self.device, self.dtype)
             
-            # Set up MLL and fit
-            self.global_mll = ExactMarginalLogLikelihood(
-                self.global_model.likelihood, 
-                self.global_model
-            )
+            # Better hyperparameter initialization
+            self._initialize_hyperparameters()
             
-            # Use BoTorch's standard fitting procedure
-            fit_gpytorch_mll(self.global_mll, max_attempts=3)
+            self.global_mll = ExactMarginalLogLikelihood(self.global_model.likelihood, self.global_model)
             
-            # Set to eval mode
+            # Fit with multiple attempts and different strategies
+            success = False
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        # Standard fit
+                        fit_gpytorch_mll(self.global_mll, max_attempts=1, max_iter=100)
+                    elif attempt == 1:
+                        # More conservative fit
+                        fit_gpytorch_mll(self.global_mll, max_attempts=1, max_iter=50)
+                        # Re-initialize if needed
+                        self._initialize_hyperparameters()
+                        fit_gpytorch_mll(self.global_mll, max_attempts=1, max_iter=100)
+                    else:
+                        # Minimal fit - just get something reasonable
+                        fit_gpytorch_mll(self.global_mll, max_attempts=1, max_iter=25)
+                    
+                    success = True
+                    break
+                except Exception as e:
+                    if attempt == 2:  # Last attempt
+                        print(f"[WARN] All GP fitting attempts failed: {e}")
+                        continue
+                    
+            if not success:
+                self.global_model = None
+                self.global_mll = None
+                return
+                
             self.global_model.eval()
             
         except Exception as e:
-            print(f"Warning: Global GP fitting failed: {e}")
+            print(f"[WARN] Global GP creation failed: {e}")
             self.global_model = None
-    
-    def predict_global_cached(self, X_query):
-        """Predict using global model with simple caching"""
-        X_query = np.asarray(X_query, dtype=np.float64)
-        
+            self.global_mll = None
+
+    def _initialize_hyperparameters(self):
+        """Initialize hyperparameters based on data characteristics"""
         if self.global_model is None:
-            # Return prior mean/std
-            mean = np.mean(self.global_y.cpu().numpy()) if self.global_y is not None else 0.0
-            return np.full(len(X_query), mean), np.ones(len(X_query))
-        
-        # Simple cache key (rounded to avoid numerical issues)
-        cache_key = (self._cache_version, hash(np.round(X_query, 6).tobytes()))
-        
-        if cache_key in self._pred_cache:
-            return self._pred_cache[cache_key]
-        
-        # Convert to tensor and predict
-        X_tensor = torch.tensor(X_query, dtype=self.dtype, device=self.device)
-        
-        with torch.no_grad(), fast_pred_var():
-            posterior = self.global_model.posterior(X_tensor)
-            mean = posterior.mean.squeeze(-1).cpu().numpy()
-            std = posterior.variance.clamp_min(1e-9).sqrt().squeeze(-1).cpu().numpy()
-        
-        result = (mean, std)
-        
-        # Cache result (limit cache size)
-        if len(self._pred_cache) < 100:
-            self._pred_cache[cache_key] = result
-        
-        return result
-    
-    def predict_local(self, X_query, local_X, local_y, region_radius=None):
-        """Predict using local model with caching"""
-        X_query = np.asarray(X_query, dtype=np.float64)
-        local_X = np.asarray(local_X, dtype=np.float64)
-        local_y = np.asarray(local_y, dtype=np.float64).reshape(-1)
-        
-        # Fall back to global if insufficient local data
-        if len(local_y) < 4:
-            return self.predict_global_cached(X_query)
-        
-        # Simple cache key based on local data
-        local_key = (len(local_y), hash(np.round(local_X, 4).tobytes()))
-        
-        # Get or create local model
-        if local_key not in self.local_cache:
-            try:
-                local_model = self._fit_local_model(local_X, local_y)
-                # Limit cache size
-                if len(self.local_cache) > 10:
-                    # Remove oldest entry
-                    oldest_key = next(iter(self.local_cache))
-                    del self.local_cache[oldest_key]
-                self.local_cache[local_key] = local_model
-            except Exception:
-                return self.predict_global_cached(X_query)
-        else:
-            local_model = self.local_cache[local_key]
-            self.cache_hits += 1
-        
-        # Predict with local model
+            return
+            
         try:
-            X_tensor = torch.tensor(X_query, dtype=self.dtype, device=self.device)
+            # Initialize lengthscales based on input scales
+            if self._input_scales is not None:
+                with torch.no_grad():
+                    # Set lengthscales to reasonable fractions of input variation
+                    target_ls = torch.tensor(
+                        np.clip(self._input_scales * 0.3, 0.1, 2.0),
+                        dtype=self.dtype,
+                        device=self.device
+                    )
+                    self.global_model.covar_module.base_kernel.lengthscale = target_ls
+                    
+            # Initialize outputscale based on output variation
+            if self._output_scale is not None:
+                with torch.no_grad():
+                    target_os = max(0.1, min(10.0, self._output_scale))
+                    self.global_model.covar_module.outputscale = torch.tensor(
+                        target_os, dtype=self.dtype, device=self.device
+                    )
+                    
+            # Initialize noise based on estimate
+            if self._noise_estimate is not None:
+                with torch.no_grad():
+                    target_noise = max(self._get_adaptive_noise_floor(), 
+                                     min(0.1 * self._output_scale, self._noise_estimate))
+                    self.global_model.likelihood.noise = torch.tensor(
+                        target_noise, dtype=self.dtype, device=self.device
+                    )
+                    
+        except Exception as e:
+            print(f"[WARN] Hyperparameter initialization failed: {e}")
+
+    # ----------------- Prediction (cached) -----------------
+    def predict_global_cached(self, X_query) -> Tuple[np.ndarray, np.ndarray]:
+        Xq = np.asarray(X_query, dtype=np.float64)
+        if self.global_model is None:
+            mean = float(self.global_y.min().item()) if self.global_y is not None else 0.0
+            return np.full(len(Xq), mean, dtype=np.float64), np.ones(len(Xq), dtype=np.float64)
+
+        key = (self._cache_version, _round_key(Xq, ndig=6))
+        if key in self._pred_cache:
+            return self._pred_cache[key]
+
+        X_t = torch.as_tensor(Xq, dtype=self.dtype, device=self.device)
+        with torch.no_grad(), fast_pred_var():
+            post = self.global_model.posterior(X_t)
+            mean = _to_np(post.mean.squeeze(-1))
+            std = _to_np(post.variance.clamp_min(1e-12).sqrt().squeeze(-1))
+            
+        if len(self._pred_cache) < 256:
+            self._pred_cache[key] = (mean, std)
+        return mean, std
+
+    # ----------------- Local model (reuse improved GP creation) -----------------
+    def predict_local(self, X_query, local_X, local_y, region_radius=None):
+        Xq = np.asarray(X_query, dtype=np.float64)
+        X = np.asarray(local_X, dtype=np.float64)
+        y = np.asarray(local_y, dtype=np.float64).reshape(-1)
+
+        if len(y) < 4:
+            return self.predict_global_cached(Xq)
+
+        lkey = (len(y), _round_key(X, 4))
+        if lkey not in self.local_cache:
+            try:
+                self.local_cache[lkey] = self._fit_local_model(X, y)
+                if len(self.local_cache) > self._local_cache_cap:
+                    self.local_cache.pop(next(iter(self.local_cache)))
+            except Exception:
+                return self.predict_global_cached(Xq)
+        else:
+            self.cache_hits += 1
+
+        model = self.local_cache[lkey]
+        X_t = torch.as_tensor(Xq, dtype=self.dtype, device=self.device)
+        try:
             with torch.no_grad(), fast_pred_var():
-                posterior = local_model.posterior(X_tensor)
-                mean = posterior.mean.squeeze(-1).cpu().numpy()
-                std = posterior.variance.clamp_min(1e-9).sqrt().squeeze(-1).cpu().numpy()
+                post = model.posterior(X_t)
+                mean = _to_np(post.mean.squeeze(-1))
+                std = _to_np(post.variance.clamp_min(1e-12).sqrt().squeeze(-1))
             return mean, std
         except Exception:
-            return self.predict_global_cached(X_query)
-    
+            return self.predict_global_cached(Xq)
+
     def _fit_local_model(self, X, y):
-        """Fit a local GP model"""
-        X_tensor = torch.tensor(X, dtype=self.dtype, device=self.device)
-        y_tensor = torch.tensor(y, dtype=self.dtype, device=self.device)
-        
-        # Create local model (similar to global but potentially smaller)
-        model = SingleTaskGP(
-            train_X=X_tensor,
-            train_Y=y_tensor.unsqueeze(-1),
-            input_transform=Normalize(d=X_tensor.shape[-1]) if self.normalize_inputs else None,
-            outcome_transform=Standardize(m=1),
-        )
-        
-        # Fit with fewer iterations for speed
+        """Fit local model using same improved approach as global"""
+        X_t = torch.as_tensor(X, dtype=self.dtype, device=self.device)
+        y_t = torch.as_tensor(y, dtype=self.dtype, device=self.device)
+
+        # Use simplified version of global model for local fitting
+        model = self._make_exact_gp(X_t, y_t).to(self.device, self.dtype)
         mll = ExactMarginalLogLikelihood(model.likelihood, model)
-        fit_gpytorch_mll(mll, max_attempts=2, max_iter=50)
         
+        # Quick fit for local model
+        try:
+            fit_gpytorch_mll(mll, max_attempts=1, max_iter=50)
+        except Exception:
+            # Fallback: minimal fit
+            fit_gpytorch_mll(mll, max_attempts=1, max_iter=20)
+            
         model.eval()
         return model
-    
+
+    # ----------------- Rest of methods remain the same -----------------
     def ei_and_grad(self, X_query, best_f):
-        """Expected Improvement and its gradient"""
-        X_query = np.asarray(X_query, dtype=np.float64)
-        
+        Xq = np.asarray(X_query, dtype=np.float64)
         if self.global_model is None:
-            return np.zeros(len(X_query)), np.zeros_like(X_query)
-        
+            return np.zeros(len(Xq)), np.zeros_like(Xq)
+
+        X_t = torch.as_tensor(Xq, dtype=self.dtype, device=self.device, requires_grad=True)
         try:
-            # Convert to tensor with gradient tracking
-            X_tensor = torch.tensor(X_query, dtype=self.dtype, device=self.device, requires_grad=True)
-            
-            # Get posterior
             with gpytorch.settings.fast_pred_var(False):
-                posterior = self.global_model.posterior(X_tensor)
-                mean = posterior.mean.squeeze(-1)
-                var = posterior.variance.squeeze(-1)
-                std = var.clamp_min(1e-9).sqrt()
-            
-            # Compute EI
-            z = (best_f - mean) / std
-            phi = torch.exp(-0.5 * z**2) / np.sqrt(2 * np.pi)
-            Phi = 0.5 * (1.0 + torch.erf(z / np.sqrt(2.0)))
-            ei = std * (z * Phi + phi)
-            
-            # Compute gradient
-            ei_sum = ei.sum()
-            grad = torch.autograd.grad(ei_sum, X_tensor)[0]
-            
-            return ei.detach().cpu().numpy(), grad.detach().cpu().numpy()
-            
+                post = self.global_model.posterior(X_t)
+                m = post.mean.squeeze(-1)
+                v = post.variance.clamp_min(1e-12).squeeze(-1)
+                s = v.sqrt()
+
+            z = (best_f - m) / s
+            phi = torch.exp(-0.5 * z**2) / math.sqrt(2 * math.pi)
+            Phi = 0.5 * (1.0 + torch.erf(z / math.sqrt(2.0)))
+            ei = s * (z * Phi + phi)
+
+            grad = torch.autograd.grad(ei.sum(), X_t, allow_unused=False)[0]
+            return _to_np(ei), _to_np(grad)
         except Exception:
-            # Fallback to finite differences
-            def ei_func(x):
-                mean, std = self.predict_global_cached(x)
-                std = np.maximum(std, 1e-9)
+            # FD fallback
+            def _ei(arr):
+                mean, std = self.predict_global_cached(arr)
+                std = np.maximum(std, 1e-12)
                 z = (best_f - mean) / std
-                phi = np.exp(-0.5 * z**2) / np.sqrt(2 * np.pi)
-                from scipy.special import erf
-                Phi = 0.5 * (1.0 + erf(z / np.sqrt(2.0)))
+                phi = np.exp(-0.5 * z * z) / math.sqrt(2 * math.pi)
+                Phi = 0.5 * (1.0 + torch.erf(torch.as_tensor(z / math.sqrt(2.0))).numpy())
                 return std * (z * Phi + phi)
-            
-            ei_val = ei_func(X_query)
-            grad = self._finite_diff_grad(X_query, ei_func)
-            return ei_val, grad
-    
-    def _finite_diff_grad(self, X, func, eps=1e-6):
-        """Simple finite difference gradient"""
-        X = np.asarray(X)
-        grad = np.zeros_like(X)
-        
-        for i in range(X.shape[1]):
-            X_plus = X.copy()
-            X_minus = X.copy()
-            X_plus[:, i] += eps
-            X_minus[:, i] -= eps
-            
-            f_plus = func(X_plus)
-            f_minus = func(X_minus)
-            grad[:, i] = (f_plus - f_minus) / (2 * eps)
-        
-        return grad
-    
-    def gp_posterior_samples(self, X_query, n_samples=1, seed=None):
-        """Sample from GP posterior"""
-        if seed is not None:
-            torch.manual_seed(seed)
-            
-        X_query = np.asarray(X_query, dtype=np.float64)
-        
+
+            ei = _ei(Xq)
+            grad = self._finite_diff_grad(Xq, _ei)
+            return ei, grad
+
+    @staticmethod
+    def _finite_diff_grad(X, func, eps=1e-6):
+        X = np.asarray(X, dtype=np.float64)
+        G = np.zeros_like(X)
+        for j in range(X.shape[1]):
+            Xp = X.copy(); Xm = X.copy()
+            Xp[:, j] += eps; Xm[:, j] -= eps
+            fp, fm = func(Xp), func(Xm)
+            G[:, j] = (fp - fm) / (2 * eps)
+        return G
+
+    def gp_posterior_samples(self, X_query, n_samples=1, seed: Optional[int] = None, antithetic: bool = False):
+        Xq = np.asarray(X_query, dtype=np.float64)
         if self.global_model is None:
-            # Sample from prior
-            mean = np.mean(self.global_y.cpu().numpy()) if self.global_y is not None else 0.0
-            return np.random.normal(mean, 1.0, size=(n_samples, len(X_query)))
-        
-        try:
-            X_tensor = torch.tensor(X_query, dtype=self.dtype, device=self.device)
-            
-            with torch.no_grad():
-                posterior = self.global_model.posterior(X_tensor)
-                samples = posterior.rsample(sample_shape=torch.Size([n_samples]))
-                
-            return samples.squeeze(-1).cpu().numpy()
-            
-        except Exception:
-            # Fallback sampling
-            mean, std = self.predict_global_cached(X_query)
-            return np.random.normal(mean, std, size=(n_samples, len(X_query)))
-    
+            mu = float(self.global_y.min().item()) if self.global_y is not None else 0.0
+            return np.random.normal(mu, 1.0, size=(n_samples, len(Xq)))
+
+        X_t = torch.as_tensor(Xq, dtype=self.dtype, device=self.device)
+        with torch.no_grad():
+            post = self.global_model.posterior(X_t)
+            if seed is not None:
+                g = torch.Generator(device=self.device).manual_seed(int(seed))
+            else:
+                g = None
+
+            if antithetic and n_samples % 2 == 0:
+                h = n_samples // 2
+                s1 = post.rsample(sample_shape=torch.Size([h]), base_samples=None, generator=g)
+                s2 = 2 * post.mean.unsqueeze(0) - s1
+                samples = torch.cat([s1, s2], dim=0)
+            else:
+                samples = post.rsample(sample_shape=torch.Size([n_samples]), base_samples=None, generator=g)
+        return _to_np(samples.squeeze(-1))
+
     def get_lengthscales(self):
-        """Extract lengthscales from global model"""
         if self.global_model is None:
             return None
-            
         try:
-            covar_module = self.global_model.covar_module
-            if hasattr(covar_module, 'base_kernel'):
-                kernel = covar_module.base_kernel
-            else:
-                kernel = covar_module
-                
-            if hasattr(kernel, 'lengthscale'):
-                ls = kernel.lengthscale.detach().cpu().numpy()
-                return ls.squeeze() if ls.ndim > 1 else ls
+            km = self.global_model.covar_module
+            base = getattr(km, "base_kernel", km)
+            ls = base.lengthscale
+            return _to_np(ls).reshape(-1)
         except Exception:
-            pass
-        
-        return None
-    
+            return None
+
     def posterior_handle(self):
-        """Return a posterior handle for batch acquisition optimization"""
         return BoTorchPosteriorHandle(self)
-    
-    def get_best_value(self):
-        """Get current best observed value"""
-        if self.global_y is not None:
-            return float(self.global_y.min())
-        return float('inf')
-    
+
+    def get_best_value(self) -> float:
+        return float(self.global_y.min().item()) if self.global_y is not None else float("inf")
+
     def clear_cache(self):
-        """Clear all caches"""
         self._pred_cache.clear()
         self.local_cache.clear()
         self.cache_hits = 0
-    
-    # Alias methods for backward compatibility
+
+    # Back-compat
     def update_data(self, X, y):
         return self.update_global_data(X, y)
-    
+
     def predict_global(self, X):
         return self.predict_global_cached(X)
 
+
 class BoTorchPosteriorHandle:
-    """
-    Complete posterior handle that wraps the surrogate manager.
-    Provides full fantasy conditioning support for greedy batch acquisition.
-    """
-    
-    def __init__(self, surrogate_manager, fantasy_X=None, fantasy_y=None):
-        self.surrogate = surrogate_manager
-        self.fantasy_X = fantasy_X
-        self.fantasy_y = fantasy_y
-        self._conditioned_model = None
-        
-        # If we have fantasy data, create conditioned model
-        if fantasy_X is not None and fantasy_y is not None:
-            self._create_conditioned_model()
-    
-    def _create_conditioned_model(self):
-        """Create a GP model conditioned on fantasy observations"""
-        if self.surrogate.global_model is None or self.fantasy_X is None:
-            return
-        
+    """Fantasy conditioning using condition_on_observations - same as before"""
+    def __init__(self, surrogate, fantasy_X=None, fantasy_y=None):
+        self.surrogate = surrogate
+        self.device = surrogate.device
+        self.dtype = surrogate.dtype
+
+        self.fantasy_X = None if fantasy_X is None else np.asarray(fantasy_X, dtype=np.float64)
+        self.fantasy_y = None if fantasy_y is None else np.asarray(fantasy_y, dtype=np.float64).reshape(-1)
+
+        self._model = surrogate.global_model
+        self._fantasy_model = None
+        if self._model is not None and self.fantasy_X is not None and self.fantasy_y is not None:
+            self._fantasize()
+
+    def _fantasize(self):
         try:
-            # Combine real and fantasy data
-            real_X = self.surrogate.global_X
-            real_y = self.surrogate.global_y
-            
-            fantasy_X_tensor = torch.tensor(
-                self.fantasy_X, 
-                dtype=self.surrogate.dtype, 
-                device=self.surrogate.device
-            )
-            fantasy_y_tensor = torch.tensor(
-                self.fantasy_y, 
-                dtype=self.surrogate.dtype, 
-                device=self.surrogate.device
-            )
-            
-            # Concatenate real and fantasy data
-            combined_X = torch.cat([real_X, fantasy_X_tensor], dim=0)
-            combined_y = torch.cat([real_y, fantasy_y_tensor], dim=0)
-            
-            # Create new conditioned model
-            from botorch.fit import fit_gpytorch_mll
-            from botorch.models import SingleTaskGP
-            from botorch.models.transforms import Normalize, Standardize
-            from gpytorch.mlls import ExactMarginalLogLikelihood
-            
-            self._conditioned_model = SingleTaskGP(
-                train_X=combined_X,
-                train_Y=combined_y.unsqueeze(-1),
-                input_transform=Normalize(d=combined_X.shape[-1]) if self.surrogate.normalize_inputs else None,
-                outcome_transform=Standardize(m=1),
-            )
-            
-            # Quick fit (fewer iterations for fantasy models)
-            mll = ExactMarginalLogLikelihood(
-                self._conditioned_model.likelihood, 
-                self._conditioned_model
-            )
-            fit_gpytorch_mll(mll, max_attempts=1, max_iter=25)
-            self._conditioned_model.eval()
-            
+            Xf = torch.as_tensor(self.fantasy_X, dtype=self.dtype, device=self.device)
+            yf = torch.as_tensor(self.fantasy_y, dtype=self.dtype, device=self.device).unsqueeze(-1)
+            self._fantasy_model = self._model.condition_on_observations(X=Xf, Y=yf)
+            self._fantasy_model.eval()
         except Exception as e:
-            print(f"Warning: Failed to create conditioned model: {e}")
-            self._conditioned_model = None
-    
+            print(f"[WARN] condition_on_observations failed: {e}")
+            self._fantasy_model = None
+
     def predict(self, X):
-        """Predict mean and std using conditioned model if available"""
         X = np.asarray(X, dtype=np.float64)
-        
-        # Use conditioned model if available
-        if self._conditioned_model is not None:
-            try:
-                X_tensor = torch.tensor(X, dtype=self.surrogate.dtype, device=self.surrogate.device)
-                
-                with torch.no_grad():
-                    posterior = self._conditioned_model.posterior(X_tensor)
-                    mean = posterior.mean.squeeze(-1).cpu().numpy()
-                    std = posterior.variance.clamp_min(1e-9).sqrt().squeeze(-1).cpu().numpy()
-                
-                return mean, std
-            except Exception:
-                pass
-        
-        # Fallback to original surrogate
-        return self.surrogate.predict_global_cached(X)
-    
+        mdl = self._fantasy_model or self._model
+        if mdl is None:
+            return self.surrogate.predict_global_cached(X)
+        X_t = torch.as_tensor(X, dtype=self.dtype, device=self.device)
+        with torch.no_grad(), fast_pred_var():
+            post = mdl.posterior(X_t)
+            mean = _to_np(post.mean.squeeze(-1))
+            std = _to_np(post.variance.clamp_min(1e-12).sqrt().squeeze(-1))
+        return mean, std
+
     def sample_y(self, X, H=8, antithetic=True, rng=None):
-        """Sample from posterior with optional antithetic sampling"""
         X = np.asarray(X, dtype=np.float64)
-        
-        # Handle random seed
-        if rng is not None and hasattr(rng, '_bit_generator'):
-            seed = rng.integers(0, 2**32)
-            torch.manual_seed(seed)
-        elif rng is not None:
-            # Assume it's an integer seed
-            torch.manual_seed(int(rng))
-        
-        # Use conditioned model if available
-        if self._conditioned_model is not None:
+        seed = None
+        if rng is not None:
             try:
-                X_tensor = torch.tensor(X, dtype=self.surrogate.dtype, device=self.surrogate.device)
-                
-                with torch.no_grad():
-                    posterior = self._conditioned_model.posterior(X_tensor)
-                    
-                    if antithetic and H % 2 == 0:
-                        # Antithetic sampling for variance reduction
-                        H_half = H // 2
-                        base_samples = posterior.rsample(sample_shape=torch.Size([H_half]))
-                        
-                        # Create antithetic pairs
-                        mean = posterior.mean.unsqueeze(0)  # [1, N, 1]
-                        antithetic_samples = 2 * mean - base_samples
-                        
-                        samples = torch.cat([base_samples, antithetic_samples], dim=0)
-                    else:
-                        samples = posterior.rsample(sample_shape=torch.Size([H]))
-                
-                # Convert to numpy with correct shape [H, N]
-                samples_np = samples.squeeze(-1).cpu().numpy()
-                if samples_np.ndim == 1:  # Single query point
-                    samples_np = samples_np.reshape(-1, 1)
-                
-                return samples_np
-                
-            except Exception as e:
-                print(f"Warning: Conditioned sampling failed: {e}")
-        
-        # Fallback to surrogate sampling
-        samples = self.surrogate.gp_posterior_samples(X, n_samples=H, seed=None)
-        
-        if antithetic and H % 2 == 0:
-            H_half = H // 2
-            mean, _ = self.predict(X)
-            # Apply antithetic transformation
-            samples[H_half:] = 2 * mean - samples[:H_half]
-        
-        return samples
-    
+                seed = int(rng.integers(0, 2**31 - 1))
+            except Exception:
+                try:
+                    seed = int(rng)
+                except Exception:
+                    seed = None
+
+        mdl = self._fantasy_model or self._model
+        if mdl is None:
+            return self.surrogate.gp_posterior_samples(X, n_samples=H, seed=seed, antithetic=antithetic)
+
+        X_t = torch.as_tensor(X, dtype=self.dtype, device=self.device)
+        with torch.no_grad():
+            post = mdl.posterior(X_t)
+            g = torch.Generator(device=self.device).manual_seed(seed) if seed is not None else None
+            if antithetic and H % 2 == 0:
+                h = H // 2
+                s1 = post.rsample(sample_shape=torch.Size([h]), generator=g)
+                s2 = 2 * post.mean.unsqueeze(0) - s1
+                samples = torch.cat([s1, s2], dim=0)
+            else:
+                samples = post.rsample(sample_shape=torch.Size([H]), generator=g)
+        S = _to_np(samples.squeeze(-1))
+        if S.ndim == 1:
+            S = S.reshape(H, 1)
+        return S
+
     def conditional(self, X_new, y_new_mean):
-        """Create new posterior handle conditioned on fantasy observations"""
         X_new = np.asarray(X_new, dtype=np.float64)
-        y_new_mean = np.asarray(y_new_mean, dtype=np.float64).reshape(-1)
-        
-        # Combine with existing fantasy data if any
-        if self.fantasy_X is not None:
-            combined_X = np.vstack([self.fantasy_X, X_new])
-            combined_y = np.hstack([self.fantasy_y, y_new_mean])
+        y_new = np.asarray(y_new_mean, dtype=np.float64).reshape(-1)
+        if self.fantasy_X is None:
+            fX = X_new; fy = y_new
         else:
-            combined_X = X_new
-            combined_y = y_new_mean
-        
-        # Return new handle with fantasy conditioning
-        return BoTorchPosteriorHandle(
-            self.surrogate, 
-            fantasy_X=combined_X, 
-            fantasy_y=combined_y
-        )
-    
+            fX = np.vstack([self.fantasy_X, X_new])
+            fy = np.hstack([self.fantasy_y, y_new])
+        return BoTorchPosteriorHandle(self.surrogate, fX, fy)
+
     def sample_fantasy(self, X_pending):
-        """Sample fantasy observations at pending points"""
-        X_pending = np.asarray(X_pending, dtype=np.float64)
-        
-        # Sample single realization at pending points
-        fantasy_samples = self.sample_y(X_pending, H=1, antithetic=False)
-        fantasy_y = fantasy_samples.squeeze(0)  # Remove sample dimension
-        
-        return self.conditional(X_pending, fantasy_y)
-    
+        Xp = np.asarray(X_pending, dtype=np.float64)
+        y_samp = self.sample_y(Xp, H=1, antithetic=False).squeeze(0)
+        return self.conditional(Xp, y_samp)
+
     def get_fantasy_model(self):
-        """Return the underlying conditioned model (for debugging)"""
-        return self._conditioned_model
-    
+        return self._fantasy_model
+
     def __repr__(self):
-        fantasy_info = ""
-        if self.fantasy_X is not None:
-            fantasy_info = f" with {len(self.fantasy_X)} fantasy points"
-        
-        return f"BoTorchPosteriorHandle({self.surrogate.__class__.__name__}{fantasy_info})"
+        extra = "" if self.fantasy_X is None else f" with {len(self.fantasy_X)} fantasies"
+        return f"BoTorchPosteriorHandle({self.surrogate.__class__.__name__}{extra})"

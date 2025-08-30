@@ -4,7 +4,10 @@ from functools import cached_property
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from boosting_aux import FeatureImportance, GPUAccelerator, prebin_data, prebin_edges
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from boosting_aux import *
 from boosting_loss import HuberLoss, LogisticLoss, MSELoss, QuantileLoss
 from boosting_tree import *
 
@@ -30,7 +33,9 @@ class SamplingConfig:
     use_goss: bool = True
     goss_top_rate: float = 0.2
     goss_other_rate: float = 0.1
-
+    # NEW
+    score_mode: str = "abs_g"          # {"abs_g", "abs_g_sqrt_h"}
+    goss_scale: str = "both"           # {"both", "grad_only"}
 
 try:
     from numba import njit
@@ -38,34 +43,108 @@ try:
 except Exception:
     HAS_NUMBA = False
 
-if HAS_NUMBA:
-    @njit
-    def _goss_select(scores, top_k, rest_k):
-        n = scores.shape[0]
-        # argpartition for top_k
-        kth = n - top_k
-        idx = np.argpartition(scores, kth)
-        top_idx = idx[kth:]
-        # build mask
-        mask = np.ones(n, dtype=np.uint8)
-        for i in top_idx:
-            mask[i] = 0
-        rest_pool = np.empty(n - top_k, dtype=np.int64)
-        rp = 0
-        for i in range(n):
-            if mask[i] == 1:
-                rest_pool[rp] = i
-                rp += 1
-        if rest_k > rp:
-            rest_k = rp
-        # uniform sample rest_k without replacement (Fisher–Yates subset)
-        for i in range(rest_k):
-            j = i + np.random.randint(0, rp - i)
-            rest_pool[i], rest_pool[j] = rest_pool[j], rest_pool[i]
-        sel = np.empty(top_k + rest_k, dtype=np.int64)
-        sel[:top_k] = top_idx
-        sel[top_k:] = rest_pool[:rest_k]
-        return sel
+
+
+@dataclass
+class NodeConfig:
+    num_trees: int = 64
+    tree_depth: int = 4
+    temperature: float = 1.0
+    dropout_rate: float = 0.1
+
+
+class NodeTree:
+    """Simple NODE layer that can be used as a drop-in replacement for traditional trees."""
+    
+    def __init__(self, input_dim: int, config: NodeConfig):
+        self.input_dim = input_dim
+        self.config = config
+        self.model = self._build_model()
+        
+    def _build_model(self):
+        """Build the neural oblivious decision tree ensemble."""
+        model = nn.Sequential(
+            # Feature embedding
+            nn.Linear(self.input_dim, self.config.num_trees),
+            nn.ReLU(),
+            nn.Dropout(self.config.dropout_rate),
+            
+            # Oblivious decision layer
+            ObliviousLayer(self.config.num_trees, self.config.tree_depth, self.config.temperature),
+            
+            # Output aggregation
+            nn.Linear(self.config.num_trees, 1)
+        )
+        return model
+        
+    def fit(self, X, grad, hess, feature_importance=None, epochs=30, lr=0.01):
+            """Fit NODE to gradient boosting residuals. Compatible with existing tree interface."""
+            X_tensor = torch.FloatTensor(X)
+            target = torch.FloatTensor(-grad / (hess + 1e-8))  # Newton-Raphson target
+            
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+            
+            self.model.train()
+            for _ in range(epochs):
+                optimizer.zero_grad()
+                pred = self.model(X_tensor).squeeze()
+                loss = F.mse_loss(pred, target)
+                loss.backward()
+                optimizer.step()
+            
+            # Update feature importance if provided (optional for compatibility)
+            if feature_importance is not None:
+                # Simple feature importance based on gradient norms
+                with torch.no_grad():
+                    for i, param in enumerate(self.model.parameters()):
+                        if param.grad is not None:
+                            importance = torch.sum(torch.abs(param.grad)).item()
+                            # Add to feature importance tracker if needed
+                            pass
+    def post_prune_ccp(self, ccp_alpha=1e-4):
+        """Compatibility method - NODE layers don't need post-pruning."""
+        pass
+    
+    def predict(self, X):
+        """Make predictions."""
+        self.model.eval()
+        with torch.no_grad():
+            X_tensor = torch.FloatTensor(X)
+            pred = self.model(X_tensor).squeeze()
+        return pred.numpy()
+
+class ObliviousLayer(nn.Module):
+    def __init__(self, num_features: int, depth: int, temperature: float):
+        super().__init__()
+        self.depth = depth
+        self.temperature = temperature
+        self.num_leaves = 2 ** depth
+
+        self.feature_weights = nn.Parameter(torch.randn(depth, num_features) * 0.01)
+        self.thresholds = nn.Parameter(torch.zeros(depth))  # stable start
+        self.leaf_values = nn.Parameter(torch.randn(num_features, self.num_leaves) * 0.01)
+
+        # Precompute binary codes for leaves: shape (num_leaves, depth)
+        codes = []
+        for leaf in range(self.num_leaves):
+            bits = [(leaf >> (depth - 1 - i)) & 1 for i in range(depth)]
+            codes.append(bits)
+        self.register_buffer("leaf_codes", torch.tensor(codes, dtype=torch.float32))  # (L, D)
+
+    def forward(self, x):
+        # feature selection per depth
+        probs = F.softmax(self.feature_weights, dim=1)         # (D, F)
+        sel = x @ probs.t()                                    # (B, D)
+
+        decisions = torch.sigmoid((sel - self.thresholds) / self.temperature)  # (B, D)
+        # leaf_probs = Π over depth of decision/1-decision according to leaf code
+        p = decisions.unsqueeze(1)                             # (B, 1, D)
+        code = self.leaf_codes.unsqueeze(0)                    # (1, L, D)
+        leaf_probs = (p * code + (1 - p) * (1 - code)).prod(dim=-1)  # (B, L)
+
+        # aggregate per “tree” (num_features == num_trees)
+        out = leaf_probs @ self.leaf_values.t()                # (B, num_features)
+        return out
 
 # ================================================================
 # BoostRegressor with corrected & fast DART
@@ -136,9 +215,16 @@ class BoostRegressor:
         eval_metric: Optional[str] = None,
         monotone_constraints: Optional[Dict] = None,
         interaction_constraints: Optional[List] = None,
+        
+        use_gpu: bool = False,
+        adaptive_hist: bool = False,
+        
+        use_neural: bool = False,
     ):
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
+        
+        self.use_neural = use_neural
 
         self.tree_config = tree_config or TreeConfig(
             max_depth=max_depth,
@@ -199,6 +285,8 @@ class BoostRegressor:
         self.tree_learner = tree_learner
 
         self.random_state = random_state
+        self._rng = np.random.default_rng(random_state) if random_state is not None else np.random.default_rng()
+
         self.verbose = verbose
         self.eval_metric = eval_metric
         self.monotone_constraints = monotone_constraints or {}
@@ -210,7 +298,12 @@ class BoostRegressor:
         # Map old alias if provided
         if self.dart_rate and self.rate_drop == 0.0:
             self.rate_drop = self.dart_rate
-
+            
+        self.use_gpu = use_gpu
+        self.adaptive_hist = adaptive_hist
+        self.node_frequency = 3  # Add NODE every 3 trees
+        self.node_config = NodeConfig()
+        
         self._initialize_components()
 
     # ----------------------------- init helpers -----------------------------
@@ -218,7 +311,7 @@ class BoostRegressor:
         self.base_score: Optional[float] = None
         self.trees: List[Tuple[object, np.ndarray]] = []  # (tree, feature_mask)
         self.feature_importance_ = FeatureImportance()
-        self.gpu_accelerator = GPUAccelerator()
+        self.gpu_accelerator = None
         self._setup_loss_function()
         self.train_scores_: List[float] = []
         self.val_scores_: List[float] = []
@@ -291,27 +384,21 @@ class BoostRegressor:
             return self.learning_rate
 
     # ----------------------------- DART helpers -----------------------------
-    def _dart_select_drop(self) -> Optional[Tuple[np.ndarray, float, float]]:
-        """
-        Decide which existing trees to drop this round and compute normalization.
-        Returns: (drop_mask, tree_scale, forest_newtree_scale) or None.
-        """
+    def _dart_select_drop(self):
         n = len(self.trees)
         if n == 0 or self.rate_drop <= 0.0:
             return None
-        if np.random.rand() < float(self.skip_drop):
+        if self._rng.random() < float(self.skip_drop):
             return None
 
-        drop_mask = (np.random.rand(n) < float(self.rate_drop))
+        drop_mask = (self._rng.random(n) < float(self.rate_drop))
         if self.one_drop and not drop_mask.any():
-            drop_mask[np.random.randint(0, n)] = True
-        # ensure at least one survivor
+            drop_mask[self._rng.integers(0, n)] = True
         if drop_mask.all():
-            drop_mask[np.random.randint(0, n)] = False
+            drop_mask[self._rng.integers(0, n)] = False
 
         k = int(drop_mask.sum())
         if self.normalize_type == "tree":
-            # scale survivors this round
             tree_scale = float(n) / float(n - k) if k > 0 else 1.0
             forest_newtree_scale = 1.0
         elif self.normalize_type == "forest":
@@ -320,8 +407,8 @@ class BoostRegressor:
         else:
             tree_scale = 1.0
             forest_newtree_scale = 1.0
-
         return drop_mask, tree_scale, forest_newtree_scale
+    
 
     def _dart_iter_pred(
         self,
@@ -353,6 +440,14 @@ class BoostRegressor:
 
     # ----------------------------- tree factory -----------------------------
     def _create_tree(self, feature_mask: np.ndarray):
+                
+        feature_indices = np.asarray(feature_mask, dtype=np.int32)
+
+        # For hist-only: slice the globally computed edges
+        tree_bin_edges_seq = (
+            [self.bin_edges[j] for j in feature_indices] if self.bin_edges is not None else None
+        )
+
         common_args = {
             'max_depth': self.tree_config.max_depth,
             'min_samples_split': self.tree_config.min_samples_split,
@@ -364,11 +459,14 @@ class BoostRegressor:
             'n_jobs': self.n_jobs,
             'tree_method': self.tree_method,
             'n_bins': self.n_bins,
-            'bin_edges': self.bin_edges,
+            'bin_edges': tree_bin_edges_seq,
             'monotone_constraints': self.monotone_constraints,
             'interaction_constraints': self.interaction_constraints,
             'gpu_accelerator': self.gpu_accelerator,
             'max_delta_step': self.tree_config.max_delta_step,
+            'use_gpu': self.use_gpu,
+            'adaptive_hist': self.adaptive_hist,
+            'feature_importance_': self.feature_importance_,
         }
         if self.tree_learner == "leaf":
             return LeafWiseSingleTree(max_leaves=self.tree_config.max_leaves, **common_args)
@@ -377,50 +475,91 @@ class BoostRegressor:
 
     # ----------------------------- sampling + batch build -----------------------------
     def _apply_goss_optimized(self, X, y, grad, hess):
-
         n = grad.shape[0]
-        top_k  = int(self.sampling_config.goss_top_rate  * n)
-        rest_k = int(self.sampling_config.goss_other_rate * n)
+        a = float(self.sampling_config.goss_top_rate)
+        b = float(self.sampling_config.goss_other_rate)
 
-        # If sampling would keep everyone, short-circuit
+        top_k  = max(0, int(a * n))
+        rest_k = max(0, int(b * n))  # b is fraction of ALL samples (LightGBM-style)
+
+        if top_k == 0 and rest_k == 0:
+            idx = np.arange(n)
+            return X, y, grad, hess, idx
         if top_k + rest_k >= n:
             idx = np.arange(n)
             return X, y, grad, hess, idx
 
-        # Score = |g| * sqrt(h)
-        scores  = np.abs(grad) * np.sqrt(hess + 1e-12)
-
-        # Take top_k by score (partial sort)
-        top_idx = np.argpartition(scores, n - top_k)[-top_k:]
-
-        # Pool for the rest (ensure we don't oversample)
-        mask = np.ones(n, dtype=bool)
-        mask[top_idx] = False
-        rest_pool = np.flatnonzero(mask)
-        if rest_k > rest_pool.size:
-            rest_k = rest_pool.size  # cap to avoid errors
-
-        # Uniform sample from the rest without replacement
-        rest_idx = rest_pool[np.random.choice(rest_pool.size, size=rest_k, replace=False)]
-
-        if HAS_NUMBA:
-            sel = _goss_select(scores.astype(np.float64), top_k, rest_k)
+        # scoring
+        if self.sampling_config.score_mode == "abs_g":
+            scores = np.abs(grad)
+        elif self.sampling_config.score_mode == "abs_g_sqrt_h":
+            scores = np.abs(grad) * np.sqrt(np.maximum(hess, 0.0) + 1e-12)
         else:
-            # Concatenate so that first top_k are the top samples (needed for in-place scaling)
-            sel = np.concatenate([top_idx, rest_idx])
+            raise ValueError(f"Invalid score_mode: {self.sampling_config.score_mode}")
 
-        # Slice & copy grads/hess for safe in-place scaling
+        # top indices
+        if top_k > 0:
+            kth = n - top_k
+            idx = np.argpartition(scores, kth)
+            top_idx = idx[kth:]
+        else:
+            top_idx = np.empty(0, dtype=np.int64)
+
+        # rest sampling
+        mask = np.ones(n, dtype=bool)
+        if top_k > 0:
+            mask[top_idx] = False
+        rest_pool = np.flatnonzero(mask)
+        if rest_pool.size == 0 or rest_k == 0:
+            sel = top_idx
+            Xs, ys = X[sel], y[sel]
+            gs, hs = grad[sel].astype(np.float64, copy=True), hess[sel].astype(np.float64, copy=True)
+            return Xs, ys, gs, hs, sel
+
+        rest_k = min(rest_k, rest_pool.size)
+        rest_idx = rest_pool[self._rng.choice(rest_pool.size, size=rest_k, replace=False)]
+
+        sel = np.concatenate([top_idx, rest_idx])
+
         Xs, ys = X[sel], y[sel]
-        gs, hs = grad[sel].copy(), hess[sel].copy()
+        gs = grad[sel].astype(np.float64, copy=True)
+        hs = hess[sel].astype(np.float64, copy=True)
 
-        # Scale the 'other' (non-top) part only
-        scaling = (1.0 - self.sampling_config.goss_top_rate) / max(self.sampling_config.goss_other_rate, 1e-12)
+        # Reweight small-|g| group for unbiasedness
         if rest_k > 0:
-            gs[top_k:] *= scaling
-            hs[top_k:] *= scaling
+            scale = (1.0 - a) / max(b, 1e-12)
+            if top_k < sel.size:
+                gs[top_k:] *= scale
+                if self.sampling_config.goss_scale == "both":
+                    hs[top_k:] *= scale
+                elif self.sampling_config.goss_scale == "grad_only":
+                    pass
+                else:
+                    raise ValueError(f"Invalid goss_scale: {self.sampling_config.goss_scale}")
 
         return Xs, ys, gs, hs, sel
 
+    def _should_use_node(self):
+        if self.node_frequency <= 0:
+            return False
+        p = 1.0 / float(self.node_frequency)  # e.g., 1/3
+        return (self._rng.random() < p)
+
+
+    def _create_tree_with_node_option(self, feature_mask: np.ndarray):
+        """
+        Modified version of your _create_tree method.
+        Replace your existing _create_tree call with this.
+        """
+        # Decide: NODE or traditional tree
+        if self.use_neural and self._should_use_node():
+            # Create NODE tree
+            return NodeTree(len(feature_mask), self.node_config)
+        else:
+            # Use your existing tree creation logic
+            return self._create_tree(feature_mask)  # Your original method
+    
+    
     def _build_tree_batch(self, X: np.ndarray, y: np.ndarray, grad: np.ndarray, hess: np.ndarray) -> List[Tuple]:
         trees = []
         n_samples, n_features = X.shape
@@ -440,10 +579,15 @@ class BoostRegressor:
 
             # feature sampling
             n_features_tree = max(1, int(self.sampling_config.colsample_bytree * n_features))
-            feature_mask = np.random.choice(n_features, size=n_features_tree, replace=False)
+            feature_mask = self._rng.choice(n_features, size=n_features_tree, replace=False)
             X_sub_feat = X_sub[:, feature_mask]
 
-            tree = self._create_tree(feature_mask)
+            if self.use_neural:
+                tree = self._create_tree_with_node_option(feature_mask)
+            else:
+                tree = self._create_tree(feature_mask)
+            #t
+
             tree._row_indexer = selected_idx
             tree._binned = self._binned
             tree._feature_mask = feature_mask
@@ -472,7 +616,6 @@ class BoostRegressor:
         self.train_scores_.clear()
         self.val_scores_.clear()
         self._lr_history.clear()
-        self.feature_importance_ = FeatureImportance()
 
         start_time = time.time()
         self.base_score = self._compute_base_score(y)
@@ -491,8 +634,8 @@ class BoostRegressor:
         # Pre-binning (kept row-major for compatibility with your trees)
         if self.tree_method == "hist":
             dummy_grad, _ = self.loss_fn.grad_hess(y, np.full_like(y, self.base_score, dtype=np.float64))
-            self.bin_edges = prebin_edges(X, dummy_grad, self.n_bins, self.gpu_accelerator.available)
-            self._binned = prebin_data(X, self.bin_edges, self.n_bins)
+            self.bin_edges = create_bin_edges(X, dummy_grad, self.n_bins, self.use_gpu)
+            self._binned = prebin_data(X, self.bin_edges, self.n_bins, self.use_gpu)
         else:
             self.bin_edges = None
             self._binned = None
@@ -523,8 +666,11 @@ class BoostRegressor:
             # 4) LR for this round; store per-tree LRs
             current_lr = self._get_learning_rate(iteration)
             self._lr_history.append(current_lr)
+            
+            forest_newtree_scale = drop_info[2] if drop_info is not None else 1.0
+            effective_lr = current_lr * (forest_newtree_scale if self.normalize_type == "forest" else 1.0)
             for _ in trees:
-                self._tree_lr.append(current_lr)
+                self._tree_lr.append(effective_lr)
 
             # 5) Update running sums with NEW trees (train & val)
             forest_newtree_scale = drop_info[2] if drop_info is not None else 1.0
@@ -656,15 +802,17 @@ class BoostRegressor:
         return np.column_stack([1 - proba_pos, proba_pos])
 
     def feature_importances(self, importance_type: str = "gain", normalize: bool = True) -> np.ndarray:
+        """
+        importance_type ∈ {"gain", "cover", "split", "perm", "input_grad"}
+        """
         importance_dict = self.feature_importance_.get_importance(importance_type)
-        if not importance_dict:
-            return np.zeros(self.n_features_)
-        importance_array = np.zeros(max(importance_dict.keys()) + 1)
-        for feat_idx, importance in importance_dict.items():
-            importance_array[feat_idx] = importance
-        if normalize and importance_array.sum() > 0:
-            importance_array = importance_array / importance_array.sum()
-        return importance_array[:self.n_features_]
+        arr = np.zeros(self.n_features_, dtype=np.float64)
+        for k, v in importance_dict.items():
+            if 0 <= k < self.n_features_:
+                arr[k] = v
+        if normalize and arr.sum() > 0:
+            arr /= arr.sum()
+        return arr
 
     def get_training_history(self) -> Dict[str, List[float]]:
         history = {

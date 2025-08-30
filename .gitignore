@@ -37,3 +37,4 @@ test*
 *backup*
 work/
 generate_manifest.sh
+*.so

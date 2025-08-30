@@ -80,6 +80,7 @@ class Foretuner:
         
         # NEW: Unified acquisition and candidate manager
         self.acquisition_candidate_manager = AcquisitionCandidateManager(self.config)
+        self.region_manager.set_acquisition_candidate_manager(self.acquisition_candidate_manager)
 
         # Connect managers
         self.region_manager.set_surrogate_manager(self.surrogate_manager)
@@ -283,37 +284,20 @@ class Foretuner:
         best_y = float(np.min(self.global_y))
         self.global_best_history = [best_y]
         print(f"Initial best: {best_y:.6f}")
-        
-    def _initialize_points(
-        self,
-        n_dims: int,
-        bounds: np.ndarray,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """
-        RESTORED to match original behavior:
-        - Sobol of size n_init
-        - plus random extra of size n_init//4
-        - unique in unit cube
-        - DO NOT trim back to n_init (may return > n_init)
-        """
-        n_init = int(self.config.n_init)
-        low, high = bounds[:, 0], bounds[:, 1]
-
+            
+    def _initialize_points(self, n_dims, bounds, rng):
+        """Simple, reliable initialization."""
+        n_init = self.config.n_init
         if n_init <= 0:
-            return rng.uniform(low, high, size=(1, n_dims))
-
-        # Exactly like your original
-        sobol_seed = int(rng.integers(0, 10000))
-        sobol_part = sobol_sequence(n_init, n_dims, sobol_seed)  # size = n_init
-        rand_extra = rng.uniform(0.0, 1.0, (n_init // 4, n_dims))  # size = n_init//4
-        all_unit = np.vstack([sobol_part, rand_extra])
-
-        # Unique (lexicographic) like before; importantly, do NOT trim to n_init
-        all_unit = np.unique(all_unit, axis=0)
-
-        # Rescale to bounds; may return > n_init rows (same as before)
-        return low + all_unit * (high - low)
+            n_init = max(10, 2 * n_dims)  # Reasonable default
+            
+        # Sobol sequence is sufficient
+        from scipy.stats import qmc
+        sampler = qmc.Sobol(d=n_dims, scramble=True, seed=rng.integers(0, 2**31))
+        unit_samples = sampler.random(n_init)
+        
+        low, high = bounds[:, 0], bounds[:, 1]
+        return low + unit_samples * (high - low)
 
     # ===========================
     # Iteration Context
@@ -325,24 +309,16 @@ class Foretuner:
     # ===========================
     # Global Data Updates
     # ===========================
-    def _update_global_data(self, candidates: np.ndarray, y_new: np.ndarray) -> None:
-        """Append new data; update surrogate (by cadence) and regions."""
-        if self.global_X is None or self.global_y is None:
-            # Should not happen after initialization; keep a defensive fallback.
-            self.global_X = np.asarray(candidates, dtype=float)
-            self.global_y = np.asarray(y_new, dtype=float)
-        else:
-            self.global_X = np.vstack([self.global_X, candidates])
-            self.global_y = np.append(self.global_y, y_new)
-
-        # Retrain surrogate model (cadence; default = every loop)
-        # Use integer "outer loop" count based on batch_size to keep parity with original
-        if (self.iteration // max(1, self.config.batch_size)) % max(1, self._sur_cadence) == 0:
+    def _update_global_data(self, candidates, y_new):
+        # Update data first
+        self.global_X = np.vstack([self.global_X, candidates])
+        self.global_y = np.append(self.global_y, y_new)
+        
+        # Update both managers together with same cadence
+        should_update = (self.iteration // self.config.batch_size) % self._sur_cadence == 0
+        if should_update:
             self.surrogate_manager.update_data(self.global_X, self.global_y)
-
-        # Update trust regions
-        self.region_manager.update_regions_with_new_data(candidates, y_new)
-
+            self.region_manager.update_regions_with_new_data(candidates, y_new)
     # ===========================
     # Progress Tracking
     # ===========================
