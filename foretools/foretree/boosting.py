@@ -194,7 +194,8 @@ class BoostRegressor:
         # Performance
         early_stopping_rounds: Optional[int] = None,
         n_jobs: int = -1,
-        tree_method: str = "hist",
+        tree_method: str = "binned",
+        binned_mode: str = "hist",            # "hist" or "adaptive"
         n_bins: int = 256,
         batch_size: int = 1,
         cache_gradients: bool = True,
@@ -271,6 +272,7 @@ class BoostRegressor:
         self.early_stopping_rounds = early_stopping_rounds
         self.n_jobs = None if n_jobs == -1 else n_jobs
         self.tree_method = tree_method
+        self.binned_mode = binned_mode
         self.n_bins = n_bins
         self.batch_size = batch_size
         self.cache_gradients = cache_gradients
@@ -301,7 +303,7 @@ class BoostRegressor:
             
         self.use_gpu = use_gpu
         self.adaptive_hist = adaptive_hist
-        self.node_frequency = 3  # Add NODE every 3 trees
+        self.node_frequency = 2  # Add NODE every 3 trees
         self.node_config = NodeConfig()
         
         self._initialize_components()
@@ -458,6 +460,7 @@ class BoostRegressor:
             'feature_indices': feature_mask,
             'n_jobs': self.n_jobs,
             'tree_method': self.tree_method,
+            'binned_mode': self.binned_mode,
             'n_bins': self.n_bins,
             'bin_edges': tree_bin_edges_seq,
             'monotone_constraints': self.monotone_constraints,
@@ -632,7 +635,7 @@ class BoostRegressor:
             X_val = y_val = None
 
         # Pre-binning (kept row-major for compatibility with your trees)
-        if self.tree_method == "hist":
+        if self.tree_method == "binned" and self.binned_mode in ("hist", "adaptive"):
             dummy_grad, _ = self.loss_fn.grad_hess(y, np.full_like(y, self.base_score, dtype=np.float64))
             self.bin_edges = create_bin_edges(X, dummy_grad, self.n_bins, self.use_gpu)
             self._binned = prebin_data(X, self.bin_edges, self.n_bins, self.use_gpu)

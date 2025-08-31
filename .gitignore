@@ -38,3 +38,4 @@ test*
 work/
 generate_manifest.sh
 *.so
+*.pt

@@ -6,51 +6,7 @@ import numba
 import numpy as np
 from numba import jit, njit, prange
 
-
-@njit(cache=True)
-def _flatten_edges_for_numba(bin_edges_list):
-    n_features = len(bin_edges_list)
-    total = 0
-    for e in bin_edges_list:
-        total += len(e)
-    flat = np.empty(total, dtype=np.float64)
-    starts = np.empty(n_features, dtype=np.int32)
-    off = 0
-    for i, e in enumerate(bin_edges_list):
-        starts[i] = off
-        m = len(e)
-        flat[off : off + m] = e
-        off += m
-    return flat, starts
-
-
-@njit(parallel=True, fastmath=True, cache=True)
-def encode_with_reserved_missing_all_features(X, bin_edges_flat, bin_start_indices):
-    """Encode to integer bins with a dedicated missing bin."""
-    n_samples, n_features = X.shape
-    out = np.empty((n_samples, n_features), dtype=np.int32)
-
-    for f in prange(n_features):
-        start = bin_start_indices[f]
-        end = bin_start_indices[f + 1] if f < n_features - 1 else len(bin_edges_flat)
-        edges = bin_edges_flat[start:end]
-        n_bins = len(edges) - 1
-        missing_id = n_bins
-
-        for i in range(n_samples):
-            v = X[i, f]
-            if not np.isfinite(v):
-                out[i, f] = missing_id
-                continue
-
-            j = 1
-            while j < len(edges) and v > edges[j]:
-                j += 1
-            b = j - 1
-            if b >= n_bins:
-                b = n_bins - 1
-            out[i, f] = b
-    return out
+from foretools.foretree.boosting_bin_reg import BinRegistry
 
 
 @njit(fastmath=True, cache=True)
@@ -381,16 +337,6 @@ class UnifiedMissingHandler:
             surrogate_splits=surrogate_splits
         )
 
-    def prebin_matrix_with_reserved_missing(
-        self, X: np.ndarray, bin_edges_list: list, max_bins: int, out_dtype=np.int32
-    ) -> Tuple[np.ndarray, int]:
-        """Vectorized prebinning with dedicated missing bin."""
-        flat, starts = _flatten_edges_for_numba(bin_edges_list)
-        binned = encode_with_reserved_missing_all_features(X, flat, starts)
-        if out_dtype != np.int32:
-            binned = binned.astype(out_dtype, copy=False)
-        return binned, max_bins  # missing bin id
-
     def detect_missing(self, X: np.ndarray, feature_idx: int = None) -> np.ndarray:
         """Unified missing detection with caching."""
         if feature_idx is not None:
@@ -476,3 +422,22 @@ class UnifiedMissingHandler:
     def clear_cache(self):
         """Clear caches to free memory."""
         self._missing_masks_cache.clear()
+
+    def prebin_via_registry(
+        self,
+        X_local: np.ndarray,
+        *,
+        bin_registry: "BinRegistry",
+        mode: str,
+        node_id: int | None = None,
+        cache_key: str | None = None,
+    ):
+        """
+        Delegate prebinning to the BinRegistry so capacity and the missing bin id
+        are guaranteed consistent with the active mode/layout.
+        """
+        # BinRegistry owns the layout (capacity + reserved missing id)
+        codes, miss_id = bin_registry.prebin_matrix(
+            X_local, mode=mode, node_id=node_id, cache_key=cache_key
+        )
+        return codes, miss_id

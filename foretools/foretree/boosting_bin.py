@@ -553,6 +553,41 @@ class GradientBinner:
 
         return edges, meta
 
+    def _should_refine_feature(
+        self,
+        v: np.ndarray,
+        g: np.ndarray,
+        h: np.ndarray,
+        feature_idx: int,
+        tree_depth: int,
+    ) -> bool:
+        """
+        Decide whether to refine this feature at this node.
+        Uses cached feature stats if available; otherwise computes them.
+        """
+        stats = self._feature_stats.get(feature_idx)
+        complexity = self._feature_complex.get(feature_idx)
+        if stats is None or complexity is None:
+            stats = self._compute_feature_stats(v, g, h)
+            complexity = self._estimate_complexity(v, g, h)
+            # cache for future
+            with self._lock:
+                self._feature_stats[feature_idx] = stats
+                self._feature_complex[feature_idx] = complexity
+
+        corr_g, skew, miss, n_unique, corr_h, sv = stats
+        if n_unique <= self.config.categorical_threshold:
+            return False
+        if miss > 0.5:
+            return False
+        if abs(corr_g) < self.config.refinement_min_correlation:
+            return False
+        if tree_depth > self.config.max_refinement_depth:
+            return False
+        if np.random.rand() > self.config.refinement_feature_fraction:
+            return False
+        return True
+    
     def batch_create_bins(
         self,
         features_data: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int]],
