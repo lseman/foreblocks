@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ForeBlocks — Modular Deep Learning for Time‑Series Forecasting</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Prism.js (CSS + core + autoloader + line-numbers) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/line-numbers/prism-line-numbers.css">
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-core.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/autoloader/prism-autoloader.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/line-numbers/prism-line-numbers.min.js" defer></script>
+
+  <!-- MathJax (v3) -->
+  <script>
+    window.MathJax = {
+      tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]], displayMath: [["$$", "$$"], ["\\[", "\\]"]] },
+      chtml: { linebreaks: { automatic: false }, matchFontHeight: true },
+      options: { skipHtmlTags: ['script','noscript','style','textarea','pre'] },
+      svg: { fontCache: 'global' }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+
+  <style>
+    html { scroll-behavior: smooth }
+    .card { backdrop-filter: blur(4px) }
+    .theorem { background:#eff6ff;border-left:4px solid #3b82f6;padding:.75rem 1rem;border-radius:.5rem }
+    .def { background:#f0fdf4;border-left:4px solid #22c55e;padding:.75rem 1rem;border-radius:.5rem }
+    .warn { background:#fef2f2;border-left:4px solid #ef4444;padding:.75rem 1rem;border-radius:.5rem }
+    .insight { background:#fefce8;border-left:4px solid #eab308;padding:.75rem 1rem;border-radius:.5rem }
+    .step { background:#f8fafc;border:2px solid #e2e8f0;padding:1rem;border-radius:.75rem;margin:1rem 0 }
+    code { background:#f1f5f9;padding:.15rem .35rem;border-radius:.35rem }
+    pre code { background:transparent;padding:0 }
+    .step-number { background:#0ea5e9;color:#fff;border-radius:50%;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:14px }
+    .math-nowrap { overflow-x:auto;white-space:nowrap }
+    .kbd { border:1px solid #cbd5e1;background:#f8fafc;border-radius:.375rem;padding:.125rem .375rem;font-size:.75rem }
+    /* Landing grid backdrop */
+    .bg-grid{background-image:linear-gradient(to right,rgba(15,23,42,.06) 1px,transparent 1px),linear-gradient(to bottom,rgba(15,23,42,.06) 1px,transparent 1px);background-size:24px 24px;mask-image:radial-gradient(ellipse at 50% 20%,rgba(0,0,0,.9),rgba(0,0,0,.15) 60%,transparent 75%)}
+    /* Soft gradient glow */
+    .glow{position:absolute;inset:-20% -10% auto -10%;height:55vh;background:radial-gradient(60% 60% at 50% 40%, rgba(59,130,246,.25), rgba(14,165,233,.18) 40%, rgba(34,197,94,.12) 70%, transparent 75%);filter:blur(40px);pointer-events:none}
+    /* Fade-in and up */
+    .fade-up{opacity:0;transform:translateY(12px);animation:fadeUp .7s ease forwards .1s}
+    @keyframes fadeUp{to{opacity:1;transform:none}}
+    /* Nav active state */
+    .nav-link{position:relative}
+    .nav-link.active{color:rgb(15 23 42);font-weight:700}
+    .nav-link.active::after{content:"";position:absolute;left:0;right:0;bottom:-8px;height:2px;background:rgb(15 23 42);border-radius:9999px}
+  </style>
+  <style>
+    :root { --nav-h:72px; }
+    .alt-section { scroll-margin-top: calc(var(--nav-h) + 12px); }
+  </style>
+</head>
+
+<body class="min-h-screen text-slate-800 bg-gradient-to-br from-slate-50 to-sky-50">
+
+  <!-- ======= Sticky Nav ======= -->
+  <nav id="topnav" class="fixed top-0 inset-x-0 z-50 transition-colors">
+    <div class="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
+      <a href="#" class="flex items-center gap-2">
+        <img src="logo.svg" alt="ForeBlocks logo" class="w-8 h-8 object-contain">
+        <span class="font-extrabold tracking-tight text-slate-900">ForeBlocks</span>
+      </a>
+      <div class="hidden md:flex items-center gap-5 text-sm">
+        <a class="nav-link hover:text-slate-900 text-slate-600" href="#get">Get</a>
+        <a class="nav-link hover:text-slate-900 text-slate-600" href="#features">Features</a>
+        <a class="nav-link hover:text-slate-900 text-slate-600" href="#models">Models</a>
+        <a class="nav-link hover:text-slate-900 text-slate-600" href="#usage">Usage</a>
+        <a class="nav-link hover:text-slate-900 text-slate-600" href="#api">API</a>
+        <a class="nav-link hover:text-slate-900 text-slate-600" href="#examples">Examples</a>
+        <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-black">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ======= Full-Viewport Hero ======= -->
+  <header class="relative h-[100svh] flex items-center">
+    <div aria-hidden="true" class="absolute inset-0 bg-grid"></div>
+    <div aria-hidden="true" class="glow"></div>
+
+    <div class="relative mx-auto max-w-7xl px-6 w-full">
+      <img src="logo.svg" alt="ForeBlocks logo" class="block mx-auto mb-8 w-40 sm:w-56 md:w-64 lg:w-72 xl:w-80 h-auto object-contain" />
+      <div class="flex items-center gap-3 mb-6">
+        <div>
+          <h1 class="text-5xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-[1.05]">ForeBlocks — <span class="text-sky-600">Modular Time‑Series Forecasting</span></h1>
+          <p class="mt-1 text-xs tracking-wide text-slate-500">Flexible PyTorch library for research‑grade forecasting</p>
+        </div>
+      </div>
+      <div class="grid lg:grid-cols-[1.2fr_.8fr] gap-10 items-center">
+        <!-- Hero copy -->
+        <div class="fade-up">
+          <p class="mt-5 text-lg md:text-xl text-slate-700 max-w-2xl">
+            A clean, extensible library for building state‑of‑the‑art forecasters: LSTM/GRU, Transformers, Fourier/Wavelet, VAE, and more. Includes adaptive preprocessing, attention, multiple forecasting strategies, and a research‑friendly API.
+          </p>
+          <div class="mt-8 flex flex-wrap gap-3">
+            <a href="#get" class="px-5 py-3 rounded-xl bg-sky-600 text-white font-semibold shadow hover:bg-sky-700">Get ForeBlocks</a>
+            <a href="#features" class="px-5 py-3 rounded-xl bg-white ring-1 ring-slate-200 shadow-sm font-semibold hover:bg-slate-50">Explore Features</a>
+            <a href="#examples" class="px-5 py-3 rounded-xl bg-white ring-1 ring-slate-200 shadow-sm font-semibold hover:bg-slate-50">See Examples</a>
+          </div>
+        </div>
+
+        <!-- Hero side card -->
+        <aside class="fade-up w-full lg:w-auto">
+          <div class="bg-white/70 border border-slate-200 rounded-2xl p-5 shadow card">
+            <h3 class="text-lg font-semibold mb-2">Project Links</h3>
+            <div class="space-y-2">
+              <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-900 text-white hover:bg-black">
+                <span class="font-semibold">GitHub: lseman/foreblocks</span>
+                <span class="kbd">↗</span>
+              </a>
+              <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="flex items-center justify-between px-3 py-2 rounded-lg bg-sky-600 text-white hover:bg-sky-700">
+                <span class="font-semibold">PyPI: foreblocks</span>
+                <span class="kbd">↗</span>
+              </a>
+              <a href="#get" class="block px-3 py-2 rounded-lg bg-white ring-1 ring-slate-200 text-center hover:bg-slate-50">Install &amp; Build</a>
+            </div>
+            <p class="text-xs text-slate-500 mt-3">Open‑source research library. Transformers • Seq2Seq • Fourier/Wavelet • Adaptive Preprocessing</p>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- Scroll cue -->
+    <a href="#get" class="absolute bottom-6 left-1/2 -translate-x-1/2 inline-flex flex-col items-center gap-1 text-slate-500 hover:text-slate-700" aria-label="Scroll to Get section">
+      <span class="text-xs tracking-wide">Scroll</span>
+      <svg class="w-5 h-5 animate-bounce" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </a>
+  </header>
+
+  <!-- ======= Sections ======= -->
+  <section id="get" class="alt-section py-14">
+    <div class="max-w-7xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-8">Get ForeBlocks</h2>
+      <div class="grid lg:grid-cols-1 gap-6">
+        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
+          <h3 class="text-xl font-semibold mb-3">Quick Install (PyPI)</h3>
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-bash">pip install foreblocks</code></pre>
+          </div>
+          <p class="text-sm text-slate-600 mt-3"><b>Requires:</b> Python ≥ 3.9, PyTorch, NumPy, pandas.</p>
+        </article>
+
+        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card" id="build">
+          <h3 class="text-xl font-semibold mb-3">Install from Source</h3>
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-bash">git clone https://github.com/lseman/foreblocks
+cd foreblocks
+pip install -e .</code></pre>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="features" class="alt-section py-14">
+    <div class="max-w-7xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-8">Key Features</h2>
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div class="border border-slate-200 rounded-xl p-5 bg-white">
+          <h3 class="font-semibold mb-1">Multiple Strategies</h3>
+          <p class="text-sm text-slate-700">Seq2Seq, Autoregressive, Direct multi‑step, Transformer Seq2Seq.</p>
+        </div>
+        <div class="border border-slate-200 rounded-xl p-5 bg-white">
+          <h3 class="font-semibold mb-1">Modular Design</h3>
+          <p class="text-sm text-slate-700">Swap encoders/decoders, attention, and heads through a clean API.</p>
+        </div>
+        <div class="border border-slate-200 rounded-xl p-5 bg-white">
+          <h3 class="font-semibold mb-1">Advanced Models</h3>
+          <p class="text-sm text-slate-700">LSTM, GRU, Transformer, VAE; Fourier & Wavelet blocks.</p>
+        </div>
+        <div class="border border-slate-200 rounded-xl p-5 bg-white">
+          <h3 class="font-semibold mb-1">Adaptive Preprocessing</h3>
+          <p class="text-sm text-slate-700">Normalization, differencing, detrending, EWT, outlier handling.</p>
+        </div>
+        <div class="border border-slate-200 rounded-xl p-5 bg-white">
+          <h3 class="font-semibold mb-1">Attention Modules</h3>
+          <p class="text-sm text-slate-700">Pluggable attention layers for temporal alignment and context.</p>
+        </div>
+        <div class="border border-slate-200 rounded-xl p-5 bg-white">
+          <h3 class="font-semibold mb-1">Trainer & Utilities</h3>
+          <p class="text-sm text-slate-700">Callbacks, metrics, early stopping, visualizations.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="models" class="alt-section py-14">
+    <div class="max-w-7xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-8">Model Recipes</h2>
+
+      <div class="grid md:grid-cols-2 gap-6 mb-6">
+        <article class="step h-full">
+          <div class="flex items-center gap-3 mb-3"><span class="step-number">1</span><h3 class="text-xl font-semibold">Seq2Seq (LSTM)</h3></div>
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+
+cfg = ModelConfig(
+    model_type="lstm", strategy="seq2seq",
+    input_size=3, output_size=1,
+    hidden_size=64, target_len=24,
+    num_encoder_layers=2, num_decoder_layers=2,
+)
+model = TimeSeriesSeq2Seq(model_config=cfg)</code></pre>
+          </div>
+        </article>
+
+        <article class="step h-full">
+          <div class="flex items-center gap-3 mb-3"><span class="step-number">2</span><h3 class="text-xl font-semibold">Transformer Seq2Seq</h3></div>
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+
+cfg = ModelConfig(
+  model_type="transformer", strategy="transformer_seq2seq",
+  input_size=4, output_size=4,
+  hidden_size=128, dim_feedforward=512,
+  nheads=8, num_encoder_layers=3, num_decoder_layers=3,
+  target_len=96,
+)
+model = TimeSeriesSeq2Seq(model_config=cfg)</code></pre>
+          </div>
+        </article>
+      </div>
+
+      <article class="step">
+        <div class="flex items-center gap-3 mb-3"><span class="step-number">3</span><h3 class="text-xl font-semibold">Autoregressive & Direct Multi‑Step</h3></div>
+        <p class="text-slate-700">Switch strategies while keeping the same data pipeline.</p>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">cfg.strategy = "autoregressive"  # one-step teacher forcing
+# or
+cfg.strategy = "direct"          # predict all steps at once</code></pre>
+          </div>
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python"># Add attention
+from foreblocks.attention import AttentionLayer
+attn = AttentionLayer(method="dot", encoder_hidden_size=64, decoder_hidden_size=64)
+model = TimeSeriesSeq2Seq(model_config=cfg, attention_module=attn)</code></pre>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section id="usage" class="alt-section py-14">
+    <div class="max-w-7xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-8">Quick Start</h2>
+
+      <div class="grid md:grid-cols-1 gap-8">
+        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
+          <h3 class="text-xl font-semibold mb-3">Minimal Example</h3>
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+import pandas as pd, torch
+
+# Load your time‑series (n_samples × n_features)
+data = pd.read_csv('your_data.csv').values
+
+cfg = ModelConfig(model_type="lstm", input_size=data.shape[1], output_size=1,
+                  hidden_size=64, target_len=24)
+model = TimeSeriesSeq2Seq(model_config=cfg)
+
+X_train, y_train, _ = model.preprocess(data, self_tune=True)
+from torch.utils.data import DataLoader, TensorDataset
+loader = DataLoader(TensorDataset(torch.tensor(X_train, dtype=torch.float32),
+                                  torch.tensor(y_train, dtype=torch.float32)),
+                    batch_size=32, shuffle=True)
+
+history = model.train_model(loader)
+# predictions = model.predict(X_test)</code></pre>
+          </div>
+        </article>
+      </div>
+
+      <div class="mt-10 grid md:grid-cols-3 gap-4">
+        <div class="border border-slate-200 rounded-xl p-4 bg-white">
+          <div class="text-slate-500 text-xs font-semibold">STEP 1</div>
+          <h4 class="font-semibold">Choose strategy</h4>
+          <p class="text-sm text-slate-700"><code>seq2seq</code>, <code>autoregressive</code>, <code>direct</code>, or <code>transformer_seq2seq</code>.</p>
+        </div>
+        <div class="border border-slate-200 rounded-xl p-4 bg-white">
+          <div class="text-slate-500 text-xs font-semibold">STEP 2</div>
+          <h4 class="font-semibold">Configure</h4>
+          <p class="text-sm text-slate-700">Hidden sizes, attention, preprocessing, trainer options.</p>
+        </div>
+        <div class="border border-slate-200 rounded-xl p-4 bg-white">
+          <div class="text-slate-500 text-xs font-semibold">STEP 3</div>
+          <h4 class="font-semibold">Train & Evaluate</h4>
+          <p class="text-sm text-slate-700">Use built‑in metrics, callbacks, and plots to iterate quickly.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="api" class="alt-section py-14">
+    <div class="max-w-7xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-8">API Cheatsheet</h2>
+      <div class="grid md:grid-cols-2 gap-6">
+        <div class="border border-slate-200 rounded-xl p-4 bg-white">
+          <h3 class="font-semibold mb-2">Key Classes</h3>
+          <ul class="list-disc ml-6 text-sm text-slate-700 space-y-1">
+            <li><code>TimeSeriesSeq2Seq</code>, <code>ForecastingModel</code></li>
+            <li><code>ModelConfig</code>, <code>TrainingConfig</code></li>
+            <li><code>TimeSeriesPreprocessor</code></li>
+            <li><code>AttentionLayer</code></li>
+          </ul>
+          <h3 class="font-semibold mt-4 mb-2">Common Config</h3>
+          <ul class="list-disc ml-6 text-sm text-slate-700 space-y-1">
+            <li><code>model_type</code>: <code>lstm</code> | <code>gru</code> | <code>transformer</code> | ...</li>
+            <li><code>strategy</code>: <code>seq2seq</code> | <code>autoregressive</code> | <code>direct</code> | <code>transformer_seq2seq</code></li>
+            <li><code>target_len</code>, <code>hidden_size</code>, <code>nheads</code>, layers</li>
+          </ul>
+        </div>
+        <div class="border border-slate-200 rounded-xl p-4 bg-white">
+          <h3 class="font-semibold mb-2">Preprocessing</h3>
+          <ul class="list-disc ml-6 text-sm text-slate-700 space-y-1">
+            <li>Normalization, differencing, detrending</li>
+            <li>EWT, Fourier/Wavelet features</li>
+            <li>Outlier removal, missing‑value imputation</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="examples" class="alt-section py-14">
+    <div class="max-w-7xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-8">Worked Examples</h2>
+      <div class="grid lg:grid-cols-1 gap-8">
+        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
+          <h3 class="text-lg font-semibold mb-2">LSTM + Attention</h3>
+          <p class="text-slate-700">Plug a simple dot‑product attention into a Seq2Seq LSTM.</p>
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+from foreblocks.attention import AttentionLayer
+
+cfg = ModelConfig(model_type="lstm", input_size=3, output_size=1,
+                  hidden_size=64, target_len=24)
+attn = AttentionLayer(method="dot", encoder_hidden_size=64, decoder_hidden_size=64)
+model = TimeSeriesSeq2Seq(model_config=cfg, attention_module=attn)</code></pre>
+          </div>
+        </article>
+
+        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
+          <h3 class="text-lg font-semibold mb-2">Transformer (Multi‑variate)</h3>
+          <p class="text-slate-700">A larger transformer for multi‑feature forecasting.</p>
+          <div class="relative">
+            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
+            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig, TrainingConfig
+
+cfg = ModelConfig(
+  model_type="transformer", strategy="transformer_seq2seq",
+  input_size=4, output_size=4, hidden_size=128,
+  dim_feedforward=512, nheads=8,
+  num_encoder_layers=3, num_decoder_layers=3,
+  target_len=96,
+)
+train = TrainingConfig(num_epochs=100, learning_rate=1e-4, patience=15)
+model = TimeSeriesSeq2Seq(model_config=cfg, training_config=train)</code></pre>
+          </div>
+        </article>
+      </div>
+      <div class="text-center mt-6">
+        <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white font-semibold hover:bg-black">Browse more examples on GitHub <span class="kbd">↗</span></a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======= Footer ======= -->
+  <footer class="py-10 bg-slate-900 text-slate-200">
+    <div class="max-w-7xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-center justify-between gap-4">
+        <p class="text-sm">© <span id="year"></span> ForeBlocks — Time‑Series Forecasting Library</p>
+        <div class="text-xs text-slate-400">Seq2Seq • Transformer • Fourier • Wavelet • Attention • Adaptive Preprocessing</div>
+      </div>
+      <div class="mt-4 pt-4 border-t border-slate-700 text-center text-xs text-slate-400">Research‑friendly API • Clean modular design • Trainer with callbacks & metrics</div>
+    </div>
+  </footer>
+
+  <!-- Copy buttons, year, smooth anchors, sticky nav & section alternator & nav highlight -->
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      // Copy buttons
+      document.querySelectorAll('.copy-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const pre = btn.nextElementSibling;
+          const code = pre && pre.querySelector('code');
+          if (!code) return;
+          const text = code.innerText;
+          navigator.clipboard.writeText(text).then(() => {
+            const old = btn.textContent; btn.textContent = 'Copied!';
+            setTimeout(() => btn.textContent = old, 1200);
+          });
+        });
+      });
+
+      // Ensure line numbers
+      document.querySelectorAll('pre').forEach(pre => pre.classList.add('line-numbers'));
+
+      // Update year
+      const y = document.getElementById('year');
+      if (y) y.textContent = new Date().getFullYear();
+
+      // Smooth anchor scroll
+      document.querySelectorAll('a[href^="#"]').forEach(a => {
+        a.addEventListener('click', (e) => {
+          const href = a.getAttribute('href');
+          if (!href || href === '#') return;
+          const t = document.querySelector(href);
+          if (t) { e.preventDefault(); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+        });
+      });
+    });
+  </script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const nav = document.getElementById('topnav');
+      const hero = document.querySelector('header');
+
+      const solid = () => nav && nav.classList.add('backdrop-blur','bg-white/80','border-b','border-slate-200');
+      const clear = () => nav && nav.classList.remove('backdrop-blur','bg-white/80','border-b','border-slate-200');
+      solid();
+
+      let navH = nav ? nav.getBoundingClientRect().height : 72;
+
+      // Active nav highlight
+      const links = Array.from(document.querySelectorAll('.nav-link'));
+      const linkById = new Map(links.filter(a => a.hash).map(a => [a.hash.slice(1), a]));
+      const sections = Array.from(document.querySelectorAll('.alt-section'));
+
+      const setActive = (id) => {
+        links.forEach(a => a.classList.remove('active'));
+        const el = linkById.get(id);
+        if (el) el.classList.add('active');
+      };
+
+      links.forEach(a => { a.addEventListener('click', () => { const id = a.hash && a.hash.slice(1); if (id) setActive(id); }); });
+
+      const vis = new Map(); // id -> ratio
+      const chooseAndSetActive = () => {
+        let bestId = null, bestRatio = 0, bestDist = Infinity; const headerY = navH + 8;
+        sections.forEach(sec => { const id = sec.id; const ratio = vis.get(id) || 0; if (ratio > 0) { const rect = sec.getBoundingClientRect(); const dist = Math.abs(rect.top - headerY); if (ratio > bestRatio || (ratio === bestRatio && dist < bestDist)) { bestRatio = ratio; bestDist = dist; bestId = id; } } });
+        if (!bestId) { let nearestId = null, nearestDist = Infinity; sections.forEach(sec => { const rect = sec.getBoundingClientRect(); const dist = Math.abs(rect.top - headerY); if (dist < nearestDist) { nearestDist = dist; nearestId = sec.id; } }); bestId = nearestId; }
+        if (bestId) setActive(bestId);
+      };
+
+      const thresholds = Array.from({ length: 11 }, (_, i) => i / 10);
+      let sectionObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => { vis.set(entry.target.id, entry.intersectionRatio); });
+        chooseAndSetActive();
+      }, { rootMargin: `-${navH + 8}px 0px -55% 0px`, threshold: thresholds });
+      sections.forEach(s => sectionObserver.observe(s));
+
+      // Navbar transparency when hero fully visible
+      let heroObserver = null;
+      const makeHeroObserver = () => {
+        if (!hero) return; if (heroObserver) heroObserver.disconnect();
+        heroObserver = new IntersectionObserver((entries) => {
+          entries.forEach(entry => { if (entry.isIntersecting && entry.intersectionRatio === 1) { clear(); } else { solid(); } });
+        }, { threshold: [0,1] });
+        heroObserver.observe(hero);
+      };
+      makeHeroObserver();
+
+      const init = () => {
+        if (location.hash) { const id = location.hash.slice(1); setActive(id); const target = document.getElementById(id); if (target) target.scrollIntoView({ behavior: 'instant', block: 'start' }); } else { chooseAndSetActive(); }
+      };
+      requestAnimationFrame(init);
+
+      // Alternating section backgrounds
+      const applyAlternating = () => {
+        const secs = Array.from(document.querySelectorAll('.alt-section'));
+        secs.forEach((sec, idx) => {
+          sec.classList.remove('bg-white','bg-slate-50');
+          sec.classList.add(idx % 2 === 0 ? 'bg-white' : 'bg-slate-50');
+        });
+      };
+      requestAnimationFrame(applyAlternating);
+      window.addEventListener('resize', applyAlternating);
+      const mo = new MutationObserver(() => applyAlternating());
+      mo.observe(document.body, { childList: true, subtree: true });
+
+      // Recompute observers on resize
+      window.addEventListener('resize', () => {
+        const newNavH = nav ? nav.getBoundingClientRect().height : 72;
+        if (newNavH !== navH) {
+          navH = newNavH;
+          sectionObserver.disconnect();
+          sections.forEach(s => vis.set(s.id, 0));
+          sectionObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => vis.set(entry.target.id, entry.intersectionRatio));
+            chooseAndSetActive();
+          }, { rootMargin: `-${navH + 8}px 0px -55% 0px`, threshold: thresholds });
+          sections.forEach(s => sectionObserver.observe(s));
+          makeHeroObserver();
+        }
+        chooseAndSetActive();
+      });
+    });
+  </script>
+</body>
+</html>
