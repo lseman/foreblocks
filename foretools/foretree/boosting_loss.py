@@ -188,7 +188,8 @@ def logistic_loss_kernel(y_true, y_pred):
 
 class MSELoss(LossFunction):
     """Optimized Mean Squared Error loss with Numba acceleration"""
-
+    def __init__(self):
+        self.name = "mse"
     def grad_hess(self, y_true, y_pred):
         """Vectorized MSE gradient and hessian computation"""
         return mse_grad_hess_kernel(y_true, y_pred)

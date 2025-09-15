@@ -31,49 +31,45 @@ EdgesProvider = Callable[["UnifiedTree", TreeNode, int], Optional[np.ndarray]]
 
 def should_stop(tree: "UnifiedTree", node: "TreeNode") -> bool:
     return (
-        node.n_samples < tree.min_samples_split
-        or node.depth >= tree.max_depth
+        node.n_samples < tree.min_samples_split or node.depth >= tree.max_depth
         # or node.h_sum < tree.min_child_weight
     )
 
 
+
 class BinnedStrategy:
     """
-    Composite binned strategy that can operate in three modes selected at runtime:
-      - 'hist'     : fixed global edges from tree.bin_edges (via BinRegistry)
-      - 'approx'   : global learned edges (tree._approx_edges registered in BinRegistry)
-      - 'adaptive' : global learned edges with optional per-node refinement via a binner
-
-    It keeps the original axis-aligned behavior fast, while optionally adding:
-      - Categorical k-way splits,
-      - Oblique (linear-combination) splits,
-      - Interaction-seeded oblique splits.
-
-    The best candidate across enabled generators is turned into a SplitPlan that
-    materializes the children; axis-aligned plans still fill legacy fields (thresholds etc.).
+    Composite binned strategy that integrates with the new GradientHistogramSystem.
+    Supports three modes:
+      - 'hist'     : Simple histogram method (like XGBoost hist)
+      - 'approx'   : Approximate with quantile sketching (like XGBoost approx)  
+      - 'grad_aware': Gradient-aware sophisticated binning
+    
+    Key integration points:
+    - Uses GradientHistogramSystem for all binning and histogram operations
+    - Handles GOSS subsampling through index mapping
+    - Supports both global pre-binning and per-node refinement
     """
 
     def __init__(
         self,
         mode: str = "hist",
-        binner: Optional["GradientBinner"] = None,
-        edges_provider: Optional["EdgesProvider"] = None,
+        histogram_system: Optional[GradientHistogramSystem] = None,
         *,
         enable_categorical_kway: bool = True,
         enable_oblique: bool = False,
-        enable_interactions: bool = False,
+        enable_interactions: bool = True,
         cat_max_groups: int = 8,
         oblique_k: int = 6,
     ):
-        if mode not in {"hist", "approx", "adaptive"}:
+        if mode not in {"hist", "approx", "grad_aware"}:
             raise ValueError(
-                "BinnedStrategy.mode must be one of {'hist','approx','adaptive'}"
+                "BinnedStrategy.mode must be one of {'hist','approx','grad_aware'}"
             )
         self.mode = mode
-        self.binner = binner
-        self._custom_provider = edges_provider
+        self.histogram_system = histogram_system
 
-        # plug-in generators (Axis always first to ensure baseline candidate)
+        # Split generators (Axis always first to ensure baseline candidate)
         self._gens: List = [AxisGenerator()]
         if enable_categorical_kway:
             self._gens.append(CategoricalKWayGenerator(max_groups=cat_max_groups))
@@ -88,248 +84,177 @@ class BinnedStrategy:
     def prepare(
         self, tree: "UnifiedTree", X: np.ndarray, g: np.ndarray, h: np.ndarray
     ) -> None:
-        # nothing to do here (exact path pre-sorts; binned path is prepared in tree.fit)
-        return
-
-    # -------------------------------------------------------------------------
-    # Edges resolution (registry-first, with adaptive overrides)
-    # -------------------------------------------------------------------------
-    def _edges_for(
-        self, tree: "UnifiedTree", node: "TreeNode", gfi: int
-    ) -> Optional[np.ndarray]:
-        """
-        Resolve edges for (node, global_feature_index=gfi) according to this strategy's mode.
-        - hist/approx: use registry.
-        - adaptive: use registry global; if a node override exists, return it; otherwise
-                    optionally refine and register a node override.
-        If a custom edges_provider is set, it wins outright.
-        """
-        # 1) Custom provider wins outright
-        if self._custom_provider is not None:
-            return self._custom_provider(tree, node, gfi)
-
-        mode = self.mode  # "hist" | "approx" | "adaptive"
-
-        # 2) Registry lookup (adaptive can have per-node overrides)
-        e = None
-        try:
-            e = tree.bins.get_edges(
-                int(gfi),
-                mode=mode,
-                node_id=(node.node_id if mode == "adaptive" else None),
+        """Initialize histogram system and handle pre-binning"""
+        if self.histogram_system is None:
+            print("Initializing histogram system...")
+            # Create histogram system if not provided
+            config = HistogramConfig(
+                method=self.mode,
+                max_bins=getattr(tree, 'n_bins', 256),
+                lambda_reg=getattr(tree, 'lambda_', 1.0),
+                gamma=getattr(tree, 'gamma', 0.0),
+                use_parallel=True,
+                random_state=42
             )
-            if e is not None and e.size >= 2:
-                if mode != "adaptive":
-                    return e  # hist/approx done
-                # adaptive: if a node override already exists, just use it
-                try:
-                    if tree.bins.has_node_override(mode, node.node_id, int(gfi)):
-                        return e
-                except AttributeError:
-                    # Registry doesn't expose has_node_override; fall through and possibly refine.
-                    pass
-        except KeyError:
-            # mode not registered; fall back to legacy below
-            e = None
+            self.histogram_system = GradientHistogramSystem(config)
+            
+            # Fit bins using training data
+            self.histogram_system.fit_bins(X, g, h)
+        
+        # Pre-bin the training data for fast histogram building
+        # if not hasattr(tree, '_precomputed_indices') or tree._precomputed_indices is None:
+        tree._precomputed_indices = self.histogram_system._precomputed_indices
+        
+        # Store training data reference
+        tree._X_train_cols = X
+        tree._global_gradients = g
+        tree._global_hessians = h
 
-        # 3) Legacy parent edges fallback
-        parent_edges = None
-        if mode == "hist":
-            lfi = tree.feature_map.get(int(gfi))
-            if lfi is not None and lfi < len(tree.bin_edges):
-                parent_edges = tree.bin_edges[lfi]
-            return parent_edges
+    # -------------------------------------------------------------------------
+    # Helper methods
+    # -------------------------------------------------------------------------
 
-        if mode == "approx":
-            parent_edges = getattr(tree, "_approx_edges", {}).get(int(gfi))
-            if parent_edges is None:
-                lfi = tree.feature_map.get(int(gfi))
-                if lfi is not None and lfi < len(tree.bin_edges):
-                    parent_edges = tree.bin_edges[lfi]
-            return parent_edges
+    def _lfi(self, tree, gfi: int) -> int:
+        """Map global feature index -> local (training) column index or -1."""
+        if hasattr(tree, "feature_indices") and tree.feature_indices.size:
+            try:
+                pos = np.where(tree.feature_indices == int(gfi))[0]
+                if pos.size:
+                    return int(pos[0])
+            except Exception:
+                pass
+        return int(tree.feature_map.get(int(gfi), -1))
 
-        # ---- ADAPTIVE MODE ----
-        # Prefer registry global (e); else legacy adaptive; else legacy hist
-        if e is not None and e.size >= 2:
-            parent_edges = e
-        if parent_edges is None:
-            parent_edges = getattr(tree, "_adaptive_edges", {}).get(int(gfi))
-        if parent_edges is None:
-            lfi = tree.feature_map.get(int(gfi))
-            if lfi is not None and lfi < len(tree.bin_edges):
-                parent_edges = tree.bin_edges[lfi]
+    def _get_node_sample_indices(self, tree: "UnifiedTree", node: "TreeNode") -> np.ndarray:
+        """
+        Get the global sample indices for this node, handling GOSS subsampling.
+        This is key for mapping node-local indices back to the global pre-binned matrix.
+        """
+        # If tree was built with GOSS, map local indices to global
+        if hasattr(tree, '_goss_selected_indices') and tree._goss_selected_indices is not None:
+            # Node's data_indices are relative to the GOSS subsample
+            # Map them back to original dataset indices
+            return tree._goss_selected_indices[node.data_indices]
+        else:
+            # No subsampling - node indices are already global
+            return node.data_indices
 
-        # If still nothing or degenerate, bail
-        if parent_edges is None or parent_edges.size < 2:
-            return parent_edges
+    # -------------------------------------------------------------------------
+    # Histogram building with GOSS support
+    # -------------------------------------------------------------------------
 
-        # 4) Node-local refinement cache
-        key = (node.node_id, int(gfi))
-        if hasattr(tree, "_node_adaptive_edges"):
-            cached = tree._node_adaptive_edges.get(key)
-            if cached is not None and cached.size >= 2:
-                return cached
-
-        # 5) If refinement disabled or no binner, return parent
-        if not getattr(tree, "_refinement_enabled", False) or self.binner is None:
-            return parent_edges
-
-        # 6) Need local feature index
-        lf = tree.feature_map.get(int(gfi))
-        if lf is None:
-            return parent_edges
-
-        # 7) Node values
+    def _build_histograms_fast(
+        self, tree: "UnifiedTree", node: "TreeNode"
+    ) -> Tuple[np.ndarray, np.ndarray, int]:
+        """
+        Build histograms using the fast pre-binned approach.
+        Handles GOSS subsampling correctly by mapping indices.
+        """
+        # Get global sample indices for this node
+        global_indices = self._get_node_sample_indices(tree, node)
+        
+        # Use fast histogram building from histogram system
         try:
-            v_node = node.get_feature_values(int(lf))
-        except Exception:
-            return parent_edges
+            if hasattr(tree, '_goss_selected_indices') and tree._goss_selected_indices is not None:
+                # GOSS case: use full gradient/hessian arrays with global indices
+                grad_hist, hess_hist = self.histogram_system.build_histograms_fast(
+                    tree._global_gradients,
+                    tree._global_hessians,
+                    sample_indices=global_indices
+                )
+            else:
+                # Normal case: use node's gradients/hessians with node indices
+                grad_hist, hess_hist = self.histogram_system.build_histograms_fast(
+                    node.gradients.astype(np.float64),
+                    node.hessians.astype(np.float64), 
+                    sample_indices=global_indices
+                )
+            
+            n_bins_total = self.histogram_system.config.total_bins
+            return grad_hist, hess_hist, n_bins_total
+            
+        except Exception as e:
+            # Fallback to slower method if fast path fails
+            return self._build_histograms_fallback(tree, node)
 
-        if not np.any(np.isfinite(v_node)):
-            if not hasattr(tree, "_node_adaptive_edges"):
-                tree._node_adaptive_edges = {}
-            tree._node_adaptive_edges[key] = parent_edges
-            return parent_edges
-
-        # 8) Refine
-        refined, _meta = self.binner.create_node_refined_bins(
-            feature_values=v_node,
-            gradients=node.gradients,
-            hessians=node.hessians,
-            feature_idx=int(gfi),
-            node_id=str(node.node_id),
-            tree_depth=int(node.depth),
-            parent_edges=parent_edges,
-            lambda_reg=float(tree.lambda_),
-            gamma=float(tree.gamma),
+    def _build_histograms_fallback(
+        self, tree: "UnifiedTree", node: "TreeNode"
+    ) -> Tuple[np.ndarray, np.ndarray, int]:
+        """
+        Fallback histogram building for cases where fast path fails.
+        Uses direct data processing without pre-binned indices.
+        """
+        # Get node's feature data
+        global_indices = self._get_node_sample_indices(tree, node)
+        X_node = tree._X_train_cols[global_indices]
+        
+        # Get gradients and hessians for this node
+        if hasattr(tree, '_goss_selected_indices') and tree._goss_selected_indices is not None:
+            g_node = tree._global_gradients[global_indices]
+            h_node = tree._global_hessians[global_indices] 
+        else:
+            g_node = node.gradients.astype(np.float64)
+            h_node = node.hessians.astype(np.float64)
+        
+        # Build histograms directly from data
+        grad_hist, hess_hist = self.histogram_system.build_histograms(
+            X_node, g_node, h_node
         )
+        
+        n_bins_total = self.histogram_system.config.total_bins
+        return grad_hist, hess_hist, n_bins_total
 
-        if refined is None or refined.size < 2:
-            refined = parent_edges
-
-        # 9) Cap to capacity and enforce strictly increasing
-        nb = refined.size - 1
-        cap = int(getattr(tree, "_actual_max_bins", nb))
-        if nb > cap:
-            q = np.linspace(0.0, 1.0, cap + 1)
-            lo, hi = float(refined[0]), float(refined[-1])
-            refined = lo + q * (hi - lo)
-
-        ref = np.array(refined, dtype=np.float64, copy=True)
-        for i in range(1, ref.size):
-            if not (ref[i] > ref[i - 1]):
-                ref[i] = np.nextafter(ref[i - 1], np.inf)
-        refined = ref
-
-        # 10) Cache & register node override
-        if not hasattr(tree, "_node_adaptive_edges"):
-            tree._node_adaptive_edges = {}
-        tree._node_adaptive_edges[key] = refined
-
-        try:
-            tree.bins.set_node_override("adaptive", node.node_id, int(gfi), refined)
-        except KeyError:
-            # Mode not registered: ignore silently (training still proceeds)
-            pass
-
-        node._used_refinement = True
-        return refined
-
-    # -------------------------------------------------------------------------
-    # Histogram build (+ sibling subtraction if valid)
-    # -------------------------------------------------------------------------
     def _build_histograms_with_cache(
         self, tree: "UnifiedTree", node: "TreeNode"
     ) -> Tuple[np.ndarray, np.ndarray, int]:
-        # Sibling subtraction is only valid if both children share identical edges/codes.
-        # If adaptive overrides were used for this node, skip subtraction.
-        use_subtraction = (
-            tree.histogram_cache is not None
-            and node.parent_hist is not None
-            and node.sibling_node_id is not None
-            and getattr(tree, "binned_mode", "hist") != "adaptive"
-            and not getattr(tree.bins, "node_has_any_override", lambda *a, **k: False)(
-                "adaptive", node.node_id
-            )
-        )
-        if use_subtraction:
-            sib = tree.histogram_cache.get(node.sibling_node_id)
-            if sib is not None:
+        """
+        Main histogram building method with caching support.
+        Integrates with the new histogram system while maintaining compatibility.
+        """
+        # Try cached histograms first
+        if hasattr(tree, 'histogram_cache') and tree.histogram_cache is not None:
+            cached_hist = tree.histogram_cache.get(node.node_id)
+            if cached_hist is not None:
+                hist_g, hist_h = cached_hist
+                return hist_g, hist_h, hist_g.shape[1]
+
+        # Try sibling subtraction if available
+        if self._can_use_sibling_subtraction(tree, node):
+            sib_hist = tree.histogram_cache.get(node.sibling_node_id)
+            if sib_hist is not None:
                 p_g, p_h = node.parent_hist
-                s_g, s_h = sib
+                s_g, s_h = sib_hist
                 if p_g.shape == s_g.shape == p_h.shape == s_h.shape:
                     hist_g, hist_h = subtract_sibling_histograms(p_g, p_h, s_g, s_h)
                     tree.histogram_cache.put(node.node_id, hist_g, hist_h)
                     return hist_g, hist_h, hist_g.shape[1]
 
-        mode = getattr(tree, "binned_mode", "hist")  # "hist" | "approx" | "adaptive"
+        # Build histograms using histogram system
+        hist_g, hist_h, n_bins_total = self._build_histograms_fast(tree, node)
 
-        # Decide which codes to use:
-        # - adaptive + any per-node override => re-prebin rows with node_id
-        # - else => slice the global codes view if available (fast-path)
-        use_node_prebin = False
-        if mode == "adaptive":
-            try:
-                use_node_prebin = tree.bins.node_has_any_override(
-                    "adaptive", node.node_id
-                )
-            except AttributeError:
-                use_node_prebin = bool(getattr(node, "_used_refinement", False))
-
-        if use_node_prebin:
-            # Re-prebin ONLY these rows; overrides (per-node, per-feature) are applied inside the registry
-            X_sub = tree._X_train_cols[node.data_indices]
-            codes, missing_bin_id = tree.bins.prebin_matrix(
-                X_sub,
-                mode="adaptive",
-                node_id=node.node_id,
-                cache_key=f"adaptive:node:{node.node_id}:{X_sub.shape}",
-            )
-            layout = tree.bins.get_layout(mode="adaptive")
-            n_bins_total = int(layout.actual_max_bins) + 1
-        else:
-            # Slice the global codes view if available, or synthesize it on demand
-            try:
-                global_codes = tree.bins.get_codes_view(mode=mode)
-                if (
-                    global_codes is None
-                    or global_codes.shape[0] < np.max(node.data_indices) + 1
-                ):
-                    raise KeyError(
-                        "global codes view missing or mismatched; fallback to prebin rows"
-                    )
-                codes = global_codes[node.data_indices]
-                layout = tree.bins.get_layout(mode=mode)
-                n_bins_total = int(layout.actual_max_bins) + 1
-            except Exception:
-                # Fallback: prebin just these rows without overrides
-                X_sub = tree._X_train_cols[node.data_indices]
-                codes, missing_bin_id = tree.bins.prebin_matrix(
-                    X_sub,
-                    mode=mode,
-                    node_id=None,
-                    cache_key=f"{mode}:rows:{X_sub.shape}",
-                )
-                layout = tree.bins.get_layout(mode=mode)
-                n_bins_total = int(layout.actual_max_bins) + 1
-
-        # Histograms from codes (Numba)
-        codes = codes.astype(np.int32, copy=False)
-        g_node = node.gradients.astype(np.float64, copy=False)
-        h_node = node.hessians.astype(np.float64, copy=False)
-
-        # Use the BinRegistry's builder to guarantee same missing id/capacity semantics
-        hist_g, hist_h = tree.bins.build_histograms_from_codes(
-            codes, g_node, h_node, n_bins_total
-        )
-
-        # Cache only if subtraction remains valid (i.e., no per-node overrides)
-        if tree.histogram_cache is not None and not use_node_prebin:
+        # Cache the results
+        if hasattr(tree, 'histogram_cache') and tree.histogram_cache is not None:
             tree.histogram_cache.put(node.node_id, hist_g, hist_h)
 
         return hist_g, hist_h, n_bins_total
 
-    def _update_feature_importance_for_plan(self, tree, node, sp: "SplitPlanView", hist_pair):
+    def _can_use_sibling_subtraction(self, tree, node) -> bool:
+        """Check if sibling subtraction infrastructure is available."""
+        return (
+            hasattr(tree, 'histogram_cache') and
+            tree.histogram_cache is not None and
+            node.parent_hist is not None and
+            node.sibling_node_id is not None
+        )
+
+    # -------------------------------------------------------------------------
+    # Feature importance tracking  
+    # -------------------------------------------------------------------------
+
+    def _update_feature_importance_for_plan(
+        self, tree, node, sp: "SplitPlanView", hist_pair
+    ):
+        """Feature importance update logic"""
         fi = getattr(tree, "feature_importance_", None)
         if fi is None:
             return
@@ -337,96 +262,122 @@ class BinnedStrategy:
         finite_bins = max_bins_total - 1
 
         def _book(gfi, GL, HL, GR, HR, weight=1.0):
-            gain = compute_gain(float(GL), float(HL), float(GR), float(HR), float(tree.lambda_), float(tree.gamma))
+            gain = compute_gain(
+                float(GL),
+                float(HL),
+                float(GR),
+                float(HR),
+                float(tree.lambda_),
+                float(tree.gamma),
+            )
             cover_h = float(HL + HR)
             if weight != 1.0:
-                gain *= weight; cover_h *= weight
+                gain *= weight
+                cover_h *= weight
             fi.add_split(int(gfi), float(gain), float(cover_h))
             fi.add("split", int(gfi), float(1.0 * weight))
 
         if sp.kind == "axis":
             gfi = int(sp.gfi)
-            lfi = int(np.where(tree.feature_indices == gfi)[0][0]) if gfi in set(tree.feature_indices) \
+            lfi = (
+                int(np.where(tree.feature_indices == gfi)[0][0])
+                if gfi in set(tree.feature_indices)
                 else int(tree.feature_map.get(gfi, -1))
+            )
             if lfi < 0 or lfi >= hg.shape[0] or sp.bin_idx is None:
                 return
             b = int(sp.bin_idx)
-            g_f = hg[lfi, :finite_bins]; h_f = hh[lfi, :finite_bins]
-            Gm = float(hg[lfi, finite_bins]); Hm = float(hh[lfi, finite_bins])
-            GL = float(g_f[: b + 1].sum()); HL = float(h_f[: b + 1].sum())
-            GR = float(g_f[b + 1 :].sum()); HR = float(h_f[b + 1 :].sum())
-            if bool(sp.missing_left): GL += Gm; HL += Hm
-            else: GR += Gm; HR += Hm
+            g_f = hg[lfi, :finite_bins]
+            h_f = hh[lfi, :finite_bins]
+            Gm = float(hg[lfi, finite_bins])
+            Hm = float(hh[lfi, finite_bins])
+            GL = float(g_f[: b + 1].sum())
+            HL = float(h_f[: b + 1].sum())
+            GR = float(g_f[b + 1 :].sum())
+            HR = float(h_f[b + 1 :].sum())
+            if bool(sp.missing_left):
+                GL += Gm
+                HL += Hm
+            else:
+                GR += Gm
+                HR += Hm
             _book(gfi, GL, HL, GR, HR)
             return
 
         if sp.kind == "kway":
             gfi = int(sp.gfi)
-            lfi = int(np.where(tree.feature_indices == gfi)[0][0]) if gfi in set(tree.feature_indices) \
+            lfi = (
+                int(np.where(tree.feature_indices == gfi)[0][0])
+                if gfi in set(tree.feature_indices)
                 else int(tree.feature_map.get(gfi, -1))
+            )
             if lfi < 0 or lfi >= hg.shape[0]:
                 return
-            left_bins = np.array(sorted(set(int(b) for b in sp.left_groups if 0 <= int(b) < finite_bins)), dtype=np.int32)
+            left_bins = np.array(
+                sorted(
+                    set(int(b) for b in sp.left_groups if 0 <= int(b) < finite_bins)
+                ),
+                dtype=np.int32,
+            )
             GL = float(hg[lfi, left_bins].sum()) if left_bins.size else 0.0
             HL = float(hh[lfi, left_bins].sum()) if left_bins.size else 0.0
             all_bins = np.arange(finite_bins, dtype=np.int32)
             mask = np.ones(finite_bins, dtype=bool)
-            if left_bins.size: mask[left_bins] = False
+            if left_bins.size:
+                mask[left_bins] = False
             GR = float(hg[lfi, all_bins[mask]].sum()) if mask.any() else 0.0
             HR = float(hh[lfi, all_bins[mask]].sum()) if mask.any() else 0.0
-            Gm = float(hg[lfi, finite_bins]); Hm = float(hh[lfi, finite_bins])
-            if bool(sp.missing_left): GL += Gm; HL += Hm
-            else: GR += Gm; HR += Hm
+            Gm = float(hg[lfi, finite_bins])
+            Hm = float(hh[lfi, finite_bins])
+            if bool(sp.missing_left):
+                GL += Gm
+                HL += Hm
+            else:
+                GR += Gm
+                HR += Hm
             _book(gfi, GL, HL, GR, HR)
             return
 
         if sp.kind in ("oblique", "oblique_interaction"):
             rows = node.data_indices
-            Xcols = tree._X_train_cols
             g = node.gradients.astype(np.float64, copy=False)
             h = node.hessians.astype(np.float64, copy=False)
             gfi_list = [int(x) for x in sp.features]
             w = np.asarray(sp.weights, dtype=np.float64)
-            b0 = float(sp.bias)
-            thr = float(sp.threshold)
-            miss_left = bool(sp.missing_left)
-
-            z = np.full(rows.size, b0, dtype=np.float64)
-            any_miss = np.zeros(rows.size, dtype=np.bool_)
-            for j, gfi in enumerate(gfi_list):
-                lfi = tree.feature_map.get(int(gfi), -1)
-                if lfi < 0 or lfi >= Xcols.shape[1]:
-                    any_miss[:] = True; break
-                col = Xcols[rows, lfi]
-                any_miss |= ~np.isfinite(col)
-                z += w[j] * np.where(np.isfinite(col), col, 0.0)
 
             z, any_missing = tree._project_oblique(tree._X_train_cols, rows, sp)
-            thr = 0.0  # canonical
+            thr = 0.0
             miss_left = bool(sp.missing_left)
-
             go_left = np.empty(rows.size, dtype=np.bool_)
             go_left[any_missing] = miss_left
             finite_mask = ~any_missing
             go_left[finite_mask] = z[finite_mask] <= thr
 
-            GL = float(g[go_left].sum()); HL = float(h[go_left].sum())
-            GR = float(g[~go_left].sum()); HR = float(h[~go_left].sum())
+            GL = float(g[go_left].sum())
+            HL = float(h[go_left].sum())
+            GR = float(g[~go_left].sum())
+            HR = float(h[~go_left].sum())
 
             absw = np.abs(w)
             denom = float(absw.sum()) if absw.size else 1.0
-            shares = (absw / denom) if denom > 0.0 else np.full(len(gfi_list), 1.0 / max(len(gfi_list),1))
+            shares = (
+                (absw / denom)
+                if denom > 0.0
+                else np.full(len(gfi_list), 1.0 / max(len(gfi_list), 1))
+            )
             for gfi, share in zip(gfi_list, shares):
                 _book(int(gfi), GL, HL, GR, HR, float(share))
             return
-
-        # otherwise ignore
 
     # -------------------------------------------------------------------------
     # Strategy entrypoint
     # -------------------------------------------------------------------------
     def eval_split(self, tree: "UnifiedTree", X: np.ndarray, node: "TreeNode") -> bool:
-        # guard
+        """
+        Main split evaluation method.
+        Now uses the new histogram system for all binning and histogram operations.
+        """
+        # Guard conditions
         if (
             node.n_samples < tree.min_samples_split
             or node.depth >= tree.max_depth
@@ -434,54 +385,108 @@ class BinnedStrategy:
         ):
             return False
 
-        # (1) ensure edges prepared/refined (lazy touch so adaptive overrides happen)
-        for gfi in tree.feature_indices:
-            _ = self._edges_for(tree, node, int(gfi))
+        # Build histograms using the new system
+        try:
+            hg, hh, max_bins_total = self._build_histograms_with_cache(tree, node)
+            node.histograms = (hg, hh, max_bins_total)
+        except Exception as e:
+            # If histogram building fails, cannot split
+            return False
 
-        # (2) histograms for this node
-        hg, hh, max_bins_total = self._build_histograms_with_cache(tree, node)
-        node.histograms = (hg, hh)
+        # Run Axis generator first (fast baseline)
+        best_axis: Optional[Candidate] = None
+        axis_gain_max = -np.inf
 
-        # (3) query all generators, pick the best candidate
-        best: Optional[Candidate] = None
+        axis_gen = None
+        other_gens = []
         for gen in self._gens:
-            cands = gen.generate(tree, X, node, (hg, hh, max_bins_total))
+            if isinstance(gen, AxisGenerator):
+                axis_gen = gen
+            else:
+                other_gens.append(gen)
+
+        if axis_gen is None:
+            axis_gen = AxisGenerator()
+
+        axis_cands = axis_gen.generate(tree, X, node, (hg, hh, max_bins_total))
+        if axis_cands:
+            best_axis = max(axis_cands, key=lambda c: c.gain)
+            axis_gain_max = best_axis.gain
+
+        # Ask other generators
+        best: Optional[Candidate] = best_axis
+        for gen in other_gens:
+            cands = gen.generate(
+                tree, X, node, (hg, hh, max_bins_total), axis_gain_max=axis_gain_max
+            )
             for c in cands:
                 if (best is None) or (c.gain > best.gain):
                     best = c
+
         if best is None or best.gain <= 0.0:
             return False
 
-        # (4) convert into SplitPlan and stash on node
-        plan: SplitPlan = to_split_plan(best)
-        sp = SplitPlanView(plan)  # NEW
-        node._split_plan = plan   # keep the raw plan around if you want
+        # Convert to SplitPlan
+        sp: SplitPlan = to_split_plan(best)
+        node._split_plan = sp
         node.best_gain = float(sp.gain)
-        tree._plan_kind_counts[plan.kind] += 1
 
-        node.best_gain = float(plan.gain)
-
-        # For axis we still set the legacy fields (for compatibility)
-        if plan.kind == "axis":
-            node.best_feature = int(plan.gfi)
-            node.best_threshold = float(plan.threshold)
-            node.missing_go_left = bool(plan.missing_left)
-            node.best_bin_idx = int(plan.bin_idx) if plan.bin_idx is not None else None
+        # Set legacy fields for axis-aligned splits (backward compatibility)
+        if sp.kind == "axis":
+            node.best_feature = int(sp.gfi)
+            node.best_threshold = float(sp.threshold)
+            node.missing_go_left = bool(sp.missing_left)
+            node.best_bin_idx = int(sp.bin_idx) if sp.bin_idx is not None else None
         else:
             node.best_feature = None
             node.best_threshold = np.nan
             node.missing_go_left = False
             node.best_bin_idx = None
 
-        # ---------- NEW: feature importance update ----------
-        # use the exact histograms we just computed so numbers match split search
+        # Update feature importance
         self._update_feature_importance_for_plan(
             tree, node, sp, (hg, hh, max_bins_total)
         )
 
         return True
-        return True
 
+    # -------------------------------------------------------------------------
+    # Utility methods for compatibility
+    # -------------------------------------------------------------------------
+
+    def get_feature_bins_info(self, tree: "UnifiedTree", feature_idx: int) -> Dict:
+        """Get binning information for a specific feature"""
+        if self.histogram_system is None:
+            return {}
+        
+        try:
+            return self.histogram_system.get_feature_info(feature_idx)
+        except Exception:
+            return {}
+
+    def get_all_strategies(self, tree: "UnifiedTree") -> List[str]:
+        """Get binning strategies used for all features"""
+        if self.histogram_system is None:
+            return []
+        
+        try:
+            return self.histogram_system.get_all_strategies()
+        except Exception:
+            return []
+
+
+# Helper functions that need to be imported or defined elsewhere
+def subtract_sibling_histograms(p_g, p_h, s_g, s_h):
+    """Subtract sibling histograms from parent to get other child"""
+    return p_g - s_g, p_h - s_h
+
+def compute_gain(GL, HL, GR, HR, lambda_reg, gamma):
+    """Compute split gain using gradient boosting formula"""
+    if HL <= 0 or HR <= 0:
+        return 0.0
+    return 0.5 * ((GL * GL) / (HL + lambda_reg) + 
+                  (GR * GR) / (HR + lambda_reg) - 
+                  ((GL + GR) * (GL + GR)) / (HL + HR + lambda_reg)) - gamma
 
 class ExactStrategy:
     """

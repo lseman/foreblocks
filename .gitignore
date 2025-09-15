@@ -39,3 +39,4 @@ work/
 generate_manifest.sh
 *.so
 *.pt
+*.npy
