@@ -7,15 +7,34 @@ import torch.nn.functional as F
 
 from .quantization import *
 
+# Optional: import your heads from wherever you defined them.
+# If you don't want imports here, pass an instance via `encoder_only_head=...`
+try:
+    from .heads import (
+        DLinearHead,  # adjust path as needed
+        HorizonMLPHead,
+        TemporalLinearHead,
+    )
+except Exception:
+    HorizonMLPHead = TemporalLinearHead = DLinearHead = None
+
 
 class BaseForecastingModel(nn.Module):
     """
     Modular and extensible forecasting model for time series tasks.
-    Supports autoregressive, seq2seq, and transformer-style decoding.
     """
 
-    VALID_STRATEGIES = ["seq2seq", "autoregressive", "direct", "transformer_seq2seq"]
-    VALID_MODEL_TYPES = ["lstm", "transformer", "informer-like"]
+    VALID_STRATEGIES = [
+        "seq2seq",
+        "autoregressive",
+        "direct",
+        "transformer_seq2seq",
+    ]
+    VALID_MODEL_TYPES = [
+        "lstm",
+        "transformer",
+        "informer-like",
+    ]
 
     def __init__(
         self,
@@ -39,10 +58,12 @@ class BaseForecastingModel(nn.Module):
         input_processor_output_size: int = 16,
         # Training
         teacher_forcing_ratio: float = 0.5,
-        scheduled_sampling_fn: Callable = None,
+        scheduled_sampling_fn: Optional[Callable] = None,
         # Time embeddings
         time_feature_embedding_enc: nn.Module = None,
         time_feature_embedding_dec: nn.Module = None,
+        # Decoder prompt length for transformer-style decoding
+        label_len: Optional[int] = None,
     ):
         super().__init__()
 
@@ -81,329 +102,62 @@ class BaseForecastingModel(nn.Module):
         # === Architecture Setup ===
         self._setup_architecture(encoder, decoder, input_processor_output_size)
 
+        # Infer I/O sizes from encoder/decoder if available
         self.input_size = getattr(encoder, "input_size", None) if encoder else None
-        self.output_size = output_size or getattr(decoder, "output_size", None)
-        self.label_len = getattr(decoder, "output_size", None)
+        self.output_size = output_size or (getattr(decoder, "output_size", None) if decoder else None)
 
-        self._setup_output_layers()
+        # label_len is a *prompt length* for transformer decoding, not an output dim.
+        self.label_len = label_len
+
+        # Aux loss aggregator (for MoE etc.)
         self._kl = None
+        self._mem_model_bridge: Optional[nn.Module] = None
 
-        # Decoder input projection if needed
-        if encoder and self.output_size:
-            enc_dim = getattr(encoder, "hidden_size", self.hidden_size)
-            self.init_decoder_input_layer = nn.Linear(enc_dim, self.output_size)
+        # === Decoder input/feedback projection bridges ===
+        self._decoder_input_size = getattr(self.decoder, "input_size", self.input_size or self.output_size)
+        if self.input_size and self._decoder_input_size and self.input_size != self._decoder_input_size:
+            self.dec_init_proj = nn.Linear(self.input_size, self._decoder_input_size)
+        else:
+            self.dec_init_proj = nn.Identity()
+        if self.output_size and self._decoder_input_size and self.output_size != self._decoder_input_size:
+            self.dec_feedback_proj = nn.Linear(self.output_size, self._decoder_input_size)
+        else:
+            self.dec_feedback_proj = nn.Identity()
+
+        # === Encoder-only configuration ===
+        self._setup_output_layers()
+
+    # === Public API ===
 
     def get_aux_loss(self) -> torch.Tensor:
-        loss = torch.tensor(0.0, device=getattr(self, "device", "cpu"))
+        device = next(self.parameters()).device if any(p.requires_grad for p in self.parameters()) else torch.device("cpu")
+        loss = torch.zeros((), device=device)
 
         if hasattr(self, "encoder") and hasattr(self.encoder, "aux_loss"):
-            loss = loss + self.encoder.aux_loss
+            aux = self.encoder.aux_loss
+            loss = loss + (aux if torch.is_tensor(aux) else loss.new_tensor(aux))
 
         if hasattr(self, "decoder") and hasattr(self.decoder, "aux_loss"):
-            loss = loss + self.decoder.aux_loss
+            aux = self.decoder.aux_loss
+            loss = loss + (aux if torch.is_tensor(aux) else loss.new_tensor(aux))
 
         if hasattr(self, "aux_loss"):
-            loss = loss + self.aux_loss
+            aux = self.aux_loss
+            loss = loss + (aux if torch.is_tensor(aux) else loss.new_tensor(aux))
 
         return loss
 
-    # === Architecture Setup ===
-    def _setup_architecture(self, encoder, decoder, input_processor_output_size):
-        if self.multi_encoder_decoder:
-            self.encoder = nn.ModuleList(
-                [encoder for _ in range(input_processor_output_size)]
-            )
-            self.decoder = nn.ModuleList(
-                [decoder for _ in range(input_processor_output_size)]
-            )
-            self.decoder_aggregator = nn.Linear(
-                input_processor_output_size, 1, bias=False
-            )
-        else:
-            self.encoder = encoder
-            self.decoder = decoder
-
-    def _setup_output_layers(self):
-        if not self.encoder or not self.decoder:
-            self.output_head = nn.Identity()
-            self.project_output = nn.Identity()
-            return
-
-        encoder_hidden = self._get_attr(self.encoder, "hidden_size", self.hidden_size)
-        decoder_hidden = self._get_attr(self.decoder, "hidden_size", self.hidden_size)
-        self._get_attr(self.decoder, "output_size", self.output_size)
-
-        # Final output projection
-        out_dim = (
-            decoder_hidden + encoder_hidden if self.use_attention else decoder_hidden
-        )
-        self.output_head = nn.Sequential(
-            nn.Linear(out_dim, decoder_hidden),
-            nn.ReLU(),
-            nn.Linear(decoder_hidden, self.output_size),
-        )
-
-        # Optional input projection
-        self.project_output = (
-            nn.Linear(self.input_size, self.output_size)
-            if self.input_size and self.input_size != self.output_size
-            else nn.Identity()
-        )
-
-    @staticmethod
-    def _get_attr(module, attr, fallback):
-        return getattr(
-            module[0] if isinstance(module, nn.ModuleList) else module, attr, fallback
-        )
-
-    # === Forward ===
     def forward(self, src, targets=None, time_features=None, epoch=None):
         x = self._preprocess_input(src)
+        # Dispatch
+        key = self.strategy
         strategy_fn = {
             "direct": self._forward_direct,
             "autoregressive": self._forward_autoregressive,
             "seq2seq": self._forward_seq2seq,
             "transformer_seq2seq": self._forward_seq2seq,
-        }[self.strategy]
+        }[key]
         return strategy_fn(x, targets, time_features, epoch)
-
-    def _preprocess_input(self, src):
-        processed = self.input_preprocessor(src)
-        if self.input_skip_connection:
-            processed = processed + src
-        return self.input_normalization(processed)
-
-    # ==================== FORWARD STRATEGIES ====================
-
-    def _forward_direct(self, src, targets=None, time_features=None, epoch=None):
-        """Direct forecasting: Single forward pass"""
-        out = self.decoder(src)
-        return self._finalize_output(out)
-
-    def _forward_autoregressive(
-        self, src, targets=None, time_features=None, epoch=None
-    ):
-        """Autoregressive decoding: one step at a time"""
-        outputs = []
-        decoder_input = src[:, -1:, :]  # last input timestep
-        use_tf = self._should_use_teacher_forcing(targets, epoch)
-
-        for t in range(self.target_len):
-            out = self.decoder(decoder_input)
-            out = self._finalize_output(out)
-            outputs.append(out)
-
-            if t < self.target_len - 1:
-                decoder_input = self._next_decoder_input(out, targets, t, use_tf)
-
-        return self.output_postprocessor(torch.cat(outputs, dim=1))
-
-    def _forward_seq2seq(self, src, targets=None, time_features=None, epoch=None):
-        """Generic seq2seq dispatcher"""
-        if self.multi_encoder_decoder:
-            return self._forward_multi_encoder_decoder(src, targets, epoch)
-
-        strategy = {
-            "informer-like": self._forward_informer_style,
-            "transformer": self._forward_transformer_style,
-        }.get(self.model_type, self._forward_rnn_style)
-
-        return strategy(src, targets, time_features, epoch)
-
-    def _forward_rnn_style(self, src, targets=None, time_features=None, epoch=None):
-        """RNN/LSTM/GRU seq2seq forward"""
-        outputs = []
-        enc_out, enc_hidden = self.encoder(src)
-        dec_hidden, kl = self._extract_latent_state(enc_hidden)
-        self._kl = kl
-        decoder_input = src[:, -1:, :]  # last timestep
-        use_tf = self._should_use_teacher_forcing(targets, epoch)
-
-        for t in range(self.target_len):
-            dec_out, dec_hidden = self.decoder(decoder_input, dec_hidden)
-
-            if self.use_attention:
-                context, _ = self.attention_module(dec_hidden, enc_out)
-                dec_out = torch.cat([dec_out, context], dim=-1)
-
-            dec_out = self._finalize_output(self.output_head(dec_out))
-            outputs.append(dec_out.squeeze(1) if dec_out.dim() == 3 else dec_out)
-
-            if t < self.target_len - 1:
-                decoder_input = self._next_decoder_input(dec_out, targets, t, use_tf)
-
-        return self.output_postprocessor(torch.stack(outputs, dim=1))
-
-    def _forward_transformer_style(
-        self, src, targets=None, time_features=None, epoch=None
-    ):
-        """Transformer-style autoregressive decoder"""
-        batch_size = src.size(0)
-        memory = self.encoder(src)
-        decoder_input = (
-            src[:, -self.label_len :, :] if self.label_len else src[:, -1:, :]
-        )
-
-        outputs = []
-        use_tf = self._should_use_teacher_forcing(targets, epoch)
-
-        for t in range(self.pred_len):
-            out = self.decoder(decoder_input, memory)
-            # print(f"Decoder output shape at step {t}: {out.shape}")
-            # saida = self.output_head(out)
-            out = self._finalize_output(out)
-            outputs.append(out)
-
-            if t < self.pred_len - 1:
-                decoder_input = self._next_decoder_input(out, targets, t, use_tf)
-                # pad if necessary
-                if self.input_size != self.output_size:
-                    pad = torch.zeros(
-                        batch_size,
-                        1,
-                        self.input_size - self.output_size,
-                        device=src.device,
-                    )
-                    decoder_input = torch.cat([decoder_input, pad], dim=-1)
-
-        return torch.cat(outputs, dim=1)
-
-    def _forward_informer_style(
-        self, src, targets=None, time_features=None, epoch=None
-    ):
-        """Informer-style decoder with full parallel prediction"""
-        batch_size = src.size(0)
-        enc = self.encoder(src, time_features=time_features)
-        enc_out = enc[0] if isinstance(enc, tuple) else enc
-
-        start_token = src[:, -1:, :]
-        dec_input = start_token.expand(batch_size, self.pred_len, -1)
-        dec_out = self.decoder(dec_input, enc_out)
-
-        return self._finalize_output(dec_out)
-
-    def _forward_multi_encoder_decoder(self, src, targets=None, epoch=None):
-        """Multi-input forecasting with independent encoder-decoders per feature"""
-        batch_size, _, num_inputs = src.shape
-        outputs = []
-        use_tf = self._should_use_teacher_forcing(targets, epoch)
-
-        for i in range(num_inputs):
-            x_i = src[:, :, i : i + 1]
-            enc_out, enc_hidden = self.encoder[i](x_i)
-            dec_hidden, kl = self._extract_latent_state(enc_hidden)
-            self._kl = kl
-
-            dec_input = torch.zeros(batch_size, 1, self.output_size, device=src.device)
-            out_i = []
-
-            for t in range(self.target_len):
-                dec_out, dec_hidden = self.decoder[i](dec_input, dec_hidden)
-
-                if self.use_attention:
-                    query = self._get_attention_query(dec_out, dec_hidden)
-                    context, _ = self.attention_module(query, enc_out)
-                    dec_out = torch.cat([dec_out, context], dim=-1)
-
-                dec_out = self._finalize_output(self.output_head(dec_out))
-                out_i.append(dec_out.squeeze(1) if dec_out.dim() == 3 else dec_out)
-
-                if t < self.target_len - 1:
-                    dec_input = self._next_decoder_input(dec_out, targets, t, use_tf)
-
-            outputs.append(torch.stack(out_i, dim=1))
-
-        # aggregate per-feature output
-        stacked = torch.stack(outputs, dim=-1)
-        aggregated = self.decoder_aggregator(stacked).squeeze(-1)
-        return self.output_postprocessor(aggregated)
-
-    # ==================== OUTPUT HANDLING ====================
-
-    def _finalize_output(self, x):
-        """Post-normalize + output postprocessing block"""
-        return self.output_postprocessor(self.output_normalization(x))
-
-    def _next_decoder_input(self, output, targets, t, use_tf):
-        """Handles autoregressive input for next timestep"""
-        if use_tf and targets is not None:
-            return targets[:, t : t + 1, :]
-        return output if output.dim() == 3 else output.unsqueeze(1)
-
-    def _should_use_teacher_forcing(
-        self, targets=None, epoch=None, fallback_device="cpu"
-    ):
-        if (not self.training) or (targets is None):
-            return False
-        if self._is_fx_tracing():
-            return False
-        ratio = (
-            self.scheduled_sampling_fn(epoch)
-            if self.scheduled_sampling_fn and epoch is not None
-            else self.teacher_forcing_ratio
-        )
-        device = getattr(targets, "device", torch.device(fallback_device))
-        return torch.rand((1,), device=device).item() < ratio
-
-    def _extract_latent_state(
-        self, encoder_hidden
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Process encoder hidden state, handling VAE and bidirectional cases"""
-        # VAE case: (z, mu, logvar)
-        if isinstance(encoder_hidden, tuple) and len(encoder_hidden) == 3:
-            z, mu, logvar = encoder_hidden
-            kl_div = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-            return (z,), kl_div
-
-        return self._prepare_decoder_hidden(encoder_hidden), None
-
-    def _prepare_decoder_hidden(self, encoder_hidden):
-        """
-        Adapt encoder hidden state to decoder shape, handling bidirectional case if needed.
-        """
-        if not getattr(self.encoder, "bidirectional", False):
-            return encoder_hidden
-
-        if isinstance(encoder_hidden, tuple):  # LSTM
-            h_n, c_n = encoder_hidden
-            return (self._merge_bidirectional(h_n), self._merge_bidirectional(c_n))
-        return self._merge_bidirectional(encoder_hidden)
-
-    def _merge_bidirectional(self, hidden: torch.Tensor) -> torch.Tensor:
-        """
-        Merge bidirectional RNN hidden states by summing forward and backward directions.
-        Assumes hidden.shape[0] = num_layers * 2.
-        """
-        assert hidden.size(0) % 2 == 0, (
-            "Expected even number of layers for bidirectional RNN"
-        )
-        num_layers = hidden.size(0) // 2
-        # safer reshape for FX-tracing and edge cases
-        reshaped = hidden.reshape(num_layers, 2, *hidden.shape[1:])
-        return reshaped.sum(dim=1)
-
-    def _get_attention_query(self, decoder_output, decoder_hidden):
-        """
-        Get the attention query vector depending on decoder type.
-        """
-        if hasattr(self.decoder, "is_transformer") and self.decoder.is_transformer:
-            return decoder_hidden.permute(1, 0, 2)  # (batch, seq_len, hidden)
-        return (
-            decoder_hidden[0][-1]
-            if isinstance(decoder_hidden, tuple)
-            else decoder_hidden[-1]
-        )
-
-    # ==================== UTILITY METHODS ====================
-
-    @staticmethod
-    def _is_fx_tracing():
-        try:
-            import torch.fx
-
-            return torch.fx._symbolic_trace.is_fx_tracing()
-        except Exception:
-            return False
 
     def get_kl(self):
         return self._kl
@@ -422,7 +176,6 @@ class BaseForecastingModel(nn.Module):
 
     def benchmark_inference(self, input_tensor, num_runs=100, warmup_runs=10):
         import time
-
         self.eval()
         device = next(self.parameters()).device
         input_tensor = input_tensor.to(device)
@@ -446,28 +199,284 @@ class BaseForecastingModel(nn.Module):
         avg = (end - start) / num_runs
         return {
             "avg_inference_time_ms": avg * 1000,
-            "throughput_samples_per_sec": 1.0 / avg,
+            "throughput_samples_per_sec": 1.0 / avg if avg > 0 else float("inf"),
             "device": str(device),
         }
 
-    def attribute_forward(
-        self, src, time_features=None, targets=None, epoch=None, output_idx=None
-    ):
+    def attribute_forward(self, src, time_features=None, targets=None, epoch=None, output_idx=None):
         self.train()
         self._disable_dropout()
         src = src.requires_grad_()
-        out = self.forward(
-            src, targets=targets, time_features=time_features, epoch=epoch
-        )
+        out = self.forward(src, targets=targets, time_features=time_features, epoch=epoch)
         return out[..., output_idx] if output_idx is not None else out
+
+    # === Private / setup ===
+
+    def _setup_architecture(self, encoder, decoder, input_processor_output_size):
+        if self.multi_encoder_decoder:
+            self.encoder = nn.ModuleList([encoder for _ in range(input_processor_output_size)])
+            self.decoder = nn.ModuleList([decoder for _ in range(input_processor_output_size)])
+            self.decoder_aggregator = nn.Linear(input_processor_output_size, 1, bias=False)
+        else:
+            self.encoder = encoder
+            self.decoder = decoder
+
+    def _setup_output_layers(self):
+        if not self.encoder or not self.decoder:
+            self.output_head = nn.Identity()
+            self.project_output = nn.Identity()
+            return
+
+        encoder_hidden = self._get_attr(self.encoder, "hidden_size", self.hidden_size)
+        decoder_hidden = self._get_attr(self.decoder, "hidden_size", self.hidden_size)
+        if self.output_size is None:
+            raise ValueError("output_size must be provided or available on decoder.output_size")
+
+        out_dim = (decoder_hidden + encoder_hidden) if self.use_attention else decoder_hidden
+        self.output_head = nn.Sequential(
+            nn.Linear(out_dim, decoder_hidden),
+            nn.ReLU(),
+            nn.Linear(decoder_hidden, self.output_size),
+        )
+        if self.input_size and self.input_size != self.output_size:
+            self.project_output = nn.Linear(self.input_size, self.output_size)
+        else:
+            self.project_output = nn.Identity()
+
+    def _get_attr(self, module, attr, fallback):
+        return getattr(module[0] if isinstance(module, nn.ModuleList) else module, attr, fallback)
+
+    # === Core helpers ===
+
+    def _preprocess_input(self, src):
+        processed = self.input_preprocessor(src)
+        if self.input_skip_connection:
+            processed = processed + src
+        return self.input_normalization(processed)
+
+    def _finalize_output(self, x):
+        return self.output_postprocessor(self.output_normalization(x))
+
+    def _next_decoder_input(self, output, targets, t, use_tf):
+        if use_tf and targets is not None:
+            return targets[:, t : t + 1, :]
+        return output if output.dim() == 3 else output.unsqueeze(1)
+
+    def _should_use_teacher_forcing(self, targets=None, epoch=None, fallback_device="cpu"):
+        if (not self.training) or (targets is None):
+            return False
+        if self._is_fx_tracing():
+            return False
+        ratio = (
+            self.scheduled_sampling_fn(epoch)
+            if self.scheduled_sampling_fn and epoch is not None
+            else self.teacher_forcing_ratio
+        )
+        device = getattr(targets, "device", torch.device(fallback_device))
+        return torch.rand((1,), device=device).item() < ratio
+
+    def _extract_latent_state(self, encoder_hidden) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # VAE case: (z, mu, logvar)
+        if isinstance(encoder_hidden, tuple) and len(encoder_hidden) == 3:
+            z, mu, logvar = encoder_hidden
+            kl_div = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+            return (z,), kl_div
+        return self._prepare_decoder_hidden(encoder_hidden), None
+
+    def _prepare_decoder_hidden(self, encoder_hidden):
+        if not getattr(self.encoder, "bidirectional", False):
+            return encoder_hidden
+        if isinstance(encoder_hidden, tuple):  # LSTM
+            h_n, c_n = encoder_hidden
+            return (self._merge_bidirectional(h_n), self._merge_bidirectional(c_n))
+        return self._merge_bidirectional(encoder_hidden)
+
+    def _merge_bidirectional(self, hidden: torch.Tensor) -> torch.Tensor:
+        assert hidden.size(0) % 2 == 0, "Expected even number of layers for bidirectional RNN"
+        num_layers = hidden.size(0) // 2
+        reshaped = hidden.reshape(num_layers, 2, *hidden.shape[1:])
+        return reshaped.sum(dim=1)
+
+    def _get_attention_query(self, decoder_output, decoder_hidden):
+        if hasattr(self.decoder, "is_transformer") and getattr(self.decoder, "is_transformer"):
+            return decoder_hidden.permute(1, 0, 2)  # (batch, seq_len, hidden)
+        return (decoder_hidden[0][-1] if isinstance(decoder_hidden, tuple) else decoder_hidden[-1])
+
+    @staticmethod
+    def _is_fx_tracing():
+        try:
+            import torch.fx
+            return torch.fx._symbolic_trace.is_fx_tracing()
+        except Exception:
+            return False
 
     def _disable_dropout(self):
         for m in self.modules():
             if isinstance(m, nn.Dropout):
                 m.p = 0.0
 
+    def _decoder_model_dim(self) -> Optional[int]:
+        for name in ("d_model", "model_dim", "embed_dim", "dim", "hidden_dim"):
+            if hasattr(self.decoder, name) and isinstance(getattr(self.decoder, name), int):
+                return getattr(self.decoder, name)
+        return None
 
-# ==================== FORECASTING MODEL WITH DISTILLATION ====================
+    def _align_memory_to_decoder(self, memory: torch.Tensor) -> torch.Tensor:
+        d_model = self._decoder_model_dim()
+        if d_model is None or memory is None or memory.size(-1) == d_model:
+            return memory
+        if self._mem_model_bridge is None:
+            self._mem_model_bridge = nn.Linear(memory.size(-1), d_model).to(memory.device)
+        return self._mem_model_bridge(memory)
+
+    def _supports_time(self, module: nn.Module) -> bool:
+        # Heuristic: check signature by attribute or a flag you use in your encoders
+        return hasattr(module, "supports_time_features") or "time" in " ".join(dir(module)).lower()
+
+    # === Forward strategies ===
+
+    def _forward_direct(self, src, targets=None, time_features=None, epoch=None):
+        out = self.decoder(src)
+        return self._finalize_output(out)
+
+    def _forward_autoregressive(self, src, targets=None, time_features=None, epoch=None):
+        outputs = []
+        decoder_input = self.dec_init_proj(src[:, -1:, :])
+        use_tf = self._should_use_teacher_forcing(targets, epoch)
+
+        for t in range(self.target_len):
+            out = self.decoder(decoder_input)  # [B, 1, *]
+            out = self._finalize_output(out)
+            outputs.append(out)
+
+            if t < self.target_len - 1:
+                next_in = self._next_decoder_input(out, targets, t, use_tf)  # [B,1,output_size]
+                decoder_input = self.dec_feedback_proj(next_in)
+
+        return self.output_postprocessor(torch.cat(outputs, dim=1))
+
+    def _forward_seq2seq(self, src, targets=None, time_features=None, epoch=None):
+        if self.multi_encoder_decoder:
+            return self._forward_multi_encoder_decoder(src, targets, epoch)
+
+        strategy = {
+            "informer-like": self._forward_informer_style,
+            "transformer": self._forward_transformer_style,
+        }.get(self.model_type, self._forward_rnn_style)
+
+        return strategy(src, targets, time_features, epoch)
+
+    def _forward_rnn_style(self, src, targets=None, time_features=None, epoch=None):
+        outputs = []
+        enc_out, enc_hidden = self.encoder(src)
+        dec_hidden, kl = self._extract_latent_state(enc_hidden)
+        self._kl = kl
+
+        decoder_input = self.dec_init_proj(src[:, -1:, :])
+        use_tf = self._should_use_teacher_forcing(targets, epoch)
+
+        for t in range(self.target_len):
+            dec_out, dec_hidden = self.decoder(decoder_input, dec_hidden)
+
+            if self.use_attention:
+                context, _ = self.attention_module(dec_hidden, enc_out)
+                dec_out = torch.cat([dec_out, context], dim=-1)
+
+            dec_out = self._finalize_output(self.output_head(dec_out))
+            outputs.append(dec_out.squeeze(1) if dec_out.dim() == 3 else dec_out)
+
+            if t < self.target_len - 1:
+                next_in = self._next_decoder_input(dec_out, targets, t, use_tf)
+                decoder_input = self.dec_feedback_proj(next_in)
+
+        return self.output_postprocessor(torch.stack(outputs, dim=1))
+
+    def _forward_transformer_style(self, src, targets=None, time_features=None, epoch=None):
+        device = src.device
+        memory = (
+            self.encoder(src, time_features=time_features)
+            if time_features is not None
+            else self.encoder(src)
+        )
+        memory = self._align_memory_to_decoder(
+            memory[0] if isinstance(memory, tuple) else memory
+        )
+
+        if self.label_len and self.label_len > 0:
+            decoder_input = src[:, -self.label_len :, :]
+        else:
+            decoder_input = src[:, -1:, :]
+        decoder_input = self.dec_init_proj(decoder_input)
+
+        outputs = []
+        use_tf = self._should_use_teacher_forcing(targets, epoch)
+
+        for t in range(self.pred_len):
+            L_tgt = decoder_input.size(1)
+            tgt_mask = torch.triu(
+                torch.ones(L_tgt, L_tgt, device=device, dtype=torch.bool),
+                diagonal=1,
+            )  # causal
+
+            try:
+                out = self.decoder(decoder_input, memory, tgt_mask=tgt_mask)
+            except TypeError:
+                out = self.decoder(decoder_input, memory)
+
+            out = self._finalize_output(out)
+            outputs.append(out[:, -1:, :] if out.size(1) > 1 else out)
+
+            if t < self.pred_len - 1:
+                next_in = self._next_decoder_input(outputs[-1], targets, t, use_tf)
+                next_in = self.dec_feedback_proj(next_in)
+                decoder_input = torch.cat([decoder_input, next_in], dim=1)
+
+        return torch.cat(outputs, dim=1)
+
+    def _forward_informer_style(self, src, targets=None, time_features=None, epoch=None):
+        batch_size = src.size(0)
+        enc = self.encoder(src, time_features=time_features)
+        enc_out = enc[0] if isinstance(enc, tuple) else enc
+        enc_out = self._align_memory_to_decoder(enc_out)
+
+        start_token = self.dec_init_proj(src[:, -1:, :])
+        dec_input = start_token.expand(batch_size, self.pred_len, -1)
+        dec_out = self.decoder(dec_input, enc_out)
+        return self._finalize_output(dec_out)
+
+    def _forward_multi_encoder_decoder(self, src, targets=None, epoch=None):
+        batch_size, _, num_inputs = src.shape
+        outputs = []
+        use_tf = self._should_use_teacher_forcing(targets, epoch)
+
+        for i in range(num_inputs):
+            x_i = src[:, :, i : i + 1]
+            enc_out, enc_hidden = self.encoder[i](x_i)
+            dec_hidden, kl = self._extract_latent_state(enc_hidden)
+            self._kl = kl
+
+            dec_input = torch.zeros(batch_size, 1, self.output_size, device=src.device)
+            out_i = []
+
+            for t in range(self.target_len):
+                dec_out, dec_hidden = self.decoder[i](self.dec_feedback_proj(dec_input), dec_hidden)
+
+                if self.use_attention:
+                    query = self._get_attention_query(dec_out, dec_hidden)
+                    context, _ = self.attention_module(query, enc_out)
+                    dec_out = torch.cat([dec_out, context], dim=-1)
+
+                dec_out = self._finalize_output(self.output_head(dec_out))
+                out_i.append(dec_out.squeeze(1) if dec_out.dim() == 3 else dec_out)
+
+                if t < self.target_len - 1:
+                    dec_input = self._next_decoder_input(dec_out, targets, t, use_tf)
+
+            outputs.append(torch.stack(out_i, dim=1))
+
+        stacked = torch.stack(outputs, dim=-1)         # [B,T,out,C]
+        aggregated = self.decoder_aggregator(stacked).squeeze(-1)  # [B,T,out]
+        return self.output_postprocessor(aggregated)
 
 
 class ForecastingModel(BaseForecastingModel):
