@@ -15,21 +15,6 @@ from .transformer_aux import *
 from .transformer_moe import *
 
 
-class TimeSeriesEncoder(nn.Module):
-    def __init__(self, input_size, hidden_size, max_len=5000):
-        super().__init__()
-        self.input_projection = nn.Linear(input_size, hidden_size)
-        self.positional_encoding = PositionalEncoding(
-            d_model=hidden_size, max_len=max_len
-        )
-
-    def forward(self, x):
-        # x: [B, T, input_size]
-        x = self.input_projection(x)          # [B, T, hidden_size]
-        x = self.positional_encoding(x)       # [B, T, hidden_size]
-        return x
-
-
 class NormWrapper(nn.Module):
     """Normalization + residual + dropout, supports pre- or post-norm."""
     def __init__(self, norm: nn.Module, strategy: str = "pre_norm", dropout_p: float = 0.0):
@@ -84,8 +69,8 @@ class BaseTransformerLayer(nn.Module):
             use_moe=use_moe,
             num_experts=num_experts,
             top_k=top_k,
-            capacity_factor=moe_capacity_factor,
-            expert_dropout=dropout,
+            # capacity_factor=moe_capacity_factor,
+            # expert_dropout=dropout,
         )
 
         self.norm_wrappers = nn.ModuleList()
@@ -360,7 +345,7 @@ class BaseTransformer(nn.Module, ABC):
             use_moe=use_moe,
             num_experts=num_experts,
             top_k=top_k,
-            moe_capacity_factor=moe_capacity_factor,
+            # moe_capacity_factor=moe_capacity_factor,
             **kwargs,
         )
 

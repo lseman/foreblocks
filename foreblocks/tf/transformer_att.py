@@ -1,4 +1,4 @@
-# transformer_att.py (fixed)
+# transformer_att.py (with GQA support)
 
 import math
 import warnings
@@ -34,18 +34,20 @@ def _get_available_backends():
 
 class MultiAttention(nn.Module):
     """
-    Multi-backend attention for time series.
+    Multi-backend attention with GQA/MQA support.
 
     Notes:
     - Mask semantics are boolean with True = masked (disallowed) everywhere.
     - Rotary embeddings are applied only for self-attention (never cross-attn).
     - SDPA fast path uses boolean masks (PyTorch ≥ 2.0).
+    - Supports Grouped Query Attention (GQA) and Multi-Query Attention (MQA).
     """
 
     def __init__(
         self,
         d_model: int,
         n_heads: int,
+        n_kv_heads: Optional[int] = None,  # NEW: GQA support
         dropout: float = 0.1,
         attention_type: str = "standard",
         prob_sparse_factor: float = 0.4,
@@ -58,6 +60,7 @@ class MultiAttention(nn.Module):
         global_attention_ratio: float = 0.1,
         chunk_size: int = 1024,
         use_flash_sliding: bool = True,
+        use_swiglu: bool = True,
         verbose_init: bool = False,
     ):
         super().__init__()
@@ -66,6 +69,13 @@ class MultiAttention(nn.Module):
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
+        
+        # GQA setup
+        self.n_kv_heads = n_kv_heads or n_heads
+        assert n_heads % self.n_kv_heads == 0, "n_heads must be divisible by n_kv_heads"
+        self.n_rep = n_heads // self.n_kv_heads
+        self.kv_dim = self.n_kv_heads * self.head_dim
+        
         self.attention_type = attention_type
         self.dropout_p = dropout
         self.cross_attention = cross_attention
@@ -80,10 +90,18 @@ class MultiAttention(nn.Module):
         self.use_flash_sliding = use_flash_sliding
 
         if attention_type in ["standard", "prob_sparse", "softpick", "sliding_window"]:
+            # Q projection: full d_model
             self.q_proj = nn.Linear(d_model, d_model, bias=False)
-            self.k_proj = nn.Linear(d_model, d_model, bias=False)
-            self.v_proj = nn.Linear(d_model, d_model, bias=False)
-            self.out_proj = nn.Linear(d_model, d_model)
+            # K, V projections: reduced for GQA
+            self.k_proj = nn.Linear(d_model, self.kv_dim, bias=False)
+            self.v_proj = nn.Linear(d_model, self.kv_dim, bias=False)
+            
+            # Output projection with optional SwiGLU
+            self.out_proj = nn.Sequential(
+                nn.Linear(d_model, d_model * 4, bias=False),
+                nn.SiLU(),
+                nn.Linear(d_model * 4, d_model, bias=False)
+            ) if use_swiglu else nn.Linear(d_model, d_model)
             self.dropout = nn.Dropout(dropout)
 
         # RoPE for self-attn only
@@ -123,7 +141,8 @@ class MultiAttention(nn.Module):
             "sliding_window": self._sliding_window_attention,
         }
         if verbose_init:
-            print(f"[MultiAttention] type={self.attention_type}, backends={self.backends}, rotary={self.use_rotary}")
+            gqa_info = f"GQA({n_heads}q/{self.n_kv_heads}kv)" if self.n_rep > 1 else "MHA"
+            print(f"[MultiAttention] {gqa_info}, type={self.attention_type}, backends={self.backends}, rotary={self.use_rotary}")
 
     # --------------------------------------------------------------------- #
     # Public forward
@@ -155,12 +174,31 @@ class MultiAttention(nn.Module):
     # --------------------------------------------------------------------- #
     # Helpers
     # --------------------------------------------------------------------- #
+    def _repeat_kv(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Repeat KV heads to match Q heads for GQA.
+        x: [B, n_kv_heads, T, head_dim]
+        returns: [B, n_heads, T, head_dim]
+        """
+        if self.n_rep == 1:
+            return x
+        
+        B, n_kv_heads, T, head_dim = x.shape
+        # Repeat each KV head n_rep times
+        x = x[:, :, None, :, :].expand(B, n_kv_heads, self.n_rep, T, head_dim)
+        return x.reshape(B, n_kv_heads * self.n_rep, T, head_dim)
+
     def _project_qkv(self, query, key, value):
         B, T_q, _ = query.shape
         T_k = key.shape[1]
+        
+        # Project Q (full n_heads)
         q = self.q_proj(query).view(B, T_q, self.n_heads, self.head_dim)
-        k = self.k_proj(key).view(B, T_k, self.n_heads, self.head_dim)
-        v = self.v_proj(value).view(B, T_k, self.n_heads, self.head_dim)
+        
+        # Project K, V (reduced n_kv_heads)
+        k = self.k_proj(key).view(B, T_k, self.n_kv_heads, self.head_dim)
+        v = self.v_proj(value).view(B, T_k, self.n_kv_heads, self.head_dim)
+        
         return q, k, v
 
     def _apply_masks(self, scores, attn_mask, key_padding_mask, B, T_q, T_k):
@@ -244,8 +282,6 @@ class MultiAttention(nn.Module):
             end_i = min(i + self.chunk_size, T_q)
             
             if is_causal:
-                # Most restrictive query at position i needs keys in [max(0, i-w+1), i]
-                # Most permissive query at end_i-1 needs keys in [max(0, end_i-1-w+1), end_i-1]
                 start_k = max(0, i - self.window_size + 1)
                 end_k = end_i
             else:
@@ -264,10 +300,8 @@ class MultiAttention(nn.Module):
             Kc = end_k - start_k
 
             if is_causal:
-                # Create mask based on absolute positions
-                q_pos = torch.arange(i, end_i, device=q.device).unsqueeze(1)      # (Qi, 1)
-                k_pos = torch.arange(start_k, end_k, device=q.device).unsqueeze(0)  # (1, Kc)
-                # Mask future OR outside window
+                q_pos = torch.arange(i, end_i, device=q.device).unsqueeze(1)
+                k_pos = torch.arange(start_k, end_k, device=q.device).unsqueeze(0)
                 local_mask = (k_pos > q_pos) | (k_pos < (q_pos - self.window_size + 1))
             else:
                 local_mask = torch.zeros(Qi, Kc, device=q.device, dtype=torch.bool)
@@ -326,21 +360,24 @@ class MultiAttention(nn.Module):
         q, k, v = self._project_qkv(query, key, value)
         q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
 
-        # Apply RoPE BEFORE caching (critical fix)
+        # Apply RoPE BEFORE caching and repeating
         if self.use_rotary:
             q, k = self.rotary_emb(q, k)
 
-        # Cache for self-attention only (after RoPE)
+        # Cache UNREPEATED KV for self-attention (after RoPE)
         if layer_state is not None and not self.cross_attention:
             if "k" in layer_state:
                 k = torch.cat([layer_state["k"], k], dim=2)
                 v = torch.cat([layer_state["v"], v], dim=2)
             layer_state["k"], layer_state["v"] = k, v
 
+        # Repeat KV heads for GQA (after caching)
+        k = self._repeat_kv(k)
+        v = self._repeat_kv(v)
+
         # SDPA fast-path with proper mask shape handling
         if self.use_flash_sliding and self.backends.get("sdp", False) and hasattr(F, "scaled_dot_product_attention"):
             try:
-                # Create mask with correct shape from the start
                 base_mask = self._create_sliding_window_mask(q.size(2), k.size(2), q.device, is_causal)
                 combined = base_mask.bool()
 
@@ -439,13 +476,13 @@ class MultiAttention(nn.Module):
 
         q, k, v = self._project_qkv(query, key, value)
 
-        # Apply RoPE BEFORE caching
+        # Apply RoPE BEFORE caching (on unrepeated KV)
         if self.use_rotary:
             q_r, k_r = q.transpose(1, 2), k.transpose(1, 2)
             q_r, k_r = self.rotary_emb(q_r, k_r)
             q, k = q_r.transpose(1, 2), k_r.transpose(1, 2)
 
-        # Cache for self-attn (after RoPE)
+        # Cache UNREPEATED KV for self-attn (after RoPE)
         if layer_state is not None and not self.cross_attention:
             if "k" in layer_state:
                 k = torch.cat([layer_state["k"], k], dim=1)
@@ -453,14 +490,25 @@ class MultiAttention(nn.Module):
             layer_state["k"] = k
             layer_state["v"] = v
 
+        # Repeat for attention computation
+        if self.n_rep > 1:
+            k_exp = k.view(B, T_k, self.n_kv_heads, 1, self.head_dim).expand(
+                B, T_k, self.n_kv_heads, self.n_rep, self.head_dim
+            ).reshape(B, T_k, self.n_heads, self.head_dim)
+            v_exp = v.view(B, T_k, self.n_kv_heads, 1, self.head_dim).expand(
+                B, T_k, self.n_kv_heads, self.n_rep, self.head_dim
+            ).reshape(B, T_k, self.n_heads, self.head_dim)
+        else:
+            k_exp, v_exp = k, v
+
         try:
             if cu_seqlens is None:
-                out = parallel_softpick_attn(q=q, k=k, v=v, scale=self.scale, cu_seqlens=None, head_first=False)
+                out = parallel_softpick_attn(q=q, k=k_exp, v=v_exp, scale=self.scale, cu_seqlens=None, head_first=False)
                 out = out.contiguous().view(B, T_q, self.d_model)
             else:
                 qf = q.view(B * T_q, self.n_heads, self.head_dim)
-                kf = k.view(B * T_k, self.n_heads, self.head_dim)
-                vf = v.view(B * T_k, self.n_heads, self.head_dim)
+                kf = k_exp.view(B * T_k, self.n_heads, self.head_dim)
+                vf = v_exp.view(B * T_k, self.n_heads, self.head_dim)
                 out = parallel_softpick_attn(q=qf, k=kf, v=vf, scale=self.scale, cu_seqlens=cu_seqlens, head_first=True)
                 out = out.view(B, T_q, self.n_heads, self.head_dim).contiguous().view(B, T_q, self.d_model)
 
@@ -485,16 +533,20 @@ class MultiAttention(nn.Module):
         q, k, v = self._project_qkv(query, key, value)
         q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
 
-        # Apply RoPE BEFORE caching
+        # Apply RoPE BEFORE caching (on unrepeated KV)
         if self.use_rotary:
             q, k = self.rotary_emb(q, k)
 
-        # Cache for self-attn only (after RoPE)
+        # Cache UNREPEATED KV for self-attn only (after RoPE)
         if layer_state is not None and not self.cross_attention:
             if "k" in layer_state:
                 k = torch.cat([layer_state["k"], k], dim=2)
                 v = torch.cat([layer_state["v"], v], dim=2)
             layer_state["k"], layer_state["v"] = k, v
+
+        # Repeat KV heads for GQA (after caching)
+        k = self._repeat_kv(k)
+        v = self._repeat_kv(v)
 
         if self.attention_type == "standard":
             out, weights = self._standard_attention(q, k, v, attn_mask, key_padding_mask, is_causal, need_weights)
@@ -523,80 +575,104 @@ class MultiAttention(nn.Module):
 
     def _prob_sparse_attention(self, q, k, v, attn_mask, key_padding_mask, is_causal, need_weights):
         """
-        Stable prob-sparse attention with proper handling of small sequences.
+        Fixed ProbSparse attention based on Informer paper.
+        Uses measurement M = ln(L_Q) for top-u selection and proper query sampling.
         """
         B, H, T_q, D = q.shape
         T_k = k.size(2)
 
-        # Calculate sampling parameters
-        u = max(8, int(self.prob_sparse_factor * math.sqrt(max(T_q, 2))))
+        # ProbSparse parameters (per Informer paper)
+        # M = c * ln(L_Q), typically c=5
+        u = max(1, int(5 * math.log(max(T_q, 2))))
         u = min(u, T_q)
-        sample_k = max(8, int(self.prob_sparse_factor * T_k))
+        
+        # Sample factor for keys (U = c * ln(L_K))
+        sample_k = max(1, int(math.ceil(5 * math.log(max(T_k, 2)))))
         sample_k = min(sample_k, T_k)
 
-        if sample_k < 1 or u >= T_q:
-            # Degenerate case: fall back to standard attention
+        if u >= T_q or sample_k >= T_k:
+            # Degenerate case: fall back to standard
             return self._standard_attention(q, k, v, attn_mask, key_padding_mask, is_causal, need_weights)
 
-        # Sample keys
-        idx = torch.randperm(T_k, device=q.device)[:sample_k]
-        k_sample = k[:, :, idx, :]
+        # Step 1: Sample keys uniformly (not random permutation for stability)
+        step = max(1, T_k // sample_k)
+        idx = torch.arange(0, T_k, step, device=q.device)[:sample_k]
+        k_sample = k[:, :, idx, :]  # [B, H, sample_k, D]
 
-        # Compute sparsity scores
-        scores_sample = torch.matmul(q, k_sample.transpose(-2, -1)) * self.scale
-        sparsity = scores_sample.max(dim=-1)[0] - scores_sample.mean(dim=-1)
-        _, top_idx = torch.topk(sparsity, k=u, dim=-1)
+        # Step 2: Compute Q-K' scores for sparsity measurement
+        scores_sample = torch.matmul(q, k_sample.transpose(-2, -1)) * self.scale  # [B, H, T_q, sample_k]
+        
+        # Step 3: Compute sparsity measure M(q_i) = max_j(Q·K'_j) - mean_j(Q·K'_j)
+        # This identifies queries with "dominant" attention patterns
+        max_scores = scores_sample.max(dim=-1)[0]  # [B, H, T_q]
+        mean_scores = scores_sample.mean(dim=-1)  # [B, H, T_q]
+        sparsity_measure = max_scores - mean_scores  # [B, H, T_q]
+        
+        # Step 4: Select top-u queries with highest sparsity
+        _, top_idx = torch.topk(sparsity_measure, k=u, dim=-1)  # [B, H, u]
 
-        # Gather top queries
-        top_idx_exp = top_idx.unsqueeze(-1).expand(-1, -1, -1, D)
-        top_q = torch.gather(q, 2, top_idx_exp)
+        # Step 5: Gather top queries
+        top_idx_exp = top_idx.unsqueeze(-1).expand(-1, -1, -1, D)  # [B, H, u, D]
+        top_q = torch.gather(q, 2, top_idx_exp)  # [B, H, u, D]
 
-        # Compute full attention for top queries
-        scores = torch.matmul(top_q, k.transpose(-2, -1)) * self.scale
+        # Step 6: Compute full attention for top-u queries
+        scores = torch.matmul(top_q, k.transpose(-2, -1)) * self.scale  # [B, H, u, T_k]
 
         # Apply causal mask for self-attn
         if is_causal and not self.cross_attention:
-            q_pos = top_idx.unsqueeze(-1)
-            k_pos = torch.arange(T_k, device=q.device).view(1, 1, 1, T_k)
+            q_pos = top_idx.unsqueeze(-1)  # [B, H, u, 1]
+            k_pos = torch.arange(T_k, device=q.device).view(1, 1, 1, T_k)  # [1, 1, 1, T_k]
             causal_mask = k_pos > q_pos
             scores = scores.masked_fill(causal_mask, float("-inf"))
 
         # Apply attention mask
         if attn_mask is not None:
             if attn_mask.dim() == 2:
+                # Expand and gather
                 am = attn_mask.bool().view(1, 1, T_q, T_k)
-                am = torch.gather(am.expand(B, H, T_q, T_k), 2, 
-                                 top_idx.unsqueeze(-1).expand(B, H, u, T_k))
+                am = am.expand(B, H, T_q, T_k)
+                # Gather rows corresponding to top queries
+                am_top = torch.gather(am, 2, top_idx.unsqueeze(-1).expand(B, H, u, T_k))
             else:
-                am = attn_mask.bool()
-                am = torch.gather(am, 2, top_idx.unsqueeze(-1).expand(B, H, u, T_k))
-            scores = scores.masked_fill(am, float("-inf"))
+                # Already has batch/head dims
+                am_top = torch.gather(attn_mask.bool(), 2, top_idx.unsqueeze(-1).expand(B, H, u, T_k))
+            scores = scores.masked_fill(am_top, float("-inf"))
 
         if key_padding_mask is not None:
             scores = scores.masked_fill(key_padding_mask.view(B, 1, 1, T_k), float("-inf"))
 
-        # Compute attention weights
-        scores = scores - scores.max(dim=-1, keepdim=True)[0]
-        weights = F.softmax(scores, dim=-1)
+        # Step 7: Compute attention weights and output for top queries
+        # Stabilize with max subtraction
+        scores_max = scores.max(dim=-1, keepdim=True)[0]
+        scores = scores - scores_max
+        weights = F.softmax(scores, dim=-1)  # [B, H, u, T_k]
+        
         if self.training and self.dropout_p > 0:
             weights = F.dropout(weights, p=self.dropout_p, training=True)
-        top_out = torch.matmul(weights, v)
+        
+        top_out = torch.matmul(weights, v)  # [B, H, u, D]
 
-        # Scatter back to full length
-        output = torch.zeros_like(q)
+        # Step 8: Create output tensor and scatter top results
+        output = torch.zeros(B, H, T_q, D, device=q.device, dtype=q.dtype)
         output.scatter_(2, top_idx_exp, top_out)
 
-        # Fill non-selected positions with mean
+        # Step 9: Fill remaining positions with cumulative value mean
+        # This is the "V-bar" operation from the paper
         if u < T_q:
+            # Create mask for positions that were computed
             mask = torch.zeros(B, H, T_q, device=q.device, dtype=torch.bool)
             mask.scatter_(2, top_idx, True)
-            mean_v = v.mean(dim=2, keepdim=True).expand(B, H, T_q, D)
-            output = torch.where(mask.unsqueeze(-1), output, mean_v)
+            
+            # Compute mean value for non-selected positions
+            v_mean = v.mean(dim=2, keepdim=True).expand(B, H, T_q, D)
+            output = torch.where(mask.unsqueeze(-1), output, v_mean)
 
+        # Return weights if needed (reconstruct full matrix)
         if need_weights:
             full_weights = torch.zeros(B, H, T_q, T_k, device=q.device, dtype=weights.dtype)
             full_weights.scatter_(2, top_idx.unsqueeze(-1).expand(-1, -1, -1, T_k), weights)
             return output, full_weights
+        
         return output, None
 
     # --------------------------------------------------------------------- #

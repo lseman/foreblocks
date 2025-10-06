@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLTracker Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f7fa;
+            color: #2d3748;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1.5rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+        }
+
+        .header p {
+            opacity: 0.9;
+            margin-top: 0.25rem;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .filters {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .filter-group label {
+            font-weight: 500;
+            color: #4a5568;
+        }
+
+        .filter-group select, .filter-group input {
+            padding: 0.5rem 1rem;
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            min-width: 200px;
+        }
+
+        .filter-group select:focus, .filter-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .runs-grid {
+            display: grid;
+            gap: 1.5rem;
+        }
+
+        .run-card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .run-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        .run-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .run-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .run-id {
+            font-size: 0.85rem;
+            color: #718096;
+            margin-top: 0.25rem;
+        }
+
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .status-finished {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .status-running {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+
+        .status-failed {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .run-content {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }
+
+        .section {
+            background: #f7fafc;
+            padding: 1rem;
+            border-radius: 6px;
+        }
+
+        .section-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #4a5568;
+            margin-bottom: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .metric-item, .param-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .metric-item:last-child, .param-item:last-child {
+            border-bottom: none;
+        }
+
+        .metric-key, .param-key {
+            color: #718096;
+            font-size: 0.9rem;
+        }
+
+        .metric-value {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .param-value {
+            font-weight: 500;
+            color: #2d3748;
+        }
+
+        .chart-container {
+            margin-top: 2rem;
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #718096;
+        }
+
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        .tag {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            background: #edf2f7;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔬 MLTracker Dashboard</h1>
+        <p>Track and compare your machine learning experiments</p>
+        <div id="connectionStatus" style="margin-top: 0.5rem; font-size: 0.9rem;">
+            <span style="color: #f59e0b;">● Connecting...</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="filters">
+            <div class="filter-group">
+                <label>Experiment:</label>
+                <select id="experimentFilter">
+                    <option value="all">All Experiments</option>
+                </select>
+                
+                <label>Status:</label>
+                <select id="statusFilter">
+                    <option value="all">All Status</option>
+                    <option value="FINISHED">Finished</option>
+                    <option value="RUNNING">Running</option>
+                    <option value="FAILED">Failed</option>
+                </select>
+
+                <label>Search:</label>
+                <input type="text" id="searchInput" placeholder="Search runs...">
+            </div>
+        </div>
+
+        <div id="runsContainer" class="runs-grid"></div>
+
+        <div class="chart-container" id="chartContainer" style="display: none;">
+            <h3 style="margin-bottom: 1rem;">Metrics Comparison</h3>
+            <canvas id="metricsChart"></canvas>
+        </div>
+    </div>
+
+<script>
+  // Configuration
+  const API_BASE_URL = 'http://100.103.103.23:8000';
+  let USE_API = true;  // Set to false to use sample data
+
+  // Sample data (unchanged)
+  const sampleRuns = [ /* ... your sample runs ... */ ];
+
+  // ✅ Single source of truth for runs loaded from API or demo
+  let allRuns = [];
+
+  // Check if API is available
+  async function checkAPI() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/health`);
+      if (response.ok) {
+        USE_API = true;
+        document.getElementById('connectionStatus').innerHTML =
+          '<span style="color: #22c55e;">● Connected to API</span>';
+        await loadRunsFromAPI();
+      } else {
+        USE_API = false;
+        showDemoMode();
+      }
+    } catch {
+      USE_API = false;
+      showDemoMode();
+    }
+  }
+
+  function showDemoMode() {
+    document.getElementById('connectionStatus').innerHTML =
+      '<span style="color: #f59e0b;">● Demo Mode (API not running)</span>';
+    allRuns = [...sampleRuns];
+    renderRuns(allRuns);
+  }
+
+  async function loadRunsFromAPI() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/runs`);
+      if (!response.ok) return showDemoMode();
+
+      const data = await response.json();
+      allRuns = data.runs || [];
+
+      // Load experiments for filter (optional, if your API provides it)
+      const expResponse = await fetch(`${API_BASE_URL}/api/experiments`);
+      if (expResponse.ok) {
+        const experiments = await expResponse.json();
+        updateExperimentFilter(experiments);
+      }
+
+      renderRuns(allRuns);
+    } catch (e) {
+      console.error('Failed to load runs:', e);
+      showDemoMode();
+    }
+  }
+
+  function updateExperimentFilter(experiments) {
+    const select = document.getElementById('experimentFilter');
+    select.innerHTML = '<option value="all">All Experiments</option>';
+    experiments.forEach(exp => {
+      const option = document.createElement('option');
+      option.value = exp.name;
+      option.textContent = exp.name;
+      select.appendChild(option);
+    });
+  }
+
+  function renderRuns(runs) {
+    const container = document.getElementById('runsContainer');
+
+    if (!runs || runs.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+          </svg>
+          <h3>No runs found</h3>
+          <p>Try adjusting your filters or create a new run</p>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = runs.map(run => `
+      <div class="run-card">
+        <div class="run-header">
+          <div>
+            <div class="run-title">${run.name || 'Unnamed Run'}</div>
+            <div class="run-id">Run ID: ${run.run_id}</div>
+          </div>
+          <span class="status-badge status-${(run.status || 'UNKNOWN').toLowerCase()}">${run.status}</span>
+        </div>
+
+        <div class="run-content">
+          <div class="section">
+            <div class="section-title">Parameters</div>
+            ${Object.entries(run.params || {}).map(([k, v]) => `
+              <div class="param-item">
+                <span class="param-key">${k}</span>
+                <span class="param-value">${v}</span>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="section">
+            <div class="section-title">Metrics</div>
+            ${Object.entries(run.metrics || {}).map(([k, v]) => `
+              <div class="metric-item">
+                <span class="metric-key">${k}</span>
+                <span class="metric-value">${typeof v === 'number' ? v.toFixed(4) : v}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+
+        ${run.tags && Object.keys(run.tags).length ? `
+          <div style="margin-top: 1rem;">
+            ${Object.entries(run.tags).map(([k, v]) => `
+              <span class="tag">${k}: ${v}</span>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>
+    `).join('');
+  }
+
+  function filterRuns() {
+    const experimentFilter = document.getElementById('experimentFilter').value;
+    const statusFilter = document.getElementById('statusFilter').value;
+    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+
+    // ✅ Filter WITHOUT mutating the source
+    const results = (allRuns || []).filter(run => {
+      const expName = run.experiment_name || `experiment_${run.experiment_id}`;
+      const matchesExperiment = experimentFilter === 'all' || expName === experimentFilter;
+      const matchesStatus = statusFilter === 'all' || run.status === statusFilter;
+      const matchesSearch = !searchTerm ||
+        (run.name && run.name.toLowerCase().includes(searchTerm)) ||
+        (run.run_id && run.run_id.toLowerCase().includes(searchTerm));
+      return matchesExperiment && matchesStatus && matchesSearch;
+    });
+
+    renderRuns(results);
+  }
+
+  // Initialize filters (for demo mode; API mode will populate via updateExperimentFilter)
+  const experiments = [...new Set(sampleRuns.map(r => r.experiment_name))];
+  const experimentSelect = document.getElementById('experimentFilter');
+  experiments.forEach(exp => {
+    const option = document.createElement('option');
+    option.value = exp;
+    option.textContent = exp;
+    experimentSelect.appendChild(option);
+  });
+
+  // Event listeners
+  document.getElementById('experimentFilter').addEventListener('change', filterRuns);
+  document.getElementById('statusFilter').addEventListener('change', filterRuns);
+  document.getElementById('searchInput').addEventListener('input', filterRuns);
+
+  // Kickoff
+  checkAPI();
+</script>
+
+</body>
+</html>

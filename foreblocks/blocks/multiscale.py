@@ -1,18 +1,15 @@
-from typing import List
+from typing import Optional, Sequence
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class MultiScaleTemporalConv(nn.Module):
     """
-    Multi-scale temporal convolution block for time series.
-
-    Uses parallel dilated convolutions with different dilation rates to capture
-    patterns at multiple time scales efficiently. Similar to the TCN architecture
-    but with parallel rather than sequential dilations.
-
-    This approach has shown strong performance in various time series models.
+    Parallel multi-dilation temporal conv block.
+    Input:  [B, T, C_in]
+    Output: [B, T, C_out]
     """
 
     def __init__(
@@ -20,106 +17,89 @@ class MultiScaleTemporalConv(nn.Module):
         input_size: int,
         output_size: int,
         kernel_size: int = 3,
-        dilation_rates: List[int] = [1, 2, 4, 8],
+        dilation_rates: Optional[Sequence[int]] = None,
         dropout: float = 0.1,
         activation: str = "gelu",
         causal: bool = True,
     ):
-        """
-        Args:
-            input_size: Number of input channels
-            output_size: Number of output channels
-            kernel_size: Kernel size for all convolutions
-            dilation_rates: List of dilation rates for parallel branches
-            dropout: Dropout rate
-            activation: Activation function
-            causal: Whether to use causal (padding on left only) convolutions
-        """
         super().__init__()
         self.input_size = input_size
         self.output_size = output_size
+        self.kernel_size = kernel_size
         self.causal = causal
+        self.dilation_rates = tuple(dilation_rates or (1, 2, 4, 8))
 
-        # Create parallel dilated convolution branches
-        self.branches = nn.ModuleList()
-        for dilation in dilation_rates:
-            padding = (
-                ((kernel_size - 1) * dilation)
-                if causal
-                else ((kernel_size - 1) * dilation // 2)
-            )
-            branch = nn.Sequential(
-                nn.Conv1d(
-                    input_size,
-                    output_size,
-                    kernel_size=kernel_size,
-                    padding=padding,
-                    dilation=dilation,
-                    padding_mode="zeros",
-                ),
-                self._get_activation(activation),
-                nn.Dropout(dropout),
-            )
-            self.branches.append(branch)
+        act = self._get_activation(activation)
+        drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
 
-        # Weight averaging layer for combining branch outputs
-        self.combiner = nn.Conv1d(
-            output_size * len(dilation_rates), output_size, kernel_size=1
-        )
+        # Build branches
+        branches = []
+        for d in self.dilation_rates:
+            if causal:
+                # left-pad manually; conv uses padding=0
+                conv = nn.Conv1d(input_size, output_size,
+                                 kernel_size=kernel_size, dilation=d, padding=0)
+                branch = nn.Sequential(conv, act, drop)
+            else:
+                # “same-length” padding (for odd kernels) via symmetric pad
+                pad = (kernel_size - 1) * d // 2
+                conv = nn.Conv1d(input_size, output_size,
+                                 kernel_size=kernel_size, dilation=d, padding=pad)
+                branch = nn.Sequential(conv, act, drop)
+            branches.append(branch)
+        self.branches = nn.ModuleList(branches)
 
-        # Residual connection for stability
+        # 1x1 to fuse branches
+        self.combiner = nn.Conv1d(output_size * len(self.dilation_rates),
+                                  output_size, kernel_size=1)
+
+        # Residual
         self.residual = (
             nn.Conv1d(input_size, output_size, kernel_size=1)
-            if input_size != output_size
-            else nn.Identity()
+            if input_size != output_size else nn.Identity()
         )
 
-        # Layer normalization
+        # LN on last dim after we transpose back to [B, T, C]
         self.layer_norm = nn.LayerNorm(output_size)
 
-    def _get_activation(self, activation: str) -> nn.Module:
-        """Get activation function by name"""
-        return {
-            "relu": nn.ReLU(),
-            "gelu": nn.GELU(),
-            "silu": nn.SiLU(),
-            "tanh": nn.Tanh(),
-        }.get(activation.lower(), nn.GELU())
+    @staticmethod
+    def _get_activation(name: str) -> nn.Module:
+        name = name.lower()
+        if name == "relu":  return nn.ReLU()
+        if name == "gelu":  return nn.GELU()
+        if name == "silu":  return nn.SiLU()
+        if name == "tanh":  return nn.Tanh()
+        return nn.GELU()
+
+    def _causal_pad(self, x: torch.Tensor, dilation: int) -> torch.Tensor:
+        # x: [B, C, T]; left-pad only
+        pad = (self.kernel_size - 1) * dilation
+        return F.pad(x, (pad, 0))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Input tensor of shape [batch_size, seq_len, input_size]
+        # x: [B, T, C_in] -> [B, C_in, T]
+        x_ch_first = x.transpose(1, 2)
+        T = x_ch_first.size(-1)
 
-        Returns:
-            Output tensor of shape [batch_size, seq_len, output_size]
-        """
-        # Transpose for convolution: [batch, input_size, seq_len]
-        x_trans = x.transpose(1, 2)
-
-        # Apply each branch
-        branch_outputs = []
-        for branch in self.branches:
-            branch_output = branch(x_trans)
+        outs = []
+        for d, branch in zip(self.dilation_rates, self.branches):
             if self.causal:
-                # Remove extra padding on the right for causal convolution
-                branch_output = branch_output[:, :, : x_trans.size(2)]
-            branch_outputs.append(branch_output)
+                xin = self._causal_pad(x_ch_first, d)
+                y = branch(xin)                    # padding=0 in conv
+                # keep original length exactly
+                y = y[..., :T]
+            else:
+                y = branch(x_ch_first)             # symmetric padding inside conv
+            outs.append(y)
 
-        # Concatenate branch outputs along channel dimension
-        multi_scale_features = torch.cat(branch_outputs, dim=1)
+        # fuse multi-scale features
+        y = torch.cat(outs, dim=1)                 # [B, C_out*k, T]
+        y = self.combiner(y)                       # [B, C_out, T]
 
-        # Combine multi-scale features
-        combined = self.combiner(multi_scale_features)
+        # residual
+        y = y + self.residual(x_ch_first)
 
-        # Apply residual connection
-        res = self.residual(x_trans)
-        output = combined + res
-
-        # Transpose back: [batch, seq_len, output_size]
-        output = output.transpose(1, 2)
-
-        # Apply layer normalization
-        output = self.layer_norm(output)
-
-        return output
+        # back to [B, T, C] and LayerNorm on C
+        y = y.transpose(1, 2)
+        y = self.layer_norm(y)
+        return y

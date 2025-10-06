@@ -1,8 +1,14 @@
 from .att import AttentionLayer
 from .aux import ModelConfig, TrainingConfig
 from .core import ForecastingModel
-from .enc_dec import (GRUDecoder, GRUEncoder, LatentConditionedDecoder,
-                      LSTMDecoder, LSTMEncoder, VariationalEncoderWrapper)
+from .enc_dec import (
+    GRUDecoder,
+    GRUEncoder,
+    LatentConditionedDecoder,
+    LSTMDecoder,
+    LSTMEncoder,
+    VariationalEncoderWrapper,
+)
 from .pipeline import TimeSeriesSeq2Seq
 from .preprocessing import TimeSeriesPreprocessor
 from .tf.transformer import TransformerDecoder, TransformerEncoder
