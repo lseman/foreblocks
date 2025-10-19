@@ -1,10 +1,13 @@
-# transformer_moe_dmoe.py (COMPATIBILITY FIX FOR ROUTER RETURN)
+# transformer_moe_dmoe.py
 # -----------------------------------------------------------------------------
-# Fixed: Robust unpacking in _compute_router_logits for varying tuple lengths
-# (handles len=2: (logits, probs) or len=3: (raw, logits, probs)).
-# Ensures single Tensor return for optimized_topk_routing.
-# Retains all prior optimizations.
+# Enhanced dMoE FeedForward with safe aux handling (no graph reuse across steps)
+# - Router unpacking robust to compiled/uncompiled + varied tuple arities
+# - Z-loss computed from local logits (no stored raw logits with grad)
+# - Stored metrics (aux_loss) are detached to avoid cross-step graph reuse
+# - Capacity-aware dropless dispatcher
+# - Optional grouped_swiglu kernel path
 # -----------------------------------------------------------------------------
+
 import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -12,32 +15,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .kernels import grouped_mlp_swiglu  # Replace with actual import if available
+# If you have a custom kernel, import it here; else keep the fallback path below.
+try:
+    from .kernels import grouped_mlp_swiglu  # type: ignore
+except Exception:
+    grouped_mlp_swiglu = None  # Fallback will use Python loop
 
-# Mock/fallback for grouped_mlp_swiglu (replace with your .kernels if available)
-# def grouped_mlp_swiglu(x, offsets, experts, dropout_p=0.0, training=False, out_dtype=torch.float32):
-#     packed_y = torch.empty_like(x)
-#     for e in range(len(experts)):
-#         s = int(offsets[e].item()); t = int(offsets[e + 1].item())
-#         if t <= s: continue
-#         seg = x[s:t]
-#         y = experts[e](seg)
-#         packed_y[s:t] = y
-#     if training and dropout_p > 0:
-#         packed_y = F.dropout(packed_y, p=dropout_p, training=True)
-#     return packed_y
 
 # -----------------------------------------------------------------------------
 # Utils
 # -----------------------------------------------------------------------------
 def maybe_compile(mod):
+    """Wrap with torch.compile if available, otherwise return the module."""
     try:
         return torch.compile(mod, dynamic=True)
     except Exception:
         return mod
 
+
 # -----------------------------------------------------------------------------
-# Optimized Top-K
+# Optimized Top-K (Scripted for speed)
 # -----------------------------------------------------------------------------
 @torch.jit.script
 def optimized_topk_routing(logits: torch.Tensor, k: int):
@@ -47,6 +44,7 @@ def optimized_topk_routing(logits: torch.Tensor, k: int):
     else:
         top_p, top_i = torch.topk(probs, k, dim=-1, sorted=False)
     return top_p, top_i
+
 
 # -----------------------------------------------------------------------------
 # Enhanced Dispatcher with Capacity Drop
@@ -60,9 +58,9 @@ class DroplessPackedDispatcher:
         self.top_k = top_k
         self.capacity_factor = capacity_factor
         self._buffer_size = 0
-        self._sort_buffer = None
-        self._counts_buffer = None
-        self._offsets_buffer = None
+        self._sort_buffer: Optional[torch.Tensor] = None
+        self._counts_buffer: Optional[torch.Tensor] = None
+        self._offsets_buffer: Optional[torch.Tensor] = None
 
     def _ensure_buffers(self, size: int, device: torch.device):
         if self._sort_buffer is None or self._buffer_size < size:
@@ -84,29 +82,36 @@ class DroplessPackedDispatcher:
         K = topk_i.shape[1]
         S = T * K
         capacity_factor = capacity_factor or self.capacity_factor
+
         if S == 0:
             empty = x_flat.new_zeros((0, D))
             empty_idx = x_flat.new_zeros(0, dtype=torch.long)
             empty_offsets = x_flat.new_zeros(self.num_experts + 1, dtype=torch.long)
             return empty, empty, empty_idx, empty_idx, empty_offsets
+
         self._ensure_buffers(S, device)
         experts = topk_i.reshape(-1)
         weights = topk_p.reshape(-1)
         tokens = torch.arange(T, device=device, dtype=torch.long).unsqueeze(1).expand(T, K).reshape(-1)
+
+        # sort by expert (stable)
         torch.argsort(experts, stable=True, out=self._sort_buffer[:S])
         sort_idx = self._sort_buffer[:S]
         experts_sorted = experts[sort_idx]
         weights_sorted = weights[sort_idx]
         tokens_sorted = tokens[sort_idx]
+
         counts = torch.bincount(experts_sorted, minlength=self.num_experts)
         self._offsets_buffer.zero_()
         torch.cumsum(counts, 0, out=self._offsets_buffer[1:])
         offsets = self._offsets_buffer.clone()
+
         packed_x = x_flat.index_select(0, tokens_sorted)
         packed_w = weights_sorted.unsqueeze(1)
+
         # Capacity drop: per-expert random subsample if overload
         total_capacity = math.ceil(T * K * capacity_factor)
-        per_expert_cap = math.ceil(total_capacity / self.num_experts)
+        per_expert_cap = max(1, math.ceil(total_capacity / self.num_experts))
         kept_mask = torch.ones(S, dtype=torch.bool, device=device)
         for e in range(self.num_experts):
             s = int(offsets[e].item())
@@ -117,6 +122,7 @@ class DroplessPackedDispatcher:
                 local_mask = torch.zeros(num, dtype=torch.bool, device=device)
                 local_mask[local_keep] = True
                 kept_mask[s:t] = local_mask
+
         kept = kept_mask.nonzero(as_tuple=True)[0]
         if len(kept) < S:
             packed_x = packed_x[kept]
@@ -125,7 +131,11 @@ class DroplessPackedDispatcher:
             tokens_sorted = tokens_sorted[kept]
             # Recompute offsets post-drop
             counts = torch.bincount(experts_sorted, minlength=self.num_experts)
-            offsets = torch.cumsum(torch.cat([torch.tensor([0], device=device, dtype=torch.long), counts.float()]), dim=0).long()
+            offsets = torch.cumsum(
+                torch.cat([torch.tensor([0], device=device, dtype=torch.long), counts]),
+                dim=0
+            )
+
         return packed_x, packed_w, experts_sorted, tokens_sorted, offsets
 
     @staticmethod
@@ -137,8 +147,9 @@ class DroplessPackedDispatcher:
         out_accum.index_add_(0, tokens_seq, packed_y)
         return out_accum
 
+
 # -----------------------------------------------------------------------------
-# Router (Fixed for Non-Noisy)
+# Router (Noisy Top-K)
 # -----------------------------------------------------------------------------
 class NoisyTopKRouter(nn.Module):
     def __init__(
@@ -171,23 +182,29 @@ class NoisyTopKRouter(nn.Module):
             shp = (*x.shape[:-1], self.num_experts)
             z = x.new_zeros(shp)
             return (z, z, z) if return_raw_logits else (z, z)
+
         if self.training and self.input_dropout is not None:
             x = self.input_dropout(x)
+
         raw = self.router(x)
         if self.training and self.jitter > 0:
             logits = (raw + torch.randn_like(raw) * self.jitter).clamp_(self.clamp_min, self.clamp_max)
         else:
             logits = raw.clamp_(self.clamp_min, self.clamp_max)
+
+        # stable softmax later; for now provide logits + probs compatibility
         m = logits.max(dim=-1, keepdim=True).values
         probs = torch.exp(logits - m)
         probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-12)
+
         if return_raw_logits:
             return raw, logits, probs
         else:
             return logits, probs
 
+
 # -----------------------------------------------------------------------------
-# Experts (Added expert_dropout support)
+# Experts
 # -----------------------------------------------------------------------------
 class MoE_SwiGLUExpert(nn.Module):
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.0, expert_dropout: float = 0.0):
@@ -213,6 +230,7 @@ class MoE_SwiGLUExpert(nn.Module):
             h = F.dropout(h, p=self.expert_dropout_p, training=True)
         return self.w3(h)
 
+
 class MoE_FFNExpert(nn.Module):
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.0, activation: str = "gelu", expert_dropout: float = 0.0):
         super().__init__()
@@ -234,8 +252,9 @@ class MoE_FFNExpert(nn.Module):
             x = F.dropout(x, p=self.expert_dropout_p, training=True)
         return self.fc2(x)
 
+
 # -----------------------------------------------------------------------------
-# Enhanced dMoE Layer (FIX: Robust router unpacking)
+# Enhanced dMoE Layer (safe aux + robust router unpack)
 # -----------------------------------------------------------------------------
 class MoEFeedForwardDMoE(nn.Module):
     def __init__(
@@ -258,8 +277,10 @@ class MoEFeedForwardDMoE(nn.Module):
         use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
-        print(f"MoEFeedForwardDMoE: num_experts={num_experts}, top_k={top_k}, "
-              f"use_swiglu={use_swiglu}, capacity_factor={moe_capacity_factor}, router_type={router_type}")
+        print(
+            f"MoEFeedForwardDMoE: num_experts={num_experts}, top_k={top_k}, "
+            f"use_swiglu={use_swiglu}, capacity_factor={moe_capacity_factor}, router_type={router_type}"
+        )
         self.d_model = d_model
         self.d_ff = d_ff
         self.num_experts = num_experts
@@ -268,7 +289,9 @@ class MoEFeedForwardDMoE(nn.Module):
         self.z_loss_weight = z_loss_weight
         self.moe_capacity_factor = moe_capacity_factor
         self.use_gradient_checkpointing = use_gradient_checkpointing
+
         self.input_norm = nn.LayerNorm(d_model)
+
         # Router
         if router_type == "noisy_topk":
             self.router = NoisyTopKRouter(
@@ -278,7 +301,8 @@ class MoEFeedForwardDMoE(nn.Module):
         else:
             self.router = nn.Linear(d_model, num_experts, bias=use_bias)
             nn.init.normal_(self.router.weight, mean=0.0, std=0.02)
-        # Experts (FIX: Conditional activation passing)
+
+        # Experts
         expert_cls = MoE_SwiGLUExpert if use_swiglu else MoE_FFNExpert
         expert_kwargs = {
             'd_model': d_model,
@@ -288,21 +312,24 @@ class MoEFeedForwardDMoE(nn.Module):
         }
         if not use_swiglu:
             expert_kwargs['activation'] = activation
-        self.experts = nn.ModuleList([
-            expert_cls(**expert_kwargs)
-            for _ in range(num_experts)
-        ])
+
+        self.experts = nn.ModuleList([expert_cls(**expert_kwargs) for _ in range(num_experts)])
+
+        # Optional compile for speed
         self.router = maybe_compile(self.router)
         self.experts = nn.ModuleList([maybe_compile(e) for e in self.experts])
+
         # Dispatcher with capacity
         self.dispatcher = DroplessPackedDispatcher(num_experts, self.top_k, moe_capacity_factor)
-        # Stats
+
+        # Stats / buffers
         self.register_buffer("_eps", torch.tensor(1e-8))
         self.register_buffer("expert_usage", torch.zeros(num_experts))
         self.register_buffer("momentum", torch.tensor(0.999))
+
+        # metrics-only store; always detached copies
         self.aux_loss = torch.tensor(0.0)
-        self.raw_logits = None
-        
+
     def _compute_router_logits(self, x_flat: torch.Tensor) -> torch.Tensor:
         """
         Robustly obtain router logits as a single Tensor, regardless of whether:
@@ -311,7 +338,6 @@ class MoEFeedForwardDMoE(nn.Module):
         - it returns (raw, logits, probs), (logits, probs), or just logits.
         """
         out = None
-        raw = None
 
         # Try to request raw logits explicitly (works on uncompiled router).
         try:
@@ -320,25 +346,19 @@ class MoEFeedForwardDMoE(nn.Module):
             # Compiled wrappers often drop/rename kwargs; call without it.
             out = self.router(x_flat)
 
-        # Normalize outputs to a single logits tensor and optional raw.
+        # Normalize outputs to a single logits tensor
         if isinstance(out, tuple):
             if len(out) == 3:
-                raw, logits, probs = out
+                _raw_unused, logits, _probs = out
             elif len(out) == 2:
-                logits, probs = out
-                raw = None
+                logits, _probs = out
             elif len(out) == 1:
                 logits = out[0]
-                raw = None
             else:
-                # Unexpected arity; take first element as logits for safety.
                 logits = out[0]
-                raw = None
         else:
             logits = out
-            raw = None
 
-        self.raw_logits = raw
         return logits
 
     def _update_expert_usage_ema(self, top_p: torch.Tensor, top_i: torch.Tensor):
@@ -353,22 +373,33 @@ class MoEFeedForwardDMoE(nn.Module):
         # Pre-norm
         x_norm = self.input_norm(x)
         x_flat = x_norm.reshape(-1, self.d_model)
+
         # Router
         logits = self._compute_router_logits(x_flat)
         T = x_flat.size(0)
         top_p, top_i = optimized_topk_routing(logits, self.top_k)
+
         # Track usage
         if self.training:
             self._update_expert_usage_ema(top_p, top_i)
+
         # Pack with capacity drop
         packed_x, packed_w, experts_seq, tokens_seq, offsets = self.dispatcher.pack(
             x_flat, top_p, top_i, capacity_factor=self.moe_capacity_factor
         )
+
+        # If nothing dispatched (e.g., empty batch)
         if packed_x.numel() == 0:
             out = torch.zeros_like(x_flat).reshape_as(x_norm)
-            return (out, x.new_zeros(())) if return_aux_loss else out
+            if return_aux_loss:
+                self.aux_loss = x.new_zeros(()).detach()
+                return out, self.aux_loss
+            else:
+                self.aux_loss = x.new_zeros(()).detach()
+                return out
+
         # Expert compute
-        if 'grouped_mlp_swiglu' in globals() and grouped_mlp_swiglu is not None:
+        if grouped_mlp_swiglu is not None:
             packed_y = grouped_mlp_swiglu(
                 packed_x, offsets, self.experts,
                 dropout_p=getattr(self.experts[0], "dropout_p", 0.0),
@@ -376,48 +407,55 @@ class MoEFeedForwardDMoE(nn.Module):
                 out_dtype=packed_x.dtype,
             )
         else:
-            # Fallback loop
             packed_y = torch.empty_like(packed_x)
             for e in range(self.num_experts):
                 s = int(offsets[e].item()); t = int(offsets[e + 1].item())
-                if t <= s: continue
+                if t <= s:
+                    continue
                 seg = packed_x[s:t]
                 if self.use_gradient_checkpointing and self.training:
                     y = torch.utils.checkpoint.checkpoint(self.experts[e], seg, use_reentrant=False)
                 else:
                     y = self.experts[e](seg)
                 packed_y[s:t] = y
-        # Gating (in-place)
+
+        # Gating
         packed_y.mul_(packed_w)
-        # Scatter
+
+        # Scatter back
         out_flat = torch.zeros_like(x_flat)
         self.dispatcher.scatter_back(out_flat, packed_y, tokens_seq)
         out = out_flat.reshape_as(x_norm)
-        # Aux
+
+        # Aux (with grad for current step; detached copy stored for metrics)
         if return_aux_loss:
             aux = self._compute_aux_loss(logits, T, experts_seq)
-            self.aux_loss = aux
+            self.aux_loss = aux.detach()
             return out, aux
         else:
-            self.aux_loss = x.new_zeros(())
+            self.aux_loss = x.new_zeros(()).detach()
             return out
 
     def _compute_aux_loss(self, logits: torch.Tensor, num_tokens: int, experts_seq: torch.Tensor):
         aux = logits.new_zeros(())
-        # Z-loss (improved: /2 for variance; skip if no raw)
-        if self.z_loss_weight > 0 and self.raw_logits is not None:
-            log_z = torch.logsumexp(self.raw_logits.view(-1, self.num_experts), dim=-1)
-            aux += self.z_loss_weight * 0.5 * (log_z ** 2).mean()
-        # CV² load balance (improved: quadratic for stronger uniformity)
+
+        # Z-loss based on current logits (no reliance on stored tensors)
+        if self.z_loss_weight > 0:
+            log_z = torch.logsumexp(logits.view(-1, self.num_experts), dim=-1)
+            aux = aux + self.z_loss_weight * 0.5 * (log_z ** 2).mean()
+
+        # Load-balance (quadratic on f*p)
         if self.load_balance_weight > 0:
             probs = F.softmax(logits, dim=-1)
             with torch.no_grad():
                 counts = torch.bincount(experts_seq, minlength=self.num_experts).float()
-                f = counts / (num_tokens * self.top_k)  # Fraction dispatched (post-capacity)
+                f = counts / max(1, (num_tokens * self.top_k))  # post-capacity fraction
             p = probs.mean(dim=0)
-            aux += self.load_balance_weight * self.num_experts * (f * p).pow(2).sum()
+            aux = aux + self.load_balance_weight * self.num_experts * (f * p).pow(2).sum()
+
         return aux
 
+    @torch.no_grad()
     def get_expert_stats(self) -> Dict[str, torch.Tensor]:
         eps = float(self._eps)
         usage = self.expert_usage.clamp_min(eps)
@@ -431,11 +469,12 @@ class MoEFeedForwardDMoE(nn.Module):
 
     def reset_stats(self):
         self.expert_usage.zero_()
-        self.aux_loss = torch.zeros((), device=self.expert_usage.device)
-        self.raw_logits = None
+        # keep metrics placeholder on the same device, detached
+        self.aux_loss = torch.zeros((), device=self.expert_usage.device).detach()
+
 
 # -----------------------------------------------------------------------------
-# Non-MoE FFN (Unchanged)
+# Non-MoE FFN
 # -----------------------------------------------------------------------------
 class _StandardFeedForwardBlock(nn.Module):
     """Standard FFN with optional SwiGLU."""
@@ -472,8 +511,9 @@ class _StandardFeedForwardBlock(nn.Module):
                 y = F.dropout(y, p=self.dropout_p, training=True)
             return self.fc2(y)
 
+
 # -----------------------------------------------------------------------------
-# Public Wrapper (Updated with New Params)
+# Public Wrapper
 # -----------------------------------------------------------------------------
 class FeedForwardBlock(nn.Module):
     """

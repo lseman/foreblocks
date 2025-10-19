@@ -1,258 +1,373 @@
-# fedformer_encoder_decoder_custom.py
-from typing import Optional, Tuple
+# fedformer_head_custom.py
+from typing import Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Your blocks
-from foreblocks.tf.transformer import TransformerDecoder, TransformerEncoder
-from foreblocks.tf.transformer_aux import create_norm_layer
+from .transformer_aux import (
+    create_norm_layer,  # your helper (rms/layer/batch norm etc.)
+)
 
+# ---------------------------
+# 1) Series decomposition
+# ---------------------------
 
-# ----------------------------
-# Series decomposition (centered moving average)
-# ----------------------------
-class SeriesDecompMovingAvg(nn.Module):
+class SeriesDecomp(nn.Module):
     """
-    Per-channel moving average via depthwise Conv1d.
-    Input:  x [B, T, C]
-    Output: seasonal [B, T, C], trend [B, T, C]
+    Moving-average decomposition: x = seasonal + trend
+    Trend = MA(x, kernel_size), Seasonal = x - Trend.
     """
     def __init__(self, kernel_size: int):
         super().__init__()
-        assert kernel_size > 0 and kernel_size % 2 == 1, "kernel_size must be odd"
+        assert kernel_size % 2 == 1, "kernel_size should be odd"
         self.kernel_size = kernel_size
-        self.pad = kernel_size // 2
+        # Depthwise "smoothing" over time
+        pad = (kernel_size - 1) // 2
+        self.avg = nn.Conv1d(
+            in_channels=1, out_channels=1, kernel_size=kernel_size,
+            padding=pad, bias=False, groups=1
+        )
+        nn.init.constant_(self.avg.weight, 1.0 / kernel_size)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        x: [B, T, C]
+        Returns: seasonal [B, T, C], trend [B, T, C]
+        """
         B, T, C = x.shape
-        xc = x.permute(0, 2, 1).contiguous()  # [B, C, T]
-        weight = x.new_ones(C, 1, self.kernel_size) / float(self.kernel_size)
-        trend = F.conv1d(xc, weight=weight, bias=None, stride=1, padding=self.pad, groups=C)
-        trend = trend.permute(0, 2, 1).contiguous()   # [B, T, C]
-        seasonal = x - trend
-        return seasonal, trend
+        # apply independently per channel via view+conv
+        u = x.permute(0, 2, 1).contiguous().view(B * C, 1, T)  # [B*C,1,T]
+        t = self.avg(u)                                        # [B*C,1,T]
+        t = t.view(B, C, T).permute(0, 2, 1).contiguous()      # [B,T,C]
+        s = x - t
+        return s, t
 
 
-# ----------------------------
-# FEDFormer Encoder (separate)
-# ----------------------------
-class FEDFormerEncoderCustom(nn.Module):
+# ---------------------------
+# 2) Fourier (frequency) block
+# ---------------------------
+
+def _complex_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    # (re, im) multiplication on last dim size=2
+    ar, ai = a[..., 0], a[..., 1]
+    br, bi = b[..., 0], b[..., 1]
+    return torch.stack([ar * br - ai * bi, ar * bi + ai * br], dim=-1)
+
+class FourierModeSelector(nn.Module):
     """
-    Encoder side of FEDFormer:
-      - Decompose x into seasonal + trend
-      - Encode seasonal with frequency attention
-    Returns:
-      memory [B, T_enc, d_model], seasonal_enc [B, T_enc, C], trend_enc [B, T_enc, C]
+    Select top-K frequency modes (by magnitude) per sample for efficiency.
+    If mode_select='fixed', take lowest K frequencies (excluding DC).
+    """
+    def __init__(self, modes: int = 32, mode_select: Literal["topk", "fixed"] = "topk"):
+        super().__init__()
+        self.modes = modes
+        self.mode_select = mode_select
+
+    def forward(self, Xf: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Xf: [B, F, C, 2] complex spectrum (one-sided real FFT representation)
+        Returns selected (Xf_sel, idx) with shape [B, K, C, 2], idx [B, K]
+        """
+        B, F, C, _ = Xf.shape
+        # Skip DC (0) to keep shapes nice — paper often ignores it or handles separately
+        freqs = Xf[:, 1:, :, :]  # [B, F-1, C, 2]
+        mag = freqs.pow(2).sum(dim=-1).sum(dim=-1)  # [B, F-1] magnitude across channels
+        K = min(self.modes, freqs.size(1))
+        if self.mode_select == "topk":
+            idx = mag.topk(K, dim=-1, largest=True).indices + 1  # shift back
+        else:
+            idx = torch.arange(1, K + 1, device=Xf.device).unsqueeze(0).expand(B, -1)
+        # Gather
+        Xf_sel = Xf.gather(dim=1, index=idx[:, :, None, None].expand(B, K, C, 2))
+        return Xf_sel, idx
+
+class FourierBlock(nn.Module):
+    """
+    Frequency-domain mixing:
+      - FFT over time
+      - select K modes
+      - learnable complex weights W_k for each mode and channel
+      - IFFT back
     """
     def __init__(
         self,
-        enc_in: int,
-        d_model: int = 512,
-        nhead: int = 8,
-        num_layers_enc: int = 3,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.1,
-        activation: str = "gelu",
-        freq_modes: int = 32,
-        layer_norm_eps: float = 1e-5,
-        norm_strategy: str = "pre_norm",
+        d_model: int,
+        modes: int = 32,
+        mode_select: Literal["topk", "fixed"] = "topk",
+        dropout: float = 0.0,
         custom_norm: str = "rms",
-        use_final_norm: bool = True,
-        use_swiglu: bool = True,
-        use_moe: bool = False,
-        num_experts: int = 8,
-        top_k: int = 2,
-        moe_capacity_factor: float = 1.25,
-        max_seq_len: int = 5000,
-        pos_encoding_scale: float = 1.0,
-        use_time_encoding_enc: bool = True,
-        decomp_kernel: int = 25,
+        eps: float = 1e-5,
     ):
         super().__init__()
-        self.enc_in = enc_in
-        self.use_time_encoding_enc = use_time_encoding_enc
-        self.decomp = SeriesDecompMovingAvg(decomp_kernel)
+        self.selector = FourierModeSelector(modes=modes, mode_select=mode_select)
+        # Learnable complex weights per (mode, channel)
+        self.weight = nn.Parameter(torch.randn(modes, d_model, 2) * 0.02)
+        self.dropout = nn.Dropout(dropout)
+        self.norm = create_norm_layer(custom_norm, d_model, eps)
 
-        self.encoder = TransformerEncoder(
-            input_size=enc_in,
-            d_model=d_model,
-            nhead=nhead,
-            num_layers=num_layers_enc,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=activation,
-            att_type="freq",
-            freq_modes=freq_modes,
-            layer_norm_eps=layer_norm_eps,
-            norm_strategy=norm_strategy,
-            custom_norm=custom_norm,
-            max_seq_len=max_seq_len,
-            pos_encoding_scale=pos_encoding_scale,
-            use_final_norm=use_final_norm,
-            use_swiglu=use_swiglu,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
-            moe_capacity_factor=moe_capacity_factor,
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, T, C] (C=d_model)
+        """
+        B, T, C = x.shape
+        # FFT (one-sided real-to-complex): shape [B, F, C, 2]
+        Xf = torch.view_as_real(torch.fft.rfft(x, dim=1))  # [B, F, C, 2]
+        Fh = Xf.size(1)
+
+        Xf_sel, idx = self.selector(Xf)                    # [B, K, C, 2], [B, K]
+        K = Xf_sel.size(1)
+
+        # Slice learnable weights to K (first K rows)
+        W = self.weight[:K, :, :]                          # [K, C, 2]
+        W = W.unsqueeze(0).expand(B, K, C, 2)              # [B, K, C, 2]
+
+        # Complex multiply selected modes
+        Yf_sel = _complex_mul(Xf_sel, W)                   # [B, K, C, 2]
+        # Scatter back into full spectrum buffer
+        Yf = torch.zeros_like(Xf)
+        Yf.scatter_(1, idx[:, :, None, None].expand(B, K, C, 2), Yf_sel)
+
+        # IFFT to time domain
+        y = torch.fft.irfft(torch.view_as_complex(Yf), n=T, dim=1)  # [B, T, C]
+        y = self.dropout(y)
+        return self.norm(y)
+
+
+# ---------------------------
+# 3) FEDformer encoder/decoder blocks
+# ---------------------------
+
+class FeedForwardBlock(nn.Module):
+    def __init__(self, d_model: int, dim_ff: int, dropout: float = 0.0, activation: str = "gelu"):
+        super().__init__()
+        act = nn.GELU() if activation.lower() in {"gelu", "geglu", "swiglu"} else nn.ReLU()
+        self.net = nn.Sequential(
+            nn.Linear(d_model, dim_ff),
+            act,
+            nn.Dropout(dropout),
+            nn.Linear(dim_ff, d_model),
         )
+    def forward(self, x): return self.net(x)
 
-    def forward(
+class FEDEncoderLayer(nn.Module):
+    def __init__(
         self,
-        x_enc: torch.Tensor,                       # [B, T_enc, C]
-        x_mark_enc: Optional[torch.Tensor] = None  # optional time features
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if x_enc.dim() != 3:
-            raise ValueError(f"Expected x_enc [B, T, C], got {tuple(x_enc.shape)}")
-        if x_enc.size(-1) != self.enc_in:
-            raise ValueError(f"enc_in={self.enc_in} but got C={x_enc.size(-1)}")
+        d_model: int,
+        dim_ff: int = 512,
+        modes: int = 32,
+        mode_select: Literal["topk", "fixed"] = "topk",
+        dropout: float = 0.1,
+        custom_norm: str = "rms",
+        eps: float = 1e-5,
+        activation: str = "gelu",
+    ):
+        super().__init__()
+        self.freq = FourierBlock(d_model, modes, mode_select, dropout, custom_norm, eps)
+        self.ffn = FeedForwardBlock(d_model, dim_ff, dropout, activation)
+        self.drop = nn.Dropout(dropout)
+        self.norm1 = create_norm_layer(custom_norm, d_model, eps)
+        self.norm2 = create_norm_layer(custom_norm, d_model, eps)
 
-        # Decompose
-        seasonal_enc, trend_enc = self.decomp(x_enc)  # [B, T, C]
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.freq(self.norm1(x))
+        x = x + self.drop(y)
+        y = self.ffn(self.norm2(x))
+        return x + self.drop(y)
 
-        # Encode seasonal with freq attention
-        enc_time = x_mark_enc if self.use_time_encoding_enc else None
-        memory = self.encoder(
-            seasonal_enc, src_mask=None, src_key_padding_mask=None, time_features=enc_time
-        )  # [B, T_enc, d_model]
-        return memory, seasonal_enc, trend_enc
-
-
-# ----------------------------
-# FEDFormer Decoder (separate)
-# ----------------------------
-class FEDFormerDecoderCustom(nn.Module):
+class FEDDecoderLayer(nn.Module):
     """
-    Decoder side of FEDFormer:
-      - Build seasonal_dec = seasonal_label + zeros(pred_len)
-      - Build trend_dec    = trend_label + repeat(last_trend, pred_len)
-      - Decode seasonal with freq attention + cross-attn to memory
-      - Project seasonal -> C_out and add trend horizon
+    Decoder layer uses Fourier mix on the target side + cross-frequency gating.
+    For simplicity, we do: y = Freq(dec) + linear cross from memory.
     """
     def __init__(
         self,
-        dec_in: int,
-        c_out: int,
-        label_len: int,
+        d_model: int,
+        dim_ff: int = 512,
+        modes: int = 32,
+        mode_select: Literal["topk", "fixed"] = "topk",
+        dropout: float = 0.1,
+        custom_norm: str = "rms",
+        eps: float = 1e-5,
+        activation: str = "gelu",
+    ):
+        super().__init__()
+        self.freq = FourierBlock(d_model, modes, mode_select, dropout, custom_norm, eps)
+        self.cross_proj = nn.Linear(d_model, d_model)
+        self.gate = nn.Sigmoid()
+        self.ffn = FeedForwardBlock(d_model, dim_ff, dropout, activation)
+        self.drop = nn.Dropout(dropout)
+        self.norm1 = create_norm_layer(custom_norm, d_model, eps)
+        self.norm2 = create_norm_layer(custom_norm, d_model, eps)
+        self.normx = create_norm_layer(custom_norm, d_model, eps)
+
+    def forward(self, tgt: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
+        """
+        tgt:    [B, T_out, C]
+        memory: [B, T_in,  C]  (encoded seasonal context)
+        """
+        # Simple memory pooling (mean) — FEDformer uses cross decomposed info
+        m = memory.mean(dim=1, keepdim=True).expand_as(tgt)         # [B,T_out,C]
+        m = self.cross_proj(self.normx(m))                          # [B,T_out,C]
+        # Frequency mixing on normalized tgt
+        y = self.freq(self.norm1(tgt))
+        # Gated cross fusion
+        fused = y * self.gate(m)
+        x = tgt + self.drop(fused)
+        y = self.ffn(self.norm2(x))
+        return x + self.drop(y)
+
+
+# ---------------------------
+# 4) Full FEDformer Head
+# ---------------------------
+
+class FEDformerHeadCustom(nn.Module):
+    """
+    Minimal, faithful FEDformer head with seasonal–trend decomposition and
+    frequency-enhanced encoder/decoder mixing.
+
+    Input:
+      x: [B, L_in, C_in]
+
+    Output:
+      y: [B, pred_len, C_out]
+    """
+    def __init__(
+        self,
         pred_len: int,
-
-        d_model: int = 512,
-        nhead: int = 8,
-        num_layers_dec: int = 2,
-        dim_feedforward: int = 2048,
+        d_model: int = 256,
+        n_layers_enc: int = 2,
+        n_layers_dec: int = 1,
+        dim_ff: int = 512,
         dropout: float = 0.1,
+        modes: int = 32,
+        mode_select: Literal["topk", "fixed"] = "topk",
+        kernel_size: int = 25,                 # moving average window (odd)
+        in_channels: int = 1,
+        out_channels: int = 1,
         activation: str = "gelu",
-        freq_modes: int = 32,
-        layer_norm_eps: float = 1e-5,
-        norm_strategy: str = "pre_norm",
         custom_norm: str = "rms",
-        use_final_norm: bool = True,
-        use_swiglu: bool = True,
-        use_moe: bool = False,
-        num_experts: int = 8,
-        top_k: int = 2,
-        moe_capacity_factor: float = 1.25,
-        max_seq_len: int = 5000,
-        pos_encoding_scale: float = 1.0,
-        use_time_encoding_dec: bool = True,
-        informer_like: bool = True,   # Informer-style masking (non-causal)
+        layer_norm_eps: float = 1e-5,
+        use_channel_mixer: bool = True,
+        quantiles: Optional[Tuple[float, ...]] = None,
     ):
         super().__init__()
-        self.dec_in = dec_in
-        self.c_out = c_out
-        self.label_len = label_len
         self.pred_len = pred_len
-        self.use_time_encoding_dec = use_time_encoding_dec
+        self.quantiles = quantiles
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.d_model = d_model
 
-        self.decoder = TransformerDecoder(
-            input_size=dec_in,
-            output_size=d_model,        # keep in model space; project after
-            d_model=d_model,
-            nhead=nhead,
-            num_layers=num_layers_dec,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=activation,
-            att_type="freq",
-            freq_modes=freq_modes,
-            layer_norm_eps=layer_norm_eps,
-            norm_strategy=norm_strategy,
-            custom_norm=custom_norm,
-            max_seq_len=max_seq_len,
-            pos_encoding_scale=pos_encoding_scale,
-            use_final_norm=use_final_norm,
-            use_swiglu=use_swiglu,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
-            moe_capacity_factor=moe_capacity_factor,
-            informer_like=informer_like,
-            use_time_encoding=use_time_encoding_dec,
+        # Decomposition
+        self.decomp = SeriesDecomp(kernel_size)
+
+        # Input/Output projections (joint multivariate processing)
+        self.enc_in = nn.Linear(in_channels, d_model)
+        self.dec_in = nn.Linear(in_channels, d_model)
+
+        # Encoder
+        self.encoder = nn.ModuleList([
+            FEDEncoderLayer(
+                d_model=d_model, dim_ff=dim_ff, dropout=dropout,
+                modes=modes, mode_select=mode_select,
+                custom_norm=custom_norm, eps=layer_norm_eps, activation=activation
+            ) for _ in range(n_layers_enc)
+        ])
+
+        # Decoder
+        self.decoder = nn.ModuleList([
+            FEDDecoderLayer(
+                d_model=d_model, dim_ff=dim_ff, dropout=dropout,
+                modes=modes, mode_select=mode_select,
+                custom_norm=custom_norm, eps=layer_norm_eps, activation=activation
+            ) for _ in range(n_layers_dec)
+        ])
+
+        # Trend forecasting head (linear extrapolation from last trend state)
+        self.trend_proj = nn.Sequential(
+            nn.Linear(d_model, dim_ff), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(dim_ff, out_channels if quantiles is None else out_channels * (len(quantiles)))
         )
 
-        # Seasonal path projection and channel alignment for trend if needed
-        self.proj_seasonal = nn.Linear(d_model, c_out)
-        self.trend_mixer = (
-            nn.Identity() if c_out == dec_in else nn.Linear(dec_in, c_out, bias=True)
+        # Seasonal forecasting head (from decoder outputs)
+        self.seasonal_proj = nn.Linear(
+            d_model, out_channels if quantiles is None else out_channels * (len(quantiles))
         )
 
-    @staticmethod
-    def build_decoder_inputs(
-        seasonal_enc: torch.Tensor, trend_enc: torch.Tensor, label_len: int, pred_len: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Optional channel mixer after sum (kept here for parity with your PatchTST/TFT style)
+        self.post_mixer = nn.Linear(
+            out_channels, out_channels, bias=True
+        ) if (use_channel_mixer and (quantiles is None)) else nn.Identity()
+
+        # Learnable decoder "queries" in time for seasonal part
+        self.query_pos = nn.Parameter(torch.randn(1, pred_len, d_model) * (1.0 / d_model ** 0.5))
+
+        self._reset()
+
+    def _reset(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight); 
+                if m.bias is not None: nn.init.zeros_(m.bias)
+        nn.init.normal_(self.query_pos, std=0.02)
+
+    # -------- helper: build decoder seasonal queries --------
+    def _build_decoder_queries(self, B: int) -> torch.Tensor:
+        return self.query_pos.expand(B, -1, -1)  # [B, pred_len, d_model]
+
+    # -------- forward --------
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Construct decoder inputs:
-          seasonal_dec = seasonal_last_label_len + zeros(pred_len)
-          trend_dec    = trend_last_label_len + repeat(last_trend, pred_len)
-        Returns (seasonal_dec, trend_dec) both [B, label_len+pred_len, C]
+        x: [B, L_in, C_in]
         """
-        B, T, C = seasonal_enc.shape
-        ll, pl = label_len, pred_len
-        seasonal_label = seasonal_enc[:, -ll:, :]
-        seasonal_pred_init = seasonal_enc.new_zeros(B, pl, C)
-        seasonal_dec = torch.cat([seasonal_label, seasonal_pred_init], dim=1)
+        if x.dim() != 3:
+            raise ValueError(f"Expected [B, L, C], got {tuple(x.shape)}")
+        B, L, Cin = x.shape
+        if Cin != self.in_channels:
+            raise ValueError(f"in_channels mismatch: got {Cin}, expected {self.in_channels}")
 
-        trend_label = trend_enc[:, -ll:, :]
-        last_trend = trend_enc[:, -1:, :].expand(B, pl, C)
-        trend_dec = torch.cat([trend_label, last_trend], dim=1)
-        return seasonal_dec, trend_dec
+        # 1) Decompose
+        s, t = self.decomp(x)                  # seasonal, trend  [B, L, C]
 
-    def forward(
-        self,
-        memory: torch.Tensor,                     # [B, T_enc, d_model]
-        seasonal_enc: torch.Tensor,               # [B, T_enc, C]
-        trend_enc: torch.Tensor,                  # [B, T_enc, C]
-        x_mark_dec: Optional[torch.Tensor] = None # optional time features for decoder horizon
-    ) -> torch.Tensor:
-        if seasonal_enc.size(-1) != self.dec_in or trend_enc.size(-1) != self.dec_in:
-            raise ValueError(
-                f"dec_in={self.dec_in} but got seasonal C={seasonal_enc.size(-1)} "
-                f"and trend C={trend_enc.size(-1)}"
-            )
+        # 2) Encode seasonal part
+        sez = self.enc_in(s)                   # [B, L, d]
+        for layer in self.encoder:
+            sez = layer(sez)                   # [B, L, d]
+        memory = sez                           # [B, L, d]
 
-        # Build decoder inputs
-        seasonal_dec, trend_dec = self.build_decoder_inputs(
-            seasonal_enc, trend_enc, self.label_len, self.pred_len
-        )  # [B, ll+pl, C]
+        # 3) Decode seasonal for pred_len using learned queries
+        tgt = self._build_decoder_queries(B)   # [B, H, d]
+        # simple start signal: last seasonal token repeated (can be improved)
+        start = sez[:, -1:, :].expand(B, self.pred_len, -1)  # [B, H, d]
+        tgt = tgt + start
 
-        # Decode seasonal with cross-attention to encoder memory
-        dec_time = x_mark_dec if self.use_time_encoding_dec else None
-        seasonal_dec_out = self.decoder(
-            seasonal_dec, memory,
-            tgt_mask=None, memory_mask=None,
-            tgt_key_padding_mask=None, memory_key_padding_mask=None,
-            incremental_state=None, return_incremental_state=False,
-            time_features=dec_time,
-        )  # [B, ll+pl, d_model]
+        for layer in self.decoder:
+            tgt = layer(tgt, memory)           # [B, H, d]
+        sez_out = self.seasonal_proj(tgt)      # [B, H, C_out or C_out*Q]
 
-        # Project seasonal to channels and slice pred horizon
-        seasonal_hat = self.proj_seasonal(seasonal_dec_out[:, -self.pred_len:, :])  # [B, pred_len, C_out]
+        # 4) Trend extrapolation: take last trend state -> project across horizon
+        tr = self.dec_in(t)                    # [B, L, d]
+        tr_last = tr[:, -1, :]                 # [B, d]
+        tr_expand = tr_last.unsqueeze(1).expand(B, self.pred_len, -1)  # [B, H, d]
+        tr_out = self.trend_proj(tr_expand)    # [B, H, C_out or C_out*Q]
 
-        # Trend horizon (align channels if needed)
-        trend_h = trend_dec[:, -self.pred_len:, :]                                   # [B, pred_len, C]
-        trend_hat = self.trend_mixer(trend_h)                                        # [B, pred_len, C_out]
+        # 5) Combine seasonal + trend (both already in output channel space)
+        y = sez_out + tr_out                   # [B, H, Cout*(Q?)]
 
-        # Final: seasonal + trend
-        y_hat = seasonal_hat + trend_hat
-        return y_hat
+        # Optional per-channel mixer (if no quantiles)
+        if isinstance(self.post_mixer, nn.Linear) and (self.quantiles is None):
+            y = self.post_mixer(y)
+
+        return y
+
+    # Convenience splitter for quantile outputs if configured
+    def split_quantiles(self, y: torch.Tensor):
+        """
+        y: [B, H, C_out * Q] -> {q: [B, H, C_out]}
+        """
+        assert self.quantiles is not None
+        Q = len(self.quantiles)
+        B, H, _ = y.shape
+        y = y.view(B, H, self.out_channels, Q)
+        return {q: y[..., i] for i, q in enumerate(self.quantiles)}

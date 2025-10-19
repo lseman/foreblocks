@@ -40,3 +40,8 @@ generate_manifest.sh
 *.so
 *.pt
 *.npy
+foreblocks/mltracker/mltracker_data/
+uni2ts/
+timesfm/
+examples/seq2seq.ipynb
+webui/

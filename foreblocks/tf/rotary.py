@@ -1,4 +1,5 @@
 # Copyright (c) 2025, Tri Dao
+# Optimized version with improved performance
 
 import math
 from functools import partial
@@ -57,7 +58,7 @@ class ApplyRotaryEmb(torch.autograd.Function):
             inplace=inplace,
         )
         if isinstance(seqlen_offsets, int):
-            ctx.save_for_backward(cos, sin, cu_seqlens)  # Can't save int with save_for_backward
+            ctx.save_for_backward(cos, sin, cu_seqlens)
             ctx.seqlen_offsets = seqlen_offsets
         else:
             ctx.save_for_backward(cos, sin, cu_seqlens, seqlen_offsets)
@@ -151,7 +152,6 @@ def _apply_rotary_emb_qkv(
         if qkv.dim() == 5:
             batch, seqlen, three, nheads, headdim = qkv.shape
             assert three == 3
-            # qk = rearrange(qkv[:, :, :2], "b s t h d -> b s (t h) d")
             qk = qkv[:, :, :2].reshape(batch, seqlen, -1, headdim)
             qk = apply_rotary_fn(qk, cos, sin)
         else:
@@ -202,7 +202,6 @@ class ApplyRotaryEmbQKV_(torch.autograd.Function):
         seqlen_offsets: Union[int, torch.Tensor] = 0,
         num_heads_q: Optional[int] = None,
     ):
-        # apply_rotary_emb_qkv_inplace(
         qkv = _apply_rotary_emb_qkv(
             qkv, cos, sin, cos_k, sin_k, interleaved=interleaved, inplace=True,
             seqlen_offsets=seqlen_offsets, num_heads_q=num_heads_q,
@@ -261,6 +260,7 @@ def apply_rotary_emb_qkv_(
         qkv, cos, sin, cos_k, sin_k, interleaved, seqlen_offsets, num_heads_q
     )
 
+
 def apply_rotary(
     x,
     cos,
@@ -293,125 +293,199 @@ def apply_rotary(
     """
     ro_dim = cos.shape[-1] * 2
     assert ro_dim <= x.shape[-1]
+    
     if cu_seqlens is not None:
-        # x: (total_seqlen, nheads, headdim)
-        total_seqlen, nheads, headdim = x.shape
-        assert cu_seqlens.dim() == 1 and cu_seqlens.dtype == torch.int64
-        batch = cu_seqlens.shape[0] - 1
-        if isinstance(seqlen_offsets, int):
-            if seqlen_offsets != 0:
-                raise ValueError("If cu_seqlens is provided, seqlen_offsets must be a tensor")
-            seqlen_offsets = cu_seqlens[:-1]
-        else:
-            assert seqlen_offsets.dim() == 1 and seqlen_offsets.shape[0] == batch
-        if cos.dim() == 2:
-            # (seqlen_rotary, rotary_dim / 2) -> (batch, seqlen_rotary, rotary_dim / 2)
-            if max_seqlen is None:
-                max_seqlen = total_seqlen + seqlen_offsets.max().item()
-            cos = cos[:max_seqlen]
-            sin = sin[:max_seqlen]
-            cos = cos.index_select(0, (cu_seqlens[:-1].unsqueeze(1) + torch.arange(
-                cos.shape[0], device=cos.device)).flatten())
-            sin = sin.index_select(0, (cu_seqlens[:-1].unsqueeze(1) + torch.arange(
-                sin.shape[0], device=sin.device)).flatten())
-            cos = cos.view(batch, -1, cos.shape[-1])
-            sin = sin.view(batch, -1, sin.shape[-1])
-        elif cos.dim() == 3:
-            assert (
-                cos.shape[0] == batch and sin.shape[0] == batch
-                and cos.shape[1] >= (total_seqlen + seqlen_offsets).max().item()
-                and sin.shape[1] >= (total_seqlen + seqlen_offsets).max().item()
-                and cos.shape[2] * 2 == ro_dim
-            )
-            cos = cos[:, :total_seqlen + seqlen_offsets.max().item()]
-            sin = sin[:, :total_seqlen + seqlen_offsets.max().item()]
-            cos = cos.gather(1, (cu_seqlens[:-1].unsqueeze(1) + torch.arange(
-                cos.shape[1], device=cos.device)).flatten().unsqueeze(0).expand(batch, -1))
-            sin = sin.gather(1, (cu_seqlens[:-1].unsqueeze(1) + torch.arange(
-                sin.shape[1], device=sin.device)).flatten().unsqueeze(0).expand(batch, -1))
-            cos = cos.view(batch, -1, cos.shape[-1])
-            sin = sin.view(batch, -1, sin.shape[-1])
-        else:
-            raise ValueError("cos and sin must have shape (seqlen_rotary, rotary_dim / 2) or (batch, seqlen_rotary, rotary_dim / 2)")
-        if conjugate:
-            sin = -sin
-        if inplace:
-            for b in range(batch):
-                seqlen = cu_seqlens[b + 1] - cu_seqlens[b]
-                x[cu_seqlens[b] : cu_seqlens[b + 1], :, :ro_dim] = apply_rotary_emb_torch(
-                    x[cu_seqlens[b] : cu_seqlens[b + 1], :, :ro_dim],
-                    cos[b, :seqlen],
-                    sin[b, :seqlen],
-                    interleaved=interleaved,
-                )
-            return x
-        else:
-            out = torch.empty_like(x)
-            for b in range(batch):
-                seqlen = cu_seqlens[b + 1] - cu_seqlens[b]
-                out[cu_seqlens[b] : cu_seqlens[b + 1], :, :ro_dim] = apply_rotary_emb_torch(
-                    x[cu_seqlens[b] : cu_seqlens[b + 1], :, :ro_dim],
-                    cos[b, :seqlen],
-                    sin[b, :seqlen],
-                    interleaved=interleaved,
-                )
-            out[:, :, ro_dim:] = x[:, :, ro_dim:]
-            return out
+        # Variable-length sequence case
+        return _apply_rotary_cu_seqlens(
+            x, cos, sin, cu_seqlens, seqlen_offsets, max_seqlen, 
+            ro_dim, interleaved, inplace, conjugate
+        )
     else:
-        # x: (batch_size, seqlen, nheads, headdim)
-        batch, seqlen, nheads, headdim = x.shape
-        if isinstance(seqlen_offsets, int):
-            if seqlen_offsets != 0:
-                raise ValueError("If cu_seqlens is not provided, seqlen_offsets must be an int")
-            seqlen_offsets = torch.zeros(batch, device=x.device, dtype=torch.int64)
-        else:
-            assert seqlen_offsets.dim() == 1 and seqlen_offsets.shape[0] == batch
-        if cos.dim() == 2:
-            # (seqlen_rotary, rotary_dim / 2) -> (batch, seqlen_rotary, rotary_dim / 2)
-            if max_seqlen is None:
-                max_seqlen = seqlen + seqlen_offsets.max().item()
-            cos = cos[:max_seqlen]
-            sin = sin[:max_seqlen]
-            cos = cos.index_select(0, (seqlen_offsets.unsqueeze(1) + torch.arange(
-                cos.shape[0], device=cos.device)).flatten())
-            sin = sin.index_select(0, (seqlen_offsets.unsqueeze(1) + torch.arange(
-                sin.shape[0], device=sin.device)).flatten())
-            cos = cos.view(batch, -1, cos.shape[-1])
-            sin = sin.view(batch, -1, sin.shape[-1])
-        elif cos.dim() == 3:
-            assert (
-                cos.shape[0] == batch and sin.shape[0] == batch
-                and cos.shape[1] >= (seqlen + seqlen_offsets).max().item()
-                and sin.shape[1] >= (seqlen + seqlen_offsets).max().item()
-                and cos.shape[2] * 2 == ro_dim
-            )
-            cos = cos[:, :seqlen + seqlen_offsets.max().item()]
-            sin = sin[:, :seqlen + seqlen_offsets.max().item()]
-            cos = cos.gather(1, (seqlen_offsets.unsqueeze(1) + torch.arange(
-                cos.shape[1], device=cos.device)).flatten().unsqueeze(0).expand(batch, -1))
-            sin = sin.gather(1, (seqlen_offsets.unsqueeze(1) + torch.arange(
-                sin.shape[1], device=sin.device)).flatten().unsqueeze(0).expand(batch, -1))
-            cos = cos.view(batch, -1, cos.shape[-1])
-            sin = sin.view(batch, -1, sin.shape[-1])
-        else:
-            raise ValueError("cos and sin must have shape (seqlen_rotary, rotary_dim / 2) or (batch, seqlen_rotary, rotary_dim / 2)")
+        # Standard batch case - optimized path
+        return _apply_rotary_batch(
+            x, cos, sin, seqlen_offsets, max_seqlen,
+            ro_dim, interleaved, inplace, conjugate
+        )
+
+
+def _apply_rotary_batch(
+    x, cos, sin, seqlen_offsets, max_seqlen,
+    ro_dim, interleaved, inplace, conjugate
+):
+    """Optimized rotary embedding for standard batched input."""
+    batch, seqlen, nheads, headdim = x.shape
+    
+    # Fast path: zero offset and 2D cos/sin
+    if isinstance(seqlen_offsets, int) and seqlen_offsets == 0 and cos.dim() == 2:
         if conjugate:
             sin = -sin
+        
+        # Broadcast cos/sin to batch dimension
+        cos_expanded = cos[:seqlen].unsqueeze(0)  # (1, seqlen, rotary_dim/2)
+        sin_expanded = sin[:seqlen].unsqueeze(0)
+        
+        cos_expanded = repeat(
+            cos_expanded, 
+            "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)"
+        )
+        sin_expanded = repeat(
+            sin_expanded,
+            "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)"
+        )
+        
+        rotated = x[..., :ro_dim] * cos_expanded + rotate_half(x[..., :ro_dim], interleaved) * sin_expanded
+        
         if inplace:
-            for b in range(batch):
-                x[b, : , :ro_dim] = apply_rotary_emb_torch(
-                    x[b, :, :ro_dim], cos[b, :seqlen], sin[b, :seqlen], interleaved=interleaved
-                )
+            x[..., :ro_dim] = rotated
             return x
         else:
-            out = torch.empty_like(x)
-            for b in range(batch):
-                out[b, :, :ro_dim] = apply_rotary_emb_torch(
-                    x[b, :, :ro_dim], cos[b, :seqlen], sin[b, :seqlen], interleaved=interleaved
-                )
-            out[:, :, ro_dim:] = x[:, :, ro_dim:]
-            return out
+            if ro_dim == headdim:
+                return rotated
+            return torch.cat([rotated, x[..., ro_dim:]], dim=-1)
+    
+    # General case with offsets
+    if isinstance(seqlen_offsets, int):
+        if seqlen_offsets != 0:
+            raise ValueError("seqlen_offsets must be 0 or a tensor when cu_seqlens is None")
+        seqlen_offsets = None
+    
+    if seqlen_offsets is not None:
+        assert seqlen_offsets.dim() == 1 and seqlen_offsets.shape[0] == batch
+    
+    # Prepare cos/sin with offsets
+    if cos.dim() == 2:
+        # (seqlen_rotary, rotary_dim / 2) -> (batch, seqlen, rotary_dim / 2)
+        if max_seqlen is None:
+            max_seqlen = seqlen if seqlen_offsets is None else seqlen + seqlen_offsets.max().item()
+        cos = cos[:max_seqlen]
+        sin = sin[:max_seqlen]
         
+        if seqlen_offsets is not None:
+            # Apply offsets
+            indices = seqlen_offsets.unsqueeze(1) + torch.arange(
+                seqlen, device=cos.device
+            ).unsqueeze(0)  # (batch, seqlen)
+            cos = cos[indices.flatten()].view(batch, seqlen, -1)
+            sin = sin[indices.flatten()].view(batch, seqlen, -1)
+        else:
+            cos = cos[:seqlen].unsqueeze(0).expand(batch, -1, -1)
+            sin = sin[:seqlen].unsqueeze(0).expand(batch, -1, -1)
+    
+    elif cos.dim() == 3:
+        assert cos.shape[0] == batch and sin.shape[0] == batch
+        max_needed = seqlen if seqlen_offsets is None else seqlen + seqlen_offsets.max().item()
+        assert cos.shape[1] >= max_needed and sin.shape[1] >= max_needed
+        assert cos.shape[2] * 2 == ro_dim
+        
+        if seqlen_offsets is not None:
+            indices = seqlen_offsets.unsqueeze(1) + torch.arange(
+                seqlen, device=cos.device
+            ).unsqueeze(0)  # (batch, seqlen)
+            cos = torch.gather(
+                cos, 1, 
+                indices.unsqueeze(-1).expand(-1, -1, cos.shape[-1])
+            )
+            sin = torch.gather(
+                sin, 1,
+                indices.unsqueeze(-1).expand(-1, -1, sin.shape[-1])
+            )
+        else:
+            cos = cos[:, :seqlen]
+            sin = sin[:, :seqlen]
+    else:
+        raise ValueError("cos and sin must have shape (seqlen_rotary, rotary_dim / 2) or (batch, seqlen_rotary, rotary_dim / 2)")
+    
+    if conjugate:
+        sin = -sin
+    
+    # Apply rotation
+    cos = repeat(cos, "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)")
+    sin = repeat(sin, "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)")
+    
+    rotated = x[..., :ro_dim] * cos + rotate_half(x[..., :ro_dim], interleaved) * sin
+    
+    if inplace:
+        x[..., :ro_dim] = rotated
+        return x
+    else:
+        if ro_dim == headdim:
+            return rotated
+        return torch.cat([rotated, x[..., ro_dim:]], dim=-1)
+
+
+def _apply_rotary_cu_seqlens(
+    x, cos, sin, cu_seqlens, seqlen_offsets, max_seqlen,
+    ro_dim, interleaved, inplace, conjugate
+):
+    """Rotary embedding for variable-length sequences."""
+    total_seqlen, nheads, headdim = x.shape
+    assert cu_seqlens.dim() == 1 and cu_seqlens.dtype == torch.int32 or cu_seqlens.dtype == torch.int64
+    batch = cu_seqlens.shape[0] - 1
+    
+    if isinstance(seqlen_offsets, int):
+        if seqlen_offsets != 0:
+            raise ValueError("If cu_seqlens is provided, seqlen_offsets must be a tensor or 0")
+        seqlen_offsets = torch.zeros(batch, dtype=torch.int64, device=cu_seqlens.device)
+    else:
+        assert seqlen_offsets.dim() == 1 and seqlen_offsets.shape[0] == batch
+    
+    # Prepare cos/sin
+    if cos.dim() == 2:
+        if max_seqlen is None:
+            max_seqlen = total_seqlen + seqlen_offsets.max().item()
+        cos = cos[:max_seqlen]
+        sin = sin[:max_seqlen]
+        
+        # Create indices for each sequence
+        seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+        max_seq_len = seq_lens.max().item()
+        
+        # Build indices: for each batch, offset + position
+        batch_indices = torch.arange(batch, device=cos.device).repeat_interleave(seq_lens)
+        position_indices = torch.cat([
+            torch.arange(seq_lens[b].item(), device=cos.device) + seqlen_offsets[b].item()
+            for b in range(batch)
+        ])
+        
+        cos = cos[position_indices]  # (total_seqlen, rotary_dim/2)
+        sin = sin[position_indices]
+        
+    elif cos.dim() == 3:
+        assert cos.shape[0] == batch and sin.shape[0] == batch
+        max_needed = total_seqlen + seqlen_offsets.max().item()
+        assert cos.shape[1] >= max_needed and sin.shape[1] >= max_needed
+        assert cos.shape[2] * 2 == ro_dim
+        
+        # Gather appropriate cos/sin for each position
+        seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+        position_indices = torch.cat([
+            torch.arange(seq_lens[b].item(), device=cos.device) + seqlen_offsets[b].item()
+            for b in range(batch)
+        ])
+        batch_indices = torch.arange(batch, device=cos.device).repeat_interleave(seq_lens)
+        
+        cos = cos[batch_indices, position_indices]  # (total_seqlen, rotary_dim/2)
+        sin = sin[batch_indices, position_indices]
+    else:
+        raise ValueError("cos and sin must have shape (seqlen_rotary, rotary_dim / 2) or (batch, seqlen_rotary, rotary_dim / 2)")
+    
+    if conjugate:
+        sin = -sin
+    
+    # Apply rotation
+    cos = repeat(cos, "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)")
+    sin = repeat(sin, "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)")
+    
+    rotated = x[..., :ro_dim] * cos + rotate_half(x[..., :ro_dim], interleaved) * sin
+    
+    if inplace:
+        x[..., :ro_dim] = rotated
+        return x
+    else:
+        if ro_dim == headdim:
+            return rotated
+        return torch.cat([rotated, x[..., ro_dim:]], dim=-1)
+
 
 class ApplyRotaryEmbKV_(torch.autograd.Function):
 
@@ -424,7 +498,7 @@ class ApplyRotaryEmbKV_(torch.autograd.Function):
             k, cos, sin, seqlen_offsets=seqlen_offsets, interleaved=interleaved, inplace=True
         )
         if isinstance(seqlen_offsets, int):
-            ctx.save_for_backward(cos, sin)  # Can't save int with save_for_backward
+            ctx.save_for_backward(cos, sin)
             ctx.seqlen_offsets = seqlen_offsets
         else:
             ctx.save_for_backward(cos, sin, seqlen_offsets)
@@ -449,9 +523,6 @@ class ApplyRotaryEmbKV_(torch.autograd.Function):
             conjugate=True,
         )
         return dkv, None, None, None, None
-
-
-apply_rotary_emb_kv_ = ApplyRotaryEmbKV_.apply
 
 
 def apply_rotary_emb_kv_(
@@ -543,7 +614,7 @@ class RotaryEmbedding(torch.nn.Module):
             or self._cos_cached is None
             or self._cos_cached.device != device
             or self._cos_cached.dtype != dtype
-            or (self.training and self._cos_cached.is_inference())
+            or (self.training and self._cos_cached.requires_grad)
         ):
             self._seq_len_cached = seqlen
             # We want fp32 here, not self.inv_freq.dtype, since the model could be loaded in bf16
@@ -600,6 +671,12 @@ class RotaryEmbedding(torch.nn.Module):
             self._update_cos_sin_cache(max_seqlen, device=qkv.device, dtype=qkv.dtype)
         elif isinstance(seqlen_offset, int):
             self._update_cos_sin_cache(seqlen + seqlen_offset, device=qkv.device, dtype=qkv.dtype)
+        else:
+            # seqlen_offset is a tensor
+            self._update_cos_sin_cache(
+                seqlen + seqlen_offset.max().item(), device=qkv.device, dtype=qkv.dtype
+            )
+            
         if kv is None:
             return apply_rotary_emb_qkv_(
                 qkv,

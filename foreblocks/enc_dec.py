@@ -5,9 +5,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from foreblocks.node_spec import node
+
 # ==============================================================
 # Base Interfaces
 # ==============================================================
+
 
 class EncoderBase(nn.Module):
     def __init__(self):
@@ -32,7 +35,14 @@ class DecoderBase(nn.Module):
 # ==============================================================
 # LSTM
 # ==============================================================
-
+@node(
+    type_id="lstm_encoder",
+    name="LSTM Encoder",
+    category="Encoder",
+    color="bg-gradient-to-br from-blue-700 to-blue-800",
+    outputs=["encoder"],
+    inputs=[],
+)
 class LSTMEncoder(EncoderBase):
     def __init__(
         self,
@@ -76,12 +86,21 @@ class LSTMEncoder(EncoderBase):
         self,
         x: Tensor,
         hidden: Optional[Tuple[Tensor, Tensor]] = None,
+        time_features: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         # x: [B, T, input_size]
         output, hidden = self.lstm(x, hidden)  # output: [B, T, H*num_dirs]
         return output, hidden
 
 
+@node(
+    type_id="lstm_decoder",
+    name="LSTM Decoder",
+    category="Decoder",
+    color="bg-gradient-to-br from-green-700 to-green-800",
+    outputs=["decoder"],
+    inputs=[],
+)
 class LSTMDecoder(DecoderBase):
     def __init__(
         self,
@@ -135,14 +154,15 @@ class LSTMDecoder(DecoderBase):
         elif x.dim() != 3:
             raise ValueError(f"Decoder input must be 2D or 3D, got {tuple(x.shape)}")
 
-        lstm_out, hidden = self.lstm(x, hidden)   # [B, T, H]
-        last_out = lstm_out[:, -1, :]             # [B, H]
+        lstm_out, hidden = self.lstm(x, hidden)  # [B, T, H]
+        last_out = lstm_out[:, -1, :]  # [B, H]
         return last_out, hidden
 
 
 # ==============================================================
 # GRU
 # ==============================================================
+
 
 class GRUEncoder(EncoderBase):
     def __init__(
@@ -241,13 +261,14 @@ class GRUDecoder(DecoderBase):
             raise ValueError(f"Decoder input must be 2D or 3D, got {tuple(x.shape)}")
 
         gru_out, hidden = self.gru(x, hidden)  # [B, T, H]
-        last_out = gru_out[:, -1, :]           # [B, H]
+        last_out = gru_out[:, -1, :]  # [B, H]
         return last_out, hidden
 
 
 # ==============================================================
 # Variational Encoder Wrapper (bidi-aware)
 # ==============================================================
+
 
 class VariationalEncoderWrapper(nn.Module):
     """
@@ -256,6 +277,7 @@ class VariationalEncoderWrapper(nn.Module):
       - (z, mu, logvar), where z ~ N(mu, diag(exp(logvar)))
     Uses last layer's hidden for each direction and concatenates directions.
     """
+
     def __init__(self, base_encoder: nn.Module, latent_dim: int):
         super().__init__()
         self.base_encoder = base_encoder
@@ -271,11 +293,15 @@ class VariationalEncoderWrapper(nn.Module):
     def forward(self, x: Tensor):
         outputs, hidden = self.base_encoder(x)
         # hidden for LSTM: (h, c); for GRU: h
-        h_last = hidden[0] if isinstance(hidden, tuple) else hidden  # [L*num_dirs, B, H]
+        h_last = (
+            hidden[0] if isinstance(hidden, tuple) else hidden
+        )  # [L*num_dirs, B, H]
 
         # Reshape to [L, num_dirs, B, H], take last layer, then concat directions
-        LND = h_last.view(self.num_layers, self.num_directions, h_last.size(1), h_last.size(2))
-        h_top = LND[-1]                               # [num_dirs, B, H]
+        LND = h_last.view(
+            self.num_layers, self.num_directions, h_last.size(1), h_last.size(2)
+        )
+        h_top = LND[-1]  # [num_dirs, B, H]
         h = h_top.transpose(0, 1).reshape(h_top.size(1), -1)  # [B, H*num_dirs]
 
         mu = self.hidden_to_mu(h)
@@ -290,12 +316,14 @@ class VariationalEncoderWrapper(nn.Module):
 # Latent-conditioned Decoder Wrapper
 # ==============================================================
 
+
 class LatentConditionedDecoder(nn.Module):
     """
     Initializes the decoder's initial hidden state from a latent vector.
     Works with LSTMDecoder or GRUDecoder that accept (x, hidden).
     No output projection is applied in the base decoders.
     """
+
     def __init__(
         self,
         base_decoder: nn.Module,
@@ -326,11 +354,15 @@ class LatentConditionedDecoder(nn.Module):
           y, hidden from base decoder (y is [B, H], no projection)
         """
         B = latent.size(0)
-        h0 = torch.tanh(self.latent_to_hidden(latent)).view(self.num_layers, B, self.hidden_size)
+        h0 = torch.tanh(self.latent_to_hidden(latent)).view(
+            self.num_layers, B, self.hidden_size
+        )
         if self.rnn_type == "lstm":
             if self.latent_to_cell is None:
                 raise RuntimeError("lat_to_cell is None for LSTM mode.")
-            c0 = torch.tanh(self.latent_to_cell(latent)).view(self.num_layers, B, self.hidden_size)
+            c0 = torch.tanh(self.latent_to_cell(latent)).view(
+                self.num_layers, B, self.hidden_size
+            )
             hidden0 = (h0, c0)
         else:
             hidden0 = h0
@@ -341,6 +373,7 @@ class LatentConditionedDecoder(nn.Module):
 # ==============================================================
 # VAE utilities
 # ==============================================================
+
 
 def compute_kl_divergence(mu: Tensor, logvar: Tensor) -> Tensor:
     """

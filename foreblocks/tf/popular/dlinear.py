@@ -5,13 +5,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import foreblocks.tf.transformer_aux as txaux
-import foreblocks.tf.transformer_moe as txmoe
+import foreblocks.tf.moe as txmoe
+import foreblocks.tf.norms as txaux
 
 # Use your project modules
 from foreblocks.tf.embeddings import PositionalEncoding
-from foreblocks.tf.transformer_att import MultiAttention
-from foreblocks.tf.transformer_aux import create_norm_layer
+from foreblocks.tf.multi_att import MultiAttention
+from foreblocks.tf.norms import create_norm_layer
 
 
 class DLinearHeadCustom(nn.Module):

@@ -3,9 +3,12 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
+from foreblocks.node_spec import node
+
 # =============================================================================
 # Graph utilities
 # =============================================================================
+
 
 def _ensure_batch_adj(adj: Optional[torch.Tensor], B: int) -> Optional[torch.Tensor]:
     """
@@ -25,13 +28,16 @@ class TimewiseGraph(nn.Module):
     to work on [B, T, N, F] by applying it independently per time step.
     If x is already [B,N,F], just forwards.
     """
+
     def __init__(self, gblock: nn.Module):
         super().__init__()
         self.gblock = gblock
         # mark capability to avoid re-wrapping
         self._accepts_time_dim = True
 
-    def forward(self, x: torch.Tensor, adj: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, adj: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         if x.dim() == 3:  # [B,N,F]
             return self.gblock(x, adj)
         assert x.dim() == 4, "TimewiseGraph expects [B,N,F] or [B,T,N,F]"
@@ -39,36 +45,12 @@ class TimewiseGraph(nn.Module):
         A = _ensure_batch_adj(adj, B)
         ys = []
         for t in range(T):
-            xt = x[:, t, :, :]                  # [B,N,F]
-            yt = self.gblock(xt, A)             # [B,N,F’]
+            xt = x[:, t, :, :]  # [B,N,F]
+            yt = self.gblock(xt, A)  # [B,N,F']
             ys.append(yt.unsqueeze(1))
-        return torch.cat(ys, dim=1)             # [B,T,N,F’]
+        return torch.cat(ys, dim=1)  # [B,T,N,F']
 
 
-def _apply_graph_block(x: torch.Tensor,
-                       adj: Optional[torch.Tensor],
-                       block: Optional[nn.Module]) -> torch.Tensor:
-    """
-    Apply a registered graph block that supports (x, adj)
-    where x is [B,N,F] or [B,T,N,F], adj is [N,N] or [B,N,N] or None.
-    Ensures device/dtype alignment.
-    """
-    if block is None:
-        return x
-
-    # align adj to batch/device/dtype of x
-    B = x.size(0)
-    if adj is not None:
-        if adj.dim() == 2:
-            adj = adj.unsqueeze(0).expand(B, adj.size(0), adj.size(1)).contiguous()
-        adj = adj.to(device=x.device, dtype=x.dtype)
-
-    # align block to x
-    params = list(block.parameters(recurse=True))
-    if params and (params[0].device != x.device or params[0].dtype != x.dtype):
-        block.to(device=x.device, dtype=x.dtype)
-
-    return block(x, adj)
 # -----------------------------
 # Graph + Per-Node Core Wrapper
 # -----------------------------
@@ -96,6 +78,12 @@ class BaseHead(nn.Module):
         except AttributeError:
             return getattr(self.module, name)
 
+@node(
+    type_id="forecasting_model",
+    name="Forecasting Model",
+    category="Models",
+    color="bg-gradient-to-br from-blue-700 to-blue-800",
+)
 class ForecastingModel(nn.Module):
     """
     Head-based modular forecasting model for time series tasks.
@@ -140,6 +128,8 @@ class ForecastingModel(nn.Module):
         time_feature_embedding_dec: Optional[nn.Module] = None,
         # Transformer-style decoding prompt length
         label_len: Optional[int] = None,
+        # NEW: optional HeadComposer to own pre/inverse processing
+        head_composer: Optional[nn.Module] = None,
     ):
         super().__init__()
 
@@ -153,7 +143,6 @@ class ForecastingModel(nn.Module):
         self.strategy = forecasting_strategy
         self.model_type = model_type
         self.target_len = target_len
-        self.pred_len = target_len  # alias
         self.hidden_size = hidden_size
         self.teacher_forcing_ratio = teacher_forcing_ratio
         self.scheduled_sampling_fn = scheduled_sampling_fn
@@ -201,10 +190,10 @@ class ForecastingModel(nn.Module):
                 )
 
         # label_len is a prompt length for transformer decoding
-        self.label_len = label_len
+        self.label_len = label_len if label_len is not None else target_len // 2
 
-        # Aux
-        self._kl = None  # kept for API compatibility (unused here)
+        # Aux (kept for backward compatibility)
+        self._kl = None
         self._mem_model_bridge: Optional[nn.Module] = None
 
         # === Decoder input/feedback projection bridges (if decoder exists) ===
@@ -242,6 +231,36 @@ class ForecastingModel(nn.Module):
 
         # === Optional graph blocks registry ===
         self._graph_blocks: Dict[str, nn.Module] = {}
+
+        # === Validate configuration ===
+        self._validate_configuration()
+
+        # === HeadComposer (optional) ===
+        self.head_composer = head_composer
+        if self.head_composer is not None:
+            self._to_model_device_dtype(self.head_composer)
+
+    # -------------------------------------------------------------------------
+    # Properties
+    # -------------------------------------------------------------------------
+    @property
+    def pred_len(self):
+        """Alias for target_len."""
+        return self.target_len
+
+    # -----------------------------
+    # Composer helpers (NEW)
+    # -----------------------------
+    def set_head_composer(self, composer: nn.Module) -> "ForecastingModel":
+        """Attach a HeadComposer post-hoc; moved to model device/dtype."""
+        self.head_composer = composer
+        self._to_model_device_dtype(self.head_composer)
+        return self
+
+    def clear_head_composer(self) -> "ForecastingModel":
+        """Detach the HeadComposer."""
+        self.head_composer = None
+        return self
 
     # -------------------------------------------------------------------------
     # Public API
@@ -293,6 +312,7 @@ class ForecastingModel(nn.Module):
         return self
 
     def remove_head(self, position: str):
+        """Remove head at specified position."""
         if position == "encoder":
             self.encoder = None
         elif position == "decoder":
@@ -315,6 +335,7 @@ class ForecastingModel(nn.Module):
         return self
 
     def list_heads(self) -> Dict[str, Any]:
+        """List all registered heads in the model."""
         heads = {}
         if self.encoder:
             heads["encoder"] = type(self.encoder).__name__
@@ -345,36 +366,25 @@ class ForecastingModel(nn.Module):
         The block should accept (x, adj) with shapes:
         x: [B, T, N, F] or [B, N, F]; adj: [N,N] or [B,N,N]
         """
-        assert where in {"pre_encoder", "post_encoder", "post_decoder"}
+        valid_positions = {"pre_encoder", "post_encoder", "post_decoder"}
+        if where not in valid_positions:
+            raise ValueError(
+                f"Invalid position '{where}'. Must be one of {valid_positions}"
+            )
 
         # Wrap once to operate timewise if needed
         if not getattr(graph_block, "_accepts_time_dim", False):
             graph_block = TimewiseGraph(graph_block)
-            graph_block._accepts_time_dim = True
 
         # Move to the same device/dtype as the model
-        try:
-            ref_param = next(self.parameters())
-            device = ref_param.device
-            dtype  = ref_param.dtype
-        except StopIteration:
-            # Fallback if model has no params yet
-            device, dtype = torch.device("cpu"), None
-
-        if dtype is not None:
-            graph_block.to(device=device, dtype=dtype)
-        else:
-            graph_block.to(device=device)
+        self._to_model_device_dtype(graph_block)
 
         self._graph_blocks[where] = graph_block
         return self
 
     def get_aux_loss(self) -> torch.Tensor:
-        device = (
-            next(self.parameters()).device
-            if any(p.requires_grad for p in self.parameters())
-            else torch.device("cpu")
-        )
+        """Aggregate auxiliary losses from all components."""
+        device = self._get_model_device_dtype()[0]
         loss = torch.zeros((), device=device)
 
         for head_name in [
@@ -402,10 +412,11 @@ class ForecastingModel(nn.Module):
         return loss
 
     def get_kl(self):
-        # Kept for API compatibility (not used here)
+        """Get KL divergence loss (kept for backward compatibility)."""
         return self._kl
 
     def get_model_size(self):
+        """Calculate model size statistics."""
         params = sum(p.numel() for p in self.parameters())
         buffers = sum(b.numel() for b in self.buffers())
         size_mb = (params + buffers) * 4 / 1024**2
@@ -418,7 +429,9 @@ class ForecastingModel(nn.Module):
         }
 
     def benchmark_inference(self, input_tensor, num_runs=100, warmup_runs=10):
+        """Benchmark inference time and throughput."""
         import time
+
         self.eval()
         device = next(self.parameters()).device
         input_tensor = input_tensor.to(device)
@@ -444,6 +457,7 @@ class ForecastingModel(nn.Module):
     def attribute_forward(
         self, src, time_features=None, targets=None, epoch=None, output_idx=None
     ):
+        """Forward pass for attribution analysis (gradients enabled)."""
         self.train()
         self._disable_dropout()
         src = src.requires_grad_()
@@ -456,9 +470,40 @@ class ForecastingModel(nn.Module):
     # Private / setup
     # -------------------------------------------------------------------------
     def _wrap_head(self, module: nn.Module, name: str) -> BaseHead:
+        """Wrap module in BaseHead if not already wrapped."""
         if isinstance(module, BaseHead):
             return module
         return BaseHead(module, name)
+
+    def _get_model_device_dtype(self) -> Tuple[torch.device, Optional[torch.dtype]]:
+        """Get device and dtype from model parameters."""
+        try:
+            ref_param = next(self.parameters())
+            return ref_param.device, ref_param.dtype
+        except StopIteration:
+            return torch.device("cpu"), None
+
+    def _to_model_device_dtype(self, module: nn.Module):
+        """Move module to model's device/dtype."""
+        device, dtype = self._get_model_device_dtype()
+        if dtype is not None:
+            module.to(device=device, dtype=dtype)
+        else:
+            module.to(device=device)
+
+    def _validate_configuration(self):
+        """Validate model configuration consistency."""
+        if self.strategy != "direct" and self.decoder is None:
+            raise ValueError(f"Strategy '{self.strategy}' requires a decoder")
+
+        if self.strategy in ("seq2seq", "transformer_seq2seq"):
+            if self.encoder is None or self.decoder is None:
+                raise ValueError(
+                    f"Strategy '{self.strategy}' requires both encoder and decoder"
+                )
+
+        if self.use_attention and self.attention_module is None:
+            raise ValueError("use_attention=True but attention_module is None")
 
     def _setup_output_layers(self):
         """Prepare output_head and projection for seq2seq paths."""
@@ -481,30 +526,54 @@ class ForecastingModel(nn.Module):
         out_dim = (
             (decoder_hidden + encoder_hidden) if self.use_attention else decoder_hidden
         )
-        self.output_head = nn.Sequential(
-            nn.Linear(out_dim, decoder_hidden),
-            nn.GELU(),
-            nn.Linear(decoder_hidden, self.output_size),
-        )
+        self.output_head = self._create_output_projection(out_dim, self.output_size)
+
         if self.input_size and self.input_size != self.output_size:
             self.project_output = nn.Linear(self.input_size, self.output_size)
         else:
             self.project_output = nn.Identity()
 
+    def _create_output_projection(self, in_dim: int, out_dim: int) -> nn.Module:
+        """Create output projection with consistent architecture."""
+        hidden_dim = max(in_dim // 2, out_dim)
+        return nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_dim),
+        )
+
+    def _apply_graph_block(
+        self, x: torch.Tensor, adj: Optional[torch.Tensor], block_name: str
+    ) -> torch.Tensor:
+        """Apply registered graph block by name."""
+        block = self._graph_blocks.get(block_name)
+        if block is None:
+            return x
+
+        B = x.size(0)
+        if adj is not None:
+            if adj.dim() == 2:
+                adj = adj.unsqueeze(0).expand(B, adj.size(0), adj.size(1)).contiguous()
+            adj = adj.to(device=x.device, dtype=x.dtype)
+
+        return block(x, adj)
+
     # -------------------------------------------------------------------------
     # Core helpers
     # -------------------------------------------------------------------------
     def _preprocess_input(self, src):
+        """Apply input preprocessing with optional skip connection."""
         processed = self.input_preprocessor(src)
         if self.input_skip_connection:
             processed = processed + src
         return self.input_normalization(processed)
 
     def _finalize_output(self, x):
-        # Apply any final normalization/postprocessing exactly once.
+        """Apply final normalization/postprocessing exactly once."""
         return self.output_postprocessor(self.output_normalization(x))
 
     def _next_decoder_input(self, output, targets, t, use_tf):
+        """Get next decoder input (teacher forcing or model output)."""
         if use_tf and targets is not None:
             return targets[:, t : t + 1, :]
         return output if output.dim() == 3 else output.unsqueeze(1)
@@ -512,6 +581,7 @@ class ForecastingModel(nn.Module):
     def _should_use_teacher_forcing(
         self, targets=None, epoch=None, fallback_device="cpu"
     ):
+        """Determine whether to use teacher forcing for current step."""
         if (not self.training) or (targets is None):
             return False
         if self._is_fx_tracing():
@@ -525,7 +595,7 @@ class ForecastingModel(nn.Module):
         return torch.rand((1,), device=device).item() < ratio
 
     def _prepare_decoder_hidden(self, encoder_hidden):
-        """No VAE: pass encoder_hidden through (merge bidirectional if needed)."""
+        """Prepare decoder hidden state (merge bidirectional if needed)."""
         if self.encoder is None or not getattr(self.encoder, "bidirectional", False):
             return encoder_hidden
         # Bidirectional RNN handling
@@ -535,14 +605,16 @@ class ForecastingModel(nn.Module):
         return self._merge_bidirectional(encoder_hidden)
 
     def _merge_bidirectional(self, hidden: torch.Tensor) -> torch.Tensor:
-        assert hidden.size(0) % 2 == 0, (
-            "Expected even number of layers for bidirectional RNN"
-        )
+        """Merge bidirectional hidden states."""
+        assert (
+            hidden.size(0) % 2 == 0
+        ), "Expected even number of layers for bidirectional RNN"
         num_layers = hidden.size(0) // 2
         reshaped = hidden.reshape(num_layers, 2, *hidden.shape[1:])
         return reshaped.sum(dim=1)
 
     def _get_attention_query(self, decoder_output, decoder_hidden):
+        """Extract attention query from decoder state."""
         if hasattr(self.decoder, "is_transformer") and getattr(
             self.decoder, "is_transformer"
         ):
@@ -555,18 +627,22 @@ class ForecastingModel(nn.Module):
 
     @staticmethod
     def _is_fx_tracing():
+        """Check if currently in torch.fx tracing mode."""
         try:
             import torch.fx
+
             return torch.fx._symbolic_trace.is_fx_tracing()
         except Exception:
             return False
 
     def _disable_dropout(self):
+        """Disable dropout for all layers (used in attribution)."""
         for m in self.modules():
             if isinstance(m, nn.Dropout):
                 m.p = 0.0
 
     def _decoder_model_dim(self) -> Optional[int]:
+        """Get model dimension from decoder if available."""
         if self.decoder is None:
             return None
         for name in ("d_model", "model_dim", "embed_dim", "dim", "hidden_dim"):
@@ -577,6 +653,7 @@ class ForecastingModel(nn.Module):
         return None
 
     def _align_memory_to_decoder(self, memory: torch.Tensor) -> torch.Tensor:
+        """Align encoder memory dimension to decoder's expected dimension."""
         d_model = self._decoder_model_dim()
         if d_model is None or memory is None or memory.size(-1) == d_model:
             return memory
@@ -587,6 +664,7 @@ class ForecastingModel(nn.Module):
         return self._mem_model_bridge(memory)
 
     def _supports_time(self, module: nn.Module) -> bool:
+        """Check if module supports time features."""
         return (
             hasattr(module, "supports_time_features")
             or "time" in " ".join(dir(module)).lower()
@@ -596,23 +674,46 @@ class ForecastingModel(nn.Module):
     # Forward (Public) — finalize exactly once here
     # -------------------------------------------------------------------------
     def forward(self, src, targets=None, time_features=None, epoch=None):
-        x = self._preprocess_input(src)
+        """
+        Main forward pass. Returns finalized predictions.
 
-        # 4D graph dispatch [B, T, N, F]
-        if x.dim() == 4:
+        Args:
+            src: Input tensor [B, T, F] or [B, T, N, F]
+            targets: Target tensor (for teacher forcing)
+            time_features: Time-related features
+            epoch: Current epoch (for scheduled sampling)
+
+        Returns:
+            Finalized predictions with same shape structure as targets
+        """
+        # 4D path delegates composer internally after per-node flattening
+        if src.dim() == 4:
             raw = self._forward_graph_4d(
-                x, targets=targets, time_features=time_features, epoch=epoch
+                src, targets=targets, time_features=time_features, epoch=epoch
             )
             return self._finalize_output(raw)
 
-        # 2D/3D pathways
+        # 3D path
+        if self.head_composer is not None:
+            # Composer owns preprocessing; avoid legacy double-processing
+            x_enc, comp_state = self.head_composer.forward_pre(src)  # [B,T,F’]
+        else:
+            x_enc = self._preprocess_input(src)
+            comp_state = None
+
+        # Strategy (RAW)
         strategy_fn = {
             "direct": self._forward_direct,
             "autoregressive": self._forward_autoregressive,
             "seq2seq": self._forward_seq2seq,
             "transformer_seq2seq": self._forward_seq2seq,
         }[self.strategy]
-        raw = strategy_fn(x, targets, time_features, epoch)
+        raw = strategy_fn(x_enc, targets, time_features, epoch)
+
+        # Composer inverse BEFORE final postprocess/normalization
+        if self.head_composer is not None:
+            raw = self.head_composer.inverse_post(raw, comp_state)
+
         return self._finalize_output(raw)
 
     # -------------------------------------------------------------------------
@@ -620,71 +721,87 @@ class ForecastingModel(nn.Module):
     # -------------------------------------------------------------------------
     def _forward_graph_4d(
         self,
-        src: torch.Tensor,              # [B, T, N, F]
-        targets: Optional[torch.Tensor] = None,   # [B, L, N, D_out]
+        src: torch.Tensor,  # [B, T, N, F]
+        targets: Optional[torch.Tensor] = None,  # [B, L, N, D_out]
         time_features: Optional[torch.Tensor] = None,  # [B, T, N, Ft]
         epoch: Optional[int] = None,
         *,
         adj: Optional[torch.Tensor] = None,
         mode: str = "temporal_per_node",
     ):
+        """
+        Forward pass for 4D spatiotemporal data.
+        Returns RAW predictions (finalization happens in forward()).
+        Composer is applied per node-stream after flattening to [B·N,T,F].
+        """
         assert src.dim() == 4, "Expected [B, T, N, F]"
         B, T, N, F = src.shape
         if targets is not None and targets.dim() == 3:
             targets = targets.unsqueeze(-1)  # [B, L, N, 1]
 
         # Graph block BEFORE encoder
-        pre_gb  = self._graph_blocks.get("pre_encoder",  None)
-        src     = _apply_graph_block(src, adj, pre_gb)
+        src = self._apply_graph_block(src, adj, "pre_encoder")
 
-        # Graph block POST encoder (but before decoder)
-        postenc_gb = self._graph_blocks.get("post_encoder", None)
-        src        = _apply_graph_block(src, adj, postenc_gb)
+        # Graph block POST encoder (kept to match original ordering)
+        src = self._apply_graph_block(src, adj, "post_encoder")
 
-        if mode == "temporal_per_node":
-            # Flatten nodes to batch
-            B, T, N, F = src.shape  # (F may have changed)
-            src_3d = src.permute(0, 2, 1, 3).reshape(B * N, T, F)
+        if mode != "temporal_per_node":
+            raise NotImplementedError(
+                f"mode={mode} not implemented. Use 'temporal_per_node'."
+            )
 
-            if targets is not None:
-                L = targets.size(1)
-                D_out = targets.size(-1)
-                targets_3d = targets.permute(0, 2, 1, 3).reshape(B * N, L, D_out)
-            else:
-                targets_3d = None
+        # Flatten nodes to batch
+        B, T, N, F = src.shape
+        src_3d = src.permute(0, 2, 1, 3).reshape(B * N, T, F)  # [B·N, T, F]
 
-            if time_features is not None:
-                Ft = time_features.size(-1)
-                time_3d = time_features.permute(0, 2, 1, 3).reshape(B * N, T, Ft)
-            else:
-                time_3d = None
-
-            # Route through selected temporal strategy (RAW return)
-            if self.strategy in ("seq2seq", "transformer_seq2seq"):
-                out_3d = self._forward_seq2seq(
-                    src_3d, targets=targets_3d, time_features=time_3d, epoch=epoch
-                )
-            elif self.strategy == "autoregressive":
-                out_3d = self._forward_autoregressive(
-                    src_3d, targets=targets_3d, time_features=time_3d, epoch=epoch
-                )
-            elif self.strategy == "direct":
-                out_3d = self._forward_direct(
-                    src_3d, targets=targets_3d, time_features=time_3d, epoch=epoch
-                )
-            else:
-                raise ValueError(f"Unsupported strategy for 4D: {self.strategy}")
-
-            # Back to [B, L, N, D_out]
-            L = out_3d.size(1)
-            D_out = out_3d.size(-1)
-            out_4d = out_3d.reshape(B, N, L, D_out).permute(0, 2, 1, 3).contiguous()
+        # Targets/time features flattened the same way
+        if targets is not None:
+            L = targets.size(1)
+            D_out = targets.size(-1)
+            targets_3d = targets.permute(0, 2, 1, 3).reshape(B * N, L, D_out)
         else:
-            raise NotImplementedError(f"mode={mode} not implemented. Use 'temporal_per_node'.")
+            targets_3d = None
+
+        if time_features is not None:
+            Ft = time_features.size(-1)
+            time_3d = time_features.permute(0, 2, 1, 3).reshape(B * N, T, Ft)
+        else:
+            time_3d = None
+
+        # Composer (if present) owns preprocessing here
+        if self.head_composer is not None:
+            x_enc, comp_state = self.head_composer.forward_pre(src_3d)  # [B·N,T,F’]
+        else:
+            x_enc = self._preprocess_input(src_3d)
+            comp_state = None
+
+        # Temporal strategy on flattened streams (RAW)
+        if self.strategy in ("seq2seq", "transformer_seq2seq"):
+            out_3d = self._forward_seq2seq(
+                x_enc, targets=targets_3d, time_features=time_3d, epoch=epoch
+            )
+        elif self.strategy == "autoregressive":
+            out_3d = self._forward_autoregressive(
+                x_enc, targets=targets_3d, time_features=time_3d, epoch=epoch
+            )
+        elif self.strategy == "direct":
+            out_3d = self._forward_direct(
+                x_enc, targets=targets_3d, time_features=time_3d, epoch=epoch
+            )
+        else:
+            raise ValueError(f"Unsupported strategy for 4D: {self.strategy}")
+
+        # Composer inverse (if present) BEFORE reshaping back
+        if self.head_composer is not None:
+            out_3d = self.head_composer.inverse_post(out_3d, comp_state)
+
+        # Back to [B, L, N, D_out]
+        L = out_3d.size(1)
+        D_out = out_3d.size(-1)
+        out_4d = out_3d.reshape(B, N, L, D_out).permute(0, 2, 1, 3).contiguous()
 
         # Graph block AFTER decoder
-        post_gb = self._graph_blocks.get("post_decoder", None)
-        out_4d  = _apply_graph_block(out_4d, adj, post_gb)
+        out_4d = self._apply_graph_block(out_4d, adj, "post_decoder")
 
         return out_4d  # RAW — finalized once in forward()
 
@@ -692,11 +809,13 @@ class ForecastingModel(nn.Module):
     # Forward strategies — all return RAW predictions (no finalize inside)
     # -------------------------------------------------------------------------
     def _forward_direct(self, src, targets=None, time_features=None, epoch=None):
+        """Direct prediction strategy (no autoregression)."""
         return self.head(src)  # RAW
 
     def _forward_autoregressive(
         self, src, targets=None, time_features=None, epoch=None
     ):
+        """Autoregressive prediction strategy."""
         if self.decoder is None:
             raise RuntimeError("Autoregressive strategy requires a decoder.")
         outputs = []
@@ -714,6 +833,7 @@ class ForecastingModel(nn.Module):
         return torch.cat(outputs, dim=1)  # RAW
 
     def _forward_seq2seq(self, src, targets=None, time_features=None, epoch=None):
+        """Sequence-to-sequence prediction strategy."""
         if self.encoder is None or self.decoder is None:
             raise RuntimeError("Seq2seq strategy requires both encoder and decoder.")
         strategy = {
@@ -723,6 +843,7 @@ class ForecastingModel(nn.Module):
         return strategy(src, targets, time_features, epoch)  # RAW
 
     def _forward_rnn_style(self, src, targets=None, time_features=None, epoch=None):
+        """RNN-style seq2seq forward pass."""
         enc_out, enc_hidden = self.encoder(src)
         dec_hidden = self._prepare_decoder_hidden(enc_hidden)
         decoder_input = self.dec_init_proj(src[:, -1:, :])
@@ -745,6 +866,7 @@ class ForecastingModel(nn.Module):
     def _forward_transformer_style(
         self, src, targets=None, time_features=None, epoch=None
     ):
+        """Transformer-style seq2seq forward pass."""
         device = src.device
         memory = (
             self.encoder(src, time_features=time_features)
@@ -784,15 +906,169 @@ class ForecastingModel(nn.Module):
 
         return torch.cat(outputs, dim=1)  # RAW
 
+    def _causal_mask(self, L: int, device: torch.device):
+        # True = masked (blocked), False = allowed
+        return torch.triu(torch.ones(L, L, dtype=torch.bool, device=device), diagonal=1)
+
     def _forward_informer_style(
-        self, src, targets=None, time_features=None, epoch=None
+        self,
+        src,
+        targets=None,
+        time_features=None,
+        epoch=None,
+        *,
+        teacher_forcing: str = "none",  # "none" | "prefix" | "scheduled"
+        teacher_forcing_k: int = 0,  # used when teacher_forcing == "prefix"
     ):
-        batch_size = src.size(0)
+        """
+        Informer-style seq2seq forward pass with optional teacher forcing on the decoder inputs.
+
+        Layout:
+        decoder_input = concat( last label_len of src , horizon segment )
+        - horizon segment is zeros by default
+        - with teacher forcing (training only), selected horizon positions are replaced
+            by the *ground truth at the same positions* (no extra shift), since the
+            last label_len from src already precedes the horizon.
+
+        Returns:
+        dec_out: [B, pred_len, d_model] (or already-projected depending on your decoder/head)
+        """
+        import torch
+
+        assert hasattr(self, "label_len") and hasattr(
+            self, "pred_len"
+        ), "Model must define self.label_len and self.pred_len"
+
+        B, L_enc, F_in = src.shape
+        L_label = int(self.label_len)
+        H = int(self.pred_len)
+        device, dtype = src.device, src.dtype
+
+        # Clamp to avoid slicing issues
+        L_label = max(0, min(L_label, L_enc))
+        L_dec = L_label + H
+
+        # ----- Encoder -----
         enc = self.encoder(src, time_features=time_features)
         enc_out = enc[0] if isinstance(enc, tuple) else enc
         enc_out = self._align_memory_to_decoder(enc_out)
 
-        start_token = self.dec_init_proj(src[:, -1:, :])
-        dec_input = start_token.expand(batch_size, self.pred_len, -1)
-        dec_out = self.decoder(dec_input, enc_out)
-        return self.output_head(dec_out)  # RAW
+        # ----- Build decoder features: [known label] + [future zeros] -----
+        dec_known_feats = (
+            src[:, -L_label:, :] if L_label > 0 else src[:, :0, :]
+        )  # [B, L_label, F_in]
+        dec_future_feats = torch.zeros(
+            B, H, F_in, device=device, dtype=dtype
+        )  # [B, H, F_in]
+
+        # Project known part
+        dec_known_emb = self.dec_init_proj(dec_known_feats)  # [B, L_label, d_model]
+
+        # Prepare future segment default (zeros) in d_model
+        zeros_emb = self.dec_init_proj(dec_future_feats)  # [B, H, d_model]
+
+        # ----- Teacher forcing over the horizon (no last_src_step, direct fill) -----
+        use_tf = self.training and teacher_forcing != "none" and targets is not None
+        if use_tf:
+            # Ensure targets cover H steps (pad if shorter)
+            if targets.size(1) < H:
+                pad = torch.zeros(
+                    B,
+                    H - targets.size(1),
+                    targets.size(2),
+                    device=targets.device,
+                    dtype=targets.dtype,
+                )
+                tgt_full = torch.cat([targets, pad], dim=1)
+            else:
+                tgt_full = targets
+
+            # Project GT to d_model (if output features differ from input features, provide a dedicated proj)
+            gt_emb = self.dec_init_proj(tgt_full[:, :H, :])  # [B, H, d_model]
+
+            # Choose which horizon positions to force
+            if teacher_forcing == "prefix":
+                k = max(0, min(int(teacher_forcing_k), H))
+                force_mask = torch.zeros(B, H, dtype=torch.bool, device=device)
+                if k > 0:
+                    force_mask[:, :k] = True
+            elif teacher_forcing == "scheduled":
+                ratio = (
+                    self.scheduled_sampling_fn(epoch)
+                    if (self.scheduled_sampling_fn and epoch is not None)
+                    else self.teacher_forcing_ratio
+                )
+                p = float(max(0.0, min(1.0, ratio)))
+                force_mask = torch.rand(B, H, device=device) < p  # [B, H]
+            else:
+                force_mask = torch.zeros(B, H, dtype=torch.bool, device=device)
+
+            # Mix: GT where forced, zeros elsewhere
+            dec_future_emb = torch.where(
+                force_mask.unsqueeze(-1), gt_emb, zeros_emb
+            )  # [B, H, d_model]
+        else:
+            dec_future_emb = zeros_emb
+            force_mask = torch.zeros(B, H, dtype=torch.bool, device=device)
+
+        # Final decoder input
+        dec_input = torch.cat(
+            [dec_known_emb, dec_future_emb], dim=1
+        )  # [B, L_dec, d_model]
+
+        # ----- Optional decoder time features -----
+        dec_time = None
+        if isinstance(time_features, dict) and "dec" in time_features:
+            dec_time = time_features["dec"]  # [B, L_dec, ...]
+        elif time_features is not None and not isinstance(time_features, dict):
+            tf = time_features
+            if tf.size(1) >= L_enc:
+                tf_known = tf[:, -L_label:, ...] if L_label > 0 else tf[:, :0, ...]
+                tf_zeros = torch.zeros(
+                    B, H, *tf.shape[2:], device=device, dtype=tf.dtype
+                )
+                dec_time = torch.cat([tf_known, tf_zeros], dim=1)  # [B, L_dec, *]
+
+        # ----- Masks -----
+        # Causal mask over the entire decoder sequence (label + horizon)
+        tgt_mask = self._causal_mask(L_dec, device=device)
+
+        # K/V padding mask:
+        #   - known label segment: valid (False)
+        #   - horizon segment: mask only positions that remain zeros (i.e., NOT teacher-forced)
+        if H > 0:
+            horiz_placeholder = ~force_mask  # True -> mask K/V
+            kpm_known = torch.zeros(B, L_label, dtype=torch.bool, device=device)
+            tgt_key_padding_mask = torch.cat(
+                [kpm_known, horiz_placeholder], dim=1
+            )  # [B, L_dec]
+        else:
+            tgt_key_padding_mask = torch.zeros(
+                B, L_dec, dtype=torch.bool, device=device
+            )
+
+        # ----- Decode -----
+        try:
+            dec_out_full = self.decoder(
+                dec_input,
+                enc_out,
+                tgt_mask=tgt_mask,
+                memory_mask=None,
+                tgt_key_padding_mask=tgt_key_padding_mask,
+                memory_key_padding_mask=None,
+                time_features=dec_time,
+            )
+        except TypeError:
+            try:
+                dec_out_full = self.decoder(
+                    dec_input,
+                    enc_out,
+                    tgt_mask=tgt_mask,
+                    tgt_key_padding_mask=tgt_key_padding_mask,
+                )
+            except TypeError:
+                dec_out_full = self.decoder(dec_input, enc_out)
+
+        # Keep only the forecast window
+        dec_out = dec_out_full[:, -H:, :]  # [B, H, d_model]
+        return dec_out
