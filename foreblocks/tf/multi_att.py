@@ -1,6 +1,6 @@
 import math
 import warnings
-from typing import Callable, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -11,18 +11,20 @@ def _get_available_backends():
     """Check which attention backends are available."""
     backends = {"flash": False, "xformers": False, "sdp": False, "softpick": False}
     try:
-        from flash_attn import flash_attn_func
+        from flash_attn import flash_attn_func  # noqa: F401
         backends["flash"] = True
     except ImportError:
         pass
     try:
-        import xformers.ops
+        import xformers.ops  # noqa: F401
         backends["xformers"] = True
     except ImportError:
         pass
     backends["sdp"] = hasattr(F, "scaled_dot_product_attention")
     try:
-        from ..third_party.flash_softpick_attn import parallel_softpick_attn
+        from ..third_party.flash_softpick_attn import (  # noqa: F401
+            parallel_softpick_attn,
+        )
         backends["softpick"] = True
     except ImportError:
         pass
@@ -32,7 +34,7 @@ def _get_available_backends():
 class MultiAttention(nn.Module):
     """
     Multi-backend attention with GQA/MQA support.
-    
+
     Features:
     - Grouped Query Attention (GQA) and Multi-Query Attention (MQA)
     - RoPE positional embeddings for self-attention
@@ -87,7 +89,7 @@ class MultiAttention(nn.Module):
 
         # Setup attention-specific modules
         self._setup_attention_modules(attention_type, freq_modes, use_swiglu, use_rotary)
-        
+
         # Backend availability
         self.backends = (
             _get_available_backends()
@@ -97,11 +99,14 @@ class MultiAttention(nn.Module):
 
         if verbose_init:
             gqa_info = f"GQA({n_heads}q/{self.n_kv_heads}kv)" if self.n_rep > 1 else "MHA"
-            print(f"[MultiAttention] {gqa_info}, type={attention_type}, "
-                  f"backends={self.backends}, rotary={self.use_rotary}")
+            print(
+                f"[MultiAttention] {gqa_info}, type={attention_type}, "
+                f"backends={self.backends}, rotary={self.use_rotary}"
+            )
 
-    def _setup_attention_modules(self, attention_type: str, freq_modes: int, 
-                                  use_swiglu: bool, use_rotary: bool):
+    def _setup_attention_modules(
+        self, attention_type: str, freq_modes: int, use_swiglu: bool, use_rotary: bool
+    ):
         """Setup projections and type-specific modules."""
         if attention_type in ["standard", "prob_sparse", "softpick", "sliding_window"]:
             # QKV projections
@@ -116,7 +121,8 @@ class MultiAttention(nn.Module):
                     nn.SiLU(),
                     nn.Linear(self.d_model * 4, self.d_model, bias=False),
                 )
-                if use_swiglu else nn.Linear(self.d_model, self.d_model)
+                if use_swiglu
+                else nn.Linear(self.d_model, self.d_model)
             )
             self.dropout = nn.Dropout(self.dropout_p)
 
@@ -124,6 +130,7 @@ class MultiAttention(nn.Module):
             self.use_rotary = use_rotary and not self.cross_attention
             if self.use_rotary:
                 from .rotary import RotaryEmbedding
+
                 self.rotary_emb = RotaryEmbedding(self.head_dim)
             else:
                 self.rotary_emb = None
@@ -131,22 +138,27 @@ class MultiAttention(nn.Module):
             # Frequency-domain attention types
             self.use_rotary = False
             self.rotary_emb = None
-            
+
             if attention_type == "frequency":
                 from .multi_att_helper import FrequencyAttention
+
                 self.freq_attention = FrequencyAttention(self.d_model, self.n_heads, self.dropout_p, modes=freq_modes)
             elif attention_type == "dwt":
                 from .multi_att_helper import DWTAttention
+
                 self.dwt_attention = DWTAttention(self.d_model, self.n_heads, self.dropout_p, modes=freq_modes)
             elif attention_type == "autocor":
                 from .multi_att_helper import AutoCorrelation, AutoCorrelationLayer
+
                 autocorr = AutoCorrelation(mask_flag=True, factor=1, attention_dropout=0.1, output_attention=False)
-                self.freq_attention = AutoCorrelationLayer(correlation=autocorr, d_model=self.d_model, n_heads=self.n_heads)
+                self.freq_attention = AutoCorrelationLayer(
+                    correlation=autocorr, d_model=self.d_model, n_heads=self.n_heads
+                )
 
     # ========================================================================
     # Public API
     # ========================================================================
-    
+
     def forward(
         self,
         query: torch.Tensor,
@@ -173,13 +185,14 @@ class MultiAttention(nn.Module):
             "softpick": self._softpick_path,
             "sliding_window": self._sliding_window_path,
         }
-        
+
         fn = attention_map.get(self.attention_type)
         if fn is None:
             raise ValueError(f"Unknown attention_type: {self.attention_type}")
 
-        return fn(query, key, value, attn_mask, key_padding_mask, 
-                  is_causal, need_weights, layer_state, cu_seqlens)
+        return fn(
+            query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, layer_state, cu_seqlens
+        )
 
     def reset_cache(self):
         """Reset any cached attention patterns."""
@@ -191,7 +204,7 @@ class MultiAttention(nn.Module):
     # ========================================================================
     # Core QKV Processing Pipeline
     # ========================================================================
-    
+
     def _process_qkv(
         self,
         query: torch.Tensor,
@@ -202,33 +215,46 @@ class MultiAttention(nn.Module):
         """
         Unified QKV processing pipeline: project → transpose → RoPE → cache → repeat.
         Returns Q, K, V in [B, H, T, D] format ready for attention.
+
+        NOTE:
+        - For self-attention we maintain a per-layer KV cache in `layer_state`.
+        - RoPE is applied with an offset equal to the cached KV length to keep positions consistent.
+        - KV is cached BEFORE GQA repetition; repetition happens after caching.
         """
         B, T_q, _ = query.shape
         T_k = key.shape[1]
 
-        # 1. Project to heads: [B, T, d_model] → [B, T, H, D]
+        # 1) Project to heads: [B, T, d_model] → [B, T, H, D]
         q = self.q_proj(query).view(B, T_q, self.n_heads, self.head_dim)
         k = self.k_proj(key).view(B, T_k, self.n_kv_heads, self.head_dim)
         v = self.v_proj(value).view(B, T_k, self.n_kv_heads, self.head_dim)
 
-        # 2. Transpose to [B, H, T, D] for attention
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
+        # 2) Transpose to [B, H, T, D] for attention
+        q = q.transpose(1, 2)  # [B, H, T_q, D]
+        k = k.transpose(1, 2)  # [B, H_kv, T_k, D]
+        v = v.transpose(1, 2)  # [B, H_kv, T_k, D]
 
-        # 3. Apply RoPE (before caching, on unrepeated KV)
+        # 3) Apply RoPE (before caching, on unrepeated KV) with correct offset
+        seqlen_offset = 0
+        if self.use_rotary and (layer_state is not None) and (not self.cross_attention):
+            if "k" in layer_state and isinstance(layer_state["k"], torch.Tensor):
+                seqlen_offset = layer_state["k"].size(2)  # cached T_prev
+
         if self.use_rotary and self.rotary_emb is not None:
-            q, k = self._apply_rope(q, k)
+            q, k = self._apply_rope(q, k, seqlen_offset=seqlen_offset)
 
-        # 4. Cache KV for autoregressive self-attention (before repeat)
-        if layer_state is not None and not self.cross_attention:
+        # 4) Cache KV for autoregressive self-attention (before repeat)
+        #    For cross-attention, we do NOT maintain a target-time-growing KV cache.
+        if not self.cross_attention:
+            if layer_state is None:
+                layer_state = {}
             if "k" in layer_state:
                 k = torch.cat([layer_state["k"], k], dim=2)
                 v = torch.cat([layer_state["v"], v], dim=2)
             layer_state["k"] = k
             layer_state["v"] = v
 
-        # 5. Repeat KV heads for GQA (after caching)
+        # 5) Repeat KV heads for GQA (after caching)
         k = self._repeat_kv(k)
         v = self._repeat_kv(v)
 
@@ -244,47 +270,48 @@ class MultiAttention(nn.Module):
     def _apply_rope(self, q: torch.Tensor, k: torch.Tensor, seqlen_offset=0) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply RoPE to Q and K in [B, H, T, D] format.
-        Simplified version without unnecessary transposes.
         """
         from foreblocks.tf.rotary import apply_rotary_emb
-        
+
         B, H, T, D = q.shape
-        
-        # Update cos/sin cache
-        max_len = T + (seqlen_offset if isinstance(seqlen_offset, int) else seqlen_offset.max().item())
+
+        # Update cos/sin cache to cover positions up to T + offset
+        max_len = T + (seqlen_offset if isinstance(seqlen_offset, int) else int(seqlen_offset.max().item()))
         self.rotary_emb._update_cos_sin_cache(max_len, device=q.device, dtype=q.dtype)
 
-        # RoPE expects [B, T, H, D], so transpose
-        q = q.transpose(1, 2).contiguous()
-        k = k.transpose(1, 2).contiguous()
+        # RoPE expects [B, T, H, D]
+        q_bt_hd = q.transpose(1, 2).contiguous()
+        k_bt_hd = k.transpose(1, 2).contiguous()
 
-        # Apply rotations
         cos_q, sin_q = self.rotary_emb._cos_cached, self.rotary_emb._sin_cached
         if self.rotary_emb.scale is None:
             cos_k, sin_k = cos_q, sin_q
         else:
             cos_k, sin_k = self.rotary_emb._cos_k_cached, self.rotary_emb._sin_k_cached
 
-        q = apply_rotary_emb(q, cos_q, sin_q, interleaved=self.rotary_emb.interleaved,
-                            seqlen_offsets=seqlen_offset, inplace=False)
-        k = apply_rotary_emb(k, cos_k, sin_k, interleaved=self.rotary_emb.interleaved,
-                            seqlen_offsets=seqlen_offset, inplace=False)
+        q_bt_hd = apply_rotary_emb(
+            q_bt_hd, cos_q, sin_q, interleaved=self.rotary_emb.interleaved, seqlen_offsets=seqlen_offset, inplace=False
+        )
+        k_bt_hd = apply_rotary_emb(
+            k_bt_hd, cos_k, sin_k, interleaved=self.rotary_emb.interleaved, seqlen_offsets=seqlen_offset, inplace=False
+        )
 
         # Back to [B, H, T, D]
-        return q.transpose(1, 2).contiguous(), k.transpose(1, 2).contiguous()
+        return q_bt_hd.transpose(1, 2).contiguous(), k_bt_hd.transpose(1, 2).contiguous()
 
     # ========================================================================
     # Mask Utilities
     # ========================================================================
-    
+
     def _create_causal_mask(self, T_q: int, T_k: int, device: torch.device) -> torch.Tensor:
         """Create causal mask: [T_q, T_k], True = masked."""
         i = torch.arange(T_q, device=device).unsqueeze(1)
         j = torch.arange(T_k, device=device).unsqueeze(0)
         return j > i
 
-    def _create_sliding_window_mask(self, T_q: int, T_k: int, device: torch.device, 
-                                     is_causal: bool = True) -> torch.Tensor:
+    def _create_sliding_window_mask(
+        self, T_q: int, T_k: int, device: torch.device, is_causal: bool = True
+    ) -> torch.Tensor:
         """Create sliding window mask: [T_q, T_k], True = masked."""
         i = torch.arange(T_q, device=device).unsqueeze(1)
         j = torch.arange(T_k, device=device).unsqueeze(0)
@@ -302,30 +329,31 @@ class MultiAttention(nn.Module):
     ) -> torch.Tensor:
         """Apply attention and key padding masks. scores: [B, H, T_q, T_k]"""
         B, H, T_q, T_k = scores.shape
-        
+
         if attn_mask is not None:
             mask = attn_mask.bool()
             if mask.dim() == 2:
                 mask = mask.view(1, 1, T_q, T_k)
             scores = scores.masked_fill(mask, float("-inf"))
-        
+
         if key_padding_mask is not None:
             scores = scores.masked_fill(key_padding_mask.view(B, 1, 1, T_k).bool(), float("-inf"))
-        
+
         return scores
 
     # ========================================================================
     # Standard Attention
     # ========================================================================
-    
-    def _standard_path(self, query, key, value, attn_mask, key_padding_mask,
-                       is_causal, need_weights, layer_state, *_):
+
+    def _standard_path(
+        self, query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, layer_state, *_  # cu_seqlens
+    ):
         """Standard attention path."""
         B, T_q, _ = query.shape
-        
+
         q, k, v = self._process_qkv(query, key, value, layer_state)
         out, weights = self._compute_attention(q, k, v, attn_mask, key_padding_mask, is_causal, need_weights)
-        
+
         out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
         return self.out_proj(self.dropout(out)), weights, layer_state
 
@@ -339,11 +367,10 @@ class MultiAttention(nn.Module):
         is_causal: bool,
         need_weights: bool,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Core attention computation - manual implementation only for exact reproducibility."""
+        """Core attention computation."""
         B, H, T_q, D = q.shape
         T_k = k.size(2)
 
-        # Manual attention computation (matches original exactly)
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
         # Apply causal mask for self-attention
@@ -363,15 +390,16 @@ class MultiAttention(nn.Module):
     # ========================================================================
     # ProbSparse Attention (Informer)
     # ========================================================================
-    
-    def _prob_sparse_path(self, query, key, value, attn_mask, key_padding_mask,
-                          is_causal, need_weights, layer_state, *_):
+
+    def _prob_sparse_path(
+        self, query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, layer_state, *_  # cu_seqlens
+    ):
         """ProbSparse attention path."""
         B, T_q, _ = query.shape
-        
+
         q, k, v = self._process_qkv(query, key, value, layer_state)
         out, weights = self._prob_sparse_attention(q, k, v, attn_mask, key_padding_mask, is_causal, need_weights)
-        
+
         out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
         return self.out_proj(self.dropout(out)), weights, layer_state
 
@@ -401,7 +429,7 @@ class MultiAttention(nn.Module):
             return self._compute_attention(q, k, v, attn_mask, key_padding_mask, is_causal, need_weights)
 
         # Sample keys uniformly
-        k_sample = k[:, :, ::max(1, T_k // sample_k), :][:, :, :sample_k, :]  # [B, H, sample_k, D]
+        k_sample = k[:, :, :: max(1, T_k // sample_k), :][:, :, :sample_k, :]  # [B, H, sample_k, D]
 
         # Compute sparsity measure: M(q_i) = max - mean
         scores_sample = torch.matmul(q, k_sample.transpose(-2, -1)) * self.scale  # [B, H, T_q, sample_k]
@@ -452,12 +480,13 @@ class MultiAttention(nn.Module):
     # ========================================================================
     # Sliding Window Attention
     # ========================================================================
-    
-    def _sliding_window_path(self, query, key, value, attn_mask, key_padding_mask,
-                             is_causal, need_weights, layer_state, *_):
+
+    def _sliding_window_path(
+        self, query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, layer_state, *_  # cu_seqlens
+    ):
         """Sliding window attention path."""
         B, T_q, _ = query.shape
-        
+
         q, k, v = self._process_qkv(query, key, value, layer_state)
 
         # Try SDPA with window mask
@@ -476,7 +505,10 @@ class MultiAttention(nn.Module):
                     combined = combined | key_padding_mask.view(B, 1, 1, k.size(2)).bool()
 
                 out = F.scaled_dot_product_attention(
-                    q, k, v, attn_mask=combined,
+                    q,
+                    k,
+                    v,
+                    attn_mask=combined,
                     dropout_p=self.dropout_p if self.training else 0.0,
                     is_causal=False,
                 )
@@ -503,18 +535,18 @@ class MultiAttention(nn.Module):
             window_mask = self._create_sliding_window_mask(T_q, T_k, q.device, is_causal)
             scores = scores.masked_fill(window_mask.view(1, 1, T_q, T_k), float("-inf"))
             scores = self._apply_masks(scores, attn_mask, key_padding_mask)
-            
+
             weights = F.softmax(scores, dim=-1)
             if self.training and self.dropout_p > 0:
                 weights = F.dropout(weights, p=self.dropout_p, training=True)
-            
+
             return torch.matmul(weights, v), (weights if need_weights else None)
 
         # Large sequences: chunk processing
         output = torch.zeros_like(q)
         for i in range(0, T_q, self.chunk_size):
             end_i = min(i + self.chunk_size, T_q)
-            
+
             # Determine KV range for this chunk
             if is_causal:
                 start_k = max(0, i - self.window_size + 1)
@@ -531,7 +563,7 @@ class MultiAttention(nn.Module):
 
             # Compute chunk attention
             scores = torch.matmul(q_chunk, k_chunk.transpose(-2, -1)) * self.scale
-            
+
             # Create local window mask
             q_pos = torch.arange(i, end_i, device=q.device).unsqueeze(1)
             k_pos = torch.arange(start_k, end_k, device=q.device).unsqueeze(0)
@@ -540,9 +572,9 @@ class MultiAttention(nn.Module):
             else:
                 half = self.window_size // 2
                 local_mask = (k_pos < (q_pos - half)) | (k_pos > (q_pos + half))
-            
+
             scores = scores.masked_fill(local_mask.view(1, 1, end_i - i, end_k - start_k), float("-inf"))
-            
+
             # Apply padding mask if present
             if key_padding_mask is not None:
                 chunk_pad = key_padding_mask[:, start_k:end_k]
@@ -551,7 +583,7 @@ class MultiAttention(nn.Module):
             weights = F.softmax(scores, dim=-1)
             if self.training and self.dropout_p > 0:
                 weights = F.dropout(weights, p=self.dropout_p, training=True)
-            
+
             output[:, :, i:end_i] = torch.matmul(weights, v_chunk)
 
         return output, None  # Don't reconstruct full weights for chunked
@@ -559,18 +591,20 @@ class MultiAttention(nn.Module):
     # ========================================================================
     # SoftPick Attention
     # ========================================================================
-    
-    def _softpick_path(self, query, key, value, attn_mask, key_padding_mask,
-                       is_causal, need_weights, layer_state, cu_seqlens):
+
+    def _softpick_path(
+        self, query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, layer_state, cu_seqlens
+    ):
         """SoftPick attention path with fallback."""
         if not self.backends.get("softpick"):
             warnings.warn("[MultiAttention] SoftPick unavailable, falling back to standard.")
-            return self._standard_path(query, key, value, attn_mask, key_padding_mask,
-                                      is_causal, need_weights, layer_state, cu_seqlens)
+            return self._standard_path(
+                query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, layer_state, cu_seqlens
+            )
 
         try:
             from ..third_party.flash_softpick_attn import parallel_softpick_attn
-            
+
             B, T_q, _ = query.shape
             q, k, v = self._process_qkv(query, key, value, layer_state)
 
@@ -583,38 +617,34 @@ class MultiAttention(nn.Module):
                 q_flat = q.reshape(B * T_q, self.n_heads, self.head_dim)
                 k_flat = k.reshape(B * T_k, self.n_heads, self.head_dim)
                 v_flat = v.reshape(B * T_k, self.n_heads, self.head_dim)
-                out = parallel_softpick_attn(q_flat, k_flat, v_flat, scale=self.scale, 
-                                            cu_seqlens=cu_seqlens, head_first=True)
+                out = parallel_softpick_attn(
+                    q_flat, k_flat, v_flat, scale=self.scale, cu_seqlens=cu_seqlens, head_first=True
+                )
                 out = out.view(B, T_q, self.n_heads, self.head_dim).contiguous().view(B, T_q, self.d_model)
 
             return self.out_proj(self.dropout(out)), None, layer_state
-            
+
         except Exception as e:
             warnings.warn(f"[MultiAttention] SoftPick failed ({e}), falling back.")
-            return self._standard_path(query, key, value, attn_mask, key_padding_mask,
-                                      is_causal, need_weights, layer_state, cu_seqlens)
+            return self._standard_path(
+                query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, layer_state, cu_seqlens
+            )
 
     # ========================================================================
     # Frequency-Domain Attention
     # ========================================================================
-    
-    def _frequency_path(self, query, key, value, attn_mask, key_padding_mask,
-                        is_causal, need_weights, *_):
+
+    def _frequency_path(self, query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, *_):
         """Frequency attention path."""
-        out, weights = self.freq_attention(query, key, value, attn_mask, 
-                                           key_padding_mask, is_causal, need_weights)
+        out, weights = self.freq_attention(query, key, value, attn_mask, key_padding_mask, is_causal, need_weights)
         return out, weights, None
 
-    def _dwt_path(self, query, key, value, attn_mask, key_padding_mask,
-                  is_causal, need_weights, *_):
+    def _dwt_path(self, query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, *_):
         """DWT attention path."""
-        out, weights = self.dwt_attention(query, key, value, attn_mask,
-                                         key_padding_mask, is_causal, need_weights)
+        out, weights = self.dwt_attention(query, key, value, attn_mask, key_padding_mask, is_causal, need_weights)
         return out, weights, None
 
-    def _autocor_path(self, query, key, value, attn_mask, key_padding_mask,
-                      is_causal, need_weights, *_):
+    def _autocor_path(self, query, key, value, attn_mask, key_padding_mask, is_causal, need_weights, *_):
         """AutoCorrelation attention path."""
-        out, weights = self.freq_attention(query, key, value, attn_mask,
-                                           key_padding_mask, is_causal, need_weights)
+        out, weights = self.freq_attention(query, key, value, attn_mask, key_padding_mask, is_causal, need_weights)
         return out, weights, None
