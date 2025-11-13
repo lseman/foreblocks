@@ -1,47 +1,55 @@
+# head_composer.py
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from foreblocks.node_spec import node
 
 BaseHeadLike = Union[nn.Module]  # or your foreblocks.core.BaseHead
+
 
 @dataclass
 class HeadSpec:
     """
     Describe how to combine/invert a head.
+
     combine:
-      - "auto" : infer behavior per output:
+      - "auto"  : infer behavior per output:
           * (y, state) and hasattr(head, 'invert') -> "invert"
-          * (main, carry) and no invert -> "add"
-          * y only -> "none"
+          * (main, carry) and no invert           -> "add"
+          * y only                                -> "none"
       - "invert": force reversible; head must return (y, state) and implement invert(y, state)
-      - "add" : force split-add; head must return (main, carry)
-      - "none" : force passthrough; head must return y
+      - "add"   : force split-add; head must return (main, carry)
+      - "none"  : force passthrough; head must return y
     add_project:
       - If True and combine == "add", project carry to match inverse target feature dim.
         (Target dim is detected at inverse time from `y` unless `output_dim` is given.)
+
     α (architecture) controls:
       - alpha_mode:
-          "off" : legacy behavior (no α)
-          "gate" : head is gated on/off with straight-through sigmoid (invert-safe)
-          "soft" : y = w_head * head(x) + w_skip * x (non-invert heads only)
+          "off"   : legacy behavior (no α)
+          "gate"  : head is gated on/off with straight-through sigmoid (invert-safe)
+          "soft"  : y = w_head * head(x) + w_skip * x  (non-invert heads only)
       - alpha_init: initial scalar/logit for the gate/soft weights (default 0.0)
       - alpha_trainable: whether α is trainable
       - weight_carry: when combine="add", also scale the carry by the same head weight
     """
     head: BaseHeadLike
     name: str
-    combine: str = "auto"  # "auto" | "invert" | "add" | "none"
+    combine: str = "auto"          # "auto" | "invert" | "add" | "none"
     add_project: bool = True
     custom_add_proj: Optional[nn.Module] = None
+
     # α controls (new)
-    alpha_mode: str = "off"  # "off" | "gate" | "soft"
+    alpha_mode: str = "off"        # "off" | "gate" | "soft"
     alpha_init: float = 0.0
     alpha_trainable: bool = True
-    weight_carry: bool = True  # only relevant when combine="add"
+    weight_carry: bool = True      # only relevant when combine="add"
 
 
 @node(
@@ -55,29 +63,32 @@ class HeadComposer(nn.Module):
     """
     Chains multiple preprocessing heads before the encoder and provides an inverse
     that maps model outputs back to the original space (add trend back, invert RevIN, etc.).
+
     Now supports DARTS-style α parameters per head:
       - gate (ST-sigmoid): invert-safe binary routing of a head
       - soft mix: convex blend between skip(x) and head(x) for non-invert heads
+
     Typical:
         specs = [
-            HeadSpec(RevINHead(F), name="revin", combine="invert", alpha_mode="gate"),
+            HeadSpec(RevINHead(F), name="revin",  combine="invert", alpha_mode="gate"),
             HeadSpec(DecompositionHead(...), name="decomp", combine="add", alpha_mode="soft"),
             HeadSpec(MultiScaleConvHead(F), name="msconv", combine="none", alpha_mode="soft"),
         ]
         composer = HeadComposer(specs, enable_nas=True, alpha_temperature=1.0)
+
         # --- Step A: optimize alphas only ---
         opt_alpha = torch.optim.Adam(composer.arch_parameters(), lr=1e-2)
+
         # --- Step B: freeze alphas; optimize model/heads weights ---
         opt_w = torch.optim.Adam(composer.weight_parameters(), lr=1e-3)
     """
-
     def __init__(
         self,
         specs: List[HeadSpec],
-        output_dim: Optional[int] = None,  # optional fixed target feature dim for inverse add()
-        stop_gradient_on_carry: bool = False,  # detach carry before storing (can stabilize training)
-        alpha_temperature: float = 1.0,  # temperature for gate/soft mixing
-        enable_nas: bool = False,  # enable neural architecture search with α parameters
+        output_dim: Optional[int] = None,     # optional fixed target feature dim for inverse add()
+        stop_gradient_on_carry: bool = False, # detach carry before storing (can stabilize training)
+        alpha_temperature: float = 1.0,       # temperature for gate/soft mixing
+        enable_nas: bool = False,             # enable neural architecture search with α parameters
     ):
         super().__init__()
         # Ensure unique names
@@ -86,17 +97,20 @@ class HeadComposer(nn.Module):
             if s.name in seen:
                 raise ValueError(f"HeadSpec names must be unique; duplicated: {s.name}")
             seen.add(s.name)
+
         self.specs = nn.ModuleList([s.head for s in specs])  # register modules
         self.meta: List[HeadSpec] = specs
         self.fixed_output_dim = output_dim
         self.stop_gradient_on_carry = stop_gradient_on_carry
         self.alpha_temperature = alpha_temperature
         self.enable_nas = enable_nas
+
         # Pre-register any custom projections
         self.add_projs = nn.ModuleDict()
         for spec in specs:
             if spec.combine in ("auto", "add") and spec.custom_add_proj is not None:
                 self.add_projs[spec.name] = spec.custom_add_proj
+
         # --- α parameters per head (by name) ---
         # Only create alpha parameters if NAS is enabled
         self._alphas = nn.ParameterDict()
@@ -113,10 +127,12 @@ class HeadComposer(nn.Module):
                     raise ValueError(f"alpha_mode must be 'off'|'soft'|'gate', got {spec.alpha_mode}")
                 p.requires_grad_(bool(spec.alpha_trainable))
                 self._alphas[spec.name] = p
+
         # record hardened choices after discretization (optional)
         self._hardened_choice: Dict[str, Optional[bool]] = {s.name: None for s in specs}
 
     # ---------- helpers ----------
+
     @staticmethod
     def _is_2tuple(obj: Any) -> bool:
         return isinstance(obj, (tuple, list)) and len(obj) == 2
@@ -133,6 +149,7 @@ class HeadComposer(nn.Module):
                 return "invert"
             if self._both_tensors(out):
                 return "add"
+            return "none"
         return "none"
 
     def _get_or_build_add_proj(
@@ -146,6 +163,7 @@ class HeadComposer(nn.Module):
         if name in self.add_projs:
             proj = self.add_projs[name]
             return proj.to(device=device, dtype=dtype)
+
         if in_dim == out_dim:
             proj = nn.Identity()
         else:
@@ -153,6 +171,7 @@ class HeadComposer(nn.Module):
             nn.init.xavier_uniform_(proj.weight)
             if proj.bias is not None:
                 nn.init.zeros_(proj.bias)
+
         self.add_projs[name] = proj
         return proj.to(device=device, dtype=dtype)
 
@@ -168,6 +187,7 @@ class HeadComposer(nn.Module):
         return torch.cat([x, last], dim=1)
 
     # ---------- α mixing primitives ----------
+
     def _alpha_weights(self, spec: HeadSpec) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Returns (w_head, w_skip) depending on alpha_mode and enable_nas.
@@ -177,11 +197,14 @@ class HeadComposer(nn.Module):
         """
         if not self.enable_nas or spec.alpha_mode == "off":
             return None, None
+
         a = self._alphas[spec.name]
         tau = self.alpha_temperature
+
         if spec.alpha_mode == "soft":
             w = F.softmax(a / max(1e-6, tau), dim=0)  # [2]
             return w[0], w[1]
+
         # gate
         g = torch.sigmoid(a[0] / max(1e-6, tau))  # scalar in (0,1)
         return g, 1.0 - g
@@ -196,9 +219,11 @@ class HeadComposer(nn.Module):
         return g_hard.detach() - g.detach() + g
 
     # ---------- public API ----------
+
     def forward_pre(self, x: torch.Tensor) -> Tuple[torch.Tensor, List[Dict[str, Any]]]:
         """
         Apply all heads in order to produce the encoder input.
+
         Returns:
             x_out: transformed input for encoder [B,T,F']
             run_state: list of dicts (per-head) to be used by inverse_post
@@ -209,139 +234,124 @@ class HeadComposer(nn.Module):
             head = spec.head
             out = head(cur)
             combine = self._infer_combine(spec, out)
+
+            state_rec: Dict[str, Any] = {"name": spec.name, "combine": combine}
+
+            # Resolve α (returns None if NAS is disabled)
             w_head, w_skip = self._alpha_weights(spec)
+
+            # Hard overrides if previously discretized
             hardened = self._hardened_choice.get(spec.name, None)
-            state_rec = {"name": spec.name, "combine": combine}
 
             if combine == "invert":
-                cur, state_rec = self._apply_invert(cur, out, spec, w_head, hardened, state_rec)
+                # Expected out = (y:Tensor, state)
+                if not self._is_2tuple(out) or not isinstance(out[0], torch.Tensor):
+                    raise RuntimeError(f"[{spec.name}] expected (y:Tensor, state:Any) for 'invert' combine.")
+                y, state = out[0], out[1]
+
+                # Invert heads must be EITHER on or off to preserve a valid inverse.
+                if w_head is None:  # NAS disabled or alpha_mode="off"
+                    cur = y
+                    state_rec["state"] = state
+                    state_rec["head_ref"] = head
+                    state_rec["gate_on"] = True
+                else:
+                    if hardened is not None:
+                        gate_on = bool(hardened)
+                        g_used = torch.tensor(float(gate_on), device=cur.device, dtype=cur.dtype)
+                    else:
+                        g = w_head  # scalar
+                        g_used = self._straight_through_hard_gate(g)  # ST binary
+
+                    # y_or_skip = g* y + (1-g)*cur   but must be exactly choose for inverse consistency
+                    # We use ST hard gate in the forward path:
+                    cur = y * g_used + cur * (1.0 - g_used)
+
+                    state_rec["state"] = state
+                    state_rec["head_ref"] = head
+                    state_rec["gate_on"] = bool((g_used > 0.5).item())
+                    state_rec["gate_value"] = float(w_head.item())  # for reporting
+
             elif combine == "add":
-                cur, state_rec = self._apply_add(cur, out, spec, w_head, w_skip, hardened, state_rec)
+                # Expected out = (main, carry) both tensors
+                if not self._both_tensors(out):
+                    raise RuntimeError(f"[{spec.name}] expected (main:Tensor, carry:Tensor) for 'add' combine.")
+                main, carry = out
+                if self.stop_gradient_on_carry:
+                    carry = carry.detach()
+
+                if w_head is None:  # NAS disabled or alpha_mode="off"
+                    cur = main
+                    state_rec["carry_shape"] = carry.shape
+                    state_rec["carry"] = carry
+                    state_rec["mix_w_head"] = None
+                elif spec.alpha_mode == "soft":
+                    # convex blend: y = w_head * main + w_skip * cur
+                    if hardened is not None:
+                        # Hardened as pick-head (True) or skip (False)
+                        if hardened:
+                            cur = main
+                            mix_w_head = torch.tensor(1.0, device=cur.device, dtype=cur.dtype)
+                        else:
+                            cur = cur  # skip
+                            mix_w_head = torch.tensor(0.0, device=cur.device, dtype=cur.dtype)
+                    else:
+                        cur = main * w_head + cur * w_skip
+                        mix_w_head = w_head
+
+                    state_rec["carry_shape"] = carry.shape
+                    # Optionally scale carry by same head weight (keeps reconstruction consistent)
+                    state_rec["carry"] = carry * (mix_w_head if spec.weight_carry else 1.0)
+                    state_rec["mix_w_head"] = float(mix_w_head.item()) if isinstance(mix_w_head, torch.Tensor) else mix_w_head
+                else:  # gate
+                    if hardened is not None:
+                        gate_on = bool(hardened)
+                        g_used = torch.tensor(float(gate_on), device=cur.device, dtype=cur.dtype)
+                    else:
+                        g_used = self._straight_through_hard_gate(w_head)
+                    cur = main * g_used + cur * (1.0 - g_used)
+
+                    state_rec["carry_shape"] = carry.shape
+                    state_rec["carry"] = carry * (g_used if spec.weight_carry else 1.0)
+                    state_rec["mix_w_head"] = float(w_head.item())
+
             elif combine == "none":
-                cur, state_rec = self._apply_none(cur, out, spec, w_head, w_skip, hardened, state_rec)
+                # Expected out = Tensor
+                if not isinstance(out, torch.Tensor):
+                    raise RuntimeError(f"[{spec.name}] expected single tensor for 'none' combine.")
+                y = out
+
+                if w_head is None:  # NAS disabled or alpha_mode="off"
+                    cur = y
+                    state_rec["mix_w_head"] = None
+                elif spec.alpha_mode == "soft":
+                    if hardened is not None:
+                        cur = y if hardened else cur
+                        mix_w_head = torch.tensor(1.0 if hardened else 0.0, device=cur.device, dtype=cur.dtype)
+                    else:
+                        cur = y * w_head + cur * w_skip
+                        mix_w_head = w_head
+                    state_rec["mix_w_head"] = float(mix_w_head.item()) if isinstance(mix_w_head, torch.Tensor) else mix_w_head
+                else:  # gate
+                    if hardened is not None:
+                        gate_on = bool(hardened)
+                        g_used = torch.tensor(float(gate_on), device=cur.device, dtype=cur.dtype)
+                    else:
+                        g_used = self._straight_through_hard_gate(w_head)
+                    cur = y * g_used + cur * (1.0 - g_used)
+                    state_rec["mix_w_head"] = float(w_head.item())
+
             else:
                 raise ValueError(f"Unknown combine mode: {combine}")
 
             run_state.append(state_rec)
+
         return cur, run_state
-
-    def _apply_invert(
-        self, cur: torch.Tensor, out: Any, spec: HeadSpec,
-        w_head: Optional[torch.Tensor], hardened: Optional[bool],
-        state_rec: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        if not self._is_2tuple(out) or not isinstance(out[0], torch.Tensor):
-            raise RuntimeError(f"[{spec.name}] expected (y:Tensor, state:Any) for 'invert' combine.")
-        y, state = out[0], out[1]
-        # Invert heads must be EITHER on or off to preserve a valid inverse.
-        if w_head is None:  # NAS disabled or alpha_mode="off"
-            cur = y
-            state_rec["state"] = state
-            state_rec["head_ref"] = spec.head
-            state_rec["gate_on"] = True
-            return cur, state_rec
-
-        # Gate only for invert (enforce binary for consistency)
-        if spec.alpha_mode == "soft":
-            raise ValueError(f"[{spec.name}] 'soft' alpha_mode invalid for 'invert' (use 'gate').")
-        if hardened is not None:
-            gate_on = bool(hardened)
-            g_used = torch.tensor(float(gate_on), device=cur.device, dtype=cur.dtype)
-        else:
-            g_used = self._straight_through_hard_gate(w_head)  # ST binary
-        # y_or_skip = g* y + (1-g)*cur but must be exactly choose for inverse consistency
-        # We use ST hard gate in the forward path:
-        cur = y * g_used + cur * (1.0 - g_used)
-        state_rec["state"] = state
-        state_rec["head_ref"] = spec.head
-        state_rec["gate_on"] = bool((g_used > 0.5).item())
-        state_rec["gate_value"] = float(w_head.item())  # for reporting
-        return cur, state_rec
-
-    def _apply_add(
-        self, cur: torch.Tensor, out: Any, spec: HeadSpec,
-        w_head: Optional[torch.Tensor], w_skip: Optional[torch.Tensor],
-        hardened: Optional[bool], state_rec: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        # Expected out = (main, carry) both tensors
-        if not self._both_tensors(out):
-            raise RuntimeError(f"[{spec.name}] expected (main:Tensor, carry:Tensor) for 'add' combine.")
-        main, carry = out
-        if self.stop_gradient_on_carry:
-            carry = carry.detach()
-        carry_shape = carry.shape
-
-        if w_head is None:  # NAS disabled or alpha_mode="off"
-            cur = main
-            state_rec["carry_shape"] = carry_shape
-            state_rec["carry"] = carry
-            state_rec["mix_w_head"] = None
-            return cur, state_rec
-
-        if hardened is not None:
-            # Hardened as pick-head (True) or skip (False)
-            if hardened:
-                cur = main
-                effective_w = torch.tensor(1.0, device=cur.device, dtype=cur.dtype)
-            else:
-                cur = cur  # skip
-                effective_w = torch.tensor(0.0, device=cur.device, dtype=cur.dtype)
-        elif spec.alpha_mode == "soft":
-            # convex blend: y = w_head * main + w_skip * cur
-            cur = main * w_head + cur * w_skip
-            effective_w = w_head
-        else:  # gate
-            if hardened is not None:
-                gate_on = bool(hardened)
-                g_used = torch.tensor(float(gate_on), device=cur.device, dtype=cur.dtype)
-            else:
-                g_used = self._straight_through_hard_gate(w_head)
-            cur = main * g_used + cur * (1.0 - g_used)
-            effective_w = g_used  # Use hard for carry scaling
-
-        # Optionally scale carry by same head weight (keeps reconstruction consistent)
-        scale_carry = effective_w if spec.weight_carry else 1.0
-        state_rec["carry_shape"] = carry_shape
-        state_rec["carry"] = carry * scale_carry
-        state_rec["mix_w_head"] = float(effective_w.item())  # Now records effective (hard/soft as used)
-        return cur, state_rec
-
-    def _apply_none(
-        self, cur: torch.Tensor, out: Any, spec: HeadSpec,
-        w_head: Optional[torch.Tensor], w_skip: Optional[torch.Tensor],
-        hardened: Optional[bool], state_rec: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        # Expected out = Tensor
-        if not isinstance(out, torch.Tensor):
-            raise RuntimeError(f"[{spec.name}] expected single tensor for 'none' combine.")
-        y = out
-
-        if w_head is None:  # NAS disabled or alpha_mode="off"
-            cur = y
-            state_rec["mix_w_head"] = None
-            return cur, state_rec
-
-        if hardened is not None:
-            cur = y if hardened else cur
-            effective_w = torch.tensor(1.0 if hardened else 0.0, device=cur.device, dtype=cur.dtype)
-        elif spec.alpha_mode == "soft":
-            cur = y * w_head + cur * w_skip
-            effective_w = w_head
-        else:  # gate
-            if hardened is not None:
-                gate_on = bool(hardened)
-                g_used = torch.tensor(float(gate_on), device=cur.device, dtype=cur.dtype)
-            else:
-                g_used = self._straight_through_hard_gate(w_head)
-            cur = y * g_used + cur * (1.0 - g_used)
-            effective_w = g_used
-
-        state_rec["mix_w_head"] = float(effective_w.item())
-        return cur, state_rec
 
     def inverse_post(self, y: torch.Tensor, run_state: List[Dict[str, Any]]) -> torch.Tensor:
         """
         Undo heads in reverse: add carries, apply .invert(), or passthrough.
+
         Note: For 'invert' heads with α gating, we only invert if the forward
         gate was 'on' (recorded as gate_on). This preserves inverse consistency.
         """
@@ -349,11 +359,14 @@ class HeadComposer(nn.Module):
         for state in reversed(run_state):
             mode = state["combine"]
             name = state["name"]
+
             if mode == "add":
                 carry = state["carry"]
+
                 # 1) time alignment
                 if carry.shape[1] != cur.shape[1]:
                     carry = self._align_time(carry, cur.shape[1])
+
                 # 2) feature projection (if requested)
                 if any(s.name == name and s.add_project for s in self.meta):
                     target_dim = self.fixed_output_dim if self.fixed_output_dim is not None else cur.size(-1)
@@ -365,6 +378,7 @@ class HeadComposer(nn.Module):
                         dtype=cur.dtype,
                     )
                     carry = proj(carry)
+
                 # 3) add back (final guard)
                 if carry.size(-1) != cur.size(-1):
                     raise RuntimeError(
@@ -372,6 +386,7 @@ class HeadComposer(nn.Module):
                         "and add_project=False or projection not provided."
                     )
                 cur = cur + carry
+
             elif mode == "invert":
                 head: nn.Module = state.get("head_ref", None)
                 st = state.get("state", None)
@@ -385,13 +400,17 @@ class HeadComposer(nn.Module):
                 else:
                     # skipped at forward → nothing to invert
                     pass
+
             elif mode == "none":
                 continue
+
             else:
                 raise ValueError(f"Unknown combine mode during inverse: {mode}")
+
         return cur
 
     # ---------- α utilities for NAS loops ----------
+
     def arch_parameters(self):
         """
         Iterable over α parameters (for optimizer step A).
@@ -403,10 +422,18 @@ class HeadComposer(nn.Module):
 
     def weight_parameters(self):
         """Iterable over non-α parameters (for optimizer step B)."""
-        if not self.enable_nas:
-            return self.parameters()  # All params if no alphas
         alpha_ids = {id(p) for p in self._alphas.values()}
-        return (p for p in self.parameters() if id(p) not in alpha_ids)
+        for m in self.modules():
+            for p in m.parameters(recurse=False):
+                if id(p) not in alpha_ids:
+                    yield p
+        # plus recursive children (heads)
+        for name, module in self.named_modules():
+            if module is self:
+                continue
+            for p in module.parameters(recurse=False):
+                if id(p) not in alpha_ids:
+                    yield p
 
     def alpha_report(self) -> Dict[str, Dict[str, float]]:
         """
@@ -415,7 +442,8 @@ class HeadComposer(nn.Module):
         """
         if not self.enable_nas:
             return {}
-        rep: Dict[str, Dict[str, Any]] = {}
+        
+        rep: Dict[str, Dict[str, float]] = {}
         for spec in self.meta:
             d: Dict[str, Any] = {"mode": spec.alpha_mode, "hardened": self._hardened_choice.get(spec.name, None)}
             if spec.alpha_mode == "off":
@@ -440,12 +468,16 @@ class HeadComposer(nn.Module):
         """
         if not self.enable_nas:
             return
+        
         for spec in self.meta:
             if spec.alpha_mode == "off":
                 self._hardened_choice[spec.name] = None
                 continue
-            w_head, _ = self._alpha_weights(spec)
-            self._hardened_choice[spec.name] = bool(w_head >= threshold)  # Unified for soft/gate
+            w_head, w_skip = self._alpha_weights(spec)
+            if spec.alpha_mode == "soft":
+                self._hardened_choice[spec.name] = bool(w_head >= threshold)
+            else:
+                self._hardened_choice[spec.name] = bool(w_head >= threshold)
 
     @torch.no_grad()
     def clear_discretization_(self):

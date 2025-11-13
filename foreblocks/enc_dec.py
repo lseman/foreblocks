@@ -46,8 +46,8 @@ class DecoderBase(nn.Module):
 class LSTMEncoder(EncoderBase):
     def __init__(
         self,
-        input_size: int,
-        hidden_size: int,
+        input_size: int = 1,
+        hidden_size: int = 32,
         num_layers: int = 1,
         dropout: float = 0.0,
         bidirectional: bool = False,
@@ -104,9 +104,9 @@ class LSTMEncoder(EncoderBase):
 class LSTMDecoder(DecoderBase):
     def __init__(
         self,
-        input_size: int,
-        hidden_size: int,
-        output_size: int,  # kept for compatibility; not used (no projection)
+        input_size: int = 1,
+        hidden_size: int = 32,
+        output_size: int = 1,  # kept for compatibility; not used (no projection)
         num_layers: int = 1,
         dropout: float = 0.0,
     ):

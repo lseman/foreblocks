@@ -249,7 +249,7 @@ class TranAD(nn.Module):
             nhead=n_heads,
             num_layers=n_layers,
             dropout=dropout,
-            use_adaptive_ln="layer",
+            # use_adaptive_ln="layer",
             norm_strategy="pre_norm",
         )
 
@@ -261,7 +261,7 @@ class TranAD(nn.Module):
             num_layers=n_layers,
             dropout=dropout,
             informer_like=False,
-            use_adaptive_ln="layer",
+            # use_adaptive_ln="layer",
         )
 
         self.decoder2 = TransformerDecoder(
@@ -271,7 +271,7 @@ class TranAD(nn.Module):
             nhead=n_heads,
             num_layers=n_layers,
             dropout=dropout,
-            informer_like=True,
+            informer_like=False,
         )
         
         # Pre-allocate context tensors to avoid repeated allocations

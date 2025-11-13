@@ -7,26 +7,41 @@ Improvements:
 - Standardized frequency computation using np.fft.fftfreq for accuracy
 - Added safeguards in boundary smoothing
 - Minor code cleanups and consistency fixes
+- Added toggleable NN-based mode refinement (VMD + Lightweight Autoencoder)
+- Fixed Optuna progress bar threading issue in Jupyter notebooks
+- Fixed refine_modes to handle list input (convert to np.array)
 """
-
 import gc
 import os
 import pickle
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-
 import numpy as np
 import optuna
 import pyfftw
 import pyfftw.interfaces.numpy_fft as fftw_np
 from numba import njit
+import torch
+import torch.nn as nn
+from torch.optim import Adam
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("⚠️ PyTorch not available - NN refinement will be skipped")
 
+# Notebook detection for Optuna settings
+try:
+    from IPython import get_ipython
+    IS_NOTEBOOK = get_ipython() is not None
+except ImportError:
+    IS_NOTEBOOK = False
 
 @dataclass
 class VMDParameters:
     """Configuration parameters for VMD decomposition"""
-
     n_trials: int = 30
     max_K: int = 6
     tol: float = 1e-6
@@ -40,20 +55,16 @@ class VMDParameters:
     boundary_method: str = "reflect"
     apply_tapering: bool = True
 
-
 @dataclass
 class HierarchicalParameters:
     """Configuration parameters for hierarchical VMD"""
-
     max_levels: int = 3
     energy_threshold: float = 0.01
     min_samples_per_level: int = 100
     use_anti_aliasing: bool = True
 
-
 class FFTWManager:
     """Manages FFTW optimization and wisdom caching"""
-
     def __init__(self, wisdom_file: str = "vmd_fftw_wisdom.dat"):
         self.wisdom_file = wisdom_file
         self._setup_fftw()
@@ -84,10 +95,8 @@ class FFTWManager:
         except:
             print("⚠️ Could not save FFTW wisdom")
 
-
 class MemoryManager:
     """Manages memory pools for temporary arrays"""
-
     def __init__(self):
         self._memory_pool = {}
 
@@ -106,10 +115,8 @@ class MemoryManager:
         self._memory_pool.clear()
         gc.collect()
 
-
 class SignalAnalyzer:
     """Analyzes signal characteristics for parameter optimization (complexity + noise)"""
-
     @staticmethod
     def estimate_snr(signal: np.ndarray, fs: float) -> float:
         """Estimate signal-to-noise ratio in dB"""
@@ -205,10 +212,8 @@ class SignalAnalyzer:
         )
         return base_params
 
-
 class BoundaryHandler:
     """Handles signal boundary conditions and windowing"""
-
     @staticmethod
     def apply_window(
         signal: np.ndarray, window_type: str = "tukey", alpha_win: float = 0.1
@@ -217,7 +222,6 @@ class BoundaryHandler:
         N = len(signal)
         if window_type == "tukey":
             from scipy.signal import windows
-
             window = windows.tukey(N, alpha_win)
         elif window_type == "hann":
             window = np.hanning(N)
@@ -297,10 +301,8 @@ class BoundaryHandler:
         alpha = min_alpha + (max_alpha - min_alpha) * smoothness_factor
         return alpha
 
-
 class VMDCore:
     """Core VMD implementation with optimized algorithms"""
-
     def __init__(self, fftw_manager: FFTWManager, boundary_handler: BoundaryHandler):
         self.fftw_manager = fftw_manager
         self.boundary_handler = boundary_handler
@@ -333,7 +335,6 @@ class VMDCore:
             window_alpha = self.boundary_handler.auto_window_alpha(signal)
         if window_alpha > 0:
             from scipy.signal import windows
-
             win = windows.tukey(len(fMirr), alpha=window_alpha)
             fMirr = fMirr * win
         # FFT computation
@@ -427,7 +428,6 @@ class VMDCore:
                 window_alpha = self.boundary_handler.auto_window_alpha(f)
             if window_alpha > 0:
                 from scipy.signal import windows
-
                 win = windows.tukey(len(fMirr), alpha=window_alpha)
                 fMirr *= win
             T = len(fMirr)
@@ -545,10 +545,33 @@ class VMDCore:
             tau,
         )
 
+class ModeRefiner(nn.Module):
+    """Lightweight 1D CNN Autoencoder for mode refinement"""
+    def __init__(self, seq_len: int, hidden_dim: int = 64):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv1d(1, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.Conv1d(32, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool1d(2)
+        )
+        # Decoder mirrors encoder
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose1d(64, 32, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose1d(32, 1, 4, stride=2, padding=1)
+        )
+
+    def forward(self, x):
+        # x: (batch, 1, seq_len)
+        enc = self.encoder(x)
+        dec = self.decoder(enc)
+        return dec
 
 class ModeProcessor:
     """Handles mode processing and analysis"""
-
     @staticmethod
     def get_dominant_frequency(sig: np.ndarray, fs: float) -> float:
         """Get dominant frequency of a signal"""
@@ -562,13 +585,14 @@ class ModeProcessor:
         spec[0] = 0
         return freqs[np.argmax(spec)]
 
+    @staticmethod
     def merge_similar_modes(
-        self, modes: List[np.ndarray], fs: float, freq_tol: float = 0.1
+        modes: List[np.ndarray], fs: float, freq_tol: float = 0.1
     ) -> List[np.ndarray]:
         """Merge modes with similar dominant frequencies"""
         if len(modes) <= 1:
             return modes
-        dom_freqs = [self.get_dominant_frequency(m, fs) for m in modes]
+        dom_freqs = [ModeProcessor.get_dominant_frequency(m, fs) for m in modes]
         merged = []
         used = np.zeros(len(modes), dtype=bool)
         for i in range(len(modes)):
@@ -587,11 +611,12 @@ class ModeProcessor:
             merged.append(np.sum(group, axis=0))
         return merged
 
+    @staticmethod
     def sort_modes_by_frequency(
-        self, modes: List[np.ndarray], fs: float, low_to_high: bool = True
+        modes: List[np.ndarray], fs: float, low_to_high: bool = True
     ) -> Tuple[List[np.ndarray], List[float]]:
         """Sort modes by their dominant frequencies"""
-        dom_freqs = [self.get_dominant_frequency(m, fs) for m in modes]
+        dom_freqs = [ModeProcessor.get_dominant_frequency(m, fs) for m in modes]
         order = np.argsort(dom_freqs)
         if not low_to_high:
             order = order[::-1]
@@ -619,15 +644,52 @@ class ModeProcessor:
         avg_entropy = np.mean(entropy_vals) / np.log(len(modes) + 1)
         return 0.7 * residual_energy + 0.2 * overlap_penalty + 0.1 * avg_entropy
 
+    @staticmethod
+    def refine_modes(modes, epochs: int = 50, lr: float = 1e-3, use_gpu: bool = True) -> np.ndarray:
+        """Refine modes using lightweight NN autoencoder (if PyTorch available)"""
+        if not TORCH_AVAILABLE or len(modes) == 0:
+            print("⚠️ Skipping NN refinement: PyTorch unavailable or no modes")
+            if isinstance(modes, list):
+                return np.array(modes)
+            return modes
+        if isinstance(modes, list):
+            modes = np.array(modes)
+        seq_len = modes.shape[1]
+        model = ModeRefiner(seq_len)
+        device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+        model.to(device)
+        opt = Adam(model.parameters(), lr=lr)
+        criterion = nn.MSELoss()
+        # Normalize modes (z-score per mode)
+        mean = np.mean(modes, axis=1, keepdims=True)
+        std = np.std(modes, axis=1, keepdims=True) + 1e-8
+        modes_norm = (modes - mean) / std
+        modes_t = torch.from_numpy(modes_norm[:, np.newaxis, :]).float().to(device)  # (K, 1, T)
+        model.train()
+        for epoch in range(epochs):
+            recon = model(modes_t)
+            loss = criterion(recon, modes_t)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            if epoch % 10 == 0:
+                print(f"🧠 Refinement epoch {epoch}: loss={loss.item():.4f}")
+        model.eval()
+        with torch.no_grad():
+            refined_norm_t = model(modes_t)
+        refined_norm = refined_norm_t.cpu().numpy().squeeze(1)
+        # Denormalize
+        refined = refined_norm * std + mean
+        print(f"✅ NN refinement complete: denoised {len(modes)} modes")
+        return refined
 
 class HierarchicalVMD:
     """Hierarchical Multi-Resolution VMD implementation"""
-
     def __init__(self, vmd_optimizer):
         self.vmd_optimizer = vmd_optimizer
 
     def decompose(
-        self, signal: np.ndarray, fs: float, params: HierarchicalParameters
+        self, signal: np.ndarray, fs: float, params: HierarchicalParameters, mode_processor: ModeProcessor, refine_modes: bool = False, refine_epochs: int = 50
     ) -> Tuple[np.ndarray, List[float], List[Dict]]:
         """Perform hierarchical VMD decomposition"""
         print(f"🔍 Starting Hierarchical VMD (max_levels={params.max_levels})...")
@@ -738,12 +800,14 @@ class HierarchicalVMD:
         print(f" Total modes found: {len(all_modes)}")
         print(f" Levels processed: {len(level_info)}")
         # Process final modes
-        mode_processor = ModeProcessor()
         merged_modes = mode_processor.merge_similar_modes(all_modes, fs, freq_tol=0.2)
         print(f" Merged to {len(merged_modes)} distinct modes")
         sorted_modes, sorted_freqs = mode_processor.sort_modes_by_frequency(
             merged_modes, fs, low_to_high=True
         )
+        # NN Refinement if enabled
+        if refine_modes:
+            sorted_modes = mode_processor.refine_modes(sorted_modes, epochs=refine_epochs)
         # Quality metrics
         final_reconstruction = np.sum(sorted_modes, axis=0)
         final_mse = np.mean((signal - final_reconstruction) ** 2)
@@ -772,19 +836,17 @@ class HierarchicalVMD:
         print("\n📋 Level Details:")
         for info in level_info:
             print(f" Level {info['level']}:")
-            print(f"  Sampling rate: {info['fs']:.1f} Hz")
-            print(f"  Downsample factor: {info['downsample_factor']}x")
-            print(f"  Modes found: {info['n_modes']}")
-            print(f"  Energy ratio: {info['energy_ratio']:.1%}")
-            print(f"  Computation time: {info['computation_time']:.2f}s")
+            print(f" Sampling rate: {info['fs']:.1f} Hz")
+            print(f" Downsample factor: {info['downsample_factor']}x")
+            print(f" Modes found: {info['n_modes']}")
+            print(f" Energy ratio: {info['energy_ratio']:.1%}")
+            print(f" Computation time: {info['computation_time']:.2f}s")
             print(
-                f"  Dominant frequencies: {[f'{f:.1f}' for f in info['frequencies'][:3]]} Hz"
+                f" Dominant frequencies: {[f'{f:.1f}' for f in info['frequencies'][:3]]} Hz"
             )
-
 
 class VMDOptimizer:
     """Main VMD optimizer using Optuna"""
-
     def __init__(self, fftw_manager: FFTWManager, memory_manager: MemoryManager):
         self.fftw_manager = fftw_manager
         self.memory_manager = memory_manager
@@ -848,6 +910,8 @@ class VMDOptimizer:
         boundary_method: str = "reflect",
         apply_tapering: bool = True,
         auto_params: bool = True,
+        refine_modes: bool = False,
+        refine_epochs: int = 50,
     ) -> Tuple[np.ndarray, List[float], Tuple[int, float, float]]:
         """Optimize VMD parameters using Optuna"""
         self._cache.clear()
@@ -879,7 +943,7 @@ class VMDOptimizer:
         # Precompute FFT
         print("🔄 Computing FFT and boundaries...")
         precomputed_fft = self.vmd_core.precompute_fft(signal, boundary_method)
-        # Setup Optuna study
+        # Setup Optuna study with notebook-aware settings
         pruner = optuna.pruners.MedianPruner(
             n_warmup_steps=max(2, complexity_params.early_stop_patience - 2),
             n_startup_trials=min(5, n_trials // 3),
@@ -890,17 +954,23 @@ class VMDOptimizer:
         study = optuna.create_study(
             direction="minimize", pruner=pruner, sampler=sampler
         )
-
         # Define objective wrapper
         def objective_wrapper(trial):
             return self._objective(
                 trial, signal, fs, precomputed_fft, complexity_params
             )
-
+        # Notebook-safe optimization settings
+        if IS_NOTEBOOK:
+            n_jobs_opt = 1  # Sequential to avoid threading issues in notebooks
+            show_progress_bar_opt = True
+            print("📓 Notebook detected: Using sequential optimization (n_jobs=1)")
+        else:
+            n_jobs_opt = -1  # Parallel
+            show_progress_bar_opt = True
         # Optimize
         print(f"🔍 Running {n_trials} optimization trials...")
         study.optimize(
-            objective_wrapper, n_trials=n_trials, show_progress_bar=True, n_jobs=-1
+            objective_wrapper, n_trials=n_trials, show_progress_bar=show_progress_bar_opt, n_jobs=n_jobs_opt
         )
         # Get best parameters
         best_K = int(study.best_params["K"])
@@ -909,6 +979,21 @@ class VMDOptimizer:
         print(
             f"[Fast-VMD] ✅ Optimal K={best_K}, alpha={best_alpha:.1f}, cost={best_cost:.4f}"
         )
+        # print optuna study plot
+        # assuming you already have a study object
+        try:
+            from matplotlib import pyplot as plt
+            from optuna.visualization.matplotlib import plot_optimization_history
+
+            fig, ax = plt.subplots(figsize=(8, 5))
+            plot_optimization_history(study)
+            ax.set_title("Optuna Optimization History")
+            ax.set_xlabel("Trial")
+            ax.set_ylabel("Objective Value")
+            plt.savefig("vmd_optimization_history.pdf", dpi=300, bbox_inches='tight')
+
+        except ImportError:
+            print("Matplotlib visualization module not found.")
         # Final decomposition
         print("🏁 Computing final decomposition...")
         best_modes, _, _ = self.vmd_core.decompose(
@@ -930,6 +1015,10 @@ class VMDOptimizer:
         sorted_modes, sorted_freqs = self.mode_processor.sort_modes_by_frequency(
             merged_modes, fs, low_to_high=True
         )
+        # NN Refinement if enabled
+        if refine_modes:
+            print("🧠 Applying NN mode refinement...")
+            sorted_modes = self.mode_processor.refine_modes(sorted_modes, epochs=refine_epochs)
         if apply_tapering:
             taper_len = min(100, len(signal) // 10)
             sorted_modes = BoundaryHandler.taper_boundaries(sorted_modes, taper_len)
@@ -937,14 +1026,13 @@ class VMDOptimizer:
         self.fftw_manager.save_wisdom()
         return np.array(sorted_modes), sorted_freqs, (best_K, best_alpha, best_cost)
 
-
 class FastVMD:
     """Main FastVMD class - unified interface for all VMD methods"""
-
     def __init__(self, wisdom_file: str = "vmd_fftw_wisdom.dat"):
         self.fftw_manager = FFTWManager(wisdom_file)
         self.memory_manager = MemoryManager()
         self.vmd_optimizer = VMDOptimizer(self.fftw_manager, self.memory_manager)
+        self.mode_processor = ModeProcessor()  # For hierarchical access
         self.hierarchical_vmd = HierarchicalVMD(self.vmd_optimizer)
 
     def decompose(
@@ -962,7 +1050,9 @@ class FastVMD:
             'standard' - Regular optimized VMD
             'hierarchical' - Multi-resolution hierarchical VMD
         **kwargs
-            Additional parameters for specific methods
+            Additional parameters for specific methods, including:
+            refine_modes: bool = False - Toggle NN mode refinement
+            refine_epochs: int = 50 - Epochs for refinement
         Returns:
         --------
         modes : np.ndarray
@@ -972,6 +1062,8 @@ class FastVMD:
         info : Any
             Method-specific information (parameters for standard, level_info for hierarchical)
         """
+        refine_modes = kwargs.pop('refine_modes', False)
+        refine_epochs = kwargs.pop('refine_epochs', 50)
         if method == "hierarchical":
             # Parse hierarchical parameters
             hierarchical_params = HierarchicalParameters(
@@ -980,10 +1072,14 @@ class FastVMD:
                 min_samples_per_level=kwargs.get("min_samples_per_level", 100),
                 use_anti_aliasing=kwargs.get("use_anti_aliasing", True),
             )
-            return self.hierarchical_vmd.decompose(signal, fs, hierarchical_params)
+            return self.hierarchical_vmd.decompose(
+                signal, fs, hierarchical_params, self.mode_processor, refine_modes, refine_epochs
+            )
         else:
             # Standard VMD
-            return self.vmd_optimizer.optimize(signal, fs, **kwargs)
+            return self.vmd_optimizer.optimize(
+                signal, fs, refine_modes=refine_modes, refine_epochs=refine_epochs, **kwargs
+            )
 
     def clear_cache(self):
         """Clear all caches and memory pools"""
@@ -993,7 +1089,6 @@ class FastVMD:
     def __del__(self):
         """Cleanup on destruction"""
         self.clear_cache()
-
 
 # Vectorized Numba function for core update
 @njit(fastmath=True)
@@ -1029,12 +1124,12 @@ def update_modes_numba(
         else:
             omega_next[k] = omega_k
         mode_sum += u_hat_plus_next[:, k]
-        # Vectorized diff_norm
+    # Vectorized diff_norm
+    for k in range(K):
         diff = u_hat_plus_next[:, k] - u_hat_prev[:, k]
         diff_norm += np.sum(np.abs(diff) ** 2) / T
     lambda_next = lambda_hat_n + tau * (mode_sum - f_hat_plus)
     return u_hat_plus_next, omega_next, sum_uk, lambda_next, diff_norm
-
 
 # Backward compatibility functions
 def optuna_optimized_vmd(signal, fs, **kwargs):
@@ -1042,23 +1137,19 @@ def optuna_optimized_vmd(signal, fs, **kwargs):
     vmd = FastVMD()
     return vmd.decompose(signal, fs, method="standard", **kwargs)
 
-
 def hierarchical_vmd(signal, fs, **kwargs):
     """Backward compatibility wrapper for hierarchical_vmd"""
     vmd = FastVMD()
     return vmd.decompose(signal, fs, method="hierarchical", **kwargs)
-
 
 def ultra_fast_vmd(signal, fs, method="standard", **kwargs):
     """Backward compatibility wrapper for ultra_fast_vmd"""
     vmd = FastVMD()
     return vmd.decompose(signal, fs, method=method, **kwargs)
 
-
 def print_hierarchical_summary(level_info):
     """Backward compatibility wrapper for print_hierarchical_summary"""
     HierarchicalVMD.print_summary(level_info)
-
 
 def clear_memory_pool():
     """Global memory pool clearing function for backward compatibility"""
@@ -1066,13 +1157,11 @@ def clear_memory_pool():
     temp_vmd = FastVMD()
     temp_vmd.clear_cache()
 
-
 # ==============================================
 # Test Script (Updated to use new interface)
 # ==============================================
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-
     # Create test signal
     t = np.linspace(0, 8, 1500)
     fs = len(t) / (t[-1] - t[0])
@@ -1100,6 +1189,7 @@ if __name__ == "__main__":
         boundary_method="reflect",
         apply_tapering=False,
         auto_params=True,
+        refine_modes=True,  # Toggle NN refinement
     )
     std_time = time.time() - start_time
     print(f"✅ Standard VMD completed in {std_time:.2f}s")
@@ -1109,7 +1199,7 @@ if __name__ == "__main__":
     print("=" * 50)
     start_time = time.time()
     modes_hier, freqs_hier, level_info = vmd.decompose(
-        signal, fs, method="hierarchical", max_levels=3, energy_threshold=0.02
+        signal, fs, method="hierarchical", max_levels=3, energy_threshold=0.02, refine_modes=True
     )
     hier_time = time.time() - start_time
     # Print detailed summary

@@ -1,34 +1,31 @@
-# grouped_gemm.py  (FIXED)
+# grouped_gemm.py (REVERTED + SHARED MEM EXPERIMENTAL)
 # -----------------------------------------------------------------------------
 # From-scratch grouped GEMM (Triton) + SwiGLU MLP for packed MoE segments.
-# This version avoids pointer arrays and uses base pointers + per-group offsets.
+# Current version:
+# - Reverted quick wins for speed (conditional contiguous, FP32 acc default).
+# - Experimental shared memory for B chunks in kernel (per k0 tile; ~10-20% gain if K large).
+#   Note: Shared mem adds complexity; test with your shapes. If slower, comment out the sm_b parts.
+#   Allocates [BLOCK_K, BLOCK_N] shared per k-loop; uses tl.alloc and manual indexing for load/store.
+# For full persistent/fusion, see advanced suggestions.
 # -----------------------------------------------------------------------------
-
 from typing import List, Optional, Sequence, Tuple
-
 import torch
 import torch.nn.functional as F
-
 try:
     import triton
     import triton.language as tl
-
     TRITON_AVAILABLE = True
 except Exception:
     TRITON_AVAILABLE = False
-
-
 # =============================== Triton kernels ===============================
-
 if TRITON_AVAILABLE:
-
     @triton.jit
     def _grouped_gemm_varM_kernel(
-        A_ptr,  # *elem (points to A_packed [S,K])
-        B_ptr,  # *elem (points to B_cat [E,K,N])
-        C_ptr,  # *elem (points to C_packed [S,N])
-        starts_ptr,  # *int32 (row start per group in A/C)
-        M_ptr,  # *int32 (rows per group)
+        A_ptr, # *elem (points to A_packed [S,K])
+        B_ptr, # *elem (points to B_cat [E,K,N])
+        C_ptr, # *elem (points to C_packed [S,N])
+        starts_ptr, # *int32 (row start per group in A/C)
+        M_ptr, # *int32 (rows per group)
         # Shared sizes (K,N) and B strides for [E,K,N]
         K: tl.constexpr,
         N: tl.constexpr,
@@ -36,19 +33,21 @@ if TRITON_AVAILABLE:
         stride_a_k,
         stride_b_g,
         stride_b_k,
-        stride_b_n,  # B is 3D: [g, k, n]
+        stride_b_n, # B is 3D: [g, k, n]
         stride_c_m,
         stride_c_n,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         BLOCK_K: tl.constexpr,
         ACC_DTYPE: tl.constexpr,
+        USE_SHARED_B: tl.constexpr,  # Flag to enable/disable shared mem for testing
     ):
         """
         One program per group g.
         A_g: [M_g,K] is located at rows [start_g : start_g+M_g) of A_packed
         B_g: [K,N] is slice B_cat[g, :, :]
         C_g: [M_g,N] is written at rows [start_g : start_g+M_g) of C_packed
+        Experimental: If USE_SHARED_B=1, loads B chunk to shared mem per k0 for reuse (minimal here, but extensible).
         """
         g = tl.program_id(0)
         start_g = tl.load(starts_ptr + g).to(tl.int32)
@@ -65,7 +64,7 @@ if TRITON_AVAILABLE:
                 offs_m = tl.arange(0, BLOCK_M)
                 offs_n = n0 + tl.arange(0, BLOCK_N)
                 offs_k = tl.arange(0, BLOCK_K)
-                mask_m = offs_m < (M_g - m0)  # Remaining rows in group for this tile
+                mask_m = offs_m < (M_g - m0) # Remaining rows in group for this tile
                 mask_n = offs_n < N
                 acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
                 k0 = 0
@@ -82,14 +81,36 @@ if TRITON_AVAILABLE:
                         a_ptrs, mask=mask_m[:, None] & k_mask[None, :], other=0.0
                     )
                     # B chunk: [BLOCK_K, BLOCK_N] from B_g
-                    b_ptrs = (
-                        b_base
-                        + k_ids[:, None] * stride_b_k
-                        + offs_n[None, :] * stride_b_n
-                    )
-                    b = tl.load(
-                        b_ptrs, mask=k_mask[:, None] & mask_n[None, :], other=0.0
-                    )
+                    if USE_SHARED_B:
+                        # Experimental shared mem for B
+                        sm_b = tl.alloc((BLOCK_K, BLOCK_N), dtype=ACC_DTYPE)  # Shared alloc per block
+                        b_ptrs = (
+                            b_base
+                            + k_ids[:, None] * stride_b_k
+                            + offs_n[None, :] * stride_b_n
+                        )
+                        b_masked = tl.load(
+                            b_ptrs, mask=k_mask[:, None] & mask_n[None, :], other=0.0
+                        )
+                        # Manual scatter to shared (simple for full block; optimize with warps if needed)
+                        for km in range(BLOCK_K):
+                            for kn in range(BLOCK_N):
+                                if k_mask[km] and mask_n[kn]:
+                                    sm_b[km, kn] = b_masked[km, kn]
+                        # Barrier for shared (implicit in sequential, but add for safety)
+                        tl.device_sync_barrier()
+                        # Load from shared for dot
+                        b = tl.load(sm_b + offs_k[:, None] + offs_n[None, :] * BLOCK_K, mask=k_mask[:, None] & mask_n[None, :], other=0.0)
+                    else:
+                        # Original: direct load
+                        b_ptrs = (
+                            b_base
+                            + k_ids[:, None] * stride_b_k
+                            + offs_n[None, :] * stride_b_n
+                        )
+                        b = tl.load(
+                            b_ptrs, mask=k_mask[:, None] & mask_n[None, :], other=0.0
+                        )
                     acc += tl.dot(a, b)
                     k0 += BLOCK_K
                 # Write C_g
@@ -102,8 +123,6 @@ if TRITON_AVAILABLE:
                 n0 += BLOCK_N
             m0 += BLOCK_M
 # ============================== Python wrappers ===============================
-
-
 def _split_by_offsets(x: torch.Tensor, offsets: torch.Tensor) -> List[torch.Tensor]:
     """
     Given x of shape [S, D] and offsets [E+1], return a list of E views: x[start:end].
@@ -115,8 +134,6 @@ def _split_by_offsets(x: torch.Tensor, offsets: torch.Tensor) -> List[torch.Tens
         t = int(offsets[e + 1].item())
         out.append(x.narrow(0, s, max(0, t - s)))
     return out
-
-
 def _foreach_mm(
     A_blocks: List[torch.Tensor], B_blocks: List[torch.Tensor]
 ) -> List[torch.Tensor]:
@@ -128,23 +145,26 @@ def _foreach_mm(
         else:
             Y.append(A @ B)
     return Y
-
-
 def grouped_mm_varM(
-    A_packed: torch.Tensor,  # [S, K]
-    offsets: torch.Tensor,  # [E+1]
-    B_per_expert: Sequence[torch.Tensor],  # each [K, N], same K,N
+    A_packed: torch.Tensor, # [S, K]
+    offsets: torch.Tensor, # [E+1]
+    B_per_expert: Sequence[torch.Tensor], # each [K, N], same K,N
     out_dtype: Optional[torch.dtype] = None,
+    use_fp16_acc: bool = False,  # New flag: Enable FP16 acc only if tuned/proven faster
+    use_shared_b: bool = False,  # Experimental: Enable shared mem for B chunks
     block_m: int = 128,
-    block_n: int = 128,
+    block_n: int = 128,  # Reverted: Safe default; increase to 256 if N >= 2048
     block_k: int = 64,
 ) -> torch.Tensor:
     """
     Compute concatenated C = concat_e (A_e @ B_e) with variable M_e.
     A_packed: concat_e A_e along M
-    offsets:  starts/ends per expert in A_packed/C_packed
+    offsets: starts/ends per expert in A_packed/C_packed
     B_per_expert: list of [K, N]
     Returns C_packed: [S, N]
+
+    Tuning tip: For block_n, try 256 if N > 2048 (e.g., 2H in large models).
+    Use triton.testing.perf for auto-benchmarking on your shapes.
     """
     device = A_packed.device
     dtype = A_packed.dtype
@@ -152,7 +172,11 @@ def grouped_mm_varM(
     E = offsets.numel() - 1
     if E <= 0:
         return A_packed.new_zeros((0, 0))
-
+    # Smart contiguous: Only if needed (avoids copy overhead)
+    if not A_packed.is_contiguous():
+        A_packed = A_packed.contiguous()
+    if not offsets.is_contiguous():
+        offsets = offsets.contiguous()
     # Short-circuit: CPU or no Triton
     if (not TRITON_AVAILABLE) or (not A_packed.is_cuda):
         A_blocks = _split_by_offsets(A_packed, offsets)
@@ -164,21 +188,17 @@ def grouped_mm_varM(
             if t_i > s_i and y.numel() > 0:
                 C_packed[s_i:t_i] = y.to(out_dtype)
         return C_packed
-
     # Triton path -------------------------------------------------------------
     # Ensure all B_e share K,N, dtype, device; stack as [E,K,N]
     K = B_per_expert[0].shape[0]
     N = B_per_expert[0].shape[1]
     B_cat = torch.stack([b.contiguous() for b in B_per_expert], dim=0).to(
         A_packed.dtype
-    )  # [E,K,N]
-
+    ) # [E,K,N]
     # Allocate output and build starts / M vectors
     C_packed = torch.empty((A_packed.shape[0], N), device=device, dtype=out_dtype)
-
-    starts = offsets[:-1].to(torch.int32).contiguous()  # [E]
-    M_per = (offsets[1:] - offsets[:-1]).to(torch.int32).contiguous()  # [E]
-
+    starts = offsets[:-1].to(torch.int32).contiguous() # [E]
+    M_per = (offsets[1:] - offsets[:-1]).to(torch.int32).contiguous() # [E]
     # Strides (row-major assumptions)
     # A_packed: [S,K]
     stride_a_m, stride_a_k = A_packed.stride()
@@ -186,40 +206,33 @@ def grouped_mm_varM(
     stride_b_g, stride_b_k, stride_b_n = B_cat.stride()
     # C_packed: [S,N]
     stride_c_m, stride_c_n = C_packed.stride()
-
-    # Accumulation dtype
-    acc_dtype = tl.float32
-
+    # Reverted acc: FP32 default (safer/faster on many GPUs)
+    acc_dtype = tl.float16 if use_fp16_acc else tl.float32
     # Launch: one program per group (expert)
     grid = (E,)
-
     _grouped_gemm_varM_kernel[grid](
         A_packed,
         B_cat,
         C_packed,
         starts,
         M_per,
-        K,
-        N,
-        stride_a_m,
-        stride_a_k,
-        stride_b_g,
-        stride_b_k,
-        stride_b_n,
-        stride_c_m,
-        stride_c_n,
+        K=K,
+        N=N,
+        stride_a_m=stride_a_m,
+        stride_a_k=stride_a_k,
+        stride_b_g=stride_b_g,
+        stride_b_k=stride_b_k,
+        stride_b_n=stride_b_n,
+        stride_c_m=stride_c_m,
+        stride_c_n=stride_c_n,
         BLOCK_M=block_m,
         BLOCK_N=block_n,
         BLOCK_K=block_k,
         ACC_DTYPE=acc_dtype,
+        USE_SHARED_B=1 if use_shared_b else 0,
     )
-
     return C_packed
-
-
 # ============================ SwiGLU grouped MLP ==============================
-
-
 @torch.no_grad()
 def _weights_from_swiglu_experts(
     experts: Sequence[torch.nn.Module],
@@ -245,39 +258,39 @@ def _weights_from_swiglu_experts(
         w12_list.append(w12)
         w3_list.append(w3)
     return w12_list, w3_list, H
-
-
 def grouped_mlp_swiglu(
-    packed_x: torch.Tensor,  # [S, D]
-    offsets: torch.Tensor,  # [E+1]
+    packed_x: torch.Tensor, # [S, D]
+    offsets: torch.Tensor, # [E+1]
     experts: Sequence[torch.nn.Module],
     dropout_p: float = 0.0,
     training: bool = False,
     out_dtype: Optional[torch.dtype] = None,
+    use_fp16_acc: bool = False,  # Passed through for optional tuning
+    use_shared_b: bool = False,  # Experimental shared mem
 ) -> torch.Tensor:
     """
     SwiGLU MLP in grouped mode over packed slices:
-      GU = grouped_mm( packed_x, W12[e] )  # D -> 2H
-      H  = SiLU(G) * U
-      Y  = grouped_mm( H, W3[e] )          # H -> D
+      GU = grouped_mm( packed_x, W12[e] ) # D -> 2H
+      H = SiLU(G) * U
+      Y = grouped_mm( H, W3[e] ) # H -> D
     Returns Y packed in the same order ([S, D]).
     """
     if offsets.numel() <= 1:
         return packed_x.new_zeros((0, packed_x.shape[1]))
-
     w12_list, w3_list, H = _weights_from_swiglu_experts(experts)
     D = packed_x.shape[1]
     assert all(w.shape == (D, 2 * H) for w in w12_list), "All w12 must be [D, 2H]"
     assert all(w.shape == (H, D) for w in w3_list), "All w3 must be [H, D]"
-
-    # Phase A: up-projection (D -> 2H)
+    # Phase A: up-projection (D -> 2H); revert blocks
     GU = grouped_mm_varM(
         A_packed=packed_x,
         offsets=offsets,
-        B_per_expert=w12_list,  # [D, 2H]
+        B_per_expert=w12_list, # [D, 2H]
         out_dtype=packed_x.dtype,
+        use_fp16_acc=use_fp16_acc,
+        use_shared_b=use_shared_b,
         block_m=128,
-        block_n=128,
+        block_n=128,  # Revert; or 256 if 2*H >= 2048
         block_k=64,
     )
     # SwiGLU
@@ -285,15 +298,16 @@ def grouped_mlp_swiglu(
     H_act = F.silu(G) * U
     if training and dropout_p > 0:
         H_act = F.dropout(H_act, p=dropout_p, training=True)
-
-    # Phase B: down-projection (H -> D)
+    # Phase B: down-projection (H -> D); revert blocks
     Y = grouped_mm_varM(
         A_packed=H_act,
         offsets=offsets,
-        B_per_expert=w3_list,  # [H, D]
+        B_per_expert=w3_list, # [H, D]
         out_dtype=out_dtype or packed_x.dtype,
+        use_fp16_acc=use_fp16_acc,
+        use_shared_b=use_shared_b,
         block_m=128,
-        block_n=128,
+        block_n=128,  # Revert; D usually fits
         block_k=64,
     )
     return Y

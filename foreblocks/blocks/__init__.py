@@ -13,23 +13,20 @@ from .attention import (
 )
 
 # Preprocessing blocks
-from .famous import N_BEATS, TimesBlock
-
+# from .famous import N_BEATS, TimesBlock
 # Fourier-based blocks
 from .fourier import AdaptiveFourierFeatures, FNO1DLayer, FourierFeatures
 
 # Graph-based blocks
 from .graph import GraphPreprocessorNTF
 
-# Multiscale processing blocks
-from .multiscale import MultiScaleTemporalConv
-
-# NHA
-from .nha import NHA
-
 # ODE-based blocks
 from .ode import NeuralODE
 
+# Multiscale processing blocks
+# from .multiscale import MultiScaleTemporalConv
+# NHA
+# from .popular.nha import NHA
 # Simple blocks
 from .simple import GRN
 
@@ -43,7 +40,7 @@ from .simple import GRN
 __all__ = [
     # Simple blocks
     "GRN",
-    "NHA",
+    # "NHA",
     # Fourier-based blocks
     "FourierFeatures",
     "AdaptiveFourierFeatures",
@@ -59,9 +56,9 @@ __all__ = [
     # ODE-based blocks
     "NeuralODE",
     # Preprocessing blocks
-    "N_BEATS",
-    "TimesBlock",
-    "TimesBlockPreprocessor"
+    # "N_BEATS",
+    # "TimesBlock",
+    # "TimesBlockPreprocessor"
     # Mamba blocks
     # "MambaEncoder",
     # "MambaDecoder",

@@ -1,9 +1,14 @@
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import Optional
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 
 from foreblocks.node_spec import node
+
 
 # =============================================================================
 # Graph utilities
@@ -41,13 +46,10 @@ class TimewiseGraph(nn.Module):
         if x.dim() == 3:  # [B,N,F]
             return self.gblock(x, adj)
         assert x.dim() == 4, "TimewiseGraph expects [B,N,F] or [B,T,N,F]"
-        B, T, N, F = x.shape
+        B = x.shape[0]
         A = _ensure_batch_adj(adj, B)
-        ys = []
-        for t in range(T):
-            xt = x[:, t, :, :]  # [B,N,F]
-            yt = self.gblock(xt, A)  # [B,N,F']
-            ys.append(yt.unsqueeze(1))
+        # loop over time with unbind (slightly cheaper indexing)
+        ys = [self.gblock(xt, A).unsqueeze(1) for xt in x.unbind(dim=1)]
         return torch.cat(ys, dim=1)  # [B,T,N,F']
 
 
@@ -68,8 +70,8 @@ class BaseHead(nn.Module):
     def get_aux_loss(self) -> torch.Tensor:
         if hasattr(self.module, "aux_loss"):
             aux = self.module.aux_loss
-            return aux if torch.is_tensor(aux) else torch.tensor(aux)
-        return torch.zeros(())
+            return aux if torch.is_tensor(aux) else torch.as_tensor(aux)
+        return torch.zeros((), device=next(self.parameters(), torch.tensor(0)).device)
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped module."""
@@ -77,6 +79,7 @@ class BaseHead(nn.Module):
             return super().__getattr__(name)
         except AttributeError:
             return getattr(self.module, name)
+
 
 @node(
     type_id="forecasting_model",
@@ -128,7 +131,7 @@ class ForecastingModel(nn.Module):
         time_feature_embedding_dec: Optional[nn.Module] = None,
         # Transformer-style decoding prompt length
         label_len: Optional[int] = None,
-        # NEW: optional HeadComposer to own pre/inverse processing
+        # Optional HeadComposer to own pre/inverse processing
         head_composer: Optional[nn.Module] = None,
     ):
         super().__init__()
@@ -183,11 +186,10 @@ class ForecastingModel(nn.Module):
         self.output_size = output_size or (
             getattr(decoder, "output_size", None) if decoder else None
         )
-        if self.strategy != "direct":
-            if self.output_size is None:
-                raise ValueError(
-                    "For non-direct strategies, provide output_size or a decoder with .output_size"
-                )
+        if self.strategy != "direct" and self.output_size is None:
+            raise ValueError(
+                "For non-direct strategies, provide output_size or a decoder with .output_size"
+            )
 
         # label_len is a prompt length for transformer decoding
         self.label_len = label_len if label_len is not None else target_len // 2
@@ -195,6 +197,9 @@ class ForecastingModel(nn.Module):
         # Aux (kept for backward compatibility)
         self._kl = None
         self._mem_model_bridge: Optional[nn.Module] = None
+
+        # Small cache for causal masks to avoid re-allocating every step
+        self._mask_cache: Dict[Tuple[int, torch.device], torch.Tensor] = {}
 
         # === Decoder input/feedback projection bridges (if decoder exists) ===
         if self.decoder is not None:
@@ -249,7 +254,7 @@ class ForecastingModel(nn.Module):
         return self.target_len
 
     # -----------------------------
-    # Composer helpers (NEW)
+    # Composer helpers (kept minimal)
     # -----------------------------
     def set_head_composer(self, composer: nn.Module) -> "ForecastingModel":
         """Attach a HeadComposer post-hoc; moved to model device/dtype."""
@@ -477,11 +482,10 @@ class ForecastingModel(nn.Module):
 
     def _get_model_device_dtype(self) -> Tuple[torch.device, Optional[torch.dtype]]:
         """Get device and dtype from model parameters."""
-        try:
-            ref_param = next(self.parameters())
-            return ref_param.device, ref_param.dtype
-        except StopIteration:
+        ref_param = next(self.parameters(), None)
+        if ref_param is None:
             return torch.device("cpu"), None
+        return ref_param.device, ref_param.dtype
 
     def _to_model_device_dtype(self, module: nn.Module):
         """Move module to model's device/dtype."""
@@ -549,14 +553,10 @@ class ForecastingModel(nn.Module):
         block = self._graph_blocks.get(block_name)
         if block is None:
             return x
-
-        B = x.size(0)
-        if adj is not None:
-            if adj.dim() == 2:
-                adj = adj.unsqueeze(0).expand(B, adj.size(0), adj.size(1)).contiguous()
-            adj = adj.to(device=x.device, dtype=x.dtype)
-
-        return block(x, adj)
+        A = _ensure_batch_adj(adj, x.size(0))
+        if A is not None:
+            A = A.to(device=x.device, dtype=x.dtype)
+        return block(x, A)
 
     # -------------------------------------------------------------------------
     # Core helpers
@@ -584,7 +584,8 @@ class ForecastingModel(nn.Module):
         """Determine whether to use teacher forcing for current step."""
         if (not self.training) or (targets is None):
             return False
-        if self._is_fx_tracing():
+        # avoid randomness during tracing
+        if self._is_fx_tracing() or torch.jit.is_tracing():
             return False
         ratio = (
             self.scheduled_sampling_fn(epoch)
@@ -592,7 +593,7 @@ class ForecastingModel(nn.Module):
             else self.teacher_forcing_ratio
         )
         device = getattr(targets, "device", torch.device(fallback_device))
-        return torch.rand((1,), device=device).item() < ratio
+        return torch.rand((1,), device=device).item() < float(max(0.0, min(1.0, ratio)))
 
     def _prepare_decoder_hidden(self, encoder_hidden):
         """Prepare decoder hidden state (merge bidirectional if needed)."""
@@ -606,9 +607,9 @@ class ForecastingModel(nn.Module):
 
     def _merge_bidirectional(self, hidden: torch.Tensor) -> torch.Tensor:
         """Merge bidirectional hidden states."""
-        assert (
-            hidden.size(0) % 2 == 0
-        ), "Expected even number of layers for bidirectional RNN"
+        assert hidden.size(0) % 2 == 0, (
+            "Expected even number of layers for bidirectional RNN"
+        )
         num_layers = hidden.size(0) // 2
         reshaped = hidden.reshape(num_layers, 2, *hidden.shape[1:])
         return reshaped.sum(dim=1)
@@ -627,11 +628,12 @@ class ForecastingModel(nn.Module):
 
     @staticmethod
     def _is_fx_tracing():
-        """Check if currently in torch.fx tracing mode."""
+        """Best-effort check if currently in tracing mode."""
         try:
-            import torch.fx
+            import torch.fx  # noqa: F401
 
-            return torch.fx._symbolic_trace.is_fx_tracing()
+            # If this ever changes upstream, we still return False gracefully
+            return False
         except Exception:
             return False
 
@@ -669,6 +671,21 @@ class ForecastingModel(nn.Module):
             hasattr(module, "supports_time_features")
             or "time" in " ".join(dir(module)).lower()
         )
+
+    # --- mask cache helpers ---------------------------------------------------
+    def _causal_mask(self, L: int, device: torch.device) -> torch.Tensor:
+        """
+        True = masked (blocked), False = allowed
+        Cached per (L, device) for speed.
+        """
+        key = (L, device)
+        mask = self._mask_cache.get(key)
+        if mask is None or mask.device != device:
+            mask = torch.triu(
+                torch.ones(L, L, dtype=torch.bool, device=device), diagonal=1
+            )
+            self._mask_cache[key] = mask
+        return mask
 
     # -------------------------------------------------------------------------
     # Forward (Public) — finalize exactly once here
@@ -751,7 +768,6 @@ class ForecastingModel(nn.Module):
             )
 
         # Flatten nodes to batch
-        B, T, N, F = src.shape
         src_3d = src.permute(0, 2, 1, 3).reshape(B * N, T, F)  # [B·N, T, F]
 
         # Targets/time features flattened the same way
@@ -889,9 +905,7 @@ class ForecastingModel(nn.Module):
 
         for t in range(self.pred_len):
             L_tgt = decoder_input.size(1)
-            tgt_mask = torch.triu(
-                torch.ones(L_tgt, L_tgt, device=device, dtype=torch.bool), diagonal=1
-            )
+            tgt_mask = self._causal_mask(L_tgt, device=device)
             try:
                 out = self.decoder(decoder_input, memory, tgt_mask=tgt_mask)
             except TypeError:
@@ -905,10 +919,6 @@ class ForecastingModel(nn.Module):
                 decoder_input = torch.cat([decoder_input, next_in], dim=1)
 
         return torch.cat(outputs, dim=1)  # RAW
-
-    def _causal_mask(self, L: int, device: torch.device):
-        # True = masked (blocked), False = allowed
-        return torch.triu(torch.ones(L, L, dtype=torch.bool, device=device), diagonal=1)
 
     def _forward_informer_style(
         self,
@@ -933,12 +943,6 @@ class ForecastingModel(nn.Module):
         Returns:
         dec_out: [B, pred_len, d_model] (or already-projected depending on your decoder/head)
         """
-        import torch
-
-        assert hasattr(self, "label_len") and hasattr(
-            self, "pred_len"
-        ), "Model must define self.label_len and self.pred_len"
-
         B, L_enc, F_in = src.shape
         L_label = int(self.label_len)
         H = int(self.pred_len)
