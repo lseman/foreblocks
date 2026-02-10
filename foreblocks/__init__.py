@@ -1,7 +1,8 @@
-from .att import AttentionLayer
 from .aux import ModelConfig, TrainingConfig
 from .core import ForecastingModel
-from .enc_dec import (
+from .evaluation import ModelEvaluator
+from .core.att import AttentionLayer
+from .blocks.enc_dec import (
     GRUDecoder,
     GRUEncoder,
     LatentConditionedDecoder,
@@ -12,11 +13,21 @@ from .enc_dec import (
 from .pipeline import TimeSeriesSeq2Seq
 from .preprocessing import TimeSeriesPreprocessor
 from .tf.transformer import TransformerDecoder, TransformerEncoder
-from .utils import TimeSeriesDataset, Trainer, create_dataloaders
+from .training import Trainer
+from .aux import TimeSeriesDataset, create_dataloaders
 
-# Define what gets imported with "from foreblocks import *"
+# Stable top-level public API
 __all__ = [
     "ForecastingModel",
+    "Trainer",
+    "ModelEvaluator",
+    "TimeSeriesSeq2Seq",
+    "TimeSeriesPreprocessor",
+    "TimeSeriesDataset",
+    "create_dataloaders",
+    "ModelConfig",
+    "TrainingConfig",
+    # expert/low-level exports (kept for compatibility)
     "LSTMEncoder",
     "LSTMDecoder",
     "GRUEncoder",
@@ -26,12 +37,4 @@ __all__ = [
     "VariationalEncoderWrapper",
     "LatentConditionedDecoder",
     "AttentionLayer",
-    "TimeSeriesPreprocessor",
-    "TimeSeriesDataset",
-    "Trainer",
-    "create_dataloaders",
-    "TimeSeriesSeq2Seq",
-    "ModelConfig",
-    "TrainingConfig",
-    "blocks",
 ]

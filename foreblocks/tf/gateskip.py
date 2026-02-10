@@ -48,6 +48,7 @@ class ResidualGate(nn.Module):
         g, gbar = self.gate_scores(h_prev)
         h_gated = h_prev + g * o
         return h_gated, g, gbar
+
 @torch.no_grad()
 def _quantile_threshold(gbar: torch.Tensor, keep) -> torch.Tensor:
     """

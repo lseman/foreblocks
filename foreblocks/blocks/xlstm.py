@@ -8,9 +8,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from foreblocks.enc_dec import DecoderBase
-from foreblocks.enc_dec import EncoderBase
-from foreblocks.node_spec import node
+from foreblocks.blocks.enc_dec import DecoderBase
+from foreblocks.blocks.enc_dec import EncoderBase
+from foreblocks.ui_aux.node_spec import node
 
 
 # ==============================================================

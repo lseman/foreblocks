@@ -13,6 +13,7 @@ import numpy as np
 import statsmodels.api as sm
 from joblib import Parallel, delayed
 
+from .ewt_core import EWT1D
 # ============================
 # Visualization
 # ============================
@@ -56,7 +57,6 @@ def _select_best_imf_by_aic(signal: np.ndarray, imfs: np.ndarray) -> int:
 
 
 def _ewt_detrend_column(i, signal, ewt_bands, detrend, trend_idx, auto_trend):
-    from ewtpy import EWT1D
 
     if np.isnan(signal).any():
         return i, signal, None, None, None

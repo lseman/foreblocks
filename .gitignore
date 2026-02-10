@@ -49,3 +49,5 @@ webui/
 uv.lock
 work2
 ml-pararnn
+typings/
+*.dat

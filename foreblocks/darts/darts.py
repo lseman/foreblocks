@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -35,10 +36,9 @@ class DARTSConfig:
     progressive_shrinking: bool = True
 
 
-
-
 class RMSNorm(nn.Module):
     """Simple RMS normalization"""
+
     def __init__(self, dim: int, eps: float = 1e-8):
         super().__init__()
         self.scale = nn.Parameter(torch.ones(dim))
@@ -51,9 +51,14 @@ class RMSNorm(nn.Module):
 
 class IdentityOp(nn.Module):
     """Identity operation with optional dimension projection"""
+
     def __init__(self, input_dim: int, latent_dim: int):
         super().__init__()
-        self.proj = nn.Linear(input_dim, latent_dim, bias=False) if input_dim != latent_dim else nn.Identity()
+        self.proj = (
+            nn.Linear(input_dim, latent_dim, bias=False)
+            if input_dim != latent_dim
+            else nn.Identity()
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.proj(x)
@@ -61,61 +66,69 @@ class IdentityOp(nn.Module):
 
 class TimeConvOp(nn.Module):
     """Depthwise-separable temporal convolution"""
+
     def __init__(self, input_dim: int, latent_dim: int, kernel_size: int = 3):
         super().__init__()
         # Depthwise convolution
         self.depthwise = nn.Conv1d(
-            input_dim, input_dim, kernel_size, 
-            padding=kernel_size-1, groups=input_dim, bias=False
+            input_dim,
+            input_dim,
+            kernel_size,
+            padding=kernel_size - 1,
+            groups=input_dim,
+            bias=False,
         )
         # Pointwise convolution
         self.pointwise = nn.Conv1d(input_dim, latent_dim, 1, bias=False)
-        
+
         self.norm = RMSNorm(latent_dim)
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(0.05)
-        
+
         self.residual_proj = (
-            nn.Linear(input_dim, latent_dim, bias=False) 
-            if input_dim != latent_dim else nn.Identity()
+            nn.Linear(input_dim, latent_dim, bias=False)
+            if input_dim != latent_dim
+            else nn.Identity()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, C = x.shape
         residual = self.residual_proj(x)
-        
+
         # Depthwise-separable convolution
         x_conv = x.transpose(1, 2)
         x_conv = self.depthwise(x_conv)
         x_conv = self.pointwise(x_conv)
-        
+
         # Causal truncation
         if x_conv.size(2) > L:
             x_conv = x_conv[:, :, :L]
-            
+
         x_conv = x_conv.transpose(1, 2)
         x_conv = self.activation(x_conv)
         x_conv = self.dropout(x_conv)
-        
+
         return self.norm(x_conv + residual)
 
 
 class ResidualMLPOp(nn.Module):
     """MLP with residual connection and proper scaling"""
+
     def __init__(self, input_dim: int, latent_dim: int, expansion_factor: float = 2.67):
         super().__init__()
         hidden_dim = int(latent_dim * expansion_factor)
-        
+
         self.mlp = nn.Sequential(
             nn.Linear(input_dim, hidden_dim, bias=False),
             nn.GELU(),
             nn.Linear(hidden_dim, latent_dim, bias=False),
-            nn.Dropout(0.05)
+            nn.Dropout(0.05),
         )
         self.norm = RMSNorm(latent_dim)
         self.residual_proj = (
-            nn.Linear(input_dim, latent_dim, bias=False) 
-            if input_dim != latent_dim else nn.Identity()
+            nn.Linear(input_dim, latent_dim, bias=False)
+            if input_dim != latent_dim
+            else nn.Identity()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -126,36 +139,48 @@ class ResidualMLPOp(nn.Module):
 
 class TCNOp(nn.Module):
     """Temporal Convolutional Network with depthwise-separable and dilations"""
+
     def __init__(self, input_dim: int, latent_dim: int, kernel_size: int = 3):
         super().__init__()
         # First dilated depthwise-separable block
         self.depthwise1 = nn.Conv1d(
-            input_dim, input_dim, kernel_size,
-            padding=kernel_size-1, dilation=1, groups=input_dim, bias=False
+            input_dim,
+            input_dim,
+            kernel_size,
+            padding=kernel_size - 1,
+            dilation=1,
+            groups=input_dim,
+            bias=False,
         )
         self.pointwise1 = nn.Conv1d(input_dim, latent_dim, 1, bias=False)
-        
+
         # Second dilated depthwise-separable block
         self.depthwise2 = nn.Conv1d(
-            latent_dim, latent_dim, kernel_size,
-            padding=(kernel_size-1)*2, dilation=2, groups=latent_dim, bias=False
+            latent_dim,
+            latent_dim,
+            kernel_size,
+            padding=(kernel_size - 1) * 2,
+            dilation=2,
+            groups=latent_dim,
+            bias=False,
         )
         self.pointwise2 = nn.Conv1d(latent_dim, latent_dim, 1, bias=False)
-        
+
         self.norm1 = RMSNorm(latent_dim)
         self.norm2 = RMSNorm(latent_dim)
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(0.05)
-        
+
         self.residual_proj = (
-            nn.Linear(input_dim, latent_dim, bias=False) 
-            if input_dim != latent_dim else nn.Identity()
+            nn.Linear(input_dim, latent_dim, bias=False)
+            if input_dim != latent_dim
+            else nn.Identity()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, C = x.shape
         residual = self.residual_proj(x)
-        
+
         # First block
         x_conv = x.transpose(1, 2)
         x_conv = self.depthwise1(x_conv)
@@ -165,7 +190,7 @@ class TCNOp(nn.Module):
         x_conv = x_conv.transpose(1, 2)
         x_conv = self.activation(self.norm1(x_conv))
         x_conv = self.dropout(x_conv)
-        
+
         # Second block
         x_conv2 = x_conv.transpose(1, 2)
         x_conv2 = self.depthwise2(x_conv2)
@@ -174,61 +199,69 @@ class TCNOp(nn.Module):
             x_conv2 = x_conv2[:, :, :L]
         x_conv2 = x_conv2.transpose(1, 2)
         x_conv2 = self.activation(self.norm2(x_conv2))
-        
+
         return x_conv2 + residual
 
 
 class FourierOp(nn.Module):
     """Fourier operation with learnable frequency weighting"""
-    def __init__(self, input_dim: int, latent_dim: int, seq_length: int, num_frequencies: int = None):
+
+    def __init__(
+        self,
+        input_dim: int,
+        latent_dim: int,
+        seq_length: int,
+        num_frequencies: int = None,
+    ):
         super().__init__()
         self.seq_length = seq_length
-        self.num_frequencies = min(seq_length // 2 + 1, 32) if num_frequencies is None else num_frequencies
-        
+        self.num_frequencies = (
+            min(seq_length // 2 + 1, 32) if num_frequencies is None else num_frequencies
+        )
+
         # Frequency processing
         self.freq_proj = nn.Sequential(
             nn.Linear(input_dim * 2, latent_dim, bias=False),
             nn.GELU(),
-            nn.Linear(latent_dim, latent_dim, bias=False)
+            nn.Linear(latent_dim, latent_dim, bias=False),
         )
-        
+
         # Learnable frequency weights
         self.freq_weights = nn.Parameter(torch.randn(self.num_frequencies) * 0.02)
-        
+
         self.gate = nn.Sequential(
-            nn.Linear(latent_dim, latent_dim, bias=False),
-            nn.Sigmoid()
+            nn.Linear(latent_dim, latent_dim, bias=False), nn.Sigmoid()
         )
-        
+
         self.output_proj = nn.Linear(input_dim + latent_dim, latent_dim, bias=False)
         self.norm = RMSNorm(latent_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, C = x.shape
-        
+
         # Pad or truncate to target sequence length
         if L < self.seq_length:
             x_padded = F.pad(x, (0, 0, 0, self.seq_length - L))
         else:
-            x_padded = x[:, :self.seq_length]
-        
+            x_padded = x[:, : self.seq_length]
+
         # FFT processing
         x_fft = torch.fft.rfft(x_padded, dim=1, norm="ortho")
-        x_fft = x_fft[:, :self.num_frequencies]
-        
+        x_fft = x_fft[:, : self.num_frequencies]
+
         # Apply learnable frequency weights
         weights = F.softmax(self.freq_weights, dim=0).view(1, -1, 1)
         real = x_fft.real * weights
         imag = x_fft.imag * weights
-        
+
         # Process frequency features
         freq_feat = torch.cat([real, imag], dim=-1)
         freq_feat = self.freq_proj(freq_feat)
-        
+
         # Global feature extraction and gating
         global_feat = freq_feat.mean(dim=1, keepdim=True).expand(-1, L, -1)
         gated = self.gate(global_feat)
-        
+
         # Combine with input
         combined = torch.cat([x[:, :L], gated * global_feat], dim=-1)
         return self.norm(self.output_proj(combined))
@@ -236,34 +269,41 @@ class FourierOp(nn.Module):
 
 class WaveletOp(nn.Module):
     """Multi-scale wavelet-style operation using dilated convolutions"""
+
     def __init__(self, input_dim: int, latent_dim: int, num_scales: int = 3):
         super().__init__()
         self.num_scales = num_scales
         scales = [1, 2, 4][:num_scales]
-        
+
         # Multi-scale depthwise-separable convolutions
         self.scale_layers = nn.ModuleList()
         for dilation in scales:
             layer = nn.Sequential(
                 nn.Conv1d(
-                    input_dim, input_dim, kernel_size=3,
-                    padding=dilation, dilation=dilation, 
-                    groups=input_dim, bias=False
+                    input_dim,
+                    input_dim,
+                    kernel_size=3,
+                    padding=dilation,
+                    dilation=dilation,
+                    groups=input_dim,
+                    bias=False,
                 ),
                 nn.Conv1d(input_dim, input_dim, kernel_size=1, bias=False),
                 nn.BatchNorm1d(input_dim),
                 nn.GELU(),
-                nn.Dropout(0.05)
+                nn.Dropout(0.05),
             )
             self.scale_layers.append(layer)
-        
-        self.fusion = nn.Conv1d(input_dim * num_scales, latent_dim, kernel_size=1, bias=False)
+
+        self.fusion = nn.Conv1d(
+            input_dim * num_scales, latent_dim, kernel_size=1, bias=False
+        )
         self.norm = RMSNorm(latent_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, C = x.shape
         x_t = x.transpose(1, 2)
-        
+
         # Multi-scale processing
         features = []
         for layer in self.scale_layers:
@@ -272,7 +312,7 @@ class WaveletOp(nn.Module):
             if feat.shape[-1] != L:
                 feat = F.adaptive_avg_pool1d(feat, L)
             features.append(feat)
-        
+
         # Fuse features
         fused = torch.cat(features, dim=1)
         output = self.fusion(fused).transpose(1, 2)
@@ -281,19 +321,24 @@ class WaveletOp(nn.Module):
 
 class ConvMixerOp(nn.Module):
     """ConvMixer-style operation with depthwise separable convolutions"""
+
     def __init__(self, input_dim: int, latent_dim: int, kernel_size: int = 9):
         super().__init__()
         self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
-        
+
         # Depthwise convolution
         self.depthwise = nn.Conv1d(
-            latent_dim, latent_dim, kernel_size,
-            padding=kernel_size // 2, groups=latent_dim, bias=False
+            latent_dim,
+            latent_dim,
+            kernel_size,
+            padding=kernel_size // 2,
+            groups=latent_dim,
+            bias=False,
         )
-        
+
         # Pointwise convolution
         self.pointwise = nn.Conv1d(latent_dim, latent_dim, kernel_size=1, bias=False)
-        
+
         self.norm1 = nn.BatchNorm1d(latent_dim)
         self.norm2 = RMSNorm(latent_dim)
         self.activation = nn.GELU()
@@ -302,7 +347,7 @@ class ConvMixerOp(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.input_proj(x)
         residual = x
-        
+
         # Depthwise-separable convolution
         x_conv = x.transpose(1, 2)
         x_conv = self.depthwise(x_conv)
@@ -311,139 +356,149 @@ class ConvMixerOp(nn.Module):
         x_conv = self.pointwise(x_conv) + x_conv  # Inner residual
         x_conv = x_conv.transpose(1, 2)
         x_conv = self.dropout(x_conv)
-        
+
         return self.norm2(x_conv + residual)
 
 
 class GRNOp(nn.Module):
     """Gated Residual Network with proper gating"""
+
     def __init__(self, input_dim: int, latent_dim: int):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, latent_dim, bias=False)
         self.fc2 = nn.Linear(latent_dim, latent_dim, bias=False)
-        
+
         self.gate = nn.Sequential(
-            nn.Linear(latent_dim, latent_dim, bias=False),
-            nn.Sigmoid()
+            nn.Linear(latent_dim, latent_dim, bias=False), nn.Sigmoid()
         )
-        
+
         self.norm = RMSNorm(latent_dim)
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(0.05)
-        
+
         self.residual_proj = (
-            nn.Linear(input_dim, latent_dim, bias=False) 
-            if input_dim != latent_dim else nn.Identity()
+            nn.Linear(input_dim, latent_dim, bias=False)
+            if input_dim != latent_dim
+            else nn.Identity()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = self.residual_proj(x)
-        
+
         h = self.activation(self.fc1(x))
         h = self.dropout(h)
         gated = self.gate(h)
         y = gated * self.fc2(h)
-        
+
         return self.norm(y + residual)
 
 
 class MultiScaleConvOp(nn.Module):
     """Multi-scale convolution with attention-based fusion"""
+
     def __init__(self, input_dim: int, latent_dim: int, scales: list = None):
         super().__init__()
         self.scales = scales or [1, 3, 5, 7]
         self.num_scales = len(self.scales)
         self.latent_dim = latent_dim
-        
+
         # Multi-scale depthwise-separable convolutions
         self.scale_convs = nn.ModuleList()
         for kernel_size in self.scales:
             conv = nn.Sequential(
                 nn.Conv1d(
-                    input_dim, input_dim, kernel_size,
-                    padding=kernel_size // 2, groups=input_dim, bias=False
+                    input_dim,
+                    input_dim,
+                    kernel_size,
+                    padding=kernel_size // 2,
+                    groups=input_dim,
+                    bias=False,
                 ),
                 nn.Conv1d(
-                    input_dim, latent_dim // self.num_scales,
-                    kernel_size=1, bias=False
+                    input_dim, latent_dim // self.num_scales, kernel_size=1, bias=False
                 ),
                 nn.BatchNorm1d(latent_dim // self.num_scales),
-                nn.GELU()
+                nn.GELU(),
             )
             self.scale_convs.append(conv)
-        
+
         # Attention mechanism for scale fusion
         self.attention = nn.Sequential(
             nn.Conv1d(latent_dim, latent_dim // 4, kernel_size=1),
             nn.GELU(),
             nn.Conv1d(latent_dim // 4, self.num_scales, kernel_size=1),
-            nn.Softmax(dim=1)
+            nn.Softmax(dim=1),
         )
-        
+
         self.final_proj = nn.Conv1d(latent_dim, latent_dim, kernel_size=1, bias=False)
         self.norm = RMSNorm(latent_dim)
-        
+
         self.residual_proj = (
-            nn.Linear(input_dim, latent_dim, bias=False) 
-            if input_dim != latent_dim else nn.Identity()
+            nn.Linear(input_dim, latent_dim, bias=False)
+            if input_dim != latent_dim
+            else nn.Identity()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, C = x.shape
         residual = self.residual_proj(x)
         x_t = x.transpose(1, 2)
-        
+
         # Multi-scale feature extraction
         scale_features = [conv(x_t) for conv in self.scale_convs]
         multi_scale = torch.cat(scale_features, dim=1)
-        
+
         # Attention-based fusion
         attn_weights = self.attention(multi_scale)
-        
+
         # Apply attention and combine
         weighted_features = [
-            feat * attn_weights[:, i:i+1, :]
+            feat * attn_weights[:, i : i + 1, :]
             for i, feat in enumerate(scale_features)
         ]
-        
+
         combined = torch.stack(weighted_features, dim=0).sum(dim=0)
         # Expand to full dimension
-        combined = combined.repeat(1, self.num_scales, 1)[:, :self.latent_dim, :]
-        
+        combined = combined.repeat(1, self.num_scales, 1)[:, : self.latent_dim, :]
+
         output = self.final_proj(combined).transpose(1, 2)
         return self.norm(output + residual)
 
 
 class PyramidConvOp(nn.Module):
     """Pyramid convolution with progressive downsampling and upsampling"""
+
     def __init__(self, input_dim: int, latent_dim: int, levels: int = 3):
         super().__init__()
         self.levels = min(levels, 3)
-        
+
         # Calculate channel dimensions for pyramid
         base_channels = max(latent_dim // (2**self.levels), 8)
-        
+
         self.input_proj = nn.Conv1d(
-            input_dim, base_channels * (2**self.levels),
-            kernel_size=1, bias=False
+            input_dim, base_channels * (2**self.levels), kernel_size=1, bias=False
         )
-        
+
         # Encoder (downsampling) with depthwise-separable convolutions
-        encoder_channels = [base_channels * (2**(self.levels - i)) for i in range(self.levels + 1)]
+        encoder_channels = [
+            base_channels * (2 ** (self.levels - i)) for i in range(self.levels + 1)
+        ]
         self.encoder_convs = nn.ModuleList()
         for i in range(self.levels):
             in_ch, out_ch = encoder_channels[i], encoder_channels[i + 1]
             conv = nn.Sequential(
                 # Depthwise
-                nn.Conv1d(in_ch, in_ch, 3, stride=2, padding=1, groups=in_ch, bias=False),
+                nn.Conv1d(
+                    in_ch, in_ch, 3, stride=2, padding=1, groups=in_ch, bias=False
+                ),
                 # Pointwise
                 nn.Conv1d(in_ch, out_ch, 1, bias=False),
                 nn.BatchNorm1d(out_ch),
                 nn.GELU(),
-                nn.Dropout(0.05)
+                nn.Dropout(0.05),
             )
             self.encoder_convs.append(conv)
-        
+
         # Decoder (upsampling)
         decoder_channels = encoder_channels[::-1]
         self.decoder_convs = nn.ModuleList()
@@ -451,83 +506,91 @@ class PyramidConvOp(nn.Module):
             in_ch, out_ch = decoder_channels[i], decoder_channels[i + 1]
             conv = nn.Sequential(
                 nn.ConvTranspose1d(
-                    in_ch, out_ch, 3, stride=2, padding=1,
-                    output_padding=1, bias=False
+                    in_ch, out_ch, 3, stride=2, padding=1, output_padding=1, bias=False
                 ),
                 nn.BatchNorm1d(out_ch),
-                nn.GELU()
+                nn.GELU(),
             )
             self.decoder_convs.append(conv)
-        
+
         # Skip connections
-        self.skip_fusions = nn.ModuleList([
-            nn.Conv1d(
-                decoder_channels[i + 1] + encoder_channels[self.levels - 1 - i],
-                decoder_channels[i + 1], kernel_size=1, bias=False
-            )
-            for i in range(self.levels - 1)
-        ])
-        
-        self.final_proj = nn.Conv1d(decoder_channels[-1], latent_dim, kernel_size=1, bias=False)
+        self.skip_fusions = nn.ModuleList(
+            [
+                nn.Conv1d(
+                    decoder_channels[i + 1] + encoder_channels[self.levels - 1 - i],
+                    decoder_channels[i + 1],
+                    kernel_size=1,
+                    bias=False,
+                )
+                for i in range(self.levels - 1)
+            ]
+        )
+
+        self.final_proj = nn.Conv1d(
+            decoder_channels[-1], latent_dim, kernel_size=1, bias=False
+        )
         self.norm = RMSNorm(latent_dim)
-        
+
         self.residual_proj = (
-            nn.Linear(input_dim, latent_dim, bias=False) 
-            if input_dim != latent_dim else nn.Identity()
+            nn.Linear(input_dim, latent_dim, bias=False)
+            if input_dim != latent_dim
+            else nn.Identity()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, C = x.shape
         residual = self.residual_proj(x)
         x_t = x.transpose(1, 2)
-        
+
         # Project input
         x_proj = self.input_proj(x_t)
-        
+
         # Encoder path
         encoder_features = [x_proj]
         current = x_proj
         for conv in self.encoder_convs:
             current = conv(current)
             encoder_features.append(current)
-        
+
         # Decoder path with skip connections
         current = encoder_features[-1]
         for i, conv in enumerate(self.decoder_convs):
             current = conv(current)
-            
+
             # Add skip connection if not last layer
             if i < len(self.decoder_convs) - 1:
                 skip_idx = self.levels - 1 - i
                 skip = encoder_features[skip_idx]
-                
+
                 # Handle dimension mismatches
                 if current.shape[-1] != skip.shape[-1]:
                     target_len = min(current.shape[-1], skip.shape[-1])
                     current = current[:, :, :target_len]
                     skip = skip[:, :, :target_len]
-                
+
                 # Fuse skip connection
                 fused = torch.cat([current, skip], dim=1)
                 current = self.skip_fusions[i](fused)
-        
+
         # Final projection and resize
         current = self.final_proj(current)
         if current.shape[-1] != L:
-            current = F.interpolate(current, size=L, mode='linear', align_corners=False)
-        
+            current = F.interpolate(current, size=L, mode="linear", align_corners=False)
+
         output = current.transpose(1, 2)
         return self.norm(output + residual)
 
 
 class FixedOp(nn.Module):
     """Simple wrapper for fixed operations"""
+
     def __init__(self, selected_op: nn.Module):
         super().__init__()
         self.op = selected_op
 
     def forward(self, x):
         return self.op(x)
+
 
 from .darts_base import *
 
@@ -582,7 +645,7 @@ class MixedOp(nn.Module):
 
         # Initialize operations
         self.available_ops = self._validate_ops(available_ops)
-        
+
         if use_hierarchical:
             self._init_hierarchical_search()
         else:
@@ -625,14 +688,14 @@ class MixedOp(nn.Module):
         """Validate and filter available operations"""
         if not ops:
             return ["Identity", "TimeConv", "ResidualMLP", "TCN"]
-        
+
         # Filter valid operations
         valid_ops = [op for op in ops if op in self.op_map]
-        
+
         # Ensure minimum operations
         if len(valid_ops) < 2:
             valid_ops = ["Identity", "TimeConv"]
-        
+
         return valid_ops
 
     def _init_hierarchical_search(self):
@@ -646,42 +709,46 @@ class MixedOp(nn.Module):
 
         self.active_groups = active_groups
         self.group_names = list(active_groups.keys())
-        
+
         # Group selection parameters
         self.group_alphas = nn.Parameter(torch.randn(len(self.group_names)) * 0.1)
-        
+
         # Operation modules and parameters for each group
         self.group_ops = nn.ModuleDict()
         self.op_alphas = nn.ParameterDict()
-        
+
         self.op_to_group = {}  # Map operation to group index
         self.group_op_indices = {}  # Map group to operation indices
-        
+
         all_ops = []
         for group_idx, (group_name, group_ops) in enumerate(active_groups.items()):
             # Create operations for this group
             group_modules = nn.ModuleList([self.op_map[op]() for op in group_ops])
             self.group_ops[group_name] = group_modules
-            
+
             # Create alpha parameters for this group
             self.op_alphas[group_name] = nn.Parameter(torch.randn(len(group_ops)) * 0.1)
-            
+
             # Track mappings
             start_idx = len(all_ops)
             for local_idx, op in enumerate(group_ops):
                 global_idx = start_idx + local_idx
                 self.op_to_group[global_idx] = (group_idx, local_idx)
                 all_ops.append(op)
-            
-            self.group_op_indices[group_name] = list(range(start_idx, start_idx + len(group_ops)))
-        
+
+            self.group_op_indices[group_name] = list(
+                range(start_idx, start_idx + len(group_ops))
+            )
+
         self.ops = nn.ModuleList([self.op_map[op]() for op in all_ops])
         self.available_ops = all_ops
 
     def _init_flat_search(self):
         """Initialize flat search space"""
         self.ops = nn.ModuleList([self.op_map[op]() for op in self.available_ops])
-        self._alphas = nn.Parameter(torch.randn(len(self.ops)) * 0.1)  # Use _alphas internally
+        self._alphas = nn.Parameter(
+            torch.randn(len(self.ops)) * 0.1
+        )  # Use _alphas internally
 
     def _get_weights(self, top_k: Optional[int] = None):
         """Get operation weights with optional top-k selection"""
@@ -693,14 +760,18 @@ class MixedOp(nn.Module):
     def _get_hierarchical_weights(self, top_k: Optional[int] = None):
         """Get weights for hierarchical search"""
         if self.use_gumbel and self.training:
-            group_weights = F.gumbel_softmax(self.group_alphas, tau=self.temperature, hard=False)
+            group_weights = F.gumbel_softmax(
+                self.group_alphas, tau=self.temperature, hard=False
+            )
         else:
             group_weights = F.softmax(self.group_alphas / self.temperature, dim=0)
 
         final_weights = []
         selected_ops = []
-        
-        for group_idx, (group_name, group_weight) in enumerate(zip(self.group_names, group_weights)):
+
+        for group_idx, (group_name, group_weight) in enumerate(
+            zip(self.group_names, group_weights)
+        ):
             if group_weight.item() > 1e-6:
                 # Get operation weights within group
                 if self.use_gumbel and self.training:
@@ -708,24 +779,28 @@ class MixedOp(nn.Module):
                         self.op_alphas[group_name], tau=self.temperature, hard=False
                     )
                 else:
-                    op_weights = F.softmax(self.op_alphas[group_name] / self.temperature, dim=0)
-                
+                    op_weights = F.softmax(
+                        self.op_alphas[group_name] / self.temperature, dim=0
+                    )
+
                 # Get operation indices for this group
                 op_indices = self.group_op_indices[group_name]
-                
-                for local_idx, (op_idx, op_weight) in enumerate(zip(op_indices, op_weights)):
+
+                for local_idx, (op_idx, op_weight) in enumerate(
+                    zip(op_indices, op_weights)
+                ):
                     if op_weight.item() > 1e-6:
                         final_weight = group_weight * op_weight
                         final_weights.append(final_weight)
                         selected_ops.append(op_idx)
-        
+
         # Apply top-k selection
         if top_k is not None and len(final_weights) > top_k:
             weight_tensor = torch.stack(final_weights)
             _, top_indices = torch.topk(weight_tensor, top_k)
             final_weights = [final_weights[i] for i in top_indices]
             selected_ops = [selected_ops[i] for i in top_indices]
-        
+
         return list(zip(selected_ops, final_weights))
 
     def _get_flat_weights(self, top_k: Optional[int] = None):
@@ -734,20 +809,22 @@ class MixedOp(nn.Module):
             weights = F.gumbel_softmax(self._alphas, tau=self.temperature, hard=False)
         else:
             weights = F.softmax(self._alphas / self.temperature, dim=0)
-        
+
         # Apply adaptive sampling if enabled
         if self.adaptive_sampling and self.training:
             # Boost weights of better performing operations
             performance_boost = torch.sigmoid(self.performance_tracker) * 0.1
             weights = weights + performance_boost
             weights = F.softmax(weights, dim=0)
-        
+
         selected_ops = [(i, w) for i, w in enumerate(weights) if w.item() > 1e-6]
-        
+
         # Apply top-k selection
         if top_k is not None and len(selected_ops) > top_k:
-            selected_ops = sorted(selected_ops, key=lambda x: x[1].item(), reverse=True)[:top_k]
-        
+            selected_ops = sorted(
+                selected_ops, key=lambda x: x[1].item(), reverse=True
+            )[:top_k]
+
         return selected_ops
 
     def _ensure_output_dim(self, x: torch.Tensor) -> torch.Tensor:
@@ -761,7 +838,7 @@ class MixedOp(nn.Module):
     def forward(self, x: torch.Tensor, top_k: Optional[int] = None) -> torch.Tensor:
         """Enhanced forward with better operation selection"""
         op_weights = self._get_weights(top_k)
-        
+
         if not op_weights:
             # Fallback to identity or first operation
             fallback_out = self.ops[self.fallback_idx](x)
@@ -782,12 +859,14 @@ class MixedOp(nn.Module):
                 out = self._ensure_output_dim(out)
                 outputs.append(out * weight)
                 total_weight += weight.item()
-                
+
                 # Track efficiency penalty
                 op_name = self.available_ops[op_idx]
                 if op_name in self.op_efficiency:
-                    efficiency_penalty += weight.item() * (1 - self.op_efficiency[op_name])
-                
+                    efficiency_penalty += weight.item() * (
+                        1 - self.op_efficiency[op_name]
+                    )
+
                 # Update performance tracker if adaptive sampling
                 if self.adaptive_sampling and self.training:
                     # Simple heuristic: operations that don't cause NaN/inf are "good"
@@ -820,12 +899,14 @@ class MixedOp(nn.Module):
             # Combine group and operation weights
             group_weights = F.softmax(self.group_alphas, dim=0)
             all_weights = []
-            
-            for group_idx, (group_name, group_weight) in enumerate(zip(self.group_names, group_weights)):
+
+            for group_idx, (group_name, group_weight) in enumerate(
+                zip(self.group_names, group_weights)
+            ):
                 op_weights = F.softmax(self.op_alphas[group_name], dim=0)
                 final_weights = group_weight * op_weights
                 all_weights.extend(final_weights.tolist())
-            
+
             return torch.tensor(all_weights, device=self.group_alphas.device)
         else:
             return F.softmax(self.alphas.detach(), dim=0)
@@ -837,14 +918,14 @@ class MixedOp(nn.Module):
             return self.get_alphas()
         else:
             return self._alphas
-    
+
     @alphas.setter
     def alphas(self, value):
         """Compatibility setter for alphas"""
         if self.use_hierarchical:
             # For hierarchical, we need to distribute the values
             # This is a simplified approach - in practice you might want more sophisticated logic
-            if hasattr(self, 'group_alphas'):
+            if hasattr(self, "group_alphas"):
                 with torch.no_grad():
                     # Update group alphas with first few values
                     num_groups = len(self.group_alphas)
@@ -856,27 +937,29 @@ class MixedOp(nn.Module):
     def get_entropy_loss(self) -> torch.Tensor:
         """Get entropy loss for exploration"""
         total_entropy = 0
-        
+
         if self.use_hierarchical:
             # Group entropy
             group_probs = F.softmax(self.group_alphas / self.temperature, dim=0)
             group_entropy = -(group_probs * torch.log(group_probs + 1e-8)).sum()
             total_entropy += group_entropy
-            
+
             # Operation entropy within groups
             for group_name in self.group_names:
-                op_probs = F.softmax(self.op_alphas[group_name] / self.temperature, dim=0)
+                op_probs = F.softmax(
+                    self.op_alphas[group_name] / self.temperature, dim=0
+                )
                 op_entropy = -(op_probs * torch.log(op_probs + 1e-8)).sum()
                 total_entropy += op_entropy
         else:
             probs = F.softmax(self._alphas / self.temperature, dim=0)
             total_entropy = -(probs * torch.log(probs + 1e-8)).sum()
-        
+
         return -0.01 * total_entropy  # Encourage exploration
 
     def get_efficiency_penalty(self) -> torch.Tensor:
         """Get efficiency penalty for regularization"""
-        return getattr(self, '_last_efficiency_penalty', torch.tensor(0.0))
+        return getattr(self, "_last_efficiency_penalty", torch.tensor(0.0))
 
     def set_temperature(self, temp: float):
         """Set temperature for Gumbel softmax"""
@@ -885,7 +968,7 @@ class MixedOp(nn.Module):
     def get_operation_statistics(self) -> Dict[str, Any]:
         """Get statistics about operation usage and performance"""
         stats = {}
-        
+
         if self.adaptive_sampling:
             for i, op_name in enumerate(self.available_ops):
                 usage = self.usage_counter[i].item()
@@ -893,9 +976,9 @@ class MixedOp(nn.Module):
                 stats[op_name] = {
                     "usage_count": usage,
                     "avg_performance": performance / max(usage, 1),
-                    "efficiency": self.op_efficiency.get(op_name, 0.5)
+                    "efficiency": self.op_efficiency.get(op_name, 0.5),
                 }
-        
+
         return stats
 
     def describe(self, top_k: int = 3) -> Dict[str, float]:
@@ -912,10 +995,14 @@ class MixedOp(nn.Module):
         if self.use_hierarchical:
             return {
                 "group_alphas": self.group_alphas.detach(),
-                "op_alphas": {name: alpha.detach() for name, alpha in self.op_alphas.items()}
+                "op_alphas": {
+                    name: alpha.detach() for name, alpha in self.op_alphas.items()
+                },
             }
         else:
             return {"alphas": self._alphas.detach()}
+
+
 class DARTSCell(nn.Module):
     """Enhanced DARTS cell with progressive search and better aggregation"""
 
@@ -947,8 +1034,17 @@ class DARTSCell(nn.Module):
         self.stage_operations = {
             "basic": ["Identity", "ResidualMLP", "TimeConv"],
             "intermediate": ["Identity", "TimeConv", "TCN", "ConvMixer", "GRN"],
-            "advanced": ["Identity", "TimeConv", "TCN", "ConvMixer", "GRN", 
-                        "Fourier", "Wavelet", "MultiScaleConv", "PyramidConv"]
+            "advanced": [
+                "Identity",
+                "TimeConv",
+                "TCN",
+                "ConvMixer",
+                "GRN",
+                "Fourier",
+                "Wavelet",
+                "MultiScaleConv",
+                "PyramidConv",
+            ],
         }
 
         self.available_ops = self._select_operations(selected_ops)
@@ -961,15 +1057,21 @@ class DARTSCell(nn.Module):
         """Select operations based on search stage"""
         if self.initial_search:
             return ["Identity", "TimeConv"]
-        
+
         if selected_ops:
             return selected_ops
-        
-        return self.stage_operations.get(self.progressive_stage, self.stage_operations["basic"])
+
+        return self.stage_operations.get(
+            self.progressive_stage, self.stage_operations["basic"]
+        )
 
     def _precompute_edge_indices(self):
         """Precompute edge indices for faster lookup"""
-        return {(i, j): sum(range(i)) + j for i in range(1, self.num_nodes) for j in range(i)}
+        return {
+            (i, j): sum(range(i)) + j
+            for i in range(1, self.num_nodes)
+            for j in range(i)
+        }
 
     def _init_components(self):
         """Initialize all components"""
@@ -981,18 +1083,20 @@ class DARTSCell(nn.Module):
         )
 
         # Enhanced mixed operations
-        self.edges = nn.ModuleList([
-            MixedOp(
-                self.latent_dim, 
-                self.latent_dim, 
-                self.seq_length, 
-                available_ops=self.available_ops,
-                temperature=self.temperature,
-                use_hierarchical=True,
-                adaptive_sampling=True
-            )
-            for _ in range(self.num_edges)
-        ])
+        self.edges = nn.ModuleList(
+            [
+                MixedOp(
+                    self.latent_dim,
+                    self.latent_dim,
+                    self.seq_length,
+                    available_ops=self.available_ops,
+                    temperature=self.temperature,
+                    use_hierarchical=True,
+                    adaptive_sampling=True,
+                )
+                for _ in range(self.num_edges)
+            ]
+        )
 
         # Learnable residual weights per node
         self.residual_weights = nn.Parameter(torch.full((self.num_nodes,), 0.2))
@@ -1010,7 +1114,9 @@ class DARTSCell(nn.Module):
         self.out_norm = RMSNorm(self.latent_dim)
 
         # Progressive search parameters
-        self.stage_gates = nn.Parameter(torch.ones(3))  # [basic, intermediate, advanced]
+        self.stage_gates = nn.Parameter(
+            torch.ones(3)
+        )  # [basic, intermediate, advanced]
 
     def _get_edge_index(self, node_idx, input_idx):
         """Get edge index efficiently"""
@@ -1020,12 +1126,14 @@ class DARTSCell(nn.Module):
         """Aggregate inputs with different strategies"""
         if len(inputs) == 1:
             return inputs[0]
-        
+
         stacked = torch.stack(inputs, dim=0)
-        
+
         if self.aggregation == "weighted" and self.agg_weights is not None:
             # Use edge-specific weights
-            weights = F.softmax(torch.stack([self.agg_weights[i] for i in edge_indices]), dim=0)
+            weights = F.softmax(
+                torch.stack([self.agg_weights[i] for i in edge_indices]), dim=0
+            )
             weights = weights.view(-1, 1, 1, 1)
             return (weights * stacked).sum(dim=0)
         elif self.aggregation == "attention":
@@ -1042,7 +1150,7 @@ class DARTSCell(nn.Module):
     def _apply_residual(self, node_output, residual_input, node_idx):
         """Apply learnable residual connection with proper dimension handling"""
         residual_weight = torch.sigmoid(self.residual_weights[node_idx])
-        
+
         # Handle dimension mismatches
         if node_output.shape != residual_input.shape:
             # Temporal alignment
@@ -1051,15 +1159,19 @@ class DARTSCell(nn.Module):
                     residual_input.transpose(1, 2),
                     size=node_output.shape[1],
                     mode="linear",
-                    align_corners=False
+                    align_corners=False,
                 ).transpose(1, 2)
-            
+
             # Feature dimension alignment
             if node_output.shape[2] != residual_input.shape[2]:
-                if not hasattr(self, f'_residual_proj_{node_idx}'):
-                    proj = nn.Linear(residual_input.shape[2], node_output.shape[2]).to(residual_input.device)
-                    setattr(self, f'_residual_proj_{node_idx}', proj)
-                residual_input = getattr(self, f'_residual_proj_{node_idx}')(residual_input)
+                if not hasattr(self, f"_residual_proj_{node_idx}"):
+                    proj = nn.Linear(residual_input.shape[2], node_output.shape[2]).to(
+                        residual_input.device
+                    )
+                    setattr(self, f"_residual_proj_{node_idx}", proj)
+                residual_input = getattr(self, f"_residual_proj_{node_idx}")(
+                    residual_input
+                )
 
         return residual_weight * node_output + (1 - residual_weight) * residual_input
 
@@ -1079,10 +1191,10 @@ class DARTSCell(nn.Module):
             for input_idx in range(node_idx):
                 edge_idx = self._get_edge_index(node_idx, input_idx)
                 edge = self.edges[edge_idx]
-                
+
                 # Apply edge importance gating
                 edge_weight = torch.sigmoid(self.edge_importance[edge_idx])
-                
+
                 if edge_weight.item() > 0.1:  # Skip unimportant edges
                     # Use gradient checkpointing if enabled
                     if self.training and self.use_checkpoint:
@@ -1091,14 +1203,14 @@ class DARTSCell(nn.Module):
                         )
                     else:
                         out = edge(nodes[input_idx])
-                    
+
                     # Apply edge weight
                     out = out * edge_weight
                     node_inputs.append(out)
                     edge_indices.append(edge_idx)
-                    
+
                     # Accumulate efficiency penalty
-                    #total_efficiency_penalty += edge.get_efficiency_penalty()
+                    # total_efficiency_penalty += edge.get_efficiency_penalty()
 
             if node_inputs:
                 # Aggregate inputs
@@ -1108,16 +1220,16 @@ class DARTSCell(nn.Module):
             else:
                 # Fallback to previous node
                 out = nodes[node_idx - 1]
-            
+
             nodes.append(out)
 
         # Apply final residual and normalization
         final = self._apply_residual(nodes[-1], x_proj, 0)
         result = self.out_norm(final)
-        
+
         # Store efficiency penalty for regularization
         self._last_efficiency_penalty = total_efficiency_penalty
-        
+
         return result
 
     def advance_progressive_stage(self):
@@ -1127,11 +1239,11 @@ class DARTSCell(nn.Module):
         if current_idx < len(stages) - 1:
             self.progressive_stage = stages[current_idx + 1]
             new_ops = self.stage_operations[self.progressive_stage]
-            
+
             # Update all edges with new operations
             for edge in self.edges:
                 edge.available_ops = new_ops
-                if hasattr(edge, '_init_hierarchical_search'):
+                if hasattr(edge, "_init_hierarchical_search"):
                     edge._init_hierarchical_search()
 
     def get_alphas(self):
@@ -1141,18 +1253,18 @@ class DARTSCell(nn.Module):
     def get_entropy_loss(self):
         """Get total entropy loss for exploration"""
         total = sum(edge.get_entropy_loss() for edge in self.edges)
-        
+
         # Add aggregation entropy if using weighted aggregation
         if self.agg_weights is not None:
             probs = F.softmax(self.agg_weights, dim=0)
             agg_entropy = -(probs * torch.log(probs + 1e-8)).sum()
             total -= 0.005 * agg_entropy
-        
+
         return total
 
     def get_efficiency_penalty(self) -> torch.Tensor:
         """Get total efficiency penalty"""
-        return getattr(self, '_last_efficiency_penalty', torch.tensor(0.0))
+        return getattr(self, "_last_efficiency_penalty", torch.tensor(0.0))
 
     def set_temperature(self, temp: float):
         """Update temperature for all edges"""
@@ -1169,9 +1281,10 @@ class DARTSCell(nn.Module):
             stats[f"edge_{i}"] = {
                 "importance_weight": edge_weight,
                 "operations": edge_stats,
-                "top_ops": edge.describe(top_k=2)
+                "top_ops": edge.describe(top_k=2),
             }
         return stats
+
 
 class TimeSeriesDARTS(nn.Module):
     """Simplified TimeSeriesDARTS with essential features"""
@@ -1196,6 +1309,17 @@ class TimeSeriesDARTS(nn.Module):
     ):
         super().__init__()
 
+        self._config = {
+            "input_dim": input_dim,
+            "hidden_dim": hidden_dim,
+            "latent_dim": latent_dim,
+            "forecast_horizon": forecast_horizon,
+            "seq_length": seq_length,
+            "num_cells": num_cells,
+            "num_nodes": num_nodes,
+            "selected_ops": selected_ops,
+        }
+
         # Store configuration
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -1218,6 +1342,13 @@ class TimeSeriesDARTS(nn.Module):
         self.operation_performance = {}
         self.pruned_operations = set()
         self._init_components()
+
+    def get_config(self):
+        return copy.deepcopy(self._config)
+
+    @classmethod
+    def from_config(cls, config: dict):
+        return cls(**config)
 
     def _init_components(self):
         """Initialize all model components"""
@@ -1271,10 +1402,9 @@ class TimeSeriesDARTS(nn.Module):
         self.global_skip = nn.Parameter(torch.tensor(0.1))
 
         self.feature_gate = nn.Sequential(
-            nn.Linear(self.hidden_dim * 2, self.hidden_dim),
-            nn.Sigmoid()
+            nn.Linear(self.hidden_dim * 2, self.hidden_dim), nn.Sigmoid()
         )
-        
+
         self.feature_transform = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
@@ -1306,9 +1436,9 @@ class TimeSeriesDARTS(nn.Module):
 
         self.output_layer = nn.Linear(self.latent_dim, self.input_dim, bias=False)
 
-        self.residual_weights = nn.ParameterList([
-            nn.Parameter(torch.tensor(0.1)) for _ in range(self.num_cells)
-        ])
+        self.residual_weights = nn.ParameterList(
+            [nn.Parameter(torch.tensor(0.1)) for _ in range(self.num_cells)]
+        )
 
         # Initialize weights
         self.apply(self._init_weights)
@@ -1336,7 +1466,7 @@ class TimeSeriesDARTS(nn.Module):
         """Forward pass"""
         B, L, _ = x_seq.shape
 
-     # Ensure consistent dtype
+        # Ensure consistent dtype
         x_seq = self._ensure_dtype(x_seq)
 
         # Input embedding
@@ -1348,8 +1478,13 @@ class TimeSeriesDARTS(nn.Module):
         cell_outputs = []
 
         for i, (cell, proj, scale, res_weight, importance) in enumerate(
-            zip(self.cells, self.cell_proj, self.layer_scales, 
-                self.residual_weights, self.cell_importance)
+            zip(
+                self.cells,
+                self.cell_proj,
+                self.layer_scales,
+                self.residual_weights,
+                self.cell_importance,
+            )
         ):
             # Apply cell with optional checkpointing
             if self.training and self.use_gradient_checkpointing:
@@ -1373,13 +1508,15 @@ class TimeSeriesDARTS(nn.Module):
         # Enhanced cell feature combination
         if len(cell_outputs) > 1:
             # Learnable weighted combination
-            cell_weights_norm = F.softmax(self.cell_weights[:len(cell_outputs)], dim=0)
-            cell_importance_norm = torch.sigmoid(self.cell_importance[:len(cell_outputs)])
-            
+            cell_weights_norm = F.softmax(self.cell_weights[: len(cell_outputs)], dim=0)
+            cell_importance_norm = torch.sigmoid(
+                self.cell_importance[: len(cell_outputs)]
+            )
+
             # Combine with both weights and importance
             final_weights = cell_weights_norm * cell_importance_norm
             final_weights = final_weights / final_weights.sum()
-            
+
             combined_features = sum(w * f for w, f in zip(final_weights, cell_outputs))
         else:
             combined_features = cell_outputs[0]
@@ -1388,10 +1525,10 @@ class TimeSeriesDARTS(nn.Module):
         concatenated = torch.cat([combined_features, original_input], dim=-1)
         gate = self.feature_gate(concatenated)
         gated_features = gate * combined_features + (1 - gate) * original_input
-        
+
         # Apply feature transformation
         final_features = self.feature_transform(gated_features)
-        
+
         # Global skip connection
         final_features = final_features + self.global_skip * original_input
 
@@ -1444,9 +1581,9 @@ class TimeSeriesDARTS(nn.Module):
 
         # Cell alphas
         for i, cell in enumerate(self.cells):
-            if hasattr(cell, 'edges'):
+            if hasattr(cell, "edges"):
                 for j, edge in enumerate(cell.edges):
-                    if hasattr(edge, 'get_alphas'):
+                    if hasattr(edge, "get_alphas"):
                         alphas[f"cell_{i}_edge_{j}"] = edge.get_alphas()
 
         # Encoder/decoder alphas
@@ -1454,9 +1591,11 @@ class TimeSeriesDARTS(nn.Module):
         alphas["decoder"] = self.forecast_decoder.get_alphas()
 
         # Attention alphas
-        if (self.use_attention_bridge and 
-            hasattr(self.forecast_decoder, "attention_alphas") and
-            self.forecast_decoder.attention_alphas is not None):
+        if (
+            self.use_attention_bridge
+            and hasattr(self.forecast_decoder, "attention_alphas")
+            and self.forecast_decoder.attention_alphas is not None
+        ):
             alphas["attention_bridge"] = F.softmax(
                 self.forecast_decoder.attention_alphas, dim=0
             )
@@ -1471,12 +1610,12 @@ class TimeSeriesDARTS(nn.Module):
         for component_name, component_weights in weights.items():
             if not component_weights:  # Skip empty weight dictionaries
                 continue
-                
+
             max_op = max(component_weights, key=component_weights.get)
             max_weight = component_weights[max_op]
 
             if component_name.startswith("cell_"):
-                parts = component_name.split('_')
+                parts = component_name.split("_")
                 if len(parts) >= 2:
                     cell_name = f"cell_{parts[1]}"
                     if cell_name not in discrete_arch:
@@ -1497,9 +1636,9 @@ class TimeSeriesDARTS(nn.Module):
 
         # Cell weights
         for i, cell in enumerate(self.cells):
-            if hasattr(cell, 'edges'):
+            if hasattr(cell, "edges"):
                 for j, edge in enumerate(cell.edges):
-                    if hasattr(edge, 'get_alphas') and hasattr(edge, 'available_ops'):
+                    if hasattr(edge, "get_alphas") and hasattr(edge, "available_ops"):
                         try:
                             alphas = edge.get_alphas()
                             if alphas.numel() > 0:
@@ -1540,21 +1679,22 @@ class TimeSeriesDARTS(nn.Module):
         """Update temperature for all components"""
         self.temperature = temp
         for cell in self.cells:
-            if hasattr(cell, 'set_temperature'):
+            if hasattr(cell, "set_temperature"):
                 cell.set_temperature(temp)
         self.forecast_encoder.set_temperature(temp)
         self.forecast_decoder.set_temperature(temp)
 
-
     # PRUNING METHODS
-    def prune_weak_operations(self, threshold: float = 0.1, strategy: str = "probability") -> Dict[str, Any]:
+    def prune_weak_operations(
+        self, threshold: float = 0.1, strategy: str = "probability"
+    ) -> Dict[str, Any]:
         """
         Prune weak operations based on their weights/importance
-        
+
         Args:
             threshold: Minimum weight to keep an operation
             strategy: "probability" | "gradient" | "entropy" | "performance"
-        
+
         Returns:
             Dict with pruning statistics
         """
@@ -1563,9 +1703,9 @@ class TimeSeriesDARTS(nn.Module):
             "operations_kept": 0,
             "pruned_details": {},
             "threshold_used": threshold,
-            "strategy": strategy
+            "strategy": strategy,
         }
-        
+
         if strategy == "probability":
             pruning_stats.update(self._prune_by_probability(threshold))
         elif strategy == "gradient":
@@ -1576,48 +1716,51 @@ class TimeSeriesDARTS(nn.Module):
             pruning_stats.update(self._prune_by_performance(threshold))
         else:
             raise ValueError(f"Unknown pruning strategy: {strategy}")
-        
+
         # Store pruning history
         self.pruning_history.append(pruning_stats)
-        print(f"Pruning completed with strategy '{strategy}' and threshold {threshold}.")
+        print(
+            f"Pruning completed with strategy '{strategy}' and threshold {threshold}."
+        )
         return pruning_stats
-    
 
     def _prune_by_probability(self, threshold: float) -> Dict[str, Any]:
         """Prune operations based on their probability weights"""
         stats = {"operations_pruned": 0, "operations_kept": 0, "pruned_details": {}}
-        
+
         # Prune cell operations
         for i, cell in enumerate(self.cells):
-            if hasattr(cell, 'edges'):
+            if hasattr(cell, "edges"):
                 for j, edge in enumerate(cell.edges):
-                    if hasattr(edge, 'get_alphas') and hasattr(edge, 'available_ops'):
+                    if hasattr(edge, "get_alphas") and hasattr(edge, "available_ops"):
                         alphas = edge.get_alphas()
                         probs = F.softmax(alphas, dim=0)
-                        
+
                         # Find operations below threshold
                         weak_ops = []
-                        for k, (op_name, prob) in enumerate(zip(edge.available_ops, probs)):
+                        for k, (op_name, prob) in enumerate(
+                            zip(edge.available_ops, probs)
+                        ):
                             if prob.item() < threshold and op_name != "Identity":
                                 weak_ops.append((k, op_name, prob.item()))
-                        
+
                         # Prune weak operations by setting very low alpha values
                         if weak_ops:
                             with torch.no_grad():
                                 for k, op_name, prob in weak_ops:
-                                    if hasattr(edge, '_alphas'):
+                                    if hasattr(edge, "_alphas"):
                                         edge._alphas[k] = -10.0  # Very low value
-                                    elif hasattr(edge, 'alphas'):
+                                    elif hasattr(edge, "alphas"):
                                         edge.alphas[k] = -10.0
-                                    
+
                                     # Track pruned operation
                                     op_id = f"cell_{i}_edge_{j}_{op_name}"
                                     self.pruned_operations.add(op_id)
                                     stats["pruned_details"][op_id] = prob
                                     stats["operations_pruned"] += 1
-                        
+
                         # Count kept operations
                         kept_ops = len(edge.available_ops) - len(weak_ops)
                         stats["operations_kept"] += kept_ops
-        
+
         return stats

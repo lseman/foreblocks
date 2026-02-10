@@ -7,14 +7,14 @@ import pkgutil
 from typing import Dict, Iterable, List, Tuple
 
 # NEW: use the unified spec builder (handles inputs/outputs/config + py)
-from foreblocks.auto_spec import build_node_spec
+from foreblocks.ui_aux.auto_spec import build_node_spec
 
 ALLOWED_PACKAGES = [
     "foreblocks.blocks",
-    "foreblocks.blocks.heads",
+    "foreblocks.blocks.enc_dec",
     "foreblocks.core",
-    "foreblocks.utils",
-    "foreblocks.enc_dec",
+    "foreblocks.core.heads",
+    "foreblocks.aux.utils",
     "foreblocks.tf.transformer",
 ]
 

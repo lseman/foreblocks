@@ -11,20 +11,30 @@ import torch.nn.functional as F
 try:
     import triton
     import triton.language as tl
+
     TRITON_AVAILABLE = True
 except ImportError:
     TRITON_AVAILABLE = False
 
 
 def _should_use_triton(x: torch.Tensor, min_numel: int = 4096) -> bool:
-    """Determine if we should use Triton based on tensor properties."""
+    """
+    Determine if we should use Triton based on tensor properties.
+
+    We only gate on:
+      - Triton availability
+      - CUDA
+      - dtype (fp16/bf16/fp32)
+      - size threshold
+      - not in torch.jit.scripting
+    Contiguity is handled inside the actual Triton-backed functions.
+    """
     return (
         TRITON_AVAILABLE
         and x.is_cuda
         and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
         and x.numel() >= min_numel
         and not torch.jit.is_scripting()
-        and x.is_contiguous()
     )
 
 
@@ -32,6 +42,7 @@ def _should_use_triton(x: torch.Tensor, min_numel: int = 4096) -> bool:
 # Triton Kernels - LayerNorm
 # ================================================================
 if TRITON_AVAILABLE:
+
     @triton.jit
     def layernorm_fwd_kernel(
         X, Y, W, B, Mean, Rstd,
@@ -85,10 +96,10 @@ if TRITON_AVAILABLE:
         mask = col < n_cols
 
         dy_ptrs = DY + row_idx * stride_dy_row + col
-        x_ptrs  = X  + row_idx * stride_x_row  + col
+        x_ptrs = X + row_idx * stride_x_row + col
 
         dy = tl.load(dy_ptrs, mask=mask, other=0.0).to(tl.float32)
-        x  = tl.load(x_ptrs,  mask=mask, other=0.0).to(tl.float32)
+        x = tl.load(x_ptrs, mask=mask, other=0.0).to(tl.float32)
 
         mean = tl.load(Mean + row_idx)
         rstd = tl.load(Rstd + row_idx)
@@ -110,7 +121,7 @@ if TRITON_AVAILABLE:
         dx_ptrs = DX + row_idx * stride_dx_row + col
         tl.store(dx_ptrs, dx, mask=mask)
 
-    # ---- NEW: row-wise dW/dB kernel using atomics (no Python-side loops) ----
+    # ---- row-wise dW/dB kernel using atomics (no Python-side loops) ----
     @triton.jit
     def layernorm_bwd_dwdb_row_kernel(
         DY, X, Mean, Rstd, DW, DB,
@@ -121,7 +132,8 @@ if TRITON_AVAILABLE:
         BLOCK_SIZE: tl.constexpr,
     ):
         """
-        Each program handles one row: accumulates dW/dB contributions and atomically adds to global DW/DB.
+        Each program handles one row: accumulates dW/dB contributions and atomically
+        adds to global DW/DB.
         """
         row_idx = tl.program_id(0)
 
@@ -129,10 +141,10 @@ if TRITON_AVAILABLE:
         mask = col < n_cols
 
         dy_ptrs = DY + row_idx * stride_dy_row + col
-        x_ptrs  = X  + row_idx * stride_x_row  + col
+        x_ptrs = X + row_idx * stride_x_row + col
 
         dy = tl.load(dy_ptrs, mask=mask, other=0.0).to(tl.float32)
-        x  = tl.load(x_ptrs,  mask=mask, other=0.0).to(tl.float32)
+        x = tl.load(x_ptrs, mask=mask, other=0.0).to(tl.float32)
 
         mean = tl.load(Mean + row_idx)
         rstd = tl.load(Rstd + row_idx)
@@ -149,13 +161,13 @@ if TRITON_AVAILABLE:
     # ================================================================
     @triton.jit
     def rmsnorm_fwd_kernel(
-        X, Y, W, Rms,  # Added Rms parameter
+        X, Y, W, Rms,
         stride_x_row, stride_y_row,
         n_cols, eps,
         HAS_WEIGHT: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
-        """RMSNorm forward kernel - now saves RMS for backward."""
+        """RMSNorm forward kernel - saves RMS for backward."""
         row_idx = tl.program_id(0)
 
         col = tl.arange(0, BLOCK_SIZE)
@@ -175,13 +187,13 @@ if TRITON_AVAILABLE:
 
         y_ptrs = Y + row_idx * stride_y_row + col
         tl.store(y_ptrs, y, mask=mask)
-        
+
         # Save RMS for backward pass
         tl.store(Rms + row_idx, rms)
 
     @triton.jit
     def rmsnorm_bwd_kernel(
-        DY, X, W, Rms, DX, DW,  # Added Rms parameter
+        DY, X, W, Rms, DX, DW,
         stride_dy_row, stride_x_row, stride_dx_row,
         n_cols, eps,
         HAS_WEIGHT: tl.constexpr,
@@ -195,10 +207,10 @@ if TRITON_AVAILABLE:
         mask = col < n_cols
 
         dy_ptrs = DY + row_idx * stride_dy_row + col
-        x_ptrs  = X  + row_idx * stride_x_row  + col
+        x_ptrs = X + row_idx * stride_x_row + col
 
         dy = tl.load(dy_ptrs, mask=mask, other=0.0).to(tl.float32)
-        x  = tl.load(x_ptrs,  mask=mask, other=0.0).to(tl.float32)
+        x = tl.load(x_ptrs, mask=mask, other=0.0).to(tl.float32)
 
         # Use saved RMS instead of recomputing
         rms = tl.load(Rms + row_idx)
@@ -220,7 +232,7 @@ if TRITON_AVAILABLE:
             tl.atomic_add(DW + col, tl.where(mask, dy * x_normed, 0.0))
 
     # ================================================================
-    # Triton Kernels - Scale and Bias
+    # Triton Kernels - Scale and Bias (inference only)
     # ================================================================
     @triton.jit
     def scale_bias_kernel(
@@ -248,7 +260,7 @@ if TRITON_AVAILABLE:
         tl.store(Y + base + col, y, mask=mask)
 
     # ================================================================
-    # Triton Kernels - Fused RMSNorm + Scale + Bias
+    # Triton Kernels - Fused RMSNorm + Scale + Bias (inference-only helper)
     # ================================================================
     @triton.jit
     def fused_rmsnorm_scale_bias_kernel(
@@ -259,7 +271,7 @@ if TRITON_AVAILABLE:
         HAS_BIAS: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
-        """Fused RMSNorm + scale + bias kernel."""
+        """Fused RMSNorm + scale + bias kernel (for inference-only paths)."""
         row_idx = tl.program_id(0)
 
         col = tl.arange(0, BLOCK_SIZE)
@@ -293,6 +305,13 @@ if TRITON_AVAILABLE:
 class LayerNormTritonFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, bias, eps):
+        if not TRITON_AVAILABLE:
+            raise RuntimeError("LayerNormTritonFunction called but Triton is not available.")
+
+        if weight is None or bias is None:
+            # We only support the affine=True case here; otherwise fall back at module level.
+            raise RuntimeError("LayerNormTritonFunction expects non-None weight and bias.")
+
         orig_shape = x.shape
         x = x.view(-1, x.shape[-1]).contiguous()
         M, N = x.shape
@@ -307,8 +326,8 @@ class LayerNormTritonFunction(torch.autograd.Function):
             x, y, weight, bias, mean, rstd,
             x.stride(0), y.stride(0),
             N, eps,
-            weight is not None,
-            bias is not None,
+            True,  # HAS_WEIGHT
+            True,  # HAS_BIAS
             BLOCK_SIZE,
         )
 
@@ -319,6 +338,9 @@ class LayerNormTritonFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        if not TRITON_AVAILABLE:
+            raise RuntimeError("LayerNormTritonFunction backward called but Triton is not available.")
+
         x, weight, bias, mean, rstd = ctx.saved_tensors
         orig_shape = ctx.orig_shape
         N = ctx.N
@@ -333,63 +355,55 @@ class LayerNormTritonFunction(torch.autograd.Function):
             grad_output, x, weight, mean, rstd, grad_input,
             grad_output.stride(0), x.stride(0), grad_input.stride(0),
             N,
-            weight is not None,
+            True,  # HAS_WEIGHT
             BLOCK_DX,
         )
 
-        grad_weight = None
-        grad_bias = None
+        grad_weight = torch.zeros_like(weight)
+        grad_bias = torch.zeros_like(bias)
 
         # dW/dB via row-wise atomics
-        if weight is not None or bias is not None:
-            # always provide valid storage for pointers; use temp buffers if param is None
-            if weight is not None:
-                grad_weight = torch.zeros_like(weight)
-                dw_ptr = grad_weight
-            else:
-                dw_ptr = x.new_zeros((N,))  # dummy
-            if bias is not None:
-                grad_bias = torch.zeros_like(bias)
-                db_ptr = grad_bias
-            else:
-                db_ptr = x.new_zeros((N,))  # dummy
-
-            BLOCK_WB = min(triton.next_power_of_2(N), 1024)
-            layernorm_bwd_dwdb_row_kernel[(M,)](
-                grad_output, x, mean, rstd,
-                dw_ptr, db_ptr,
-                grad_output.stride(0), x.stride(0),
-                N,
-                weight is not None,
-                bias is not None,
-                BLOCK_WB,
-            )
+        BLOCK_WB = min(triton.next_power_of_2(N), 1024)
+        layernorm_bwd_dwdb_row_kernel[(M,)](
+            grad_output, x, mean, rstd,
+            grad_weight, grad_bias,
+            grad_output.stride(0), x.stride(0),
+            N,
+            True,  # HAS_WEIGHT
+            True,  # HAS_BIAS
+            BLOCK_WB,
+        )
 
         return grad_input.view(orig_shape), grad_weight, grad_bias, None
 
 
-# Fix 3: RMSNormTritonFunction.forward - save RMS
 class RMSNormTritonFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, eps):
+        if not TRITON_AVAILABLE:
+            raise RuntimeError("RMSNormTritonFunction called but Triton is not available.")
+
+        if weight is None:
+            raise RuntimeError("RMSNormTritonFunction expects non-None weight.")
+
         orig_shape = x.shape
         x = x.view(-1, x.shape[-1]).contiguous()
         M, N = x.shape
 
         y = torch.empty_like(x)
-        rms = torch.empty((M,), dtype=torch.float32, device=x.device)  # Added
-        
+        rms = torch.empty((M,), dtype=torch.float32, device=x.device)
+
         BLOCK_SIZE = min(triton.next_power_of_2(N), 2048)
 
         rmsnorm_fwd_kernel[(M,)](
-            x, y, weight, rms,  # Added rms
+            x, y, weight, rms,
             x.stride(0), y.stride(0),
             N, eps,
-            weight is not None,
+            True,  # HAS_WEIGHT
             BLOCK_SIZE,
         )
 
-        ctx.save_for_backward(x, weight, rms)  # Save rms
+        ctx.save_for_backward(x, weight, rms)
         ctx.orig_shape = orig_shape
         ctx.eps = eps
         ctx.N = N
@@ -397,7 +411,10 @@ class RMSNormTritonFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        x, weight, rms = ctx.saved_tensors  # Load rms
+        if not TRITON_AVAILABLE:
+            raise RuntimeError("RMSNormTritonFunction backward called but Triton is not available.")
+
+        x, weight, rms = ctx.saved_tensors
         orig_shape = ctx.orig_shape
         eps = ctx.eps
         N = ctx.N
@@ -406,32 +423,33 @@ class RMSNormTritonFunction(torch.autograd.Function):
         M = grad_output.shape[0]
 
         grad_input = torch.empty_like(x)
-        
-        # Fixed: Always provide valid pointer for grad_weight
-        if weight is not None:
-            grad_weight = torch.zeros_like(weight)
-            dw_ptr = grad_weight
-        else:
-            grad_weight = None
-            dw_ptr = x.new_zeros((N,))  # Dummy buffer
+        grad_weight = torch.zeros_like(weight)
 
         BLOCK_SIZE = min(triton.next_power_of_2(N), 2048)
         rmsnorm_bwd_kernel[(M,)](
-            grad_output, x, weight, rms, grad_input, dw_ptr,  # Pass rms
+            grad_output, x, weight, rms, grad_input, grad_weight,
             grad_output.stride(0), x.stride(0), grad_input.stride(0),
             N, eps,
-            weight is not None,
-            weight is not None,
+            True,  # HAS_WEIGHT
+            True,  # COMPUTE_DW
             BLOCK_SIZE,
         )
 
         return grad_input.view(orig_shape), grad_weight, None
 
+
 # ================================================================
-# Helpers for scale/bias and fused RMS
+# Helpers for scale/bias and fused RMS (inference-only)
 # ================================================================
 def triton_scale_bias(x: torch.Tensor, alpha: torch.Tensor, beta: Optional[torch.Tensor]) -> torch.Tensor:
-    """Apply scale and optional bias using Triton."""
+    """Apply scale and optional bias using Triton.
+
+    NOTE: This is inference-only. It does NOT propagate gradients to x/alpha/beta.
+    Only call it under torch.no_grad() or when you do not need grads.
+    """
+    if not TRITON_AVAILABLE:
+        raise RuntimeError("triton_scale_bias called but Triton is not available.")
+
     *lead, H = x.shape
     x_flat = x.reshape(-1, H).contiguous()
     y_flat = torch.empty_like(x_flat)
@@ -454,9 +472,15 @@ def triton_fused_rmsnorm_scale_bias(
     rms_weight: Optional[torch.Tensor],
     alpha: torch.Tensor,
     beta: Optional[torch.Tensor],
-    eps: float
+    eps: float,
 ) -> torch.Tensor:
-    """Fused RMSNorm + scale + bias using Triton."""
+    """Fused RMSNorm + scale + bias using Triton.
+
+    NOTE: Inference-only helper (no autograd). Only safe under torch.no_grad().
+    """
+    if not TRITON_AVAILABLE:
+        raise RuntimeError("triton_fused_rmsnorm_scale_bias called but Triton is not available.")
+
     *lead, H = x.shape
     x_flat = x.reshape(-1, H).contiguous()
     y_flat = torch.empty_like(x_flat)
@@ -494,8 +518,8 @@ class FastLayerNorm(nn.Module):
             self.weight = nn.Parameter(torch.ones(normalized_shape))
             self.bias = nn.Parameter(torch.zeros(normalized_shape))
         else:
-            self.register_parameter('weight', None)
-            self.register_parameter('bias', None)
+            self.register_parameter("weight", None)
+            self.register_parameter("bias", None)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         # Input validation
@@ -504,14 +528,19 @@ class FastLayerNorm(nn.Module):
                 f"Expected last dimensions to be {self.normalized_shape}, "
                 f"got {input.shape[-len(self.normalized_shape):]}"
             )
-        
-        if _should_use_triton(input, min_numel=4096):
+
+        # Triton path only if we have affine params and want gradients
+        if (
+            self.elementwise_affine
+            and _should_use_triton(input, min_numel=4096)
+            and TRITON_AVAILABLE
+        ):
             return LayerNormTritonFunction.apply(input, self.weight, self.bias, self.eps)
         else:
             return F.layer_norm(input, self.normalized_shape, self.weight, self.bias, self.eps)
 
     def extra_repr(self) -> str:
-        return f'{self.normalized_shape}, eps={self.eps}, elementwise_affine={self.elementwise_affine}'
+        return f"{self.normalized_shape}, eps={self.eps}, elementwise_affine={self.elementwise_affine}"
 
 
 class RMSNorm(nn.Module):
@@ -526,7 +555,7 @@ class RMSNorm(nn.Module):
         if elementwise_affine:
             self.weight = nn.Parameter(torch.ones(d_model))
         else:
-            self.register_parameter('weight', None)
+            self.register_parameter("weight", None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Input validation
@@ -534,18 +563,22 @@ class RMSNorm(nn.Module):
             raise ValueError(
                 f"Expected last dimension to be {self.d_model}, got {x.shape[-1]}"
             )
-        
-        if _should_use_triton(x, min_numel=2048):
+
+        if (
+            self.elementwise_affine
+            and _should_use_triton(x, min_numel=2048)
+            and TRITON_AVAILABLE
+        ):
             return RMSNormTritonFunction.apply(x, self.weight, self.eps)
         else:
             variance = x.pow(2).mean(dim=-1, keepdim=True)
-            x = x * torch.rsqrt(variance + self.eps)
+            x_norm = x * torch.rsqrt(variance + self.eps)
             if self.weight is not None:
-                x = x * self.weight
-            return x
+                x_norm = x_norm * self.weight
+            return x_norm
 
     def extra_repr(self) -> str:
-        return f'd_model={self.d_model}, eps={self.eps}, elementwise_affine={self.elementwise_affine}'
+        return f"d_model={self.d_model}, eps={self.eps}, elementwise_affine={self.elementwise_affine}"
 
 
 class AdaptiveLayerNorm(nn.Module):
@@ -566,16 +599,23 @@ class AdaptiveLayerNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.norm(x)
-        if _should_use_triton(x, min_numel=8192):
+
+        # Triton scale/bias is inference-only (no autograd). Use it only if grads are disabled.
+        if (
+            TRITON_AVAILABLE
+            and not torch.is_grad_enabled()
+            and _should_use_triton(x, min_numel=8192)
+        ):
             x = triton_scale_bias(x, self.alpha, self.beta)
         else:
             x = x * self.alpha
             if self.beta is not None:
                 x = x + self.beta
+
         return self.dropout(x)
 
     def extra_repr(self) -> str:
-        return f'd_model={self.d_model}, eps={self.eps}, use_bias={self.use_bias}'
+        return f"d_model={self.d_model}, eps={self.eps}, use_bias={self.use_bias}"
 
 
 class AdaptiveRMSNorm(nn.Module):
@@ -587,7 +627,7 @@ class AdaptiveRMSNorm(nn.Module):
         eps: float = 1e-5,
         use_bias: bool = False,
         dropout: float = 0.0,
-        global_rms: bool = False
+        global_rms: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
@@ -595,31 +635,42 @@ class AdaptiveRMSNorm(nn.Module):
         self.use_bias = use_bias
         self.global_rms = global_rms
 
+        # RMSNorm weight
         self.weight = nn.Parameter(torch.ones(d_model))
+        # Extra scale/bias
         self.alpha = nn.Parameter(torch.ones(d_model))
         self.beta = nn.Parameter(torch.zeros(d_model)) if use_bias else None
 
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not self.global_rms and _should_use_triton(x, min_numel=2048):
-            y = triton_fused_rmsnorm_scale_bias(x, self.weight, self.alpha, self.beta, self.eps)
-        else:
-            if self.global_rms:
-                variance = x.pow(2).mean(dim=(-2, -1), keepdim=True)
+        if x.shape[-1] != self.d_model:
+            raise ValueError(f"Expected last dimension to be {self.d_model}, got {x.shape[-1]}")
+
+        # Base RMSNorm part
+        if not self.global_rms:
+            # Prefer Triton RMSNorm when available; this path is fully differentiable.
+            if _should_use_triton(x, min_numel=2048) and TRITON_AVAILABLE:
+                base = RMSNormTritonFunction.apply(x, self.weight, self.eps)
             else:
-                variance = x.pow(2).mean(dim=-1, keepdim=True)
-            y = x * torch.rsqrt(variance + self.eps)
-            if self.weight is not None:
-                y = y * self.weight
-            y = y * self.alpha
-            if self.beta is not None:
-                y = y + self.beta
-        
+                var = x.pow(2).mean(dim=-1, keepdim=True)
+                base = x * torch.rsqrt(var + self.eps)
+                base = base * self.weight
+        else:
+            # Global RMS over (time, channels)
+            var = x.pow(2).mean(dim=(-2, -1), keepdim=True)
+            base = x * torch.rsqrt(var + self.eps)
+            base = base * self.weight
+
+        # Extra affine after RMS
+        y = base * self.alpha
+        if self.beta is not None:
+            y = y + self.beta
+
         return self.dropout(y)
 
     def extra_repr(self) -> str:
-        return f'd_model={self.d_model}, eps={self.eps}, use_bias={self.use_bias}, global_rms={self.global_rms}'
+        return f"d_model={self.d_model}, eps={self.eps}, use_bias={self.use_bias}, global_rms={self.global_rms}"
 
 
 # ---------- Channel-last GroupNorm for [B, T, D] tensors ----------
@@ -628,10 +679,11 @@ class ChannelLastGroupNorm(nn.Module):
     GroupNorm for channel-last tensors [B, ..., C].
     Internally permutes to [B, C, ...] → group_norm → permutes back.
     """
+
     def __init__(self, num_groups: int, num_channels: int, eps: float = 1e-5, affine: bool = True):
         super().__init__()
         if num_channels % num_groups != 0:
-            raise ValueError(f'num_channels ({num_channels}) must be divisible by num_groups ({num_groups})')
+            raise ValueError(f"num_channels ({num_channels}) must be divisible by num_groups ({num_groups})")
         self.num_groups = num_groups
         self.num_channels = num_channels
         self.eps = eps
@@ -640,21 +692,22 @@ class ChannelLastGroupNorm(nn.Module):
             self.weight = nn.Parameter(torch.ones(num_channels))
             self.bias = nn.Parameter(torch.zeros(num_channels))
         else:
-            self.register_parameter('weight', None)
-            self.register_parameter('bias', None)
+            self.register_parameter("weight", None)
+            self.register_parameter("bias", None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() < 2:
             raise ValueError("ChannelLastGroupNorm expects at least 2D input with channels in the last dim.")
         # permute last dim (C) to dim=1 for F.group_norm
         perm = list(range(x.dim()))
-        perm.insert(1, perm.pop(-1))        # [B, C, T, ...]
+        perm.insert(1, perm.pop(-1))  # [B, C, T, ...]
         x_perm = x.permute(perm).contiguous()
         y_perm = F.group_norm(x_perm, self.num_groups, self.weight, self.bias, self.eps)
         # invert permutation
         inv = list(range(x.dim()))
-        inv.append(inv.pop(1))              # [B, T, ..., C] back
+        inv.append(inv.pop(1))  # [B, T, ..., C] back
         return y_perm.permute(inv)
+
 
 # ================================================================
 # TemporalNorm (normalize along time axis per (B, D))
@@ -667,22 +720,8 @@ class TemporalNorm(nn.Module):
     - Optional causal/rolling window to avoid leakage into the future.
     - Optional mask to ignore missing timesteps in statistics.
     - Optional affine parameters (γ, β) like LayerNorm.
-    
-    Args:
-        d_model:   number of channels (D)
-        eps:       numerical stability
-        affine:    learnable scale/bias after normalization
-        mode:      'standard' (mean/std) or 'robust' (median/IQR*0.741)
-        causal:    if True, uses left-causal windows; else full (or centered if window_size provided)
-        window_size: int or None. If None -> full-window statistics over T.
-                     If int -> rolling window size over time dimension.
-        center:    if False, only scales (no mean/median subtraction)
-        scale:     if False, only centers (no std/IQR division)
-    Inputs:
-        x:    [B, T, D]
-        mask: optional [B, T, 1] or [B, T, D] (1=valid, 0=missing)
-        return_stats: if True, returns (y, stats) where stats={'loc':..., 'scale':...}
     """
+
     def __init__(
         self,
         d_model: int,
@@ -707,7 +746,7 @@ class TemporalNorm(nn.Module):
 
         if affine:
             self.weight = nn.Parameter(torch.ones(d_model))
-            self.bias   = nn.Parameter(torch.zeros(d_model))
+            self.bias = nn.Parameter(torch.zeros(d_model))
         else:
             self.register_parameter("weight", None)
             self.register_parameter("bias", None)
@@ -735,16 +774,27 @@ class TemporalNorm(nn.Module):
             scale = (var + self.eps).sqrt()
         else:  # robust
             if mask is not None:
-                # replace missing by NaN and use nan-median; torch.nanmedian available on newer PyTorch
+                # replace missing by NaN and use nan-median
                 x_ = torch.where(mask > 0, x, torch.nan)
-                loc = torch.nanmedian(x_, dim=1, keepdim=True).values if self.center else torch.zeros_like(x[:, :1, :])
+                loc = (
+                    torch.nanmedian(x_, dim=1, keepdim=True).values
+                    if self.center
+                    else torch.zeros_like(x[:, :1, :])
+                )
                 diff = torch.abs(x - loc)
-                mad  = torch.nanmedian(torch.where(mask > 0, diff, torch.nan), dim=1, keepdim=True).values if self.scale else torch.ones_like(loc)
+                mad = (
+                    torch.nanmedian(torch.where(mask > 0, diff, torch.nan), dim=1, keepdim=True).values
+                    if self.scale
+                    else torch.ones_like(loc)
+                )
             else:
                 loc = torch.median(x, dim=1, keepdim=True).values if self.center else torch.zeros_like(x[:, :1, :])
-                mad = torch.median(torch.abs(x - loc), dim=1, keepdim=True).values if self.scale else torch.ones_like(loc)
-            # IQR-like scaling; 0.741 ~ 1/Φ^{-1}(0.75) for normal consistency
-            scale = (mad * (1.0 / 0.741) + self.eps)
+                mad = (
+                    torch.median(torch.abs(x - loc), dim=1, keepdim=True).values
+                    if self.scale
+                    else torch.ones_like(loc)
+                )
+            scale = mad * (1.0 / 0.741) + self.eps
         return loc, scale
 
     def _reduce_rolling(self, x: torch.Tensor, mask: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -754,77 +804,81 @@ class TemporalNorm(nn.Module):
         """
         B, T, D = x.shape
         W = int(self.window_size)
-        # For efficiency and numerical stability we use cumulative sums (standard mode).
+        idx = torch.arange(T, device=x.device)
+
+        if self.causal:
+            # causal window [t-W+1, t]
+            l = (idx - W + 1).clamp_min(0)
+            r = idx
+        else:
+            # centered window [t - W//2, t + W - half - 1]
+            half = W // 2
+            l = (idx - half).clamp_min(0)
+            r = (idx + (W - half - 1)).clamp_max(T - 1)
+
         if self.mode == "standard":
             if mask is None:
-                ones = x.new_ones(B, T, D)
-                m = ones
-                sx = x.cumsum(dim=1)                                # sum
-                sx2 = (x * x).cumsum(dim=1)                         # sum of squares
+                m = x.new_ones(B, T, D)
             else:
                 m = mask
-                sx = (x * m).cumsum(dim=1)
-                sx2 = (x * x * m).cumsum(dim=1)
 
-            # helper to get windowed cumulative difference
-            def win_cumsum(cs):
-                if self.causal:
-                    # causal window [t-W+1, t]
-                    pad = cs.new_zeros(B, 1, D)
-                    cs_pad = torch.cat([pad, cs], dim=1)            # align for easy diff
-                    prev = torch.roll(cs_pad, W, dims=1)[:, :T, :]
-                    return cs_pad[:, 1:, :] - prev
-                else:
-                    # centered: [t - W//2, t + W//2] clipped to bounds
-                    # build indices per t (vectorized gather)
-                    half = W // 2
-                    idx_r = torch.arange(T, device=x.device).clamp_max(T-1)
-                    l = (idx_r - half).clamp_min(0)
-                    r = (idx_r + (W - half - 1)).clamp_max(T-1)
-                    # prefix sums for variable windows:
-                    pad = cs.new_zeros(B, 1, D)
-                    cs_pad = torch.cat([pad, cs], dim=1)            # shape [B,T+1,D]
-                    # gather r+1 and l
-                    r1 = cs_pad.gather(1, (r+1)[None, :, None].expand(B, -1, D))
-                    l0 = cs_pad.gather(1, l[None, :, None].expand(B, -1, D))
-                    return r1 - l0
+            # prefix sums over time
+            mcum = m.cumsum(dim=1)
+            sx = (x * m).cumsum(dim=1)
+            sx2 = (x * x * m).cumsum(dim=1)
 
-            win_m  = win_cumsum(m.cumsum(dim=1) if mask is not None else m.cumsum(dim=1))
-            win_sx = win_cumsum(sx)
-            win_sx2= win_cumsum(sx2)
+            def window_sum(cum):
+                pad = cum.new_zeros(B, 1, D)
+                cum_pad = torch.cat([pad, cum], dim=1)  # [B, T+1, D]
+                r1 = cum_pad.gather(1, (r + 1)[None, :, None].expand(B, -1, D))
+                l0 = cum_pad.gather(1, l[None, :, None].expand(B, -1, D))
+                return r1 - l0  # [B, T, D]
+
+            win_m = window_sum(mcum)
+            win_sx = window_sum(sx)
+            win_sx2 = window_sum(sx2)
 
             denom = win_m.clamp_min(1.0)
             loc = win_sx / denom if self.center else x.new_zeros(B, T, D)
-            var = (win_sx2 / denom - (loc * loc)) if self.scale else x.new_ones(B, T, D)
+            var = win_sx2 / denom - loc * loc if self.scale else x.new_ones(B, T, D)
             scale = (var + self.eps).sqrt()
             return loc, scale
 
-        else:
-            # robust rolling (median/MAD) – heavier; compute with unfold on time
-            # We do causal or centered by slicing windows per t.
-            # For performance on long T you may prefer approximate robust stats.
-            loc = []
-            scale = []
-            half = (W // 2)
+        else:  # robust rolling (median/MAD) – heavier
+            loc_list = []
+            scale_list = []
+            half = W // 2
+
             for t in range(T):
                 if self.causal:
                     a, b = max(0, t - W + 1), t + 1
                 else:
                     a, b = max(0, t - half), min(T, t + (W - half))
-                xw = x[:, a:b, :]          # [B, w, D]
+                xw = x[:, a:b, :]  # [B, w, D]
                 if mask is not None:
                     mw = mask[:, a:b, :].bool()
-                    # replace missing with NaN then nanmedian
                     xw = torch.where(mw, xw, torch.nan)
-                    med = torch.nanmedian(xw, dim=1, keepdim=True).values if self.center else xw.new_zeros(B, 1, D)
-                    mad = torch.nanmedian(torch.abs(xw - med), dim=1, keepdim=True).values if self.scale else xw.new_ones(B, 1, D)
+                    med = (
+                        torch.nanmedian(xw, dim=1, keepdim=True).values
+                        if self.center
+                        else xw.new_zeros(B, 1, D)
+                    )
+                    mad = (
+                        torch.nanmedian(torch.abs(xw - med), dim=1, keepdim=True).values
+                        if self.scale
+                        else xw.new_ones(B, 1, D)
+                    )
                 else:
                     med = torch.median(xw, dim=1, keepdim=True).values if self.center else xw.new_zeros(B, 1, D)
-                    mad = torch.median(torch.abs(xw - med), dim=1, keepdim=True).values if self.scale else xw.new_ones(B, 1, D)
-                loc.append(med.squeeze(1))
-                scale.append((mad * (1.0 / 0.741) + self.eps).squeeze(1))
-            loc = torch.stack(loc, dim=1)    # [B,T,D]
-            scale = torch.stack(scale, dim=1)
+                    mad = (
+                        torch.median(torch.abs(xw - med), dim=1, keepdim=True).values
+                        if self.scale
+                        else xw.new_ones(B, 1, D)
+                    )
+                loc_list.append(med.squeeze(1))
+                scale_list.append((mad * (1.0 / 0.741) + self.eps).squeeze(1))
+            loc = torch.stack(loc_list, dim=1)   # [B,T,D]
+            scale = torch.stack(scale_list, dim=1)
             return loc, scale
 
     def forward(
@@ -880,6 +934,7 @@ class TemporalNorm(nn.Module):
             x = x + loc
         return x
 
+
 class RevIN(nn.Module):
     """
     Reversible Instance Normalization (Kim et al., NeurIPS 2021)
@@ -897,7 +952,6 @@ class RevIN(nn.Module):
         else:
             self.register_parameter("gamma", None)
             self.register_parameter("beta", None)
-        self.training_mode = True
 
     def forward(self, x: torch.Tensor, mode: str = "norm", stats: Optional[dict] = None):
         """
@@ -925,8 +979,12 @@ class RevIN(nn.Module):
             raise ValueError(f"Unknown mode: {mode}")
 
     def reset_stats(self):
-        if hasattr(self, "mean"): del self.mean
-        if hasattr(self, "std"): del self.std
+        if hasattr(self, "mean"):
+            del self.mean
+        if hasattr(self, "std"):
+            del self.std
+
+
 # ================================================================
 # Factory Function
 # ================================================================
@@ -934,35 +992,41 @@ def create_norm_layer(
     norm_type: str,
     d_model: int,
     eps: float = 1e-5,
-    **kwargs
+    **kwargs,
 ) -> nn.Module:
     """
     Factory function for creating normalization layers.
 
     Args:
-        norm_type: Type ('layer', 'rms', 'adaptive_layer', 'adaptive_rms', 'group')
+        norm_type: Type
+            ('layer', 'rms', 'adaptive_layer', 'adaptive_rms',
+             'group', 'temporal', 'revin')
         d_model: Model dimension (channels for [B, T, D] tensors)
         eps: Epsilon for numerical stability
     """
-    norm_type = norm_type.lower().replace('_', '').replace('-', '')
+    norm_type = norm_type.lower().replace("_", "").replace("-", "")
 
-    if norm_type in ('layer', 'layernorm'):
+    if norm_type in ("layer", "layernorm"):
         return FastLayerNorm(d_model, eps=eps, **kwargs)
-    elif norm_type in ('temporal', 'temporalnorm'):
+    elif norm_type in ("temporal", "temporalnorm"):
         return TemporalNorm(d_model, eps=eps, **kwargs)
-    elif norm_type in ("revin"):
-        return RevIN(d_model, eps=eps, **kwargs)
-    elif norm_type in ('rms', 'rmsnorm'):
+    elif norm_type in ("revin",):
+        # kwargs may contain: affine
+        affine = kwargs.pop("affine", True)
+        return RevIN(d_model, affine=affine, eps=eps)
+    elif norm_type in ("rms", "rmsnorm"):
         return RMSNorm(d_model, eps=eps, **kwargs)
-    elif norm_type in ('adaptivelayer', 'adaptivelayernorm'):
+    elif norm_type in ("adaptivelayer", "adaptivelayernorm"):
         return AdaptiveLayerNorm(d_model, eps=eps, **kwargs)
-    elif norm_type in ('adaptiverms', 'adaptivermsnorm'):
+    elif norm_type in ("adaptiverms", "adaptivermsnorm"):
         return AdaptiveRMSNorm(d_model, eps=eps, **kwargs)
-    elif norm_type in ('group', 'groupnorm'):
-        num_groups = kwargs.pop('num_groups', 32)
+    elif norm_type in ("group", "groupnorm"):
+        num_groups = kwargs.pop("num_groups", 32)
         return ChannelLastGroupNorm(num_groups, d_model, eps=eps, **kwargs)
     else:
         raise ValueError(
             f"Unsupported norm type: {norm_type}. "
-            f"Supported types: layer, rms, adaptive_layer, adaptive_rms, group"
+            f"Supported types: layer, rms, adaptive_layer, adaptive_rms, "
+            f"group, temporal, revin"
         )
+

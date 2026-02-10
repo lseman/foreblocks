@@ -5,6 +5,16 @@ This package contains a collection of state-of-the-art neural network building
 blocks specifically designed for time series forecasting and analysis.
 """
 
+from ..core.att import AttentionLayer
+from .enc_dec import (
+    GRUDecoder,
+    GRUEncoder,
+    LatentConditionedDecoder,
+    LSTMDecoder,
+    LSTMEncoder,
+    VariationalEncoderWrapper,
+)
+
 # Attention-based blocks
 from .attention import (
     AutoCorrelationBlock,
@@ -38,6 +48,13 @@ from .simple import GRN
 
 
 __all__ = [
+    "AttentionLayer",
+    "LSTMEncoder",
+    "LSTMDecoder",
+    "GRUEncoder",
+    "GRUDecoder",
+    "VariationalEncoderWrapper",
+    "LatentConditionedDecoder",
     # Simple blocks
     "GRN",
     # "NHA",

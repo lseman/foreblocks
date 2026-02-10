@@ -6,16 +6,14 @@ import random
 import threading
 import time
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-import matplotlib.patches as patches
 # ─── Third-Party Libraries ────────────────────────────────────────
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from matplotlib.patches import FancyBboxPatch
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 
@@ -52,9 +50,29 @@ class ArchitectureRegularizer:
     ):
         self.reg_types = reg_types
         self.weights = weights or [1.0] * len(reg_types)
-        assert len(self.reg_types) == len(
-            self.weights
-        ), "Number of weights must match number of regularization types"
+        assert len(self.reg_types) == len(self.weights), (
+            "Number of weights must match number of regularization types"
+        )
+        self._dispatch = {
+            RegularizationType.ENTROPY: lambda m, p, e, t: self._entropy_regularization(
+                p
+            ),
+            RegularizationType.KL_DIVERGENCE: lambda m, p, e, t: (
+                self._kl_divergence_regularization(p)
+            ),
+            RegularizationType.L2_NORM: lambda m, p, e, t: self._l2_norm_regularization(
+                p
+            ),
+            RegularizationType.DIVERSITY: lambda m, p, e, t: (
+                self._diversity_regularization(m)
+            ),
+            RegularizationType.SPARSITY: lambda m, p, e, t: (
+                self._sparsity_regularization(p, e, t)
+            ),
+            RegularizationType.EFFICIENCY: lambda m, p, e, t: (
+                self._efficiency_regularization(m)
+            ),
+        }
 
     def compute_regularization(
         self,
@@ -87,33 +105,22 @@ class ArchitectureRegularizer:
     ) -> torch.Tensor:
         """Compute a single type of regularization"""
         device = next(model.parameters()).device
-
-        if reg_type == RegularizationType.ENTROPY:
-            return self._entropy_regularization(arch_params)
-        elif reg_type == RegularizationType.KL_DIVERGENCE:
-            return self._kl_divergence_regularization(arch_params)
-        elif reg_type == RegularizationType.L2_NORM:
-            return self._l2_norm_regularization(arch_params)
-        elif reg_type == RegularizationType.DIVERSITY:
-            return self._diversity_regularization(model)
-        elif reg_type == RegularizationType.SPARSITY:
-            return self._sparsity_regularization(arch_params, epoch, total_epochs)
-        elif reg_type == RegularizationType.EFFICIENCY:
-            return self._efficiency_regularization(model)
-        else:
+        reg_fn = self._dispatch.get(reg_type)
+        if reg_fn is None:
             return torch.tensor(0.0, device=device)
+        return reg_fn(model, arch_params, epoch, total_epochs)
+
+    def _iter_arch_probs(self, arch_params: List[torch.Tensor]):
+        for param in arch_params:
+            if param.dim() >= 1:
+                yield F.softmax(param.view(-1, param.size(-1)), dim=-1)
 
     def _entropy_regularization(self, arch_params: List[torch.Tensor]) -> torch.Tensor:
         """Entropy regularization to encourage exploration"""
         total_entropy = torch.tensor(0.0, device=arch_params[0].device)
-
-        for param in arch_params:
-            if param.dim() >= 1:
-                # Apply softmax along the last dimension
-                probs = F.softmax(param.view(-1, param.size(-1)), dim=-1)
-                entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()
-                # Encourage exploration by penalizing low entropy
-                total_entropy += 1.0 - entropy / np.log(param.size(-1))
+        for probs in self._iter_arch_probs(arch_params):
+            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()
+            total_entropy += 1.0 - entropy / np.log(probs.size(-1))
 
         return total_entropy
 
@@ -122,23 +129,12 @@ class ArchitectureRegularizer:
     ) -> torch.Tensor:
         """KL divergence from uniform distribution to encourage diversity"""
         total_kl = torch.tensor(0.0, device=arch_params[0].device)
-
-        for param in arch_params:
-            if param.dim() >= 1:
-                # Reshape to 2D for easier processing
-                flat_param = param.view(-1, param.size(-1))
-                probs = F.softmax(flat_param, dim=-1)
-
-                # Uniform distribution target
-                uniform = torch.ones_like(probs) / probs.size(-1)
-
-                # KL divergence: KL(P||Q) = sum(P * log(P/Q))
-                kl_div = (
-                    (probs * torch.log(probs / (uniform + 1e-8) + 1e-8))
-                    .sum(dim=-1)
-                    .mean()
-                )
-                total_kl += kl_div
+        for probs in self._iter_arch_probs(arch_params):
+            uniform = torch.ones_like(probs) / probs.size(-1)
+            kl_div = (
+                (probs * torch.log(probs / (uniform + 1e-8) + 1e-8)).sum(dim=-1).mean()
+            )
+            total_kl += kl_div
 
         return total_kl
 
@@ -193,11 +189,9 @@ class ArchitectureRegularizer:
         # Increase sparsity pressure over time
         sparsity_weight = min(1.0, epoch / (total_epochs * 0.8))
 
-        for param in arch_params:
-            if param.dim() >= 1:
-                probs = F.softmax(param.view(-1, param.size(-1)), dim=-1)
-                # L1 penalty on probabilities to encourage sparsity
-                sparsity_loss += sparsity_weight * probs.sum()
+        for probs in self._iter_arch_probs(arch_params):
+            # L1 penalty on probabilities to encourage sparsity
+            sparsity_loss += sparsity_weight * probs.sum()
 
         return sparsity_loss
 
@@ -259,36 +253,477 @@ class TemperatureScheduler:
 
         progress = (epoch - self.warmup_epochs) / (total_epochs - self.warmup_epochs)
         progress = min(progress, 1.0)
-
-        if self.schedule_type == "cosine":
-            temp = (
+        schedule_fns = {
+            "cosine": lambda: (
                 self.final_temp
                 + (self.initial_temp - self.final_temp)
                 * (1 + np.cos(np.pi * progress))
                 / 2
-            )
-        elif self.schedule_type == "exponential":
-            decay_rate = np.log(self.final_temp / self.initial_temp) / (
-                total_epochs - self.warmup_epochs
-            )
-            temp = self.initial_temp * np.exp(decay_rate * (epoch - self.warmup_epochs))
-        elif self.schedule_type == "linear":
-            temp = self.initial_temp - (self.initial_temp - self.final_temp) * progress
-        elif self.schedule_type == "step":
-            # Step decay at specific epochs
-            if progress < 0.3:
-                temp = self.initial_temp
-            elif progress < 0.7:
-                temp = self.initial_temp * 0.5
-            else:
-                temp = self.final_temp
-        else:
-            temp = self.initial_temp
+            ),
+            "exponential": lambda: (
+                self.initial_temp
+                * np.exp(
+                    np.log(self.final_temp / self.initial_temp)
+                    / (total_epochs - self.warmup_epochs)
+                    * (epoch - self.warmup_epochs)
+                )
+            ),
+            "linear": lambda: (
+                self.initial_temp - (self.initial_temp - self.final_temp) * progress
+            ),
+            "step": lambda: (
+                self.initial_temp
+                if progress < 0.3
+                else (self.initial_temp * 0.5 if progress < 0.7 else self.final_temp)
+            ),
+        }
+        temp = schedule_fns.get(self.schedule_type, lambda: self.initial_temp)()
 
         return max(temp, self.final_temp)
 
 
-class DARTSTrainer:
+def _weights_uniform(base: Dict[str, float]) -> Dict[str, float]:
+    return {k: (1.0 if v >= 0 else -1.0) for k, v in base.items()}
+
+
+def _weights_family_subsets(base: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+    grad = ["grasp", "fisher", "snip", "jacobian", "sensitivity"]
+    act = ["naswot", "zennas"]
+    complexity = ["params", "flops", "conditioning"]
+    syn = ["synflow"]
+    return {
+        "subset_grad": {k: base[k] for k in grad if k in base},
+        "subset_act": {k: base[k] for k in act if k in base},
+        "subset_complexity": {k: base[k] for k in complexity if k in base},
+        "subset_synflow": {k: base[k] for k in syn if k in base},
+        "subset_pos_only": {k: v for k, v in base.items() if v > 0},
+        "subset_no_penalties": {
+            k: v
+            for k, v in base.items()
+            if k not in {"params", "flops", "conditioning"}
+        },
+    }
+
+
+def _weights_leave_one_out(base: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+    out = {}
+    for k in list(base.keys()):
+        w = dict(base)
+        w.pop(k, None)
+        out[f"loo_minus_{k}"] = w
+    return out
+
+
+def _sample_random_weights_around(
+    base: Dict[str, float], sigma: float, seed: int
+) -> Dict[str, float]:
+    rng = np.random.default_rng(seed)
+    out = {}
+    for k, w0 in base.items():
+        s = max(abs(w0), 1e-6)
+        out[k] = float(rng.normal(w0, sigma * s))
+    return out
+
+
+def build_weight_schemes(
+    base_weights: Dict[str, float],
+    n_random: int = 20,
+    random_sigma: float = 0.25,
+    seed: int = 0,
+) -> Dict[str, Dict[str, float]]:
+    schemes: Dict[str, Dict[str, float]] = {}
+    schemes["baseline"] = dict(base_weights)
+    schemes["uniform"] = _weights_uniform(base_weights)
+    schemes.update(_weights_family_subsets(base_weights))
+    schemes.update(_weights_leave_one_out(base_weights))
+    for i in range(n_random):
+        schemes[f"rand_{i:02d}"] = _sample_random_weights_around(
+            base_weights, random_sigma, seed + i
+        )
+    return schemes
+
+
+def _sig_from_cfg(cfg: Dict[str, Any]) -> Tuple:
+    # stable signature across pools/runs
+    ops = tuple(sorted(cfg["selected_ops"]))
+    return (ops, int(cfg["hidden_dim"]), int(cfg["num_cells"]), int(cfg["num_nodes"]))
+
+
+def score_from_metrics(metrics: Dict[str, float], weights: Dict[str, float]) -> float:
+    """Compute aggregate score from precomputed raw metrics."""
+    total_score = 0.0
+    total_weight = 0.0
+
+    for metric, val in metrics.items():
+        if metric not in weights:
+            continue
+        w = float(weights[metric])
+
+        if not np.isfinite(val):
+            continue
+
+        # match your ZeroCostNAS normalization conventions
+        if metric in {"synflow", "params", "flops"}:
+            norm = np.log1p(max(float(val), 0.0))
+            if not np.isfinite(norm):
+                norm = 0.0
+        elif metric == "conditioning":
+            norm = min(float(val), 100.0) / 100.0
+        else:
+            norm = float(val)
+
+        total_score += norm * w
+        total_weight += abs(w)
+
+    return float(total_score / max(total_weight, 1.0))
+
+
+def _ranks_desc(scores: np.ndarray) -> np.ndarray:
+    """Ranks: 1 = best."""
+    order = np.argsort(-scores, kind="mergesort")
+    ranks = np.empty_like(order)
+    ranks[order] = np.arange(1, len(scores) + 1)
+    return ranks
+
+
+def _spearman_from_scores(a: np.ndarray, b: np.ndarray) -> float:
+    ra = _ranks_desc(a).astype(np.float64)
+    rb = _ranks_desc(b).astype(np.float64)
+    ra -= ra.mean()
+    rb -= rb.mean()
+    denom = np.sqrt((ra**2).sum()) * np.sqrt((rb**2).sum())
+    return float((ra * rb).sum() / denom) if denom > 0 else 0.0
+
+
+def _topk_overlap_from_scores(a: np.ndarray, b: np.ndarray, k: int) -> float:
+    ra = _ranks_desc(a)
+    rb = _ranks_desc(b)
+    A = set(np.where(ra <= k)[0].tolist())
+    B = set(np.where(rb <= k)[0].tolist())
+    return float(len(A & B) / max(k, 1))
+
+
+class TrainerUtilitiesMixin:
+    """Shared helpers used across search, architecture, and training phases."""
+
+    def _get_loss_function(self, loss_type: str):
+        loss_functions = {
+            "huber": lambda p, t: F.huber_loss(p, t, delta=0.1),
+            "mse": F.mse_loss,
+            "mae": F.l1_loss,
+            "smooth_l1": F.smooth_l1_loss,
+        }
+        return loss_functions.get(loss_type, loss_functions["huber"])
+
+    def _create_progress_bar(self, iterable, desc: str, leave: bool = True, **kwargs):
+        if "unit" not in kwargs:
+            kwargs["unit"] = "batch"
+        return tqdm(iterable, desc=desc, leave=leave, **kwargs)
+
+    def _autocast(self, enabled: bool):
+        device_type = "cuda" if self.device.startswith("cuda") else "cpu"
+        return autocast(device_type, enabled=enabled)
+
+    def _iter_edge_alphas(self, model):
+        if hasattr(model, "cells"):
+            for i, cell in enumerate(model.cells):
+                if hasattr(cell, "edges"):
+                    for j, edge in enumerate(cell.edges):
+                        if hasattr(edge, "alphas"):
+                            name = f"cell_{i}_edge_{j}"
+                            available_ops = getattr(edge, "available_ops", None)
+                            yield name, edge.alphas, available_ops
+
+    def _iter_component_alphas(self, model):
+        if hasattr(model, "forecast_encoder") and hasattr(
+            model.forecast_encoder, "alphas"
+        ):
+            yield "encoder", model.forecast_encoder.alphas
+
+        if hasattr(model, "forecast_decoder") and hasattr(
+            model.forecast_decoder, "alphas"
+        ):
+            yield "decoder", model.forecast_decoder.alphas
+
+        if hasattr(model, "forecast_decoder") and hasattr(
+            model.forecast_decoder, "attention_alphas"
+        ):
+            yield "attention_bridge", model.forecast_decoder.attention_alphas
+
+    def _evaluate_model(
+        self, model: nn.Module, dataloader, loss_type: str = "huber"
+    ) -> float:
+        model.eval()
+        loss_fn = self._get_loss_function(loss_type)
+        total_loss = 0.0
+
+        with torch.no_grad():
+            for batch_x, batch_y, *_ in dataloader:
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                preds = model(batch_x)
+                total_loss += loss_fn(preds, batch_y).item()
+
+        return total_loss / len(dataloader)
+
+    def _make_candidate_config(
+        self,
+        rng,
+        allowed_ops: List[str],
+        hidden_dim_choices: List[int],
+        cell_range: Tuple[int, int],
+        node_range: Tuple[int, int],
+        *,
+        min_ops: int = 2,
+        max_ops: Optional[int] = None,
+        require_identity: bool = True,
+    ) -> Dict[str, Any]:
+        ops_pool = [op for op in allowed_ops if op != "Identity"]
+        max_ops_local = min(
+            max_ops or len(allowed_ops), len(ops_pool) + (1 if require_identity else 0)
+        )
+        min_ops_local = min(min_ops, max_ops_local)
+
+        n_ops = rng.randint(min_ops_local, max_ops_local)
+        picked = rng.sample(ops_pool, k=max(0, n_ops - (1 if require_identity else 0)))
+
+        selected_ops = ["Identity"] + picked if require_identity else picked
+        if not selected_ops:
+            selected_ops = (
+                ["Identity"] if require_identity else [rng.choice(allowed_ops)]
+            )
+
+        return {
+            "selected_ops": selected_ops,
+            "hidden_dim": rng.choice(hidden_dim_choices),
+            "num_cells": rng.randint(cell_range[0], cell_range[1]),
+            "num_nodes": rng.randint(node_range[0], node_range[1]),
+        }
+
+    def _build_candidate_model(self, cfg: Dict[str, Any]) -> nn.Module:
+        return TimeSeriesDARTS(
+            input_dim=self.input_dim,
+            hidden_dim=cfg["hidden_dim"],
+            latent_dim=cfg["hidden_dim"],
+            forecast_horizon=self.forecast_horizon,
+            seq_length=self.seq_length,
+            num_cells=cfg["num_cells"],
+            num_nodes=cfg["num_nodes"],
+            selected_ops=cfg["selected_ops"],
+        ).to(self.device)
+
+    def _compute_metrics(
+        self, preds: np.ndarray, targets: np.ndarray
+    ) -> Dict[str, float]:
+        mse = np.mean((preds - targets) ** 2)
+        rmse = np.sqrt(mse)
+        mae = np.mean(np.abs(preds - targets))
+        mape = np.mean(np.abs((preds - targets) / (np.abs(targets) + 1e-8))) * 100
+        ss_res = np.sum((targets - preds) ** 2)
+        ss_tot = np.sum((targets - np.mean(targets)) ** 2)
+        r2_score = 1 - (ss_res / (ss_tot + 1e-8))
+        return {
+            "mse": mse,
+            "rmse": rmse,
+            "mae": mae,
+            "mape": mape,
+            "r2_score": r2_score,
+        }
+
+    def _plot_training_curve(
+        self,
+        train_losses: List[float],
+        val_losses: List[float],
+        title: str = "Training Progress",
+        save_path: str = None,
+    ):
+        plt.figure(figsize=(10, 6))
+        epochs = range(1, len(train_losses) + 1)
+        plt.plot(epochs, train_losses, "b-", linewidth=2, label="Train Loss", alpha=0.8)
+        plt.plot(
+            epochs, val_losses, "r-", linewidth=2, label="Validation Loss", alpha=0.8
+        )
+
+        plt.xlabel("Epoch", fontsize=12)
+        plt.ylabel("Loss", fontsize=12)
+        plt.title(title, fontsize=14, fontweight="bold")
+        plt.legend(fontsize=10)
+        plt.grid(True, linestyle="--", alpha=0.7)
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            print(f"📊 Training curve saved to {save_path}")
+        plt.close()
+
+
+class ArchitecturePhaseMixin:
+    """Architecture-specific helpers split out from the trainer core."""
+
+    @staticmethod
+    def _model_device(model: nn.Module) -> torch.device:
+        if hasattr(model, "device"):
+            return model.device
+        return next(model.parameters()).device
+
+    def _compute_architecture_regularization(
+        self, model, epoch, epochs, temperature, alpha_values
+    ):
+        dynamic_weights = {
+            "entropy": 0.1 * (1.0 - epoch / epochs),
+            "identity": 0.2,
+            "smoothness": 0.05 * (epoch / epochs),
+            "balance": 0.1 * max(0, 1.0 - 2 * epoch / epochs),
+        }
+        penalties = {
+            "entropy": self._calculate_entropy_regularization(model, temperature),
+            "identity": self._calculate_identity_penalty(model),
+            "balance": self._calculate_operation_balance_penalty(model),
+        }
+        if len(alpha_values) > 1:
+            penalties["smoothness"] = self._calculate_smoothness_penalty(
+                model, alpha_values
+            )
+
+        reg_loss = 0.0
+        for name, value in penalties.items():
+            reg_loss += dynamic_weights[name] * value
+        return reg_loss
+
+    def _print_architecture_summary(self, architecture):
+        for cell_name, cell_arch in architecture.items():
+            if isinstance(cell_arch, dict) and "edge_0" in cell_arch:
+                for edge_name, edge_info in cell_arch.items():
+                    op_name = edge_info.get("operation", "Unknown")
+                    weight = edge_info.get("weight", 0.0)
+                    print(
+                        f"   {cell_name.title()}, {edge_name.title()}: {op_name} (weight: {weight:.3f})"
+                    )
+            elif isinstance(cell_arch, dict) and "type" in cell_arch:
+                op_type = cell_arch.get("type", "Unknown")
+                weight = cell_arch.get("weight", 0.0)
+                print(
+                    f"   → Fixing {cell_name.title()}: {op_type.upper()} (weight: {weight:.3f})"
+                )
+
+    def _create_bilevel_loaders(self, train_loader):
+        dataset = train_loader.dataset
+        train_size = int(0.7 * len(dataset))
+        arch_size = len(dataset) - train_size
+        train_dataset, arch_dataset = torch.utils.data.random_split(
+            dataset, [train_size, arch_size]
+        )
+        train_model_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=train_loader.batch_size,
+            shuffle=True,
+        )
+        train_arch_loader = torch.utils.data.DataLoader(
+            arch_dataset,
+            batch_size=train_loader.batch_size,
+            shuffle=True,
+        )
+        return train_arch_loader, train_model_loader
+
+    def _extract_alpha_values(self, model):
+        current_alphas = []
+        for name, alphas, _ in self._iter_edge_alphas(model):
+            current_alphas.append(
+                (name, F.softmax(alphas, dim=-1).detach().cpu().numpy())
+            )
+        for name, alphas in self._iter_component_alphas(model):
+            current_alphas.append(
+                (name, F.softmax(alphas, dim=-1).detach().cpu().numpy())
+            )
+        return current_alphas
+
+    def _iter_prob_vectors(self, model, temperature=1.0):
+        for _, alphas, _ in self._iter_edge_alphas(model):
+            yield F.softmax(alphas / temperature, dim=-1)
+        for _, alphas in self._iter_component_alphas(model):
+            yield F.softmax(alphas / temperature, dim=-1)
+
+    def _calculate_entropy_regularization(self, model, temperature):
+        total_entropy = 0.0
+        num_vectors = 0
+        for probs in self._iter_prob_vectors(model, temperature):
+            total_entropy += -(probs * torch.log(probs + 1e-8)).sum()
+            num_vectors += 1
+        return -total_entropy / max(num_vectors, 1)
+
+    def _calculate_identity_penalty(self, model):
+        total_penalty = 0.0
+        num_edges = 0
+        for _, alphas, available_ops in self._iter_edge_alphas(model):
+            if not available_ops or "Identity" not in available_ops:
+                continue
+            identity_idx = available_ops.index("Identity")
+            probs = F.softmax(alphas, dim=-1)
+            identity_prob = probs[identity_idx]
+            if identity_prob > 0.5:
+                total_penalty += (identity_prob - 0.5) ** 2
+            num_edges += 1
+        return total_penalty / max(num_edges, 1)
+
+    def _calculate_smoothness_penalty(self, model, alpha_history):
+        if len(alpha_history) < 2:
+            return torch.tensor(0.0, device=self._model_device(model))
+
+        current_alphas = alpha_history[-1]
+        previous_alphas = alpha_history[-2]
+        total_diff = 0.0
+        num_comparisons = 0
+        for (name1, alphas1), (name2, alphas2) in zip(current_alphas, previous_alphas):
+            if name1 == name2:
+                total_diff += np.sum((alphas1 - alphas2) ** 2)
+                num_comparisons += 1
+
+        return torch.tensor(
+            total_diff / max(num_comparisons, 1), device=self._model_device(model)
+        )
+
+    def _calculate_operation_balance_penalty(self, model):
+        operation_counts = {}
+        total_weight = 0.0
+        for _, alphas, available_ops in self._iter_edge_alphas(model):
+            if not available_ops:
+                continue
+            probs = F.softmax(alphas, dim=-1)
+            for op_name, prob in zip(available_ops, probs):
+                operation_counts[op_name] = (
+                    operation_counts.get(op_name, 0) + prob.item()
+                )
+                total_weight += prob.item()
+
+        if not operation_counts:
+            return torch.tensor(0.0, device=self._model_device(model))
+
+        avg_weight = total_weight / len(operation_counts)
+        variance = sum(
+            (weight - avg_weight) ** 2 for weight in operation_counts.values()
+        ) / len(operation_counts)
+        return torch.tensor(variance, device=self._model_device(model))
+
+    def _derive_final_architecture(self, model):
+        if hasattr(model, "derive_discrete_architecture"):
+            return model.derive_discrete_architecture(threshold=0.3)
+
+        architecture = {}
+        if hasattr(model, "cells"):
+            for i, cell in enumerate(model.cells):
+                if hasattr(cell, "edges"):
+                    cell_arch = {}
+                    for j, edge in enumerate(cell.edges):
+                        if hasattr(edge, "available_ops") and hasattr(edge, "alphas"):
+                            weights = F.softmax(edge.alphas, dim=-1)
+                            max_idx = weights.argmax().item()
+                            cell_arch[f"edge_{j}"] = {
+                                "operation": edge.available_ops[max_idx],
+                                "weight": weights.max().item(),
+                            }
+                    architecture[f"cell_{i}"] = cell_arch
+        return architecture
+
+
+class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
     """
     Comprehensive DARTS trainer with search, training, and evaluation capabilities.
 
@@ -347,115 +782,120 @@ class DARTSTrainer:
         print(f"   Input dim: {input_dim}, Forecast horizon: {forecast_horizon}")
         print(f"   Available operations: {len(self.all_ops)}")
 
-    def _get_loss_function(self, loss_type: str):
-        """Get loss function by name."""
-        loss_functions = {
-            "huber": lambda p, t: F.huber_loss(p, t, delta=0.1),
-            "mse": F.mse_loss,
-            "mae": F.l1_loss,
-            "smooth_l1": F.smooth_l1_loss,
-        }
-        return loss_functions.get(loss_type, loss_functions["huber"])
-
-    def _create_progress_bar(self, iterable, desc: str, leave: bool = True, **kwargs):
-        """Create standardized progress bar."""
-        # Set default unit if not provided
-        if "unit" not in kwargs:
-            kwargs["unit"] = "batch"
-        return tqdm(iterable, desc=desc, leave=leave, **kwargs)
-
-    def _evaluate_model(
-        self, model: nn.Module, dataloader, loss_type: str = "huber"
-    ) -> float:
-        """Evaluate model on given dataloader."""
-        model.eval()
-        loss_fn = self._get_loss_function(loss_type)
-        total_loss = 0.0
-
-        with torch.no_grad():
-            for batch_x, batch_y, *_ in dataloader:
-                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
-                preds = model(batch_x)
-                total_loss += loss_fn(preds, batch_y).item()
-
-        return total_loss / len(dataloader)
-
-    def _compute_metrics(
-        self, preds: np.ndarray, targets: np.ndarray
-    ) -> Dict[str, float]:
-        """Compute comprehensive regression metrics."""
-        mse = np.mean((preds - targets) ** 2)
-        rmse = np.sqrt(mse)
-        mae = np.mean(np.abs(preds - targets))
-        mape = np.mean(np.abs((preds - targets) / (np.abs(targets) + 1e-8))) * 100
-
-        # R² score
-        ss_res = np.sum((targets - preds) ** 2)
-        ss_tot = np.sum((targets - np.mean(targets)) ** 2)
-        r2_score = 1 - (ss_res / (ss_tot + 1e-8))
-
-        return {
-            "mse": mse,
-            "rmse": rmse,
-            "mae": mae,
-            "mape": mape,
-            "r2_score": r2_score,
-        }
-
-    def _plot_training_curve(
+    def evaluate_zero_cost_metrics_raw(
         self,
-        train_losses: List[float],
-        val_losses: List[float],
-        title: str = "Training Progress",
-        save_path: str = None,
-    ):
-        """Plot and save training curves."""
-        plt.figure(figsize=(10, 6))
-        epochs = range(1, len(train_losses) + 1)
+        model: nn.Module,
+        dataloader,
+        max_samples: int = 32,
+        num_batches: int = 1,
+    ) -> Dict[str, Any]:
+        """Compute zero-cost *raw* metrics once (no weighting)."""
 
-        plt.plot(epochs, train_losses, "b-", linewidth=2, label="Train Loss", alpha=0.8)
-        plt.plot(
-            epochs, val_losses, "r-", linewidth=2, label="Validation Loss", alpha=0.8
+        def create_custom_config(
+            max_samples: int = 32, max_outputs: int = 10
+        ) -> Config:
+            return Config(max_samples=max_samples, max_outputs=max_outputs)
+
+        cfg = create_custom_config(max_samples=max_samples, max_outputs=10)
+        nas_evaluator = ZeroCostNAS(config=cfg)
+
+        # 🔹 RAW call (correct)
+        out = nas_evaluator.evaluate_model_raw_metrics(
+            model=model,
+            dataloader=dataloader,
+            device=self.device,
+            num_batches=num_batches,
         )
 
-        plt.xlabel("Epoch", fontsize=12)
-        plt.ylabel("Loss", fontsize=12)
-        plt.title(title, fontsize=14, fontweight="bold")
-        plt.legend(fontsize=10)
-        plt.grid(True, linestyle="--", alpha=0.7)
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
-            print(f"📊 Training curve saved to {save_path}")
-
-        plt.close()
+        print(
+            f"✅ Zero-cost raw metrics computed: {len(out.get('raw_metrics', {}))} metrics"
+        )
+        # print the metric names and values
+        for k, v in out.get("raw_metrics", {}).items():
+            print(f"   - {k}: {v:.6f}")
+        # 🔹 Return what actually exists
+        return {
+            "raw_metrics": out.get("raw_metrics", {}),
+            "success_rates": out.get("success_rates", {}),
+            "errors": out.get("errors", {}),
+            "base_weights": dict(cfg.weights),
+        }
 
     def evaluate_zero_cost_metrics(
-        self, model: nn.Module, dataloader, max_samples: int = 32, num_batches: int = 1
+        self,
+        model: nn.Module,
+        dataloader,
+        max_samples: int = 32,
+        num_batches: int = 1,
+        ablation: bool = False,
+        n_random: int = 20,
+        random_sigma: float = 0.25,
+        seed: int = 0,
     ) -> Dict[str, Any]:
-        """Evaluate model using zero-cost metrics."""
+        """Evaluate model using zero-cost metrics. If ablation=True, evaluate multiple weight schemes."""
 
         def create_custom_config(
             max_samples: int = 32,
             max_outputs: int = 10,
             timeout_seconds: float = 30.0,
             enable_mixed_precision: bool = False,
+            weights: Optional[Dict[str, float]] = None,
         ) -> Config:
-            return Config(max_samples=max_samples, max_outputs=max_outputs)
+            cfg = Config(max_samples=max_samples, max_outputs=max_outputs)
+            if weights is not None:
+                cfg.weights = weights
+            return cfg
 
-        config = create_custom_config(
+        # First run baseline once to get raw metrics (and baseline score)
+        base_config = create_custom_config(
             max_samples=max_samples,
             max_outputs=10,
             timeout_seconds=30.0,
             enable_mixed_precision=True,
+            weights=None,  # use default weights from Config
         )
 
-        nas_evaluator = ZeroCostNAS(config=config)
-        results = nas_evaluator.evaluate_model(
-            model, dataloader, self.device, num_batches=num_batches
+        if not ablation:
+            nas_evaluator = ZeroCostNAS(config=base_config)
+            return nas_evaluator.evaluate_model(
+                model, dataloader, self.device, num_batches=num_batches
+            )
+
+        # Ablation: run multiple schemes (same metrics computed each time, but simplest is re-run evaluate_model)
+        schemes = build_weight_schemes(
+            base_weights=dict(base_config.weights),
+            n_random=n_random,
+            random_sigma=random_sigma,
+            seed=seed,
         )
 
-        return results
+        per_scheme = {}
+        # Optional micro-optimization: compute metrics once and re-score multiple weight sets.
+        # Your current ZeroCostNAS does not expose that, so we just rerun; acceptable for reviewer ablation on a subset.
+        for scheme_name, w in schemes.items():
+            cfg = create_custom_config(
+                max_samples=max_samples,
+                max_outputs=10,
+                timeout_seconds=30.0,
+                enable_mixed_precision=True,
+                weights=w,
+            )
+            nas_evaluator = ZeroCostNAS(config=cfg)
+            out = nas_evaluator.evaluate_model(
+                model, dataloader, self.device, num_batches=num_batches
+            )
+            per_scheme[scheme_name] = {
+                "aggregate_score": out["aggregate_score"],
+                "metrics": out["metrics"],  # raw metrics
+                "success_rates": out["success_rates"],
+            }
+
+        return {
+            "ablation": True,
+            "base_weights": dict(base_config.weights),
+            "schemes": list(per_scheme.keys()),
+            "per_scheme": per_scheme,
+        }
 
     def train_darts_model(
         self,
@@ -642,15 +1082,13 @@ class DARTSTrainer:
                         val_arch_iter = iter(val_loader)
                         arch_batch = next(val_arch_iter)
 
-                    arch_x, arch_y = arch_batch[0].to(self.device), arch_batch[1].to(
-                        self.device
+                    arch_x, arch_y = (
+                        arch_batch[0].to(self.device),
+                        arch_batch[1].to(self.device),
                     )
                     arch_optimizer.zero_grad()
 
-                    with autocast(
-                        "cuda" if self.device.startswith("cuda") else "cpu",
-                        enabled=use_amp,
-                    ):
+                    with self._autocast(use_amp):
                         arch_preds = model(arch_x)
                         arch_loss = loss_fn(arch_preds, arch_y)
 
@@ -681,7 +1119,7 @@ class DARTSTrainer:
             batch_pbar = (
                 self._create_progress_bar(
                     enumerate(train_model_loader),
-                    f"Epoch {epoch+1:3d}",
+                    f"Epoch {epoch + 1:3d}",
                     leave=False,
                     total=len(train_model_loader),
                 )
@@ -693,9 +1131,7 @@ class DARTSTrainer:
             for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
 
-                with autocast(
-                    "cuda" if self.device.startswith("cuda") else "cpu", enabled=use_amp
-                ):
+                with self._autocast(use_amp):
                     preds = model(batch_x)
                     loss = loss_fn(preds, batch_y) / gradient_accumulation_steps
 
@@ -715,7 +1151,7 @@ class DARTSTrainer:
                     batch_pbar.set_postfix(
                         {
                             "loss": f"{loss.item() * gradient_accumulation_steps:.4f}",
-                            "avg": f"{epoch_train_loss/(batch_idx+1):.4f}",
+                            "avg": f"{epoch_train_loss / (batch_idx + 1):.4f}",
                         }
                     )
 
@@ -733,20 +1169,18 @@ class DARTSTrainer:
                 )
 
                 for batch_data in val_pbar:
-                    batch_x, batch_y = batch_data[0].to(self.device), batch_data[1].to(
-                        self.device
+                    batch_x, batch_y = (
+                        batch_data[0].to(self.device),
+                        batch_data[1].to(self.device),
                     )
 
-                    with autocast(
-                        "cuda" if self.device.startswith("cuda") else "cpu",
-                        enabled=use_amp,
-                    ):
+                    with self._autocast(use_amp):
                         preds = model(batch_x)
                         val_loss += loss_fn(preds, batch_y).item()
 
                     if verbose and hasattr(val_pbar, "set_postfix"):
                         val_pbar.set_postfix(
-                            {"val_loss": f"{val_loss/(len(val_loader)):.4f}"}
+                            {"val_loss": f"{val_loss / (len(val_loader)):.4f}"}
                         )
 
                 if verbose and hasattr(val_pbar, "close"):
@@ -756,28 +1190,6 @@ class DARTSTrainer:
             avg_val_loss = val_loss / len(val_loader)
             train_losses.append(avg_train_loss)
             val_losses.append(avg_val_loss)
-
-            # Architecture health check
-            if epoch % diversity_check_freq == 0 and hasattr(
-                model, "validate_architecture_health"
-            ):
-                health = model.validate_architecture_health()
-                diversity_scores.append(
-                    {
-                        "epoch": epoch,
-                        "health_score": health["health_score"],
-                        "avg_identity_dominance": health["avg_identity_dominance"],
-                        "issues": len(health["issues"]),
-                    }
-                )
-
-                if health["health_score"] < 0.4:
-                    if verbose:
-                        print(
-                            f"\n⚠️ Architecture health low ({health['health_score']:.3f})"
-                        )
-                    if hasattr(model, "apply_architecture_fixes"):
-                        model.apply_architecture_fixes()
 
             # Progressive shrinking
             if progressive_shrinking and epoch > epochs * 0.6:
@@ -799,7 +1211,7 @@ class DARTSTrainer:
                 patience_counter += 1
                 if patience_counter >= patience:
                     if verbose:
-                        print(f"\nEarly stopping at epoch {epoch+1}")
+                        print(f"\nEarly stopping at epoch {epoch + 1}")
                     break
 
             # Progress update
@@ -884,276 +1296,6 @@ class DARTSTrainer:
         self.training_history.append(results)
         return results
 
-    def _compute_architecture_regularization(
-        self, model, epoch, epochs, temperature, alpha_values
-    ):
-        """Consolidated architecture regularization computation"""
-        reg_loss = 0.0
-
-        # Dynamic weights
-        entropy_weight = 0.1 * (1.0 - epoch / epochs)
-        identity_weight = 0.2
-        smoothness_weight = 0.05 * (epoch / epochs)
-        balance_weight = 0.1 * max(0, 1.0 - 2 * epoch / epochs)
-
-        # Entropy regularization
-        entropy_reg = self._calculate_entropy_regularization(model, temperature)
-        reg_loss += entropy_weight * entropy_reg
-
-        # Identity penalty
-        identity_penalty = self._calculate_identity_penalty(model)
-        reg_loss += identity_weight * identity_penalty
-
-        # Smoothness penalty
-        if len(alpha_values) > 1:
-            smoothness_penalty = self._calculate_smoothness_penalty(model, alpha_values)
-            reg_loss += smoothness_weight * smoothness_penalty
-
-        # Operation balance
-        balance_penalty = self._calculate_operation_balance_penalty(model)
-        reg_loss += balance_weight * balance_penalty
-
-        return reg_loss
-
-    # === HELPER METHODS ===
-
-    def _print_architecture_summary(self, architecture):
-        """Print a summary of the final architecture"""
-        for cell_name, cell_arch in architecture.items():
-            if isinstance(cell_arch, dict) and "edge_0" in cell_arch:
-                for edge_name, edge_info in cell_arch.items():
-                    op_name = edge_info.get("operation", "Unknown")
-                    weight = edge_info.get("weight", 0.0)
-                    print(
-                        f"   {cell_name.title()}, {edge_name.title()}: {op_name} (weight: {weight:.3f})"
-                    )
-            elif isinstance(cell_arch, dict) and "type" in cell_arch:
-                # Encoder/decoder info
-                op_type = cell_arch.get("type", "Unknown")
-                weight = cell_arch.get("weight", 0.0)
-                print(
-                    f"   → Fixing {cell_name.title()}: {op_type.upper()} (weight: {weight:.3f})"
-                )
-
-    def _create_bilevel_loaders(self, train_loader):
-        """Create separate loaders for bilevel optimization"""
-        # Split training data: 70% for model weights, 30% for architecture
-        dataset = train_loader.dataset
-        train_size = int(0.7 * len(dataset))
-        arch_size = len(dataset) - train_size
-
-        train_dataset, arch_dataset = torch.utils.data.random_split(
-            dataset, [train_size, arch_size]
-        )
-
-        train_model_loader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_size=train_loader.batch_size,
-            shuffle=True,
-            # num_workers=train_loader.num_workers,
-            # pin_memory=train_loader.pin_memory,
-        )
-
-        train_arch_loader = torch.utils.data.DataLoader(
-            arch_dataset,
-            batch_size=train_loader.batch_size,
-            shuffle=True,
-            # num_workers=train_loader.num_workers,
-            # pin_memory=train_loader.pin_memory,
-        )
-
-        return train_arch_loader, train_model_loader
-
-    def _extract_alpha_values(self, model):
-        """Extract current alpha values for tracking"""
-        current_alphas = []
-        if hasattr(model, "cells"):
-            for i, cell in enumerate(model.cells):
-                if hasattr(cell, "edges"):
-                    for j, edge in enumerate(cell.edges):
-                        if hasattr(edge, "alphas"):
-                            alphas = (
-                                F.softmax(edge.alphas, dim=-1).detach().cpu().numpy()
-                            )
-                            current_alphas.append((f"cell_{i}_edge_{j}", alphas))
-
-        # Add encoder/decoder alphas
-        if hasattr(model, "forecast_encoder") and hasattr(
-            model.forecast_encoder, "alphas"
-        ):
-            alphas = (
-                F.softmax(model.forecast_encoder.alphas, dim=-1).detach().cpu().numpy()
-            )
-            current_alphas.append(("encoder", alphas))
-
-        if hasattr(model, "forecast_decoder") and hasattr(
-            model.forecast_decoder, "alphas"
-        ):
-            alphas = (
-                F.softmax(model.forecast_decoder.alphas, dim=-1).detach().cpu().numpy()
-            )
-            current_alphas.append(("decoder", alphas))
-
-        # Add attention alphas for attention bridge selection
-        if hasattr(model, "forecast_decoder") and hasattr(
-            model.forecast_decoder, "attention_alphas"
-        ):
-            alphas = (
-                F.softmax(model.forecast_decoder.attention_alphas, dim=-1)
-                .detach()
-                .cpu()
-                .numpy()
-            )
-            current_alphas.append(("attention_bridge", alphas))
-
-        return current_alphas
-
-    def _calculate_entropy_regularization(self, model, temperature):
-        """Calculate entropy regularization to encourage diversity"""
-        total_entropy = 0.0
-        num_edges = 0
-
-        # Cell edges
-        if hasattr(model, "cells"):
-            for cell in model.cells:
-                if hasattr(cell, "edges"):
-                    for edge in cell.edges:
-                        if hasattr(edge, "alphas"):
-                            probs = F.softmax(edge.alphas / temperature, dim=-1)
-                            entropy = -(probs * torch.log(probs + 1e-8)).sum()
-                            total_entropy += entropy
-                            num_edges += 1
-
-        # Encoder/decoder alphas
-        for module_name in ["forecast_encoder", "forecast_decoder"]:
-            if hasattr(model, module_name):
-                module = getattr(model, module_name)
-                if hasattr(module, "alphas"):
-                    probs = F.softmax(module.alphas / temperature, dim=-1)
-                    entropy = -(probs * torch.log(probs + 1e-8)).sum()
-                    total_entropy += entropy
-                    num_edges += 1
-
-        # Attention bridge alphas
-        if hasattr(model, "forecast_decoder") and hasattr(
-            model.forecast_decoder, "attention_alphas"
-        ):
-            probs = F.softmax(
-                model.forecast_decoder.attention_alphas / temperature, dim=-1
-            )
-            entropy = -(probs * torch.log(probs + 1e-8)).sum()
-            total_entropy += entropy
-            num_edges += 1
-
-        return -total_entropy / max(num_edges, 1)  # Negative to encourage high entropy
-
-    def _calculate_identity_penalty(self, model):
-        """Penalize Identity operation dominance"""
-        total_penalty = 0.0
-        num_edges = 0
-
-        if hasattr(model, "cells"):
-            for cell in model.cells:
-                if hasattr(cell, "edges"):
-                    for edge in cell.edges:
-                        if (
-                            hasattr(edge, "available_ops")
-                            and "Identity" in edge.available_ops
-                        ):
-                            identity_idx = edge.available_ops.index("Identity")
-                            probs = F.softmax(edge.alphas, dim=-1)
-                            identity_prob = probs[identity_idx]
-
-                            # Quadratic penalty when Identity > 0.5
-                            if identity_prob > 0.5:
-                                penalty = (identity_prob - 0.5) ** 2
-                                total_penalty += penalty
-
-                            num_edges += 1
-
-        return total_penalty / max(num_edges, 1)
-
-    def _calculate_smoothness_penalty(self, model, alpha_history):
-        """Penalize rapid changes in architecture"""
-        if len(alpha_history) < 2:
-            return torch.tensor(0.0).to(
-                model.device if hasattr(model, "device") else "cpu"
-            )
-
-        current_alphas = alpha_history[-1]
-        previous_alphas = alpha_history[-2]
-
-        total_diff = 0.0
-        num_comparisons = 0
-
-        # Compare current vs previous alpha values
-        for (name1, alphas1), (name2, alphas2) in zip(current_alphas, previous_alphas):
-            if name1 == name2:  # Same edge
-                diff = np.sum((alphas1 - alphas2) ** 2)
-                total_diff += diff
-                num_comparisons += 1
-
-        return torch.tensor(total_diff / max(num_comparisons, 1)).to(
-            model.device if hasattr(model, "device") else "cpu"
-        )
-
-    def _calculate_operation_balance_penalty(self, model):
-        """Encourage balanced exploration of all operations"""
-        operation_counts = {}
-        total_weight = 0.0
-
-        if hasattr(model, "cells"):
-            for cell in model.cells:
-                if hasattr(cell, "edges"):
-                    for edge in cell.edges:
-                        if hasattr(edge, "available_ops") and hasattr(edge, "alphas"):
-                            probs = F.softmax(edge.alphas, dim=-1)
-                            for op_name, prob in zip(edge.available_ops, probs):
-                                operation_counts[op_name] = (
-                                    operation_counts.get(op_name, 0) + prob.item()
-                                )
-                                total_weight += prob.item()
-
-        if not operation_counts:
-            return torch.tensor(0.0)
-
-        # Calculate variance in operation usage
-        avg_weight = total_weight / len(operation_counts)
-        variance = sum(
-            (weight - avg_weight) ** 2 for weight in operation_counts.values()
-        )
-        variance /= len(operation_counts)
-
-        return torch.tensor(variance).to(
-            model.device if hasattr(model, "device") else "cpu"
-        )
-
-    def _derive_final_architecture(self, model):
-        """Derive the final discrete architecture"""
-        if hasattr(model, "derive_discrete_architecture"):
-            return model.derive_discrete_architecture(threshold=0.3)
-
-        # Fallback implementation
-        architecture = {}
-
-        if hasattr(model, "cells"):
-            for i, cell in enumerate(model.cells):
-                if hasattr(cell, "edges"):
-                    cell_arch = {}
-                    for j, edge in enumerate(cell.edges):
-                        if hasattr(edge, "available_ops") and hasattr(edge, "alphas"):
-                            weights = F.softmax(edge.alphas, dim=-1)
-                            max_idx = weights.argmax().item()
-                            max_weight = weights.max().item()
-
-                            cell_arch[f"edge_{j}"] = {
-                                "operation": edge.available_ops[max_idx],
-                                "weight": max_weight,
-                            }
-                    architecture[f"cell_{i}"] = cell_arch
-
-        return architecture
-
     def _compute_final_metrics(self, model: nn.Module, val_loader) -> Dict[str, float]:
         """Compute final metrics on validation set."""
         model.eval()
@@ -1163,8 +1305,9 @@ class DARTSTrainer:
             for batch_x, batch_y, *_ in self._create_progress_bar(
                 val_loader, "Computing metrics", leave=False
             ):
-                batch_x, batch_y = batch_x.to(self.device).float(), batch_y.to(
-                    self.device
+                batch_x, batch_y = (
+                    batch_x.to(self.device).float(),
+                    batch_y.to(self.device),
                 )
                 all_preds.append(model(batch_x).cpu().numpy())
                 all_targets.append(batch_y.cpu().numpy())
@@ -1185,6 +1328,20 @@ class DARTSTrainer:
             Optimized model with fixed architecture
         """
         new_model = copy.deepcopy(model)
+        variant_attrs = {
+            "encoder": {0: "lstm", 1: "gru", 2: "transformer"},
+            "decoder": {0: "lstm", 1: "gru", 2: "transformer"},
+        }
+
+        def _pick_variant(module, top_idx: int, collection_attr: str, role: str):
+            if hasattr(module, collection_attr):
+                variants = getattr(module, collection_attr)
+                if top_idx < len(variants):
+                    return variants[top_idx]
+            attr_name = variant_attrs[role].get(top_idx)
+            if attr_name and hasattr(module, attr_name):
+                return getattr(module, attr_name)
+            raise ValueError(f"Could not find {role} for index {top_idx}")
 
         print("🔧 Deriving final architecture...")
 
@@ -1215,20 +1372,9 @@ class DARTSTrainer:
             try:
                 encoder_weights = F.softmax(new_model.forecast_encoder.alphas, dim=-1)
                 top_idx = encoder_weights.argmax().item()
-
-                # Get the encoder based on the architecture
-                if hasattr(new_model.forecast_encoder, "encoders"):
-                    top_encoder = new_model.forecast_encoder.encoders[top_idx]
-                elif hasattr(new_model.forecast_encoder, "lstm") and top_idx == 0:
-                    top_encoder = new_model.forecast_encoder.lstm
-                elif hasattr(new_model.forecast_encoder, "gru") and top_idx == 1:
-                    top_encoder = new_model.forecast_encoder.gru
-                elif (
-                    hasattr(new_model.forecast_encoder, "transformer") and top_idx == 2
-                ):
-                    top_encoder = new_model.forecast_encoder.transformer
-                else:
-                    raise ValueError(f"Could not find encoder for index {top_idx}")
+                top_encoder = _pick_variant(
+                    new_model.forecast_encoder, top_idx, "encoders", "encoder"
+                )
 
                 encoder_names = getattr(
                     new_model.forecast_encoder,
@@ -1263,20 +1409,9 @@ class DARTSTrainer:
             try:
                 decoder_weights = F.softmax(new_model.forecast_decoder.alphas, dim=-1)
                 top_idx = decoder_weights.argmax().item()
-
-                # Get the decoder based on the architecture
-                if hasattr(new_model.forecast_decoder, "decoders"):
-                    top_decoder = new_model.forecast_decoder.decoders[top_idx]
-                elif hasattr(new_model.forecast_decoder, "lstm") and top_idx == 0:
-                    top_decoder = new_model.forecast_decoder.lstm
-                elif hasattr(new_model.forecast_decoder, "gru") and top_idx == 1:
-                    top_decoder = new_model.forecast_decoder.gru
-                elif (
-                    hasattr(new_model.forecast_decoder, "transformer") and top_idx == 2
-                ):
-                    top_decoder = new_model.forecast_decoder.transformer
-                else:
-                    raise ValueError(f"Could not find decoder for index {top_idx}")
+                top_decoder = _pick_variant(
+                    new_model.forecast_decoder, top_idx, "decoders", "decoder"
+                )
 
                 decoder_names = getattr(
                     new_model.forecast_decoder,
@@ -1323,12 +1458,12 @@ class DARTSTrainer:
                             new_model.forecast_decoder.attention_alphas, dim=0
                         )
                         max_idx = attention_weights.argmax().item()
-
-                        if max_idx == len(attention_weights) - 1:
-                            attention_choice = "no_attention"
-                        else:
-                            attention_choice = f"attention_layer_{max_idx}"
-                            max_att_idx = max_idx
+                        attention_choice = (
+                            "no_attention"
+                            if max_idx == len(attention_weights) - 1
+                            else f"attention_layer_{max_idx}"
+                        )
+                        max_att_idx = max(0, max_idx)
 
                         print("   → Using Attention Bridge:", attention_choice)
                     except Exception as e:
@@ -1338,12 +1473,15 @@ class DARTSTrainer:
                         )
 
                 # Get attention bridges safely
+                attention_bridge_sources = {
+                    "attention_bridges": lambda m: m.attention_bridges,
+                    "attention_bridge": lambda m: [m.attention_bridge],
+                }
                 attention_bridges = None
-                if hasattr(new_model.forecast_decoder, "attention_bridges"):
-                    attention_bridges = new_model.forecast_decoder.attention_bridges
-                elif hasattr(new_model.forecast_decoder, "attention_bridge"):
-                    # Handle single attention bridge case
-                    attention_bridges = [new_model.forecast_decoder.attention_bridge]
+                for attr_name, getter in attention_bridge_sources.items():
+                    if hasattr(new_model.forecast_decoder, attr_name):
+                        attention_bridges = getter(new_model.forecast_decoder)
+                        break
 
                 # Create fixed decoder using ArchitectureConverter
                 use_attention_final = (
@@ -1480,7 +1618,7 @@ class DARTSTrainer:
 
             train_pbar = self._create_progress_bar(
                 train_loader,
-                f"Epoch {epoch+1:3d} Train",
+                f"Epoch {epoch + 1:3d} Train",
                 leave=False,
                 total=num_train_batches,
             )
@@ -1489,7 +1627,7 @@ class DARTSTrainer:
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                 optimizer.zero_grad()
 
-                with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
+                with self._autocast(True):
                     preds = model(batch_x)
                     loss = loss_fn(preds, batch_y)
 
@@ -1509,8 +1647,8 @@ class DARTSTrainer:
                 train_pbar.set_postfix(
                     {
                         "loss": f"{loss.item():.4f}",
-                        "avg_loss": f"{epoch_train_loss/(batch_idx+1):.4f}",
-                        "lr": f'{optimizer.param_groups[0]["lr"]:.2e}',
+                        "avg_loss": f"{epoch_train_loss / (batch_idx + 1):.4f}",
+                        "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
                     }
                 )
 
@@ -1553,7 +1691,7 @@ class DARTSTrainer:
             else:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    epoch_pbar.set_description(f"Early stopping at epoch {epoch+1}")
+                    epoch_pbar.set_description(f"Early stopping at epoch {epoch + 1}")
                     break
 
         epoch_pbar.close()
@@ -1667,7 +1805,7 @@ class DARTSTrainer:
 
             for batch_x, batch_y, *_ in test_pbar:
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
-                with autocast("cuda" if self.device.startswith("cuda") else "cpu"):
+                with self._autocast(True):
                     preds = model(batch_x)
                     batch_test_loss = loss_fn(preds, batch_y).item()
 
@@ -1697,7 +1835,7 @@ class DARTSTrainer:
         logger.info("🏁 FINAL MODEL TRAINING COMPLETED")
         logger.info("=" * 70)
         logger.info(
-            f"{'Training duration:':<30} {results['training_time']:.1f} seconds  ({results['training_time']/60:.1f} minutes)"
+            f"{'Training duration:':<30} {results['training_time']:.1f} seconds  ({results['training_time'] / 60:.1f} minutes)"
         )
         logger.info(f"{'Total epochs:':<30} {info['epochs_completed']}")
         logger.info(
@@ -1713,6 +1851,410 @@ class DARTSTrainer:
         logger.info(f"{'Mean Absolute % Error (MAPE):':<30} {metrics['mape']:.2f}%")
         logger.info(f"{'R² Score:':<30} {metrics['r2_score']:.4f}")
         logger.info("=" * 70 + "\n")
+
+    def ablation_weight_search(
+        self,
+        train_loader,
+        val_loader,
+        test_loader=None,
+        num_candidates: int = 20,
+        max_samples: int = 32,
+        num_batches: int = 1,
+        top_k: int = 5,
+        max_workers: Optional[int] = None,
+        n_random: int = 50,
+        random_sigma: float = 0.25,
+        seed: int = 0,
+        save_dir: str = ".",
+        save_prefix: str = "zc_weight_ablation",
+    ) -> Dict[str, Any]:
+        """
+        Run a lightweight ablation search that evaluates raw zero-cost metrics ONCE per candidate,
+        then re-scores candidates under many weight schemes (baseline/uniform/subsets/LOO/random).
+
+        Produces:
+        - tables (pandas) and plots (matplotlib) saved to disk
+        - returns all raw data for paper tables and reproducibility
+        """
+        import os
+
+        import pandas as pd
+
+        os.makedirs(save_dir, exist_ok=True)
+        rng = np.random.default_rng(seed)
+
+        print("Weight ablation search (zero-cost weighting).")
+        print(
+            f"  candidates: {num_candidates} | max_samples: {max_samples} | num_batches: {num_batches}"
+        )
+        print(
+            f"  top_k: {top_k} | n_random: {n_random} | sigma: {random_sigma} | seed: {seed}"
+        )
+        print("-" * 70)
+
+        # ---------------------------------------------------------------------
+        # Phase 1: generate candidates + compute raw metrics ONCE (parallel)
+        # ---------------------------------------------------------------------
+        def _make_candidate_config() -> Dict[str, Any]:
+            return self._make_candidate_config(
+                random,
+                self.all_ops,
+                self.hidden_dims,
+                (1, 2),
+                (2, 4),
+                min_ops=2,
+                max_ops=len(self.all_ops),
+                require_identity=True,
+            )
+
+        def _eval_one(candidate_id: int) -> Dict[str, Any]:
+            try:
+                cfg = _make_candidate_config()
+                model = self._build_candidate_model(cfg)
+
+                out = self.evaluate_zero_cost_metrics_raw(
+                    model=model,
+                    dataloader=val_loader,
+                    max_samples=max_samples,
+                    num_batches=num_batches,
+                )
+
+                return {
+                    "candidate_id": candidate_id,
+                    "success": True,
+                    **cfg,
+                    # ✅ correct keys
+                    "raw_metrics": out["raw_metrics"],
+                    "success_rates": out.get("success_rates", {}),
+                    "errors": out.get("errors", {}),
+                    "base_weights": out.get("base_weights", {}),
+                }
+
+            except Exception as e:
+                return {
+                    "candidate_id": candidate_id,
+                    "success": False,
+                    "error": str(e),
+                }
+
+        candidates: List[Dict[str, Any]] = []
+        lock = threading.Lock()
+        done = 0
+
+        def _cb(fut):
+            nonlocal done
+            r = fut.result()
+            with lock:
+                done += 1
+                if r.get("success", False):
+                    print(
+                        f"  [{done:>3}/{num_candidates}] ok   id={r['candidate_id']} raw_metrics={len(r['raw_metrics'])}"
+                    )
+                else:
+                    print(
+                        f"  [{done:>3}/{num_candidates}] fail id={r.get('candidate_id', -1)}"
+                    )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(_eval_one, i) for i in range(num_candidates)]
+            for f in futs:
+                f.add_done_callback(_cb)
+            for f in concurrent.futures.as_completed(futs):
+                r = f.result()
+                if r.get("success", False):
+                    candidates.append(r)
+
+        if not candidates:
+            raise RuntimeError("All candidates failed in raw zero-cost evaluation.")
+
+        print("-" * 70)
+        print(f"Raw eval done: {len(candidates)}/{num_candidates} successful.")
+
+        # ---------------------------------------------------------------------
+        # Phase 2: build schemes and re-score WITHOUT recomputing metrics
+        # ---------------------------------------------------------------------
+        base_weights = dict(candidates[0].get("base_weights", {}))
+        schemes = build_weight_schemes(
+            base_weights=base_weights,
+            n_random=n_random,
+            random_sigma=random_sigma,
+            seed=seed,
+        )
+        scheme_names = list(schemes.keys())
+
+        # score matrix: [N, S]
+        N = len(candidates)
+        S = len(scheme_names)
+        score_mat = np.zeros((N, S), dtype=np.float64)
+
+        for i, c in enumerate(candidates):
+            m = c["raw_metrics"]
+            for j, name in enumerate(scheme_names):
+                score_mat[i, j] = score_from_metrics(m, schemes[name])
+
+        # store scheme_scores in candidates for convenience
+        for i, c in enumerate(candidates):
+            c["scheme_scores"] = {
+                scheme_names[j]: float(score_mat[i, j]) for j in range(S)
+            }
+
+        # ---------------------------------------------------------------------
+        # Phase 3: build tables (stability, top candidates, LOO importance)
+        # ---------------------------------------------------------------------
+        baseline_idx = (
+            scheme_names.index("baseline") if "baseline" in scheme_names else 0
+        )
+        baseline_scores = score_mat[:, baseline_idx]
+
+        # Stability table vs baseline
+        rows = []
+        for j, name in enumerate(scheme_names):
+            rows.append(
+                {
+                    "scheme": name,
+                    "spearman_vs_baseline": _spearman_from_scores(
+                        baseline_scores, score_mat[:, j]
+                    ),
+                    "topk_overlap_vs_baseline": _topk_overlap_from_scores(
+                        baseline_scores, score_mat[:, j], top_k
+                    ),
+                }
+            )
+        df_stability = pd.DataFrame(rows).sort_values(
+            by=["spearman_vs_baseline", "topk_overlap_vs_baseline"], ascending=False
+        )
+
+        # Candidate summary table (top by baseline)
+        baseline_rank = _ranks_desc(baseline_scores)
+        order = np.argsort(baseline_rank)
+        top_show = min(10, N)
+
+        cand_rows = []
+        for idx in order[:top_show]:
+            c = candidates[idx]
+            row = {
+                "candidate_id": c["candidate_id"],
+                "baseline_rank": int(baseline_rank[idx]),
+                "hidden_dim": c["hidden_dim"],
+                "num_cells": c["num_cells"],
+                "num_nodes": c["num_nodes"],
+                "num_ops": len(c["selected_ops"]),
+                "selected_ops": ", ".join(c["selected_ops"]),
+            }
+            # add a few key scheme scores
+            row["baseline_score"] = float(score_mat[idx, baseline_idx])
+            if "uniform" in scheme_names:
+                row["uniform_score"] = float(
+                    score_mat[idx, scheme_names.index("uniform")]
+                )
+            cand_rows.append(row)
+        df_top_candidates = pd.DataFrame(cand_rows)
+
+        # LOO importance (only schemes starting with loo_minus_)
+        # We quantify importance by how much stability drops when removing metric.
+        loo_rows = []
+        loo_names = [n for n in scheme_names if n.startswith("loo_minus_")]
+        for n in loo_names:
+            j = scheme_names.index(n)
+            loo_rows.append(
+                {
+                    "metric_removed": n.replace("loo_minus_", ""),
+                    "spearman_vs_baseline": _spearman_from_scores(
+                        baseline_scores, score_mat[:, j]
+                    ),
+                    "topk_overlap_vs_baseline": _topk_overlap_from_scores(
+                        baseline_scores, score_mat[:, j], top_k
+                    ),
+                }
+            )
+        df_loo = pd.DataFrame(loo_rows)
+        if len(df_loo) > 0:
+            # importance = 1 - stability
+            df_loo["importance_spearman_drop"] = 1.0 - df_loo["spearman_vs_baseline"]
+            df_loo["importance_topk_drop"] = 1.0 - df_loo["topk_overlap_vs_baseline"]
+            df_loo = df_loo.sort_values(
+                by=["importance_spearman_drop", "importance_topk_drop"], ascending=False
+            )
+
+        # Random stability: baseline winner rank distribution
+        rand_names = [n for n in scheme_names if n.startswith("rand_")]
+        baseline_winner_idx = int(np.argmax(baseline_scores))
+        winner_ranks = []
+        for rn in rand_names:
+            j = scheme_names.index(rn)
+            ranks = _ranks_desc(score_mat[:, j])
+            winner_ranks.append(int(ranks[baseline_winner_idx]))
+        winner_ranks = (
+            np.array(winner_ranks, dtype=np.int64)
+            if len(winner_ranks)
+            else np.array([], dtype=np.int64)
+        )
+
+        # Random top-k frequency per candidate
+        topk_freq = np.zeros(N, dtype=np.int64)
+        for rn in rand_names:
+            j = scheme_names.index(rn)
+            ranks = _ranks_desc(score_mat[:, j])
+            topk_ids = np.where(ranks <= top_k)[0]
+            topk_freq[topk_ids] += 1
+
+        # ---------------------------------------------------------------------
+        # Phase 4: plots (matplotlib only, no seaborn, no fixed colors)
+        # ---------------------------------------------------------------------
+        def _savefig(path: str):
+            plt.tight_layout()
+            plt.savefig(path, dpi=300, bbox_inches="tight")
+            plt.close()
+            print(f"Saved: {path}")
+
+        # Plot 1: heatmap of ranks (top candidates x schemes)
+        # Use imshow (no fixed colormap specified; matplotlib default is fine)
+        ranks_mat = np.zeros_like(score_mat, dtype=np.int64)
+        for j in range(S):
+            ranks_mat[:, j] = _ranks_desc(score_mat[:, j])
+
+        # show top_show candidates (baseline order), and a manageable number of schemes
+        scheme_keep = [
+            "baseline",
+            "uniform",
+            "subset_grad",
+            "subset_act",
+            "subset_complexity",
+            "subset_no_penalties",
+            "subset_pos_only",
+        ]
+        scheme_keep = [s for s in scheme_keep if s in scheme_names]
+        # add a few random schemes to visualize
+        scheme_keep += rand_names[: min(6, len(rand_names))]
+        scheme_keep = list(dict.fromkeys(scheme_keep))
+        keep_idx = [scheme_names.index(s) for s in scheme_keep]
+
+        sub_ranks = ranks_mat[order[:top_show]][:, keep_idx]
+
+        plt.figure(figsize=(max(8, 0.8 * len(keep_idx)), max(4, 0.5 * top_show)))
+        plt.imshow(sub_ranks, aspect="auto")
+        plt.xticks(range(len(keep_idx)), scheme_keep, rotation=45, ha="right")
+        plt.yticks(
+            range(top_show),
+            [int(candidates[i]["candidate_id"]) for i in order[:top_show]],
+        )
+        plt.xlabel("Weight scheme")
+        plt.ylabel("Candidate id (baseline top)")
+        plt.title("Candidate ranks across weight schemes (lower is better)")
+        _savefig(os.path.join(save_dir, f"{save_prefix}_rank_heatmap.png"))
+
+        # Plot 2: histogram of baseline winner rank under random weights
+        if len(winner_ranks) > 0:
+            plt.figure(figsize=(8, 4))
+            plt.hist(
+                winner_ranks,
+                bins=min(20, max(5, int(np.sqrt(len(winner_ranks))))),
+                edgecolor="black",
+            )
+            plt.xlabel("Rank of baseline winner under random weights (1=best)")
+            plt.ylabel("Count")
+            plt.title(
+                "Baseline-winner rank distribution under random weight perturbations"
+            )
+            _savefig(os.path.join(save_dir, f"{save_prefix}_winner_rank_hist.png"))
+
+        # Plot 3: top-k frequency under random schemes (bar, top 10)
+        if len(rand_names) > 0:
+            freq_order = np.argsort(-topk_freq)
+            show = min(10, N)
+            plt.figure(figsize=(10, 4))
+            plt.bar(range(show), topk_freq[freq_order[:show]])
+            plt.xticks(
+                range(show),
+                [int(candidates[i]["candidate_id"]) for i in freq_order[:show]],
+                rotation=0,
+            )
+            plt.xlabel("Candidate id")
+            plt.ylabel(
+                f"Times in top-{top_k} (across {len(rand_names)} random schemes)"
+            )
+            plt.title(f"Top-{top_k} frequency under random weight perturbations")
+            _savefig(os.path.join(save_dir, f"{save_prefix}_topk_freq.png"))
+
+        # Plot 4: LOO importance (bar)
+        if len(df_loo) > 0:
+            show = min(12, len(df_loo))
+            df_plot = df_loo.head(show)
+            plt.figure(figsize=(10, 4))
+            plt.bar(range(show), df_plot["importance_spearman_drop"].to_numpy())
+            plt.xticks(
+                range(show), df_plot["metric_removed"].tolist(), rotation=45, ha="right"
+            )
+            plt.xlabel("Removed metric")
+            plt.ylabel("Importance (1 - Spearman vs baseline)")
+            plt.title("Leave-one-out importance of each zero-cost metric")
+            _savefig(os.path.join(save_dir, f"{save_prefix}_loo_importance.png"))
+
+        # ---------------------------------------------------------------------
+        # Phase 5: save tables to disk
+        # ---------------------------------------------------------------------
+        stability_path = os.path.join(save_dir, f"{save_prefix}_stability.csv")
+        topcand_path = os.path.join(save_dir, f"{save_prefix}_top_candidates.csv")
+        loo_path = os.path.join(save_dir, f"{save_prefix}_loo_importance.csv")
+
+        df_stability.to_csv(stability_path, index=False)
+        df_top_candidates.to_csv(topcand_path, index=False)
+        if len(df_loo) > 0:
+            df_loo.to_csv(loo_path, index=False)
+
+        print("Tables saved:")
+        print(f"  {stability_path}")
+        print(f"  {topcand_path}")
+        if len(df_loo) > 0:
+            print(f"  {loo_path}")
+
+        # ---------------------------------------------------------------------
+        # Return everything needed for paper + reproducibility
+        # ---------------------------------------------------------------------
+        summary = {
+            "candidates": candidates,
+            "scheme_names": scheme_names,
+            "schemes": schemes,  # weights per scheme
+            "score_matrix": score_mat,
+            "rank_matrix": ranks_mat,
+            "tables": {
+                "stability": df_stability,
+                "top_candidates": df_top_candidates,
+                "loo_importance": df_loo if len(df_loo) > 0 else None,
+            },
+            "random_analysis": {
+                "baseline_winner_candidate_id": int(
+                    candidates[baseline_winner_idx]["candidate_id"]
+                ),
+                "baseline_winner_rank_under_random": winner_ranks.tolist(),
+                "topk_frequency_under_random": topk_freq.tolist(),
+            },
+            "artifacts": {
+                "rank_heatmap": os.path.join(
+                    save_dir, f"{save_prefix}_rank_heatmap.png"
+                ),
+                "winner_rank_hist": os.path.join(
+                    save_dir, f"{save_prefix}_winner_rank_hist.png"
+                ),
+                "topk_freq": os.path.join(save_dir, f"{save_prefix}_topk_freq.png"),
+                "loo_importance": os.path.join(
+                    save_dir, f"{save_prefix}_loo_importance.png"
+                ),
+                "stability_csv": stability_path,
+                "top_candidates_csv": topcand_path,
+                "loo_csv": loo_path if len(df_loo) > 0 else None,
+            },
+            "config": {
+                "num_candidates": num_candidates,
+                "max_samples": max_samples,
+                "num_batches": num_batches,
+                "top_k": top_k,
+                "n_random": n_random,
+                "random_sigma": random_sigma,
+                "seed": seed,
+            },
+        }
+        return summary
 
     def multi_fidelity_search(
         self,
@@ -1754,56 +2296,42 @@ class DARTSTrainer:
 
         def generate_and_evaluate_candidate(candidate_id: int) -> Dict[str, Any]:
             """Generate and evaluate a single candidate."""
-            try:
-                # Random architecture generation
-                num_ops = random.randint(2, len(self.all_ops))
-                selected_ops = ["Identity"] + random.sample(
-                    [op for op in self.all_ops if op != "Identity"], num_ops - 1
-                )
+            config = self._make_candidate_config(
+                random,
+                self.all_ops,
+                self.hidden_dims,
+                (1, 2),
+                (2, 4),
+                min_ops=2,
+                max_ops=len(self.all_ops),
+                require_identity=True,
+            )
 
-                config = {
-                    "selected_ops": selected_ops,
-                    "hidden_dim": random.choice(self.hidden_dims),
-                    "num_cells": random.randint(1, 2),
-                    "num_nodes": random.randint(2, 4),
-                }
+            # Create model (each worker gets its own model instance)
+            model = self._build_candidate_model(config)
 
-                # Create model (each worker gets its own model instance)
-                model = TimeSeriesDARTS(
-                    input_dim=self.input_dim,
-                    hidden_dim=config["hidden_dim"],
-                    latent_dim=config["hidden_dim"],
-                    forecast_horizon=self.forecast_horizon,
-                    seq_length=self.seq_length,
-                    num_cells=config["num_cells"],
-                    num_nodes=config["num_nodes"],
-                    selected_ops=config["selected_ops"],
-                ).to(self.device)
+            # Evaluate with zero-cost metrics
+            metrics = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
+            score = metrics["aggregate_score"]
 
-                # Evaluate with zero-cost metrics
-                metrics = self.evaluate_zero_cost_metrics(
-                    model, val_loader, max_samples
-                )
-                score = metrics["aggregate_score"]
+            return {
+                "candidate_id": candidate_id,
+                "model": model,
+                "metrics": metrics,
+                "score": score,
+                "success": True,
+                **config,
+            }
 
-                return {
-                    "candidate_id": candidate_id,
-                    "model": model,
-                    "metrics": metrics,
-                    "score": score,
-                    "success": True,
-                    **config,
-                }
-
-            except Exception as e:
-                return {
-                    "candidate_id": candidate_id,
-                    "model": None,
-                    "metrics": {"aggregate_score": 0.0},
-                    "score": 0.0,
-                    "success": False,
-                    "error": str(e),
-                }
+            # except Exception as e:
+            #     return {
+            #         "candidate_id": candidate_id,
+            #         "model": None,
+            #         "metrics": {"aggregate_score": 0.0},
+            #         "score": 0.0,
+            #         "success": False,
+            #         "error": str(e),
+            #     }
 
         # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1859,7 +2387,7 @@ class DARTSTrainer:
         print("Top candidates:")
         for i, c in enumerate(top_candidates):
             print(
-                f"  {i+1}: Score={c['score']:.4f}, Ops={len(c['selected_ops'])}, "
+                f"  {i + 1}: Score={c['score']:.4f}, Ops={len(c['selected_ops'])}, "
                 f"Hidden={c['hidden_dim']}, Arch={c['num_cells']}x{c['num_nodes']}"
             )
 
@@ -1867,8 +2395,10 @@ class DARTSTrainer:
         print(f"\n🔧 Phase 3: Training top {top_k} candidates...")
         trained_candidates = []
 
+        trained_non_derived_candidates = []  # For analysis: candidates trained without derivation
+
         for i, candidate in enumerate(top_candidates):
-            print(f"\nTraining candidate {i+1}/{top_k}...")
+            print(f"\nTraining candidate {i + 1}/{top_k}...")
 
             # Quick DARTS training
             search_results = self.train_darts_model(
@@ -1877,6 +2407,16 @@ class DARTSTrainer:
                 val_loader=val_loader,
                 epochs=search_epochs,
                 use_swa=False,
+            )
+
+            # copy model and append to trained_non_derived_candidates before derivation for analysis
+            trained_non_derived_candidates.append(
+                {
+                    "model": copy.deepcopy(search_results["model"]),
+                    "val_loss": search_results["best_val_loss"],
+                    "candidate": candidate,
+                    "search_results": search_results,
+                }
             )
 
             # Derive and evaluate architecture
@@ -1909,6 +2449,7 @@ class DARTSTrainer:
         # Phase 5: Train final model
         print("\n🚀 Phase 5: Training final model...")
         final_model = copy.deepcopy(best_candidate["model"])
+        final_conf = final_model.get_config()
 
         final_results = self.train_final_model(
             model=final_model,
@@ -1936,12 +2477,14 @@ class DARTSTrainer:
             "trained_candidates": trained_candidates,
             "best_candidate": best_candidate,
             "final_results": final_results,
+            "final_config": final_conf,
             "search_config": {
                 "num_candidates": num_candidates,
                 "search_epochs": search_epochs,
                 "final_epochs": final_epochs,
                 "top_k": top_k,
             },
+            "trained_non_derived_candidates": trained_non_derived_candidates,
         }
 
         self.search_history.append(search_summary)
@@ -1950,6 +2493,994 @@ class DARTSTrainer:
 
         print("\n✅ Multi-fidelity search completed!")
         return search_summary
+
+    def multi_fidelity_search_with_stats(
+        self,
+        train_loader,
+        val_loader,
+        test_loader,
+        *,
+        num_candidates: int = 10,
+        search_epochs: int = 10,
+        final_epochs: int = 100,
+        max_samples: int = 32,
+        top_k: int = 5,
+        max_workers: int = None,
+        # statistics / what-if parallelism
+        parallelism_levels=None,  # e.g., [1,2,4,8,16]
+        est_overhead_per_task: float = 0.0,
+        est_fixed_overhead_phase1: float = 0.0,
+        est_fixed_overhead_phase3: float = 0.0,
+        # optional micro-benchmark of phase 1 at multiple workers (REAL timings)
+        benchmark_phase1_workers=None,  # e.g., [1,2,4,8]
+        benchmark_phase1_candidates: int = None,  # if None -> min(num_candidates, 20)
+        # output
+        stats_dir: str = "search_stats",
+        run_name: str = None,
+        logger=None,
+    ) -> Dict[str, Any]:
+        """
+        Single-function, instrumented multi-fidelity search:
+        - records wall-time for Phase 1..5
+        - records per-candidate dt for Phase 1 (zero-cost) and per-candidate dt for Phase 3 (search train + derive)
+        - produces what-if wall-time estimates for Phase 1 and Phase 3 under different worker counts
+        - optionally benchmarks Phase 1 with different worker counts (actually runs phase 1 multiple times)
+        - saves JSON + CSV stats to stats_dir/run_id/
+
+        IMPORTANT:
+        - keeps everything inside this one method (no extra helper functions/classes).
+        - uses ThreadPoolExecutor like your original for Phase 1.
+        """
+        import concurrent.futures
+        import copy
+        import datetime
+        import json
+        import os
+        import random
+        import threading
+        import time
+        from typing import Any, Dict
+
+        import numpy as np
+        import torch
+
+        # -------------------------
+        # Setup
+        # -------------------------
+        if logger is None:
+            logger = getattr(self, "logger", None)
+        if logger is None:
+            import logging
+
+            logger = logging.getLogger("NASLogger")
+
+        if parallelism_levels is None:
+            cpu = os.cpu_count() or 8
+            parallelism_levels = sorted(set([1, 2, 4, 8, cpu]))
+        else:
+            parallelism_levels = list(parallelism_levels)
+
+        if benchmark_phase1_workers is not None:
+            benchmark_phase1_workers = list(benchmark_phase1_workers)
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_id = run_name or f"multifidelity_{ts}"
+        out_base = os.path.join(stats_dir, run_id)
+        os.makedirs(out_base, exist_ok=True)
+
+        def _save_json(path: str, obj: Any):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(obj, f, indent=2, ensure_ascii=False, default=str)
+
+        def _save_csv(path: str, header, rows):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            import csv
+
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(header)
+                w.writerows(rows)
+
+        def _mean_std(xs):
+            xs = list(xs)
+            if not xs:
+                return 0.0, 0.0
+            m = float(np.mean(xs))
+            s = float(np.std(xs, ddof=1)) if len(xs) > 1 else 0.0
+            return m, s
+
+        def _lpt_estimate(
+            work_times, workers, overhead_per_task=0.0, fixed_overhead=0.0
+        ):
+            """
+            Greedy LPT bin packing estimate of wall time with `workers`.
+            Adds overhead_per_task to each task and fixed_overhead once.
+            """
+            work = [float(t) + float(overhead_per_task) for t in work_times]
+            if not work:
+                return float(fixed_overhead)
+            w = max(1, int(workers))
+            bins = [0.0 for _ in range(w)]
+            for t in sorted(work, reverse=True):
+                i = int(np.argmin(bins))
+                bins[i] += t
+            return float(max(bins) + float(fixed_overhead))
+
+        sys_info = {
+            "run_id": run_id,
+            "timestamp_local": datetime.datetime.now().isoformat(),
+            "cpu_count_os": os.cpu_count(),
+            "torch_num_threads": torch.get_num_threads()
+            if hasattr(torch, "get_num_threads")
+            else None,
+            "torch_num_interop_threads": torch.get_num_interop_threads()
+            if hasattr(torch, "get_num_interop_threads")
+            else None,
+            "cuda_available": torch.cuda.is_available(),
+            "cuda_device_count": torch.cuda.device_count()
+            if torch.cuda.is_available()
+            else 0,
+            "cuda_device_name": torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else None,
+            "parallelism_levels": list(map(int, parallelism_levels)),
+            "max_workers_used": max_workers,
+            "config": {
+                "num_candidates": num_candidates,
+                "search_epochs": search_epochs,
+                "final_epochs": final_epochs,
+                "max_samples": max_samples,
+                "top_k": top_k,
+            },
+        }
+
+        logger.info("Starting multi-fidelity DARTS search (instrumented)")
+        logger.info(
+            f"candidates={num_candidates}, search_epochs={search_epochs}, final_epochs={final_epochs}, "
+            f"top_k={top_k}, max_samples={max_samples}, max_workers={max_workers or 'auto'}"
+        )
+
+        # Accumulators
+        phase_summary: Dict[str, Any] = {}
+        per_candidate_rows = []  # CSV rows
+        whatif_rows = []  # CSV rows
+        bench_rows = []  # CSV rows (phase1 benchmark)
+
+        # -------------------------
+        # Optional: Phase 1 real benchmark across worker counts
+        # -------------------------
+        phase1_benchmark_results = []
+        if benchmark_phase1_workers:
+            bench_n = int(benchmark_phase1_candidates or min(num_candidates, 20))
+            logger.info(
+                f"Phase 1 benchmark enabled: workers={benchmark_phase1_workers}, candidates_per_run={bench_n}"
+            )
+
+            for w in benchmark_phase1_workers:
+                # run minimal phase1 loop to measure
+                t_wall0 = time.perf_counter()
+                task_times = []
+
+                def _bench_task(cid: int):
+                    t0 = time.perf_counter()
+                    cfg = self._make_candidate_config(
+                        random,
+                        self.all_ops,
+                        self.hidden_dims,
+                        (1, 2),
+                        (2, 4),
+                        min_ops=2,
+                        max_ops=len(self.all_ops),
+                        require_identity=True,
+                    )
+                    model = self._build_candidate_model(cfg)
+                    m = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
+                    score = float(m["aggregate_score"])
+                    dt = time.perf_counter() - t0
+                    return {"cid": cid, "dt": float(dt), "score": score}
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=w) as ex:
+                    futs = [ex.submit(_bench_task, i) for i in range(bench_n)]
+                    for f in concurrent.futures.as_completed(futs):
+                        r = f.result()
+                        task_times.append(r["dt"])
+
+                wall = time.perf_counter() - t_wall0
+                m, s = _mean_std(task_times)
+
+                phase1_benchmark_results.append(
+                    {
+                        "workers": int(w),
+                        "ncand": int(bench_n),
+                        "wall_time_sec": float(wall),
+                        "task_mean_sec": m,
+                        "task_std_sec": s,
+                    }
+                )
+                bench_rows.append([run_id, w, bench_n, wall, m, s])
+                logger.info(
+                    f"[Phase1 bench] workers={w}: wall={wall:.3f}s task_mean={m:.3f}s task_std={s:.3f}s"
+                )
+
+        # -------------------------
+        # Phase 1: Generate & zero-cost evaluate candidates (parallel)
+        # -------------------------
+        logger.info("Phase 1: generating + zero-cost evaluating candidates (parallel)")
+        candidates = []
+        phase1_task_times = []
+        lock = threading.Lock()
+        completed = 0
+
+        def generate_and_evaluate_candidate(cid: int) -> Dict[str, Any]:
+            t0 = time.perf_counter()
+            cfg = self._make_candidate_config(
+                random,
+                self.all_ops,
+                self.hidden_dims,
+                (1, 2),
+                (2, 4),
+                min_ops=2,
+                max_ops=len(self.all_ops),
+                require_identity=True,
+            )
+            model = self._build_candidate_model(cfg)
+            metrics = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
+            score = float(metrics["aggregate_score"])
+            dt = time.perf_counter() - t0
+            return {
+                "candidate_id": cid,
+                "model": model,
+                "metrics": metrics,
+                "score": score,
+                "success": True,
+                "phase1_dt": float(dt),
+                **cfg,
+            }
+
+        def update_progress(fut):
+            nonlocal completed
+            r = fut.result()
+            with lock:
+                completed += 1
+                if r.get("success", False):
+                    phase1_task_times.append(float(r.get("phase1_dt", 0.0)))
+                    logger.info(
+                        f"[Phase 1] {completed}/{num_candidates} ID={r.get('candidate_id')} "
+                        f"score={r.get('score', 0.0):.4f} ops={len(r.get('selected_ops', []))} "
+                        f"hidden={r.get('hidden_dim', 'N/A')} dt={r.get('phase1_dt', 0.0):.3f}s"
+                    )
+                else:
+                    logger.info(f"[Phase 1] {completed}/{num_candidates} failed")
+
+        t_p1_0 = time.perf_counter()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = [
+                ex.submit(generate_and_evaluate_candidate, i)
+                for i in range(num_candidates)
+            ]
+            for f in futs:
+                f.add_done_callback(update_progress)
+            for f in concurrent.futures.as_completed(futs):
+                try:
+                    r = f.result()
+                    if r.get("success", False):
+                        candidates.append(r)
+                except Exception as e:
+                    logger.warning(f"[Phase 1] future error: {e}")
+        t_p1 = time.perf_counter() - t_p1_0
+
+        p1_mean, p1_std = _mean_std(phase1_task_times)
+
+        phase_summary["phase1"] = {
+            "wall_time_sec": float(t_p1),
+            "num_success": int(len(candidates)),
+            "num_total": int(num_candidates),
+            "task_mean_sec": p1_mean,
+            "task_std_sec": p1_std,
+            "task_min_sec": float(min(phase1_task_times)) if phase1_task_times else 0.0,
+            "task_max_sec": float(max(phase1_task_times)) if phase1_task_times else 0.0,
+        }
+
+        logger.info(
+            f"Phase 1 done: {len(candidates)}/{num_candidates} successful (wall={t_p1:.3f}s)"
+        )
+
+        # What-if estimates for Phase 1
+        phase1_whatif = []
+        for w in parallelism_levels:
+            est = _lpt_estimate(
+                phase1_task_times,
+                workers=w,
+                overhead_per_task=est_overhead_per_task,
+                fixed_overhead=est_fixed_overhead_phase1,
+            )
+            phase1_whatif.append(
+                {"phase": "phase1", "workers": int(w), "est_wall_time_sec": float(est)}
+            )
+            whatif_rows.append([run_id, "phase1", int(w), float(est)])
+        phase_summary["phase1"]["whatif_estimates"] = phase1_whatif
+
+        # -------------------------
+        # Phase 2: Select top-k
+        # -------------------------
+        logger.info(f"Phase 2: selecting top {top_k} candidates")
+        t_p2_0 = time.perf_counter()
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        top_k_eff = min(int(top_k), len(candidates))
+        top_candidates = candidates[:top_k_eff]
+
+        t_p2 = time.perf_counter() - t_p2_0
+        phase_summary["phase2"] = {
+            "wall_time_sec": float(t_p2),
+            "top_k_eff": int(top_k_eff),
+        }
+
+        for i, c in enumerate(top_candidates):
+            logger.info(
+                f"[Phase 2] {i + 1}: score={c['score']:.4f} ops={len(c.get('selected_ops', []))} "
+                f"hidden={c.get('hidden_dim')} arch={c.get('num_cells')}x{c.get('num_nodes')}"
+            )
+
+        # -------------------------
+        # Phase 3: Short DARTS training for top candidates (serial, but we log per-candidate dt)
+        # -------------------------
+        logger.info(
+            f"Phase 3: training top {top_k_eff} candidates (search_epochs={search_epochs})"
+        )
+        t_p3_0 = time.perf_counter()
+
+        trained_candidates = []
+        trained_non_derived_candidates = []
+        phase3_task_times = []  # per-candidate total for Phase 3
+        phase3_search_times = []
+        phase3_derive_eval_times = []
+
+        for i, cand in enumerate(top_candidates):
+            cid = cand.get("candidate_id", -1)
+            logger.info(f"[Phase 3] training candidate {i + 1}/{top_k_eff} (ID={cid})")
+
+            t_c0 = time.perf_counter()
+            # Quick DARTS training
+            t_s0 = time.perf_counter()
+            search_results = self.train_darts_model(
+                model=cand["model"],
+                train_loader=train_loader,
+                val_loader=val_loader,
+                epochs=search_epochs,
+                use_swa=False,
+            )
+            t_search = time.perf_counter() - t_s0
+
+            trained_non_derived_candidates.append(
+                {
+                    "model": copy.deepcopy(search_results["model"]),
+                    "val_loss": search_results["best_val_loss"],
+                    "candidate": cand,
+                    "search_results": search_results,
+                }
+            )
+
+            # Derive + eval
+            t_d0 = time.perf_counter()
+            derived_model = self.derive_final_architecture(search_results["model"])
+            val_loss = self._evaluate_model(derived_model, val_loader)
+            t_derive = time.perf_counter() - t_d0
+
+            t_total = time.perf_counter() - t_c0
+
+            phase3_task_times.append(float(t_total))
+            phase3_search_times.append(float(t_search))
+            phase3_derive_eval_times.append(float(t_derive))
+
+            trained_candidates.append(
+                {
+                    "model": derived_model,
+                    "val_loss": float(val_loss),
+                    "candidate": cand,
+                    "search_results": search_results,
+                }
+            )
+
+            logger.info(
+                f"[Phase 3] ID={cid} val_loss={val_loss:.6f} "
+                f"dt_total={t_total:.3f}s (train={t_search:.3f}s derive+eval={t_derive:.3f}s)"
+            )
+
+            # CSV per-candidate row
+            per_candidate_rows.append(
+                [
+                    run_id,
+                    "phase1",
+                    cid,
+                    cand.get("score", 0.0),
+                    cand.get("hidden_dim", None),
+                    len(cand.get("selected_ops", [])),
+                    cand.get("phase1_dt", 0.0),
+                    "",  # phase3_total
+                    "",  # phase3_train
+                    "",  # phase3_derive
+                    "",  # phase3_val_loss
+                ]
+            )
+            per_candidate_rows.append(
+                [
+                    run_id,
+                    "phase3",
+                    cid,
+                    cand.get("score", 0.0),
+                    cand.get("hidden_dim", None),
+                    len(cand.get("selected_ops", [])),
+                    "",  # phase1_dt
+                    t_total,
+                    t_search,
+                    t_derive,
+                    float(val_loss),
+                ]
+            )
+
+        t_p3 = time.perf_counter() - t_p3_0
+
+        p3_mean, p3_std = _mean_std(phase3_task_times)
+        p3_train_mean, p3_train_std = _mean_std(phase3_search_times)
+        p3_der_mean, p3_der_std = _mean_std(phase3_derive_eval_times)
+
+        phase_summary["phase3"] = {
+            "wall_time_sec": float(t_p3),
+            "task_mean_sec": p3_mean,
+            "task_std_sec": p3_std,
+            "train_mean_sec": p3_train_mean,
+            "train_std_sec": p3_train_std,
+            "derive_eval_mean_sec": p3_der_mean,
+            "derive_eval_std_sec": p3_der_std,
+        }
+
+        # What-if estimates for Phase 3 (IF you parallelize top-k training in the future)
+        phase3_whatif = []
+        for w in parallelism_levels:
+            est = _lpt_estimate(
+                phase3_task_times,
+                workers=w,
+                overhead_per_task=est_overhead_per_task,
+                fixed_overhead=est_fixed_overhead_phase3,
+            )
+            phase3_whatif.append(
+                {"phase": "phase3", "workers": int(w), "est_wall_time_sec": float(est)}
+            )
+            whatif_rows.append([run_id, "phase3", int(w), float(est)])
+        phase_summary["phase3"]["whatif_estimates"] = phase3_whatif
+
+        # -------------------------
+        # Phase 4: Select best candidate
+        # -------------------------
+        logger.info("Phase 4: selecting best candidate")
+        t_p4_0 = time.perf_counter()
+
+        best_candidate = min(trained_candidates, key=lambda x: x["val_loss"])
+        t_p4 = time.perf_counter() - t_p4_0
+
+        phase_summary["phase4"] = {"wall_time_sec": float(t_p4)}
+        logger.info(
+            f"[Phase 4] best val_loss={best_candidate['val_loss']:.6f} "
+            f"ops={best_candidate['candidate'].get('selected_ops')} "
+            f"arch={best_candidate['candidate'].get('num_cells')}x{best_candidate['candidate'].get('num_nodes')} "
+            f"hidden={best_candidate['candidate'].get('hidden_dim')}"
+        )
+
+        # -------------------------
+        # Phase 5: Train final model
+        # -------------------------
+        logger.info("Phase 5: training final model")
+        t_p5_0 = time.perf_counter()
+
+        final_model = copy.deepcopy(best_candidate["model"])
+        final_conf = final_model.get_config()
+
+        final_results = self.train_final_model(
+            model=final_model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            test_loader=test_loader,
+            epochs=final_epochs,
+            learning_rate=5e-4,
+            weight_decay=1e-5,
+        )
+
+        # plot training curve (keep your behavior)
+        self._plot_training_curve(
+            final_results["train_losses"],
+            final_results["val_losses"],
+            title="Final Model Training Progress",
+            save_path=os.path.join(out_base, "final_model_training.pdf"),
+        )
+
+        t_p5 = time.perf_counter() - t_p5_0
+        phase_summary["phase5"] = {"wall_time_sec": float(t_p5)}
+
+        # -------------------------
+        # Build summary & save stats
+        # -------------------------
+        total_wall = sum(
+            phase_summary[p]["wall_time_sec"]
+            for p in ["phase1", "phase2", "phase3", "phase4", "phase5"]
+        )
+        phase_summary["total"] = {"wall_time_sec": float(total_wall)}
+
+        # compact leaderboard info (for JSON)
+        top_table = [
+            {
+                "rank": i + 1,
+                "candidate_id": int(c.get("candidate_id", -1)),
+                "score": float(c.get("score", 0.0)),
+                "hidden_dim": c.get("hidden_dim", None),
+                "num_ops": int(len(c.get("selected_ops", []))),
+                "arch": f"{c.get('num_cells')}x{c.get('num_nodes')}",
+                "phase1_dt": float(c.get("phase1_dt", 0.0)),
+            }
+            for i, c in enumerate(top_candidates)
+        ]
+
+        stats_payload = {
+            "system": sys_info,
+            "phase_summary": phase_summary,
+            "phase1_benchmark_results": phase1_benchmark_results,
+            "top_candidates": top_table,
+            "best_candidate": {
+                "candidate_id": int(
+                    best_candidate["candidate"].get("candidate_id", -1)
+                ),
+                "val_loss": float(best_candidate["val_loss"]),
+                "score": float(best_candidate["candidate"].get("score", 0.0)),
+                "hidden_dim": best_candidate["candidate"].get("hidden_dim", None),
+                "selected_ops": list(
+                    best_candidate["candidate"].get("selected_ops", [])
+                ),
+                "arch": f"{best_candidate['candidate'].get('num_cells')}x{best_candidate['candidate'].get('num_nodes')}",
+            },
+        }
+
+        _save_json(os.path.join(out_base, "stats.json"), stats_payload)
+
+        # CSVs
+        _save_csv(
+            os.path.join(out_base, "per_candidate.csv"),
+            header=[
+                "run_id",
+                "phase",
+                "candidate_id",
+                "score",
+                "hidden_dim",
+                "num_ops",
+                "phase1_dt_sec",
+                "phase3_total_dt_sec",
+                "phase3_train_dt_sec",
+                "phase3_derive_eval_dt_sec",
+                "phase3_val_loss",
+            ],
+            rows=per_candidate_rows,
+        )
+
+        _save_csv(
+            os.path.join(out_base, "whatif_parallelism.csv"),
+            header=["run_id", "phase", "workers", "est_wall_time_sec"],
+            rows=whatif_rows,
+        )
+
+        if bench_rows:
+            _save_csv(
+                os.path.join(out_base, "phase1_benchmark.csv"),
+                header=[
+                    "run_id",
+                    "workers",
+                    "ncand",
+                    "wall_time_sec",
+                    "task_mean_sec",
+                    "task_std_sec",
+                ],
+                rows=bench_rows,
+            )
+
+        logger.info(f"Stats saved to: {out_base}")
+        logger.info(
+            "Phase wall-times (s): "
+            + ", ".join(
+                [
+                    f"{p}={phase_summary[p]['wall_time_sec']:.3f}"
+                    for p in ["phase1", "phase2", "phase3", "phase4", "phase5"]
+                ]
+            )
+            + f" | total={total_wall:.3f}"
+        )
+
+        # -------------------------
+        # Build the same search_summary you already return
+        # -------------------------
+        search_summary = {
+            "final_model": final_results["model"],
+            "candidates": candidates,
+            "top_candidates": top_candidates,
+            "trained_candidates": trained_candidates,
+            "best_candidate": best_candidate,
+            "final_results": final_results,
+            "final_config": final_conf,
+            "search_config": {
+                "num_candidates": num_candidates,
+                "search_epochs": search_epochs,
+                "final_epochs": final_epochs,
+                "top_k": top_k_eff,
+                "max_samples": max_samples,
+                "max_workers": max_workers,
+            },
+            "trained_non_derived_candidates": trained_non_derived_candidates,
+            "stats": stats_payload,  # <- in-memory stats
+            "stats_dir": out_base,  # <- where JSON/CSVs are saved
+        }
+
+        self.search_history.append(search_summary)
+        self.final_model = final_results["model"]
+
+        logger.info("Multi-fidelity search completed (instrumented)")
+        return search_summary
+
+    def bilevel_lr_sensitivity(
+        self,
+        model_factory,  # callable -> fresh TimeSeriesDARTS (or your wrapper)
+        train_loader,
+        val_loader,
+        *,
+        model_lrs=(1e-4, 3e-4, 1e-3, 3e-3),
+        arch_lrs=(3e-4, 1e-3, 3e-3, 1e-2),
+        seeds=(0, 1, 2),
+        epochs=30,
+        save_csv_path=None,
+    ):
+        import pandas as pd
+
+        results = []
+
+        for mlr in model_lrs:
+            for alr in arch_lrs:
+                for seed in seeds:
+                    torch.manual_seed(seed)
+                    np.random.seed(seed)
+                    random.seed(seed)
+
+                    model = model_factory.to(self.device)
+
+                    out = self.train_darts_model(
+                        model=model,
+                        train_loader=train_loader,
+                        val_loader=val_loader,
+                        epochs=epochs,
+                        model_learning_rate=mlr,
+                        arch_learning_rate=alr,
+                        use_bilevel_optimization=True,
+                        verbose=False,
+                    )
+
+                    # derived arch val (more meaningful than mixed model val)
+                    derived = self.derive_final_architecture(out["model"])
+                    derived_val = self._evaluate_model(derived, val_loader)
+
+                    # optional: last health snapshot (if you logged diversity_scores)
+                    health_last = None
+                    if out.get("diversity_scores"):
+                        health_last = out["diversity_scores"][-1]
+
+                    results.append(
+                        {
+                            "model_lr": mlr,
+                            "arch_lr": alr,
+                            "seed": seed,
+                            "best_val_loss_mixed": float(out["best_val_loss"]),
+                            "val_loss_derived": float(derived_val),
+                            "train_time_s": float(out["training_time"]),
+                            "health_score": None
+                            if not health_last
+                            else float(health_last["health_score"]),
+                            "avg_identity_dominance": None
+                            if not health_last
+                            else float(health_last["avg_identity_dominance"]),
+                        }
+                    )
+
+        df = pd.DataFrame(results)
+
+        if save_csv_path:
+            df.to_csv(save_csv_path, index=False)
+
+        return df
+
+    def robust_initial_pool_over_op_pools(
+        self,
+        *,
+        val_loader,
+        # outer robustness (op-pool perturbations)
+        n_pools: int = 25,
+        pool_size_range: Tuple[int, int] = (
+            4,
+            10,
+        ),  # how many ops (incl Identity optionally)
+        pool_seed: int = 0,
+        # inner candidate sampling (per pool)
+        num_candidates: int = 30,
+        top_k: int = 10,
+        max_samples: int = 32,
+        num_batches: int = 1,
+        seed: int = 0,
+        max_workers: Optional[int] = None,
+        # optional: still allow weight-scheme robustness inside each pool
+        use_weight_schemes: bool = False,
+        n_random: int = 50,
+        random_sigma: float = 0.25,
+        robustness_mode: str = "topk_freq",  # across pools
+        topk_ref: Optional[int] = None,
+        # candidate knobs
+        min_ops: int = 2,
+        max_ops: Optional[int] = None,
+        cell_range: tuple = (1, 2),
+        node_range: tuple = (2, 4),
+        hidden_dim_choices: Optional[List[int]] = None,
+        require_identity: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Robustness w.r.t. the INITIAL selected_ops POOL (allowed ops set),
+        not robustness w.r.t. scoring weights.
+
+        It samples many operator pools, runs candidate generation constrained to each pool,
+        and aggregates stability of selected architectures across pools.
+        """
+
+        if hidden_dim_choices is None:
+            hidden_dim_choices = list(self.hidden_dims)
+        if max_ops is None:
+            max_ops = len(self.all_ops)
+        if topk_ref is None:
+            topk_ref = top_k
+
+        # ---------------------------
+        # helpers
+        # ---------------------------
+        def _ranks_desc(scores: np.ndarray) -> np.ndarray:
+            order = np.argsort(-scores, kind="mergesort")
+            ranks = np.empty_like(order)
+            ranks[order] = np.arange(1, len(scores) + 1)
+            return ranks
+
+        # sample operator pools
+        py_rng_pools = random.Random(pool_seed)
+        base_ops = list(self.all_ops)
+
+        def _sample_pool() -> List[str]:
+            # build a subset of ops allowed for candidate generation
+            ops_no_id = [op for op in base_ops if op != "Identity"]
+            lo, hi = pool_size_range
+            # size excludes Identity; we can add it back below
+            k = py_rng_pools.randint(
+                max(1, lo - (1 if require_identity else 0)),
+                max(1, hi - (1 if require_identity else 0)),
+            )
+            picked = py_rng_pools.sample(ops_no_id, k=min(k, len(ops_no_id)))
+            if require_identity:
+                return ["Identity"] + picked
+            return picked
+
+        op_pools = []
+        seen = set()
+        while len(op_pools) < n_pools:
+            p = tuple(_sample_pool())
+            if p not in seen:
+                seen.add(p)
+                op_pools.append(list(p))
+
+        # ---------------------------
+        # per-pool run (constrained candidate generation)
+        # ---------------------------
+        all_pool_results = []
+        agg = {}  # signature -> stats accumulator
+
+        for pool_idx, allowed_ops in enumerate(op_pools):
+            py_rng = random.Random(seed + pool_idx)
+
+            def _make_candidate_config() -> Dict[str, Any]:
+                return self._make_candidate_config(
+                    py_rng,
+                    allowed_ops,
+                    hidden_dim_choices,
+                    cell_range,
+                    node_range,
+                    min_ops=min_ops,
+                    max_ops=max_ops,
+                    require_identity=require_identity,
+                )
+
+            def _eval_one(candidate_id: int) -> Dict[str, Any]:
+                cfg = _make_candidate_config()
+                try:
+                    model = self._build_candidate_model(cfg)
+
+                    out = self.evaluate_zero_cost_metrics_raw(
+                        model=model,
+                        dataloader=val_loader,
+                        max_samples=max_samples,
+                        num_batches=num_batches,
+                    )
+
+                    raw = out.get("raw_metrics", {}) or {}
+                    if not raw:
+                        return {"success": False, "error": "empty_raw_metrics"}
+
+                    return {
+                        "success": True,
+                        **cfg,
+                        "raw_metrics": raw,
+                        "base_weights": dict(out.get("base_weights", {})),
+                    }
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            # run inner evaluation
+            candidates = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futs = [ex.submit(_eval_one, i) for i in range(num_candidates)]
+                for f in concurrent.futures.as_completed(futs):
+                    r = f.result()
+                    if r.get("success", False):
+                        candidates.append(r)
+
+            if not candidates:
+                all_pool_results.append(
+                    {
+                        "pool_idx": pool_idx,
+                        "allowed_ops": allowed_ops,
+                        "success": False,
+                        "error": "all_candidates_failed",
+                    }
+                )
+                continue
+
+            # scoring: either baseline only (typical for op-pool sensitivity),
+            # or still do scheme perturbations inside each pool.
+            base_weights = dict(candidates[0].get("base_weights", {}))
+
+            if use_weight_schemes:
+                schemes = build_weight_schemes(
+                    base_weights=base_weights,
+                    n_random=n_random,
+                    random_sigma=random_sigma,
+                    seed=seed + pool_idx,
+                )
+                scheme_names = list(schemes.keys())
+                baseline_name = "baseline" if "baseline" in schemes else scheme_names[0]
+                # collapse to a single "robust within-pool score" by taking baseline score
+                # (you can replace by your within-pool robust selection if you want)
+                weights_for_pool = schemes[baseline_name]
+            else:
+                schemes = {"baseline": base_weights}
+                scheme_names = ["baseline"]
+                weights_for_pool = base_weights
+
+            scores = np.array(
+                [
+                    score_from_metrics(c["raw_metrics"], weights_for_pool)
+                    for c in candidates
+                ],
+                dtype=np.float64,
+            )
+            ranks = _ranks_desc(scores)
+
+            # choose top_k in this pool
+            order = np.argsort(-scores, kind="mergesort")
+            k = min(top_k, len(candidates))
+            top_idx = order[:k].tolist()
+
+            top = []
+            for local_rank, i in enumerate(top_idx, start=1):
+                c = candidates[i]
+                entry = {
+                    "pool_idx": pool_idx,
+                    "allowed_ops": allowed_ops,
+                    "signature": _sig_from_cfg(c),
+                    "baseline_score": float(scores[i]),
+                    "rank_in_pool": int(local_rank),
+                    "selected_ops": list(c["selected_ops"]),
+                    "hidden_dim": int(c["hidden_dim"]),
+                    "num_cells": int(c["num_cells"]),
+                    "num_nodes": int(c["num_nodes"]),
+                }
+                top.append(entry)
+
+                sig = entry["signature"]
+                st = agg.setdefault(
+                    sig,
+                    {
+                        "count_in_topk": 0,
+                        "ranks": [],
+                        "scores": [],
+                        "example": entry,
+                    },
+                )
+                st["count_in_topk"] += 1
+                st["ranks"].append(entry["rank_in_pool"])
+                st["scores"].append(entry["baseline_score"])
+
+            all_pool_results.append(
+                {
+                    "pool_idx": pool_idx,
+                    "allowed_ops": allowed_ops,
+                    "success": True,
+                    "topk": top,
+                    "scheme_names": scheme_names,
+                }
+            )
+
+        # ---------------------------
+        # aggregate robustness across pools
+        # ---------------------------
+        table = []
+        for sig, st in agg.items():
+            ranks = np.array(st["ranks"], dtype=np.float64)
+            scores = np.array(st["scores"], dtype=np.float64)
+            row = {
+                "signature": sig,
+                "topk_freq": int(st["count_in_topk"]),  # across pools
+                "avg_rank": float(ranks.mean()) if len(ranks) else float("inf"),
+                "worst_rank": int(ranks.max()) if len(ranks) else 10**9,
+                "avg_score": float(scores.mean()) if len(scores) else float("-inf"),
+                "score_std": float(scores.std(ddof=0)) if len(scores) else 0.0,
+                "example_selected_ops": st["example"]["selected_ops"],
+                "example_hidden_dim": st["example"]["hidden_dim"],
+                "example_num_cells": st["example"]["num_cells"],
+                "example_num_nodes": st["example"]["num_nodes"],
+            }
+            table.append(row)
+
+        # select robust top_k across pools using same style as before
+        if not table:
+            raise RuntimeError("No successful pools produced any top-k entries.")
+
+        # ordering across pools
+        topk_ref_eff = int(topk_ref)
+
+        if robustness_mode == "topk_freq":
+            table.sort(key=lambda r: (r["topk_freq"], r["avg_score"]), reverse=True)
+        elif robustness_mode == "avg_rank":
+            table.sort(key=lambda r: (r["avg_rank"], -r["avg_score"]))
+        elif robustness_mode == "worst_rank":
+            table.sort(key=lambda r: (r["worst_rank"], -r["avg_score"]))
+        else:
+            raise ValueError(f"Unknown robustness_mode='{robustness_mode}'")
+
+        selected = table[: min(top_k, len(table))]
+
+        return {
+            "selected": selected,  # robust across pools
+            "robustness_table": table,  # full aggregation
+            "pool_results": all_pool_results,  # per-pool topk + metadata
+            "op_pools": op_pools,
+            "config": {
+                "n_pools": n_pools,
+                "pool_size_range": pool_size_range,
+                "pool_seed": pool_seed,
+                "num_candidates": num_candidates,
+                "top_k": top_k,
+                "max_samples": max_samples,
+                "num_batches": num_batches,
+                "seed": seed,
+                "use_weight_schemes": use_weight_schemes,
+                "n_random": n_random,
+                "random_sigma": random_sigma,
+                "robustness_mode": robustness_mode,
+                "topk_ref": topk_ref,
+                "min_ops": min_ops,
+                "max_ops": max_ops,
+                "cell_range": cell_range,
+                "node_range": node_range,
+                "hidden_dim_choices": hidden_dim_choices,
+                "require_identity": require_identity,
+            },
+        }
 
     def get_search_summary(self) -> str:
         """Get a summary of all searches performed."""
@@ -1964,7 +3495,7 @@ class DARTSTrainer:
             final_metrics = search["final_results"]["final_metrics"]
             config = search["search_config"]
 
-            summary.append(f"\nSearch {i+1}:")
+            summary.append(f"\nSearch {i + 1}:")
             summary.append(f"  Candidates evaluated: {config['num_candidates']}")
             summary.append(f"  Final test RMSE: {final_metrics['rmse']:.6f}")
             summary.append(f"  Final R² score: {final_metrics['r2_score']:.4f}")
@@ -1987,7 +3518,7 @@ class DARTSTrainer:
         for i, training in enumerate(self.training_history):
             if "final_metrics" in training:
                 metrics = training["final_metrics"]
-                summary.append(f"\nSession {i+1}:")
+                summary.append(f"\nSession {i + 1}:")
                 summary.append(
                     f"  Best val loss: {training.get('best_val_loss', 'N/A')}"
                 )
@@ -2090,561 +3621,6 @@ class DARTSTrainer:
         plt.close()
 
         print(f"📊 Alpha evolution plot saved to {save_path}")
-
-    def plot_architecture(self, *, candidate: dict, save_path: str = "arch.png"):
-
-        arquitetura = self.parse_model_architecture(candidate["model"])
-        self.draw_darts_architecture(arquitetura, save_path=save_path)
-
-    def draw_darts_architecture(
-        self, model_info=None, save_path="darts_architecture.png"
-    ):
-        """
-        Draw a beautiful DARTS architecture diagram based on actual model structure.
-
-        Args:
-            model_info: Dictionary containing model architecture details
-        """
-        fig, ax = plt.subplots(figsize=(18, 12))
-        ax.set_xlim(0, 20)
-        ax.set_ylim(0, 12)
-        ax.axis("off")
-
-        # Beautiful color scheme
-        colors = {
-            "input_output": "#B8E6B8",
-            "embedding": "#A8D0F0",
-            "cell1": "#F4E4E4",
-            "cell1_ops": "#F5C2C7",
-            "cell1_processing": "#F5C2C7",
-            "cell2": "#FFF3CD",
-            "cell2_ops": "#FFE69C",
-            "forecast": "#E9ECEF",
-            "forecast_ops": "#CED4DA",
-        }
-
-        # Helper functions for beautiful boxes
-        def add_beautiful_box(
-            x,
-            y,
-            w,
-            h,
-            label,
-            color,
-            fontsize=10,
-            fontweight="normal",
-            edge_color="#333333",
-            linewidth=1.5,
-            corner_radius=0.05,
-        ):
-            """Add a beautiful rounded rectangle with shadow effect"""
-            # Add subtle shadow
-            shadow = FancyBboxPatch(
-                (x + 0.02, y - 0.02),
-                w,
-                h,
-                boxstyle=f"round,pad=0.02,rounding_size={corner_radius}",
-                facecolor="#00000015",
-                edgecolor="none",
-                zorder=1,
-            )
-            ax.add_patch(shadow)
-
-            # Main box
-            box = FancyBboxPatch(
-                (x, y),
-                w,
-                h,
-                boxstyle=f"round,pad=0.02,rounding_size={corner_radius}",
-                edgecolor=edge_color,
-                facecolor=color,
-                linewidth=linewidth,
-                zorder=2,
-            )
-            ax.add_patch(box)
-
-            # Text with better typography
-            ax.text(
-                x + w / 2,
-                y + h / 2,
-                label,
-                ha="center",
-                va="center",
-                fontsize=fontsize,
-                weight=fontweight,
-                color="#2C3E50",
-                zorder=3,
-            )
-
-        def draw_curved_arrow(
-            start_x,
-            start_y,
-            end_x,
-            end_y,
-            style="->",
-            linewidth=2,
-            color="#2C3E50",
-            curve_strength=0.3,
-        ):
-            """Draw a beautiful curved arrow"""
-            if abs(start_x - end_x) > abs(start_y - end_y):
-                # Horizontal curve
-                mid_x = (start_x + end_x) / 2
-                control_y = start_y + curve_strength * (end_y - start_y)
-                control_x = mid_x
-            else:
-                # Vertical curve
-                mid_y = (start_y + end_y) / 2
-                control_x = start_x + curve_strength * (end_x - start_x)
-                control_y = mid_y
-
-            # Create curved path
-            from matplotlib.path import Path
-
-            verts = [(start_x, start_y), (control_x, control_y), (end_x, end_y)]
-            codes = [Path.MOVETO, Path.CURVE3, Path.CURVE3]
-            path = Path(verts, codes)
-
-            # Draw path
-            patch = patches.PathPatch(
-                path, facecolor="none", edgecolor=color, linewidth=linewidth, zorder=2
-            )
-            ax.add_patch(patch)
-
-            # Add arrowhead
-            if style == "->":
-                dx = end_x - start_x
-                dy = end_y - start_y
-                length = np.sqrt(dx**2 + dy**2)
-                if length > 0:
-                    dx_norm = dx / length
-                    dy_norm = dy / length
-                    arrow_size = 0.15
-                    ax.arrow(
-                        end_x - arrow_size * dx_norm,
-                        end_y - arrow_size * dy_norm,
-                        arrow_size * dx_norm,
-                        arrow_size * dy_norm,
-                        head_width=0.08,
-                        head_length=0.08,
-                        fc=color,
-                        ec=color,
-                        zorder=3,
-                    )
-
-        def draw_dashed_connection(
-            start_x, start_y, end_x, end_y, color="#7F8C8D", alpha=0.6
-        ):
-            """Draw beautiful dashed connections"""
-            ax.plot(
-                [start_x, end_x],
-                [start_y, end_y],
-                "--",
-                color=color,
-                linewidth=1.5,
-                alpha=alpha,
-                zorder=1,
-            )
-
-        # Extract values from model_info
-        input_feat = model_info["input_features"]
-        embed_dim = model_info["embedding_dim"]
-        output_feat = model_info["output_features"]
-        cells = model_info["cells"]
-
-        # 1. Input Features (top left)
-        add_beautiful_box(
-            0.5,
-            9.5,
-            2.5,
-            1,
-            f"Input Features ({input_feat})",
-            colors["input_output"],
-            fontsize=11,
-            fontweight="bold",
-        )
-
-        # 2. Input Embedding (below input)
-        add_beautiful_box(
-            0.5,
-            8,
-            2.5,
-            1,
-            f"Input Embedding\nLinear({input_feat} → {embed_dim})",
-            colors["embedding"],
-            fontsize=10,
-            fontweight="bold",
-        )
-
-        # Curved arrow from Input to Embedding
-        draw_curved_arrow(1.75, 9.5, 1.75, 9, linewidth=2.5, color="#2980B9")
-
-        # 3. DARTS Cells (better positioned)
-        # Dynamically compute vertical positions for all DARTS cells
-        num_cells = len(cells)
-        cell_spacing = 4.0  # Vertical spacing between cells
-        total_height = (num_cells - 1) * cell_spacing
-        base_y = (
-            6.5 - total_height / 2
-        )  # Center around y=6.5 (midpoint of forecast box)
-
-        cell_positions = [(4.5, base_y + i * cell_spacing) for i in range(num_cells)]
-
-        cell_colors = [colors["cell1"], colors["cell2"]]
-        cell_op_colors = [colors["cell1_ops"], colors["cell2_ops"]]
-
-        for cell_idx, cell in enumerate(cells):
-            cell_x, cell_y = cell_positions[cell_idx]
-
-            # Main cell container with beautiful styling
-            add_beautiful_box(
-                cell_x,
-                cell_y,
-                5,
-                3.2,
-                "",
-                cell_colors[cell_idx],
-                corner_radius=0.08,
-                linewidth=2,
-            )
-
-            # Cell title
-            add_beautiful_box(
-                cell_x + 0.1,
-                cell_y + 2.7,
-                4.8,
-                0.4,
-                f"DARTS Cell {cell_idx + 1}",
-                cell_colors[cell_idx],
-                fontsize=13,
-                fontweight="bold",
-            )
-
-            # Operations (left side with better spacing)
-            ops = cell["ops"][:5]  # Show up to 5 operations
-            op_width = 2
-            op_height = 0.35
-            for i, op in enumerate(ops):
-                op_y = cell_y + 2.2 - i * 0.4
-                add_beautiful_box(
-                    cell_x + 0.2,
-                    op_y,
-                    op_width,
-                    op_height,
-                    op,
-                    cell_op_colors[cell_idx],
-                    fontsize=9,
-                    corner_radius=0.03,
-                    linewidth=1,
-                )
-
-                # Small connection line to processing box
-                line_start_x = cell_x + 0.2 + op_width
-                line_end_x = cell_x + 2.6
-                ax.plot(
-                    [line_start_x, line_end_x],
-                    [op_y + op_height / 2, op_y + op_height / 2],
-                    "-",
-                    color=cell_op_colors[cell_idx],
-                    linewidth=2,
-                    alpha=0.7,
-                )
-
-            # Cell processing box (right side)
-            add_beautiful_box(
-                cell_x + 2.6,
-                cell_y + 0.6,
-                2.2,
-                1.8,
-                "Cell Processing\nProj + Norm + Gate",
-                cell_op_colors[cell_idx],
-                fontsize=10,
-                fontweight="bold",
-                corner_radius=0.05,
-            )
-
-        # 4. Beautiful dashed connections from embedding to cells
-        embed_center_x = 1.75
-        embed_center_y = 8.5
-
-        for cell_idx, cell in enumerate(cells):
-            cell_x, cell_y = cell_positions[cell_idx]
-            ops = cell["ops"][:5]
-
-            for i, op in enumerate(ops):
-                op_y = cell_y + 2.2 - i * 0.4 + 0.175  # Center of op box
-                draw_dashed_connection(3, embed_center_y, cell_x + 0.2, op_y)
-
-        # 5. Forecasting Module (well-positioned)
-        forecast_x, forecast_y = 11, 6
-        add_beautiful_box(
-            forecast_x,
-            forecast_y,
-            4.5,
-            3.8,
-            "",
-            colors["forecast"],
-            corner_radius=0.08,
-            linewidth=2,
-        )
-
-        # Forecasting title
-        add_beautiful_box(
-            forecast_x + 0.1,
-            forecast_y + 3.3,
-            4.3,
-            0.4,
-            "Forecasting Module",
-            colors["forecast"],
-            fontsize=13,
-            fontweight="bold",
-        )
-
-        # Forecasting operations with actual model info
-        encoder_type = model_info["forecast_encoder"]
-        decoder_type = model_info["forecast_decoder"]
-        mlp_dims = model_info["mlp_dims"]
-
-        forecast_ops = [
-            f"{encoder_type} Encoder ({embed_dim} → {embed_dim})",
-            f"{decoder_type} Decoder ({input_feat} → {embed_dim})",
-            f"MLP ({' → '.join(map(str, mlp_dims))})",
-            f"Output Layer ({embed_dim} → {output_feat})",
-        ]
-
-        for i, op in enumerate(forecast_ops):
-            add_beautiful_box(
-                forecast_x + 0.2,
-                forecast_y + 2.7 - i * 0.6,
-                4.1,
-                0.5,
-                op,
-                colors["forecast_ops"],
-                fontsize=10,
-                corner_radius=0.03,
-                linewidth=1,
-            )
-
-        # 6. Output (far right)
-        add_beautiful_box(
-            16.5,
-            7.5,
-            2.5,
-            1,
-            f"Output ({output_feat})",
-            colors["input_output"],
-            fontsize=11,
-            fontweight="bold",
-        )
-
-        # 7. Beautiful curved arrows from cells to forecasting
-        for cell_idx, cell in enumerate(cells):
-            cell_x, cell_y = cell_positions[cell_idx]
-            start_x = cell_x + 5
-            start_y = cell_y + 1.6
-            draw_curved_arrow(
-                start_x,
-                start_y,
-                forecast_x,
-                forecast_y + 1.9,
-                linewidth=3,
-                color="#27AE60",
-                curve_strength=0.2,
-            )
-
-        # 8. Arrow from forecasting to output
-        draw_curved_arrow(
-            forecast_x + 4.5,
-            forecast_y + 1.9,
-            16.5,
-            8,
-            linewidth=3,
-            color="#8E44AD",
-            curve_strength=0.1,
-        )
-
-        # 9. Beautiful Legend (repositioned)
-        legend_x, legend_y = 11.5, 0.5
-        add_beautiful_box(
-            legend_x,
-            legend_y,
-            3.5,
-            3.2,
-            "",
-            "white",
-            edge_color="#34495E",
-            linewidth=2,
-            corner_radius=0.06,
-        )
-
-        ax.text(
-            legend_x + 1.75,
-            legend_y + 2.8,
-            "Legend",
-            ha="center",
-            va="center",
-            fontsize=12,
-            weight="bold",
-            color="#2C3E50",
-        )
-
-        # Base legend items
-        legend_items = [
-            ("Input/Output", colors["input_output"]),
-            ("Input Embedding", colors["embedding"]),
-        ]
-
-        # Add DARTS cell legend entries dynamically
-        cell_colors_all = [
-            colors["cell1"],
-            colors["cell2"],
-        ]  # Extend if more cells expected
-        for i in range(len(cells)):
-            color = cell_colors_all[i % len(cell_colors_all)]  # Cycle colors if needed
-            legend_items.append((f"DARTS Cell {i + 1}", color))
-
-        # Add Forecasting module
-        legend_items.append(("Forecasting Module", colors["forecast"]))
-
-        for i, (label, color) in enumerate(legend_items):
-            legend_item_y = legend_y + 2.3 - i * 0.35
-            add_beautiful_box(
-                legend_x + 0.15, legend_item_y, 0.3, 0.25, "", color, corner_radius=0.02
-            )
-            ax.text(
-                legend_x + 0.6,
-                legend_item_y + 0.125,
-                label,
-                ha="left",
-                va="center",
-                fontsize=10,
-                color="#2C3E50",
-            )
-
-        # Set beautiful background
-        fig.patch.set_facecolor("#FAFAFA")
-
-        plt.tight_layout()
-        plt.savefig(
-            save_path,
-            dpi=300,
-            bbox_inches="tight",
-            facecolor="#FAFAFA",
-            edgecolor="none",
-            pad_inches=0.2,
-        )
-        plt.show()
-        print(f"Saved beautiful architecture diagram to {save_path}")
-
-    def parse_model_architecture(self, model_dict):
-        """
-        Parse the TimeSeriesDARTS model dictionary to extract architecture details.
-
-        Args:
-            model_dict: Dictionary containing the PyTorch model (e.g., checkpoint['model'])
-
-        Returns:
-            Dictionary with architecture information for visualization
-        """
-        model_info = {}
-
-        # Get the actual model from the dictionary
-        if isinstance(model_dict, dict) and "model" in model_dict:
-            model = model_dict["model"]
-        else:
-            model = model_dict
-
-        # Extract input features and embedding dimension from input_embedding
-        try:
-            input_embedding = model.input_embedding
-            # Find the first Linear layer
-            for layer in input_embedding:
-                if hasattr(layer, "in_features") and hasattr(layer, "out_features"):
-                    model_info["input_features"] = layer.in_features
-                    model_info["embedding_dim"] = layer.out_features
-                    break
-        except:
-            model_info["input_features"] = 3
-            model_info["embedding_dim"] = 32
-
-        # Extract operations from DARTS cells
-        cells = []
-        try:
-            for cell_idx, cell in enumerate(model.cells):
-                ops = []
-
-                # Traverse the cell structure to find operations
-                if hasattr(cell, "edges"):
-                    for edge in cell.edges:
-                        if hasattr(edge, "ops"):
-                            for op_idx, op in enumerate(edge.ops):
-                                op_name = type(op).__name__
-                                if op_name not in ops:
-                                    ops.append(op_name)
-
-                if ops:
-                    cells.append({"ops": ops})
-        except:
-            # Fallback to default if parsing fails
-            cells = [
-                {
-                    "ops": [
-                        "IdentityOp",
-                        "GRNOp",
-                        "TimeConvOp",
-                        "WaveletOp",
-                    ]
-                }
-            ]
-
-        model_info["cells"] = cells
-
-        # Extract forecast encoder and decoder info
-        try:
-            forecast_encoder = model.forecast_encoder
-            model_info["forecast_encoder"] = type(forecast_encoder).__name__
-            if hasattr(forecast_encoder, "input_size"):
-                encoder_input_dim = forecast_encoder.input_size
-            if hasattr(forecast_encoder, "hidden_size"):
-                encoder_hidden_dim = forecast_encoder.hidden_size
-        except:
-            model_info["forecast_encoder"] = "GRU"
-            encoder_input_dim = 32
-            encoder_hidden_dim = 32
-
-        try:
-            forecast_decoder = model.forecast_decoder
-            model_info["forecast_decoder"] = type(forecast_decoder).__name__
-            if hasattr(forecast_decoder, "input_size"):
-                decoder_input_dim = forecast_decoder.input_size
-            if hasattr(forecast_decoder, "hidden_size"):
-                decoder_hidden_dim = forecast_decoder.hidden_size
-        except:
-            model_info["forecast_decoder"] = "GRU"
-            decoder_input_dim = 3
-            decoder_hidden_dim = 32
-
-        # Extract MLP dimensions
-        try:
-            mlp = model.mlp
-            mlp_dims = []
-            for layer in mlp:
-                if hasattr(layer, "in_features") and hasattr(layer, "out_features"):
-                    if not mlp_dims:  # First layer
-                        mlp_dims.append(layer.in_features)
-                    mlp_dims.append(layer.out_features)
-            model_info["mlp_dims"] = mlp_dims if mlp_dims else [32, 64, 32]
-        except:
-            model_info["mlp_dims"] = [32, 64, 32]
-
-        # Extract output features
-        try:
-            output_layer = model.output_layer
-            model_info["output_features"] = output_layer.out_features
-        except:
-            model_info["output_features"] = 3
-
-        return model_info
 
     def _batched_forecast(self, X_val: torch.Tensor, batch_size: int = 256):
         """

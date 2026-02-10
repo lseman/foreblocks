@@ -42,8 +42,9 @@ import optuna
 import pyfftw
 import pyfftw.interfaces.numpy_fft as fftw_np
 from numba import njit
-from scipy.interpolate import Akima1DInterpolator, PchipInterpolator, interp1d
-from scipy.signal import decimate, find_peaks, hilbert
+from scipy.interpolate import interp1d, Akima1DInterpolator, PchipInterpolator
+from scipy.signal import find_peaks, hilbert, decimate
+
 
 # -----------------------------------------------------------------------------
 # Optional torch refinement
@@ -59,17 +60,7 @@ except Exception:
     torch = None
     nn = None
     Adam = None
-
-
-# Notebook detection (Optuna progress bar can be annoying in some envs)
-try:
-    from IPython import get_ipython
-
-    IS_NOTEBOOK = get_ipython() is not None
-except Exception:
-    IS_NOTEBOOK = False
-
-
+    
 # -----------------------------------------------------------------------------
 # Utilities
 # -----------------------------------------------------------------------------
@@ -180,7 +171,7 @@ class FractalDimension:
                 col_max = np.max(column_vals)
                 k_min = col_min // s
                 k_max = col_max // s
-                total_boxes += k_max - k_min + 1
+                total_boxes += (k_max - k_min + 1)
 
             if total_boxes > 0:
                 counts.append(total_boxes)
@@ -337,13 +328,6 @@ class VMDParameters:
     k_penalty_lambda: float = 0.02
     k_overlap_mu: float = 0.10
 
-    # decorrelation (augmented Lagrangian)
-    enforce_uncorrelated: bool = True
-    corr_rho: float = 0.05  # dual ascent step
-    corr_update_every: int = 5  # update Gamma every N iterations
-    corr_ema: float = 0.8  # EMA smoothing for corr estimates
-    corr_floor: float = 1e-12
-
 
 @dataclass
 class HierarchicalParameters:
@@ -448,7 +432,9 @@ class BoundaryHandler:
             out = np.concatenate([left_ext, s, right_ext])
 
         elif method == "constant":
-            out = np.concatenate([np.full(ext_len, s[0]), s, np.full(ext_len, s[-1])])
+            out = np.concatenate(
+                [np.full(ext_len, s[0]), s, np.full(ext_len, s[-1])]
+            )
 
         else:
             return s, 0, 0
@@ -481,9 +467,7 @@ class BoundaryHandler:
         return out
 
     @staticmethod
-    def taper_boundaries(
-        modes: List[np.ndarray], taper_length: int
-    ) -> List[np.ndarray]:
+    def taper_boundaries(modes: List[np.ndarray], taper_length: int) -> List[np.ndarray]:
         out = []
         for m in modes:
             x = np.asarray(m, dtype=np.float64).copy()
@@ -670,12 +654,8 @@ class EMDVariants:
             if len(max_idx) < 3 or len(min_idx) < 3:
                 return h if iteration > 0 else None
 
-            upper = EMDVariants._interpolate_envelope(
-                max_idx, max_val, N, method=envelope_method
-            )
-            lower = EMDVariants._interpolate_envelope(
-                min_idx, min_val, N, method=envelope_method
-            )
+            upper = EMDVariants._interpolate_envelope(max_idx, max_val, N, method=envelope_method)
+            lower = EMDVariants._interpolate_envelope(min_idx, min_val, N, method=envelope_method)
             if upper is None or lower is None:
                 return h if iteration > 0 else None
 
@@ -693,9 +673,7 @@ class EMDVariants:
         return h
 
     @staticmethod
-    def _find_extrema(
-        signal: np.ndarray, kind: str = "max"
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def _find_extrema(signal: np.ndarray, kind: str = "max") -> Tuple[np.ndarray, np.ndarray]:
         x = signal
         N = len(x)
 
@@ -748,11 +726,7 @@ class EMDVariants:
                 envelope = interp_func(x_interp)
             elif method == "cubic" and len(idx) >= 4:
                 interp_func = interp1d(
-                    idx,
-                    values,
-                    kind="cubic",
-                    fill_value="extrapolate",
-                    bounds_error=False,
+                    idx, values, kind="cubic", fill_value="extrapolate", bounds_error=False
                 )
                 envelope = interp_func(x_interp)
             else:
@@ -800,9 +774,7 @@ class EMDVariants:
         return noises, bank
 
     @staticmethod
-    def _get_noise_component(
-        bank_i: List[np.ndarray], noise_fallback: np.ndarray, k: int
-    ) -> np.ndarray:
+    def _get_noise_component(bank_i: List[np.ndarray], noise_fallback: np.ndarray, k: int) -> np.ndarray:
         if k < len(bank_i):
             return bank_i[k]
         return noise_fallback
@@ -946,7 +918,7 @@ class EMDVariants:
                 )
                 if len(trial_imfs) > 0:
                     first_imf = np.asarray(trial_imfs[0], dtype=np.float64)
-                    local_mean_sum += noisy - first_imf
+                    local_mean_sum += (noisy - first_imf)
                     valid += 1
 
             if valid == 0:
@@ -979,9 +951,7 @@ class EMDVariants:
         return float(oi)
 
     @staticmethod
-    def compute_instantaneous_frequency(
-        imf: np.ndarray, fs: float = 1.0
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def compute_instantaneous_frequency(imf: np.ndarray, fs: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
         analytic = hilbert(imf)
         amplitude = np.abs(analytic)
         phase = np.unwrap(np.angle(analytic))
@@ -1008,9 +978,7 @@ class ModeProcessor:
         return float(freqs[int(np.argmax(spec))]) if spec.size else 0.0
 
     @staticmethod
-    def merge_similar_modes(
-        modes: List[np.ndarray], fs: float, freq_tol: float
-    ) -> List[np.ndarray]:
+    def merge_similar_modes(modes: List[np.ndarray], fs: float, freq_tol: float) -> List[np.ndarray]:
         if len(modes) <= 1:
             return modes
         dom = [ModeProcessor.dominant_frequency(m, fs) for m in modes]
@@ -1067,9 +1035,7 @@ class ModeProcessor:
             entropy_vals.append(Hn)
 
         avg_entropy = float(np.mean(entropy_vals))
-        return float(
-            0.5 * residual_energy + 0.2 * overlap_penalty + 0.1 * avg_entropy + 0.2 * oi
-        )
+        return float(0.5 * residual_energy + 0.2 * overlap_penalty + 0.1 * avg_entropy + 0.2 * oi)
 
     @staticmethod
     def entropy(mode: np.ndarray) -> float:
@@ -1125,7 +1091,6 @@ class VMDCore:
             window_alpha = self.boundary.auto_window_alpha(f)
         if window_alpha and window_alpha > 0:
             from scipy.signal import windows
-
             win = windows.tukey(len(fMirr), alpha=float(window_alpha))
             fMirr = fMirr * win
 
@@ -1155,9 +1120,7 @@ class VMDCore:
         use_soft_junction: bool = False,
         window_alpha: Optional[float] = None,
     ) -> Dict[str, Any]:
-        return self._prepare_signal(
-            signal, boundary_method, use_soft_junction, window_alpha
-        )
+        return self._prepare_signal(signal, boundary_method, use_soft_junction, window_alpha)
 
     @staticmethod
     def _init_from_spectrum(real_signal: np.ndarray, K: int) -> np.ndarray:
@@ -1186,10 +1149,6 @@ class VMDCore:
         use_soft_junction: bool = False,
         window_alpha: Optional[float] = None,
         trial: Optional[Any] = None,
-        enforce_uncorrelated: bool = False,
-        corr_rho: float = 0.1,
-        corr_update_every: int = 20,
-        corr_ema: float = 0.9,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Core VMD decomposition (real signal).
@@ -1229,9 +1188,6 @@ class VMDCore:
         Alpha = (alpha * np.ones(K)).astype(np.float64)
         omega = np.zeros(K, dtype=np.float64)
 
-        Gamma = np.zeros((K, K), dtype=np.float64)
-        C_ema = None
-
         if init == 1:
             omega = (np.arange(K) * (0.5 / K)).astype(np.float64)
         elif init == 2:
@@ -1240,9 +1196,7 @@ class VMDCore:
                 np.exp(np.log(fs0) + (np.log(0.5) - np.log(fs0)) * np.random.rand(K))
             ).astype(np.float64)
         elif init == 3:
-            base = np.asarray(
-                fMirr if (fMirr is not None) else x_work, dtype=np.float64
-            )
+            base = np.asarray(fMirr if (fMirr is not None) else x_work, dtype=np.float64)
             omega = self._init_from_spectrum(base, K)
 
         if DC:
@@ -1259,31 +1213,9 @@ class VMDCore:
         for n in range(int(max_iter)):
             sum_uk = np.sum(u_hat_prev, axis=1).astype(np.complex128)
 
-            if enforce_uncorrelated and (n % corr_update_every == 0) and n > 0:
-                # Use ensemble estimate if you want:
-                # C_est = self._corr_matrix_ensemble(u_hat_prev, half_T, n_blocks=4)
-                # Or single-shot:
-                # C_est = self._corr_matrix_from_uhat(u_hat_prev, half_T)
-                C_est = self._corr_matrix_time_equiv_from_uhat(
-                    u_hat_prev, half_T, remove_dc=True
-                )
-
-                Gamma, C_ema = self._update_gamma(
-                    Gamma, C_est, rho=corr_rho, ema=corr_ema, C_ema_prev=C_ema
-                )
-
             u_hat_next, omega_next, lam_next, diff_norm = update_modes_numba(
-                freqs,
-                half_T,
-                f_hat_plus,
-                sum_uk,
-                lam,
-                Alpha,
-                omega,
-                u_hat_prev,
-                K,
-                tau,
-                Gamma,
+                freqs, half_T, f_hat_plus,
+                sum_uk, lam, Alpha, omega, u_hat_prev, K, tau
             )
 
             if n > 5:
@@ -1317,9 +1249,7 @@ class VMDCore:
         u_hat_full[idxs, :] = np.conj(u_hat_full[T - idxs, :])
         u_hat_full[0, :] = np.conj(u_hat_full[-1, :])
 
-        u = np.real(
-            fftw_np.ifft(fftw_np.ifftshift(u_hat_full, axes=0), axis=0)
-        ).T  # (K, T)
+        u = np.real(fftw_np.ifft(fftw_np.ifftshift(u_hat_full, axes=0), axis=0)).T  # (K, T)
 
         # crop back to original length
         if boundary_method != "none":
@@ -1397,857 +1327,3 @@ class VMDCore:
 
         return modes, None, omega_shared
 
-    def _corr_matrix_ensemble(
-        self, u_hat: np.ndarray, half_T: int, n_blocks: int = 4, eps: float = 1e-12
-    ) -> np.ndarray:
-        U = u_hat[half_T:, :]
-        Tpos = U.shape[0]
-        if Tpos < 64 or n_blocks <= 1:
-            return self._corr_matrix_from_uhat(u_hat, half_T, eps)
-
-        blocks = np.array_split(np.arange(Tpos), n_blocks)
-        Cs = []
-        for idx in blocks:
-            Ub = U[idx, :]
-            G = (Ub.conj().T @ Ub).real
-            p = np.diag(G).copy()
-            denom = np.sqrt(np.outer(p, p)) + eps
-            C = G / denom
-            np.fill_diagonal(C, 0.0)
-            Cs.append(C)
-        C_mean = np.mean(Cs, axis=0)
-        return np.clip(C_mean, -1.0, 1.0)
-
-    def _corr_matrix_time_equiv_from_uhat(
-        self,
-        u_hat: np.ndarray,  # (T, K), fftshifted, "plus" spectrum (DC+pos half meaningful)
-        half_T: int,
-        eps: float = 1e-12,
-        remove_dc: bool = True,
-    ) -> np.ndarray:
-        """
-        Returns a correlation-like matrix that corresponds to *time-domain* normalized
-        inner products of real modes u_k(t), using Parseval (no IFFT needed).
-
-        remove_dc=True approximates mean removal by dropping the DC bin.
-        """
-        U = u_hat[half_T:, :]  # includes DC at row 0 of this slice
-
-        if remove_dc and U.shape[0] > 1:
-            U = U[1:, :]  # drop DC component (mean)
-
-        # Inner products for real signals using one-sided spectrum:
-        # <u_k, u_j> ∝ Re( U[:,k]^H U[:,j] ) with a factor 2 for positive freqs.
-        G = 2.0 * (U.conj().T @ U).real  # (K,K)
-
-        p = np.diag(G).copy()
-        denom = np.sqrt(np.outer(p, p)) + eps
-        C = G / denom
-
-        np.fill_diagonal(C, 0.0)
-        return np.clip(C, -1.0, 1.0)
-
-    def _corr_matrix_from_uhat(
-        self, u_hat: np.ndarray, half_T: int, eps: float = 1e-12
-    ) -> np.ndarray:
-        """
-        u_hat: (T, K) complex (your u_hat_prev)
-        Uses positive freqs only (half_T:).
-        Returns: (K, K) real correlation-like coefficients in [-1,1].
-        """
-        U = u_hat[half_T:, :]  # (Tpos, K)
-        # Gram matrix: G[k,j] = <u_k, u_j>
-        G = (U.conj().T @ U).real  # (K,K) real part
-        p = np.diag(G).copy()
-        denom = np.sqrt(np.outer(p, p)) + eps
-        C = G / denom
-        np.fill_diagonal(C, 0.0)
-        # Clip for stability
-        return np.clip(C, -1.0, 1.0)
-
-    def _update_gamma(
-        self,
-        Gamma: np.ndarray,
-        C_est: np.ndarray,
-        rho: float,
-        ema: float,
-        C_ema_prev: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        EMA smooth C, then dual ascent on Gamma.
-        Keeps Gamma symmetric and zero diagonal.
-        """
-        if C_ema_prev is None:
-            C_ema = C_est
-        else:
-            C_ema = ema * C_ema_prev + (1.0 - ema) * C_est
-
-        Gamma = Gamma + rho * C_ema
-        # enforce symmetry & zero diag (important)
-        Gamma = 0.5 * (Gamma + Gamma.T)
-        np.fill_diagonal(Gamma, 0.0)
-        return Gamma, C_ema
-
-
-# -----------------------------------------------------------------------------
-# Numba update kernel
-# -----------------------------------------------------------------------------
-
-
-@njit(fastmath=True)
-def update_modes_numba(
-    freqs,
-    half_T,
-    f_hat_plus,
-    sum_uk_init,
-    lambda_hat_n,
-    Alpha,
-    omega_n,
-    u_hat_prev,
-    K,
-    tau,
-    Gamma,
-):
-    T = len(freqs)
-
-    u_hat_plus_next = np.zeros((T, K), dtype=np.complex128)
-    omega_next = np.zeros(K, dtype=np.float64)
-
-    sum_uk = sum_uk_init.copy()
-
-    eps = 1e-14
-    freq_slice_start = half_T
-    positive_freqs = freqs[freq_slice_start:]
-
-    # PRE-ALLOCATED reusable buffers
-    corr_term = np.zeros(T, dtype=np.complex128)
-
-    for k in range(K):
-        sum_others = sum_uk - u_hat_prev[:, k]
-
-        omega_k = omega_n[k]
-        alpha_k = Alpha[k]
-        freq_diff = freqs - omega_k
-        denom = 1.0 + alpha_k * freq_diff * freq_diff + eps
-
-        # corr_term = sum_{j!=k} Gamma[k,j] * u_j
-        # Use Gauss–Seidel mixing:
-        #   - for j < k, use freshly updated u_hat_plus_next[:, j]
-        #   - for j > k, use u_hat_prev[:, j]
-        corr_term.real[:] = 0.0
-        corr_term.imag[:] = 0.0
-
-        for j in range(K):
-            if j == k:
-                continue
-            g = Gamma[k, j]
-            if g == 0.0:
-                continue
-
-            if j < k:
-                corr_term += g * u_hat_plus_next[:, j]
-            else:
-                corr_term += g * u_hat_prev[:, j]
-
-        # IMPORTANT: keep the correlation term (do NOT overwrite this line)
-        u_new = (f_hat_plus - sum_others - 0.5 * lambda_hat_n - corr_term) / denom
-        u_hat_plus_next[:, k] = u_new
-
-        sum_uk = sum_others + u_new
-
-        u_pos = u_new[freq_slice_start:]
-        weights = u_pos.real * u_pos.real + u_pos.imag * u_pos.imag
-        den = np.sum(weights)
-        if den > eps:
-            num = np.sum(positive_freqs * weights)
-            omega_next[k] = num / den
-        else:
-            omega_next[k] = omega_k
-
-    diff_norm = 0.0
-    for k in range(K):
-        diff = u_hat_plus_next[:, k] - u_hat_prev[:, k]
-        diff_norm += np.sum((diff.real * diff.real + diff.imag * diff.imag)) / T
-
-    lambda_next = lambda_hat_n + tau * (sum_uk - f_hat_plus)
-
-    return u_hat_plus_next, omega_next, lambda_next, diff_norm
-
-
-# -----------------------------------------------------------------------------
-# Optional: mode refinement
-# -----------------------------------------------------------------------------
-class InformerRefiner(nn.Module):
-    """Small Transformer encoder used as a denoiser/refiner."""
-
-    def __init__(self, seq_len: int, d_model: int = 64, n_heads: int = 4):
-        super().__init__()
-        self.embed = nn.Linear(1, d_model)
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=n_heads, batch_first=True
-        )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=2)
-        self.proj = nn.Linear(d_model, 1)
-        self.seq_len = seq_len
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.transpose(1, 2)  # (B, L, 1)
-        h = self.embed(x)
-        h = self.encoder(h)
-        y = self.proj(h)
-        return y.transpose(1, 2)  # (B, 1, L)
-
-
-def refine_modes_nn(
-    modes: np.ndarray,
-    epochs: int = 50,
-    lr: float = 1e-3,
-    use_gpu: bool = True,
-) -> np.ndarray:
-    if not TORCH_AVAILABLE:
-        return modes
-
-    m = np.asarray(modes, dtype=np.float64)
-    if m.ndim == 1:
-        m = m[None, :]
-    K, L = m.shape
-
-    device = "cuda" if (use_gpu and torch.cuda.is_available()) else "cpu"
-    model = InformerRefiner(seq_len=L).to(device)
-    opt = Adam(model.parameters(), lr=lr)
-    crit = nn.MSELoss()
-
-    mean = m.mean(axis=1, keepdims=True)
-    std = m.std(axis=1, keepdims=True) + 1e-8
-    mn = (m - mean) / std
-
-    x = torch.from_numpy(mn[:, None, :]).float().to(device)  # (K,1,L)
-    model.train()
-    for _ in range(int(epochs)):
-        y = model(x)
-        loss = crit(y, x)
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-
-    model.eval()
-    with torch.no_grad():
-        y = model(x).cpu().numpy().squeeze(1)
-
-    return (y * std + mean).astype(np.float64)
-
-
-# -----------------------------------------------------------------------------
-# Optimizer (REFactored)
-# -----------------------------------------------------------------------------
-class VMDOptimizer:
-    """
-    Single pipeline refactor:
-      _evaluate_candidate() is the only place that runs:
-        decompose -> postprocess -> cost
-      It is reused for:
-        - Optuna full objective (K, alpha)
-        - Optuna alpha-only objective
-        - Penalized K selection
-        - Final solve
-    """
-
-    def __init__(self, fftw: FFTWManager):
-        self.fftw = fftw
-        self.core = VMDCore(fftw)
-        self.proc = ModeProcessor()
-        self.analyzer = SignalAnalyzer()
-
-        # cache: (K, alpha_bin) -> (modes_list, freqs_list, cost)
-        self._cache: Dict[
-            Tuple[int, int], Tuple[List[np.ndarray], List[float], float]
-        ] = {}
-
-    # -----------------------------
-    # Shared helpers
-    # -----------------------------
-    @staticmethod
-    def _alpha_bin(alpha: float, step: float = 10.0) -> int:
-        return int(np.round(float(alpha) / step) * step)
-
-    @staticmethod
-    def _interp_to_len(y: np.ndarray, new_len: int) -> np.ndarray:
-        y = np.asarray(y, dtype=np.float64)
-        if y.size == new_len:
-            return y
-        xo = np.linspace(0.0, 1.0, y.size)
-        xn = np.linspace(0.0, 1.0, new_len)
-        return np.interp(xn, xo, y).astype(np.float64, copy=False)
-
-    def _postprocess_modes(
-        self,
-        modes: np.ndarray,
-        signal: np.ndarray,
-        fs: float,
-        p: VMDParameters,
-    ) -> Tuple[List[np.ndarray], List[float]]:
-        x = np.asarray(signal, dtype=np.float64)
-        total_E = _energy(x) + 1e-12
-
-        keep: List[np.ndarray] = []
-        for k in range(modes.shape[0]):
-            if _energy(modes[k]) / total_E > float(p.mode_energy_floor):
-                keep.append(np.asarray(modes[k], dtype=np.float64))
-
-        if not keep:
-            return [], []
-
-        merged = self.proc.merge_similar_modes(
-            keep, fs, freq_tol=float(p.merge_freq_tol)
-        )
-        sorted_modes, sorted_freqs = self.proc.sort_modes_by_frequency(
-            merged, fs, low_to_high=True
-        )
-        return sorted_modes, sorted_freqs
-
-    def _penalized_K_score(
-        self,
-        signal: np.ndarray,
-        fs: float,
-        raw_modes: np.ndarray,
-        p: VMDParameters,
-        K: int,
-    ) -> float:
-        x = np.asarray(signal, dtype=np.float64)
-        recon = np.sum(raw_modes, axis=0) if raw_modes.size else 0.0
-        err = float(np.sum((x - recon) ** 2)) / (float(np.sum(x**2)) + 1e-12)
-
-        dom = np.sort(
-            np.array(
-                [
-                    self.proc.dominant_frequency(raw_modes[k], fs)
-                    for k in range(raw_modes.shape[0])
-                ],
-                dtype=np.float64,
-            )
-        )
-        if dom.size > 1:
-            gaps = np.diff(dom)
-            overlap = float(np.mean(np.exp(-gaps / (np.median(gaps) + 1e-12))))
-        else:
-            overlap = 0.0
-
-        return float(
-            err + float(p.k_penalty_lambda) * float(K) + float(p.k_overlap_mu) * overlap
-        )
-
-    def _evaluate_candidate(
-        self,
-        *,
-        K: int,
-        alpha: float,
-        signal: np.ndarray,
-        fs: float,
-        precomp: Dict[str, Any],
-        p: VMDParameters,
-        trial: Optional[optuna.Trial] = None,
-        allow_cache: bool = True,
-    ) -> Tuple[List[np.ndarray], List[float], float]:
-        """
-        The canonical evaluation path:
-          - optional cache
-          - decompose (with pruning)
-          - postprocess (filter/merge/sort)
-          - compute cost on postprocessed modes
-        """
-        alpha_b = self._alpha_bin(alpha, step=10.0)
-        key = (int(K), int(alpha_b))
-        if allow_cache and key in self._cache:
-            return self._cache[key]
-
-        # try:
-        u, _, _ = self.core.decompose(
-            signal,
-            alpha=float(alpha),
-            tau=float(p.tau),
-            K=int(K),
-            DC=int(p.DC),
-            init=int(p.init),
-            tol=float(p.tol),
-            max_iter=int(p.max_iter),
-            fs=float(fs),
-            use_fs_vmd=bool(p.use_fs_vmd),
-            precomputed_fft=precomp,
-            trial=trial,
-        )
-        modes_list, freqs_list = self._postprocess_modes(u, signal, fs, p)
-        cost = float(self.proc.cost_signal(modes_list, signal, fs))
-
-        if allow_cache and len(self._cache) < 80:
-            self._cache[key] = (modes_list, freqs_list, cost)
-
-        return modes_list, freqs_list, cost
-
-    # -----------------------------
-    # K selection
-    # -----------------------------
-    def select_K(
-        self,
-        signal: np.ndarray,
-        fs: float,
-        p: VMDParameters,
-        precomp: Dict[str, Any],
-        alpha_default: float = 2000.0,
-    ) -> int:
-        K_candidates = range(2, int(p.max_K) + 1)
-
-        if p.k_selection.lower() == "fbd":
-            bestK, bestScore = None, float("inf")
-            for K in K_candidates:
-                try:
-                    u, _, _ = self.core.decompose(
-                        signal,
-                        alpha=float(alpha_default),
-                        tau=float(p.tau),
-                        K=int(K),
-                        DC=int(p.DC),
-                        init=1,
-                        tol=float(p.tol),
-                        max_iter=int(p.max_iter),
-                        fs=float(fs),
-                        use_fs_vmd=bool(p.use_fs_vmd),
-                        precomputed_fft=precomp,
-                    )
-                    res = np.asarray(signal, dtype=np.float64) - np.sum(u, axis=0)
-                    score = float(box_counting_dimension(res))
-                    if score < bestScore:
-                        bestK, bestScore = int(K), score
-                except Exception:
-                    continue
-            return int(bestK) if bestK is not None else int(p.max_K)
-
-        # default: penalized
-        bestK, bestScore = None, float("inf")
-        for K in K_candidates:
-            try:
-                u, _, _ = self.core.decompose(
-                    signal,
-                    alpha=float(alpha_default),
-                    tau=float(p.tau),
-                    K=int(K),
-                    DC=int(p.DC),
-                    init=int(p.init),
-                    tol=float(p.tol),
-                    max_iter=int(p.max_iter),
-                    fs=float(fs),
-                    use_fs_vmd=bool(p.use_fs_vmd),
-                    precomputed_fft=precomp,
-                )
-                score = self._penalized_K_score(signal, fs, u, p, int(K))
-                if score < bestScore:
-                    bestK, bestScore = int(K), float(score)
-            except Exception:
-                continue
-
-        return int(bestK) if bestK is not None else int(p.max_K)
-
-    # -----------------------------
-    # Optuna objectives (thin wrappers)
-    # -----------------------------
-    def _objective_full(
-        self,
-        trial: optuna.Trial,
-        signal: np.ndarray,
-        fs: float,
-        precomp: Dict[str, Any],
-        p: VMDParameters,
-    ) -> float:
-        K = int(trial.suggest_int("K", 2, int(p.max_K)))
-        alpha = float(
-            trial.suggest_float(
-                "alpha", float(p.alpha_min), float(p.alpha_max), log=True
-            )
-        )
-        _, _, cost = self._evaluate_candidate(
-            K=K,
-            alpha=alpha,
-            signal=signal,
-            fs=fs,
-            precomp=precomp,
-            p=p,
-            trial=trial,
-            allow_cache=True,
-        )
-        return float(cost)
-
-    def _objective_alpha_only(
-        self,
-        trial: optuna.Trial,
-        signal: np.ndarray,
-        fs: float,
-        precomp: Dict[str, Any],
-        p: VMDParameters,
-        K_fixed: int,
-    ) -> float:
-        alpha = float(
-            trial.suggest_float(
-                "alpha", float(p.alpha_min), float(p.alpha_max), log=True
-            )
-        )
-        _, _, cost = self._evaluate_candidate(
-            K=int(K_fixed),
-            alpha=alpha,
-            signal=signal,
-            fs=fs,
-            precomp=precomp,
-            p=p,
-            trial=trial,
-            allow_cache=True,
-        )
-        return float(cost)
-
-    # -----------------------------
-    # Public optimize()
-    # -----------------------------
-    def optimize(
-        self,
-        signal: Union[np.ndarray, List[float]],
-        fs: float,
-        auto_params: bool = True,
-        refine_modes: bool = True,
-        refine_epochs: int = 50,
-        use_mvmd: bool = False,
-        **overrides,
-    ) -> Tuple[np.ndarray, List[float], Tuple[int, float, float]]:
-        self._cache.clear()
-        x = np.asarray(signal, dtype=np.float64)
-
-        # MVMD path (kept)
-        if use_mvmd:
-            if x.ndim != 2:
-                raise ValueError("MVMD requires signal shaped (channels, samples)")
-            p = (
-                self.analyzer.assess_complexity(x[0], fs)
-                if auto_params
-                else VMDParameters()
-            )
-            for k, v in overrides.items():
-                if hasattr(p, k):
-                    setattr(p, k, v)
-
-            modes, _, _ = self.core.decompose_multivariate(
-                x,
-                alpha=float(p.alpha_min),
-                tau=float(p.tau),
-                K=int(p.max_K),
-                DC=int(p.DC),
-                init=int(p.init),
-                tol=float(p.tol),
-                max_iter=int(p.max_iter),
-                boundary_method=str(p.boundary_method),
-                use_soft_junction=bool(p.use_soft_junction),
-                window_alpha=p.window_alpha,
-                fs=float(fs),
-            )
-            flat = modes.reshape(-1, x.shape[1])
-            return flat, [0.0] * flat.shape[0], (int(p.max_K), float(p.alpha_min), 0.0)
-
-        # Standard path
-        p = self.analyzer.assess_complexity(x, fs) if auto_params else VMDParameters()
-        for k, v in overrides.items():
-            if hasattr(p, k):
-                setattr(p, k, v)
-
-        precomp = self.core.precompute_fft(
-            x,
-            boundary_method=str(p.boundary_method),
-            use_soft_junction=bool(p.use_soft_junction),
-            window_alpha=p.window_alpha,
-        )
-
-        # choose K strategy
-        best_K_fixed: Optional[int] = None
-        if p.k_selection.lower() in ("penalized", "fbd"):
-            best_K_fixed = self.select_K(x, fs, p, precomp, alpha_default=2000.0)
-
-        # Optuna
-        study = optuna.create_study(direction="minimize")
-        show_bar = bool(IS_NOTEBOOK)
-
-        if best_K_fixed is not None:
-            n_trials = max(10, int(p.n_trials) // 2)
-            study.optimize(
-                lambda t: self._objective_alpha_only(
-                    t, x, fs, precomp, p, best_K_fixed
-                ),
-                n_trials=int(n_trials),
-                show_progress_bar=show_bar,
-            )
-            best_alpha = float(study.best_params["alpha"])
-            best_K = int(best_K_fixed)
-        else:
-            study.optimize(
-                lambda t: self._objective_full(t, x, fs, precomp, p),
-                n_trials=int(p.n_trials),
-                show_progress_bar=show_bar,
-            )
-            best_alpha = float(study.best_params["alpha"])
-            best_K = int(study.best_params["K"])
-
-        best_cost = float(study.best_value)
-
-        # Final decomposition, reuse the same evaluation path to get modes_list+freqs_list
-        modes_list, freqs_list, _ = self._evaluate_candidate(
-            K=int(best_K),
-            alpha=float(best_alpha),
-            signal=x,
-            fs=float(fs),
-            precomp=precomp,
-            p=p,
-            trial=None,
-            allow_cache=False,  # final run, no need to cache
-        )
-
-        # Optional NN refinement (on sorted/merged modes)
-        if refine_modes and modes_list:
-            refined = refine_modes_nn(
-                np.stack(modes_list, axis=0), epochs=int(refine_epochs)
-            )
-            modes_list = [
-                refined[i].astype(np.float64, copy=False)
-                for i in range(refined.shape[0])
-            ]
-            modes_list, freqs_list = self.proc.sort_modes_by_frequency(modes_list, fs)
-
-        # Optional taper
-        if bool(p.apply_tapering) and modes_list:
-            taper_len = int(min(100, x.size // 10))
-            modes_list = BoundaryHandler.taper_boundaries(modes_list, taper_len)
-
-        self.fftw.save_wisdom()
-
-        modes_arr = (
-            np.stack(modes_list, axis=0)
-            if modes_list
-            else np.zeros((0, x.size), dtype=np.float64)
-        )
-        return modes_arr, freqs_list, (int(best_K), float(best_alpha), float(best_cost))
-
-
-# -----------------------------------------------------------------------------
-# Hierarchical VMD (minor de-dup: upsample helper)
-# -----------------------------------------------------------------------------
-class HierarchicalVMD:
-    def __init__(self, optimizer: VMDOptimizer):
-        self.opt = optimizer
-
-    @staticmethod
-    def _upsample_modes_to(modes: np.ndarray, target_len: int) -> np.ndarray:
-        if modes.size == 0:
-            return modes
-        if modes.shape[1] == target_len:
-            return modes
-        up = []
-        for i in range(modes.shape[0]):
-            m = modes[i]
-            xo = np.linspace(0.0, 1.0, m.size)
-            xn = np.linspace(0.0, 1.0, target_len)
-            up.append(np.interp(xn, xo, m))
-        return np.stack(up, axis=0).astype(np.float64)
-
-    def decompose(
-        self,
-        signal: np.ndarray,
-        fs: float,
-        params: HierarchicalParameters,
-        refine_modes: bool = True,
-        refine_epochs: int = 50,
-    ) -> Tuple[np.ndarray, List[float], List[Dict[str, Any]]]:
-        x = np.asarray(signal, dtype=np.float64)
-        original_energy = _energy(x) + 1e-12
-
-        all_modes: List[np.ndarray] = []
-        level_info: List[Dict[str, Any]] = []
-        residual = x.copy()
-
-        print(f"Starting Hierarchical VMD (max_levels={params.max_levels})")
-
-        for level in range(int(params.max_levels)):
-            downsample_factor = 2**level
-
-            if level == 0:
-                signal_level = residual.copy()
-                fs_level = float(fs)
-            else:
-                expected_len = residual.size // downsample_factor
-                if expected_len < int(params.min_samples_per_level):
-                    print(
-                        f"Stopping: projected len {expected_len} < min {params.min_samples_per_level}"
-                    )
-                    break
-
-                use_aa = params.use_anti_aliasing_higher_levels
-                do_fir = (
-                    bool(use_aa)
-                    and (residual.size >= int(params.min_samples_for_fir_decimation))
-                    and (expected_len >= 100)
-                )
-
-                if do_fir:
-                    try:
-                        signal_level = decimate(
-                            residual, q=downsample_factor, ftype="fir", zero_phase=True
-                        )
-                    except Exception:
-                        signal_level = residual[::downsample_factor]
-                else:
-                    signal_level = residual[::downsample_factor]
-
-                fs_level = float(fs) / float(downsample_factor)
-
-            print(
-                f"Level {level + 1}/{params.max_levels}: len={signal_level.size} @ fs={fs_level:.2f} Hz"
-            )
-
-            try:
-                t0 = time.time()
-                modes_level, freqs_level, opt_params = self.opt.optimize(
-                    signal_level,
-                    fs_level,
-                    auto_params=True,
-                    refine_modes=refine_modes,
-                    apply_tapering=False,
-                    k_selection="penalized",
-                )
-                dt = time.time() - t0
-
-                if params.use_emd_hybrid and modes_level.shape[0] > 0:
-                    ent = [
-                        ModeProcessor.entropy(modes_level[i])
-                        for i in range(modes_level.shape[0])
-                    ]
-                    idx = int(np.argmax(ent))
-                    imfs = EMDVariants.ceemdan(modes_level[idx])
-                    if len(imfs) > 1:
-                        modes_level[idx] = np.sum(np.stack(imfs[:-1], axis=0), axis=0)
-
-                level_info.append(
-                    {
-                        "level": level + 1,
-                        "downsample_factor": downsample_factor,
-                        "fs": fs_level,
-                        "n_modes": int(modes_level.shape[0]),
-                        "frequencies": freqs_level,
-                        "energy_ratio": _energy(signal_level) / original_energy,
-                        "computation_time": dt,
-                        "parameters": opt_params,
-                    }
-                )
-            except Exception as e:
-                print(f"FAILED at level {level + 1}: {e}")
-                break
-
-            # Upsample to original length if needed
-            if level > 0 and modes_level.shape[0] > 0:
-                modes_level = self._upsample_modes_to(modes_level, x.size)
-
-            for i in range(modes_level.shape[0]):
-                all_modes.append(modes_level[i].copy())
-
-            recon = np.sum(modes_level, axis=0) if modes_level.shape[0] else 0.0
-            residual = residual - recon
-            res_ratio = _energy(residual) / original_energy
-
-            if res_ratio < float(params.energy_threshold):
-                print("Stopping: residual below threshold")
-                break
-
-        merged = ModeProcessor.merge_similar_modes(all_modes, fs, freq_tol=0.2)
-        sorted_modes, sorted_freqs = ModeProcessor.sort_modes_by_frequency(merged, fs)
-
-        if refine_modes and sorted_modes:
-            refined = refine_modes_nn(
-                np.stack(sorted_modes, axis=0), epochs=int(refine_epochs)
-            )
-            sorted_modes = [refined[i] for i in range(refined.shape[0])]
-            sorted_modes, sorted_freqs = ModeProcessor.sort_modes_by_frequency(
-                sorted_modes, fs
-            )
-
-        out = (
-            np.stack(sorted_modes, axis=0)
-            if sorted_modes
-            else np.zeros((0, x.size), dtype=np.float64)
-        )
-        return out, sorted_freqs, level_info
-
-    @staticmethod
-    def print_summary(level_info: List[Dict[str, Any]]) -> None:
-        print("\n" + "=" * 60)
-        print("HIERARCHICAL VMD SUMMARY")
-        print("=" * 60)
-        total_modes = sum(int(info["n_modes"]) for info in level_info)
-        total_time = sum(float(info["computation_time"]) for info in level_info)
-        print(f"Levels processed: {len(level_info)}")
-        print(f"Total modes found: {total_modes}")
-        print(f"Total computation time: {total_time:.2f}s")
-        if level_info:
-            print(f"Average time per level: {total_time / len(level_info):.2f}s")
-        print("\nLevel details:")
-        for info in level_info:
-            freqs = info.get("frequencies", [])
-            fpreview = (
-                [f"{float(f):.2f}" for f in freqs[:3]]
-                if isinstance(freqs, list)
-                else []
-            )
-            print(
-                f" - Level {info['level']}: fs={info['fs']:.2f}Hz, down={info['downsample_factor']}x, "
-                f"modes={info['n_modes']}, energy={100 * info['energy_ratio']:.1f}%, time={info['computation_time']:.2f}s, "
-                f"dom={fpreview}"
-            )
-
-
-# -----------------------------------------------------------------------------
-# User-facing API
-# -----------------------------------------------------------------------------
-class FastVMD:
-    def __init__(self, wisdom_file: str = "vmd_fftw_wisdom.dat"):
-        self.fftw = FFTWManager(wisdom_file)
-        self.opt = VMDOptimizer(self.fftw)
-        self.hvmd = HierarchicalVMD(self.opt)
-
-    def decompose(
-        self, signal: np.ndarray, fs: float, method: str = "standard", **kwargs
-    ):
-        refine_modes = bool(kwargs.pop("refine_modes", False))
-        refine_epochs = int(kwargs.pop("refine_epochs", 50))
-
-        if method == "hierarchical":
-            hp = HierarchicalParameters(
-                max_levels=int(kwargs.pop("max_levels", 3)),
-                energy_threshold=float(kwargs.pop("energy_threshold", 0.01)),
-                min_samples_per_level=int(kwargs.pop("min_samples_per_level", 100)),
-                use_anti_aliasing_level_0=bool(
-                    kwargs.pop("use_anti_aliasing_level_0", True)
-                ),
-                use_anti_aliasing_higher_levels=bool(
-                    kwargs.pop("use_anti_aliasing_higher_levels", False)
-                ),
-                min_samples_for_fir_decimation=int(
-                    kwargs.pop("min_samples_for_fir_decimation", 600)
-                ),
-                use_emd_hybrid=bool(kwargs.pop("use_emd_hybrid", False)),
-            )
-            return self.hvmd.decompose(
-                signal, fs, hp, refine_modes=refine_modes, refine_epochs=refine_epochs
-            )
-
-        return self.opt.optimize(
-            signal, fs, refine_modes=refine_modes, refine_epochs=refine_epochs, **kwargs
-        )
-
-    def clear_cache(self):
-        self.opt._cache.clear()
-        gc.collect()
-
-    def __del__(self):
-        try:
-            self.clear_cache()
-        except Exception:
-            pass

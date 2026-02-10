@@ -40,6 +40,7 @@ dependencies = [
     "google>=3.0.0",
     "pysr>=1.5.9",
     "ruptures>=1.1.9",
+    "basedpyright>=1.33.0",
 ]
 
 [project.urls]
@@ -62,3 +63,9 @@ float_to_top = true
 combine_as_imports = true
 skip_gitignore = true
 filter_files = true
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]

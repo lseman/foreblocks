@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from foreblocks.node_spec import node
+from foreblocks.ui_aux.node_spec import node
 
 # ==============================================================
 # Base Interfaces

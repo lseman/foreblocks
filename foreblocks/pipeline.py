@@ -8,12 +8,18 @@ from torch import nn
 from .aux import (  # Your existing ModelConfig and TrainingConfig implementations
     ModelConfig, TrainingConfig)
 # Model components (these must be implemented or imported from your package)
+from .blocks.enc_dec import (
+    GRUDecoder,
+    GRUEncoder,
+    LatentConditionedDecoder,
+    LSTMDecoder,
+    LSTMEncoder,
+    VariationalEncoderWrapper,
+)
 from .core import ForecastingModel
-from .enc_dec import (GRUDecoder, GRUEncoder, LatentConditionedDecoder,
-                      LSTMDecoder, LSTMEncoder, VariationalEncoderWrapper)
 from .preprocessing import TimeSeriesPreprocessor
 from .tf.transformer import TransformerDecoder, TransformerEncoder
-from .utils import Trainer  # Your existing Trainer implementation
+from .training import Trainer  # Trainer package entrypoint
 
 
 class TimeSeriesSeq2Seq:

@@ -16,7 +16,7 @@ from foreblocks.quantization import (
     StaticQuantizedLinear,
 )
 
-from .core import ForecastingModel
+from .model import ForecastingModel
 
 
 class DistilledForecastingModel(ForecastingModel):

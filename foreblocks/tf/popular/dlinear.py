@@ -5,12 +5,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import foreblocks.tf.moe as txmoe
+import foreblocks.tf.experts.moe as txmoe
 import foreblocks.tf.norms as txaux
 
 # Use your project modules
 from foreblocks.tf.embeddings import PositionalEncoding
-from foreblocks.tf.multi_att import MultiAttention
+from foreblocks.tf.attention.multi_att import MultiAttention
 from foreblocks.tf.norms import create_norm_layer
 
 

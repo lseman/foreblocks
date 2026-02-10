@@ -22,12 +22,12 @@ from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from foreblocks.node_spec import node
+from foreblocks.ui_aux.node_spec import node
 
 # Optional: import your MoE classes and HeadComposer
 try:
-    from foreblocks.tf.moe import FeedForwardBlock, MoEFeedForwardDMoE
-    from foreblocks.tf.moe_logging import MoELogger, ReportInputs, build_moe_report
+    from foreblocks.tf.experts.moe import FeedForwardBlock, MoEFeedForwardDMoE
+    from foreblocks.tf.experts.moe_logging import MoELogger, ReportInputs, build_moe_report
 except Exception:
     MoELogger = None
     ReportInputs = None
