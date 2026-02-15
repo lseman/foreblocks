@@ -12,7 +12,7 @@ from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from foreblocks.ui_aux.node_spec import node
+from foreblocks.ui.node_spec import node
 
 # Optional: import your MoE classes to detect them explicitly (if available)
 # try:

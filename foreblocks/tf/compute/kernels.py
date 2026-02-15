@@ -20,15 +20,110 @@ try:
 except Exception:  # pragma: no cover
     TRITON_AVAILABLE = False
 
+
+class _GroupedMMVarMFunction(torch.autograd.Function):
+    """
+    Triton forward for grouped variable-M GEMM with manual backward.
+    Backward is computed with torch matmuls per expert segment.
+    """
+
+    @staticmethod
+    def forward(ctx, A_packed, offsets, B_cat, use_fp16_acc: bool):
+        if not TRITON_AVAILABLE:
+            raise RuntimeError("_GroupedMMVarMFunction requires Triton.")
+        if not A_packed.is_cuda:
+            raise RuntimeError("_GroupedMMVarMFunction expects CUDA tensors.")
+
+        if not A_packed.is_contiguous():
+            A_packed = A_packed.contiguous()
+        if not offsets.is_contiguous():
+            offsets = offsets.contiguous()
+        if not B_cat.is_contiguous():
+            B_cat = B_cat.contiguous()
+
+        E = offsets.numel() - 1
+        K = B_cat.shape[1]
+        N = B_cat.shape[2]
+        C_packed = torch.empty(
+            (A_packed.shape[0], N), device=A_packed.device, dtype=A_packed.dtype
+        )
+
+        starts = offsets[:-1].to(torch.int32).contiguous()
+        M_per = (offsets[1:] - offsets[:-1]).to(torch.int32).contiguous()
+
+        stride_a_m, stride_a_k = A_packed.stride()
+        stride_b_g, stride_b_k, stride_b_n = B_cat.stride()
+        stride_c_m, stride_c_n = C_packed.stride()
+        acc_dtype = tl.float16 if use_fp16_acc else tl.float32
+
+        grid = (E,)
+        _grouped_gemm_varM_kernel[grid](
+            A_packed,
+            B_cat,
+            C_packed,
+            starts,
+            M_per,
+            K=K,
+            N=N,
+            stride_a_m=stride_a_m,
+            stride_a_k=stride_a_k,
+            stride_b_g=stride_b_g,
+            stride_b_k=stride_b_k,
+            stride_b_n=stride_b_n,
+            stride_c_m=stride_c_m,
+            stride_c_n=stride_c_n,
+            ACC_DTYPE=acc_dtype,
+        )
+
+        ctx.save_for_backward(A_packed, B_cat, offsets)
+        return C_packed
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        A_packed, B_cat, offsets = ctx.saved_tensors
+        grad_out = grad_out.contiguous()
+
+        grad_A = torch.zeros_like(A_packed)
+        grad_B = torch.zeros_like(B_cat)
+
+        E = offsets.numel() - 1
+        for e in range(E):
+            s = int(offsets[e].item())
+            t = int(offsets[e + 1].item())
+            if t <= s:
+                continue
+            A_e = A_packed[s:t]  # [M, K]
+            dC_e = grad_out[s:t]  # [M, N]
+            B_e = B_cat[e]  # [K, N]
+            grad_A[s:t] = dC_e @ B_e.T  # [M, K]
+            grad_B[e] = A_e.T @ dC_e  # [K, N]
+
+        return grad_A, None, grad_B, None
+
+
 # =============================== Triton kernels ===============================
 if TRITON_AVAILABLE:
 
     @triton.autotune(
         configs=[
-            triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 32}, num_stages=2, num_warps=4),
-            triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 64}, num_stages=2, num_warps=4),
-            triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64}, num_stages=2, num_warps=4),
-            triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64}, num_stages=3, num_warps=8),
+            triton.Config(
+                {"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 32}, num_stages=2, num_warps=4
+            ),
+            triton.Config(
+                {"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 64},
+                num_stages=2,
+                num_warps=4,
+            ),
+            triton.Config(
+                {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64},
+                num_stages=2,
+                num_warps=4,
+            ),
+            triton.Config(
+                {"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64},
+                num_stages=3,
+                num_warps=8,
+            ),
         ],
         key=["K", "N"],
     )
@@ -171,9 +266,10 @@ def grouped_mm_varM(
     out_dtype: Optional[torch.dtype] = None,
     use_fp16_acc: bool = False,  # Optional tuning toggle for Triton path
     use_shared_b: bool = False,  # Ignored for now; kept for API compat
-    block_m: int = 128,          # NOTE: ignored on Triton path (autotune chooses)
-    block_n: int = 128,          # NOTE: ignored on Triton path
-    block_k: int = 64,           # NOTE: ignored on Triton path
+    allow_triton_training: bool = True,
+    block_m: int = 128,  # NOTE: ignored on Triton path (autotune chooses)
+    block_n: int = 128,  # NOTE: ignored on Triton path
+    block_k: int = 64,  # NOTE: ignored on Triton path
 ) -> torch.Tensor:
     """
     Compute concatenated C = concat_e (A_e @ B_e) with variable M_e.
@@ -183,8 +279,8 @@ def grouped_mm_varM(
     B_per_expert: list of [K, N] (one per expert, same K and N)
     Returns C_packed: [S, N]
 
-    - Triton path is *inference-only* (no gradients).
-    - Training / autograd path uses pure torch.mm.
+    - Triton path supports training via custom autograd (optional).
+    - Fallback path uses pure torch.mm.
     """
     global __SHARED_B_WARNED
 
@@ -201,13 +297,12 @@ def grouped_mm_varM(
     if not offsets.is_contiguous():
         offsets = offsets.contiguous()
 
-    # If we need gradients, stay with PyTorch matmul for correctness.
-    requires_grad = (
-        torch.is_grad_enabled()
-        and (A_packed.requires_grad or any(b.requires_grad for b in B_per_expert))
+    # Detect whether gradients are needed.
+    requires_grad = torch.is_grad_enabled() and (
+        A_packed.requires_grad or any(b.requires_grad for b in B_per_expert)
     )
 
-    if (not TRITON_AVAILABLE) or (not A_packed.is_cuda) or requires_grad:
+    if (not TRITON_AVAILABLE) or (not A_packed.is_cuda):
         A_blocks = _split_by_offsets(A_packed, offsets)
         Y = _foreach_mm(A_blocks, list(B_per_expert))
         N = B_per_expert[0].shape[1] if len(B_per_expert) else 0
@@ -218,10 +313,28 @@ def grouped_mm_varM(
                 C_packed[s_i:t_i] = y.to(out_dtype)
         return C_packed
 
-    # Triton path (inference-only) -------------------------------------------
+    # Triton path ------------------------------------------------------------
     K = B_per_expert[0].shape[0]
     N = B_per_expert[0].shape[1]
-    B_cat = torch.stack([b.contiguous() for b in B_per_expert], dim=0).to(A_packed.dtype)  # [E,K,N]
+    B_cat = torch.stack([b.contiguous() for b in B_per_expert], dim=0).to(
+        A_packed.dtype
+    )  # [E,K,N]
+
+    # Training path with manual-backward autograd wrapper
+    if requires_grad and allow_triton_training:
+        C = _GroupedMMVarMFunction.apply(A_packed, offsets, B_cat, use_fp16_acc)
+        return C.to(out_dtype) if C.dtype != out_dtype else C
+
+    # Strict fallback for training if custom-triton backward is disabled
+    if requires_grad:
+        A_blocks = _split_by_offsets(A_packed, offsets)
+        Y = _foreach_mm(A_blocks, list(B_per_expert))
+        C_packed = torch.empty((A_packed.shape[0], N), device=device, dtype=out_dtype)
+        for y, s, t in zip(Y, offsets[:-1], offsets[1:]):
+            s_i, t_i = int(s.item()), int(t.item())
+            if t_i > s_i and y.numel() > 0:
+                C_packed[s_i:t_i] = y.to(out_dtype)
+        return C_packed
 
     if use_shared_b and not __SHARED_B_WARNED:
         print(
@@ -266,7 +379,7 @@ def grouped_mm_varM(
 
 # ============================ SwiGLU grouped MLP ==============================
 
-@torch.no_grad()
+
 def _weights_from_swiglu_experts(
     experts: Sequence[torch.nn.Module],
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], int]:
@@ -307,6 +420,9 @@ def grouped_mlp_swiglu(
     out_dtype: Optional[torch.dtype] = None,
     use_fp16_acc: bool = False,  # Passed through for optional tuning
     use_shared_b: bool = False,  # Currently ignored in Triton path (see grouped_mm_varM)
+    allow_triton_training: bool = True,
+    B12_cat_prepacked: Optional[torch.Tensor] = None,
+    B3_cat_prepacked: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     SwiGLU MLP in grouped mode over packed slices:
@@ -320,8 +436,19 @@ def grouped_mlp_swiglu(
     if offsets.numel() <= 1:
         return packed_x.new_zeros((0, packed_x.shape[1]))
 
-    w12_list, w3_list, H = _weights_from_swiglu_experts(experts)
     D = packed_x.shape[1]
+    if (B12_cat_prepacked is not None) and (B3_cat_prepacked is not None):
+        B12 = B12_cat_prepacked
+        B3 = B3_cat_prepacked
+        if B12.ndim != 3 or B3.ndim != 3:
+            raise ValueError(
+                "Prepacked tensors must be rank-3: [E, D, 2H] and [E, H, D]."
+            )
+        H = B3.shape[1]
+        w12_list = list(B12.unbind(0))
+        w3_list = list(B3.unbind(0))
+    else:
+        w12_list, w3_list, H = _weights_from_swiglu_experts(experts)
 
     assert all(w.shape == (D, 2 * H) for w in w12_list), "All w12 must be [D, 2H]"
     assert all(w.shape == (H, D) for w in w3_list), "All w3 must be [H, D]"
@@ -334,6 +461,7 @@ def grouped_mlp_swiglu(
         out_dtype=packed_x.dtype,
         use_fp16_acc=use_fp16_acc,
         use_shared_b=use_shared_b,
+        allow_triton_training=allow_triton_training,
         # block_* args kept for API compat but ignored on Triton path
         block_m=128,
         block_n=128,
@@ -354,9 +482,9 @@ def grouped_mlp_swiglu(
         out_dtype=out_dtype or packed_x.dtype,
         use_fp16_acc=use_fp16_acc,
         use_shared_b=use_shared_b,
+        allow_triton_training=allow_triton_training,
         block_m=128,
         block_n=128,
         block_k=64,
     )
     return Y
-

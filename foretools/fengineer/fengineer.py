@@ -1,139 +1,25 @@
 import warnings
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+import inspect
+from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
-import torch
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.preprocessing import LabelEncoder, QuantileTransformer
+from sklearn.preprocessing import QuantileTransformer
 from sklearn.utils.validation import check_is_fitted
 
-from foretools.aux.adaptive_mi import AdaptiveMI
-from foretools.fengineer.rfecv import *
-from foretools.fengineer.transformers import *
+from foretools.fengineer.filters import CorrelationFilter
+from foretools.fengineer.selectors import FeatureSelector
+from foretools.fengineer.transformers import (
+    BinningTransformer,
+    CategoricalTransformer,
+    FeatureConfig,
+    InteractionTransformer,
+    MathematicalTransformer,
+    RandomFourierFeaturesTransformer,
+    StatisticalTransformer,
+)
 
-# Type hints for better code clarity
-ArrayLike = Union[np.ndarray, pd.Series, pd.DataFrame]
-ModelLike = Any
-
-
-
-class CorrelationFilter:
-    """Removes highly correlated features with multiple selection strategies."""
-
-    def __init__(
-        self,
-        threshold: float = 0.95,
-        method: str = "variance",
-        min_features: int = 2,
-        handle_missing: bool = True,
-    ):
-        """
-        Args:
-            threshold: Correlation threshold above which to remove features
-            method: Strategy for choosing which feature to drop ('variance', 'target_corr', 'random')
-            min_features: Minimum number of features to keep
-            handle_missing: Whether to handle missing values before correlation
-        """
-        self.threshold = threshold
-        self.method = method
-        self.min_features = min_features
-        self.handle_missing = handle_missing
-        self.features_to_drop_: List[str] = []
-        self.correlation_pairs_: List[Tuple[str, str, float]] = []
-        self.feature_rankings_: Dict[str, float] = {}
-
-    def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
-    ) -> "CorrelationFilter":
-        """Fit correlation filter."""
-        numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-
-        if len(numerical_cols) < 2:
-            self.features_to_drop_ = []
-            return self
-
-        try:
-            # Handle missing values if requested
-            X_corr = X[numerical_cols].copy()
-            if self.handle_missing:
-                X_corr = X_corr.fillna(X_corr.median())
-
-            # Calculate correlation matrix
-            corr_matrix = X_corr.corr()
-
-            # Handle NaN correlations (constant features)
-            corr_matrix = corr_matrix.fillna(0)
-
-            # Find highly correlated pairs
-            upper_tri = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
-            high_corr_mask = (corr_matrix.abs() > self.threshold) & upper_tri
-            high_corr_pairs = np.where(high_corr_mask)
-
-            # Store correlation pairs for inspection
-            self.correlation_pairs_ = []
-            feature_drop_scores = {}
-
-            for i, j in zip(*high_corr_pairs):
-                col1, col2 = corr_matrix.index[i], corr_matrix.columns[j]
-                corr_value = corr_matrix.iloc[i, j]
-                self.correlation_pairs_.append((col1, col2, abs(corr_value)))
-
-                # Calculate drop scores based on method
-                if self.method == "variance":
-                    score1 = X_corr[col1].var()
-                    score2 = X_corr[col2].var()
-                    keep_col = col1 if score1 > score2 else col2
-                    drop_col = col2 if score1 > score2 else col1
-
-                elif self.method == "target_corr" and y is not None:
-                    # Keep feature more correlated with target
-                    try:
-                        score1 = abs(X_corr[col1].corr(y))
-                        score2 = abs(X_corr[col2].corr(y))
-                        keep_col = col1 if score1 > score2 else col2
-                        drop_col = col2 if score1 > score2 else col1
-                    except:
-                        # Fallback to variance if target correlation fails
-                        score1 = X_corr[col1].var()
-                        score2 = X_corr[col2].var()
-                        keep_col = col1 if score1 > score2 else col2
-                        drop_col = col2 if score1 > score2 else col1
-
-                else:  # random or fallback
-                    drop_col = np.random.choice([col1, col2])
-                    keep_col = col1 if drop_col == col2 else col2
-
-                # Track drop scores (higher score = more likely to drop)
-                feature_drop_scores[drop_col] = feature_drop_scores.get(drop_col, 0) + 1
-
-            # Sort features by drop frequency and select final drops
-            candidate_drops = sorted(
-                feature_drop_scores.items(), key=lambda x: x[1], reverse=True
-            )
-
-            # Ensure we don't drop too many features
-            max_drops = len(numerical_cols) - self.min_features
-            self.features_to_drop_ = [col for col, _ in candidate_drops[:max_drops]]
-
-            # Store feature rankings for inspection
-            remaining_features = set(numerical_cols) - set(self.features_to_drop_)
-            self.feature_rankings_ = {
-                col: feature_drop_scores.get(col, 0) for col in remaining_features
-            }
-
-        except Exception as e:
-            warnings.warn(f"Correlation analysis failed: {e}")
-            self.features_to_drop_ = []
-            self.correlation_pairs_ = []
-
-        return self
-
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Remove correlated features."""
-        return X.drop(columns=self.features_to_drop_, errors="ignore")
-    
 # Enhanced SOTA Feature Engineer with RFECV integration
 class FeatureEngineer(BaseEstimator, TransformerMixin):
     """
@@ -160,6 +46,57 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         # Track feature creation statistics
         self.feature_stats_ = {}
 
+    def _build_transformers(self) -> Dict[str, Any]:
+        """Build ordered transformer registry from config flags."""
+        registry = {
+            "mathematical": (
+                getattr(self.config, "create_math_features", True),
+                MathematicalTransformer(self.config),
+            ),
+            "interactions": (
+                getattr(self.config, "create_interactions", True),
+                InteractionTransformer(self.config),
+            ),
+            "categorical": (
+                getattr(self.config, "create_categorical", True),
+                CategoricalTransformer(self.config),
+            ),
+            "binning": (
+                getattr(self.config, "create_binning", True),
+                BinningTransformer(self.config),
+            ),
+            "statistical": (
+                getattr(self.config, "create_statistical", True),
+                StatisticalTransformer(self.config),
+            ),
+            "rff": (
+                getattr(self.config, "create_rff", False),
+                RandomFourierFeaturesTransformer(
+                    self.config,
+                    n_components=getattr(self.config, "rff_n_components", 50),
+                    gamma=getattr(self.config, "rff_gamma", "auto"),
+                    kernel=getattr(self.config, "rff_kernel", "rbf"),
+                    max_features=getattr(self.config, "rff_max_features", 50),
+                ),
+            ),
+        }
+        return {name: tf for name, (enabled, tf) in registry.items() if enabled}
+
+    @staticmethod
+    def _transform_with_optional_y(
+        transformer: Any, X: pd.DataFrame, y: Optional[pd.Series]
+    ) -> pd.DataFrame:
+        """Pass y only for transformers that support it (e.g., target-kfold categorical)."""
+        if y is None:
+            return transformer.transform(X)
+        try:
+            sig = inspect.signature(transformer.transform)
+            if "y" in sig.parameters:
+                return transformer.transform(X, y=y)
+        except (TypeError, ValueError):
+            pass
+        return transformer.transform(X)
+
     def fit(self, X: pd.DataFrame, y: Optional[Union[pd.Series, np.ndarray]] = None):
         """Fit comprehensive feature engineering pipeline."""
         X = X.copy()
@@ -170,19 +107,8 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             f"🚀 Fitting SOTA Feature Engineer on {X.shape[0]} rows, {X.shape[1]} columns"
         )
 
-        # Initialize all transformers
-        self.transformers_ = {
-            #"datetime": DateTimeTransformer(self.config),
-            "mathematical": MathematicalTransformer(self.config),
-            "interactions": InteractionTransformer(self.config),
-            "categorical": CategoricalTransformer(self.config),
-            "binning": BinningTransformer(self.config),
-            #"clustering": ClusteringTransformer(self.config),
-            "statistical": StatisticalTransformer(self.config),
-            #'fourier': FourierTransformer(self.config),
-            #'autoencoder': AutoencoderTransformer(self.config),
-            "rff": RandomFourierFeaturesTransformer(self.config),
-        }
+        # Initialize enabled transformers in a deterministic order
+        self.transformers_ = self._build_transformers()
 
         # Fit transformers sequentially
         current_X = X.copy()
@@ -191,7 +117,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             # try:
             transformer.fit(current_X, y)
             # Update current_X with new features for next transformer
-            transformed = transformer.transform(current_X)
+            transformed = self._transform_with_optional_y(transformer, current_X, y)
             if not transformed.empty:
                 current_X = pd.concat([current_X, transformed], axis=1)
                 self.feature_stats_[name] = transformed.shape[1]
@@ -384,272 +310,3 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             self.selector_.rfecv_selector_.plot_cv_scores(**kwargs)
         else:
             print("RFECV was not used or is not available for plotting.")
-
-
-class FeatureSelector:
-    def __init__(self, config: Any):
-        self.config = config
-        self.mi_scores_: Optional[pd.Series] = None
-        self.shap_scores_: Optional[pd.Series] = None
-        self.selected_features_: List[str] = []
-
-        # RFECV integration
-        self.use_rfecv = getattr(config, 'use_rfecv', True)
-        self.rfecv_selector_ = None
-        self.selection_method_ = "mi"  # Default to MI
-        
-        # RFECV parameters from config
-        self.rfecv_params = {
-            'step': getattr(config, 'rfecv_step', 0.1),
-            'cv': getattr(config, 'rfecv_cv', 5),
-            'min_features_to_select': getattr(config, 'rfecv_min_features', None),
-            'max_features_to_select': getattr(config, 'rfecv_max_features', None),
-            'patience': getattr(config, 'rfecv_patience', 5),
-            'use_ensemble': getattr(config, 'rfecv_use_ensemble', True),
-            'stability_selection': getattr(config, 'rfecv_stability_selection', True),
-            'verbose': 0,
-            'random_state': getattr(config, 'random_state', 42)
-        }
-
-        self.ami_scorer = AdaptiveMI(
-            subsample=min(getattr(config, "max_rows_score", 2000), 2000),
-            spearman_gate=getattr(config, "mi_spearman_gate", 0.05),
-            min_overlap=getattr(config, "mi_min_overlap", 50),
-            ks=(3, 5, 10),
-            n_bins=getattr(config, "mi_bins", 16),
-            random_state=getattr(config, "random_state", 42),
-        )
-
-        self._feature_cache: Dict[str, float] = {}
-
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> "FeatureSelector":
-        """Fit feature selector with optional RFECV."""
-        
-        # Determine if we should use RFECV based on dataset characteristics
-        n_features = X.shape[1]
-        n_samples = X.shape[0]
-        
-        # Use RFECV if explicitly enabled or if dataset is suitable
-        should_use_rfecv = self.use_rfecv
-        
-        if should_use_rfecv:
-            print("🔄 Using RFECV feature selection...")
-            success = self._fit_rfecv(X, y)
-            if success:
-                self.selection_method_ = "rfecv"
-                return self
-            else:
-                print("   ⚠️  RFECV failed, falling back to MI selection")
-        
-        # Fallback to original MI-based selection
-        print("📊 Using Mutual Information feature selection...")
-        self.selection_method_ = "mi"
-        return self._fit_mi(X, y)
-  
-    def _fit_rfecv(self, X: pd.DataFrame, y: pd.Series) -> bool:
-        """Fit RFECV selector."""
-        try:
-            # Auto-calculate parameters if not specified
-            n_features = X.shape[1]
-            if self.rfecv_params['min_features_to_select'] is None:
-                self.rfecv_params['min_features_to_select'] = max(1, n_features // 20)
-            if self.rfecv_params['max_features_to_select'] is None:
-                self.rfecv_params['max_features_to_select'] = min(100, n_features)
-            
-            # Create RFECV config
-            rfecv_config = RFECVConfig(**self.rfecv_params)
-            
-            # Initialize and fit RFECV
-            self.rfecv_selector_ = AdvancedRFECV(config=rfecv_config)
-            
-            # Use only numerical features for RFECV
-            numerical_cols = X.select_dtypes(include=[np.number]).columns
-            if len(numerical_cols) < 2:
-                return False
-                
-            X_numeric = X[numerical_cols].copy()
-            X_filled = X_numeric.fillna(X_numeric.median())
-            
-            # Clean target variable - handle NaN values
-            y_clean = y.copy()
-            
-            # Handle missing values in target
-            if y_clean.isna().any():
-                if getattr(self.config, "task", "regression") == "classification":
-                    # For classification, use mode
-                    mode_val = y_clean.mode()
-                    if len(mode_val) > 0:
-                        y_clean = y_clean.fillna(mode_val[0])
-                    else:
-                        # If no mode, drop NaN rows
-                        valid_mask = y_clean.notna()
-                        y_clean = y_clean[valid_mask]
-                        X_filled = X_filled.loc[valid_mask]
-                else:
-                    # For regression, use median
-                    median_val = y_clean.median()
-                    if not pd.isna(median_val):
-                        y_clean = y_clean.fillna(median_val)
-                    else:
-                        # If no median, drop NaN rows
-                        valid_mask = y_clean.notna()
-                        y_clean = y_clean[valid_mask]
-                        X_filled = X_filled.loc[valid_mask]
-            
-            # Ensure we have enough data after cleaning
-            if len(X_filled) < 10 or len(y_clean) < 10:
-                return False
-            
-            # Align indices
-            common_idx = X_filled.index.intersection(y_clean.index)
-            if len(common_idx) < 10:
-                return False
-                
-            X_final = X_filled.loc[common_idx]
-            y_final = y_clean.loc[common_idx]
-            
-            # Final check for any remaining NaN values
-            if X_final.isna().any().any() or y_final.isna().any():
-                # Drop any remaining NaN rows
-                combined_df = pd.concat([X_final, y_final], axis=1)
-                combined_clean = combined_df.dropna()
-                
-                if len(combined_clean) < 10:
-                    return False
-                    
-                X_final = combined_clean.iloc[:, :-1]
-                y_final = combined_clean.iloc[:, -1]
-            
-            self.rfecv_selector_.fit(X_final, y_final)
-            
-            # Get selected features
-            self.selected_features_ = self.rfecv_selector_.get_selected_features()
-            
-            print(f"   ✅ RFECV selected {len(self.selected_features_)} features")
-            return True
-            
-        except Exception as e:
-            warnings.warn(f"RFECV selection failed: {e}")
-            return False
-    
-    def _fit_mi(self, X: pd.DataFrame, y: pd.Series) -> "FeatureSelector":
-        """Fit MI selector (original implementation)."""
-        # Get numerical columns once
-        numerical_cols = X.select_dtypes(include=[np.number]).columns
-        if len(numerical_cols) == 0:
-            self.selected_features_ = []
-            return self
-
-        # Prepare data more efficiently
-        X_clean, y_clean = self._prepare_data_fast(X[numerical_cols], y)
-
-        if len(X_clean) < getattr(self.config, "min_samples", 10):
-            self.selected_features_ = numerical_cols.tolist()
-            return self
-
-        # Compute MI scores
-        self.mi_scores_ = self._compute_mi_scores_fast(X_clean, y_clean)
-
-        # Feature selection
-        mi_threshold = getattr(self.config, "mi_threshold", 0.01)
-        selected_mask = self.mi_scores_ > mi_threshold
-
-        if selected_mask.any():
-            self.selected_features_ = self.mi_scores_[selected_mask].index.tolist()
-        else:
-            # Fallback to top features
-            min_features = getattr(self.config, "min_features", 1)
-            self.selected_features_ = self.mi_scores_.head(min_features).index.tolist()
-
-        # Limit max features
-        max_features = getattr(self.config, "max_features", len(numerical_cols))
-        if len(self.selected_features_) > max_features:
-            self.selected_features_ = self.selected_features_[:max_features]
-
-        return self
-
-    def _prepare_data_fast(
-        self, X: pd.DataFrame, y: pd.Series
-    ) -> Tuple[pd.DataFrame, pd.Series]:
-        # Fast index alignment
-        common_idx = X.index.intersection(y.index)
-        X_aligned = X.loc[common_idx]
-        y_aligned = y.loc[common_idx]
-
-        # Vectorized validity check
-        if getattr(self.config, "task", "regression") == "classification":
-            if not pd.api.types.is_numeric_dtype(y_aligned):
-                le = LabelEncoder()
-                y_clean = pd.Series(le.fit_transform(y_aligned), index=y_aligned.index)
-            else:
-                y_clean = y_aligned.astype("int32")
-        else:
-            y_clean = pd.to_numeric(y_aligned, errors="coerce")
-
-        # Remove invalid rows in one operation
-        valid_mask = y_clean.notna() & np.isfinite(y_clean)
-        if not valid_mask.any():
-            return pd.DataFrame(), pd.Series(dtype=float)
-
-        X_clean = X_aligned[valid_mask].astype("float32", copy=False)
-        y_clean = y_clean[valid_mask]
-
-        return X_clean, y_clean
-
-    def _compute_mi_scores_fast(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        # Convert to numpy arrays once
-        X_values = X.values
-        y_values = y.values
-
-        # Batch MI computation
-        scores = self.ami_scorer.score_pairwise(X_values, y_values)
-
-        # Create series and sort in one step
-        mi_scores = pd.Series(scores, index=X.columns)
-        mi_scores = mi_scores.fillna(0.0).clip(lower=0.0).sort_values(ascending=False)
-
-        return mi_scores
-
-    def get_selected_features(self) -> List[str]:
-        return self.selected_features_.copy()
-
-    def get_feature_scores(self) -> Optional[pd.Series]:
-        """Get feature importance scores from the selection method used."""
-        if self.selection_method_ == "rfecv" and self.rfecv_selector_ is not None:
-            # Get importance scores from RFECV
-            if hasattr(self.rfecv_selector_, 'feature_importances_'):
-                # Get the features that were actually used in RFECV
-                numerical_cols = self.rfecv_selector_._feature_names
-                if numerical_cols and len(self.rfecv_selector_.feature_importances_) == len(numerical_cols):
-                    scores = pd.Series(
-                        self.rfecv_selector_.feature_importances_, 
-                        index=numerical_cols
-                    )
-                    return scores.sort_values(ascending=False)
-        
-        # Fallback to MI scores
-        if hasattr(self, 'mi_scores_') and self.mi_scores_ is not None:
-            return self.mi_scores_
-        
-        return None
-
-    def get_top_features(self, n: int = 10) -> List[str]:
-        if self.mi_scores_ is None:
-            return self.selected_features_[:n]
-        return self.mi_scores_.head(n).index.tolist()
-
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        if not self.selected_features_:
-            return pd.DataFrame(index=X.index)
-
-        # Fast column filtering
-        available_features = [f for f in self.selected_features_ if f in X.columns]
-
-        if not available_features:
-            return pd.DataFrame(index=X.index)
-
-        return X[available_features]
-
-    def fit_transform(self, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
-        return self.fit(X, y).transform(X)
-

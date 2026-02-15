@@ -14,7 +14,6 @@ from scipy.special import digamma
 from scipy.stats import norm
 from sklearn.neighbors import NearestNeighbors
 from sklearn.utils import check_random_state
-from torch import Tensor
 
 try:
     # Often fastest for 2D Chebyshev queries
@@ -100,7 +99,7 @@ def _mi_neural_infonce(
 
         # Optional: print progress
         if (epoch + 1) % 100 == 0:
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss/len(loader):.4f}")
+            print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss / len(loader):.4f}")
 
     # Final MI estimate on full dataset
     with torch.no_grad():
@@ -147,6 +146,9 @@ class AdaptiveMI:
         ksg_use_ckdtree: bool = True,  # try cKDTree for large n
         ties_threshold: float = 0.05,  # switch to binned when ties exceed this
         rho_threshold: float = 0.85,  # switch to copula when |ρ_spearman| >= this
+        large_n_copula_threshold: int = 5000,  # speed path for large vectors
+        nonlinear_spearman_delta: float = 0.15,  # if |ρs|-|ρp| is big, prefer KSG
+        tie_sample_size: int = 5000,  # estimate tie fraction on at most this many points
     ):
         self.subsample = int(subsample)
         self.spearman_gate = float(spearman_gate)
@@ -157,6 +159,9 @@ class AdaptiveMI:
         self.ksg_use_ckdtree = bool(ksg_use_ckdtree)
         self.ties_threshold = float(ties_threshold)
         self.rho_threshold = float(rho_threshold)
+        self.large_n_copula_threshold = int(large_n_copula_threshold)
+        self.nonlinear_spearman_delta = float(nonlinear_spearman_delta)
+        self.tie_sample_size = int(tie_sample_size)
 
     # ---------------- Public API ----------------
 
@@ -211,32 +216,8 @@ class AdaptiveMI:
         if _is_constant(x) or _is_constant(y):
             return (0.0, "constant") if return_method else 0.0
 
-        # Choose method
-        used = method
-        if used is None:
-            ties_x = self._tie_fraction(x)
-            ties_y = self._tie_fraction(y)
-            abs_rho = abs(_spearman_fast(x, y))
-            if max(ties_x, ties_y) > self.ties_threshold:
-                used = "binned_quantile"
-            elif abs_rho >= self.rho_threshold:
-                used = "copula_gaussian"
-            else:
-                used = "ksg"
-
-        if used in ("ksg", "ksg1"):
-            mi = self._mi_ksg1_avg(x, y, self.ks)
-        elif used == "ksg2":
-            mi = self._mi_ksg2_avg(x, y, self.ks)
-        elif used == "copula_gaussian":
-            mi = self._mi_copula_gaussian(x, y)
-        elif used == "binned_quantile":
-            mi = self._mi_binned_quantile(x, y, self.n_bins)
-        elif used == "infonce":
-            print("Using neural MI estimation (InfoNCE)")
-            mi = self._mi_neural(x, y)  # Placeholder for neural MI method
-        else:
-            raise ValueError(f"Unknown method: {used}")
+        used = self._choose_method(x, y, forced=method)
+        mi = self._estimate_mi(x, y, used)
 
         score = mi if return_raw_mi else _mi_to_coeff(mi)
         score = 0.0 if not np.isfinite(score) else float(np.clip(score, 0.0, 1.0))
@@ -246,7 +227,8 @@ class AdaptiveMI:
         self, x: np.ndarray, y: np.ndarray, method="infonce", **kwargs
     ) -> float:
         if method == "infonce":
-            return mi_neural_infonce_coeff(x, y, **kwargs)
+            # return raw MI (nats), score() maps to coefficient if requested
+            return _mi_neural_infonce(x, y, **kwargs)
         else:
             raise ValueError(f"Unknown neural MI method: {method}")
 
@@ -255,7 +237,7 @@ class AdaptiveMI:
     ) -> float:
         # For sklearn-compatibility; MI has no fitted state.
         return self.score(x, y, return_raw_mi=return_raw_mi)
-                
+
     def score_pairwise(
         self,
         X: Union[np.ndarray, pd.DataFrame],
@@ -274,16 +256,37 @@ class AdaptiveMI:
             X = X.reshape(-1, 1)
 
         y = _to_1d_array(y)
+        if X.shape[0] != y.size:
+            raise ValueError(
+                f"X rows and y length must match, got {X.shape[0]} and {y.size}"
+            )
 
         # Use transposed view to avoid costly X[:, j] copies
-        Xt = X.T  
+        Xt = X.T
+        fy = np.isfinite(y)
+        rng = check_random_state(self.random_state)
 
-        results = [
-            self.score(Xt[j], y, return_raw_mi=return_raw_mi) for j in range(Xt.shape[0])
-        ]
+        results = []
+        for j in range(Xt.shape[0]):
+            xj = Xt[j]
+            m = fy & np.isfinite(xj)
+            if int(m.sum()) < self.min_overlap:
+                results.append(0.0)
+                continue
+            xv = np.asarray(xj[m], dtype=np.float64)
+            yv = np.asarray(y[m], dtype=np.float64)
+            if xv.size > self.subsample:
+                idx = rng.choice(xv.size, size=self.subsample, replace=False)
+                xv, yv = xv[idx], yv[idx]
+            if _is_constant(xv) or _is_constant(yv):
+                results.append(0.0)
+                continue
+            used = self._choose_method(xv, yv, forced=None)
+            mi = self._estimate_mi(xv, yv, used)
+            s = mi if return_raw_mi else _mi_to_coeff(mi)
+            results.append(0.0 if not np.isfinite(s) else float(np.clip(s, 0.0, 1.0)))
 
         return np.array(results, dtype=float)
-
 
     def matrix(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -314,15 +317,8 @@ class AdaptiveMI:
                 x, y, ok = _valid_pair(xi, arrs[j], self.min_overlap)
                 if not ok:
                     continue
-                ties_x = self._tie_fraction(x)
-                ties_y = self._tie_fraction(y)
-                abs_rho = abs(_spearman_fast(x, y))
-                if max(ties_x, ties_y) > self.ties_threshold:
-                    mi = self._mi_binned_quantile(x, y, self.n_bins)
-                elif abs_rho >= self.rho_threshold:
-                    mi = self._mi_copula_gaussian(x, y)
-                else:
-                    mi = self._mi_ksg1_avg(x, y, self.ks)
+                used = self._choose_method(x, y, forced=None)
+                mi = self._estimate_mi(x, y, used)
                 out[i, j] = out[j, i] = float(np.clip(_mi_to_coeff(mi), 0.0, 1.0))
 
         return pd.DataFrame(out, index=cols, columns=cols)
@@ -453,7 +449,53 @@ class AdaptiveMI:
         n = v.size
         if n == 0:
             return 0.0
+        if n > self.tie_sample_size > 0:
+            rng = check_random_state(self.random_state)
+            idx = rng.choice(n, size=self.tie_sample_size, replace=False)
+            vv = v[idx]
+            nn = vv.size
+            return 1.0 - (min(np.unique(vv).size, nn) / float(nn))
         return 1.0 - (min(np.unique(v).size, n) / float(n))
+
+    def _choose_method(
+        self, x: np.ndarray, y: np.ndarray, forced: Optional[str] = None
+    ) -> str:
+        if forced is not None:
+            return forced
+        ties_x = self._tie_fraction(x)
+        ties_y = self._tie_fraction(y)
+        abs_rho_s = abs(_spearman_fast(x, y))
+        abs_rho_p = _pearson_abs(x, y)
+
+        # Heavy ties -> binned is usually most robust.
+        if max(ties_x, ties_y) > self.ties_threshold:
+            return "binned_quantile"
+
+        # Large-n speed path: copula is very fast and stable on monotone dependencies.
+        if x.size >= self.large_n_copula_threshold:
+            if abs_rho_s >= self.spearman_gate:
+                return "copula_gaussian"
+            return "binned_quantile"
+
+        # Strong monotone signal -> copula unless nonlinearity signature is strong.
+        if abs_rho_s >= self.rho_threshold:
+            if (abs_rho_s - abs_rho_p) > self.nonlinear_spearman_delta:
+                return "ksg"
+            return "copula_gaussian"
+        return "ksg"
+
+    def _estimate_mi(self, x: np.ndarray, y: np.ndarray, method: str) -> float:
+        if method in ("ksg", "ksg1"):
+            return self._mi_ksg1_avg(x, y, self.ks)
+        if method == "ksg2":
+            return self._mi_ksg2_avg(x, y, self.ks)
+        if method == "copula_gaussian":
+            return self._mi_copula_gaussian(x, y)
+        if method == "binned_quantile":
+            return self._mi_binned_quantile(x, y, self.n_bins)
+        if method == "infonce":
+            return self._mi_neural(x, y)
+        raise ValueError(f"Unknown method: {method}")
 
 
 # ===================== Low-level utilities (tight & fast) =====================
@@ -479,6 +521,22 @@ def _zscore_1d(v: np.ndarray) -> np.ndarray:
     if not np.isfinite(sd) or sd < 1e-12:
         return np.zeros_like(v)
     return (v - mu) / sd
+
+
+def _pearson_abs(x: np.ndarray, y: np.ndarray) -> float:
+    m = np.isfinite(x) & np.isfinite(y)
+    if int(m.sum()) < 3:
+        return 0.0
+    xx = x[m]
+    yy = y[m]
+    sx = xx.std()
+    sy = yy.std()
+    if sx < 1e-12 or sy < 1e-12:
+        return 0.0
+    r = float(np.corrcoef(xx, yy)[0, 1])
+    if not np.isfinite(r):
+        return 0.0
+    return abs(r)
 
 
 @njit(cache=True, fastmath=True)

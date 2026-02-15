@@ -10,7 +10,7 @@ from torch import Tensor
 
 from foreblocks.blocks.enc_dec import DecoderBase
 from foreblocks.blocks.enc_dec import EncoderBase
-from foreblocks.ui_aux.node_spec import node
+from foreblocks.ui.node_spec import node
 
 
 # ==============================================================

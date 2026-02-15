@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 import time
 from torch._tensor import Tensor
@@ -59,6 +60,22 @@ def _autocast_bf16_enabled(device_type: str) -> bool:
     if device_type != "cuda":
         return False
     return torch.cuda.is_available()
+
+
+def _supports_grouped_prepacked() -> bool:
+    """
+    Detect once whether grouped_mlp_swiglu supports prepacked expert args.
+    Avoids exception-driven probing on every forward.
+    """
+    if grouped_mlp_swiglu is None:
+        return False
+    try:
+        sig = inspect.signature(grouped_mlp_swiglu)
+        return ("B12_cat_prepacked" in sig.parameters) and (
+            "B3_cat_prepacked" in sig.parameters
+        )
+    except Exception:
+        return False
 
 
 # -----------------------------------------------------------------------------
@@ -447,6 +464,10 @@ class MoEFeedForwardDMoE(nn.Module):
         # Optional compile toggles
         compile_router: bool = True,
         compile_experts: bool = True,
+        # Optional grouped-kernel controls
+        use_grouped_kernel: bool = True,
+        triton_use_fp16_acc: bool = False,
+        triton_use_shared_b: bool = False,
     ):
         super().__init__()
         num_experts = int(num_experts)
@@ -484,6 +505,10 @@ class MoEFeedForwardDMoE(nn.Module):
         self.moe_logger = moe_logger
         self.step_getter = step_getter
         self.log_latency = bool(log_latency)
+        self.use_grouped_kernel = bool(use_grouped_kernel)
+        self.triton_use_fp16_acc = bool(triton_use_fp16_acc)
+        self.triton_use_shared_b = bool(triton_use_shared_b)
+        self._grouped_kernel_prepacked = _supports_grouped_prepacked()
 
         self.input_norm = nn.LayerNorm(d_model)
 
@@ -778,10 +803,11 @@ class MoEFeedForwardDMoE(nn.Module):
                 return (out, aux) if return_aux_loss else out
 
             # Expert compute
-            if grouped_mlp_swiglu is not None:
+            if self.use_grouped_kernel and grouped_mlp_swiglu is not None:
                 # Optional prepacked expert weights (refresh once per step)
                 step = int(self.step_getter()) if self.step_getter is not None else -1
-                try:
+                use_prepacked = self._grouped_kernel_prepacked and (not self.training)
+                if use_prepacked:
                     self._refresh_packed_weights(step)
                     packed_y = grouped_mlp_swiglu(
                         packed_x,
@@ -790,11 +816,14 @@ class MoEFeedForwardDMoE(nn.Module):
                         dropout_p=getattr(self.experts[0], "dropout_p", 0.0),
                         training=self.training,
                         out_dtype=packed_x.dtype,
+                        use_fp16_acc=self.triton_use_fp16_acc,
+                        use_shared_b=self.triton_use_shared_b,
+                        allow_triton_training=True,
                         B12_cat_prepacked=self._B12_cat,  # may be ignored if wrapper doesn't accept
                         B3_cat_prepacked=self._B3_cat,
                     )
-                except TypeError:
-                    # Backward compatible wrapper without prepacked args
+                else:
+                    # Backward-compatible grouped kernel wrapper (no prepacked weights)
                     packed_y = grouped_mlp_swiglu(
                         packed_x,
                         offsets,
@@ -802,11 +831,14 @@ class MoEFeedForwardDMoE(nn.Module):
                         dropout_p=getattr(self.experts[0], "dropout_p", 0.0),
                         training=self.training,
                         out_dtype=packed_x.dtype,
+                        use_fp16_acc=self.triton_use_fp16_acc,
+                        use_shared_b=self.triton_use_shared_b,
+                        allow_triton_training=True,
                     )
             else:
                 # Fallback: loop (optionally checkpoint)
                 packed_y = torch.empty_like(packed_x)
-                for e_idx in range(self.num_experts):
+                for e_idx in range(self.num_routed_experts):
                     s = int(offsets[e_idx].item())
                     t = int(offsets[e_idx + 1].item())
                     if t <= s:
@@ -1105,6 +1137,10 @@ class FeedForwardBlock(nn.Module):
         # Optional compile flags (forwarded to MoEFeedForwardDMoE)
         compile_router: bool = True,
         compile_experts: bool = True,
+        # Optional grouped-kernel flags (forwarded to MoEFeedForwardDMoE)
+        use_grouped_kernel: bool = True,
+        triton_use_fp16_acc: bool = False,
+        triton_use_shared_b: bool = False,
     ):
         super().__init__()
         self.use_moe = bool(use_moe)
@@ -1139,6 +1175,9 @@ class FeedForwardBlock(nn.Module):
                 log_latency=log_latency,
                 compile_router=compile_router,
                 compile_experts=compile_experts,
+                use_grouped_kernel=use_grouped_kernel,
+                triton_use_fp16_acc=triton_use_fp16_acc,
+                triton_use_shared_b=triton_use_shared_b,
             )
             self._supports_aux = True
         else:

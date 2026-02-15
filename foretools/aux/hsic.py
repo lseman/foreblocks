@@ -189,6 +189,59 @@ def _hsic_biased_from_centered_perm(Kc: np.ndarray, Lc: np.ndarray, perm: np.nda
             s += Kc[i, j] * Lc[pi, pj]
     return s / ((n - 1.0) ** 2)
 
+@njit(cache=True, fastmath=True)
+def _hsic_unbiased_from_grams_perm_numba(K: np.ndarray, L: np.ndarray, perm: np.ndarray) -> float:
+    """
+    Unbiased HSIC under permutation, without materializing L[perm][:, perm].
+    """
+    n = K.shape[0]
+    if n < 4:
+        return np.nan
+
+    # Ku row sums and total (diag-zeroed)
+    Ku_row = np.zeros(n, dtype=np.float64)
+    S_K = 0.0
+    for i in range(n):
+        s = 0.0
+        for j in range(n):
+            if i != j:
+                s += K[i, j]
+        Ku_row[i] = s
+        S_K += s
+
+    # L row sums and diag (for fast permuted row-sum lookup)
+    L_row = np.zeros(n, dtype=np.float64)
+    L_diag = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        s = 0.0
+        for j in range(n):
+            s += L[i, j]
+        L_row[i] = s
+        L_diag[i] = L[i, i]
+
+    term1 = 0.0
+    for i in range(n):
+        pi = perm[i]
+        for j in range(n):
+            if i == j:
+                continue
+            pj = perm[j]
+            term1 += K[i, j] * L[pi, pj]
+
+    term3 = 0.0
+    S_L = 0.0
+    for i in range(n):
+        pi = perm[i]
+        Lu_row_i = L_row[pi] - L_diag[pi]
+        term3 += Ku_row[i] * Lu_row_i
+        S_L += Lu_row_i
+
+    n1, n2, n3 = n - 1.0, n - 2.0, n - 3.0
+    if n3 <= 0:
+        return np.nan
+    val = (term1 + (S_K * S_L) / (n1 * n2) - 2.0 * term3 / n2) / (n * n3)
+    return val if val > 0.0 and np.isfinite(val) else (0.0 if np.isfinite(val) else np.nan)
+
 # =========================================================
 # Utilities (NumPy/compat)
 # =========================================================
@@ -208,11 +261,11 @@ def _ensure_1d_or_2d(a: np.ndarray) -> np.ndarray:
         return a
     return a.reshape(a.shape[0], -1)
 
-def _nan_filter_two(X: np.ndarray, Y: np.ndarray):
+def _nan_filter_two(X: np.ndarray, Y: np.ndarray, warn: bool = True):
     X = _ensure_1d_or_2d(np.asarray(X))
     Y = _ensure_1d_or_2d(np.asarray(Y))
     mask = np.isfinite(X).all(axis=1) & np.isfinite(Y).all(axis=1)
-    if mask.sum() < len(mask):
+    if warn and mask.sum() < len(mask):
         warnings.warn(f"Removed {len(mask) - int(mask.sum())} rows with NaN/inf.")
     return X[mask], Y[mask]
 
@@ -496,6 +549,13 @@ class HSIC:
         diagnostics = {"method": method, "n": n, "mu1": mu1, "mu2": mu2, "mu3": mu3, "mu4": mu4,
                        "skewness": skewness, "kurtosis": kurtosis, "estimator": self.estimator}
 
+        # Parametric null approximations are derived for unnormalized HSIC moments.
+        # If normalized score is requested, use permutation for calibrated p-values.
+        if self.normalize and self.estimator in ("biased", "block") and method != "permutation":
+            method = "permutation"
+            diagnostics["method"] = method
+            diagnostics["method_override"] = "normalized_hsic_requires_permutation"
+
         if method in ("gaussian", "chi2", "gaussian_corrected"):
             if mu2 <= 0:
                 return obs, np.nan, diagnostics
@@ -513,8 +573,13 @@ class HSIC:
             if self.estimator == "unbiased":
                 for b in range(B):
                     perm = rng.permutation(n).astype(np.int64)
-                    Lp = L[perm][:, perm]
-                    null_vals[b] = float(_hsic_unbiased_from_grams_numba(K, Lp)) if self.use_numba else float(self._hsic_unbiased_np(K, Lp))
+                    if self.use_numba:
+                        null_vals[b] = float(
+                            _hsic_unbiased_from_grams_perm_numba(K, L, perm)
+                        )
+                    else:
+                        Lp = L[perm][:, perm]
+                        null_vals[b] = float(self._hsic_unbiased_np(K, Lp))
             else:
                 for b in range(B):
                     perm = rng.permutation(n).astype(np.int64)
@@ -561,23 +626,31 @@ class HSIC:
         # Kernel path: precompute grams once per column
         grams = [self._gram_and_center(_ensure_1d_or_2d(df[c].to_numpy()), which="x") for c in cols]
         pairs = [(i, j) for i in range(p) for j in range(i + 1, p)]
-        for k, (i, j) in enumerate(pairs, 1):
+        def compute_pair(i, j):
             Ki, Kci, xxi = grams[i]
             Kj, Kcj, xxj = grams[j]
             if self.estimator == "unbiased":
-                v = float(_hsic_unbiased_from_grams_numba(Ki, Kj)) if self.use_numba else float(self._hsic_unbiased_np(Ki, Kj))
-            elif self.estimator == "block":
-                v = self._hsic_block(Kci, Kcj, xxi, xxj, block_size=self.block_size)
-            else:
-                num = float(_trace_prod(Kci, Kcj) / ((Kci.shape[0] - 1.0) ** 2))
-                if self.normalize:
-                    den = math.sqrt(max(xxi, EPS) * max(xxj, EPS)) + EPS
-                    v = float(np.clip(num / den, 0.0, 1.0))
-                else:
-                    v = float(max(0.0, num))
-            M[i, j] = M[j, i] = v
-            if show_progress and k % max(1, len(pairs) // 10) == 0:
-                print(f"Progress: {k}/{len(pairs)} ({100*k/len(pairs):.1f}%)")
+                return float(_hsic_unbiased_from_grams_numba(Ki, Kj)) if self.use_numba else float(self._hsic_unbiased_np(Ki, Kj))
+            if self.estimator == "block":
+                return self._hsic_block(Kci, Kcj, xxi, xxj, block_size=self.block_size)
+            num = float(_trace_prod(Kci, Kcj) / ((Kci.shape[0] - 1.0) ** 2))
+            if self.normalize:
+                den = math.sqrt(max(xxi, EPS) * max(xxj, EPS)) + EPS
+                return float(np.clip(num / den, 0.0, 1.0))
+            return float(max(0.0, num))
+
+        if _JOBLIB and n_jobs != 1:
+            vals = Parallel(n_jobs=n_jobs, prefer="threads")(
+                delayed(compute_pair)(i, j) for (i, j) in pairs
+            )
+            for (i, j), v in zip(pairs, vals):
+                M[i, j] = M[j, i] = v
+        else:
+            for k, (i, j) in enumerate(pairs, 1):
+                v = compute_pair(i, j)
+                M[i, j] = M[j, i] = v
+                if show_progress and k % max(1, len(pairs) // 10) == 0:
+                    print(f"Progress: {k}/{len(pairs)} ({100*k/len(pairs):.1f}%)")
 
         return pd.DataFrame(M, index=cols, columns=cols)
 
@@ -648,7 +721,9 @@ class HSIC:
         # symmetrize & diag (if non-numba path)
         if not self.use_numba:
             K = 0.5 * (K + K.T)
-            np.fill_diagonal(K, 1.0)
+            # Only unit-diagonal kernels should be forced to 1.
+            if kernel in ("rbf", "delta", "mixed"):
+                np.fill_diagonal(K, 1.0)
 
         if self.estimator == "unbiased":
             return K, K, 1.0  # unbiased uses off-diagonal only

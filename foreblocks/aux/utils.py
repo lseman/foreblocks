@@ -33,7 +33,7 @@ from tqdm import tqdm
 
 from foreblocks.core.heads.head_helper import HeadComposer
 from foreblocks.core.heads.head_helper import HeadSpec
-from foreblocks.ui_aux.node_spec import node
+from foreblocks.ui.node_spec import node
 
 
 # Optional: import your MoE classes and HeadComposer

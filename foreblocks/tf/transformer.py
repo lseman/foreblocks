@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.ui_aux.node_spec import node
+from foreblocks.ui.node_spec import node
 
 from .embeddings import InformerTimeEmbedding, PositionalEncoding
 from .fusions import (
@@ -314,6 +314,63 @@ class BaseTransformerLayer(nn.Module):
         self.mhc_temperature = float(mhc_temperature)
         self.mhc_collapse = str(mhc_collapse)
 
+    def _apply_runtime_mhc_overrides(
+        self,
+        *,
+        use_mhc: Optional[bool],
+        mhc_n_streams: Optional[int],
+        mhc_sinkhorn_iters: Optional[int],
+        mhc_temperature: Optional[float],
+        mhc_collapse: Optional[str],
+    ) -> None:
+        """Apply per-call mHC overrides (for backward compatibility)."""
+        if use_mhc is not None:
+            self.use_mhc = bool(use_mhc)
+        if mhc_n_streams is not None:
+            self.mhc_n_streams = int(mhc_n_streams)
+        if mhc_sinkhorn_iters is not None:
+            self.mhc_sinkhorn_iters = int(mhc_sinkhorn_iters)
+        if mhc_temperature is not None:
+            self.mhc_temperature = float(mhc_temperature)
+        if mhc_collapse is not None:
+            self.mhc_collapse = str(mhc_collapse)
+
+    def _build_residual_cfg(
+        self,
+        *,
+        use_gateskip: Optional[bool],
+        gate_budget: Optional[float],
+        gate_lambda: Optional[float],
+        training: bool,
+    ) -> ResidualRunCfg:
+        """Resolve runtime GateSkip knobs into a single config object."""
+        _use_gk = self.use_gateskip if use_gateskip is None else bool(use_gateskip)
+        _budget = self.gate_budget if gate_budget is None else gate_budget
+        _lambda = self.gate_lambda if gate_lambda is None else float(gate_lambda)
+        return ResidualRunCfg(
+            use_gateskip=_use_gk,
+            gate_budget=_budget,
+            gate_lambda=_lambda,
+            training=training,
+        )
+
+    def _finalize_gateskip_aux(
+        self,
+        cfg: ResidualRunCfg,
+        aux_l2_terms: List[torch.Tensor],
+    ) -> None:
+        """Accumulate GateSkip regularization term once per layer forward."""
+        if cfg.use_gateskip and cfg.gate_lambda > 0 and aux_l2_terms:
+            self._update_aux_loss(cfg.gate_lambda * torch.stack(aux_l2_terms).mean())
+
+    def _ff_forward_with_aux(self, x: torch.Tensor) -> torch.Tensor:
+        """Shared FFN / MoE forward with auxiliary loss accounting."""
+        if self.use_moe:
+            out, aux = self.feed_forward(x, return_aux_loss=True)
+            self._update_aux_loss(aux)
+            return out
+        return self.feed_forward(x)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Encoder layer
@@ -467,25 +524,17 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         self._reset_aux_loss()
 
         # runtime overrides (kept for backward compatibility; prefer model-level setters)
-        if use_mhc is not None:
-            self.use_mhc = bool(use_mhc)
-        if mhc_n_streams is not None:
-            self.mhc_n_streams = int(mhc_n_streams)
-        if mhc_sinkhorn_iters is not None:
-            self.mhc_sinkhorn_iters = int(mhc_sinkhorn_iters)
-        if mhc_temperature is not None:
-            self.mhc_temperature = float(mhc_temperature)
-        if mhc_collapse is not None:
-            self.mhc_collapse = str(mhc_collapse)
-
-        _use_gk = self.use_gateskip if use_gateskip is None else bool(use_gateskip)
-        _budget = self.gate_budget if gate_budget is None else gate_budget
-        _lambda = self.gate_lambda if gate_lambda is None else float(gate_lambda)
-
-        cfg = ResidualRunCfg(
-            use_gateskip=_use_gk,
-            gate_budget=_budget,
-            gate_lambda=_lambda,
+        self._apply_runtime_mhc_overrides(
+            use_mhc=use_mhc,
+            mhc_n_streams=mhc_n_streams,
+            mhc_sinkhorn_iters=mhc_sinkhorn_iters,
+            mhc_temperature=mhc_temperature,
+            mhc_collapse=mhc_collapse,
+        )
+        cfg = self._build_residual_cfg(
+            use_gateskip=use_gateskip,
+            gate_budget=gate_budget,
+            gate_lambda=gate_lambda,
             training=self.training,
         )
         aux_l2_terms: List[torch.Tensor] = []
@@ -511,11 +560,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             )
 
             def ff_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
-                if self.use_moe:
-                    out, aux = self.feed_forward(x_in, return_aux_loss=True)
-                    self._update_aux_loss(aux)
-                    return out, None
-                return self.feed_forward(x_in), None
+                return self._ff_forward_with_aux(x_in), None
 
             src, _, _ = self._run_sublayer_nonmhc(
                 x=src,
@@ -526,10 +571,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
                 aux_l2_terms=aux_l2_terms,
             )
 
-            if cfg.use_gateskip and cfg.gate_lambda > 0 and aux_l2_terms:
-                self._update_aux_loss(
-                    cfg.gate_lambda * torch.stack(aux_l2_terms).mean()
-                )
+            self._finalize_gateskip_aux(cfg, aux_l2_terms)
 
             return src, None
 
@@ -565,11 +607,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         )
 
         def ff_flat(x_flat: torch.Tensor) -> torch.Tensor:
-            if self.use_moe:
-                out, aux = self.feed_forward(x_flat, return_aux_loss=True)
-                self._update_aux_loss(aux)
-                return out
-            return self.feed_forward(x_flat)
+            return self._ff_forward_with_aux(x_flat)
 
         streams = self._mhc_run_block(
             streams=streams,
@@ -775,25 +813,17 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         self._reset_aux_loss()
 
         # runtime overrides (kept for backward compatibility; prefer model-level setters)
-        if use_mhc is not None:
-            self.use_mhc = bool(use_mhc)
-        if mhc_n_streams is not None:
-            self.mhc_n_streams = int(mhc_n_streams)
-        if mhc_sinkhorn_iters is not None:
-            self.mhc_sinkhorn_iters = int(mhc_sinkhorn_iters)
-        if mhc_temperature is not None:
-            self.mhc_temperature = float(mhc_temperature)
-        if mhc_collapse is not None:
-            self.mhc_collapse = str(mhc_collapse)
-
-        _use_gk = self.use_gateskip if use_gateskip is None else bool(use_gateskip)
-        _budget = self.gate_budget if gate_budget is None else gate_budget
-        _lambda = self.gate_lambda if gate_lambda is None else float(gate_lambda)
-
-        cfg = ResidualRunCfg(
-            use_gateskip=_use_gk,
-            gate_budget=_budget,
-            gate_lambda=_lambda,
+        self._apply_runtime_mhc_overrides(
+            use_mhc=use_mhc,
+            mhc_n_streams=mhc_n_streams,
+            mhc_sinkhorn_iters=mhc_sinkhorn_iters,
+            mhc_temperature=mhc_temperature,
+            mhc_collapse=mhc_collapse,
+        )
+        cfg = self._build_residual_cfg(
+            use_gateskip=use_gateskip,
+            gate_budget=gate_budget,
+            gate_lambda=gate_lambda,
             training=self.training,
         )
         aux_l2_terms: List[torch.Tensor] = []
@@ -882,11 +912,7 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
                 state["cross_attn"] = updated_cross
 
             def ff_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
-                if self.use_moe:
-                    out, aux = self.feed_forward(x_in, return_aux_loss=True)
-                    self._update_aux_loss(aux)
-                    return out, None
-                return self.feed_forward(x_in), None
+                return self._ff_forward_with_aux(x_in), None
 
             tgt, _, _ = self._run_sublayer_nonmhc(
                 x=tgt,
@@ -897,10 +923,7 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
                 aux_l2_terms=aux_l2_terms,
             )
 
-            if cfg.use_gateskip and cfg.gate_lambda > 0 and aux_l2_terms:
-                self._update_aux_loss(
-                    cfg.gate_lambda * torch.stack(aux_l2_terms).mean()
-                )
+            self._finalize_gateskip_aux(cfg, aux_l2_terms)
 
             ret_state = {
                 "self_attn": state["self_attn"],
@@ -978,11 +1001,7 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         )
 
         def ff_flat(x_flat: torch.Tensor) -> torch.Tensor:
-            if self.use_moe:
-                out, aux = self.feed_forward(x_flat, return_aux_loss=True)
-                self._update_aux_loss(aux)
-                return out
-            return self.feed_forward(x_flat)
+            return self._ff_forward_with_aux(x_flat)
 
         streams = self._mhc_run_block(
             streams=streams,
@@ -1424,6 +1443,51 @@ class BaseTransformer(nn.Module, ABC):
                 + self.layer_skip_lambda * (exp_keep - target_keep) ** 2
             )
 
+    def _prepare_layer_step(
+        self,
+        layer_idx: int,
+        x: torch.Tensor,
+    ) -> Tuple[nn.Module, Optional[float], bool, torch.Tensor]:
+        """
+        Common per-layer orchestration:
+          - shared-layer attention routing
+          - runtime layer budget
+          - skip decision + aux accumulation
+        Returns:
+          layer, budget, skip_layer_compute, keep_mask
+        """
+        layer = self._get_layer(layer_idx)
+        if (self.shared_layer is not None) and hasattr(layer, "set_layer_attention_type"):
+            layer.set_layer_attention_type(self._get_layer_attention_type(layer_idx))
+
+        budget = self._get_runtime_budget()
+        skip_layer_compute, keep_prob, keep_mask, target_keep = self._maybe_skip_layer(
+            layer_idx, x
+        )
+        self._accum_layer_skip_aux(keep_prob, target_keep)
+        return layer, budget, skip_layer_compute, keep_mask
+
+    def _maybe_apply_token_skip_mix(
+        self,
+        x_new: torch.Tensor,
+        x_old: torch.Tensor,
+        keep_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if (
+            self.use_layer_skipping
+            and self.training
+            and (self.layer_skip_mode == "token")
+        ):
+            return self._token_mode_mix(x_new, x_old, keep_mask)
+        return x_new
+
+    def _finalize_layer_stack(self, used_indices: List[int]) -> None:
+        self._aggregate_aux_loss(used_indices)
+        if self.budget_scheduler is not None:
+            self.budget_scheduler.step()
+        if self.layer_budget_scheduler is not None:
+            self.layer_budget_scheduler.step()
+
     @staticmethod
     def _token_mode_mix(
         x_new: torch.Tensor, x_old: torch.Tensor, keep_mask: torch.Tensor
@@ -1485,7 +1549,20 @@ class BaseTransformer(nn.Module, ABC):
     color="bg-gradient-to-br from-green-700 to-green-800",
 )
 class TransformerEncoder(BaseTransformer):
-    def __init__(self, input_size: int = 1, use_time_encoding: bool = False, **kwargs):
+    def __init__(
+        self, 
+        input_size: int = 1, 
+        use_time_encoding: bool = False, 
+        model_type: str = "transformer",
+        **kwargs
+    ):
+        self.model_type = model_type
+        # Auto-configure based on model_type
+        if model_type == "informer-like":
+            use_time_encoding = kwargs.get("use_time_encoding", True)
+            # Informers often use patching or specific attention, 
+            # but usually handled by kwargs or specific layers.
+            
         self.use_time_encoding = use_time_encoding
         super().__init__(input_size, **kwargs)
         self.input_size = input_size
@@ -1569,20 +1646,7 @@ class TransformerEncoder(BaseTransformer):
         used_indices: List[int] = []
 
         for i in range(self.num_layers):
-            layer = self._get_layer(i)
-
-            # FIX: if share_layers=True, apply attention routing per "virtual layer"
-            if (self.shared_layer is not None) and hasattr(
-                layer, "set_layer_attention_type"
-            ):
-                layer.set_layer_attention_type(self._get_layer_attention_type(i))
-
-            budget = self._get_runtime_budget()
-
-            skip_layer_compute, keep_prob, keep_mask, target_keep = (
-                self._maybe_skip_layer(i, x)
-            )
-            self._accum_layer_skip_aux(keep_prob, target_keep)
+            layer, budget, skip_layer_compute, keep_mask = self._prepare_layer_step(i, x)
 
             if skip_layer_compute and (self.layer_skip_mode == "seq"):
                 continue
@@ -1617,20 +1681,10 @@ class TransformerEncoder(BaseTransformer):
                 x_before = x
                 x, streams = layer_fn(x, streams)
 
-                if (
-                    self.use_layer_skipping
-                    and self.training
-                    and (self.layer_skip_mode == "token")
-                ):
-                    x = self._token_mode_mix(x, x_before, keep_mask)
+                x = self._maybe_apply_token_skip_mix(x, x_before, keep_mask)
 
         # FIX: aggregate only over executed layers
-        self._aggregate_aux_loss(used_indices)
-
-        if self.budget_scheduler is not None:
-            self.budget_scheduler.step()
-        if self.layer_budget_scheduler is not None:
-            self.layer_budget_scheduler.step()
+        self._finalize_layer_stack(used_indices)
 
         x = self.final_norm(x)
         # IMPORTANT: if patch_encoder=True, we DO NOT unpatch here.
@@ -1655,8 +1709,18 @@ class TransformerDecoder(BaseTransformer):
         label_len: int = 0,
         informer_like: bool = False,
         use_time_encoding: bool = True,
+        model_type: str = "transformer",
         **kwargs,
     ):
+        self.model_type = model_type
+        # Auto-configure for informer-like
+        if model_type == "informer-like":
+            informer_like = True
+            use_time_encoding = True
+            if label_len == 0:
+                # Default label_len for Informer is often half of target_len (implicit)
+                pass
+
         self.output_size = output_size
         self.label_len = label_len
         self.informer_like = informer_like
@@ -1787,21 +1851,9 @@ class TransformerDecoder(BaseTransformer):
         used_indices: List[int] = []
 
         for i in range(self.num_layers):
-            layer = self._get_layer(i)
-
-            # FIX: shared-layer routing per "virtual layer"
-            if (self.shared_layer is not None) and hasattr(
-                layer, "set_layer_attention_type"
-            ):
-                layer.set_layer_attention_type(self._get_layer_attention_type(i))
+            layer, budget, skip_layer_compute, keep_mask = self._prepare_layer_step(i, x)
 
             prev_state = layer_states[i - 1] if i > 0 else None
-            budget = self._get_runtime_budget()
-
-            skip_layer_compute, keep_prob, keep_mask, target_keep = (
-                self._maybe_skip_layer(i, x)
-            )
-            self._accum_layer_skip_aux(keep_prob, target_keep)
 
             if skip_layer_compute and (self.layer_skip_mode == "seq"):
                 continue
@@ -1843,20 +1895,10 @@ class TransformerDecoder(BaseTransformer):
                 x_before = x
                 x, layer_states[i], streams = layer_fn(x, streams)
 
-                if (
-                    self.use_layer_skipping
-                    and self.training
-                    and (self.layer_skip_mode == "token")
-                ):
-                    x = self._token_mode_mix(x, x_before, keep_mask)
+                x = self._maybe_apply_token_skip_mix(x, x_before, keep_mask)
 
         # FIX: aggregate only over executed layers
-        self._aggregate_aux_loss(used_indices)
-
-        if self.budget_scheduler is not None:
-            self.budget_scheduler.step()
-        if self.layer_budget_scheduler is not None:
-            self.layer_budget_scheduler.step()
+        self._finalize_layer_stack(used_indices)
 
         x = self.final_norm(x)
 

@@ -3,7 +3,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from foreblocks.ui_aux.node_spec import node
+from foreblocks.ui.node_spec import node
 
 
 # =============================================================================
@@ -145,6 +145,8 @@ class BaseHead(nn.Module):
     type_id="forecasting_model",
     name="Forecasting Model",
     category="Models",
+    outputs=["model"],
+    infer=True,
     color="bg-gradient-to-br from-blue-700 to-blue-800",
 )
 class ForecastingModel(nn.Module):

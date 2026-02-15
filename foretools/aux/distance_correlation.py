@@ -112,7 +112,9 @@ class DistanceCorrelation:
         ry, gy = self._row_sums_and_grand_mean_abs(y)
 
         # 2) Accumulate inner products of centered distance matrices
-        dcov_xy, dcov_xx, dcov_yy = self._accumulate_centered_products(x, y, rx, gx, ry, gy)
+        dcov_xy, dcov_xx, dcov_yy = self._accumulate_centered_products(
+            x, y, rx, gx, ry, gy, self.block_size
+        )
 
         if self.unbiased:
             # unbiased normalization (finite-sample correction)
@@ -164,16 +166,19 @@ class DistanceCorrelation:
         return row_sums, grand_mean
 
     # ---------- Pass 2: centered products accumulation ----------
+    @staticmethod
     @njit(parallel=True, fastmath=True, cache=True)
     def _accumulate_centered_products(x, y, rx, gx, ry, gy, block_size):
         n = x.shape[0]
         n_inv = 1.0 / n
+        n_blocks = (n + block_size - 1) // block_size
 
         s_xy = 0.0
         s_xx = 0.0
         s_yy = 0.0
 
-        for i0 in prange(0, n, block_size):   # parallelize across i-blocks
+        for bi in prange(n_blocks):   # parallelize across i-blocks
+            i0 = bi * block_size
             i1 = min(n, i0 + block_size)
             for j0 in range(0, n, block_size):
                 j1 = min(n, j0 + block_size)

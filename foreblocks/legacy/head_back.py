@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from foreblocks.ui_aux.node_spec import node
+from foreblocks.ui.node_spec import node
 
 BaseHeadLike = Union[nn.Module]  # or your foreblocks.core.BaseHead
 

@@ -5,7 +5,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from foreblocks.ui.node_spec import node
 
+
+@node(
+    type_id="hierarchical_attention",
+    name="Hierarchical Attention",
+    category="Attention",
+    color="bg-gradient-to-br from-indigo-600 to-indigo-800",
+)
 class HierarchicalAttention(nn.Module):
     """
     Hierarchical attention for time series modeling.
@@ -231,6 +239,11 @@ class HierarchicalAttention(nn.Module):
         return output
 
 
+@node(
+    type_id="autocorrelation_block",
+    name="AutoCorrelation Block",
+    category="Attention",
+)
 class AutoCorrelationBlock(nn.Module):
     def __init__(self, d_model, factor=1, dropout=0.1):
         super().__init__()

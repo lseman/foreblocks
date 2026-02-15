@@ -15,7 +15,7 @@ from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from foreblocks.ui_aux.node_spec import node
+from foreblocks.ui.node_spec import node
 
 # Optional: import your MoE classes and HeadComposer
 try:
@@ -99,11 +99,12 @@ def _collect_xy_from_loader(cal_loader) -> Tuple[np.ndarray, np.ndarray]:
     category="Training",
     inputs=["X_train", "Y_train", "model"],
     outputs=["trained_model"],
-    config={"epochs": 100},
-    infer=False,
+    infer=True,
 )
 class Trainer:
     """Trainer for time series models with optional MoE logging and NAS support"""
+
+    Config = TrainingConfig
 
     def __init__(
         self,

@@ -12,19 +12,20 @@ from statsmodels.tools.sm_exceptions import ValueWarning
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.stattools import acf, pacf
 
-from .analyze_cluster import ClusterAnalyzer
-from .analyze_correlation import CorrelationAnalyzer
-from .analyze_dimension import DimensionalityAnalyzer
-from .analyze_distribution import DistributionAnalyzer
-from .analyze_feat import FeatureEngineeringAnalyzer
-from .analyze_graph import GraphAnalyzer
-from .analyze_group import CategoricalGroupAnalyzer
-from .analyze_missing import MissingnessAnalyzer
-from .analyze_outlier import OutlierAnalyzer
-from .analyze_pattern import PatternDetector
-from .analyze_ts import TimeSeriesAnalyzer
-from .foreminer_aux import *
-from .foreminer_aux import _run_analysis_worker
+from .analyzers.cluster import ClusterAnalyzer
+from .analyzers.correlation import CorrelationAnalyzer
+from .analyzers.dimension import DimensionalityAnalyzer
+from .analyzers.distribution import DistributionAnalyzer
+from .analyzers.feat import FeatureEngineeringAnalyzer
+from .analyzers.graph import GraphAnalyzer
+from .analyzers.group import CategoricalGroupAnalyzer
+from .analyzers.missing import MissingnessAnalyzer
+from .analyzers.outlier import OutlierAnalyzer
+from .analyzers.pattern import PatternDetector
+from .analyzers.ts import TimeSeriesAnalyzer
+from .core import *
+from .core import _run_analysis_worker
+from .report import DatasetReportPrinter
 
 # Suppress known noise warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -37,9 +38,6 @@ warnings.filterwarnings("ignore", category=ValueWarning)
 # ============================================================================
 # COMPREHENSIVE ANALYSIS STRATEGIES
 # ============================================================================
-
-warnings.filterwarnings("ignore")
-
 
 class SHAPAnalyzer(AnalysisStrategy):
     """SHAP-based feature explanation"""
@@ -157,6 +155,85 @@ class DatasetAnalyzer:
         if self.verbose:
             print(f"🔍 {message}")
 
+    def _resolve_analysis_types(self, analysis_types: Optional[List[str]]) -> List[str]:
+        """Resolve requested analyses and skip unknown types."""
+        requested = analysis_types or list(self._strategies.keys())
+        resolved = []
+
+        for analysis_type in requested:
+            if analysis_type not in self._strategies:
+                self._log(f"Skipping unknown analysis type: {analysis_type}")
+                continue
+            resolved.append(analysis_type)
+
+        return resolved
+
+    def _build_hook_context(
+        self, analysis_type: str, result: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Create a consistent hook context payload."""
+        context = {
+            "data": self.df,
+            "config": self.config,
+            "type": analysis_type,
+        }
+        if result is not None:
+            context["result"] = result
+        return context
+
+    def _get_numeric_series(
+        self,
+        column: str,
+        *,
+        min_length: int = 1,
+        error_template: str = "Series too short (minimum {minimum} points)",
+    ) -> pd.Series:
+        """Validate numeric column and return a non-null series."""
+        if column not in self._numeric_cols:
+            raise ValueError(f"Column {column} not found in numeric columns")
+
+        series = self.df[column].dropna()
+        if len(series) < min_length:
+            raise ValueError(error_template.format(minimum=min_length))
+        return series
+
+    @staticmethod
+    def _plot_correlation_series(
+        ax: plt.Axes,
+        values: np.ndarray,
+        ci: float,
+        title: str,
+        ylabel: str,
+    ) -> None:
+        """Render an ACF/PACF-style stem plot with confidence bounds."""
+        x = range(len(values))
+        ax.stem(x, values, basefmt=" ")
+        ax.axhline(y=0, color="black", linestyle="-", alpha=0.3)
+        ax.axhline(y=ci, color="red", linestyle="--", alpha=0.5)
+        ax.axhline(y=-ci, color="red", linestyle="--", alpha=0.5)
+        ax.fill_between(x, -ci, ci, alpha=0.2, color="red")
+        ax.set_title(title)
+        ax.set_xlabel("Lags")
+        ax.set_ylabel(ylabel)
+
+    def _get_analysis_result(
+        self, name: str, key: Optional[str] = None, default: Any = None
+    ) -> Any:
+        """Get a cached analysis result, running it if needed."""
+        if name not in self._results_cache:
+            try:
+                self._results_cache[name] = self._strategies[name].analyze(
+                    self.df, self.config
+                )
+            except Exception as e:
+                self._results_cache[name] = {"error": str(e)}
+        result = self._results_cache[name]
+        if key is None:
+            return result
+        if isinstance(result, dict):
+            return result.get(key, default)
+        return default
+
     @lru_cache(maxsize=32)
     def _get_clean_numeric_data(self) -> pd.DataFrame:
         """Get cached clean numeric data"""
@@ -167,21 +244,14 @@ class DatasetAnalyzer:
     # ========================================================================
     def analyze(self, analysis_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """Run specified analyses in parallel with pre/post hooks"""
-        analysis_types = analysis_types or list(self._strategies.keys())
+        resolved_types = self._resolve_analysis_types(analysis_types)
         results = {}
 
         tasks = []
         with ThreadPoolExecutor() as executor:
-            for analysis_type in analysis_types:
-                if analysis_type not in self._strategies:
-                    continue
-
+            for analysis_type in resolved_types:
                 self._log(f"Running {analysis_type} analysis...")
-                context = {
-                    "data": self.df,
-                    "config": self.config,
-                    "type": analysis_type,
-                }
+                context = self._build_hook_context(analysis_type)
                 self.hooks.trigger(f"pre_{analysis_type}", context)
 
                 strategy = self._strategies[analysis_type]
@@ -205,12 +275,7 @@ class DatasetAnalyzer:
                 self._results_cache[strategy_name] = result
                 self.hooks.trigger(
                     f"post_{strategy_name}",
-                    {
-                        "data": self.df,
-                        "config": self.config,
-                        "type": strategy_name,
-                        "result": result,
-                    },
+                    self._build_hook_context(strategy_name, result),
                 )
 
         return results
@@ -264,12 +329,11 @@ class DatasetAnalyzer:
 
     def decompose_series(self, column: str, period: Optional[int] = None):
         """STL decomposition for time series"""
-        if column not in self._numeric_cols:
-            raise ValueError(f"Column {column} not found in numeric columns")
-
-        series = self.df[column].dropna()
-        if len(series) < 24:
-            raise ValueError("Series too short for decomposition (minimum 24 points)")
+        series = self._get_numeric_series(
+            column,
+            min_length=24,
+            error_template="Series too short for decomposition (minimum {minimum} points)",
+        )
 
         if period is None:
             period = min(max(2, len(series) // 10), 24)
@@ -292,10 +356,7 @@ class DatasetAnalyzer:
 
     def plot_autocorrelations(self, column: str, lags: int = 40):
         """Enhanced ACF and PACF plots"""
-        if column not in self._numeric_cols:
-            raise ValueError(f"Column {column} not found in numeric columns")
-
-        series = self.df[column].dropna()
+        series = self._get_numeric_series(column, min_length=10)
         if len(series) < lags + 10:
             lags = max(10, len(series) // 3)
 
@@ -309,25 +370,12 @@ class DatasetAnalyzer:
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
 
-        # ACF plot
-        ax1.stem(range(len(acf_vals)), acf_vals, basefmt=" ")
-        ax1.axhline(y=0, color="black", linestyle="-", alpha=0.3)
-        ax1.axhline(y=ci, color="red", linestyle="--", alpha=0.5)
-        ax1.axhline(y=-ci, color="red", linestyle="--", alpha=0.5)
-        ax1.fill_between(range(len(acf_vals)), -ci, ci, alpha=0.2, color="red")
-        ax1.set_title(f"Autocorrelation Function - {column}")
-        ax1.set_xlabel("Lags")
-        ax1.set_ylabel("ACF")
-
-        # PACF plot
-        ax2.stem(range(len(pacf_vals)), pacf_vals, basefmt=" ")
-        ax2.axhline(y=0, color="black", linestyle="-", alpha=0.3)
-        ax2.axhline(y=ci, color="red", linestyle="--", alpha=0.5)
-        ax2.axhline(y=-ci, color="red", linestyle="--", alpha=0.5)
-        ax2.fill_between(range(len(pacf_vals)), -ci, ci, alpha=0.2, color="red")
-        ax2.set_title(f"Partial Autocorrelation Function - {column}")
-        ax2.set_xlabel("Lags")
-        ax2.set_ylabel("PACF")
+        self._plot_correlation_series(
+            ax1, acf_vals, ci, f"Autocorrelation Function - {column}", "ACF"
+        )
+        self._plot_correlation_series(
+            ax2, pacf_vals, ci, f"Partial Autocorrelation Function - {column}", "PACF"
+        )
 
         plt.tight_layout()
         plt.show()
@@ -391,65 +439,12 @@ class DatasetAnalyzer:
     # ========================================================================
     def print_detailed_insights(self):
         """Generate a comprehensive, well-formatted dataset analysis report (cleaner/DRY)."""
-
-        # ----------------------- Formatting helpers -----------------------
-        def section(title, level=1):
-            bars = {1: "=" * 80, 2: "-" * 50, 3: "-" * 30, 4: "-" * 30}
-            prefixes = {1: "📊 ", 2: "🔍 ", 3: "🔎 ", 4: "   🔍 "}
-            indent = "" if level < 4 else "   "
-            print()
-            if level == 1:
-                print(bars[1])
-                print(f"{prefixes[1]}{title.upper()}")
-                print(bars[1])
-            elif level == 2:
-                print(f"{prefixes[2]}{title.upper()}")
-                print(bars[2])
-            elif level == 3:
-                print(f"{prefixes[3]}{title}")
-                print("   " + bars[3])
-            else:
-                print(f"{prefixes[4]}{title}")
-                print("      " + bars[4])
-
-        def metric(label, value, unit="", status=None, indent=0):
-            status_emoji = {
-                "excellent": "🟢",
-                "good": "🟡",
-                "fair": "🟠",
-                "poor": "🔴",
-                "warning": "⚠️",
-                "info": "ℹ️",
-            }
-            emoji = status_emoji.get(status, "")
-            print(f"{'   '*indent}• {label}: {value}{unit} {emoji}")
-
-        def rec(text, priority="normal", indent=0):
-            icons = {"high": "🚨", "medium": "⚠️", "low": "💡", "normal": "💡"}
-            print(f"{'   '*indent}{icons.get(priority,'💡')} {text}")
-
-        def pct(num, den, zeros_as="0.0%"):
-            if not den:
-                return zeros_as
-            return f"{(num/den)*100:.1f}%"
-
-        def safe_get(name, key=None, default=None):
-            """Get a cached analysis result, running it if needed."""
-            if name not in self._results_cache:
-                try:
-                    self._results_cache[name] = self._strategies[name].analyze(
-                        self.df, self.config
-                    )
-                except Exception as e:
-                    self._results_cache[name] = {"error": str(e)}
-            res = self._results_cache[name]
-            return res if key is None else res.get(key, default)
-
-        def top_list(items, n=5):
-            items = list(items)
-            return ", ".join(items[:n]) + (
-                f" ... and {len(items)-n} more" if len(items) > n else ""
-            )
+        reporter = DatasetReportPrinter(self)
+        section = report_section
+        metric = report_metric
+        rec = report_recommendation
+        pct = report_pct
+        safe_get = reporter.safe_get
 
         # Tunable thresholds in one place
         TH = {
@@ -462,160 +457,11 @@ class DatasetAnalyzer:
             "sil_excellent": 0.7,
         }
 
-        # ----------------------- Executive summary -----------------------
-        section("EXECUTIVE SUMMARY", 1)
-        print("Dataset Overview:")
-        metric("Shape", f"{self.df.shape[0]:,} rows × {self.df.shape[1]} columns")
-        metric(
-            "Memory Usage", f"{self.df.memory_usage(deep=True).sum()/(1024**2):.2f} MB"
-        )
-        metric("Numeric Features", len(self._numeric_cols))
-        metric("Categorical Features", len(self._categorical_cols))
-
-        miss_pct = (
-            self.df.isna().sum().sum() / (self.df.shape[0] * self.df.shape[1] or 1)
-        ) * 100
-        miss_status = (
-            "excellent"
-            if miss_pct < TH["missing"][0]
-            else (
-                "good"
-                if miss_pct < TH["missing"][1]
-                else "fair" if miss_pct < TH["missing"][2] else "poor"
-            )
-        )
-        metric("Missing Values", f"{miss_pct:.2f}%", status=miss_status)
-
-        # Warm up the analyses you rely on later (lazy-run + cache)
-        for a in [
-            "distributions",
-            "correlations",
-            "outliers",
-            "patterns",
-            "clusters",
-            "timeseries",
-            "missingness",
-            "feature_engineering",
-            "dimensionality",
-        ]:
-            safe_get(a)  # ignore error here; handled when reading
-
-        # ----------------------- Distribution analysis -----------------------
-        dist_summary = safe_get("distributions", "summary", pd.DataFrame())
-        if not dist_summary.empty:
-            section("DISTRIBUTION ANALYSIS", 1)
-
-            total_features = len(dist_summary)
-            gaussian = int(dist_summary.get("is_gaussian", False).sum())
-            skewed = int(dist_summary.get("is_skewed", False).sum())
-            heavy = int(dist_summary.get("is_heavy_tailed", False).sum())
-            avg_out_pct = float(
-                dist_summary.get("outlier_pct_z>3", pd.Series([0])).mean() or 0
-            )
-
-            print("Statistical Properties:")
-            metric(
-                "Normal Distributions",
-                f"{gaussian}/{total_features} ({pct(gaussian,total_features)})",
-            )
-            metric(
-                "Skewed Distributions",
-                f"{skewed}/{total_features} ({pct(skewed,total_features)})",
-            )
-            metric(
-                "Heavy-Tailed",
-                f"{heavy}/{total_features} ({pct(heavy,total_features)})",
-            )
-            metric("Average Outlier Rate", f"{avg_out_pct:.2f}%")
-
-            section("Feature Quality Assessment", 3)
-            if gaussian:
-                feats = dist_summary.loc[
-                    dist_summary["is_gaussian"], "feature"
-                ].tolist()
-                print(f"✅ Normal Distributions ({gaussian}):")
-                print(f"   {top_list(feats)}")
-                rec("Safe for parametric methods and linear models")
-
-            hi_skew = dist_summary.loc[dist_summary["skewness"].abs() > TH["skew_hi"]]
-            if not hi_skew.empty:
-                print(f"\n⚠️ Highly Skewed Features ({len(hi_skew)}):")
-                for _, r in hi_skew.head(3).iterrows():
-                    direction = "right" if r["skewness"] > 0 else "left"
-                    print(
-                        f"   • {r['feature']}: {r['skewness']:.2f} ({direction}-skewed)"
-                    )
-                rec("Apply log/sqrt transform or use robust methods", "medium")
-
-            hi_out = dist_summary.loc[
-                dist_summary.get("outlier_pct_z>3", 0) > TH["outlier_hi_pct"]
-            ]
-            if not hi_out.empty:
-                print(
-                    f"\n🚨 High Outlier Rate Features ({len(hi_out)} > {TH['outlier_hi_pct']}%):"
-                )
-                for _, r in hi_out.head(3).iterrows():
-                    print(f"   • {r['feature']}: {r['outlier_pct_z>3']:.1f}% outliers")
-                rec("Apply robust scaling or outlier treatment", "high")
-
-            bi = dist_summary.loc[
-                dist_summary.get("bimodality_coeff", 0) > TH["bimodal_bc"], "feature"
-            ]
-            if not bi.empty:
-                print(f"\n🔀 Potential Bimodal Distributions ({len(bi)}):")
-                print(f"   {top_list(bi.tolist(), 3)}")
-                rec("Investigate mixtures or stratify data")
-
-            section("Preprocessing Recommendations", 3)
-            normal_pct = gaussian / total_features * 100 if total_features else 0
-            if normal_pct > 70:
-                rec("Dataset largely normal — parametric methods recommended")
-            elif normal_pct > 30:
-                rec("Mixed distributions — use a hybrid approach")
-            else:
-                rec("Non-normal dominant — consider robust/non-parametric methods")
-            if skewed > total_features * 0.5:
-                rec("Many skewed features — batch transform", "medium")
-
-        # ----------------------- Correlation analysis -----------------------
-        corrs = safe_get("correlations") or {}
-        if (
-            isinstance(corrs, dict)
-            and "pearson" in corrs
-            and corrs["pearson"] is not None
-        ):
-            section("CORRELATION ANALYSIS", 1)
-            cm = corrs["pearson"]
-            strong_pos, strong_neg, mod = [], [], []
-            strong, moderate = TH["corr"]
-
-            cols = cm.columns
-            for i in range(len(cols)):
-                for j in range(i + 1, len(cols)):
-                    v = cm.iloc[i, j]
-                    f1, f2 = cols[i], cols[j]
-                    if v > strong:
-                        strong_pos.append((f1, f2, v))
-                    elif v < -strong:
-                        strong_neg.append((f1, f2, v))
-                    elif abs(v) > moderate:
-                        mod.append((f1, f2, v))
-
-            print("Correlation Summary:")
-            metric("Strong Positive (>0.7)", len(strong_pos))
-            metric("Strong Negative (<-0.7)", len(strong_neg))
-            metric("Moderate (0.5–0.7)", len(mod))
-
-            if strong_pos:
-                section("Strong Positive Correlations", 3)
-                for f1, f2, v in strong_pos[:5]:
-                    metric(f"{f1} ↔ {f2}", f"{v:.3f}")
-            if strong_neg:
-                section("Strong Negative Correlations", 3)
-                for f1, f2, v in strong_neg[:5]:
-                    metric(f"{f1} ↔ {f2}", f"{v:.3f}")
-            if strong_pos or strong_neg:
-                rec("Consider dimensionality reduction or feature selection", "medium")
+        reporter.print_executive_summary(TH)
+        reporter.warmup_core_analyses()
+        reporter.print_distribution_analysis(TH)
+        reporter.print_correlation_analysis(TH)
+        reporter.print_sota_insights()
 
         # ----------------------- Enhanced Pattern detection -----------------------
         patt = safe_get("patterns") or {}
@@ -2528,12 +2374,7 @@ class DatasetAnalyzer:
         if out_sum:
             validity = max(50, 100 - (out_sum.get("overall_outlier_rate", 0) * 500))
 
-        def band(x):
-            return (
-                "excellent"
-                if x > 95
-                else "good" if x > 85 else "fair" if x > 70 else "poor"
-            )
+        band = quality_band
 
         print("Quality Dimensions:")
         metric("Completeness", f"{completeness:.1f}%", status=band(completeness))
@@ -2705,3 +2546,43 @@ class DatasetAnalyzer:
     def get_available_analyses(self) -> List[str]:
         """Get list of available analysis types"""
         return list(self._strategies.keys())
+
+    def analyze_intelligent_summary(self) -> str:
+        """
+        Highest level SOTA mining: Combine all analyses into an intelligent text summary.
+        """
+        self._log("🧠 Generating intelligent SOTA summary...")
+        results = self.analyze()
+        
+        summary_lines = []
+        summary_lines.append(f"ForeMiner SOTA Intelligence Report for Dataset ({self.df.shape[0]} rows)")
+        summary_lines.append("=" * 60)
+        
+        # Pull key facts
+        ts = results.get("timeseries", {})
+        patt = results.get("patterns", {})
+        
+        # 1. Seasonality & Motifs
+        motifs = ts.get("motif_discovery", {})
+        if motifs:
+            cols = list(motifs.keys())
+            summary_lines.append(f"• Motifs: Found recurring sub-patterns in {len(cols)} features: {', '.join(cols[:3])}")
+            
+        # 2. Causality
+        causality = patt.get("causality", {})
+        infl = causality.get("directed_influence", [])
+        if infl:
+            top = sorted(infl, key=lambda x: x['strength'], reverse=True)[0]
+            summary_lines.append(f"• Causality: Strongest directed influence detected: {top['source']} -> {top['target']}")
+            
+        # 3. Anomalies
+        anomalies = patt.get("anomalies", {})
+        global_count = len(anomalies.get("global_anomalies", []))
+        if global_count > 0:
+            summary_lines.append(f"• Anomalies: {global_count} global anomaly points identified by Isolation Forest.")
+            
+        final_summary = "\n".join(summary_lines)
+        if self.verbose:
+            print(final_summary)
+            
+        return final_summary

@@ -377,7 +377,7 @@ class MultiAttention(nn.Module):
             # RoPE (self-attention only)
             self.use_rotary = use_rotary and not self.cross_attention
             if self.use_rotary:
-                from .rotary import RotaryEmbedding  # local import
+                from ..embeddings.rotary import RotaryEmbedding  # local import
 
                 self.rotary_emb = RotaryEmbedding(self.head_dim)
             else:
@@ -506,6 +506,38 @@ class MultiAttention(nn.Module):
             return x
         return x.repeat_interleave(self.n_rep, dim=1)
 
+    def _project_qkv_heads(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Project [B,T,C] inputs into head-first tensors."""
+        B, T_q, _ = query.shape
+        T_k = key.shape[1]
+        q = self.q_proj(query).view(B, T_q, self.n_heads, self.head_dim).transpose(1, 2)
+        k = (
+            self.k_proj(key)
+            .view(B, T_k, self.n_kv_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        v = (
+            self.v_proj(value)
+            .view(B, T_k, self.n_kv_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        return q, k, v
+
+    def _finalize_projected_output(
+        self,
+        out_bhtd: torch.Tensor,
+        B: int,
+        T_q: int,
+    ) -> torch.Tensor:
+        """Merge heads and apply output projection stack."""
+        out = out_bhtd.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
+        return self.out_proj(self.dropout(out))
+
     def _ensure_paged_cache(
         self,
         layer_state: Dict,
@@ -535,7 +567,7 @@ class MultiAttention(nn.Module):
         Apply RoPE to q and k, with an optional per-batch seqlen_offset.
         q, k: [B, H, T, D]
         """
-        from foreblocks.tf.attention.rotary import (
+        from foreblocks.tf.embeddings.rotary import (
             apply_rotary_emb,  # keep as-is for API compatibility
         )
 
@@ -617,9 +649,7 @@ class MultiAttention(nn.Module):
         B, H, T_q, T_k = scores.shape
 
         if attn_mask is not None:
-            mask = attn_mask.bool()
-            if mask.dim() == 2:
-                mask = mask.view(1, 1, T_q, T_k)
+            mask = self._normalize_attn_mask(attn_mask, B, H, T_q, T_k)
             scores = scores.masked_fill(mask, float("-inf"))
 
         if key_padding_mask is not None:
@@ -629,6 +659,76 @@ class MultiAttention(nn.Module):
             )
 
         return scores
+
+    def _normalize_attn_mask(
+        self,
+        attn_mask: torch.Tensor,
+        B: int,
+        H: int,
+        T_q: int,
+        T_k: int,
+    ) -> torch.Tensor:
+        """
+        Normalize attn_mask to bool [B, H, T_q, T_k] (True = masked).
+        Supports [T_q,T_k], [B,T_q,T_k], [1,H,T_q,T_k], [B,H,T_q,T_k].
+        """
+        mask = attn_mask.bool()
+        if mask.dim() == 2:
+            mask = mask.view(1, 1, T_q, T_k)
+        elif mask.dim() == 3:
+            if mask.shape[0] in (1, B):
+                mask = mask.view(mask.shape[0], 1, T_q, T_k)
+            else:
+                raise ValueError(
+                    f"Unsupported 3D attn_mask shape {tuple(mask.shape)}; expected [B,T_q,T_k]."
+                )
+        elif mask.dim() != 4:
+            raise ValueError(
+                f"Unsupported attn_mask rank {mask.dim()}; expected 2D/3D/4D."
+            )
+
+        if mask.shape[-2:] != (T_q, T_k):
+            raise ValueError(
+                f"attn_mask last dims {tuple(mask.shape[-2:])} != {(T_q, T_k)}."
+            )
+        if mask.shape[0] not in (1, B):
+            raise ValueError(
+                f"attn_mask batch dim {mask.shape[0]} incompatible with B={B}."
+            )
+        if mask.shape[1] not in (1, H):
+            raise ValueError(
+                f"attn_mask head dim {mask.shape[1]} incompatible with H={H}."
+            )
+
+        if mask.shape[0] == 1 and B > 1:
+            mask = mask.expand(B, -1, -1, -1)
+        if mask.shape[1] == 1 and H > 1:
+            mask = mask.expand(-1, H, -1, -1)
+        return mask
+
+    def _slice_attn_mask(
+        self,
+        attn_mask: Optional[torch.Tensor],
+        B: int,
+        H: int,
+        q_start: int,
+        q_end: int,
+        k_start: int,
+        k_end: int,
+        T_q_full: int,
+        T_k_full: int,
+    ) -> Optional[torch.Tensor]:
+        """Slice normalized attention mask for chunked attention regions."""
+        if attn_mask is None:
+            return None
+        full = self._normalize_attn_mask(attn_mask, B, H, T_q_full, T_k_full)
+        return full[:, :, q_start:q_end, k_start:k_end]
+
+    def _dropout_weights(self, w: torch.Tensor) -> torch.Tensor:
+        """Single place for attention-weight dropout policy."""
+        if self.training and self.dropout_p > 0:
+            return F.dropout(w, p=self.dropout_p, training=True)
+        return w
 
     # --------------------------------------------------------------------- #
     # Core attention dispatcher: "standard"
@@ -657,21 +757,7 @@ class MultiAttention(nn.Module):
 
         if use_paged_decode:
             # 1) Project to heads
-            q = (
-                self.q_proj(query)
-                .view(B, T_q, self.n_heads, self.head_dim)
-                .transpose(1, 2)
-            )  # [B,Hq,Tq,D]
-            k = (
-                self.k_proj(key)
-                .view(B, T_k, self.n_kv_heads, self.head_dim)
-                .transpose(1, 2)
-            )
-            v = (
-                self.v_proj(value)
-                .view(B, T_k, self.n_kv_heads, self.head_dim)
-                .transpose(1, 2)
-            )
+            q, k, v = self._project_qkv_heads(query, key, value)
 
             # 2) RoPE with offsets BEFORE append
             if self.use_rotary and self.rotary_emb is not None:
@@ -706,8 +792,7 @@ class MultiAttention(nn.Module):
                 is_causal=is_causal and not self.cross_attention,
             )
             out_bhqd = self._apply_gated_attention(out_bhqd)
-            out = out_bhqd.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
-            return self.out_proj(self.dropout(out)), None, layer_state
+            return self._finalize_projected_output(out_bhqd, B, T_q), None, layer_state
 
         # Prefill / cross-attention: use regular full-attention path
         q, k, v = self._process_qkv(query, key, value, layer_state)
@@ -720,8 +805,7 @@ class MultiAttention(nn.Module):
             is_causal,
             need_weights,
         )
-        out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
-        return self.out_proj(self.dropout(out)), weights, layer_state
+        return self._finalize_projected_output(out, B, T_q), weights, layer_state
 
     # --------------------------------------------------------------------- #
     # QKV processing (non-paged + paged gather compatibility)
@@ -745,19 +829,7 @@ class MultiAttention(nn.Module):
             return self._process_qkv_paged(query, key, value, layer_state)
 
         B, T_q, _ = query.shape
-        T_k = key.shape[1]
-
-        q = self.q_proj(query).view(B, T_q, self.n_heads, self.head_dim).transpose(1, 2)
-        k = (
-            self.k_proj(key)
-            .view(B, T_k, self.n_kv_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        v = (
-            self.v_proj(value)
-            .view(B, T_k, self.n_kv_heads, self.head_dim)
-            .transpose(1, 2)
-        )
+        q, k, v = self._project_qkv_heads(query, key, value)
 
         seqlen_offset = 0
         if self.use_rotary and (layer_state is not None) and (not self.cross_attention):
@@ -793,19 +865,7 @@ class MultiAttention(nn.Module):
         gathered KV; the decode path above no longer calls the gather.
         """
         B, T_q, _ = query.shape
-        T_k = key.shape[1]
-
-        q = self.q_proj(query).view(B, T_q, self.n_heads, self.head_dim).transpose(1, 2)
-        k = (
-            self.k_proj(key)
-            .view(B, T_k, self.n_kv_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        v = (
-            self.v_proj(value)
-            .view(B, T_k, self.n_kv_heads, self.head_dim)
-            .transpose(1, 2)
-        )
+        q, k, v = self._project_qkv_heads(query, key, value)
 
         seqlen_offsets = None
         if self.use_rotary and not self.cross_attention:
@@ -875,8 +935,7 @@ class MultiAttention(nn.Module):
         scores = self._apply_masks(scores, attn_mask, key_padding_mask)
 
         weights = F.softmax(scores, dim=-1)
-        if self.training and self.dropout_p > 0:
-            weights = F.dropout(weights, p=self.dropout_p, training=True)
+        weights = self._dropout_weights(weights)
 
         out = torch.matmul(weights, v)  # [B,H,T_q,D]
         out = self._apply_gated_attention(out)
@@ -908,8 +967,7 @@ class MultiAttention(nn.Module):
             is_causal,
             need_weights,
         )
-        out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
-        return self.out_proj(self.dropout(out)), weights, layer_state
+        return self._finalize_projected_output(out, B, T_q), weights, layer_state
 
     def _prob_sparse_attention(
         self,
@@ -972,9 +1030,7 @@ class MultiAttention(nn.Module):
 
         # attn_mask
         if attn_mask is not None:
-            mask = attn_mask.bool()
-            if mask.dim() == 2:
-                mask = mask.unsqueeze(0).unsqueeze(0).expand(B, H, T_q, T_k)
+            mask = self._normalize_attn_mask(attn_mask, B, H, T_q, T_k)
             mask_top = torch.gather(
                 mask,
                 2,
@@ -992,8 +1048,7 @@ class MultiAttention(nn.Module):
         # stable softmax
         scores_max = scores.max(dim=-1, keepdim=True)[0]
         weights = F.softmax(scores - scores_max, dim=-1)
-        if self.training and self.dropout_p > 0:
-            weights = F.dropout(weights, p=self.dropout_p, training=True)
+        weights = self._dropout_weights(weights)
 
         top_out = torch.matmul(weights, v)  # [B,H,u,D]
 
@@ -1050,13 +1105,11 @@ class MultiAttention(nn.Module):
                     q.device,
                     is_causal,
                 )
-                combined = window_mask.unsqueeze(0).unsqueeze(0)  # [1,1,T_q,T_k]
-
+                combined = window_mask.view(1, 1, q.size(2), k.size(2))  # [1,1,T_q,T_k]
                 if attn_mask is not None:
-                    mask = attn_mask.bool()
-                    if mask.dim() == 2:
-                        mask = mask.unsqueeze(0).unsqueeze(0)
-                    combined = combined | mask
+                    combined = combined | self._normalize_attn_mask(
+                        attn_mask, B, self.n_heads, q.size(2), k.size(2)
+                    )
 
                 if key_padding_mask is not None:
                     combined = (
@@ -1071,8 +1124,8 @@ class MultiAttention(nn.Module):
                     dropout_p=self.dropout_p if self.training else 0.0,
                     is_causal=False,
                 )
-                out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
-                return self.out_proj(self.dropout(out)), None, layer_state
+                out = self._apply_gated_attention(out)
+                return self._finalize_projected_output(out, B, T_q), None, layer_state
             except Exception:
                 # silently fall back to manual implementation
                 pass
@@ -1087,9 +1140,7 @@ class MultiAttention(nn.Module):
             is_causal,
             need_weights,
         )
-        out = self._apply_gated_attention(out)
-        out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
-        return self.out_proj(self.dropout(out)), weights, layer_state
+        return self._finalize_projected_output(out, B, T_q), weights, layer_state
 
     def _sliding_window_manual(
         self,
@@ -1120,8 +1171,7 @@ class MultiAttention(nn.Module):
             scores = self._apply_masks(scores, attn_mask, key_padding_mask)
 
             weights = F.softmax(scores, dim=-1)
-            if self.training and self.dropout_p > 0:
-                weights = F.dropout(weights, p=self.dropout_p, training=True)
+            weights = self._dropout_weights(weights)
 
             out = torch.matmul(weights, v)
             out = self._apply_gated_attention(out)
@@ -1174,9 +1224,22 @@ class MultiAttention(nn.Module):
                     float("-inf"),
                 )
 
+            chunk_attn = self._slice_attn_mask(
+                attn_mask=attn_mask,
+                B=B,
+                H=H,
+                q_start=i,
+                q_end=end_i,
+                k_start=start_k,
+                k_end=end_k,
+                T_q_full=T_q,
+                T_k_full=T_k,
+            )
+            if chunk_attn is not None:
+                scores = scores.masked_fill(chunk_attn, float("-inf"))
+
             weights = F.softmax(scores, dim=-1)
-            if self.training and self.dropout_p > 0:
-                weights = F.dropout(weights, p=self.dropout_p, training=True)
+            weights = self._dropout_weights(weights)
 
             output[:, :, i:end_i] = torch.matmul(weights, v_chunk)
 
