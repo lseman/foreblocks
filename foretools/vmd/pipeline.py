@@ -184,8 +184,6 @@ def _dispersion_entropy_numba(
     hmax = math.log(float(_pow_int(c, m)) + eps)
     return h / (hmax + eps)
 
-def fibonnaci(num):
-    for
 
 class VMDOptimizer:
     """
@@ -516,7 +514,7 @@ class VMDOptimizer:
             tol=float(p.tol),
             max_iter=int(p.max_iter),
             fs=float(fs),
-            use_fs_vmd=bool(p.use_fs_vmd),
+            # use_fs_vmd=bool(p.use_fs_vmd),
             precomputed_fft=precomp,
             trial=trial,
             enforce_uncorrelated=bool(p.enforce_uncorrelated),
@@ -569,7 +567,7 @@ class VMDOptimizer:
                         tol=float(p.tol),
                         max_iter=int(p.max_iter),
                         fs=float(fs),
-                        use_fs_vmd=bool(p.use_fs_vmd),
+                        # use_fs_vmd=bool(p.use_fs_vmd),
                         precomputed_fft=precomp,
                         enforce_uncorrelated=bool(p.enforce_uncorrelated),
                         corr_rho=float(p.corr_rho),
@@ -608,7 +606,7 @@ class VMDOptimizer:
                     tol=float(p.tol),
                     max_iter=int(p.max_iter),
                     fs=float(fs),
-                    use_fs_vmd=bool(p.use_fs_vmd),
+                    # use_fs_vmd=bool(p.use_fs_vmd),
                     precomputed_fft=precomp,
                     enforce_uncorrelated=bool(p.enforce_uncorrelated),
                     corr_rho=float(p.corr_rho),
@@ -696,16 +694,16 @@ class VMDOptimizer:
         signal: Union[np.ndarray, List[float]],
         fs: float,
         auto_params: bool = True,
-        refine_modes: bool = True,
+        refine_modes: bool = False,
         refine_epochs: int = 50,
         refine_method: str = "informer",
         use_mvmd: bool = False,
+        return_raw_modes: bool = True,
         **overrides,
-    ) -> Tuple[np.ndarray, List[float], Tuple[int, float, float]]:
+    ):
         self._cache.clear()
         x = np.asarray(signal, dtype=np.float64)
 
-        # MVMD path (kept)
         if use_mvmd:
             if x.ndim != 2:
                 raise ValueError("MVMD requires signal shaped (channels, samples)")
@@ -735,7 +733,6 @@ class VMDOptimizer:
             flat = modes.reshape(-1, x.shape[1])
             return flat, [0.0] * flat.shape[0], (int(p.max_K), float(p.alpha_min), 0.0)
 
-        # Standard path
         p = self.analyzer.assess_complexity(x, fs) if auto_params else VMDParameters()
         for k, v in overrides.items():
             if hasattr(p, k):
@@ -748,12 +745,10 @@ class VMDOptimizer:
             window_alpha=p.window_alpha,
         )
 
-        # choose K strategy
         best_K_fixed: Optional[int] = None
         if p.k_selection.lower() in ("penalized", "fbd"):
             best_K_fixed = self.select_K(x, fs, p, precomp, alpha_default=2000.0)
 
-        # Entropy-based toggle: deterministic K+alpha estimation (no Optuna).
         if (
             str(p.search_method).lower() == "entropy"
             or p.k_selection.lower() == "entropy"
@@ -770,7 +765,6 @@ class VMDOptimizer:
                 allow_cache=False,
             )
         else:
-            # Optuna
             study = optuna.create_study(direction="minimize")
             show_bar = bool(IS_NOTEBOOK)
 
@@ -795,8 +789,6 @@ class VMDOptimizer:
                 best_K = int(study.best_params["K"])
 
             best_cost = float(study.best_value)
-
-            # Final decomposition, reuse the same evaluation path to get modes_list+freqs_list
             modes_list, freqs_list, _ = self._evaluate_candidate(
                 K=int(best_K),
                 alpha=float(best_alpha),
@@ -805,10 +797,46 @@ class VMDOptimizer:
                 precomp=precomp,
                 p=p,
                 trial=None,
-                allow_cache=False,  # final run, no need to cache
+                allow_cache=False,
             )
 
-        # Optional NN refinement (on sorted/merged modes)
+        raw_modes_np: Optional[np.ndarray] = None
+        raw_freqs_list: List[float] = []
+        if bool(return_raw_modes):
+            raw_u, _, _ = self.core.decompose(
+                x,
+                alpha=float(best_alpha),
+                tau=float(p.tau),
+                K=int(best_K),
+                DC=int(p.DC),
+                init=int(p.init),
+                tol=float(p.tol),
+                max_iter=int(p.max_iter),
+                fs=float(fs),
+                # use_fs_vmd=bool(p.use_fs_vmd),
+                precomputed_fft=precomp,
+                trial=None,
+                enforce_uncorrelated=bool(p.enforce_uncorrelated),
+                corr_rho=float(p.corr_rho),
+                corr_update_every=int(p.corr_update_every),
+                corr_ema=float(p.corr_ema),
+                adaptive_alpha=bool(p.adaptive_alpha),
+                adaptive_alpha_start_iter=int(p.adaptive_alpha_start_iter),
+                adaptive_alpha_update_every=int(p.adaptive_alpha_update_every),
+                adaptive_alpha_lr=float(p.adaptive_alpha_lr),
+                adaptive_alpha_min_scale=float(p.adaptive_alpha_min_scale),
+                adaptive_alpha_max_scale=float(p.adaptive_alpha_max_scale),
+                adaptive_alpha_skip_dc=bool(p.adaptive_alpha_skip_dc),
+                omega_momentum=float(p.omega_momentum),
+                omega_shrinkage=float(p.omega_shrinkage),
+                omega_max_step=float(p.omega_max_step),
+            )
+            raw_modes_np = np.asarray(raw_u, dtype=np.float64)
+            raw_freqs_list = [
+                float(self.proc.dominant_frequency(raw_modes_np[k], fs))
+                for k in range(raw_modes_np.shape[0])
+            ]
+
         if refine_modes and modes_list:
             if str(refine_method).lower() == "cross_mode":
                 refined = refine_modes_cross_nn(
@@ -824,7 +852,6 @@ class VMDOptimizer:
             ]
             modes_list, freqs_list = self.proc.sort_modes_by_frequency(modes_list, fs)
 
-        # Optional taper
         if bool(p.apply_tapering) and modes_list:
             taper_len = int(min(100, x.size // 10))
             modes_list = BoundaryHandler.taper_boundaries(modes_list, taper_len)
@@ -836,6 +863,25 @@ class VMDOptimizer:
             if modes_list
             else np.zeros((0, x.size), dtype=np.float64)
         )
+
+        if bool(return_raw_modes):
+            out_raw_modes = (
+                raw_modes_np
+                if raw_modes_np is not None
+                else np.zeros((0, x.size), dtype=np.float64)
+            )
+            out_raw_freqs = (
+                raw_freqs_list if raw_modes_np is not None else list(freqs_list)
+            )
+            optinfo: Dict[str, Any] = {
+                "best": (int(best_K), float(best_alpha), float(best_cost)),
+                "raw_modes": out_raw_modes,
+                "raw_freqs": out_raw_freqs,
+                "post_modes": modes_arr,
+                "post_freqs": list(freqs_list),
+            }
+            return out_raw_modes, out_raw_freqs, optinfo
+
         return modes_arr, freqs_list, (int(best_K), float(best_alpha), float(best_cost))
 
 
@@ -1035,6 +1081,7 @@ class FastVMD:
         refine_modes = bool(kwargs.pop("refine_modes", True))
         refine_epochs = int(kwargs.pop("refine_epochs", 50))
         refine_method = str(kwargs.pop("refine_method", "informer"))
+        return_raw_modes = bool(kwargs.pop("return_raw_modes", True))
 
         if method == "hierarchical":
             hp = HierarchicalParameters(
@@ -1067,6 +1114,7 @@ class FastVMD:
             refine_modes=refine_modes,
             refine_epochs=refine_epochs,
             refine_method=refine_method,
+            return_raw_modes=return_raw_modes,
             **kwargs,
         )
 

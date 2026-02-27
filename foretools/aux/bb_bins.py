@@ -3,10 +3,8 @@ from collections.abc import Iterable
 from typing import Optional, Union
 
 import numpy as np
-from scipy import stats
 
-warnings.filterwarnings('ignore')
-
+warnings.filterwarnings("ignore")
 ArrayLike = Union[np.ndarray, Iterable[float]]
 
 
@@ -18,20 +16,31 @@ def _fitness_args_of(func):
 
 
 class FitnessFunc:
-    def __init__(self, p0: float = 0.05, gamma: Optional[float] = None, ncp_prior: Optional[float] = None) -> None:
+    def __init__(
+        self,
+        p0: float = 0.05,
+        gamma: Optional[float] = None,
+        ncp_prior: Optional[float] = None,
+    ) -> None:
         self.p0 = p0
         self.gamma = gamma
         self.ncp_prior = ncp_prior
 
-    def validate_input(self, t: ArrayLike, x: Optional[ArrayLike] = None, sigma: Optional[Union[ArrayLike, float]] = None):
+    def validate_input(
+        self,
+        t: ArrayLike,
+        x: Optional[ArrayLike] = None,
+        sigma: Optional[Union[ArrayLike, float]] = None,
+    ):
         t = np.asarray(t, dtype=float)
         if t.ndim != 1 or t.size == 0:
             raise ValueError("t must be non-empty 1D array")
         unq_t, unq_ind, unq_inv = np.unique(t, return_index=True, return_inverse=True)
-
         if x is None:
             if sigma is not None:
-                raise ValueError("If sigma is provided, x must be provided for 'measures'.")
+                raise ValueError(
+                    "If sigma is provided, x must be provided for 'measures'."
+                )
             sigma = 1.0
             if unq_t.size == t.size:
                 x = np.ones_like(unq_t)
@@ -43,10 +52,11 @@ class FitnessFunc:
             if x.shape not in [(), (1,), (t.size,)]:
                 raise ValueError("x shape must be scalar or match t")
             if unq_t.size != t.size:
-                raise ValueError("Repeated values in t not supported when x is provided")
+                raise ValueError(
+                    "Repeated values in t not supported when x is provided"
+                )
             t = unq_t
             x = x[unq_ind] if x.shape == (t.size,) else np.full_like(t, float(x))
-
         if sigma is None:
             sigma = 1.0
         sigma = np.asarray(sigma, dtype=float)
@@ -57,7 +67,7 @@ class FitnessFunc:
         return t, x, sigma
 
     def p0_prior(self, N: int) -> float:
-        return 4.0 - np.log(73.53 * self.p0 * (N ** -0.478))
+        return 4.0 - np.log(73.53 * self.p0 * (N**-0.478))
 
     def compute_ncp_prior(self, N: int) -> float:
         if self.ncp_prior is not None:
@@ -75,24 +85,25 @@ class FitnessFunc:
     def fitness(self, **kwargs) -> np.ndarray:
         raise NotImplementedError
 
-    def fit(self, t: ArrayLike, x: Optional[ArrayLike] = None, sigma: Optional[Union[ArrayLike, float]] = None) -> np.ndarray:
+    def fit(
+        self,
+        t: ArrayLike,
+        x: Optional[ArrayLike] = None,
+        sigma: Optional[Union[ArrayLike, float]] = None,
+    ) -> np.ndarray:
         t, x, sigma = self.validate_input(t, x, sigma)
-
         if "a_k" in self._fitness_args:
             a_raw = 1.0 / (sigma * sigma)
         if "b_k" in self._fitness_args:
             b_raw = x / (sigma * sigma)
         if "c_k" in self._fitness_args:
             c_raw = (x * x) / (sigma * sigma)
-
         edges = np.concatenate([t[:1], 0.5 * (t[1:] + t[:-1]), t[-1:]])
         block_len_from_right = t[-1] - edges
-
         N = t.size
         best = np.zeros(N, dtype=float)
         last = np.zeros(N, dtype=int)
         ncp_prior = self.compute_ncp_prior(N)
-
         for R in range(N):
             kw = {}
             if "T_k" in self._fitness_args:
@@ -105,16 +116,13 @@ class FitnessFunc:
                 kw["b_k"] = -np.cumsum(b_raw[: R + 1][::-1])[::-1]
             if "c_k" in self._fitness_args:
                 kw["c_k"] = 0.5 * np.cumsum(c_raw[: R + 1][::-1])[::-1]
-
             fit_vec = self.fitness(**kw)
             A_R = fit_vec - ncp_prior
             if R > 0:
                 A_R[1:] += best[:R]
-
             i_max = int(np.argmax(A_R))
             last[R] = i_max
             best[R] = A_R[i_max]
-
         cps = []
         ind = N
         while ind > 0:
@@ -130,11 +138,13 @@ class FitnessFunc:
 class Events(FitnessFunc):
     def fitness(self, N_k: np.ndarray, T_k: np.ndarray) -> np.ndarray:
         out = np.zeros_like(N_k, dtype=float)
-        mask = N_k > 0
+        mask = (N_k > 0) & (T_k > 0)
         rate = np.divide(N_k, T_k, out=np.zeros_like(N_k, dtype=float), where=mask)
-        ln_rate = np.zeros_like(N_k, dtype=float)
-        np.log(rate, out=ln_rate, where=mask)
+        with np.errstate(invalid="ignore"):
+            ln_rate = np.log(rate)
         np.multiply(N_k, ln_rate, out=out, where=mask)
+        out[mask] -= N_k[mask]
+        out[~mask] = -np.inf
         return out
 
     def validate_input(self, t, x, sigma):
@@ -159,14 +169,17 @@ class RegularEvents(FitnessFunc):
 
     def fitness(self, T_k: np.ndarray, N_k: np.ndarray) -> np.ndarray:
         M_k = T_k / self.dt
-        eps = 1e-12
-        q = np.clip(N_k / np.maximum(M_k, eps), eps, 1 - eps)
+        eps = np.finfo(float).tiny
+        q = np.clip(N_k / (M_k + eps), eps, 1 - eps)
         return N_k * np.log(q) + (M_k - N_k) * np.log(1 - q)
 
 
 class PointMeasures(FitnessFunc):
     def fitness(self, a_k: np.ndarray, b_k: np.ndarray) -> np.ndarray:
-        return (b_k * b_k) / (4.0 * a_k)
+        with np.errstate(divide="ignore"):
+            out = (b_k * b_k) / (4.0 * a_k)
+        out[~np.isfinite(out)] = -np.inf
+        return out
 
     def validate_input(self, t, x, sigma):
         if x is None:
@@ -180,9 +193,18 @@ class PointMeasures(FitnessFunc):
 class BayesianBlocks:
     """Encapsulated Bayesian Blocks API."""
 
-    FITNESS = {"events": Events, "regular_events": RegularEvents, "measures": PointMeasures}
+    FITNESS = {
+        "events": Events,
+        "regular_events": RegularEvents,
+        "measures": PointMeasures,
+    }
 
-    def __init__(self, fitness: Union[str, FitnessFunc] = "events", verbose: bool = False, **kwargs):
+    def __init__(
+        self,
+        fitness: Union[str, FitnessFunc] = "events",
+        verbose: bool = False,
+        **kwargs,
+    ):
         self.fitness = fitness
         self.kwargs = kwargs
         self.verbose = verbose
@@ -195,15 +217,28 @@ class BayesianBlocks:
         elif isinstance(fitcls_or_obj, FitnessFunc):
             self.fitfunc = fitcls_or_obj
         else:
-            raise ValueError("fitness must be 'events', 'regular_events', 'measures', a FitnessFunc subclass, or instance.")
+            raise ValueError(
+                "fitness must be 'events', 'regular_events', 'measures', a FitnessFunc subclass, or instance."
+            )
 
-    def fit_edges(self, t: ArrayLike, x: Optional[ArrayLike] = None, sigma: Optional[Union[ArrayLike, float]] = None) -> np.ndarray:
+    def fit_edges(
+        self,
+        t: ArrayLike,
+        x: Optional[ArrayLike] = None,
+        sigma: Optional[Union[ArrayLike, float]] = None,
+    ) -> np.ndarray:
         if self.fitfunc is None:
             self._make_fitfunc()
         return self.fitfunc.fit(t, x, sigma)
 
-    def fit_bins(self, t: ArrayLike, x: Optional[ArrayLike] = None, sigma: Optional[Union[ArrayLike, float]] = None,
-                 max_bins: int = 100, fallback: str = "sturges") -> int:
+    def fit_bins(
+        self,
+        t: ArrayLike,
+        x: Optional[ArrayLike] = None,
+        sigma: Optional[Union[ArrayLike, float]] = None,
+        max_bins: int = 100,
+        fallback: str = "sturges",
+    ) -> int:
         """Return integer number of bins estimated by Bayesian Blocks."""
         try:
             edges = self.fit_edges(t, x, sigma)

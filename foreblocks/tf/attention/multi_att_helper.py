@@ -117,23 +117,30 @@ class DWTAttention(nn.Module):
             .transpose(1, 2)
         )
 
+        # Project K and reshape
+        k = (
+            self.k_proj(key)
+            .view(B, key.size(1), self.n_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+
         # Apply DWT
-        if self.has_pywt:
-            # Use proper DWT if available (this would need more complex implementation)
-            q_dwt = self._simple_dwt(q)
-            v_dwt = self._simple_dwt(v)
-        else:
-            q_dwt = self._simple_dwt(q)
-            v_dwt = self._simple_dwt(v)
+        q_dwt = self._simple_dwt(q)
+        k_dwt = self._simple_dwt(k)
+        v_dwt = self._simple_dwt(v)
 
         # Apply wavelet domain mixing (simplified)
         modes = min(self.modes, q_dwt.size(2))
         q_modes = q_dwt[:, :, :modes, :]
+        k_modes = k_dwt[:, :, :modes, :]
         v_modes = v_dwt[:, :, :modes, :]
 
         # Element-wise mixing with learnable weights
+        # Q acts as a query filter against K, then weighted aggregation over V
+        scores = q_modes * k_modes  # [B, H, modes, D] — cross-correlation proxy
+        attn = torch.softmax(scores / math.sqrt(self.head_dim), dim=2)
         mixed = torch.einsum(
-            "bhmd,hmd->bhmd", q_modes * v_modes, self.wavelet_weight[:, :modes, :]
+            "bhmd,hmd->bhmd", attn * v_modes, self.wavelet_weight[:, :modes, :]
         )
 
         # Reconstruct

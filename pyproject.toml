@@ -41,6 +41,9 @@ dependencies = [
     "pysr>=1.5.9",
     "ruptures>=1.1.9",
     "basedpyright>=1.33.0",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
 ]
 
 [project.urls]

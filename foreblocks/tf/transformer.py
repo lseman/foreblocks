@@ -36,22 +36,22 @@ import torch.nn.functional as F
 
 from foreblocks.ui.node_spec import node
 
+from .attention.kimi_att import KimiAttention
+from .attention.lin_att import LinearAttention
+from .attention.multi_att import MultiAttention
 from .embeddings import InformerTimeEmbedding, PositionalEncoding
+from .experts.moe import *  # FeedForwardBlock (and optionally MoE)
 from .fusions import (
     fused_dropout_add,  # fused helpers
     fused_dropout_add_norm,
     fused_dropout_gateskip_norm,
     get_dropout_p,
 )
-from .gateskip import *  # ResidualGate, gateskip_apply, apply_skip_to_kv, BudgetScheduler
-from .attention.kimi_att import KimiAttention
-from .layerskip import *  # LayerGate, LayerBudgetScheduler
-from .attention.lin_att import LinearAttention
 from .mhc import *
-from .experts.moe import *  # FeedForwardBlock (and optionally MoE)
-from .attention.multi_att import MultiAttention
 from .norms import *  # create_norm_layer, RMSNorm, etc.
 from .patching import *  # PatchTokenizer, PatchDetokenizer, PatchInfo, patchify_padding_mask, etc.
+from .skip.gateskip import *  # ResidualGate, gateskip_apply, apply_skip_to_kv, BudgetScheduler
+from .skip.layerskip import *  # LayerGate, LayerBudgetScheduler
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -77,6 +77,10 @@ class NormWrapper(nn.Module):
         eps: float = 1e-5,
     ):
         super().__init__()
+        if strategy not in {"pre_norm", "post_norm", "sandwich_norm"}:
+            raise ValueError(
+                "norm strategy must be one of {'pre_norm','post_norm','sandwich_norm'}"
+            )
         self.norm = create_norm_layer(norm_type, d_model, eps)
         self.strategy = strategy
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
@@ -102,7 +106,7 @@ class ResidualRunCfg:
 class ResidualBlockMixin:
     """
     Eliminates repetitive code for non-mHC residual blocks:
-      - pre_norm vs post_norm
+            - pre_norm vs post_norm vs sandwich_norm
       - gateskip vs plain residual
       - fused add vs fused add+norm
       - optional KV "skip propagation" (decoder)
@@ -152,8 +156,10 @@ class ResidualBlockMixin:
             return x2, updated_kv, skip_mask
 
         # non-gateskip
-        if normw.strategy == "pre_norm":
+        if normw.strategy in ("pre_norm", "sandwich_norm"):
             x2 = fused_dropout_add(x, update, p=p, training=cfg.training)
+            if normw.strategy == "sandwich_norm":
+                x2 = normw.norm(x2)
         else:
             x2 = fused_dropout_add_norm(
                 residual=x,
@@ -181,7 +187,7 @@ class ResidualBlockMixin:
         Returns: (x_out, updated_kv, skip_mask)
         """
         p = self._drop_p(normw)
-        x_in = normw.norm(x) if normw.strategy == "pre_norm" else x
+        x_in = normw.norm(x) if normw.strategy in ("pre_norm", "sandwich_norm") else x
         update, updated_kv = core_fn(x_in)
         x_out, updated_kv, skip_mask = self._residual_apply(
             x=x,
@@ -204,7 +210,7 @@ class MHCBlockMixin:
       - (optional) streamwise norm
       - streamwise sublayer run
       - residual add dropout
-      - (optional) streamwise norm (post_norm)
+            - (optional) streamwise norm (post_norm / sandwich_norm)
       - mixer
     """
 
@@ -213,18 +219,201 @@ class MHCBlockMixin:
         streams: torch.Tensor,  # [B,N,T,D]
         normw: NormWrapper,
         p: float,
+        training: bool,
         mixer: nn.Module,
         flat_core: Callable[[torch.Tensor], torch.Tensor],  # x_flat -> upd_flat
     ) -> torch.Tensor:
-        if normw.strategy == "pre_norm":
+        if normw.strategy in ("pre_norm", "sandwich_norm"):
             s_norm = mhc_apply_norm_streamwise(normw.norm, streams)
             upd = mhc_run_sublayer_streamwise(flat_core, s_norm)
-            streams = streams + F.dropout(upd, p=p, training=self.training)
+            streams = fused_dropout_add(streams, upd, p=p, training=training)
+            if normw.strategy == "sandwich_norm":
+                streams = mhc_apply_norm_streamwise(normw.norm, streams)
         else:
             upd = mhc_run_sublayer_streamwise(flat_core, streams)
-            streams = streams + F.dropout(upd, p=p, training=self.training)
+            streams = fused_dropout_add(streams, upd, p=p, training=training)
             streams = mhc_apply_norm_streamwise(normw.norm, streams)
         return mixer(streams)
+
+
+@dataclass
+class _LayerExecutionStrategy:
+    owner: "BaseTransformerLayer"
+    use_mhc: bool
+    x: Optional[torch.Tensor] = None
+    streams: Optional[torch.Tensor] = None
+
+    def run_block(
+        self,
+        *,
+        normw: NormWrapper,
+        gate: "ResidualGate",
+        cfg: ResidualRunCfg,
+        aux_l2_terms: List[torch.Tensor],
+        core_fn: Optional[
+            Callable[[torch.Tensor], Tuple[torch.Tensor, Optional[dict]]]
+        ] = None,
+        flat_core: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+        mixer: Optional[nn.Module] = None,
+        prev_layer_state: Optional[dict] = None,
+        kv_key: Optional[str] = None,
+    ) -> Tuple[Optional[dict], Optional[torch.Tensor]]:
+        if not self.use_mhc:
+            if self.x is None or core_fn is None:
+                raise RuntimeError(
+                    "Non-mHC strategy requires current tensor and core_fn."
+                )
+            self.x, updated_kv, skip_mask = self.owner._run_sublayer_nonmhc(
+                x=self.x,
+                normw=normw,
+                core_fn=core_fn,
+                gate=gate,
+                cfg=cfg,
+                aux_l2_terms=aux_l2_terms,
+                prev_layer_state=prev_layer_state,
+                kv_key=kv_key,
+            )
+            return updated_kv, skip_mask
+
+        if self.streams is None or flat_core is None or mixer is None:
+            raise RuntimeError("mHC strategy requires streams, flat_core, and mixer.")
+        p = self.owner._drop_p(normw)
+        self.streams = self.owner._mhc_run_block(
+            streams=self.streams,
+            normw=normw,
+            p=p,
+            training=self.owner.training,
+            mixer=mixer,
+            flat_core=flat_core,
+        )
+        return None, None
+
+    def collapse(self, mode: str) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        if not self.use_mhc:
+            if self.x is None:
+                raise RuntimeError("Non-mHC strategy has no tensor to return.")
+            return self.x, None
+        if self.streams is None:
+            raise RuntimeError("mHC strategy has no streams to collapse.")
+        return mhc_collapse_streams(self.streams, mode=mode), self.streams
+
+
+@dataclass(frozen=True)
+class _ModelLayerInvokeStrategy:
+    owner: "BaseTransformer"
+    use_checkpoint: bool
+
+    def run_encoder_layer(
+        self,
+        *,
+        layer: nn.Module,
+        x: torch.Tensor,
+        src_mask: Optional[torch.Tensor],
+        src_key_padding_mask: Optional[torch.Tensor],
+        budget: Optional[float],
+        streams: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        if self.use_checkpoint:
+
+            def ckpt_fn(_x, layer_mod=layer, b=budget):
+                out_x, _ = layer_mod(
+                    _x,
+                    src_mask,
+                    src_key_padding_mask,
+                    gate_budget=b,
+                    gate_lambda=self.owner.gate_lambda,
+                    use_gateskip=self.owner.use_gateskip,
+                    streams=None,
+                    use_mhc=self.owner.use_mhc,
+                    mhc_n_streams=self.owner.mhc_n_streams,
+                    mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
+                    mhc_temperature=self.owner.mhc_temperature,
+                    mhc_collapse=self.owner.mhc_collapse,
+                )
+                return out_x
+
+            x = self.owner._run_with_checkpoint(ckpt_fn, x, use_checkpoint=True)
+            return x, streams
+
+        return layer(
+            x,
+            src_mask,
+            src_key_padding_mask,
+            gate_budget=budget,
+            gate_lambda=self.owner.gate_lambda,
+            use_gateskip=self.owner.use_gateskip,
+            streams=streams,
+            use_mhc=self.owner.use_mhc,
+            mhc_n_streams=self.owner.mhc_n_streams,
+            mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
+            mhc_temperature=self.owner.mhc_temperature,
+            mhc_collapse=self.owner.mhc_collapse,
+        )
+
+    def run_decoder_layer(
+        self,
+        *,
+        layer: nn.Module,
+        x: torch.Tensor,
+        memory: torch.Tensor,
+        tgt_mask: Optional[torch.Tensor],
+        memory_mask: Optional[torch.Tensor],
+        tgt_key_padding_mask: Optional[torch.Tensor],
+        memory_key_padding_mask: Optional[torch.Tensor],
+        layer_state: Optional[dict],
+        prev_state: Optional[dict],
+        budget: Optional[float],
+        streams: Optional[torch.Tensor],
+        mtp_targets: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Optional[dict], Optional[torch.Tensor]]:
+        if self.use_checkpoint:
+
+            def ckpt_fn(_x, layer_mod=layer, b=budget, ps=prev_state, ls=layer_state):
+                out_x, _, _ = layer_mod(
+                    _x,
+                    memory,
+                    tgt_mask,
+                    memory_mask,
+                    tgt_key_padding_mask,
+                    memory_key_padding_mask,
+                    incremental_state=ls,
+                    prev_layer_state=ps,
+                    gate_budget=b,
+                    gate_lambda=self.owner.gate_lambda,
+                    use_gateskip=self.owner.use_gateskip,
+                    streams=None,
+                    use_mhc=self.owner.use_mhc,
+                    mhc_n_streams=self.owner.mhc_n_streams,
+                    mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
+                    mhc_temperature=self.owner.mhc_temperature,
+                    mhc_collapse=self.owner.mhc_collapse,
+                    mtp_targets=mtp_targets,
+                )
+                return out_x
+
+            x = self.owner._run_with_checkpoint(ckpt_fn, x, use_checkpoint=True)
+            return x, layer_state, streams
+
+        return layer(
+            x,
+            memory,
+            tgt_mask,
+            memory_mask,
+            tgt_key_padding_mask,
+            memory_key_padding_mask,
+            incremental_state=layer_state,
+            prev_layer_state=prev_state,
+            gate_budget=budget,
+            gate_lambda=self.owner.gate_lambda,
+            use_gateskip=self.owner.use_gateskip,
+            streams=streams,
+            use_mhc=self.owner.use_mhc,
+            mhc_n_streams=self.owner.mhc_n_streams,
+            mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
+            mhc_temperature=self.owner.mhc_temperature,
+            mhc_collapse=self.owner.mhc_collapse,
+            mtp_targets=mtp_targets,
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -290,29 +479,27 @@ class BaseTransformerLayer(nn.Module):
         elif new_loss != 0:
             self.aux_loss += torch.tensor(new_loss, device=self.aux_loss.device)
 
-    def _sync_gateskip(
+    def _make_exec_strategy(
         self,
-        use_gateskip: bool,
-        gate_budget: Optional[float],
-        gate_lambda: float,
-    ) -> None:
-        self.use_gateskip = bool(use_gateskip)
-        self.gate_budget = gate_budget
-        self.gate_lambda = float(gate_lambda)
+        *,
+        x: torch.Tensor,
+        streams: Optional[torch.Tensor],
+    ) -> _LayerExecutionStrategy:
+        if not self.use_mhc:
+            return _LayerExecutionStrategy(owner=self, use_mhc=False, x=x)
 
-    def _sync_mhc(
-        self,
-        use_mhc: bool,
-        mhc_n_streams: int,
-        mhc_sinkhorn_iters: int,
-        mhc_temperature: float,
-        mhc_collapse: str,
-    ) -> None:
-        self.use_mhc = bool(use_mhc)
-        self.mhc_n_streams = int(mhc_n_streams)
-        self.mhc_sinkhorn_iters = int(mhc_sinkhorn_iters)
-        self.mhc_temperature = float(mhc_temperature)
-        self.mhc_collapse = str(mhc_collapse)
+        self._ensure_mhc_mixers()
+        if streams is None:
+            streams = mhc_init_streams(x, self.mhc_n_streams)
+        else:
+            if streams.dim() != 4:
+                raise ValueError(f"mHC streams must be [B,N,T,D], got {streams.shape}")
+            if streams.shape[1] != self.mhc_n_streams:
+                raise ValueError(
+                    f"mHC streams N={streams.shape[1]} != configured {self.mhc_n_streams}"
+                )
+
+        return _LayerExecutionStrategy(owner=self, use_mhc=True, streams=streams)
 
     def _apply_runtime_mhc_overrides(
         self,
@@ -363,10 +550,14 @@ class BaseTransformerLayer(nn.Module):
         if cfg.use_gateskip and cfg.gate_lambda > 0 and aux_l2_terms:
             self._update_aux_loss(cfg.gate_lambda * torch.stack(aux_l2_terms).mean())
 
-    def _ff_forward_with_aux(self, x: torch.Tensor) -> torch.Tensor:
+    def _ff_forward_with_aux(
+        self, x: torch.Tensor, mtp_targets: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """Shared FFN / MoE forward with auxiliary loss accounting."""
         if self.use_moe:
-            out, aux = self.feed_forward(x, return_aux_loss=True)
+            out, aux = self.feed_forward(
+                x, return_aux_loss=True, mtp_targets=mtp_targets
+            )
             self._update_aux_loss(aux)
             return out
         return self.feed_forward(x)
@@ -442,6 +633,13 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         self.self_attn_lin = LinearAttention(
             d_model=d_model, n_heads=nhead, dropout=dropout
         )
+        self.self_attn_sype = MultiAttention(
+            d_model=d_model,
+            n_heads=nhead,
+            dropout=dropout,
+            attention_type="sype",
+            freq_modes=freq_modes,
+        )
         self.self_attn_kimi = KimiAttention(
             d_model=d_model, n_heads=nhead, dropout=dropout
         )
@@ -471,6 +669,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         t = self.layer_attention_type
         if t == "linear":
             return self.self_attn_lin
+        if t == "sype":
+            return self.self_attn_sype
         if t == "kimi":
             return self.self_attn_kimi
         return self.self_attn_std
@@ -515,6 +715,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         mhc_sinkhorn_iters: Optional[int] = None,
         mhc_temperature: Optional[float] = None,
         mhc_collapse: Optional[str] = None,
+        mtp_targets: Optional[torch.Tensor] = None,  # [B,T,H,D]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Returns:
@@ -541,84 +742,55 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
 
         attn_mod = self._self_attn()
 
-        # ============================================================
-        # Non-mHC path (clean template)
-        # ============================================================
-        if not self.use_mhc:
-
-            def attn_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
-                out, _, _ = attn_mod(x_in, x_in, x_in, src_mask, src_key_padding_mask)
-                return out, None
-
-            src, _, _ = self._run_sublayer_nonmhc(
-                x=src,
-                normw=self.attn_norm,
-                core_fn=attn_core,
-                gate=self.gate_attn,
-                cfg=cfg,
-                aux_l2_terms=aux_l2_terms,
-            )
-
-            def ff_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
-                return self._ff_forward_with_aux(x_in), None
-
-            src, _, _ = self._run_sublayer_nonmhc(
-                x=src,
-                normw=self.ff_norm,
-                core_fn=ff_core,
-                gate=self.gate_ff,
-                cfg=cfg,
-                aux_l2_terms=aux_l2_terms,
-            )
-
-            self._finalize_gateskip_aux(cfg, aux_l2_terms)
-
-            return src, None
-
-        # ============================================================
-        # mHC path: stream-wise compute + Sinkhorn mixing (templated)
-        # ============================================================
-        self._ensure_mhc_mixers()
-        if streams is None:
-            streams = mhc_init_streams(src, self.mhc_n_streams)
-        else:
-            if streams.dim() != 4:
-                raise ValueError(f"mHC streams must be [B,N,T,D], got {streams.shape}")
-            if streams.shape[1] != self.mhc_n_streams:
-                raise ValueError(
-                    f"mHC streams N={streams.shape[1]} != configured {self.mhc_n_streams}"
-                )
-
-        assert self.mhc_mixer_attn is not None and self.mhc_mixer_ff is not None
-
-        p_attn = self._drop_p(self.attn_norm)
-        p_ff = self._drop_p(self.ff_norm)
+        strategy = self._make_exec_strategy(x=src, streams=streams)
+        if self.use_mhc:
+            assert self.mhc_mixer_attn is not None and self.mhc_mixer_ff is not None
 
         def attn_flat(x_flat: torch.Tensor) -> torch.Tensor:
             out, _, _ = attn_mod(x_flat, x_flat, x_flat, src_mask, src_key_padding_mask)
             return out
 
-        streams = self._mhc_run_block(
-            streams=streams,
+        def attn_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
+            out, _, _ = attn_mod(x_in, x_in, x_in, src_mask, src_key_padding_mask)
+            return out, None
+
+        strategy.run_block(
             normw=self.attn_norm,
-            p=p_attn,
-            mixer=self.mhc_mixer_attn,
+            gate=self.gate_attn,
+            cfg=cfg,
+            aux_l2_terms=aux_l2_terms,
+            core_fn=attn_core,
             flat_core=attn_flat,
+            mixer=self.mhc_mixer_attn,
         )
 
         def ff_flat(x_flat: torch.Tensor) -> torch.Tensor:
-            return self._ff_forward_with_aux(x_flat)
+            flat_mtp = None
+            if mtp_targets is not None:
+                flat_mtp = mtp_targets.reshape(
+                    mtp_targets.size(0) * mtp_targets.size(1),
+                    mtp_targets.size(2),
+                    mtp_targets.size(3),
+                )
+            return self._ff_forward_with_aux(x_flat, mtp_targets=flat_mtp)
 
-        streams = self._mhc_run_block(
-            streams=streams,
+        def ff_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
+            return self._ff_forward_with_aux(x_in, mtp_targets=mtp_targets), None
+
+        strategy.run_block(
             normw=self.ff_norm,
-            p=p_ff,
-            mixer=self.mhc_mixer_ff,
+            gate=self.gate_ff,
+            cfg=cfg,
+            aux_l2_terms=aux_l2_terms,
+            core_fn=ff_core,
             flat_core=ff_flat,
+            mixer=self.mhc_mixer_ff,
         )
 
-        out_src = mhc_collapse_streams(streams, mode=self.mhc_collapse)
-        return out_src, streams
+        self._finalize_gateskip_aux(cfg, aux_l2_terms)
+
+        out_src, out_streams = strategy.collapse(self.mhc_collapse)
+        return out_src, out_streams
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -696,6 +868,14 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             dropout=dropout,
             cross_attention=False,
         )
+        self.self_attn_sype = MultiAttention(
+            d_model=d_model,
+            n_heads=nhead,
+            dropout=dropout,
+            attention_type="sype",
+            freq_modes=freq_modes,
+            cross_attention=False,
+        )
         self.self_attn_kimi = KimiAttention(
             d_model=d_model,
             n_heads=nhead,
@@ -744,6 +924,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         t = self.layer_attention_type
         if t == "linear":
             return self.self_attn_lin
+        if t == "sype":
+            return self.self_attn_sype
         if t == "kimi":
             return self.self_attn_kimi
         return self.self_attn_std
@@ -803,6 +985,7 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         mhc_sinkhorn_iters: Optional[int] = None,
         mhc_temperature: Optional[float] = None,
         mhc_collapse: Optional[str] = None,
+        mtp_targets: Optional[torch.Tensor] = None,  # [B,T,H,D]
     ) -> Tuple[torch.Tensor, Optional[dict], Optional[torch.Tensor]]:
         """
         Returns:
@@ -857,99 +1040,13 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
 
         self_attn_mod = self._self_attn()
 
-        # ============================================================
-        # Non-mHC path (clean template)
-        # ============================================================
-        if not self.use_mhc:
-
-            def self_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
-                out, _, updated = self_attn_mod(
-                    x_in,
-                    x_in,
-                    x_in,
-                    tgt_mask,
-                    tgt_key_padding_mask,
-                    is_causal=self.is_causal,
-                    layer_state=state["self_attn"],
-                )
-                return out, updated
-
-            tgt, updated_self, _ = self._run_sublayer_nonmhc(
-                x=tgt,
-                normw=self.self_attn_norm,
-                core_fn=self_core,
-                gate=self.gate_self,
-                cfg=cfg,
-                aux_l2_terms=aux_l2_terms,
-                prev_layer_state=prev_layer_state,
-                kv_key="self_attn",
+        strategy = self._make_exec_strategy(x=tgt, streams=streams)
+        if self.use_mhc:
+            assert (
+                self.mhc_mixer_self is not None
+                and self.mhc_mixer_cross is not None
+                and self.mhc_mixer_ff is not None
             )
-            if updated_self is not None:
-                state["self_attn"] = updated_self
-
-            def cross_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
-                out, _, updated = self.cross_attn(
-                    x_in,
-                    memory,
-                    memory,
-                    memory_mask,
-                    memory_key_padding_mask,
-                    layer_state=state["cross_attn"],
-                )
-                return out, updated
-
-            tgt, updated_cross, _ = self._run_sublayer_nonmhc(
-                x=tgt,
-                normw=self.cross_attn_norm,
-                core_fn=cross_core,
-                gate=self.gate_cross,
-                cfg=cfg,
-                aux_l2_terms=aux_l2_terms,
-                prev_layer_state=prev_layer_state,
-                kv_key="cross_attn",
-            )
-            if updated_cross is not None:
-                state["cross_attn"] = updated_cross
-
-            def ff_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
-                return self._ff_forward_with_aux(x_in), None
-
-            tgt, _, _ = self._run_sublayer_nonmhc(
-                x=tgt,
-                normw=self.ff_norm,
-                core_fn=ff_core,
-                gate=self.gate_ff,
-                cfg=cfg,
-                aux_l2_terms=aux_l2_terms,
-            )
-
-            self._finalize_gateskip_aux(cfg, aux_l2_terms)
-
-            ret_state = {
-                "self_attn": state["self_attn"],
-                "cross_attn": state["cross_attn"],
-            }
-            return tgt, ret_state, None
-
-        # ============================================================
-        # mHC path (no incremental_state): stream-wise compute + mixing
-        # ============================================================
-        self._ensure_mhc_mixers()
-        if streams is None:
-            streams = mhc_init_streams(tgt, self.mhc_n_streams)
-        else:
-            if streams.dim() != 4 or streams.shape[1] != self.mhc_n_streams:
-                raise ValueError(f"Invalid decoder mHC streams shape: {streams.shape}")
-
-        assert (
-            self.mhc_mixer_self is not None
-            and self.mhc_mixer_cross is not None
-            and self.mhc_mixer_ff is not None
-        )
-
-        p_self = self._drop_p(self.self_attn_norm)
-        p_cross = self._drop_p(self.cross_attn_norm)
-        p_ff = self._drop_p(self.ff_norm)
 
         def self_flat(x_flat: torch.Tensor) -> torch.Tensor:
             kpm_flat = mhc_repeat_kpm(tgt_key_padding_mask, self.mhc_n_streams)
@@ -965,13 +1062,31 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             )
             return out
 
-        streams = self._mhc_run_block(
-            streams=streams,
+        def self_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
+            out, _, updated = self_attn_mod(
+                x_in,
+                x_in,
+                x_in,
+                tgt_mask,
+                tgt_key_padding_mask,
+                is_causal=self.is_causal,
+                layer_state=state["self_attn"],
+            )
+            return out, updated
+
+        updated_self, _ = strategy.run_block(
             normw=self.self_attn_norm,
-            p=p_self,
-            mixer=self.mhc_mixer_self,
+            gate=self.gate_self,
+            cfg=cfg,
+            aux_l2_terms=aux_l2_terms,
+            core_fn=self_core,
             flat_core=self_flat,
+            mixer=self.mhc_mixer_self,
+            prev_layer_state=prev_layer_state,
+            kv_key="self_attn",
         )
+        if updated_self is not None:
+            state["self_attn"] = updated_self
 
         def cross_flat(x_flat: torch.Tensor) -> torch.Tensor:
             mkpm_flat = mhc_repeat_kpm(memory_key_padding_mask, self.mhc_n_streams)
@@ -992,28 +1107,59 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             )
             return out
 
-        streams = self._mhc_run_block(
-            streams=streams,
+        def cross_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
+            out, _, updated = self.cross_attn(
+                x_in,
+                memory,
+                memory,
+                memory_mask,
+                memory_key_padding_mask,
+                layer_state=state["cross_attn"],
+            )
+            return out, updated
+
+        updated_cross, _ = strategy.run_block(
             normw=self.cross_attn_norm,
-            p=p_cross,
-            mixer=self.mhc_mixer_cross,
+            gate=self.gate_cross,
+            cfg=cfg,
+            aux_l2_terms=aux_l2_terms,
+            core_fn=cross_core,
             flat_core=cross_flat,
+            mixer=self.mhc_mixer_cross,
+            prev_layer_state=prev_layer_state,
+            kv_key="cross_attn",
         )
+        if updated_cross is not None:
+            state["cross_attn"] = updated_cross
 
         def ff_flat(x_flat: torch.Tensor) -> torch.Tensor:
-            return self._ff_forward_with_aux(x_flat)
+            flat_mtp = None
+            if mtp_targets is not None:
+                flat_mtp = mtp_targets.reshape(
+                    mtp_targets.size(0) * mtp_targets.size(1),
+                    mtp_targets.size(2),
+                    mtp_targets.size(3),
+                )
+            return self._ff_forward_with_aux(x_flat, mtp_targets=flat_mtp)
 
-        streams = self._mhc_run_block(
-            streams=streams,
+        def ff_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
+            return self._ff_forward_with_aux(x_in, mtp_targets=mtp_targets), None
+
+        strategy.run_block(
             normw=self.ff_norm,
-            p=p_ff,
-            mixer=self.mhc_mixer_ff,
+            gate=self.gate_ff,
+            cfg=cfg,
+            aux_l2_terms=aux_l2_terms,
+            core_fn=ff_core,
             flat_core=ff_flat,
+            mixer=self.mhc_mixer_ff,
         )
 
-        out_tgt = mhc_collapse_streams(streams, mode=self.mhc_collapse)
-        ret_state = {"self_attn": None, "cross_attn": None}
-        return out_tgt, ret_state, streams
+        self._finalize_gateskip_aux(cfg, aux_l2_terms)
+
+        out_tgt, out_streams = strategy.collapse(self.mhc_collapse)
+        ret_state = {"self_attn": state["self_attn"], "cross_attn": state["cross_attn"]}
+        return out_tgt, ret_state, out_streams
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1066,6 +1212,7 @@ class BaseTransformer(nn.Module, ABC):
         attention_mode: Literal[
             "standard",
             "linear",
+            "sype",
             "hybrid",
             "kimi",
             "hybrid_kimi",
@@ -1103,7 +1250,13 @@ class BaseTransformer(nn.Module, ABC):
         self.use_gateskip = use_gateskip
         self.gate_budget = gate_budget
         self.gate_lambda = gate_lambda
+        # Backward-compatible behavior:
+        # if caller sets att_type to a routed mode but leaves attention_mode default,
+        # promote attention_mode so the intended path is used.
+        if attention_mode == "standard" and att_type in {"linear", "sype", "kimi"}:
+            attention_mode = att_type
         self.attention_mode = attention_mode
+        self.att_type = att_type
         self.budget_scheduler: Optional[BudgetScheduler] = None
 
         # MoE aux scaling (FIX)
@@ -1143,6 +1296,8 @@ class BaseTransformer(nn.Module, ABC):
         self.pos_encoder = pos_encoder or PositionalEncoding(
             self.d_model, max_len=max_seq_len, scale=pos_encoding_scale
         )
+
+        self.register_buffer("_causal_mask", torch.empty(0, 0), persistent=False)
 
         # Build layers (per-layer attention type decided by attention_mode)
         if share_layers:
@@ -1230,6 +1385,48 @@ class BaseTransformer(nn.Module, ABC):
         self.register_buffer("aux_loss", torch.tensor(0.0), persistent=False)
         self.register_buffer("layer_skip_aux", torch.tensor(0.0), persistent=False)
         self.apply(self._init_weights)
+        self._print_init_summary(
+            att_type=att_type,
+            custom_norm=custom_norm,
+            norm_strategy=norm_strategy,
+            use_moe=use_moe,
+            num_experts=num_experts,
+            top_k=top_k,
+            share_layers=share_layers,
+            use_final_norm=use_final_norm,
+        )
+
+    def _generate_causal_mask(
+        self,
+        size: int,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
+        size = int(size)
+        if size <= 0:
+            return torch.empty(0, 0, device=device, dtype=dtype)
+
+        mask = self._causal_mask
+        needs_rebuild = (
+            mask.numel() == 0
+            or mask.device != device
+            or mask.size(0) < size
+            or mask.size(1) < size
+        )
+        if needs_rebuild:
+            mask = torch.triu(
+                torch.full(
+                    (size, size), float("-inf"), device=device, dtype=torch.float32
+                ),
+                diagonal=1,
+            )
+            self._causal_mask = mask
+        else:
+            mask = mask[:size, :size]
+
+        if mask.dtype != dtype:
+            mask = mask.to(dtype=dtype)
+        return mask
 
     # ---- Attention mode routing ------------------------------------------------
     def _get_layer_attention_type(self, layer_idx: int) -> str:
@@ -1238,6 +1435,8 @@ class BaseTransformer(nn.Module, ABC):
             return "standard"
         if mode == "linear":
             return "linear"
+        if mode == "sype":
+            return "sype"
         if mode == "kimi":
             return "kimi"
         if mode in ("hybrid", "hybrid_linear"):
@@ -1305,49 +1504,55 @@ class BaseTransformer(nn.Module, ABC):
         }
 
     # ---- GateSkip runtime setters ---------------------------------------------
+    def _set_layer_gateskip_attrs(self, layer: nn.Module) -> None:
+        if hasattr(layer, "use_gateskip"):
+            layer.use_gateskip = bool(self.use_gateskip)
+        if hasattr(layer, "gate_budget"):
+            layer.gate_budget = self.gate_budget
+        if hasattr(layer, "gate_lambda"):
+            layer.gate_lambda = float(self.gate_lambda)
+
     def set_use_gateskip(self, flag: bool) -> None:
         self.use_gateskip = bool(flag)
         for i in range(self.num_layers):
             layer = self._get_layer(i)
-            if hasattr(layer, "_sync_gateskip"):
-                layer._sync_gateskip(
-                    self.use_gateskip, self.gate_budget, self.gate_lambda
-                )
+            self._set_layer_gateskip_attrs(layer)
 
     def set_gate_budget(self, budget: Optional[float]) -> None:
         self.gate_budget = budget
         for i in range(self.num_layers):
             layer = self._get_layer(i)
-            if hasattr(layer, "_sync_gateskip"):
-                layer._sync_gateskip(
-                    self.use_gateskip, self.gate_budget, self.gate_lambda
-                )
+            self._set_layer_gateskip_attrs(layer)
 
     def set_gate_lambda(self, lam: float) -> None:
         self.gate_lambda = float(lam)
         for i in range(self.num_layers):
             layer = self._get_layer(i)
-            if hasattr(layer, "_sync_gateskip"):
-                layer._sync_gateskip(
-                    self.use_gateskip, self.gate_budget, self.gate_lambda
-                )
+            self._set_layer_gateskip_attrs(layer)
 
     def set_budget_scheduler(self, scheduler: BudgetScheduler) -> None:
         self.budget_scheduler = scheduler
 
     # ---- mHC runtime setters ---------------------------------------------------
+    def _set_layer_mhc_attrs(self, layer: nn.Module) -> None:
+        if hasattr(layer, "use_mhc"):
+            layer.use_mhc = bool(self.use_mhc)
+        if hasattr(layer, "mhc_n_streams"):
+            layer.mhc_n_streams = int(self.mhc_n_streams)
+        if hasattr(layer, "mhc_sinkhorn_iters"):
+            layer.mhc_sinkhorn_iters = int(self.mhc_sinkhorn_iters)
+        if hasattr(layer, "mhc_temperature"):
+            layer.mhc_temperature = float(self.mhc_temperature)
+        if hasattr(layer, "mhc_collapse"):
+            layer.mhc_collapse = str(self.mhc_collapse)
+        if hasattr(layer, "_ensure_mhc_mixers"):
+            layer._ensure_mhc_mixers()
+
     def set_use_mhc(self, flag: bool) -> None:
         self.use_mhc = bool(flag)
         for i in range(self.num_layers):
             layer = self._get_layer(i)
-            if hasattr(layer, "_sync_mhc"):
-                layer._sync_mhc(
-                    self.use_mhc,
-                    self.mhc_n_streams,
-                    self.mhc_sinkhorn_iters,
-                    self.mhc_temperature,
-                    self.mhc_collapse,
-                )
+            self._set_layer_mhc_attrs(layer)
 
     def set_mhc_params(
         self,
@@ -1366,14 +1571,7 @@ class BaseTransformer(nn.Module, ABC):
             self.mhc_collapse = str(collapse)
         for i in range(self.num_layers):
             layer = self._get_layer(i)
-            if hasattr(layer, "_sync_mhc"):
-                layer._sync_mhc(
-                    self.use_mhc,
-                    self.mhc_n_streams,
-                    self.mhc_sinkhorn_iters,
-                    self.mhc_temperature,
-                    self.mhc_collapse,
-                )
+            self._set_layer_mhc_attrs(layer)
 
     # ---- MoD / layer skipping setters -----------------------------------------
     def set_use_layer_skipping(self, flag: bool) -> None:
@@ -1403,16 +1601,47 @@ class BaseTransformer(nn.Module, ABC):
     def _get_layer(self, idx: int) -> nn.Module:
         return self.shared_layer if self.layers is None else self.layers[idx]
 
-    def _generate_causal_mask(self, size: int, device: torch.device) -> torch.Tensor:
-        return torch.triu(
-            torch.full((size, size), float("-inf"), device=device), diagonal=1
+    def _should_print_init_summary(self) -> bool:
+        dist = torch.distributed
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank() == 0
+        return True
+
+    def _print_init_summary(
+        self,
+        *,
+        att_type: str,
+        custom_norm: str,
+        norm_strategy: str,
+        use_moe: bool,
+        num_experts: int,
+        top_k: int,
+        share_layers: bool,
+        use_final_norm: bool,
+    ) -> None:
+        if not self._should_print_init_summary():
+            return
+
+        per_layer_attn = [
+            self._get_layer_attention_type(i) for i in range(self.num_layers)
+        ]
+        attn_mix = ", ".join(sorted(set(per_layer_attn)))
+        print(
+            f"[{self.__class__.__name__}] "
+            f"att_type={att_type} | "
+            f"attention_mode={self.attention_mode} (layers={attn_mix}) | "
+            f"norm={custom_norm}/{norm_strategy} final_norm={use_final_norm} | "
+            f"moe={use_moe} experts={num_experts} top_k={top_k} moe_aux_lambda={self.moe_aux_lambda} | "
+            f"gateskip={self.use_gateskip} budget={self.gate_budget} gate_lambda={self.gate_lambda} | "
+            f"mhc={self.use_mhc} streams={self.mhc_n_streams} collapse={self.mhc_collapse} | "
+            f"patch(enc={self.patch_encoder},dec={self.patch_decoder},len={self.patch_len},stride={self.patch_stride}) | "
+            f"layer_skip={self.use_layer_skipping}/{self.layer_skip_mode} | "
+            f"shared_layers={share_layers} grad_ckpt={self.use_gradient_checkpointing}"
         )
 
     # FIX: aggregate aux loss over executed layer indices (supports skipping)
     def _aggregate_aux_loss(self, used_indices: List[int]) -> None:
-        total_aux = torch.tensor(
-            0.0, device=self.aux_loss.device, dtype=self.aux_loss.dtype
-        )
+        total_aux = self.aux_loss.new_zeros(())
         for i in used_indices:
             layer = self._get_layer(i)
             if hasattr(layer, "aux_loss"):
@@ -1447,7 +1676,8 @@ class BaseTransformer(nn.Module, ABC):
         self,
         layer_idx: int,
         x: torch.Tensor,
-    ) -> Tuple[nn.Module, Optional[float], bool, torch.Tensor]:
+        runtime_budget: Optional[float] = None,
+    ) -> Tuple[nn.Module, Optional[float], bool, Optional[torch.Tensor]]:
         """
         Common per-layer orchestration:
           - shared-layer attention routing
@@ -1457,10 +1687,17 @@ class BaseTransformer(nn.Module, ABC):
           layer, budget, skip_layer_compute, keep_mask
         """
         layer = self._get_layer(layer_idx)
-        if (self.shared_layer is not None) and hasattr(layer, "set_layer_attention_type"):
+        if (self.shared_layer is not None) and hasattr(
+            layer, "set_layer_attention_type"
+        ):
             layer.set_layer_attention_type(self._get_layer_attention_type(layer_idx))
 
-        budget = self._get_runtime_budget()
+        budget = (
+            runtime_budget if runtime_budget is not None else self._get_runtime_budget()
+        )
+        if (not self.use_layer_skipping) or (not self.training):
+            return layer, budget, False, None
+
         skip_layer_compute, keep_prob, keep_mask, target_keep = self._maybe_skip_layer(
             layer_idx, x
         )
@@ -1471,10 +1708,11 @@ class BaseTransformer(nn.Module, ABC):
         self,
         x_new: torch.Tensor,
         x_old: torch.Tensor,
-        keep_mask: torch.Tensor,
+        keep_mask: Optional[torch.Tensor],
     ) -> torch.Tensor:
         if (
-            self.use_layer_skipping
+            keep_mask is not None
+            and self.use_layer_skipping
             and self.training
             and (self.layer_skip_mode == "token")
         ):
@@ -1550,29 +1788,105 @@ class BaseTransformer(nn.Module, ABC):
 )
 class TransformerEncoder(BaseTransformer):
     def __init__(
-        self, 
-        input_size: int = 1, 
-        use_time_encoding: bool = False, 
+        self,
+        input_size: int = 1,
+        use_time_encoding: bool = False,
         model_type: str = "transformer",
-        **kwargs
+        ct_patchtst: bool = False,
+        ct_patch_len: int = 16,
+        ct_patch_stride: int = 8,
+        ct_patch_pad_end: bool = True,
+        ct_patch_fuse: Literal["mean", "linear"] = "linear",
+        **kwargs,
     ):
         self.model_type = model_type
         # Auto-configure based on model_type
         if model_type == "informer-like":
             use_time_encoding = kwargs.get("use_time_encoding", True)
-            # Informers often use patching or specific attention, 
+            # Informers often use patching or specific attention,
             # but usually handled by kwargs or specific layers.
-            
+
         self.use_time_encoding = use_time_encoding
+        self.ct_patchtst = bool(ct_patchtst)
+        self.ct_patch_len = int(ct_patch_len)
+        self.ct_patch_stride = int(ct_patch_stride)
+        self.ct_patch_pad_end = bool(ct_patch_pad_end)
+        self.ct_patch_fuse = str(ct_patch_fuse)
+        if self.ct_patch_fuse not in ("mean", "linear"):
+            raise ValueError("ct_patch_fuse must be 'mean' or 'linear'")
+        if self.ct_patchtst:
+            # CT-PatchTST is an alternative encoder tokenization path.
+            kwargs["patch_encoder"] = False
         super().__init__(input_size, **kwargs)
         self.input_size = input_size
         self.time_encoder = (
             InformerTimeEmbedding(self.d_model) if use_time_encoding else None
         )
+        self.ct_patch_embed = (
+            nn.Linear(self.ct_patch_len, self.d_model) if self.ct_patchtst else None
+        )
+        self.ct_channel_fuse = (
+            nn.Linear(self.input_size * self.d_model, self.d_model)
+            if (self.ct_patchtst and self.ct_patch_fuse == "linear")
+            else None
+        )
 
         # FIX: stash last patched mask + patch info to avoid decoder mismatch bugs
         self.last_memory_key_padding_mask: Optional[torch.Tensor] = None
         self.last_patch_info: Optional[PatchInfo] = None
+
+    @staticmethod
+    def _compute_ct_patch_pad(T: int, P: int, S: int) -> int:
+        if T <= 0:
+            return 0
+        if T < P:
+            return P - T
+        n_patches = math.ceil((T - P) / S) + 1
+        T_pad = (n_patches - 1) * S + P
+        return max(0, T_pad - T)
+
+    def _ct_patchify(self, src: torch.Tensor) -> Tuple[torch.Tensor, PatchInfo]:
+        if self.ct_patch_embed is None:
+            raise RuntimeError("CT-PatchTST is not enabled.")
+        if src.dim() != 3:
+            raise ValueError(f"CT-PatchTST expects [B,T,C], got {tuple(src.shape)}")
+
+        B, T, C = src.shape
+        if C != self.input_size:
+            raise ValueError(f"Expected input size {self.input_size}, got {C}")
+
+        x = src.transpose(1, 2).contiguous()  # [B,C,T]
+        pad = (
+            self._compute_ct_patch_pad(T, self.ct_patch_len, self.ct_patch_stride)
+            if self.ct_patch_pad_end
+            else 0
+        )
+        if pad > 0:
+            x = F.pad(x, (0, pad))
+        T_pad = x.size(-1)
+
+        patches = x.unfold(
+            dimension=2, size=self.ct_patch_len, step=self.ct_patch_stride
+        ).contiguous()  # [B,C,Np,P]
+        Np = patches.size(2)
+
+        tok = self.ct_patch_embed(patches)  # [B,C,Np,D]
+        if self.ct_patch_fuse == "mean":
+            tokens = tok.mean(dim=1)  # [B,Np,D]
+        else:
+            if self.ct_channel_fuse is None:
+                raise RuntimeError("ct_channel_fuse is not initialized.")
+            tok = tok.permute(0, 2, 1, 3).reshape(B, Np, C * self.d_model)
+            tokens = self.ct_channel_fuse(tok)  # [B,Np,D]
+
+        info = PatchInfo(
+            T_orig=T,
+            T_pad=T_pad,
+            n_patches=Np,
+            patch_len=self.ct_patch_len,
+            stride=self.ct_patch_stride,
+        )
+        return tokens, info
 
     def _make_layer(self, **kwargs) -> nn.Module:
         kwargs.pop("informer_like", None)
@@ -1588,14 +1902,28 @@ class TransformerEncoder(BaseTransformer):
         B, T, C = src.shape
         if C != self.input_size:
             raise ValueError(f"Expected input size {self.input_size}, got {C}")
-        if T > self.max_seq_len and (not self.patch_encoder):
+        if T > self.max_seq_len and (not self.patch_encoder) and (not self.ct_patchtst):
             raise ValueError(f"Sequence length {T} exceeds max {self.max_seq_len}")
 
         self.layer_skip_aux.zero_()
 
-        x = self.input_adapter(src)  # [B, T, D]
-
         patch_info: Optional[PatchInfo] = None
+        if self.ct_patchtst:
+            x, patch_info = self._ct_patchify(src)  # [B, Np, D]
+            if x.shape[1] > self.max_seq_len:
+                raise ValueError(
+                    f"Encoder CT-patch token length {x.shape[1]} exceeds max_seq_len={self.max_seq_len}. "
+                    f"Increase max_seq_len or adjust ct_patch_len/ct_patch_stride."
+                )
+            src_key_padding_mask = patchify_padding_mask(
+                src_key_padding_mask,
+                T=T,
+                patch_len=self.ct_patch_len,
+                stride=self.ct_patch_stride,
+                pad_end=self.ct_patch_pad_end,
+            )
+        else:
+            x = self.input_adapter(src)  # [B, T, D]
         if self.patch_encoder:
             x, patch_info = self.patcher(x)  # [B, Np, D]
             if x.shape[1] > self.max_seq_len:
@@ -1620,6 +1948,7 @@ class TransformerEncoder(BaseTransformer):
         # Time encoding only for timestep-space by default (encoder patching skips it)
         if (
             (not self.patch_encoder)
+            and (not self.ct_patchtst)
             and (self.time_encoder is not None)
             and (time_features is not None)
         ):
@@ -1642,45 +1971,34 @@ class TransformerEncoder(BaseTransformer):
         use_ckpt = (
             self.training and self.use_gradient_checkpointing and (not self.use_mhc)
         )
+        invoke = _ModelLayerInvokeStrategy(owner=self, use_checkpoint=use_ckpt)
+        runtime_budget = self._get_runtime_budget()
 
         used_indices: List[int] = []
 
         for i in range(self.num_layers):
-            layer, budget, skip_layer_compute, keep_mask = self._prepare_layer_step(i, x)
+            layer, budget, skip_layer_compute, keep_mask = self._prepare_layer_step(
+                i, x, runtime_budget=runtime_budget
+            )
 
             if skip_layer_compute and (self.layer_skip_mode == "seq"):
                 continue
 
             used_indices.append(i)
 
-            def layer_fn(_x, _streams, l=layer, b=budget):
-                out_x, out_streams = l(
-                    _x,
-                    src_mask,
-                    src_key_padding_mask,
-                    gate_budget=b,
-                    gate_lambda=self.gate_lambda,
-                    use_gateskip=self.use_gateskip,
-                    streams=_streams,
-                    use_mhc=self.use_mhc,
-                    mhc_n_streams=self.mhc_n_streams,
-                    mhc_sinkhorn_iters=self.mhc_sinkhorn_iters,
-                    mhc_temperature=self.mhc_temperature,
-                    mhc_collapse=self.mhc_collapse,
-                )
-                return out_x, out_streams
-
-            if use_ckpt:
-
-                def ckpt_fn(_x):
-                    out_x, _ = layer_fn(_x, None)
-                    return out_x
-
-                x = self._run_with_checkpoint(ckpt_fn, x, use_checkpoint=True)
-            else:
+            if not use_ckpt:
                 x_before = x
-                x, streams = layer_fn(x, streams)
 
+            x, streams = invoke.run_encoder_layer(
+                layer=layer,
+                x=x,
+                src_mask=src_mask,
+                src_key_padding_mask=src_key_padding_mask,
+                budget=budget,
+                streams=streams,
+            )
+
+            if not use_ckpt:
                 x = self._maybe_apply_token_skip_mix(x, x_before, keep_mask)
 
         # FIX: aggregate only over executed layers
@@ -1707,8 +2025,8 @@ class TransformerDecoder(BaseTransformer):
         input_size: int = 1,
         output_size: int = 1,
         label_len: int = 0,
-        informer_like: bool = False,
-        use_time_encoding: bool = True,
+        informer_like: bool = True,
+        use_time_encoding: bool = False,
         model_type: str = "transformer",
         **kwargs,
     ):
@@ -1750,6 +2068,49 @@ class TransformerDecoder(BaseTransformer):
         mask[:, label_len:] = True
         return mask
 
+    def _infer_mtp_num_heads(self) -> int:
+        n = 0
+        for i in range(self.num_layers):
+            layer = self._get_layer(i)
+            ff = getattr(layer, "feed_forward", None)
+            block = getattr(ff, "block", None) if ff is not None else None
+            n_i = int(getattr(block, "mtp_num_heads", 0) or 0)
+            n = max(n, n_i)
+        return n
+
+    def _prepare_mtp_base(self, base: torch.Tensor, seq_len: int) -> torch.Tensor:
+        if base.dim() != 3:
+            raise ValueError(
+                f"mtp_targets base must be [B,T,F] before shifting, got {tuple(base.shape)}"
+            )
+        if base.size(1) != seq_len:
+            raise ValueError(
+                f"mtp_targets length {base.size(1)} must match decoder length {seq_len}"
+            )
+        if base.size(-1) != self.d_model:
+            in_features = int(getattr(self.input_adapter, "in_features", -1))
+            if base.size(-1) != in_features:
+                raise ValueError(
+                    f"mtp_targets last dim {base.size(-1)} must be decoder input {in_features} or d_model {self.d_model}"
+                )
+            base = self.input_adapter(base)
+        return base
+
+    def _build_shifted_mtp_targets(
+        self, base: torch.Tensor, n_heads: int
+    ) -> torch.Tensor:
+        # base: [B,T,D] -> shifted targets [B,T,H,D], where head h predicts t+(h+1)
+        if n_heads <= 0:
+            return base.new_zeros(base.size(0), base.size(1), 0, base.size(2))
+        B, T, D = base.shape
+        tgt = base.new_zeros(B, T, n_heads, D)
+        for h in range(n_heads):
+            s = h + 1
+            if s >= T:
+                continue
+            tgt[:, : T - s, h, :] = base[:, s:, :]
+        return tgt
+
     def forward(
         self,
         tgt: torch.Tensor,  # [B, T_tgt, C_tgt]
@@ -1761,6 +2122,7 @@ class TransformerDecoder(BaseTransformer):
         incremental_state: Optional[Dict] = None,
         return_incremental_state: bool = False,
         time_features: Optional[torch.Tensor] = None,
+        mtp_targets: Optional[torch.Tensor] = None,  # [B,T,F] or [B,T,H,D]
     ):
         B, T, _ = tgt.shape
         device = tgt.device
@@ -1822,9 +2184,34 @@ class TransformerDecoder(BaseTransformer):
         if self.training and self.dropout > 0:
             x = F.dropout(x, p=self.dropout, training=True)
 
+        # Optional MTP target prep for MoE FFNs in decoder layers.
+        # Accepted:
+        # - [B, T, F] (base sequence in decoder input dim or d_model)
+        # - [B, T, H, D] (already shifted/aligned)
+        layer_mtp_targets = None
+        mtp_heads = self._infer_mtp_num_heads()
+        if self.training and (mtp_heads > 0) and (mtp_targets is not None):
+            if mtp_targets.dim() == 4:
+                if (
+                    mtp_targets.size(0) != x.size(0)
+                    or mtp_targets.size(1) != x.size(1)
+                    or mtp_targets.size(-1) != self.d_model
+                ):
+                    raise ValueError(
+                        f"mtp_targets [B,T,H,D] must align with decoder x [B={x.size(0)},T={x.size(1)},D={self.d_model}], got {tuple(mtp_targets.shape)}"
+                    )
+                layer_mtp_targets = mtp_targets
+            elif mtp_targets.dim() == 3:
+                base = self._prepare_mtp_base(mtp_targets, seq_len=x.size(1))
+                layer_mtp_targets = self._build_shifted_mtp_targets(base, mtp_heads)
+            else:
+                raise ValueError(
+                    f"mtp_targets must be [B,T,F] or [B,T,H,D], got {tuple(mtp_targets.shape)}"
+                )
+
         if tgt_mask is None:
             L = x.shape[1]
-            tgt_mask = self._generate_causal_mask(L, device)
+            tgt_mask = self._generate_causal_mask(L, device, dtype=x.dtype)
 
         if tgt_key_padding_mask is None and (not self.patch_decoder):
             tgt_key_padding_mask = self._create_informer_padding_mask(B, T, device)
@@ -1847,11 +2234,15 @@ class TransformerDecoder(BaseTransformer):
         use_ckpt = (
             self.training and self.use_gradient_checkpointing and (not self.use_mhc)
         )
+        invoke = _ModelLayerInvokeStrategy(owner=self, use_checkpoint=use_ckpt)
+        runtime_budget = self._get_runtime_budget()
 
         used_indices: List[int] = []
 
         for i in range(self.num_layers):
-            layer, budget, skip_layer_compute, keep_mask = self._prepare_layer_step(i, x)
+            layer, budget, skip_layer_compute, keep_mask = self._prepare_layer_step(
+                i, x, runtime_budget=runtime_budget
+            )
 
             prev_state = layer_states[i - 1] if i > 0 else None
 
@@ -1860,41 +2251,25 @@ class TransformerDecoder(BaseTransformer):
 
             used_indices.append(i)
 
-            def layer_fn(
-                _t, _streams, l=layer, b=budget, ps=prev_state, ls=layer_states[i]
-            ):
-                out_t, out_state, out_streams = l(
-                    _t,
-                    memory,
-                    tgt_mask,
-                    memory_mask,
-                    tgt_key_padding_mask,
-                    memory_key_padding_mask,
-                    incremental_state=ls,
-                    prev_layer_state=ps,
-                    gate_budget=b,
-                    gate_lambda=self.gate_lambda,
-                    use_gateskip=self.use_gateskip,
-                    streams=_streams,
-                    use_mhc=self.use_mhc,
-                    mhc_n_streams=self.mhc_n_streams,
-                    mhc_sinkhorn_iters=self.mhc_sinkhorn_iters,
-                    mhc_temperature=self.mhc_temperature,
-                    mhc_collapse=self.mhc_collapse,
-                )
-                return out_t, out_state, out_streams
-
-            if use_ckpt:
-
-                def ckpt_fn(_x):
-                    out_x, _, _ = layer_fn(_x, None)
-                    return out_x
-
-                x = self._run_with_checkpoint(ckpt_fn, x, use_checkpoint=True)
-            else:
+            if not use_ckpt:
                 x_before = x
-                x, layer_states[i], streams = layer_fn(x, streams)
 
+            x, layer_states[i], streams = invoke.run_decoder_layer(
+                layer=layer,
+                x=x,
+                memory=memory,
+                tgt_mask=tgt_mask,
+                memory_mask=memory_mask,
+                tgt_key_padding_mask=tgt_key_padding_mask,
+                memory_key_padding_mask=memory_key_padding_mask,
+                layer_state=layer_states[i],
+                prev_state=prev_state,
+                budget=budget,
+                streams=streams,
+                mtp_targets=layer_mtp_targets,
+            )
+
+            if not use_ckpt:
                 x = self._maybe_apply_token_skip_mix(x, x_before, keep_mask)
 
         # FIX: aggregate only over executed layers

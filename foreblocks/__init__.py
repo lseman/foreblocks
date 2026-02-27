@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from .aux import ModelConfig, TimeSeriesDataset, TrainingConfig, create_dataloaders
 from .blocks.enc_dec import (
     GRUDecoder,
@@ -12,7 +14,9 @@ from .evaluation import ModelEvaluator
 # from .pipeline import TimeSeriesSeq2Seq
 from .pre.preprocessing import TimeSeriesPreprocessor
 from .tf.transformer import TransformerDecoder, TransformerEncoder
-from .training import Trainer
+
+if TYPE_CHECKING:
+    from .training import Trainer
 
 # Stable top-level public API
 __all__ = [
@@ -34,3 +38,11 @@ __all__ = [
     "TransformerDecoder",
     "AttentionLayer",
 ]
+
+
+def __getattr__(name):
+    if name == "Trainer":
+        from .training import Trainer as _Trainer
+
+        return _Trainer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

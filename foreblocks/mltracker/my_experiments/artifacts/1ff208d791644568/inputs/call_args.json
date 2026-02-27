@@ -1,0 +1,8 @@
+{
+  "config": {
+    "lr": 0.0003,
+    "optimizer": "adamW",
+    "depth": 12
+  },
+  "_mlt": null
+}

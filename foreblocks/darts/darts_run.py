@@ -5,7 +5,6 @@ import logging
 import random
 import threading
 import time
-from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 # ─── Third-Party Libraries ────────────────────────────────────────
@@ -18,8 +17,47 @@ from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 
 # ─── Local Imports ─────────────────────────────────────────────────
-from .darts import *
+from .architecture import *
+from .architecture.finalization import (
+    derive_final_architecture as derive_fixed_architecture,
+)
 from .darts_metrics import *
+from .scoring import score_from_metrics
+from .search.candidate_scoring import candidate_signature
+from .search.orchestrator import (
+    evaluate_search_candidate,
+    make_default_search_candidate_config,
+    run_parallel_candidate_collection,
+    select_top_candidates,
+)
+from .search.stats_reporting import (
+    append_whatif_estimates,
+    mean_std,
+    save_csv,
+    save_json,
+)
+from .search.weight_schemes import (
+    build_weight_schemes,
+)
+from .search.weight_schemes import (
+    ranks_desc as _ranks_desc,
+)
+from .search.weight_schemes import (
+    spearman_from_scores as _spearman_from_scores,
+)
+from .search.weight_schemes import (
+    topk_overlap_from_scores as _topk_overlap_from_scores,
+)
+from .training.helpers import (
+    AlphaTracker,
+    ArchitectureRegularizer,
+    BilevelOptimizer,
+    RegularizationType,
+    TemperatureScheduler,
+)
+from .training.helpers import (
+    default_as_probability_vector as _as_probability_vector,
+)
 
 # Optional: configure a custom logger
 logger = logging.getLogger("NASLogger")
@@ -30,381 +68,75 @@ handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
 
-
-class RegularizationType(Enum):
-    """Types of regularization for architecture search"""
-
-    ENTROPY = "entropy"
-    KL_DIVERGENCE = "kl_divergence"
-    L2_NORM = "l2_norm"
-    DIVERSITY = "diversity"
-    SPARSITY = "sparsity"
-    EFFICIENCY = "efficiency"
+# Stable architecture-signature alias used throughout this module.
+_sig_from_cfg = candidate_signature
 
 
-class ArchitectureRegularizer:
-    """Helper class for different types of architecture regularization"""
+class DARTSTrainer:
+    """
+    Comprehensive DARTS trainer with search, training, and evaluation capabilities.
 
-    def __init__(
-        self, reg_types: List[RegularizationType], weights: List[float] = None
-    ):
-        self.reg_types = reg_types
-        self.weights = weights or [1.0] * len(reg_types)
-        assert len(self.reg_types) == len(self.weights), (
-            "Number of weights must match number of regularization types"
-        )
-        self._dispatch = {
-            RegularizationType.ENTROPY: lambda m, p, e, t: self._entropy_regularization(
-                p
-            ),
-            RegularizationType.KL_DIVERGENCE: lambda m, p, e, t: (
-                self._kl_divergence_regularization(p)
-            ),
-            RegularizationType.L2_NORM: lambda m, p, e, t: self._l2_norm_regularization(
-                p
-            ),
-            RegularizationType.DIVERSITY: lambda m, p, e, t: (
-                self._diversity_regularization(m)
-            ),
-            RegularizationType.SPARSITY: lambda m, p, e, t: (
-                self._sparsity_regularization(p, e, t)
-            ),
-            RegularizationType.EFFICIENCY: lambda m, p, e, t: (
-                self._efficiency_regularization(m)
-            ),
-        }
-
-    def compute_regularization(
-        self,
-        model: nn.Module,
-        arch_params: List[torch.Tensor],
-        epoch: int = 0,
-        total_epochs: int = 100,
-    ) -> Dict[str, torch.Tensor]:
-        """Compute all specified regularization terms"""
-        reg_losses = {}
-        total_reg = torch.tensor(0.0, device=next(model.parameters()).device)
-
-        for reg_type, weight in zip(self.reg_types, self.weights):
-            reg_loss = self._compute_single_regularization(
-                model, arch_params, reg_type, epoch, total_epochs
-            )
-            reg_losses[reg_type.value] = reg_loss
-            total_reg += weight * reg_loss
-
-        reg_losses["total"] = total_reg
-        return reg_losses
-
-    def _compute_single_regularization(
-        self,
-        model: nn.Module,
-        arch_params: List[torch.Tensor],
-        reg_type: RegularizationType,
-        epoch: int,
-        total_epochs: int,
-    ) -> torch.Tensor:
-        """Compute a single type of regularization"""
-        device = next(model.parameters()).device
-        reg_fn = self._dispatch.get(reg_type)
-        if reg_fn is None:
-            return torch.tensor(0.0, device=device)
-        return reg_fn(model, arch_params, epoch, total_epochs)
-
-    def _iter_arch_probs(self, arch_params: List[torch.Tensor]):
-        for param in arch_params:
-            if param.dim() >= 1:
-                yield F.softmax(param.view(-1, param.size(-1)), dim=-1)
-
-    def _entropy_regularization(self, arch_params: List[torch.Tensor]) -> torch.Tensor:
-        """Entropy regularization to encourage exploration"""
-        total_entropy = torch.tensor(0.0, device=arch_params[0].device)
-        for probs in self._iter_arch_probs(arch_params):
-            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()
-            total_entropy += 1.0 - entropy / np.log(probs.size(-1))
-
-        return total_entropy
-
-    def _kl_divergence_regularization(
-        self, arch_params: List[torch.Tensor]
-    ) -> torch.Tensor:
-        """KL divergence from uniform distribution to encourage diversity"""
-        total_kl = torch.tensor(0.0, device=arch_params[0].device)
-        for probs in self._iter_arch_probs(arch_params):
-            uniform = torch.ones_like(probs) / probs.size(-1)
-            kl_div = (
-                (probs * torch.log(probs / (uniform + 1e-8) + 1e-8)).sum(dim=-1).mean()
-            )
-            total_kl += kl_div
-
-        return total_kl
-
-    def _l2_norm_regularization(self, arch_params: List[torch.Tensor]) -> torch.Tensor:
-        """L2 norm regularization on architecture parameters"""
-        total_l2 = torch.tensor(0.0, device=arch_params[0].device)
-
-        for param in arch_params:
-            total_l2 += torch.norm(param, p=2)
-
-        return total_l2
-
-    def _diversity_regularization(self, model: nn.Module) -> torch.Tensor:
-        """Encourage diversity across different parts of the architecture"""
-        diversity_loss = torch.tensor(0.0, device=next(model.parameters()).device)
-
-        # Collect all architecture weights
-        all_weights = []
-        for module in model.modules():
-            if hasattr(module, "get_alphas"):
-                try:
-                    alphas = module.get_alphas()
-                    if alphas.numel() > 0:
-                        all_weights.append(F.softmax(alphas, dim=-1))
-                except:
-                    continue
-
-        if len(all_weights) >= 2:
-            # Compute pairwise diversity (negative cosine similarity)
-            for i in range(len(all_weights)):
-                for j in range(i + 1, len(all_weights)):
-                    w1, w2 = all_weights[i], all_weights[j]
-
-                    # Handle different sizes by truncating to smaller size
-                    min_size = min(w1.size(0), w2.size(0))
-                    w1_trunc = w1[:min_size]
-                    w2_trunc = w2[:min_size]
-
-                    # Cosine similarity
-                    cos_sim = F.cosine_similarity(w1_trunc, w2_trunc, dim=0)
-                    # Encourage diversity (low similarity)
-                    diversity_loss += cos_sim
-
-        return diversity_loss
-
-    def _sparsity_regularization(
-        self, arch_params: List[torch.Tensor], epoch: int, total_epochs: int
-    ) -> torch.Tensor:
-        """Sparsity regularization that increases over time"""
-        sparsity_loss = torch.tensor(0.0, device=arch_params[0].device)
-
-        # Increase sparsity pressure over time
-        sparsity_weight = min(1.0, epoch / (total_epochs * 0.8))
-
-        for probs in self._iter_arch_probs(arch_params):
-            # L1 penalty on probabilities to encourage sparsity
-            sparsity_loss += sparsity_weight * probs.sum()
-
-        return sparsity_loss
-
-    def _efficiency_regularization(self, model: nn.Module) -> torch.Tensor:
-        """Efficiency regularization based on operation complexity"""
-        efficiency_loss = torch.tensor(0.0, device=next(model.parameters()).device)
-
-        # Operation efficiency scores (lower is more efficient)
-        op_costs = {
-            "Identity": 0.0,
-            "ResidualMLP": 0.2,
-            "TimeConv": 0.3,
-            "TCN": 0.5,
-            "ConvMixer": 0.4,
-            "Fourier": 0.6,
-            "Wavelet": 0.6,
-            "GRN": 0.4,
-            "MultiScaleConv": 0.7,
-            "PyramidConv": 0.8,
-        }
-
-        for module in model.modules():
-            if hasattr(module, "get_alphas") and hasattr(module, "available_ops"):
-                try:
-                    alphas = module.get_alphas()
-                    probs = F.softmax(alphas, dim=-1)
-
-                    # Compute expected cost
-                    for i, op_name in enumerate(module.available_ops):
-                        if i < len(probs):
-                            cost = op_costs.get(op_name, 0.5)  # Default medium cost
-                            efficiency_loss += probs[i] * cost
-                except:
-                    continue
-
-        return efficiency_loss
-
-
-class TemperatureScheduler:
-    """Advanced temperature scheduling for architecture search"""
+    This class encapsulates the entire DARTS workflow:
+    - Architecture search with zero-cost metrics
+    - DARTS training with mixed operations
+    - Final model training with fixed architecture
+    - Multi-fidelity search strategies
+    """
 
     def __init__(
         self,
-        initial_temp: float = 2.0,
-        final_temp: float = 0.1,
-        schedule_type: str = "cosine",
-        warmup_epochs: int = 5,
+        input_dim: int = 3,
+        hidden_dims: List[int] = [32, 64, 128],
+        forecast_horizon: int = 6,
+        seq_length: int = 12,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        all_ops: Optional[List[str]] = None,
     ):
-        self.initial_temp = initial_temp
-        self.final_temp = final_temp
-        self.schedule_type = schedule_type
-        self.warmup_epochs = warmup_epochs
+        """
+        Initialize DARTS trainer.
 
-    def get_temperature(self, epoch: int, total_epochs: int) -> float:
-        """Get temperature for current epoch"""
-        if epoch < self.warmup_epochs:
-            # Linear warmup
-            return self.initial_temp
-
-        progress = (epoch - self.warmup_epochs) / (total_epochs - self.warmup_epochs)
-        progress = min(progress, 1.0)
-        schedule_fns = {
-            "cosine": lambda: (
-                self.final_temp
-                + (self.initial_temp - self.final_temp)
-                * (1 + np.cos(np.pi * progress))
-                / 2
-            ),
-            "exponential": lambda: (
-                self.initial_temp
-                * np.exp(
-                    np.log(self.final_temp / self.initial_temp)
-                    / (total_epochs - self.warmup_epochs)
-                    * (epoch - self.warmup_epochs)
-                )
-            ),
-            "linear": lambda: (
-                self.initial_temp - (self.initial_temp - self.final_temp) * progress
-            ),
-            "step": lambda: (
-                self.initial_temp
-                if progress < 0.3
-                else (self.initial_temp * 0.5 if progress < 0.7 else self.final_temp)
-            ),
-        }
-        temp = schedule_fns.get(self.schedule_type, lambda: self.initial_temp)()
-
-        return max(temp, self.final_temp)
-
-
-def _weights_uniform(base: Dict[str, float]) -> Dict[str, float]:
-    return {k: (1.0 if v >= 0 else -1.0) for k, v in base.items()}
-
-
-def _weights_family_subsets(base: Dict[str, float]) -> Dict[str, Dict[str, float]]:
-    grad = ["grasp", "fisher", "snip", "jacobian", "sensitivity"]
-    act = ["naswot", "zennas"]
-    complexity = ["params", "flops", "conditioning"]
-    syn = ["synflow"]
-    return {
-        "subset_grad": {k: base[k] for k in grad if k in base},
-        "subset_act": {k: base[k] for k in act if k in base},
-        "subset_complexity": {k: base[k] for k in complexity if k in base},
-        "subset_synflow": {k: base[k] for k in syn if k in base},
-        "subset_pos_only": {k: v for k, v in base.items() if v > 0},
-        "subset_no_penalties": {
-            k: v
-            for k, v in base.items()
-            if k not in {"params", "flops", "conditioning"}
-        },
-    }
-
-
-def _weights_leave_one_out(base: Dict[str, float]) -> Dict[str, Dict[str, float]]:
-    out = {}
-    for k in list(base.keys()):
-        w = dict(base)
-        w.pop(k, None)
-        out[f"loo_minus_{k}"] = w
-    return out
-
-
-def _sample_random_weights_around(
-    base: Dict[str, float], sigma: float, seed: int
-) -> Dict[str, float]:
-    rng = np.random.default_rng(seed)
-    out = {}
-    for k, w0 in base.items():
-        s = max(abs(w0), 1e-6)
-        out[k] = float(rng.normal(w0, sigma * s))
-    return out
-
-
-def build_weight_schemes(
-    base_weights: Dict[str, float],
-    n_random: int = 20,
-    random_sigma: float = 0.25,
-    seed: int = 0,
-) -> Dict[str, Dict[str, float]]:
-    schemes: Dict[str, Dict[str, float]] = {}
-    schemes["baseline"] = dict(base_weights)
-    schemes["uniform"] = _weights_uniform(base_weights)
-    schemes.update(_weights_family_subsets(base_weights))
-    schemes.update(_weights_leave_one_out(base_weights))
-    for i in range(n_random):
-        schemes[f"rand_{i:02d}"] = _sample_random_weights_around(
-            base_weights, random_sigma, seed + i
+        Args:
+            input_dim: Input feature dimension
+            hidden_dims: List of possible hidden dimensions
+            forecast_horizon: Number of steps to forecast
+            seq_length: Input sequence length
+            device: Training device
+            all_ops: List of operations to search over
+        """
+        self.input_dim = input_dim
+        self.hidden_dims = hidden_dims
+        self.forecast_horizon = forecast_horizon
+        self.seq_length = seq_length
+        self.device = device
+        self.use_gumbel = True  # Use Gumbel-softmax for sharper separation
+        self.alpha_tracker = AlphaTracker(
+            as_probability_vector_fn=_as_probability_vector
         )
-    return schemes
 
+        self.all_ops = all_ops or [
+            "Identity",
+            "TimeConv",
+            "GRN",
+            "Wavelet",
+            "Fourier",
+            "TCN",
+            "ResidualMLP",
+            "ConvMixer",
+            "MultiScaleConv",
+            "PyramidConv",
+            "PatchEmbed",
+            "TCN",
+            "Mamba",
+            "InvertedAttention",
+        ]
 
-def _sig_from_cfg(cfg: Dict[str, Any]) -> Tuple:
-    # stable signature across pools/runs
-    ops = tuple(sorted(cfg["selected_ops"]))
-    return (ops, int(cfg["hidden_dim"]), int(cfg["num_cells"]), int(cfg["num_nodes"]))
+        # Training history
+        self.search_history = []
+        self.training_history = []
 
-
-def score_from_metrics(metrics: Dict[str, float], weights: Dict[str, float]) -> float:
-    """Compute aggregate score from precomputed raw metrics."""
-    total_score = 0.0
-    total_weight = 0.0
-
-    for metric, val in metrics.items():
-        if metric not in weights:
-            continue
-        w = float(weights[metric])
-
-        if not np.isfinite(val):
-            continue
-
-        # match your ZeroCostNAS normalization conventions
-        if metric in {"synflow", "params", "flops"}:
-            norm = np.log1p(max(float(val), 0.0))
-            if not np.isfinite(norm):
-                norm = 0.0
-        elif metric == "conditioning":
-            norm = min(float(val), 100.0) / 100.0
-        else:
-            norm = float(val)
-
-        total_score += norm * w
-        total_weight += abs(w)
-
-    return float(total_score / max(total_weight, 1.0))
-
-
-def _ranks_desc(scores: np.ndarray) -> np.ndarray:
-    """Ranks: 1 = best."""
-    order = np.argsort(-scores, kind="mergesort")
-    ranks = np.empty_like(order)
-    ranks[order] = np.arange(1, len(scores) + 1)
-    return ranks
-
-
-def _spearman_from_scores(a: np.ndarray, b: np.ndarray) -> float:
-    ra = _ranks_desc(a).astype(np.float64)
-    rb = _ranks_desc(b).astype(np.float64)
-    ra -= ra.mean()
-    rb -= rb.mean()
-    denom = np.sqrt((ra**2).sum()) * np.sqrt((rb**2).sum())
-    return float((ra * rb).sum() / denom) if denom > 0 else 0.0
-
-
-def _topk_overlap_from_scores(a: np.ndarray, b: np.ndarray, k: int) -> float:
-    ra = _ranks_desc(a)
-    rb = _ranks_desc(b)
-    A = set(np.where(ra <= k)[0].tolist())
-    B = set(np.where(rb <= k)[0].tolist())
-    return float(len(A & B) / max(k, 1))
-
-
-class TrainerUtilitiesMixin:
-    """Shared helpers used across search, architecture, and training phases."""
+        print(f"🚀 DARTSTrainer initialized on {device}")
+        print(f"   Input dim: {input_dim}, Forecast horizon: {forecast_horizon}")
+        print(f"   Available operations: {len(self.all_ops)}")
 
     def _get_loss_function(self, loss_type: str):
         loss_functions = {
@@ -422,33 +154,218 @@ class TrainerUtilitiesMixin:
 
     def _autocast(self, enabled: bool):
         device_type = "cuda" if self.device.startswith("cuda") else "cpu"
-        return autocast(device_type, enabled=enabled)
+        return autocast(device_type=device_type, enabled=enabled)
 
-    def _iter_edge_alphas(self, model):
-        if hasattr(model, "cells"):
-            for i, cell in enumerate(model.cells):
-                if hasattr(cell, "edges"):
-                    for j, edge in enumerate(cell.edges):
-                        if hasattr(edge, "alphas"):
-                            name = f"cell_{i}_edge_{j}"
-                            available_ops = getattr(edge, "available_ops", None)
-                            yield name, edge.alphas, available_ops
+    def _split_architecture_and_model_params(self, model):
+        """Collect and split trainable params into architecture vs model groups."""
+        arch_params: List[torch.Tensor] = []
+        model_params: List[torch.Tensor] = []
+        edge_arch_params: List[torch.Tensor] = []
+        component_arch_params: List[torch.Tensor] = []
+        arch_param_ids = set()
 
-    def _iter_component_alphas(self, model):
-        if hasattr(model, "forecast_encoder") and hasattr(
-            model.forecast_encoder, "alphas"
-        ):
-            yield "encoder", model.forecast_encoder.alphas
+        for name, param in model.named_parameters():
+            if any(
+                arch_name in name
+                for arch_name in ["alphas", "arch_", "alpha_", "norm_alpha"]
+            ):
+                if id(param) in arch_param_ids:
+                    continue
+                arch_params.append(param)
+                arch_param_ids.add(id(param))
+                if "cells." in name and "edges." in name:
+                    edge_arch_params.append(param)
+                else:
+                    component_arch_params.append(param)
+            else:
+                model_params.append(param)
 
-        if hasattr(model, "forecast_decoder") and hasattr(
-            model.forecast_decoder, "alphas"
-        ):
-            yield "decoder", model.forecast_decoder.alphas
+        # Include component alpha tensors even if name heuristics miss them.
+        for source in self.alpha_tracker.component_alpha_sources(model):
+            alpha_tensor = source["alpha"]
+            if id(alpha_tensor) in arch_param_ids:
+                continue
+            arch_params.append(alpha_tensor)
+            arch_param_ids.add(id(alpha_tensor))
+            component_arch_params.append(alpha_tensor)
 
-        if hasattr(model, "forecast_decoder") and hasattr(
-            model.forecast_decoder, "attention_alphas"
-        ):
-            yield "attention_bridge", model.forecast_decoder.attention_alphas
+        return arch_params, model_params, edge_arch_params, component_arch_params
+
+    def _build_arch_param_groups(
+        self,
+        edge_arch_params: List[torch.Tensor],
+        component_arch_params: List[torch.Tensor],
+        arch_learning_rate: float,
+        arch_params: List[torch.Tensor],
+    ):
+        """Build optimizer groups for architecture parameters."""
+        arch_param_groups = []
+        if edge_arch_params:
+            arch_param_groups.append(
+                {"params": edge_arch_params, "lr": arch_learning_rate * 1.5}
+            )
+        if component_arch_params:
+            arch_param_groups.append(
+                {"params": component_arch_params, "lr": arch_learning_rate}
+            )
+        if not arch_param_groups:
+            arch_param_groups = [{"params": arch_params, "lr": arch_learning_rate}]
+        return arch_param_groups
+
+    def _reset_model_parameters(self, model: nn.Module) -> int:
+        """
+        Reinitialize all modules exposing `reset_parameters`.
+        Returns number of modules reset.
+        """
+        reset_count = 0
+        for module in model.modules():
+            reset_fn = getattr(module, "reset_parameters", None)
+            if callable(reset_fn):
+                try:
+                    reset_fn()
+                    reset_count += 1
+                except Exception:
+                    continue
+        return reset_count
+
+    def _capture_progressive_state(self, model: nn.Module) -> Optional[Dict[str, Any]]:
+        """Capture per-cell progressive stage so best checkpoints can be restored safely."""
+        if not hasattr(model, "cells"):
+            return None
+
+        cells_state = []
+        for cell in getattr(model, "cells", []):
+            cells_state.append(
+                {"progressive_stage": getattr(cell, "progressive_stage", None)}
+            )
+
+        return {"cells": cells_state}
+
+    def _restore_progressive_state(
+        self, model: nn.Module, state: Optional[Dict[str, Any]]
+    ) -> None:
+        """Restore per-cell progressive stage prior to loading a checkpoint."""
+        if state is None or not hasattr(model, "cells"):
+            return
+
+        cells = getattr(model, "cells", [])
+        saved_cells = state.get("cells", [])
+        for idx, cell in enumerate(cells):
+            if idx >= len(saved_cells):
+                break
+
+            stage = saved_cells[idx].get("progressive_stage")
+            if stage is None:
+                continue
+
+            if hasattr(cell, "set_progressive_stage"):
+                try:
+                    cell.set_progressive_stage(stage)
+                except Exception:
+                    continue
+            else:
+                cell.progressive_stage = stage
+
+    def _run_model_training_epoch(
+        self,
+        *,
+        model: nn.Module,
+        train_model_loader,
+        model_params: List[torch.Tensor],
+        model_optimizer,
+        model_scheduler,
+        scaler: GradScaler,
+        loss_fn,
+        gradient_accumulation_steps: int,
+        use_amp: bool,
+        verbose: bool,
+        epoch: int,
+    ) -> float:
+        """Run one model-parameter training epoch and return mean training loss."""
+        model.train()
+        epoch_train_loss = 0.0
+        batch_pbar = (
+            self._create_progress_bar(
+                enumerate(train_model_loader),
+                f"Epoch {epoch + 1:3d}",
+                leave=False,
+                total=len(train_model_loader),
+            )
+            if verbose
+            else enumerate(train_model_loader)
+        )
+
+        model_optimizer.zero_grad()
+        for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
+            batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+
+            with self._autocast(use_amp):
+                preds = model(batch_x)
+                loss = loss_fn(preds, batch_y) / gradient_accumulation_steps
+
+            scaler.scale(loss).backward()
+
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                scaler.unscale_(model_optimizer)
+                torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
+                scaler.step(model_optimizer)
+                scaler.update()
+                model_scheduler.step()
+                model_optimizer.zero_grad()
+
+            epoch_train_loss += loss.item() * gradient_accumulation_steps
+
+            if verbose and hasattr(batch_pbar, "set_postfix"):
+                batch_pbar.set_postfix(
+                    {
+                        "loss": f"{loss.item() * gradient_accumulation_steps:.4f}",
+                        "avg": f"{epoch_train_loss / (batch_idx + 1):.4f}",
+                    }
+                )
+
+        if verbose and hasattr(batch_pbar, "close"):
+            batch_pbar.close()
+
+        return epoch_train_loss / max(len(train_model_loader), 1)
+
+    def _run_validation_epoch(
+        self,
+        *,
+        model: nn.Module,
+        val_loader,
+        loss_fn,
+        use_amp: bool,
+        verbose: bool,
+    ) -> float:
+        """Run one validation epoch and return mean validation loss."""
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            val_pbar = (
+                self._create_progress_bar(val_loader, "Val", leave=False)
+                if verbose
+                else val_loader
+            )
+
+            for batch_data in val_pbar:
+                batch_x, batch_y = (
+                    batch_data[0].to(self.device),
+                    batch_data[1].to(self.device),
+                )
+
+                with self._autocast(use_amp):
+                    preds = model(batch_x)
+                    val_loss += loss_fn(preds, batch_y).item()
+
+                if verbose and hasattr(val_pbar, "set_postfix"):
+                    val_pbar.set_postfix(
+                        {"val_loss": f"{val_loss / max(len(val_loader), 1):.4f}"}
+                    )
+
+            if verbose and hasattr(val_pbar, "close"):
+                val_pbar.close()
+
+        return val_loss / max(len(val_loader), 1)
 
     def _evaluate_model(
         self, model: nn.Module, dataloader, loss_type: str = "huber"
@@ -554,62 +471,13 @@ class TrainerUtilitiesMixin:
             print(f"📊 Training curve saved to {save_path}")
         plt.close()
 
-
-class ArchitecturePhaseMixin:
-    """Architecture-specific helpers split out from the trainer core."""
-
-    @staticmethod
-    def _model_device(model: nn.Module) -> torch.device:
-        if hasattr(model, "device"):
-            return model.device
-        return next(model.parameters()).device
-
-    def _compute_architecture_regularization(
-        self, model, epoch, epochs, temperature, alpha_values
-    ):
-        dynamic_weights = {
-            "entropy": 0.1 * (1.0 - epoch / epochs),
-            "identity": 0.2,
-            "smoothness": 0.05 * (epoch / epochs),
-            "balance": 0.1 * max(0, 1.0 - 2 * epoch / epochs),
-        }
-        penalties = {
-            "entropy": self._calculate_entropy_regularization(model, temperature),
-            "identity": self._calculate_identity_penalty(model),
-            "balance": self._calculate_operation_balance_penalty(model),
-        }
-        if len(alpha_values) > 1:
-            penalties["smoothness"] = self._calculate_smoothness_penalty(
-                model, alpha_values
-            )
-
-        reg_loss = 0.0
-        for name, value in penalties.items():
-            reg_loss += dynamic_weights[name] * value
-        return reg_loss
-
-    def _print_architecture_summary(self, architecture):
-        for cell_name, cell_arch in architecture.items():
-            if isinstance(cell_arch, dict) and "edge_0" in cell_arch:
-                for edge_name, edge_info in cell_arch.items():
-                    op_name = edge_info.get("operation", "Unknown")
-                    weight = edge_info.get("weight", 0.0)
-                    print(
-                        f"   {cell_name.title()}, {edge_name.title()}: {op_name} (weight: {weight:.3f})"
-                    )
-            elif isinstance(cell_arch, dict) and "type" in cell_arch:
-                op_type = cell_arch.get("type", "Unknown")
-                weight = cell_arch.get("weight", 0.0)
-                print(
-                    f"   → Fixing {cell_name.title()}: {op_type.upper()} (weight: {weight:.3f})"
-                )
-
-    def _create_bilevel_loaders(self, train_loader):
+    def _create_bilevel_loaders(self, train_loader, seed: int = 42):
         dataset = train_loader.dataset
         train_size = int(0.7 * len(dataset))
         arch_size = len(dataset) - train_size
+        generator = torch.Generator().manual_seed(int(seed))
         train_dataset, arch_dataset = torch.utils.data.random_split(
-            dataset, [train_size, arch_size]
+            dataset, [train_size, arch_size], generator=generator
         )
         train_model_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -623,164 +491,52 @@ class ArchitecturePhaseMixin:
         )
         return train_arch_loader, train_model_loader
 
-    def _extract_alpha_values(self, model):
-        current_alphas = []
-        for name, alphas, _ in self._iter_edge_alphas(model):
-            current_alphas.append(
-                (name, F.softmax(alphas, dim=-1).detach().cpu().numpy())
-            )
-        for name, alphas in self._iter_component_alphas(model):
-            current_alphas.append(
-                (name, F.softmax(alphas, dim=-1).detach().cpu().numpy())
-            )
-        return current_alphas
-
-    def _iter_prob_vectors(self, model, temperature=1.0):
-        for _, alphas, _ in self._iter_edge_alphas(model):
-            yield F.softmax(alphas / temperature, dim=-1)
-        for _, alphas in self._iter_component_alphas(model):
-            yield F.softmax(alphas / temperature, dim=-1)
-
-    def _calculate_entropy_regularization(self, model, temperature):
-        total_entropy = 0.0
-        num_vectors = 0
-        for probs in self._iter_prob_vectors(model, temperature):
-            total_entropy += -(probs * torch.log(probs + 1e-8)).sum()
-            num_vectors += 1
-        return -total_entropy / max(num_vectors, 1)
-
-    def _calculate_identity_penalty(self, model):
-        total_penalty = 0.0
-        num_edges = 0
-        for _, alphas, available_ops in self._iter_edge_alphas(model):
-            if not available_ops or "Identity" not in available_ops:
-                continue
-            identity_idx = available_ops.index("Identity")
-            probs = F.softmax(alphas, dim=-1)
-            identity_prob = probs[identity_idx]
-            if identity_prob > 0.5:
-                total_penalty += (identity_prob - 0.5) ** 2
-            num_edges += 1
-        return total_penalty / max(num_edges, 1)
-
-    def _calculate_smoothness_penalty(self, model, alpha_history):
-        if len(alpha_history) < 2:
-            return torch.tensor(0.0, device=self._model_device(model))
-
-        current_alphas = alpha_history[-1]
-        previous_alphas = alpha_history[-2]
-        total_diff = 0.0
-        num_comparisons = 0
-        for (name1, alphas1), (name2, alphas2) in zip(current_alphas, previous_alphas):
-            if name1 == name2:
-                total_diff += np.sum((alphas1 - alphas2) ** 2)
-                num_comparisons += 1
-
-        return torch.tensor(
-            total_diff / max(num_comparisons, 1), device=self._model_device(model)
+    def _make_default_search_candidate_config(self, rng=None) -> Dict[str, Any]:
+        return make_default_search_candidate_config(
+            trainer=self,
+            rng=rng,
         )
 
-    def _calculate_operation_balance_penalty(self, model):
-        operation_counts = {}
-        total_weight = 0.0
-        for _, alphas, available_ops in self._iter_edge_alphas(model):
-            if not available_ops:
-                continue
-            probs = F.softmax(alphas, dim=-1)
-            for op_name, prob in zip(available_ops, probs):
-                operation_counts[op_name] = (
-                    operation_counts.get(op_name, 0) + prob.item()
-                )
-                total_weight += prob.item()
-
-        if not operation_counts:
-            return torch.tensor(0.0, device=self._model_device(model))
-
-        avg_weight = total_weight / len(operation_counts)
-        variance = sum(
-            (weight - avg_weight) ** 2 for weight in operation_counts.values()
-        ) / len(operation_counts)
-        return torch.tensor(variance, device=self._model_device(model))
-
-    def _derive_final_architecture(self, model):
-        if hasattr(model, "derive_discrete_architecture"):
-            return model.derive_discrete_architecture(threshold=0.3)
-
-        architecture = {}
-        if hasattr(model, "cells"):
-            for i, cell in enumerate(model.cells):
-                if hasattr(cell, "edges"):
-                    cell_arch = {}
-                    for j, edge in enumerate(cell.edges):
-                        if hasattr(edge, "available_ops") and hasattr(edge, "alphas"):
-                            weights = F.softmax(edge.alphas, dim=-1)
-                            max_idx = weights.argmax().item()
-                            cell_arch[f"edge_{j}"] = {
-                                "operation": edge.available_ops[max_idx],
-                                "weight": weights.max().item(),
-                            }
-                    architecture[f"cell_{i}"] = cell_arch
-        return architecture
-
-
-class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
-    """
-    Comprehensive DARTS trainer with search, training, and evaluation capabilities.
-
-    This class encapsulates the entire DARTS workflow:
-    - Architecture search with zero-cost metrics
-    - DARTS training with mixed operations
-    - Final model training with fixed architecture
-    - Multi-fidelity search strategies
-    """
-
-    def __init__(
+    def _evaluate_search_candidate(
         self,
-        input_dim: int = 3,
-        hidden_dims: List[int] = [32, 64, 128],
-        forecast_horizon: int = 6,
-        seq_length: int = 12,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        all_ops: Optional[List[str]] = None,
-    ):
-        """
-        Initialize DARTS trainer.
+        candidate_id: int,
+        val_loader,
+        max_samples: int,
+        *,
+        num_batches: int = 1,
+        include_timing: bool = False,
+        rng=None,
+    ) -> Dict[str, Any]:
+        return evaluate_search_candidate(
+            trainer=self,
+            candidate_id=candidate_id,
+            val_loader=val_loader,
+            max_samples=max_samples,
+            num_batches=num_batches,
+            include_timing=include_timing,
+            rng=rng,
+        )
 
-        Args:
-            input_dim: Input feature dimension
-            hidden_dims: List of possible hidden dimensions
-            forecast_horizon: Number of steps to forecast
-            seq_length: Input sequence length
-            device: Training device
-            all_ops: List of operations to search over
-        """
-        self.input_dim = input_dim
-        self.hidden_dims = hidden_dims
-        self.forecast_horizon = forecast_horizon
-        self.seq_length = seq_length
-        self.device = device
-        self.use_gumbel = True  # Use Gumbel-softmax for sharper separation
+    @staticmethod
+    def _select_top_candidates(candidates: List[Dict[str, Any]], top_k: int):
+        return select_top_candidates(candidates, top_k)
 
-        self.all_ops = all_ops or [
-            "Identity",
-            "TimeConv",
-            "GRN",
-            "Wavelet",
-            "Fourier",
-            "TCN",
-            "ResidualMLP",
-            "ConvMixer",
-            "MultiScaleConv",
-            "PyramidConv",
-        ]
-
-        # Training history
-        self.search_history = []
-        self.training_history = []
-
-        print(f"🚀 DARTSTrainer initialized on {device}")
-        print(f"   Input dim: {input_dim}, Forecast horizon: {forecast_horizon}")
-        print(f"   Available operations: {len(self.all_ops)}")
+    def _run_parallel_candidate_collection(
+        self,
+        num_candidates: int,
+        candidate_fn,
+        *,
+        max_workers: Optional[int] = None,
+        on_result=None,
+        error_log_fn=None,
+    ) -> List[Dict[str, Any]]:
+        return run_parallel_candidate_collection(
+            num_candidates=num_candidates,
+            candidate_fn=candidate_fn,
+            max_workers=max_workers,
+            on_result=on_result,
+            error_log_fn=error_log_fn,
+        )
 
     def evaluate_zero_cost_metrics_raw(
         self,
@@ -799,6 +555,9 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         cfg = create_custom_config(max_samples=max_samples, max_outputs=10)
         nas_evaluator = ZeroCostNAS(config=cfg)
 
+        print(
+            f"Computing zero-cost raw metrics (max_samples={cfg.max_samples}, max_outputs={cfg.max_outputs})..."
+        )
         # 🔹 RAW call (correct)
         out = nas_evaluator.evaluate_model_raw_metrics(
             model=model,
@@ -842,6 +601,8 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             weights: Optional[Dict[str, float]] = None,
         ) -> Config:
             cfg = Config(max_samples=max_samples, max_outputs=max_outputs)
+            cfg.timeout = float(timeout_seconds)
+            cfg.enable_mixed_precision = bool(enable_mixed_precision)
             if weights is not None:
                 cfg.weights = weights
             return cfg
@@ -855,8 +616,14 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             weights=None,  # use default weights from Config
         )
 
+        # print("Evaluating zero-cost metrics with baseline weights...")
+
         if not ablation:
+            # print(
+            #     "   Ablation disabled, running single evaluation with baseline weights."
+            # )
             nas_evaluator = ZeroCostNAS(config=base_config)
+            # print("   Running evaluation...")
             return nas_evaluator.evaluate_model(
                 model, dataloader, self.device, num_batches=num_batches
             )
@@ -914,6 +681,11 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         architecture_update_freq: int = 3,
         diversity_check_freq: int = 1,
         progressive_shrinking: bool = True,
+        hybrid_pruning_start_epoch: int = 20,
+        hybrid_pruning_interval: int = 10,
+        hybrid_pruning_base_threshold: float = 0.15,
+        hybrid_pruning_strategy: str = "performance",
+        hybrid_pruning_freeze_logit: float = -20.0,
         use_bilevel_optimization: bool = True,
         use_amp: bool = True,
         gradient_accumulation_steps: int = 1,
@@ -921,6 +693,12 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         regularization_types: Optional[List[str]] = None,
         regularization_weights: Optional[List[float]] = None,
         temperature_schedule: str = "cosine",
+        edge_sharpening_max_weight: float = 0.03,
+        edge_sharpening_start_frac: float = 0.35,
+        hessian_penalty_weight: float = 0.0,
+        hessian_fd_eps: float = 1e-2,
+        hessian_update_freq: int = 1,
+        bilevel_split_seed: int = 42,
     ) -> Dict[str, Any]:
         """Simplified DARTS training with essential features"""
 
@@ -938,34 +716,32 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         #             print(f"Warning: Compilation failed ({e})")
 
         # Separate architecture and model parameters
-        arch_params, model_params = [], []
-        for name, param in model.named_parameters():
-            # print(f"🔍 Parameter: {name} ({param.numel()})")
-            if any(arch_name in name for arch_name in ["alphas", "arch_", "alpha_"]):
-                arch_params.append(param)
-                # print(f"🔍 Architecture param: {name} ({param.numel()})")
-            else:
-                model_params.append(param)
-
-        # Add encoder/decoder alphas
-        for module_name in ["forecast_encoder", "forecast_decoder"]:
-            if hasattr(model, module_name):
-                module = getattr(model, module_name)
-                if hasattr(module, "alphas"):
-                    arch_params.append(module.alphas)
-                if hasattr(module, "attention_alphas"):
-                    arch_params.append(module.attention_alphas)
+        (
+            arch_params,
+            model_params,
+            edge_arch_params,
+            component_arch_params,
+        ) = self._split_architecture_and_model_params(model)
 
         if verbose:
             print(
                 f"📊 Architecture params: {len(arch_params)}, Model params: {len(model_params)}"
             )
+            print(
+                f"   Edge arch params: {len(edge_arch_params)}, Component arch params: {len(component_arch_params)}"
+            )
+
+        arch_param_groups = self._build_arch_param_groups(
+            edge_arch_params=edge_arch_params,
+            component_arch_params=component_arch_params,
+            arch_learning_rate=arch_learning_rate,
+            arch_params=arch_params,
+        )
 
         # Setup optimizers with fused operations if available
         try:
             arch_optimizer = torch.optim.Adam(
-                arch_params,
-                lr=arch_learning_rate,
+                arch_param_groups,
                 betas=(0.5, 0.999),
                 weight_decay=arch_weight_decay,
                 fused=True,
@@ -976,10 +752,9 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                 weight_decay=model_weight_decay,
                 fused=True,
             )
-        except:
+        except (TypeError, RuntimeError):
             arch_optimizer = torch.optim.Adam(
-                arch_params,
-                lr=arch_learning_rate,
+                arch_param_groups,
                 betas=(0.5, 0.999),
                 weight_decay=arch_weight_decay,
             )
@@ -995,21 +770,33 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             model_optimizer,
             max_lr=model_learning_rate,
             epochs=epochs,
-            steps_per_epoch=len(train_loader) // gradient_accumulation_steps,
+            steps_per_epoch=max(
+                1, len(train_loader) // max(1, gradient_accumulation_steps)
+            ),
             pct_start=0.3,
             anneal_strategy="cos",
         )
 
         # Loss function and data loaders
         loss_fn = self._get_loss_function(loss_type)
+        train_arch_loader = None
         if use_bilevel_optimization:
             train_arch_loader, train_model_loader = self._create_bilevel_loaders(
-                train_loader
+                train_loader, seed=bilevel_split_seed
             )
-            val_arch_iter = iter(val_loader)
         else:
             train_model_loader = train_loader
-            val_arch_iter = iter(val_loader)
+        bilevel_optimizer = BilevelOptimizer(
+            arch_optimizer=arch_optimizer,
+            arch_scheduler=arch_scheduler,
+            arch_params=arch_params,
+            edge_arch_params=edge_arch_params,
+            component_arch_params=component_arch_params,
+            use_bilevel_optimization=use_bilevel_optimization,
+            train_arch_loader=train_arch_loader,
+            val_loader=val_loader,
+            train_model_loader=train_model_loader,
+        )
 
         # SWA setup
         swa_model, swa_start = None, None
@@ -1024,8 +811,14 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         best_val_loss = float("inf")
         patience_counter = 0
         best_state = None
+        best_progressive_state = None
         train_losses, val_losses, alpha_values = [], [], []
         diversity_scores = []
+        prev_component_probs = {}
+        prev_edge_probs = {}
+        last_edge_entropy = float("nan")
+        last_edge_sharpen_weight = 0.0
+        edge_diversity_weight = 0.02
 
         if verbose:
             print(f"🔍 Training DARTS for {epochs} epochs")
@@ -1061,32 +854,39 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             model.train()
 
             # Dynamic temperature
-            current_temperature = temp_scheduler.get_temperature(epoch, epochs)
+            if hasattr(model, "schedule_temperature"):
+                current_temperature = model.schedule_temperature(
+                    epoch=epoch,
+                    total_epochs=epochs,
+                    schedule_type=temperature_schedule,
+                    final_temp=temp_scheduler.final_temp,
+                    warmup_epochs=warmup_epochs,
+                )
+            else:
+                current_temperature = temp_scheduler.get_temperature(epoch, epochs)
 
-            if hasattr(model, "set_temperature"):
+            if hasattr(model, "set_temperature") and not hasattr(
+                model, "schedule_temperature"
+            ):
                 model.set_temperature(current_temperature)
+
+            if progressive_shrinking and hasattr(model, "schedule_progressive_stage"):
+                model.schedule_progressive_stage(epoch=epoch, total_epochs=epochs)
 
             # Track alphas every 5 epochs
             if epoch % 5 == 0:
-                alpha_values.append(self._extract_alpha_values(model))
+                alpha_values.append(self.alpha_tracker.extract_alpha_values(model))
 
             # Architecture updates
             if epoch >= warmup_epochs and epoch % architecture_update_freq == 0:
                 for _ in range(2):  # 2 architecture steps
-                    try:
-                        if use_bilevel_optimization:
-                            arch_batch = next(iter(train_arch_loader))
-                        else:
-                            arch_batch = next(val_arch_iter)
-                    except StopIteration:
-                        val_arch_iter = iter(val_loader)
-                        arch_batch = next(val_arch_iter)
+                    arch_batch = bilevel_optimizer.next_arch_batch()
 
                     arch_x, arch_y = (
                         arch_batch[0].to(self.device),
                         arch_batch[1].to(self.device),
                     )
-                    arch_optimizer.zero_grad()
+                    bilevel_optimizer.zero_arch_grads()
 
                     with self._autocast(use_amp):
                         arch_preds = model(arch_x)
@@ -1099,13 +899,278 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
 
                         total_arch_loss = arch_loss + reg_losses["total"]
 
-                    scaler.scale(total_arch_loss).backward()
-                    scaler.unscale_(arch_optimizer)
-                    torch.nn.utils.clip_grad_norm_(arch_params, max_norm=3.0)
-                    scaler.step(arch_optimizer)
+                        hessian_penalty = torch.tensor(0.0, device=self.device)
+                        if (
+                            hessian_penalty_weight > 0.0
+                            and hessian_fd_eps > 0.0
+                            and hessian_update_freq > 0
+                            and (epoch - warmup_epochs) % hessian_update_freq == 0
+                            and model_params
+                        ):
+                            h_batch = bilevel_optimizer.next_hessian_batch()
+
+                            h_train_x, h_train_y = (
+                                h_batch[0].to(self.device),
+                                h_batch[1].to(self.device),
+                            )
+                            hessian_penalty = self._finite_difference_hessian_penalty(
+                                model=model,
+                                loss_fn=loss_fn,
+                                arch_loss=arch_loss,
+                                arch_x=arch_x,
+                                arch_y=arch_y,
+                                train_x=h_train_x,
+                                train_y=h_train_y,
+                                model_params=model_params,
+                                eps=hessian_fd_eps,
+                                use_amp=use_amp,
+                            )
+                            total_arch_loss = (
+                                total_arch_loss
+                                + hessian_penalty_weight * hessian_penalty
+                            )
+
+                        # Encourage different edges in a cell to specialize on
+                        # different operations instead of collapsing to one op.
+                        edge_diversity_loss = torch.tensor(0.0, device=self.device)
+                        edge_diversity_pairs = 0
+                        for cell in getattr(model, "cells", []):
+                            if not hasattr(cell, "edges"):
+                                continue
+
+                            edge_prob_vectors = []
+                            for edge in cell.edges:
+                                probs = None
+                                if (
+                                    hasattr(edge, "use_hierarchical")
+                                    and edge.use_hierarchical
+                                    and hasattr(edge, "_get_weights")
+                                    and hasattr(edge, "ops")
+                                ):
+                                    try:
+                                        routed = edge._get_weights(top_k=None)
+                                        if routed:
+                                            probs = torch.zeros(
+                                                len(edge.ops),
+                                                device=routed[0][1].device,
+                                                dtype=routed[0][1].dtype,
+                                            )
+                                            for op_idx, weight in routed:
+                                                probs[op_idx] = probs[op_idx] + weight
+                                    except Exception:
+                                        probs = None
+                                elif hasattr(edge, "_alphas"):
+                                    temp = max(
+                                        float(
+                                            getattr(
+                                                edge,
+                                                "op_temperature",
+                                                getattr(edge, "temperature", 1.0),
+                                            )
+                                        ),
+                                        1e-6,
+                                    )
+                                    probs = F.softmax(edge._alphas / temp, dim=0)
+
+                                if probs is not None and probs.numel() > 1:
+                                    edge_prob_vectors.append(
+                                        probs / probs.norm(p=2).clamp_min(1e-8)
+                                    )
+
+                            for i in range(len(edge_prob_vectors)):
+                                for j in range(i + 1, len(edge_prob_vectors)):
+                                    cos_ij = torch.dot(
+                                        edge_prob_vectors[i], edge_prob_vectors[j]
+                                    )
+                                    edge_diversity_loss = edge_diversity_loss + cos_ij
+                                    edge_diversity_pairs += 1
+
+                        if edge_diversity_pairs > 0:
+                            edge_diversity_loss = (
+                                edge_diversity_loss / edge_diversity_pairs
+                            )
+                            total_arch_loss = (
+                                total_arch_loss
+                                + edge_diversity_weight * edge_diversity_loss
+                            )
+
+                        # Late-phase sharpening: reduce edge entropy so operation
+                        # choices become more decisive near the end of search.
+                        edge_entropy = torch.tensor(0.0, device=self.device)
+                        edge_sharpen_weight = 0.0
+                        if edge_sharpening_max_weight > 0 and epoch >= warmup_epochs:
+                            progress = (epoch - warmup_epochs) / max(
+                                1, epochs - warmup_epochs
+                            )
+                            if progress >= edge_sharpening_start_frac:
+                                ramp = (progress - edge_sharpening_start_frac) / max(
+                                    1e-8, 1.0 - edge_sharpening_start_frac
+                                )
+                                edge_sharpen_weight = edge_sharpening_max_weight * min(
+                                    1.0, max(0.0, ramp)
+                                )
+
+                                entropy_terms = []
+                                for cell in getattr(model, "cells", []):
+                                    if not hasattr(cell, "edges"):
+                                        continue
+                                    for edge in cell.edges:
+                                        if (
+                                            hasattr(edge, "use_hierarchical")
+                                            and edge.use_hierarchical
+                                            and hasattr(edge, "group_alphas")
+                                        ):
+                                            group_temp = max(
+                                                float(
+                                                    getattr(
+                                                        edge,
+                                                        "group_temperature",
+                                                        getattr(
+                                                            edge, "temperature", 1.0
+                                                        ),
+                                                    )
+                                                ),
+                                                1e-6,
+                                            )
+                                            g_probs = F.softmax(
+                                                edge.group_alphas / group_temp, dim=0
+                                            )
+                                            g_ent = -(
+                                                g_probs * torch.log(g_probs + 1e-8)
+                                            ).sum() / np.log(max(g_probs.numel(), 2))
+                                            entropy_terms.append(g_ent)
+
+                                            if hasattr(edge, "op_alphas"):
+                                                op_temp = max(
+                                                    float(
+                                                        getattr(
+                                                            edge,
+                                                            "op_temperature",
+                                                            getattr(
+                                                                edge, "temperature", 1.0
+                                                            ),
+                                                        )
+                                                    ),
+                                                    1e-6,
+                                                )
+                                                for alpha in edge.op_alphas.values():
+                                                    o_probs = F.softmax(
+                                                        alpha / op_temp, dim=0
+                                                    )
+                                                    o_ent = -(
+                                                        o_probs
+                                                        * torch.log(o_probs + 1e-8)
+                                                    ).sum() / np.log(
+                                                        max(o_probs.numel(), 2)
+                                                    )
+                                                    entropy_terms.append(o_ent)
+                                        elif hasattr(edge, "_alphas"):
+                                            op_temp = max(
+                                                float(
+                                                    getattr(
+                                                        edge,
+                                                        "op_temperature",
+                                                        getattr(
+                                                            edge, "temperature", 1.0
+                                                        ),
+                                                    )
+                                                ),
+                                                1e-6,
+                                            )
+                                            probs = F.softmax(
+                                                edge._alphas / op_temp, dim=0
+                                            )
+                                            ent = -(
+                                                probs * torch.log(probs + 1e-8)
+                                            ).sum() / np.log(max(probs.numel(), 2))
+                                            entropy_terms.append(ent)
+
+                                if entropy_terms:
+                                    edge_entropy = torch.stack(entropy_terms).mean()
+                                    total_arch_loss = (
+                                        total_arch_loss
+                                        + edge_sharpen_weight * edge_entropy
+                                    )
+
+                        last_edge_entropy = float(edge_entropy.detach().item())
+                        last_edge_sharpen_weight = float(edge_sharpen_weight)
+
+                    bilevel_optimizer.step_architecture(
+                        total_arch_loss, scaler, already_backward=False
+                    )
                     scaler.update()
 
-                arch_scheduler.step()
+                    if (
+                        verbose
+                        and hasattr(model, "forecast_encoder")
+                        and hasattr(model, "forecast_decoder")
+                    ):
+                        enc_alphas = getattr(model.forecast_encoder, "alphas", None)
+                        dec_alphas = getattr(model.forecast_decoder, "alphas", None)
+                        enc_offsets = getattr(
+                            model.forecast_encoder, "layer_alpha_offsets", None
+                        )
+                        dec_offsets = getattr(
+                            model.forecast_decoder, "layer_alpha_offsets", None
+                        )
+                        att_alphas = getattr(
+                            model.forecast_decoder, "attention_alphas", None
+                        )
+                        if enc_alphas is not None and dec_alphas is not None:
+                            enc_gn = (
+                                enc_alphas.grad.norm().item()
+                                if enc_alphas.grad is not None
+                                else float("nan")
+                            )
+                            dec_gn = (
+                                dec_alphas.grad.norm().item()
+                                if dec_alphas.grad is not None
+                                else float("nan")
+                            )
+                            cos = F.cosine_similarity(
+                                enc_alphas.detach().view(-1),
+                                dec_alphas.detach().view(-1),
+                                dim=0,
+                            ).item()
+                            enc_off_gn = (
+                                enc_offsets.grad.norm().item()
+                                if enc_offsets is not None
+                                and enc_offsets.grad is not None
+                                else float("nan")
+                            )
+                            dec_off_gn = (
+                                dec_offsets.grad.norm().item()
+                                if dec_offsets is not None
+                                and dec_offsets.grad is not None
+                                else float("nan")
+                            )
+                            att_gn = (
+                                att_alphas.grad.norm().item()
+                                if att_alphas is not None
+                                and att_alphas.grad is not None
+                                else float("nan")
+                            )
+                            same_obj = enc_alphas is dec_alphas
+                            print(
+                                f"   [Arch Grad] enc={enc_gn:.6e}, dec={dec_gn:.6e}, "
+                                f"enc_off={enc_off_gn:.6e}, dec_off={dec_off_gn:.6e}, "
+                                f"att={att_gn:.6e}, cos={cos:.4f}, shared={same_obj}"
+                            )
+
+                bilevel_optimizer.step_scheduler()
+
+                if verbose:
+                    with torch.no_grad():
+                        self.alpha_tracker.log_architecture_update_block(
+                            model=model,
+                            prev_component_probs=prev_component_probs,
+                            prev_edge_probs=prev_edge_probs,
+                            last_edge_sharpen_weight=last_edge_sharpen_weight,
+                            last_edge_entropy=last_edge_entropy,
+                            hessian_penalty_weight=hessian_penalty_weight,
+                            hessian_penalty=hessian_penalty,
+                        )
+
                 # print("Architecture gradients:")
                 # for name, param in model.named_parameters():
                 #     if any(param is p for p in arch_params):  # ✅ identity check
@@ -1115,87 +1180,61 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                 #             print(f"{name} grad: None")
 
             # Model parameter updates
-            epoch_train_loss = 0.0
-            batch_pbar = (
-                self._create_progress_bar(
-                    enumerate(train_model_loader),
-                    f"Epoch {epoch + 1:3d}",
-                    leave=False,
-                    total=len(train_model_loader),
-                )
-                if verbose
-                else enumerate(train_model_loader)
+            avg_train_loss = self._run_model_training_epoch(
+                model=model,
+                train_model_loader=train_model_loader,
+                model_params=model_params,
+                model_optimizer=model_optimizer,
+                model_scheduler=model_scheduler,
+                scaler=scaler,
+                loss_fn=loss_fn,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+                use_amp=use_amp,
+                verbose=verbose,
+                epoch=epoch,
             )
 
-            model_optimizer.zero_grad()
-            for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
-                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
-
-                with self._autocast(use_amp):
-                    preds = model(batch_x)
-                    loss = loss_fn(preds, batch_y) / gradient_accumulation_steps
-
-                scaler.scale(loss).backward()
-
-                if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                    scaler.unscale_(model_optimizer)
-                    torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
-                    scaler.step(model_optimizer)
-                    scaler.update()
-                    model_scheduler.step()
-                    model_optimizer.zero_grad()
-
-                epoch_train_loss += loss.item() * gradient_accumulation_steps
-
-                if verbose and hasattr(batch_pbar, "set_postfix"):
-                    batch_pbar.set_postfix(
-                        {
-                            "loss": f"{loss.item() * gradient_accumulation_steps:.4f}",
-                            "avg": f"{epoch_train_loss / (batch_idx + 1):.4f}",
-                        }
-                    )
-
-            if verbose and hasattr(batch_pbar, "close"):
-                batch_pbar.close()
-
-            # Validation
-            model.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                val_pbar = (
-                    self._create_progress_bar(val_loader, "Val", leave=False)
-                    if verbose
-                    else val_loader
-                )
-
-                for batch_data in val_pbar:
-                    batch_x, batch_y = (
-                        batch_data[0].to(self.device),
-                        batch_data[1].to(self.device),
-                    )
-
-                    with self._autocast(use_amp):
-                        preds = model(batch_x)
-                        val_loss += loss_fn(preds, batch_y).item()
-
-                    if verbose and hasattr(val_pbar, "set_postfix"):
-                        val_pbar.set_postfix(
-                            {"val_loss": f"{val_loss / (len(val_loader)):.4f}"}
-                        )
-
-                if verbose and hasattr(val_pbar, "close"):
-                    val_pbar.close()
-
-            avg_train_loss = epoch_train_loss / len(train_model_loader)
-            avg_val_loss = val_loss / len(val_loader)
+            avg_val_loss = self._run_validation_epoch(
+                model=model,
+                val_loader=val_loader,
+                loss_fn=loss_fn,
+                use_amp=use_amp,
+                verbose=verbose,
+            )
             train_losses.append(avg_train_loss)
             val_losses.append(avg_val_loss)
 
-            # Progressive shrinking
-            if progressive_shrinking and epoch > epochs * 0.6:
-                if hasattr(model, "prune_weak_operations"):
-                    threshold = 0.1 + 0.1 * (epoch - epochs * 0.6) / (epochs * 0.4)
-                    model.prune_weak_operations(threshold=threshold)
+            # Hybrid pruning schedule: soft threshold growth + hard freezing.
+            should_prune = (
+                progressive_shrinking
+                and epoch > int(hybrid_pruning_start_epoch)
+                and int(hybrid_pruning_interval) > 0
+                and epoch % int(hybrid_pruning_interval) == 0
+            )
+            if should_prune and hasattr(model, "prune_weak_operations"):
+                threshold = float(hybrid_pruning_base_threshold) * (
+                    float(epoch) / float(max(epochs, 1))
+                )
+                threshold = min(max(threshold, 0.0), 0.95)
+                pruning_stats = model.prune_weak_operations(
+                    threshold=threshold,
+                    strategy=hybrid_pruning_strategy,
+                )
+                frozen = 0
+                if hasattr(model, "freeze_pruned_operations"):
+                    frozen = int(
+                        model.freeze_pruned_operations(
+                            pruning_stats=pruning_stats,
+                            logit_value=hybrid_pruning_freeze_logit,
+                        )
+                    )
+                if verbose:
+                    print(
+                        f"   [Hybrid Prune] epoch={epoch + 1}/{epochs} "
+                        f"threshold={threshold:.3f} "
+                        f"pruned={int(pruning_stats.get('operations_pruned', 0))} "
+                        f"frozen={frozen}"
+                    )
 
             # Early stopping
             if avg_val_loss < best_val_loss:
@@ -1204,6 +1243,7 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                 best_state = {
                     k: v.detach().clone().float() for k, v in model.state_dict().items()
                 }
+                best_progressive_state = self._capture_progressive_state(model)
 
                 if use_swa and swa_model and epoch >= swa_start:
                     swa_model.update_parameters(model)
@@ -1245,23 +1285,32 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                     best_state = {
                         k: v.detach().clone() for k, v in swa_model.state_dict().items()
                     }
+                    best_progressive_state = self._capture_progressive_state(model)
                     best_val_loss = swa_val_loss
             except Exception as e:
                 if verbose:
                     print(f"Warning: SWA failed ({e})")
 
         # Load best model
+        self._restore_progressive_state(model, best_progressive_state)
         try:
             model.load_state_dict(best_state)
         except RuntimeError as e:
-            if "Missing key" in str(e):
-                # Handle missing buffers
-                filtered_state = {
-                    k: v
-                    for k, v in best_state.items()
-                    if not k.startswith("_forecast_buffer")
-                    and not k.startswith("_context_buffer")
-                }
+            # Handle missing buffers and/or shape mismatch after search-space changes.
+            current_state = model.state_dict()
+            filtered_state = {}
+            for k, v in best_state.items():
+                if k.startswith("_forecast_buffer") or k.startswith("_context_buffer"):
+                    continue
+                if k in current_state and current_state[k].shape == v.shape:
+                    filtered_state[k] = v
+
+            if filtered_state:
+                if verbose:
+                    dropped = len(best_state) - len(filtered_state)
+                    print(
+                        f"Warning: partial checkpoint load due to state mismatch ({dropped} tensors skipped)."
+                    )
                 model.load_state_dict(filtered_state, strict=False)
             else:
                 raise e
@@ -1273,7 +1322,6 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             model = model.float()
 
         # Final results
-        # final_architecture = self._derive_final_architecture(model)
         final_metrics = self._compute_final_metrics(model, val_loader)
 
         if verbose:
@@ -1295,6 +1343,73 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
 
         self.training_history.append(results)
         return results
+
+    def _finite_difference_hessian_penalty(
+        self,
+        model: nn.Module,
+        loss_fn,
+        arch_loss: torch.Tensor,
+        arch_x: torch.Tensor,
+        arch_y: torch.Tensor,
+        train_x: torch.Tensor,
+        train_y: torch.Tensor,
+        model_params: List[torch.Tensor],
+        eps: float = 1e-2,
+        use_amp: bool = True,
+    ) -> torch.Tensor:
+        """Finite-difference curvature proxy used to penalize sharp architecture landscapes."""
+        if eps <= 0 or not model_params:
+            return torch.tensor(0.0, device=arch_x.device)
+
+        with self._autocast(use_amp):
+            train_preds = model(train_x)
+            train_loss = loss_fn(train_preds, train_y)
+
+        grads = torch.autograd.grad(
+            train_loss,
+            model_params,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        direction = []
+        norm_sq = torch.tensor(0.0, device=arch_x.device)
+        for p, g in zip(model_params, grads):
+            d = torch.zeros_like(p) if g is None else g.detach()
+            direction.append(d)
+            norm_sq = norm_sq + d.pow(2).sum()
+
+        norm = torch.sqrt(norm_sq).clamp_min(1e-12)
+        step = float(eps)
+        scale = step / norm
+
+        with torch.no_grad():
+            originals = [p.detach().clone() for p in model_params]
+
+        try:
+            with torch.no_grad():
+                for p, d in zip(model_params, direction):
+                    p.add_(scale * d)
+
+            with self._autocast(use_amp):
+                loss_plus = loss_fn(model(arch_x), arch_y)
+
+            with torch.no_grad():
+                for p, d in zip(model_params, direction):
+                    p.add_(-2.0 * scale * d)
+
+            with self._autocast(use_amp):
+                loss_minus = loss_fn(model(arch_x), arch_y)
+        finally:
+            with torch.no_grad():
+                for p, orig in zip(model_params, originals):
+                    p.copy_(orig)
+
+        # Baseline term is used as a value anchor to avoid coupling this penalty
+        # to any previously-consumed autograd graph in the caller.
+        curvature = (loss_plus + loss_minus - 2.0 * arch_loss.detach()) / (step**2)
+        return F.relu(curvature)
 
     def _compute_final_metrics(self, model: nn.Module, val_loader) -> Dict[str, float]:
         """Compute final metrics on validation set."""
@@ -1327,207 +1442,10 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         Returns:
             Optimized model with fixed architecture
         """
-        new_model = copy.deepcopy(model)
-        variant_attrs = {
-            "encoder": {0: "lstm", 1: "gru", 2: "transformer"},
-            "decoder": {0: "lstm", 1: "gru", 2: "transformer"},
-        }
-
-        def _pick_variant(module, top_idx: int, collection_attr: str, role: str):
-            if hasattr(module, collection_attr):
-                variants = getattr(module, collection_attr)
-                if top_idx < len(variants):
-                    return variants[top_idx]
-            attr_name = variant_attrs[role].get(top_idx)
-            if attr_name and hasattr(module, attr_name):
-                return getattr(module, attr_name)
-            raise ValueError(f"Could not find {role} for index {top_idx}")
-
-        print("🔧 Deriving final architecture...")
-
-        # Replace mixed operations with fixed ones
-        if hasattr(new_model, "cells"):
-            for cell_idx, cell in enumerate(new_model.cells):
-                new_edges = nn.ModuleList()
-                for edge_idx, edge in enumerate(cell.edges):
-                    weights = F.softmax(edge.alphas, dim=-1)
-                    top_op_idx = weights.argmax().item()
-                    top_op = edge.ops[top_op_idx]
-
-                    print(
-                        f"   Cell {cell_idx}, Edge {edge_idx}: {type(top_op).__name__} "
-                        f"(weight: {weights[top_op_idx]:.3f})"
-                    )
-
-                    fixed_edge = FixedOp(top_op)
-                    new_edges.append(fixed_edge)
-                cell.edges = new_edges
-
-        device = next(new_model.parameters()).device
-
-        # Fix encoder
-        if hasattr(new_model, "forecast_encoder") and hasattr(
-            new_model.forecast_encoder, "alphas"
-        ):
-            try:
-                encoder_weights = F.softmax(new_model.forecast_encoder.alphas, dim=-1)
-                top_idx = encoder_weights.argmax().item()
-                top_encoder = _pick_variant(
-                    new_model.forecast_encoder, top_idx, "encoders", "encoder"
-                )
-
-                encoder_names = getattr(
-                    new_model.forecast_encoder,
-                    "encoder_names",
-                    ["lstm", "gru", "transformer"],
-                )
-                encoder_type = (
-                    encoder_names[top_idx]
-                    if top_idx < len(encoder_names)
-                    else "unknown"
-                )
-
-                print(
-                    f"   → Fixing Forecast Encoder: {type(top_encoder).__name__} "
-                    f"(weight: {encoder_weights[top_idx]:.3f})"
-                )
-
-                # Create fixed encoder using ArchitectureConverter
-                new_model.forecast_encoder = ArchitectureConverter.create_fixed_encoder(
-                    new_model.forecast_encoder
-                ).to(device)
-
-            except Exception as e:
-                print(f"Warning: Could not fix encoder architecture: {e}")
-                print("Falling back to weight fixing...")
-                ArchitectureConverter.fix_mixed_weights(new_model.forecast_encoder)
-
-        # Fix decoder
-        if hasattr(new_model, "forecast_decoder") and hasattr(
-            new_model.forecast_decoder, "alphas"
-        ):
-            try:
-                decoder_weights = F.softmax(new_model.forecast_decoder.alphas, dim=-1)
-                top_idx = decoder_weights.argmax().item()
-                top_decoder = _pick_variant(
-                    new_model.forecast_decoder, top_idx, "decoders", "decoder"
-                )
-
-                decoder_names = getattr(
-                    new_model.forecast_decoder,
-                    "rnn_names",
-                    getattr(
-                        new_model.forecast_decoder,
-                        "decoder_names",
-                        ["lstm", "gru", "transformer"],
-                    ),
-                )
-                top_decoder_type = (
-                    decoder_names[top_idx]
-                    if top_idx < len(decoder_names)
-                    else "unknown"
-                )
-
-                # Infer latent_dim safely
-                if hasattr(top_decoder, "latent_dim"):
-                    latent_dim = top_decoder.latent_dim
-                elif hasattr(top_decoder, "hidden_size"):  # for LSTM/GRU
-                    latent_dim = top_decoder.hidden_size
-                elif hasattr(new_model.forecast_decoder, "latent_dim"):
-                    latent_dim = new_model.forecast_decoder.latent_dim
-                else:
-                    print("Warning: Could not extract latent_dim, using default 64")
-                    latent_dim = 64
-
-                print(
-                    f"   → Fixing Forecast Decoder: {type(top_decoder).__name__} "
-                    f"(weight: {decoder_weights[top_idx]:.3f})"
-                )
-
-                # Handle attention bridge selection
-                attention_choice = "no_attention"
-                max_att_idx = 0
-
-                use_attention = getattr(new_model, "use_attention_bridge", False)
-
-                if use_attention and hasattr(
-                    new_model.forecast_decoder, "attention_alphas"
-                ):
-                    try:
-                        attention_weights = F.softmax(
-                            new_model.forecast_decoder.attention_alphas, dim=0
-                        )
-                        max_idx = attention_weights.argmax().item()
-                        attention_choice = (
-                            "no_attention"
-                            if max_idx == len(attention_weights) - 1
-                            else f"attention_layer_{max_idx}"
-                        )
-                        max_att_idx = max(0, max_idx)
-
-                        print("   → Using Attention Bridge:", attention_choice)
-                    except Exception as e:
-                        print(f"Warning: Could not determine attention choice: {e}")
-                        attention_choice = (
-                            "attention" if use_attention else "no_attention"
-                        )
-
-                # Get attention bridges safely
-                attention_bridge_sources = {
-                    "attention_bridges": lambda m: m.attention_bridges,
-                    "attention_bridge": lambda m: [m.attention_bridge],
-                }
-                attention_bridges = None
-                for attr_name, getter in attention_bridge_sources.items():
-                    if hasattr(new_model.forecast_decoder, attr_name):
-                        attention_bridges = getter(new_model.forecast_decoder)
-                        break
-
-                # Create fixed decoder using ArchitectureConverter
-                use_attention_final = (
-                    use_attention and attention_choice != "no_attention"
-                )
-
-                new_model.forecast_decoder = ArchitectureConverter.create_fixed_decoder(
-                    new_model.forecast_decoder, use_attention_bridge=use_attention_final
-                ).to(device)
-
-                # Handle attention bridges assignment safely
-                if use_attention_final and attention_bridges is not None:
-                    try:
-                        if (
-                            isinstance(attention_bridges, (list, nn.ModuleList))
-                            and len(attention_bridges) > max_att_idx
-                        ):
-                            if hasattr(new_model.forecast_decoder, "attention_bridges"):
-                                new_model.forecast_decoder.attention_bridges = (
-                                    nn.ModuleList([attention_bridges[max_att_idx]])
-                                )
-                            elif hasattr(
-                                new_model.forecast_decoder, "attention_bridge"
-                            ):
-                                # Transfer weights to the single attention bridge
-                                new_model.forecast_decoder.attention_bridge.load_state_dict(
-                                    attention_bridges[max_att_idx].state_dict()
-                                )
-                        else:
-                            print(
-                                "Warning: Could not assign attention bridges - index out of range or invalid format"
-                            )
-                    except Exception as e:
-                        print(f"Warning: Could not assign attention bridges: {e}")
-                else:
-                    # Ensure no attention bridges are set
-                    if hasattr(new_model.forecast_decoder, "attention_bridges"):
-                        new_model.forecast_decoder.attention_bridges = None
-
-            except Exception as e:
-                print(f"Warning: Could not fix decoder architecture: {e}")
-                print("Falling back to weight fixing...")
-                ArchitectureConverter.fix_mixed_weights(new_model.forecast_decoder)
-
-        print("✓ Architecture derivation completed")
-        return new_model
+        return derive_fixed_architecture(
+            model=model,
+            as_probability_vector_fn=_as_probability_vector,
+        )
 
     def train_final_model(
         self,
@@ -1908,34 +1826,39 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             )
 
         def _eval_one(candidate_id: int) -> Dict[str, Any]:
-            try:
-                cfg = _make_candidate_config()
-                model = self._build_candidate_model(cfg)
+            print(f"Evaluating candidate {candidate_id + 1}/{num_candidates}...")
+            # try:
+            cfg = _make_candidate_config()
+            model = self._build_candidate_model(cfg)
 
-                out = self.evaluate_zero_cost_metrics_raw(
-                    model=model,
-                    dataloader=val_loader,
-                    max_samples=max_samples,
-                    num_batches=num_batches,
-                )
+            print("  → Model built. Evaluating zero-cost metrics...")
 
-                return {
-                    "candidate_id": candidate_id,
-                    "success": True,
-                    **cfg,
-                    # ✅ correct keys
-                    "raw_metrics": out["raw_metrics"],
-                    "success_rates": out.get("success_rates", {}),
-                    "errors": out.get("errors", {}),
-                    "base_weights": out.get("base_weights", {}),
-                }
+            out = self.evaluate_zero_cost_metrics_raw(
+                model=model,
+                dataloader=val_loader,
+                max_samples=max_samples,
+                num_batches=num_batches,
+            )
 
-            except Exception as e:
-                return {
-                    "candidate_id": candidate_id,
-                    "success": False,
-                    "error": str(e),
-                }
+            print(f"  → Metrics computed: {len(out['raw_metrics'])} samples.")
+
+            return {
+                "candidate_id": candidate_id,
+                "success": True,
+                **cfg,
+                # ✅ correct keys
+                "raw_metrics": out["raw_metrics"],
+                "success_rates": out.get("success_rates", {}),
+                "errors": out.get("errors", {}),
+                "base_weights": out.get("base_weights", {}),
+            }
+
+            # except Exception as e:
+            #     return {
+            #         "candidate_id": candidate_id,
+            #         "success": False,
+            #         "error": str(e),
+            #     }
 
         candidates: List[Dict[str, Any]] = []
         lock = threading.Lock()
@@ -2267,6 +2190,19 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         max_samples: int = 32,
         top_k: int = 5,
         max_workers: int = None,  # New parameter for controlling parallelism
+        *,
+        collect_stats: bool = False,
+        parallelism_levels=None,
+        est_overhead_per_task: float = 0.0,
+        est_fixed_overhead_phase1: float = 0.0,
+        est_fixed_overhead_phase3: float = 0.0,
+        benchmark_phase1_workers=None,
+        benchmark_phase1_candidates: int = None,
+        stats_dir: str = "search_stats",
+        run_name: str = None,
+        logger=None,
+        retrain_final_from_scratch: bool = True,
+        discrete_arch_threshold: float = 0.3,
     ) -> Dict[str, Any]:
         """
         Multi-fidelity architecture search using zero-cost metrics with parallel Phase 1.
@@ -2285,216 +2221,31 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         Returns:
             Dictionary containing search results
         """
-        print("🔍 Starting multi-fidelity DARTS search...")
-        print(f"   Candidates: {num_candidates}, Search epochs: {search_epochs}")
-        print(f"   Final epochs: {final_epochs}, Top-k: {top_k}")
-        print(f"   Max workers: {max_workers or 'auto-detect'}")
-        print("-" * 60)
-
-        # Phase 1: Generate and evaluate candidates with zero-cost metrics (PARALLELIZED)
-        print("\n📋 Phase 1: Generating and evaluating candidates in parallel...")
-
-        def generate_and_evaluate_candidate(candidate_id: int) -> Dict[str, Any]:
-            """Generate and evaluate a single candidate."""
-            config = self._make_candidate_config(
-                random,
-                self.all_ops,
-                self.hidden_dims,
-                (1, 2),
-                (2, 4),
-                min_ops=2,
-                max_ops=len(self.all_ops),
-                require_identity=True,
-            )
-
-            # Create model (each worker gets its own model instance)
-            model = self._build_candidate_model(config)
-
-            # Evaluate with zero-cost metrics
-            metrics = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
-            score = metrics["aggregate_score"]
-
-            return {
-                "candidate_id": candidate_id,
-                "model": model,
-                "metrics": metrics,
-                "score": score,
-                "success": True,
-                **config,
-            }
-
-            # except Exception as e:
-            #     return {
-            #         "candidate_id": candidate_id,
-            #         "model": None,
-            #         "metrics": {"aggregate_score": 0.0},
-            #         "score": 0.0,
-            #         "success": False,
-            #         "error": str(e),
-            #     }
-
-        # ─────────────────────────────────────────────────────────────────────────────
-
-        candidates = []
-        completed_count = 0
-        lock = threading.Lock()
-
-        def update_progress(future):
-            nonlocal completed_count
-            result = future.result()
-            with lock:
-                completed_count += 1
-                cid = result.get("candidate_id", -1)
-                if result["success"]:
-                    print(
-                        f"✓ Candidate {completed_count}/{num_candidates} "
-                        f"(ID {cid}) | Score: {result['score']:.4f} | "
-                        f"Ops: {len(result.get('selected_ops', []))} | "
-                        f"Hidden: {result.get('hidden_dim', 'N/A')}"
-                    )
-                else:
-                    print(
-                        f"✗ Candidate {completed_count}/{num_candidates} (ID {cid}) - Failed"
-                    )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(generate_and_evaluate_candidate, i): i
-                for i in range(num_candidates)
-            }
-
-            for future in futures:
-                future.add_done_callback(update_progress)
-
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    result = future.result()
-                    if result["success"]:
-                        candidates.append(result)
-                except Exception as e:
-                    print(f"⚠️ Unexpected error in future: {e}")
-
-        print(
-            f"\n📊 Phase 1 completed: {len(candidates)}/{num_candidates} candidates successful"
-        )
-
-        # Phase 2: Select top candidates
-        print(f"\n🏆 Phase 2: Selecting top {top_k} candidates...")
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        top_k = min(top_k, len(candidates))
-        top_candidates = candidates[:top_k]
-
-        print("Top candidates:")
-        for i, c in enumerate(top_candidates):
-            print(
-                f"  {i + 1}: Score={c['score']:.4f}, Ops={len(c['selected_ops'])}, "
-                f"Hidden={c['hidden_dim']}, Arch={c['num_cells']}x{c['num_nodes']}"
-            )
-
-        # Phase 3: Short DARTS training for top candidates
-        print(f"\n🔧 Phase 3: Training top {top_k} candidates...")
-        trained_candidates = []
-
-        trained_non_derived_candidates = []  # For analysis: candidates trained without derivation
-
-        for i, candidate in enumerate(top_candidates):
-            print(f"\nTraining candidate {i + 1}/{top_k}...")
-
-            # Quick DARTS training
-            search_results = self.train_darts_model(
-                model=candidate["model"],
-                train_loader=train_loader,
-                val_loader=val_loader,
-                epochs=search_epochs,
-                use_swa=False,
-            )
-
-            # copy model and append to trained_non_derived_candidates before derivation for analysis
-            trained_non_derived_candidates.append(
-                {
-                    "model": copy.deepcopy(search_results["model"]),
-                    "val_loss": search_results["best_val_loss"],
-                    "candidate": candidate,
-                    "search_results": search_results,
-                }
-            )
-
-            # Derive and evaluate architecture
-            derived_model = self.derive_final_architecture(search_results["model"])
-            val_loss = self._evaluate_model(derived_model, val_loader)
-
-            trained_candidates.append(
-                {
-                    "model": derived_model,
-                    "val_loss": val_loss,
-                    "candidate": candidate,
-                    "search_results": search_results,
-                }
-            )
-
-            print(f"   Validation loss: {val_loss:.6f}")
-
-        # Phase 4: Select best candidate
-        print("\n🎯 Phase 4: Selecting best candidate...")
-        best_candidate = min(trained_candidates, key=lambda x: x["val_loss"])
-
-        print("Best candidate:")
-        print(f"   Validation loss: {best_candidate['val_loss']:.6f}")
-        print(f"   Operations: {best_candidate['candidate']['selected_ops']}")
-        print(
-            f"   Architecture: {best_candidate['candidate']['num_cells']}x{best_candidate['candidate']['num_nodes']}"
-        )
-        print(f"   Hidden dim: {best_candidate['candidate']['hidden_dim']}")
-
-        # Phase 5: Train final model
-        print("\n🚀 Phase 5: Training final model...")
-        final_model = copy.deepcopy(best_candidate["model"])
-        final_conf = final_model.get_config()
-
-        final_results = self.train_final_model(
-            model=final_model,
+        return self._run_multi_fidelity_search(
             train_loader=train_loader,
             val_loader=val_loader,
             test_loader=test_loader,
-            epochs=final_epochs,
-            learning_rate=5e-4,
-            weight_decay=1e-5,
+            num_candidates=num_candidates,
+            search_epochs=search_epochs,
+            final_epochs=final_epochs,
+            max_samples=max_samples,
+            top_k=top_k,
+            max_workers=max_workers,
+            parallelism_levels=parallelism_levels,
+            est_overhead_per_task=est_overhead_per_task,
+            est_fixed_overhead_phase1=est_fixed_overhead_phase1,
+            est_fixed_overhead_phase3=est_fixed_overhead_phase3,
+            benchmark_phase1_workers=benchmark_phase1_workers,
+            benchmark_phase1_candidates=benchmark_phase1_candidates,
+            stats_dir=stats_dir,
+            run_name=run_name,
+            logger=logger,
+            collect_stats=collect_stats,
+            retrain_final_from_scratch=retrain_final_from_scratch,
+            discrete_arch_threshold=discrete_arch_threshold,
         )
 
-        # Plot training curve
-        self._plot_training_curve(
-            final_results["train_losses"],
-            final_results["val_losses"],
-            title="Final Model Training Progress",
-            save_path="final_model_training.pdf",
-        )
-
-        # Store search results
-        search_summary = {
-            "final_model": final_results["model"],
-            "candidates": candidates,
-            "top_candidates": top_candidates,
-            "trained_candidates": trained_candidates,
-            "best_candidate": best_candidate,
-            "final_results": final_results,
-            "final_config": final_conf,
-            "search_config": {
-                "num_candidates": num_candidates,
-                "search_epochs": search_epochs,
-                "final_epochs": final_epochs,
-                "top_k": top_k,
-            },
-            "trained_non_derived_candidates": trained_non_derived_candidates,
-        }
-
-        self.search_history.append(search_summary)
-
-        self.final_model = final_results["model"]
-
-        print("\n✅ Multi-fidelity search completed!")
-        return search_summary
-
-    def multi_fidelity_search_with_stats(
+    def _run_multi_fidelity_search(
         self,
         train_loader,
         val_loader,
@@ -2518,6 +2269,9 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         stats_dir: str = "search_stats",
         run_name: str = None,
         logger=None,
+        collect_stats: bool = True,
+        retrain_final_from_scratch: bool = True,
+        discrete_arch_threshold: float = 0.3,
     ) -> Dict[str, Any]:
         """
         Single-function, instrumented multi-fidelity search:
@@ -2531,17 +2285,10 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         - keeps everything inside this one method (no extra helper functions/classes).
         - uses ThreadPoolExecutor like your original for Phase 1.
         """
-        import concurrent.futures
-        import copy
         import datetime
-        import json
         import os
-        import random
-        import threading
         import time
-        from typing import Any, Dict
 
-        import numpy as np
         import torch
 
         # -------------------------
@@ -2565,47 +2312,9 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         run_id = run_name or f"multifidelity_{ts}"
-        out_base = os.path.join(stats_dir, run_id)
-        os.makedirs(out_base, exist_ok=True)
-
-        def _save_json(path: str, obj: Any):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(obj, f, indent=2, ensure_ascii=False, default=str)
-
-        def _save_csv(path: str, header, rows):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            import csv
-
-            with open(path, "w", encoding="utf-8", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(header)
-                w.writerows(rows)
-
-        def _mean_std(xs):
-            xs = list(xs)
-            if not xs:
-                return 0.0, 0.0
-            m = float(np.mean(xs))
-            s = float(np.std(xs, ddof=1)) if len(xs) > 1 else 0.0
-            return m, s
-
-        def _lpt_estimate(
-            work_times, workers, overhead_per_task=0.0, fixed_overhead=0.0
-        ):
-            """
-            Greedy LPT bin packing estimate of wall time with `workers`.
-            Adds overhead_per_task to each task and fixed_overhead once.
-            """
-            work = [float(t) + float(overhead_per_task) for t in work_times]
-            if not work:
-                return float(fixed_overhead)
-            w = max(1, int(workers))
-            bins = [0.0 for _ in range(w)]
-            for t in sorted(work, reverse=True):
-                i = int(np.argmin(bins))
-                bins[i] += t
-            return float(max(bins) + float(fixed_overhead))
+        out_base = os.path.join(stats_dir, run_id) if collect_stats else None
+        if out_base is not None:
+            os.makedirs(out_base, exist_ok=True)
 
         sys_info = {
             "run_id": run_id,
@@ -2635,7 +2344,10 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             },
         }
 
-        logger.info("Starting multi-fidelity DARTS search (instrumented)")
+        logger.info(
+            "Starting multi-fidelity DARTS search"
+            + (" (instrumented)" if collect_stats else "")
+        )
         logger.info(
             f"candidates={num_candidates}, search_epochs={search_epochs}, final_epochs={final_epochs}, "
             f"top_k={top_k}, max_samples={max_samples}, max_workers={max_workers or 'auto'}"
@@ -2651,7 +2363,7 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         # Optional: Phase 1 real benchmark across worker counts
         # -------------------------
         phase1_benchmark_results = []
-        if benchmark_phase1_workers:
+        if collect_stats and benchmark_phase1_workers:
             bench_n = int(benchmark_phase1_candidates or min(num_candidates, 20))
             logger.info(
                 f"Phase 1 benchmark enabled: workers={benchmark_phase1_workers}, candidates_per_run={bench_n}"
@@ -2663,22 +2375,18 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                 task_times = []
 
                 def _bench_task(cid: int):
-                    t0 = time.perf_counter()
-                    cfg = self._make_candidate_config(
-                        random,
-                        self.all_ops,
-                        self.hidden_dims,
-                        (1, 2),
-                        (2, 4),
-                        min_ops=2,
-                        max_ops=len(self.all_ops),
-                        require_identity=True,
+                    result = self._evaluate_search_candidate(
+                        candidate_id=cid,
+                        val_loader=val_loader,
+                        max_samples=max_samples,
+                        num_batches=1,
+                        include_timing=True,
                     )
-                    model = self._build_candidate_model(cfg)
-                    m = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
-                    score = float(m["aggregate_score"])
-                    dt = time.perf_counter() - t0
-                    return {"cid": cid, "dt": float(dt), "score": score}
+                    return {
+                        "cid": cid,
+                        "dt": float(result.get("phase1_dt", 0.0)),
+                        "score": float(result["score"]),
+                    }
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=w) as ex:
                     futs = [ex.submit(_bench_task, i) for i in range(bench_n)]
@@ -2687,7 +2395,7 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                         task_times.append(r["dt"])
 
                 wall = time.perf_counter() - t_wall0
-                m, s = _mean_std(task_times)
+                m, s = mean_std(task_times)
 
                 phase1_benchmark_results.append(
                     {
@@ -2707,70 +2415,82 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         # Phase 1: Generate & zero-cost evaluate candidates (parallel)
         # -------------------------
         logger.info("Phase 1: generating + zero-cost evaluating candidates (parallel)")
-        candidates = []
         phase1_task_times = []
-        lock = threading.Lock()
-        completed = 0
 
         def generate_and_evaluate_candidate(cid: int) -> Dict[str, Any]:
-            t0 = time.perf_counter()
-            cfg = self._make_candidate_config(
-                random,
-                self.all_ops,
-                self.hidden_dims,
-                (1, 2),
-                (2, 4),
-                min_ops=2,
-                max_ops=len(self.all_ops),
-                require_identity=True,
+            return self._evaluate_search_candidate(
+                candidate_id=cid,
+                val_loader=val_loader,
+                max_samples=max_samples,
+                num_batches=1,
+                include_timing=True,
             )
-            model = self._build_candidate_model(cfg)
-            metrics = self.evaluate_zero_cost_metrics(model, val_loader, max_samples)
-            score = float(metrics["aggregate_score"])
-            dt = time.perf_counter() - t0
-            return {
-                "candidate_id": cid,
-                "model": model,
-                "metrics": metrics,
-                "score": score,
-                "success": True,
-                "phase1_dt": float(dt),
-                **cfg,
-            }
 
-        def update_progress(fut):
-            nonlocal completed
-            r = fut.result()
-            with lock:
-                completed += 1
-                if r.get("success", False):
-                    phase1_task_times.append(float(r.get("phase1_dt", 0.0)))
-                    logger.info(
-                        f"[Phase 1] {completed}/{num_candidates} ID={r.get('candidate_id')} "
-                        f"score={r.get('score', 0.0):.4f} ops={len(r.get('selected_ops', []))} "
-                        f"hidden={r.get('hidden_dim', 'N/A')} dt={r.get('phase1_dt', 0.0):.3f}s"
-                    )
-                else:
-                    logger.info(f"[Phase 1] {completed}/{num_candidates} failed")
+        def _on_phase1_result(r, completed):
+            if r.get("success", False):
+                phase1_task_times.append(float(r.get("phase1_dt", 0.0)))
+                logger.info(
+                    f"[Phase 1] {completed}/{num_candidates} ID={r.get('candidate_id')} "
+                    f"score={r.get('score', 0.0):.4f} ops={len(r.get('selected_ops', []))} "
+                    f"hidden={r.get('hidden_dim', 'N/A')} dt={r.get('phase1_dt', 0.0):.3f}s"
+                )
+            else:
+                logger.info(f"[Phase 1] {completed}/{num_candidates} failed")
 
         t_p1_0 = time.perf_counter()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = [
-                ex.submit(generate_and_evaluate_candidate, i)
-                for i in range(num_candidates)
-            ]
-            for f in futs:
-                f.add_done_callback(update_progress)
-            for f in concurrent.futures.as_completed(futs):
-                try:
-                    r = f.result()
-                    if r.get("success", False):
-                        candidates.append(r)
-                except Exception as e:
-                    logger.warning(f"[Phase 1] future error: {e}")
+        candidates = self._run_parallel_candidate_collection(
+            num_candidates=num_candidates,
+            candidate_fn=generate_and_evaluate_candidate,
+            max_workers=max_workers,
+            on_result=_on_phase1_result,
+            error_log_fn=lambda e: logger.warning(f"[Phase 1] future error: {e}"),
+        )
         t_p1 = time.perf_counter() - t_p1_0
 
-        p1_mean, p1_std = _mean_std(phase1_task_times)
+        if not candidates and num_candidates > 0:
+            logger.warning(
+                "Phase 1 produced 0 successful candidates in parallel mode. "
+                "Retrying sequentially for diagnostics."
+            )
+            seq_t0 = time.perf_counter()
+            seq_candidates = []
+            seq_errors = []
+
+            for cid in range(num_candidates):
+                try:
+                    result = generate_and_evaluate_candidate(cid)
+                    if result.get("success", False):
+                        seq_candidates.append(result)
+                        phase1_task_times.append(float(result.get("phase1_dt", 0.0)))
+                        logger.info(
+                            f"[Phase 1 fallback] ID={result.get('candidate_id')} "
+                            f"score={result.get('score', 0.0):.4f} "
+                            f"ops={len(result.get('selected_ops', []))} "
+                            f"hidden={result.get('hidden_dim', 'N/A')}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[Phase 1 fallback] ID={cid} returned success=False"
+                        )
+                except Exception as e:
+                    seq_errors.append(f"candidate_id={cid}: {e}")
+                    logger.warning(f"[Phase 1 fallback] candidate {cid} failed: {e}")
+
+            t_p1 += time.perf_counter() - seq_t0
+            candidates = seq_candidates
+
+            if not candidates:
+                error_preview = (
+                    "; ".join(seq_errors[:3])
+                    if seq_errors
+                    else "no exceptions captured"
+                )
+                raise RuntimeError(
+                    "Phase 1 produced zero successful candidates in both parallel and "
+                    f"sequential evaluation. First errors: {error_preview}"
+                )
+
+        p1_mean, p1_std = mean_std(phase1_task_times)
 
         phase_summary["phase1"] = {
             "wall_time_sec": float(t_p1),
@@ -2787,19 +2507,17 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         )
 
         # What-if estimates for Phase 1
-        phase1_whatif = []
-        for w in parallelism_levels:
-            est = _lpt_estimate(
-                phase1_task_times,
-                workers=w,
+        if collect_stats:
+            phase1_whatif = append_whatif_estimates(
+                phase="phase1",
+                run_id=run_id,
+                work_times=phase1_task_times,
+                parallelism_levels=parallelism_levels,
                 overhead_per_task=est_overhead_per_task,
                 fixed_overhead=est_fixed_overhead_phase1,
+                whatif_rows=whatif_rows,
             )
-            phase1_whatif.append(
-                {"phase": "phase1", "workers": int(w), "est_wall_time_sec": float(est)}
-            )
-            whatif_rows.append([run_id, "phase1", int(w), float(est)])
-        phase_summary["phase1"]["whatif_estimates"] = phase1_whatif
+            phase_summary["phase1"]["whatif_estimates"] = phase1_whatif
 
         # -------------------------
         # Phase 2: Select top-k
@@ -2807,9 +2525,8 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         logger.info(f"Phase 2: selecting top {top_k} candidates")
         t_p2_0 = time.perf_counter()
 
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        top_k_eff = min(int(top_k), len(candidates))
-        top_candidates = candidates[:top_k_eff]
+        top_candidates = self._select_top_candidates(candidates, top_k)
+        top_k_eff = len(top_candidates)
 
         t_p2 = time.perf_counter() - t_p2_0
         phase_summary["phase2"] = {
@@ -2821,6 +2538,12 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             logger.info(
                 f"[Phase 2] {i + 1}: score={c['score']:.4f} ops={len(c.get('selected_ops', []))} "
                 f"hidden={c.get('hidden_dim')} arch={c.get('num_cells')}x{c.get('num_nodes')}"
+            )
+
+        if top_k_eff == 0:
+            raise RuntimeError(
+                "Phase 2 selected zero candidates. Phase 1 had no successful candidate "
+                "evaluations."
             )
 
         # -------------------------
@@ -2888,43 +2611,44 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                 f"dt_total={t_total:.3f}s (train={t_search:.3f}s derive+eval={t_derive:.3f}s)"
             )
 
-            # CSV per-candidate row
-            per_candidate_rows.append(
-                [
-                    run_id,
-                    "phase1",
-                    cid,
-                    cand.get("score", 0.0),
-                    cand.get("hidden_dim", None),
-                    len(cand.get("selected_ops", [])),
-                    cand.get("phase1_dt", 0.0),
-                    "",  # phase3_total
-                    "",  # phase3_train
-                    "",  # phase3_derive
-                    "",  # phase3_val_loss
-                ]
-            )
-            per_candidate_rows.append(
-                [
-                    run_id,
-                    "phase3",
-                    cid,
-                    cand.get("score", 0.0),
-                    cand.get("hidden_dim", None),
-                    len(cand.get("selected_ops", [])),
-                    "",  # phase1_dt
-                    t_total,
-                    t_search,
-                    t_derive,
-                    float(val_loss),
-                ]
-            )
+            if collect_stats:
+                # CSV per-candidate row
+                per_candidate_rows.append(
+                    [
+                        run_id,
+                        "phase1",
+                        cid,
+                        cand.get("score", 0.0),
+                        cand.get("hidden_dim", None),
+                        len(cand.get("selected_ops", [])),
+                        cand.get("phase1_dt", 0.0),
+                        "",  # phase3_total
+                        "",  # phase3_train
+                        "",  # phase3_derive
+                        "",  # phase3_val_loss
+                    ]
+                )
+                per_candidate_rows.append(
+                    [
+                        run_id,
+                        "phase3",
+                        cid,
+                        cand.get("score", 0.0),
+                        cand.get("hidden_dim", None),
+                        len(cand.get("selected_ops", [])),
+                        "",  # phase1_dt
+                        t_total,
+                        t_search,
+                        t_derive,
+                        float(val_loss),
+                    ]
+                )
 
         t_p3 = time.perf_counter() - t_p3_0
 
-        p3_mean, p3_std = _mean_std(phase3_task_times)
-        p3_train_mean, p3_train_std = _mean_std(phase3_search_times)
-        p3_der_mean, p3_der_std = _mean_std(phase3_derive_eval_times)
+        p3_mean, p3_std = mean_std(phase3_task_times)
+        p3_train_mean, p3_train_std = mean_std(phase3_search_times)
+        p3_der_mean, p3_der_std = mean_std(phase3_derive_eval_times)
 
         phase_summary["phase3"] = {
             "wall_time_sec": float(t_p3),
@@ -2937,25 +2661,28 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         }
 
         # What-if estimates for Phase 3 (IF you parallelize top-k training in the future)
-        phase3_whatif = []
-        for w in parallelism_levels:
-            est = _lpt_estimate(
-                phase3_task_times,
-                workers=w,
+        if collect_stats:
+            phase3_whatif = append_whatif_estimates(
+                phase="phase3",
+                run_id=run_id,
+                work_times=phase3_task_times,
+                parallelism_levels=parallelism_levels,
                 overhead_per_task=est_overhead_per_task,
                 fixed_overhead=est_fixed_overhead_phase3,
+                whatif_rows=whatif_rows,
             )
-            phase3_whatif.append(
-                {"phase": "phase3", "workers": int(w), "est_wall_time_sec": float(est)}
-            )
-            whatif_rows.append([run_id, "phase3", int(w), float(est)])
-        phase_summary["phase3"]["whatif_estimates"] = phase3_whatif
+            phase_summary["phase3"]["whatif_estimates"] = phase3_whatif
 
         # -------------------------
         # Phase 4: Select best candidate
         # -------------------------
         logger.info("Phase 4: selecting best candidate")
         t_p4_0 = time.perf_counter()
+
+        if not trained_candidates:
+            raise RuntimeError(
+                "Phase 3 produced zero trained candidates; cannot select a best model."
+            )
 
         best_candidate = min(trained_candidates, key=lambda x: x["val_loss"])
         t_p4 = time.perf_counter() - t_p4_0
@@ -2976,6 +2703,21 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
 
         final_model = copy.deepcopy(best_candidate["model"])
         final_conf = final_model.get_config()
+        final_discrete_arch = {}
+        if hasattr(final_model, "derive_discrete_architecture"):
+            try:
+                final_discrete_arch = final_model.derive_discrete_architecture(
+                    threshold=discrete_arch_threshold
+                )
+            except Exception as e:
+                logger.warning(f"[Phase 5] discrete architecture derivation failed: {e}")
+
+        modules_reset = 0
+        if retrain_final_from_scratch:
+            modules_reset = self._reset_model_parameters(final_model)
+            logger.info(
+                f"[Phase 5] reinitialized {modules_reset} modules before final training"
+            )
 
         final_results = self.train_final_model(
             model=final_model,
@@ -2992,7 +2734,11 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             final_results["train_losses"],
             final_results["val_losses"],
             title="Final Model Training Progress",
-            save_path=os.path.join(out_base, "final_model_training.pdf"),
+            save_path=(
+                os.path.join(out_base, "final_model_training.pdf")
+                if out_base is not None
+                else "final_model_training.pdf"
+            ),
         )
 
         t_p5 = time.perf_counter() - t_p5_0
@@ -3040,48 +2786,50 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             },
         }
 
-        _save_json(os.path.join(out_base, "stats.json"), stats_payload)
+        if collect_stats and out_base is not None:
+            save_json(os.path.join(out_base, "stats.json"), stats_payload)
 
-        # CSVs
-        _save_csv(
-            os.path.join(out_base, "per_candidate.csv"),
-            header=[
-                "run_id",
-                "phase",
-                "candidate_id",
-                "score",
-                "hidden_dim",
-                "num_ops",
-                "phase1_dt_sec",
-                "phase3_total_dt_sec",
-                "phase3_train_dt_sec",
-                "phase3_derive_eval_dt_sec",
-                "phase3_val_loss",
-            ],
-            rows=per_candidate_rows,
-        )
-
-        _save_csv(
-            os.path.join(out_base, "whatif_parallelism.csv"),
-            header=["run_id", "phase", "workers", "est_wall_time_sec"],
-            rows=whatif_rows,
-        )
-
-        if bench_rows:
-            _save_csv(
-                os.path.join(out_base, "phase1_benchmark.csv"),
+            # CSVs
+            save_csv(
+                os.path.join(out_base, "per_candidate.csv"),
                 header=[
                     "run_id",
-                    "workers",
-                    "ncand",
-                    "wall_time_sec",
-                    "task_mean_sec",
-                    "task_std_sec",
+                    "phase",
+                    "candidate_id",
+                    "score",
+                    "hidden_dim",
+                    "num_ops",
+                    "phase1_dt_sec",
+                    "phase3_total_dt_sec",
+                    "phase3_train_dt_sec",
+                    "phase3_derive_eval_dt_sec",
+                    "phase3_val_loss",
                 ],
-                rows=bench_rows,
+                rows=per_candidate_rows,
             )
 
-        logger.info(f"Stats saved to: {out_base}")
+            save_csv(
+                os.path.join(out_base, "whatif_parallelism.csv"),
+                header=["run_id", "phase", "workers", "est_wall_time_sec"],
+                rows=whatif_rows,
+            )
+
+            if bench_rows:
+                save_csv(
+                    os.path.join(out_base, "phase1_benchmark.csv"),
+                    header=[
+                        "run_id",
+                        "workers",
+                        "ncand",
+                        "wall_time_sec",
+                        "task_mean_sec",
+                        "task_std_sec",
+                    ],
+                    rows=bench_rows,
+                )
+
+            logger.info(f"Stats saved to: {out_base}")
+
         logger.info(
             "Phase wall-times (s): "
             + ", ".join(
@@ -3104,6 +2852,7 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
             "best_candidate": best_candidate,
             "final_results": final_results,
             "final_config": final_conf,
+            "final_discrete_architecture": final_discrete_arch,
             "search_config": {
                 "num_candidates": num_candidates,
                 "search_epochs": search_epochs,
@@ -3111,17 +2860,124 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                 "top_k": top_k_eff,
                 "max_samples": max_samples,
                 "max_workers": max_workers,
+                "retrain_final_from_scratch": bool(retrain_final_from_scratch),
+                "discrete_arch_threshold": float(discrete_arch_threshold),
             },
             "trained_non_derived_candidates": trained_non_derived_candidates,
-            "stats": stats_payload,  # <- in-memory stats
-            "stats_dir": out_base,  # <- where JSON/CSVs are saved
+            "final_reset_modules": int(modules_reset),
         }
+
+        if collect_stats:
+            search_summary["stats"] = stats_payload
+            search_summary["stats_dir"] = out_base
 
         self.search_history.append(search_summary)
         self.final_model = final_results["model"]
 
-        logger.info("Multi-fidelity search completed (instrumented)")
+        logger.info(
+            "Multi-fidelity search completed"
+            + (" (instrumented)" if collect_stats else "")
+        )
         return search_summary
+
+    def _multi_fidelity_search_instrumented(
+        self,
+        train_loader,
+        val_loader,
+        test_loader,
+        *,
+        num_candidates: int = 10,
+        search_epochs: int = 10,
+        final_epochs: int = 100,
+        max_samples: int = 32,
+        top_k: int = 5,
+        max_workers: int = None,
+        parallelism_levels=None,
+        est_overhead_per_task: float = 0.0,
+        est_fixed_overhead_phase1: float = 0.0,
+        est_fixed_overhead_phase3: float = 0.0,
+        benchmark_phase1_workers=None,
+        benchmark_phase1_candidates: int = None,
+        stats_dir: str = "search_stats",
+        run_name: str = None,
+        logger=None,
+        collect_stats: bool = True,
+        retrain_final_from_scratch: bool = True,
+        discrete_arch_threshold: float = 0.3,
+    ) -> Dict[str, Any]:
+        """Backward-compatible alias for `_run_multi_fidelity_search`."""
+        return self._run_multi_fidelity_search(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            test_loader=test_loader,
+            num_candidates=num_candidates,
+            search_epochs=search_epochs,
+            final_epochs=final_epochs,
+            max_samples=max_samples,
+            top_k=top_k,
+            max_workers=max_workers,
+            parallelism_levels=parallelism_levels,
+            est_overhead_per_task=est_overhead_per_task,
+            est_fixed_overhead_phase1=est_fixed_overhead_phase1,
+            est_fixed_overhead_phase3=est_fixed_overhead_phase3,
+            benchmark_phase1_workers=benchmark_phase1_workers,
+            benchmark_phase1_candidates=benchmark_phase1_candidates,
+            stats_dir=stats_dir,
+            run_name=run_name,
+            logger=logger,
+            collect_stats=collect_stats,
+            retrain_final_from_scratch=retrain_final_from_scratch,
+            discrete_arch_threshold=discrete_arch_threshold,
+        )
+
+    def multi_fidelity_search_with_stats(
+        self,
+        train_loader,
+        val_loader,
+        test_loader,
+        *,
+        num_candidates: int = 10,
+        search_epochs: int = 10,
+        final_epochs: int = 100,
+        max_samples: int = 32,
+        top_k: int = 5,
+        max_workers: int = None,
+        parallelism_levels=None,
+        est_overhead_per_task: float = 0.0,
+        est_fixed_overhead_phase1: float = 0.0,
+        est_fixed_overhead_phase3: float = 0.0,
+        benchmark_phase1_workers=None,
+        benchmark_phase1_candidates: int = None,
+        stats_dir: str = "search_stats",
+        run_name: str = None,
+        logger=None,
+        retrain_final_from_scratch: bool = True,
+        discrete_arch_threshold: float = 0.3,
+    ) -> Dict[str, Any]:
+        """Backward-compatible wrapper for instrumented multi-fidelity search."""
+        return self.multi_fidelity_search(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            test_loader=test_loader,
+            num_candidates=num_candidates,
+            search_epochs=search_epochs,
+            final_epochs=final_epochs,
+            max_samples=max_samples,
+            top_k=top_k,
+            max_workers=max_workers,
+            collect_stats=True,
+            parallelism_levels=parallelism_levels,
+            est_overhead_per_task=est_overhead_per_task,
+            est_fixed_overhead_phase1=est_fixed_overhead_phase1,
+            est_fixed_overhead_phase3=est_fixed_overhead_phase3,
+            benchmark_phase1_workers=benchmark_phase1_workers,
+            benchmark_phase1_candidates=benchmark_phase1_candidates,
+            stats_dir=stats_dir,
+            run_name=run_name,
+            logger=logger,
+            retrain_final_from_scratch=retrain_final_from_scratch,
+            discrete_arch_threshold=discrete_arch_threshold,
+        )
 
     def bilevel_lr_sensitivity(
         self,
@@ -3146,7 +3002,7 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                     np.random.seed(seed)
                     random.seed(seed)
 
-                    model = model_factory.to(self.device)
+                    model = model_factory().to(self.device)
 
                     out = self.train_darts_model(
                         model=model,
@@ -3368,7 +3224,6 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
                 ],
                 dtype=np.float64,
             )
-            ranks = _ranks_desc(scores)
 
             # choose top_k in this pool
             order = np.argsort(-scores, kind="mergesort")
@@ -3439,9 +3294,6 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         # select robust top_k across pools using same style as before
         if not table:
             raise RuntimeError("No successful pools produced any top-k entries.")
-
-        # ordering across pools
-        topk_ref_eff = int(topk_ref)
 
         if robustness_mode == "topk_freq":
             table.sort(key=lambda r: (r["topk_freq"], r["avg_score"]), reverse=True)
@@ -3651,32 +3503,36 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         count = torch.zeros_like(forecast)
 
         with torch.no_grad():
+            device_type = "cuda" if str(device).startswith("cuda") else "cpu"
             for i in range(0, N, batch_size):
                 batch = X_val[i : i + batch_size]
-                with autocast("cuda", dtype=torch.float16):
+                with autocast(
+                    device_type=device_type,
+                    dtype=torch.float16,
+                    enabled=device_type == "cuda",
+                ):
                     outputs = model(batch)
                     if isinstance(outputs, tuple):
                         outputs = outputs[0]
+                    outputs = outputs.float()
 
-                    for j in range(outputs.shape[0]):
-                        pred = outputs[j]  # shape: [T, D], [1, D], or [D]
-                        start = i + j
-                        if pred.dim() == 3:  # [1, T, D]
-                            pred = pred.squeeze(0)
-                        if pred.dim() == 2:
-                            if pred.shape[0] == 1:
-                                forecast[start] += pred.squeeze(0)
-                                count[start] += 1
-                            else:
-                                forecast[start : start + pred.shape[0]] += pred
-                                count[start : start + pred.shape[0]] += 1
-                        elif pred.dim() == 1:
-                            forecast[start] += pred
+                for j in range(outputs.shape[0]):
+                    pred = outputs[j]  # shape: [T, D], [1, D], or [D]
+                    start = i + j
+                    if pred.dim() == 3:  # [1, T, D]
+                        pred = pred.squeeze(0)
+                    if pred.dim() == 2:
+                        if pred.shape[0] == 1:
+                            forecast[start] += pred.squeeze(0)
                             count[start] += 1
                         else:
-                            raise ValueError(
-                                f"Unexpected prediction shape: {pred.shape}"
-                            )
+                            forecast[start : start + pred.shape[0]] += pred
+                            count[start : start + pred.shape[0]] += 1
+                    elif pred.dim() == 1:
+                        forecast[start] += pred
+                        count[start] += 1
+                    else:
+                        raise ValueError(f"Unexpected prediction shape: {pred.shape}")
 
         return forecast / count.clamp(min=1.0)
 
@@ -3710,9 +3566,6 @@ class DARTSTrainer(TrainerUtilitiesMixin, ArchitecturePhaseMixin):
         model = self.final_model
         model.eval()  # Set model to evaluation mode
         X_val = X_val.to(device)
-        y_val = y_val.to(device)
-        target_len = y_val.shape[1]
-        output_size = y_val.shape[2]
         forecast = self._batched_forecast(X_val).cpu().numpy()
 
         # If full_series is provided

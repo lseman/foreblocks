@@ -27,11 +27,12 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 # ---- import your tracker (use the improved MLTracker you implemented) ----
-from mltracker import MLTracker
-from pydantic import BaseModel, Field
+from foreblocks.mltracker import MLTracker
 
 
 # -----------------------------------------------------------------------------
@@ -63,6 +64,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Dashboard
+dashboard_dir = Path(__file__).parent / "dashboard"
+if dashboard_dir.exists():
+    app.mount(
+        "/dashboard", StaticFiles(directory=dashboard_dir, html=True), name="dashboard"
+    )
+
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/dashboard")
 
 
 # -----------------------------------------------------------------------------
@@ -180,7 +193,9 @@ async def health_check(tracker: MLTracker = Depends(get_tracker)):
 # Experiments
 # -----------------------------------------------------------------------------
 @app.post("/api/experiments", status_code=201)
-async def create_experiment(experiment: ExperimentCreate, tracker: MLTracker = Depends(get_tracker)):
+async def create_experiment(
+    experiment: ExperimentCreate, tracker: MLTracker = Depends(get_tracker)
+):
     try:
         exp_id = tracker.create_experiment(experiment.name)
         return {"experiment_id": exp_id, "name": experiment.name}
@@ -192,19 +207,42 @@ async def create_experiment(experiment: ExperimentCreate, tracker: MLTracker = D
 async def list_experiments(tracker: MLTracker = Depends(get_tracker)):
     with tracker._get_db() as conn:
         rows = conn.execute(
-            "SELECT experiment_id, name, created_at FROM experiments ORDER BY created_at DESC"
+            """
+            SELECT e.experiment_id, e.name, e.created_at,
+                   COUNT(r.run_id) AS run_count
+            FROM experiments e
+            LEFT JOIN runs r ON r.experiment_id = e.experiment_id
+            GROUP BY e.experiment_id
+            ORDER BY e.created_at DESC
+            """
         ).fetchall()
-    return [{"experiment_id": r["experiment_id"], "name": r["name"], "created_at": r["created_at"]} for r in rows]
+    return [
+        {
+            "experiment_id": r["experiment_id"],
+            "name": r["name"],
+            "created_at": r["created_at"],
+            "run_count": r["run_count"],
+        }
+        for r in rows
+    ]
 
 
 @app.get("/api/experiments/{experiment_name}")
-async def get_experiment(experiment_name: str, tracker: MLTracker = Depends(get_tracker)):
+async def get_experiment(
+    experiment_name: str, tracker: MLTracker = Depends(get_tracker)
+):
     exp_id = tracker.get_experiment(experiment_name)
     if exp_id is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
     with tracker._get_db() as conn:
-        row = conn.execute("SELECT * FROM experiments WHERE experiment_id = ?", (exp_id,)).fetchone()
-    return {"experiment_id": row["experiment_id"], "name": row["name"], "created_at": row["created_at"]}
+        row = conn.execute(
+            "SELECT * FROM experiments WHERE experiment_id = ?", (exp_id,)
+        ).fetchone()
+    return {
+        "experiment_id": row["experiment_id"],
+        "name": row["name"],
+        "created_at": row["created_at"],
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -220,13 +258,26 @@ async def create_run(run: RunCreate, tracker: MLTracker = Depends(get_tracker)):
 
 
 @app.put("/api/runs/{run_id}/end")
-async def end_run(run_id: str, update: RunUpdate, tracker: MLTracker = Depends(get_tracker)):
+async def end_run(
+    run_id: str, update: RunUpdate, tracker: MLTracker = Depends(get_tracker)
+):
     try:
         with _as_active_run(tracker, run_id):
             tracker.end_run(update.status)
         return {"run_id": run_id, "status": update.status}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/runs/{run_id}")
+async def delete_run(run_id: str, tracker: MLTracker = Depends(get_tracker)):
+    try:
+        tracker.delete_run(run_id)
+        return {"deleted": run_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/runs/{run_id}")
@@ -248,10 +299,14 @@ async def search_runs(
     q: Optional[str] = Query(None, description="search in name or run_id"),
     from_time: Optional[str] = Query(None, description="ISO start lower bound"),
     to_time: Optional[str] = Query(None, description="ISO start upper bound"),
-    sort: str = Query("-start_time", description="start_time|-start_time|duration|-duration"),
+    sort: str = Query(
+        "-start_time", description="start_time|-start_time|duration|-duration"
+    ),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    include: str = Query("full", pattern="^(summary|full)$"),  # default FULL for your UI
+    include: str = Query(
+        "full", pattern="^(summary|full)$"
+    ),  # default FULL for your UI
     tracker: MLTracker = Depends(get_tracker),
 ):
     where = ["1=1"]
@@ -312,7 +367,9 @@ async def search_runs(
         runs = []
         for r in rows:
             full = tracker.get_run(r["run_id"])
-            full["duration"] = _dur_seconds(full.get("start_time"), full.get("end_time"))
+            full["duration"] = _dur_seconds(
+                full.get("start_time"), full.get("end_time")
+            )
             runs.append(full)
 
     return {"runs": runs, "count": total}
@@ -322,7 +379,9 @@ async def search_runs(
 # Logging endpoints (safe impersonation)
 # -----------------------------------------------------------------------------
 @app.post("/api/runs/{run_id}/params")
-async def log_param(run_id: str, param: ParamLog, tracker: MLTracker = Depends(get_tracker)):
+async def log_param(
+    run_id: str, param: ParamLog, tracker: MLTracker = Depends(get_tracker)
+):
     try:
         with _as_active_run(tracker, run_id):
             tracker.log_param(param.key, param.value)
@@ -332,7 +391,9 @@ async def log_param(run_id: str, param: ParamLog, tracker: MLTracker = Depends(g
 
 
 @app.post("/api/runs/{run_id}/params/batch")
-async def log_params(run_id: str, payload: ParamsLog, tracker: MLTracker = Depends(get_tracker)):
+async def log_params(
+    run_id: str, payload: ParamsLog, tracker: MLTracker = Depends(get_tracker)
+):
     try:
         with _as_active_run(tracker, run_id):
             tracker.log_params(payload.params)
@@ -342,7 +403,9 @@ async def log_params(run_id: str, payload: ParamsLog, tracker: MLTracker = Depen
 
 
 @app.post("/api/runs/{run_id}/metrics")
-async def log_metric(run_id: str, metric: MetricLog, tracker: MLTracker = Depends(get_tracker)):
+async def log_metric(
+    run_id: str, metric: MetricLog, tracker: MLTracker = Depends(get_tracker)
+):
     try:
         with _as_active_run(tracker, run_id):
             tracker.log_metric(metric.key, metric.value, metric.step)
@@ -352,7 +415,9 @@ async def log_metric(run_id: str, metric: MetricLog, tracker: MLTracker = Depend
 
 
 @app.post("/api/runs/{run_id}/metrics/batch")
-async def log_metrics(run_id: str, payload: MetricsLog, tracker: MLTracker = Depends(get_tracker)):
+async def log_metrics(
+    run_id: str, payload: MetricsLog, tracker: MLTracker = Depends(get_tracker)
+):
     try:
         with _as_active_run(tracker, run_id):
             tracker.log_metrics(payload.metrics, payload.step)
@@ -377,7 +442,7 @@ async def set_tag(run_id: str, tag: TagSet, tracker: MLTracker = Depends(get_tra
 @app.post("/api/runs/{run_id}/artifacts")
 async def upload_artifact(
     run_id: str,
-    background: BackgroundTasks,                      # <-- plain param, no Depends()
+    background: BackgroundTasks,  # <-- plain param, no Depends()
     file: UploadFile = File(...),
     artifact_path: str = "",
     tracker: MLTracker = Depends(get_tracker),
@@ -406,13 +471,17 @@ async def list_artifacts(run_id: str, tracker: MLTracker = Depends(get_tracker))
                 "SELECT path, artifact_type FROM artifacts WHERE run_id = ?",
                 (run_id,),
             ).fetchall()
-        return {"artifacts": [{"path": r["path"], "type": r["artifact_type"]} for r in rows]}
+        return {
+            "artifacts": [{"path": r["path"], "type": r["artifact_type"]} for r in rows]
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/runs/{run_id}/artifacts/{artifact_path:path}")
-async def download_artifact(run_id: str, artifact_path: str, tracker: MLTracker = Depends(get_tracker)):
+async def download_artifact(
+    run_id: str, artifact_path: str, tracker: MLTracker = Depends(get_tracker)
+):
     try:
         safe_path = _safe_under(tracker.artifacts_path / run_id, Path(artifact_path))
         if not safe_path.exists() or not safe_path.is_file():
@@ -462,7 +531,9 @@ async def get_metric_history(
 
 
 @app.post("/api/runs/compare")
-async def compare_runs(payload: CompareRequest, tracker: MLTracker = Depends(get_tracker)):
+async def compare_runs(
+    payload: CompareRequest, tracker: MLTracker = Depends(get_tracker)
+):
     try:
         if len(payload.run_ids) > 50:
             raise HTTPException(status_code=400, detail="Too many run_ids (max 50)")
@@ -471,11 +542,16 @@ async def compare_runs(payload: CompareRequest, tracker: MLTracker = Depends(get
         for r in runs:
             all_metrics.update(r["metrics"].keys())
             all_params.update(r["params"].keys())
-        return {"runs": runs, "metric_keys": sorted(all_metrics), "param_keys": sorted(all_params)}
+        return {
+            "runs": runs,
+            "metric_keys": sorted(all_metrics),
+            "param_keys": sorted(all_params),
+        }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/api/runs/{run_id}")
 async def delete_run(run_id: str, tracker: MLTracker = Depends(get_tracker)):
@@ -496,7 +572,9 @@ async def delete_run(run_id: str, tracker: MLTracker = Depends(get_tracker)):
             conn.execute("DELETE FROM params WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM tags WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM artifacts WHERE run_id = ?", (run_id,))
-            deleted = conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,)).rowcount
+            deleted = conn.execute(
+                "DELETE FROM runs WHERE run_id = ?", (run_id,)
+            ).rowcount
 
         if not deleted:
             raise HTTPException(status_code=404, detail="Run not found")
@@ -505,6 +583,8 @@ async def delete_run(run_id: str, tracker: MLTracker = Depends(get_tracker)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
 # -----------------------------------------------------------------------------
 # Entrypoint
 # -----------------------------------------------------------------------------

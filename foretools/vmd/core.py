@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+import optuna
 import pyfftw.interfaces.numpy_fft as fftw_np
 from numba import njit
 
@@ -40,22 +41,24 @@ class VMDCore:
     ) -> Dict[str, Any]:
         """
         Canonical prepare stage:
-        - trim odd length (FIX: update orig_len)
+        - trim odd length
         - extend (mirror/reflect/...)
-        - optional smooth junction (FIX: taper clamp)
-        - optional tukey window
+        - optional smooth junction
+        - optional tukey window  [WARNING: conflicts with mirroring; use one or the other]
         - compute f_hat_plus, freqs
         Returns everything needed for decompose.
         """
         f = np.asarray(signal, dtype=np.float64)
         orig_len = int(f.size)
 
-        # FIX: keep orig_len consistent if we trim odd length
         if orig_len % 2:
             f = f[:-1]
             orig_len -= 1
 
-        ratio = self.boundary.adaptive_extension_ratio(f)
+        if boundary_method == "mirror":
+            ratio = 0.5
+        else:
+            ratio = self.boundary.adaptive_extension_ratio(f)
         fMirr, left_ext, right_ext = self.boundary.extend_signal(
             f, method=boundary_method, extension_ratio=ratio
         )
@@ -65,9 +68,7 @@ class VMDCore:
                 fMirr, original_len=orig_len, ext_len=left_ext
             )
 
-        if window_alpha is None:
-            window_alpha = self.boundary.auto_window_alpha(f)
-        if window_alpha and window_alpha > 0:
+        if window_alpha is not None and window_alpha > 0:
             from scipy.signal import windows
 
             win = windows.tukey(len(fMirr), alpha=float(window_alpha))
@@ -79,7 +80,6 @@ class VMDCore:
         f_hat_plus = f_hat.copy()
         f_hat_plus[: T // 2] = 0
 
-        # FIX: store fMirr for init==3 even when fft is cached
         return {
             "orig_len": orig_len,
             "boundary_method": boundary_method,
@@ -95,7 +95,7 @@ class VMDCore:
     def precompute_fft(
         self,
         signal: np.ndarray,
-        boundary_method: str = "reflect",
+        boundary_method: str = "mirror",
         use_soft_junction: bool = False,
         window_alpha: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -124,7 +124,6 @@ class VMDCore:
         tol: float,
         max_iter: int,
         fs: float = 1.0,
-        use_fs_vmd: bool = False,
         precomputed_fft: Optional[Dict[str, Any]] = None,
         boundary_method: str = "reflect",
         use_soft_junction: bool = False,
@@ -141,31 +140,25 @@ class VMDCore:
         adaptive_alpha_min_scale: float = 0.3,
         adaptive_alpha_max_scale: float = 6.0,
         adaptive_alpha_skip_dc: bool = True,
-        omega_momentum: float = 0.3,
+        omega_momentum: float = 0.0,
         omega_shrinkage: float = 0.0,
         omega_max_step: float = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Core VMD decomposition (real signal).
+        Core VMD decomposition (real signal), following Dragomiretskiy & Zosso (2014).
+
+        Returns raw time-domain modes — no frequency-shift demodulation applied.
+
         Returns:
-            u: (K, N)
-            u_hat_full: (T, K)
-            omega: (K,)
+            u        : (K, N)   — raw time-domain IMF modes
+            u_hat_full: (T, K)  — full (fftshifted) analytic spectrum
+            omega    : (K,)     — converged centre frequencies (normalised, 0..0.5)
         """
         x = np.asarray(signal, dtype=np.float64)
 
-        # FS-VMD: simple demod/remod around dominant freq (real-only safe)
-        if use_fs_vmd:
-            f0 = SignalAnalyzer.dominant_freq(x, fs)
-            t = np.arange(x.size, dtype=np.float64) / float(fs)
-            x_work = x * np.cos(2 * np.pi * f0 * t)
-        else:
-            f0 = 0.0
-            x_work = x
-
         if precomputed_fft is None:
             precomputed_fft = self._prepare_signal(
-                x_work,
+                x,
                 boundary_method=boundary_method,
                 use_soft_junction=use_soft_junction,
                 window_alpha=window_alpha,
@@ -180,12 +173,11 @@ class VMDCore:
         boundary_method = precomputed_fft.get("boundary_method", boundary_method)
         fMirr = precomputed_fft.get("fMirr", None)
 
+        # Per-mode alpha vector (starts uniform, may be adapted)
         Alpha = (alpha * np.ones(K)).astype(np.float64)
+
+        # Initialise centre frequencies
         omega = np.zeros(K, dtype=np.float64)
-
-        Gamma = np.zeros((K, K), dtype=np.float64)
-        C_ema = None
-
         if init == 1:
             omega = (np.arange(K) * (0.5 / K)).astype(np.float64)
         elif init == 2:
@@ -194,38 +186,35 @@ class VMDCore:
                 np.exp(np.log(fs0) + (np.log(0.5) - np.log(fs0)) * np.random.rand(K))
             ).astype(np.float64)
         elif init == 3:
-            base = np.asarray(
-                fMirr if (fMirr is not None) else x_work, dtype=np.float64
-            )
+            base = np.asarray(fMirr if (fMirr is not None) else x, dtype=np.float64)
             omega = self._init_from_spectrum(base, K)
 
         if DC:
             omega[0] = 0.0
 
+        # Dual variable and mode spectrum
         lam = np.zeros(len(freqs), dtype=np.complex128)
         u_hat_prev = np.zeros((len(freqs), K), dtype=np.complex128)
 
+        # Correlation-penalty matrix (used only when enforce_uncorrelated=True)
+        Gamma = np.zeros((K, K), dtype=np.float64)
+        C_ema = None
+
         uDiff = float(tol) + 1.0
-        prev_diff = float("inf")
-        stagnation = 0
-        adaptive_tol = float(max(tol, 1e-7))
 
         for n in range(int(max_iter)):
             sum_uk = np.sum(u_hat_prev, axis=1).astype(np.complex128)
 
+            # --- Optional: enforce decorrelated modes via dual-ascent penalty ---
             if enforce_uncorrelated and (n % corr_update_every == 0) and n > 0:
-                # Use ensemble estimate if you want:
-                # C_est = self._corr_matrix_ensemble(u_hat_prev, half_T, n_blocks=4)
-                # Or single-shot:
-                # C_est = self._corr_matrix_from_uhat(u_hat_prev, half_T)
                 C_est = self._corr_matrix_time_equiv_from_uhat(
                     u_hat_prev, half_T, remove_dc=True
                 )
-
                 Gamma, C_ema = self._update_gamma(
                     Gamma, C_est, rho=corr_rho, ema=corr_ema, C_ema_prev=C_ema
                 )
 
+            # --- Main Gauss-Seidel update (Numba) ---
             u_hat_next, omega_next, lam_next, diff_norm = update_modes_numba(
                 freqs,
                 half_T,
@@ -246,6 +235,7 @@ class VMDCore:
             if DC and K > 0:
                 omega_next[0] = 0.0
 
+            # --- Optional: adaptive per-mode alpha ---
             if (
                 adaptive_alpha
                 and n >= int(adaptive_alpha_start_iter)
@@ -265,17 +255,11 @@ class VMDCore:
                     skip_dc=bool(adaptive_alpha_skip_dc and DC),
                 )
 
-            if n > 5:
-                uDiff = float(diff_norm)
+            # --- Convergence: relative normalised criterion (canonical VMD) ---
+            # diff_norm from the Numba kernel is already: sum_k ||Δu_k||² / (||u_k_prev||² * T)
+            uDiff = float(diff_norm)
 
-            if n > 10:
-                if abs(diff_norm - prev_diff) < adaptive_tol * 0.1:
-                    stagnation += 1
-                else:
-                    stagnation = 0
-                if stagnation >= 5:
-                    break
-
+            # Optuna pruning hook
             if trial is not None and n % 15 == 0:
                 trial.report(uDiff, step=n)
                 if trial.should_prune():
@@ -284,39 +268,36 @@ class VMDCore:
             u_hat_prev = u_hat_next
             lam = lam_next
             omega = omega_next
-            prev_diff = float(diff_norm)
 
             if uDiff <= tol:
                 break
 
-        # rebuild full spectrum
+        # --- Rebuild full spectrum with Hermitian symmetry (vmdpy-compatible) ---
         u_hat_full = np.zeros((T, K), dtype=np.complex128)
-        u_hat_full[half_T:T, :] = u_hat_prev[half_T:T, :]
-        idxs = np.arange(1, half_T)
-        u_hat_full[idxs, :] = np.conj(u_hat_full[T - idxs, :])
+        u_hat_full[half_T:, :] = u_hat_prev[half_T:, :]
+        if half_T > 1:
+            u_hat_full[half_T - 1 : 0 : -1, :] = np.conj(u_hat_prev[half_T + 1 : T, :])
         u_hat_full[0, :] = np.conj(u_hat_full[-1, :])
 
+        # IFFT → real time-domain modes, shape (K, T)
         u = np.real(
             fftw_np.ifft(fftw_np.ifftshift(u_hat_full, axes=0), axis=0)
         ).T  # (K, T)
 
-        # crop back to original length
+        # --- Crop back to original signal length ---
         if boundary_method != "none":
             start = left_ext
             end = start + orig_len
             u = u[:, start:end]
 
-        # safety: ensure exact length
+        # Safety: interpolate to exact length if any rounding mismatch
         if u.shape[1] != orig_len:
             x_old = np.linspace(0, 1, u.shape[1])
             x_new = np.linspace(0, 1, orig_len)
             u = np.vstack([np.interp(x_new, x_old, uk) for uk in u])
 
-        # remodulate if FS-VMD
-        if use_fs_vmd and f0 != 0.0:
-            t = np.arange(orig_len, dtype=np.float64) / float(fs)
-            carrier = np.cos(2 * np.pi * f0 * t)
-            u = u * carrier[None, :]
+        # NOTE: No FS-VMD remodulation. Modes are returned as-is (raw IMFs),
+        # identical in spirit to the original Dragomiretskiy & Zosso (2014) output.
 
         return u, u_hat_full, omega
 
@@ -363,6 +344,7 @@ class VMDCore:
         hi = float(base_alpha) * float(max_scale)
         if hi <= lo:
             return alpha_vec
+
         max_pos_freq = float(np.max(pos_freqs)) if pos_freqs.size else 0.0
         low_freq_thr = 0.01 * max_pos_freq
 
@@ -372,7 +354,6 @@ class VMDCore:
                 out[k] = float(np.clip(base_alpha * 1.5, lo, hi))
                 continue
             ratio = float(bws[k] / (target_bw + eps)) - 1.0
-            # multiplicative step for positivity/stability
             out[k] = float(out[k] * np.exp(float(lr) * ratio))
             if omega[k] < low_freq_thr:
                 out[k] = float(np.clip(out[k] * 1.8, lo, hi))
@@ -394,7 +375,7 @@ class VMDCore:
         window_alpha: Optional[float],
         fs: float,
     ) -> Tuple[np.ndarray, Optional[np.ndarray], np.ndarray]:
-        """Minimal MVMD: decompose each channel and average omegas."""
+        """Minimal MVMD: decompose each channel independently and average omegas."""
         X = np.asarray(signals, dtype=np.float64)
         if X.ndim != 2:
             raise ValueError("MVMD expects signals shaped (channels, samples)")
@@ -424,7 +405,6 @@ class VMDCore:
                 tol=tol,
                 max_iter=max_iter,
                 fs=fs,
-                use_fs_vmd=False,
                 precomputed_fft=precomps[ch],
                 boundary_method=boundary_method,
                 use_soft_junction=use_soft_junction,
@@ -434,6 +414,10 @@ class VMDCore:
             omega_shared = (omega_shared * ch + om) / float(ch + 1)
 
         return modes, None, omega_shared
+
+    # ------------------------------------------------------------------
+    # Correlation helpers (enforce_uncorrelated penalty)
+    # ------------------------------------------------------------------
 
     def _corr_matrix_ensemble(
         self, u_hat: np.ndarray, half_T: int, n_blocks: int = 4, eps: float = 1e-12
@@ -453,54 +437,41 @@ class VMDCore:
             C = G / denom
             np.fill_diagonal(C, 0.0)
             Cs.append(C)
-        C_mean = np.mean(Cs, axis=0)
-        return np.clip(C_mean, -1.0, 1.0)
+        return np.clip(np.mean(Cs, axis=0), -1.0, 1.0)
 
     def _corr_matrix_time_equiv_from_uhat(
         self,
-        u_hat: np.ndarray,  # (T, K), fftshifted, "plus" spectrum (DC+pos half meaningful)
+        u_hat: np.ndarray,
         half_T: int,
         eps: float = 1e-12,
         remove_dc: bool = True,
     ) -> np.ndarray:
         """
-        Returns a correlation-like matrix that corresponds to *time-domain* normalized
-        inner products of real modes u_k(t), using Parseval (no IFFT needed).
-
+        Returns time-domain normalised inner products via Parseval (no IFFT).
         remove_dc=True approximates mean removal by dropping the DC bin.
         """
-        U = u_hat[half_T:, :]  # includes DC at row 0 of this slice
-
+        U = u_hat[half_T:, :]
         if remove_dc and U.shape[0] > 1:
-            U = U[1:, :]  # drop DC component (mean)
+            U = U[1:, :]
 
-        # Inner products for real signals using one-sided spectrum:
-        # <u_k, u_j> ∝ Re( U[:,k]^H U[:,j] ) with a factor 2 for positive freqs.
-        G = 2.0 * (U.conj().T @ U).real  # (K,K)
+        p = 2.0 * np.sum(U.real * U.real + U.imag * U.imag, axis=0)
+        scale = np.sqrt(np.maximum(p, eps))
+        U_norm = U / scale[None, :]
 
-        p = np.diag(G).copy()
-        denom = np.sqrt(np.outer(p, p)) + eps
-        C = G / denom
-
+        C = 2.0 * (U_norm.conj().T @ U_norm).real
+        C = np.nan_to_num(C, nan=0.0, posinf=0.0, neginf=0.0)
         np.fill_diagonal(C, 0.0)
         return np.clip(C, -1.0, 1.0)
 
     def _corr_matrix_from_uhat(
         self, u_hat: np.ndarray, half_T: int, eps: float = 1e-12
     ) -> np.ndarray:
-        """
-        u_hat: (T, K) complex (your u_hat_prev)
-        Uses positive freqs only (half_T:).
-        Returns: (K, K) real correlation-like coefficients in [-1,1].
-        """
-        U = u_hat[half_T:, :]  # (Tpos, K)
-        # Gram matrix: G[k,j] = <u_k, u_j>
-        G = (U.conj().T @ U).real  # (K,K) real part
+        U = u_hat[half_T:, :]
+        G = (U.conj().T @ U).real
         p = np.diag(G).copy()
         denom = np.sqrt(np.outer(p, p)) + eps
         C = G / denom
         np.fill_diagonal(C, 0.0)
-        # Clip for stability
         return np.clip(C, -1.0, 1.0)
 
     def _update_gamma(
@@ -511,24 +482,18 @@ class VMDCore:
         ema: float,
         C_ema_prev: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        EMA smooth C, then dual ascent on Gamma.
-        Keeps Gamma symmetric and zero diagonal.
-        """
-        if C_ema_prev is None:
-            C_ema = C_est
-        else:
-            C_ema = ema * C_ema_prev + (1.0 - ema) * C_est
-
+        """EMA-smoothed correlation estimate → dual-ascent Gamma update."""
+        C_ema = (
+            C_est if C_ema_prev is None else (ema * C_ema_prev + (1.0 - ema) * C_est)
+        )
         Gamma = Gamma + rho * C_ema
-        # enforce symmetry & zero diag (important)
         Gamma = 0.5 * (Gamma + Gamma.T)
         np.fill_diagonal(Gamma, 0.0)
         return Gamma, C_ema
 
 
 # -----------------------------------------------------------------------------
-# Numba update kernel
+# Numba update kernel — canonical VMD Gauss-Seidel step
 # -----------------------------------------------------------------------------
 
 
@@ -549,63 +514,73 @@ def update_modes_numba(
     omega_shrinkage,
     omega_max_step,
 ):
+    """
+    One full Gauss-Seidel sweep over all K modes.
+
+    Convergence metric:
+        diff_norm = sum_k  ||u_k_new - u_k_old||² / (||u_k_old||² + eps)  / T
+
+    This is the *relative* normalised criterion from Dragomiretskiy & Zosso (2014),
+    eq. (26).  It is amplitude-invariant, so `tol=1e-7` works for any signal scale.
+    """
     T = len(freqs)
+    eps = 1e-14
 
     u_hat_plus_next = np.zeros((T, K), dtype=np.complex128)
     omega_next = np.zeros(K, dtype=np.float64)
 
     sum_uk = sum_uk_init.copy()
+    positive_freqs = freqs[half_T:]
 
-    eps = 1e-14
-    freq_slice_start = half_T
-    positive_freqs = freqs[freq_slice_start:]
-
-    # PRE-ALLOCATED reusable buffers
+    # Per-mode correlation penalty accumulator (reused each k)
     corr_term = np.zeros(T, dtype=np.complex128)
 
     for k in range(K):
+        # Remove current mode from running sum → sum of all OTHER modes
         sum_others = sum_uk - u_hat_prev[:, k]
 
         omega_k = omega_n[k]
         alpha_k = Alpha[k]
+
+        # Wiener-filter denominator: 1 + alpha * (f - omega_k)²
         freq_diff = freqs - omega_k
         denom = 1.0 + alpha_k * freq_diff * freq_diff + eps
 
-        # corr_term = sum_{j!=k} Gamma[k,j] * u_j
-        # Use Gauss–Seidel mixing:
-        #   - for j < k, use freshly updated u_hat_plus_next[:, j]
-        #   - for j > k, use u_hat_prev[:, j]
+        # Correlation penalty: Gauss-Seidel mixing
+        #   j < k → use freshly updated u_hat_plus_next[:, j]
+        #   j > k → use u_hat_prev[:, j]
         corr_term.real[:] = 0.0
         corr_term.imag[:] = 0.0
-
         for j in range(K):
             if j == k:
                 continue
             g = Gamma[k, j]
             if g == 0.0:
                 continue
-
             if j < k:
                 corr_term += g * u_hat_plus_next[:, j]
             else:
                 corr_term += g * u_hat_prev[:, j]
 
-        # IMPORTANT: keep the correlation term (do NOT overwrite this line)
+        # Mode update (eq. 14 of Dragomiretskiy & Zosso 2014, extended)
         u_new = (f_hat_plus - sum_others - 0.5 * lambda_hat_n - corr_term) / denom
         u_hat_plus_next[:, k] = u_new
 
+        # Update running sum with new mode
         sum_uk = sum_others + u_new
 
-        u_pos = u_new[freq_slice_start:]
+        # --- Centre-frequency update (spectral centroid of positive half) ---
+        u_pos = u_new[half_T:]
         weights = u_pos.real * u_pos.real + u_pos.imag * u_pos.imag
         den = np.sum(weights)
         if den > eps:
             num = np.sum(positive_freqs * weights)
             omega_new = num / den
-            # Simple damped update:
-            # omega_next = (1-momentum)*omega_new + momentum*omega_prev
+
+            # Damped update: blend new estimate with previous centre freq
             om = (1.0 - omega_momentum) * omega_new + omega_momentum * omega_k
-            # Optional additional shrinkage/clamp (disabled by default).
+
+            # Optional shrinkage / max-step clamping
             if omega_shrinkage > 0.0 or omega_max_step > 0.0:
                 delta = (om - omega_k) * (1.0 - omega_shrinkage)
                 if omega_max_step > 0.0:
@@ -614,6 +589,8 @@ def update_modes_numba(
                     elif delta < -omega_max_step:
                         delta = -omega_max_step
                 om = omega_k + delta
+
+            # Clamp to [0, 0.5] (normalised frequency range for real signals)
             if om < 0.0:
                 om = 0.0
             elif om > 0.5:
@@ -622,21 +599,34 @@ def update_modes_numba(
         else:
             omega_next[k] = omega_k
 
+    # --- Relative normalised convergence criterion (amplitude-invariant) ---
+    # diff_norm = (1/T) * sum_k  ||u_new_k - u_old_k||² / (||u_old_k||² + eps)
     diff_norm = 0.0
     for k in range(K):
         diff = u_hat_plus_next[:, k] - u_hat_prev[:, k]
-        diff_norm += np.sum((diff.real * diff.real + diff.imag * diff.imag)) / T
+        num = np.sum(diff.real * diff.real + diff.imag * diff.imag)
+        den_norm = (
+            np.sum(
+                u_hat_prev[:, k].real * u_hat_prev[:, k].real
+                + u_hat_prev[:, k].imag * u_hat_prev[:, k].imag
+            )
+            + eps
+        )
+        diff_norm += num / (den_norm * T)
 
+    # Dual-variable (Lagrange multiplier) update
     lambda_next = lambda_hat_n + tau * (sum_uk - f_hat_plus)
 
     return u_hat_plus_next, omega_next, lambda_next, diff_norm
 
 
 # -----------------------------------------------------------------------------
-# Optional: mode refinement
+# Optional: mode refinement (post-processing, independent of core VMD)
 # -----------------------------------------------------------------------------
+
+
 class InformerRefiner(nn.Module):
-    """Small Transformer encoder used as a denoiser/refiner."""
+    """Small Transformer encoder used as a per-mode denoiser/refiner."""
 
     def __init__(self, seq_len: int, d_model: int = 64, n_heads: int = 4):
         super().__init__()
@@ -658,7 +648,7 @@ class InformerRefiner(nn.Module):
 
 class CrossModeRefiner(nn.Module):
     """
-    Refiner with cross-mode attention, then temporal attention.
+    Refiner with cross-mode attention then temporal attention.
     Input/Output shape: (B, K, L).
     """
 
@@ -686,7 +676,9 @@ class CrossModeRefiner(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.cross_encoder = nn.TransformerEncoder(cross_layer, num_layers=n_layers_cross)
+        self.cross_encoder = nn.TransformerEncoder(
+            cross_layer, num_layers=n_layers_cross
+        )
 
         time_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -708,12 +700,12 @@ class CrossModeRefiner(nn.Module):
         B, K, L, _ = x.shape
         h = self.embed(x)  # (B, K, L, d_model)
 
-        # Cross-mode attention at each time step.
-        h = h.permute(0, 2, 1, 3).reshape(B * L, K, -1)  # (B*L, K, d_model)
+        # Cross-mode attention at each time step
+        h = h.permute(0, 2, 1, 3).reshape(B * L, K, -1)
         h = self.cross_encoder(h)
 
-        # Temporal attention per mode.
-        h = h.reshape(B, L, K, -1).permute(0, 2, 1, 3)  # (B, K, L, d_model)
+        # Temporal attention per mode
+        h = h.reshape(B, L, K, -1).permute(0, 2, 1, 3)
         h = h.reshape(B * K, L, -1)
         h = self.time_encoder(h)
         h = h.reshape(B, K, L, -1)
@@ -728,6 +720,7 @@ def refine_modes_nn(
     lr: float = 1e-3,
     use_gpu: bool = True,
 ) -> np.ndarray:
+    """Per-mode autoencoder refinement (InformerRefiner)."""
     if not TORCH_AVAILABLE:
         return modes
 
@@ -745,7 +738,7 @@ def refine_modes_nn(
     std = m.std(axis=1, keepdims=True) + 1e-8
     mn = (m - mean) / std
 
-    x = torch.from_numpy(mn[:, None, :]).float().to(device)  # (K,1,L)
+    x = torch.from_numpy(mn[:, None, :]).float().to(device)  # (K, 1, L)
     model.train()
     for epoch in range(int(epochs)):
         y = model(x)
@@ -753,7 +746,7 @@ def refine_modes_nn(
         opt.zero_grad()
         loss.backward()
         opt.step()
-        print("Epoch", epoch, "Loss", loss)
+        print("Epoch", epoch, "Loss", loss.item())
 
     model.eval()
     with torch.no_grad():
@@ -768,6 +761,7 @@ def refine_modes_cross_nn(
     lr: float = 5e-4,
     use_gpu: bool = True,
 ) -> np.ndarray:
+    """Cross-mode attention refinement (CrossModeRefiner)."""
     if not TORCH_AVAILABLE:
         return modes
 
@@ -799,8 +793,3 @@ def refine_modes_cross_nn(
         y = model(x).squeeze(0).cpu().numpy()
 
     return (y * std + mean).astype(np.float64)
-
-
-# -----------------------------------------------------------------------------
-# Optimizer (REFactored)
-# -----------------------------------------------------------------------------

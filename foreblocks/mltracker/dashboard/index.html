@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLTracker Next Dashboard</title>
+    <link rel="stylesheet" href="style.css?v=5">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+</head>
+
+<body data-theme="dark">
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="logo-icon" aria-hidden="true"></div>
+                <div>
+                    <h1>MLTracker</h1>
+                    <p>Experiment Control Center</p>
+                </div>
+            </div>
+
+            <div class="workspace-header">
+                <div class="workspace-badge">ML</div>
+                <div class="workspace-info">
+                    <span class="workspace-name">Projects</span>
+                    <span class="workspace-meta" id="workspace-meta">–</span>
+                </div>
+            </div>
+
+            <div class="nav-section">
+                <div class="sidebar-search-wrap">
+                    <input id="experiment-search" class="sidebar-search" type="text" placeholder="Search experiments..." />
+                </div>
+                <h3>Experiments</h3>
+                <ul id="experiment-list" class="nav-list">
+                    <li class="loading">Loading experiments...</li>
+                </ul>
+            </div>
+
+            <div class="sidebar-footer">
+                <span id="version-info">v1.2.0</span>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <header class="top-bar">
+                <div class="topbar-context">
+                    <div class="breadcrumbs" id="breadcrumbs">
+                        <span class="crumb root">Dashboard</span>
+                    </div>
+                    <div class="topbar-meta" id="topbar-meta">Experiment Intelligence</div>
+                </div>
+
+                <div class="actions">
+                    <div id="connection-pill" class="connection-pill pending">Checking API</div>
+                    <button id="saved-views-btn" class="action-btn subtle" title="Saved Views">Views</button>
+                    <button id="command-palette-btn" class="icon-btn" title="Command Palette (Ctrl/Cmd+K)">⌘K</button>
+                    <button id="refresh-btn" class="icon-btn" title="Refresh">↻</button>
+                    <button id="theme-toggle" class="icon-btn" title="Toggle Theme">☀</button>
+                </div>
+            </header>
+
+            <div id="content-shell" class="content-shell">
+                <aside id="run-sidebar" class="run-sidebar hidden">
+                    <div class="run-sidebar-header">
+                        <div>
+                            <h3>Runs</h3>
+                            <p id="run-sidebar-meta">Select an experiment</p>
+                        </div>
+                        <button id="run-sidebar-clear" class="icon-btn" title="Clear selected runs">✕</button>
+                    </div>
+                    <div id="run-sidebar-list" class="run-sidebar-list"></div>
+                </aside>
+
+                <section id="view-container" class="view-container">
+                    <div class="empty-state">
+                        <div class="empty-icon" aria-hidden="true">⚗️</div>
+                        <h2>Select a project</h2>
+                        <p>Pick an experiment from the sidebar to explore runs, metrics, charts, and artifacts.</p>
+                        <p class="empty-hint">← Choose from the list on the left</p>
+                    </div>
+                </section>
+            </div>
+            <section class="hidden" aria-hidden="true">
+                <div id="legacy-runs-holder"></div>
+            </section>
+        </main>
+    </div>
+
+    <div id="drawer-overlay" class="drawer-overlay hidden">
+        <div class="drawer">
+            <button id="drawer-close" class="icon-btn drawer-close-btn">✕</button>
+            <div id="drawer-content"></div>
+        </div>
+    </div>
+
+    <div id="command-palette-overlay" class="drawer-overlay hidden palette-overlay">
+        <div class="palette-panel" role="dialog" aria-modal="true" aria-label="Command palette">
+            <div class="palette-head">
+                <input id="command-palette-input" class="palette-input" type="text" placeholder="Type a command..." autocomplete="off" />
+                <button id="command-palette-close" class="icon-btn" title="Close">✕</button>
+            </div>
+            <div id="command-palette-list" class="palette-list"></div>
+        </div>
+    </div>
+
+    <template id="tpl-run-list">
+        <div class="run-list-view">
+
+            <!-- ── Project header ─── -->
+            <div class="view-header">
+                <div>
+                    <div class="exp-kicker">Experiment Workspace</div>
+                    <h2 id="exp-title">Experiment</h2>
+                    <p id="exp-subtitle" class="view-subtitle">Runs and metrics overview</p>
+                </div>
+                <div class="controls">
+                    <input type="text" id="params-search" placeholder="Search by run name or run id" class="search-input">
+                    <select id="sort-select" class="sort-select">
+                        <option value="-start_time">Newest First</option>
+                        <option value="start_time">Oldest First</option>
+                        <option value="-duration">Longest Duration</option>
+                        <option value="duration">Shortest Duration</option>
+                    </select>
+                    <select id="group-select" class="sort-select">
+                        <option value="none">No Grouping</option>
+                        <option value="status">Group by Status</option>
+                        <option value="day">Group by Day</option>
+                    </select>
+                    <button id="compare-btn" class="action-btn">Compare Selected</button>
+                    <button id="clear-pins-btn" class="action-btn subtle">Clear Pinned</button>
+                </div>
+            </div>
+
+            <!-- ── Tab strip ─── -->
+            <div class="view-tabs" id="view-tabs-list">
+                <button class="view-tab-btn" data-scroll-to="#section-overview">Overview</button>
+                <button class="view-tab-btn" data-scroll-to="#section-charts">Charts</button>
+            </div>
+
+            <!-- ── Section: Overview ─── -->
+            <div id="section-overview" class="tab-section">
+                <div id="run-summary" class="summary-grid"></div>
+                <div id="insights-strip" class="insights-strip"></div>
+
+                <div id="leaderboard-section" class="module-card">
+                    <div class="module-header">
+                        <h3>Leaderboard</h3>
+                        <div class="leaderboard-controls">
+                            <select id="leaderboard-metric" class="sort-select"></select>
+                            <select id="leaderboard-objective" class="sort-select">
+                                <option value="auto">Objective: Auto</option>
+                                <option value="min">Objective: Min</option>
+                                <option value="max">Objective: Max</option>
+                            </select>
+                        </div>
+                    </div>
+                    <ol id="leaderboard-list" class="leaderboard-list"></ol>
+                </div>
+
+                <div id="pinned-section" class="pinned-grid"></div>
+            </div>
+
+            <!-- ── Section: Runs ─── -->
+            <div id="section-runs" class="tab-section module-hidden" aria-hidden="true">
+                <div class="advanced-controls">
+                    <input type="text" id="tag-filter" placeholder="Filter by tag (key:value or value)" class="search-input small">
+                    <select id="metric-filter-key" class="sort-select"></select>
+                    <input type="number" id="metric-filter-min" placeholder="Metric min" class="search-input xs">
+                    <input type="number" id="metric-filter-max" placeholder="Metric max" class="search-input xs">
+                    <label class="toggle-chip">
+                        <input type="checkbox" id="only-selected-runs">
+                        <span>Only selected</span>
+                    </label>
+                    <button id="select-visible-btn" class="action-btn subtle">Select Visible</button>
+                    <button id="clear-selected-btn" class="action-btn subtle">Clear Selected</button>
+                </div>
+
+                <div id="status-filters" class="status-filters"></div>
+
+                <div class="table-container">
+                    <table class="runs-table">
+                        <thead>
+                            <tr>
+                                <th>Pick</th>
+                                <th>Status</th>
+                                <th>Run</th>
+                                <th>Started</th>
+                                <th>Duration</th>
+                                <th>Latest Metrics</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="runs-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- ── Section: Charts ─── -->
+            <div id="section-charts" class="tab-section">
+                <div id="parallel-section" class="module-card">
+                    <div class="module-header">
+                        <h3>Parallel Coordinates</h3>
+                        <div class="parallel-controls">
+                            <button id="parallel-reset" class="action-btn subtle">Reset Axes</button>
+                        </div>
+                    </div>
+                    <div id="parallel-dimensions" class="chip-selector"></div>
+                    <div class="chart-container compact">
+                        <canvas id="parallel-canvas"></canvas>
+                    </div>
+                </div>
+
+                <div id="importance-section" class="module-card">
+                    <div class="module-header">
+                        <h3>Feature Importance (Proxy)</h3>
+                        <div class="importance-controls">
+                            <select id="importance-target" class="sort-select"></select>
+                        </div>
+                    </div>
+                    <div class="module-grid">
+                        <div class="chart-container compact">
+                            <canvas id="importance-canvas"></canvas>
+                        </div>
+                        <div>
+                            <h4 class="module-subtitle">Top Drivers</h4>
+                            <ul id="importance-list" class="importance-list"></ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="sweep-section" class="module-card">
+                    <div class="module-header">
+                        <h3>Sweep Explorer</h3>
+                        <div class="sweep-controls">
+                            <select id="sweep-x" class="sort-select"></select>
+                            <select id="sweep-y" class="sort-select"></select>
+                        </div>
+                    </div>
+                    <div class="module-grid">
+                        <div class="chart-container compact">
+                            <canvas id="sweep-canvas"></canvas>
+                        </div>
+                        <div>
+                            <h4 class="module-subtitle">Top Runs</h4>
+                            <ul id="sweep-top-runs" class="compact-list"></ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="compare-section" class="module-card module-hidden"></div>
+            </div>
+
+        </div>
+    </template>
+
+    <template id="tpl-run-detail">
+        <div class="run-detail-view">
+
+            <!-- ── Run header ─── -->
+            <div class="view-header">
+                <div>
+                    <div class="exp-kicker">Run Detail</div>
+                    <h2 id="run-title">Run</h2>
+                </div>
+                <div class="badges" id="run-badges"></div>
+            </div>
+
+            <!-- ── Hero metrics bar ─── -->
+            <div class="run-hero" id="run-hero"></div>
+
+            <!-- ── Tab strip ─── -->
+            <div class="view-tabs" id="view-tabs-detail">
+                <button class="view-tab-btn" data-scroll-to="#section-metrics">Metrics</button>
+                <button class="view-tab-btn" data-scroll-to="#section-params">Parameters</button>
+                <button class="view-tab-btn" data-scroll-to="#section-artifacts">Artifacts &amp; Tags</button>
+            </div>
+
+            <!-- ── Section: Metrics ─── -->
+            <div id="section-metrics" class="tab-section">
+                <div class="card full-width">
+                    <h3>Metrics History</h3>
+                    <div class="chart-container">
+                        <canvas id="metrics-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Section: Parameters ─── -->
+            <div id="section-params" class="tab-section">
+                <div class="grid-layout">
+                    <div class="card">
+                        <h3>Parameters</h3>
+                        <div class="kv-list" id="params-list"></div>
+                    </div>
+                    <div class="card">
+                        <h3>Run Info</h3>
+                        <div class="kv-list" id="info-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Section: Artifacts & Tags ─── -->
+            <div id="section-artifacts" class="tab-section">
+                <div class="card full-width">
+                    <h3>Artifacts</h3>
+                    <ul class="artifact-list" id="artifact-list"></ul>
+                </div>
+                <div class="card full-width" id="architecture-card">
+                    <h3>Model Architecture</h3>
+                    <div id="architecture-view" class="architecture-view">No architecture artifact found for this run.</div>
+                </div>
+                <div class="card full-width">
+                    <h3>Tags</h3>
+                    <div class="tags-cloud" id="tags-list"></div>
+                </div>
+            </div>
+
+        </div>
+    </template>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

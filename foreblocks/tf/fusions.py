@@ -21,6 +21,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    import triton
+    import triton.language as tl
+
+    TRITON_AVAILABLE = True
+except Exception:  # pragma: no cover
+    TRITON_AVAILABLE = False
+
 __all__ = [
     "get_dropout_p",
     "fused_dropout_add",
@@ -34,12 +42,40 @@ __all__ = [
 
 # Optional GateSkip import
 try:
-    from .gateskip import ResidualGate, gateskip_apply  # type: ignore
+    from .skip.gateskip import ResidualGate, gateskip_apply  # type: ignore
 
     _HAS_GATESKIP = True
 except Exception:  # pragma: no cover
     ResidualGate = None  # type: ignore[assignment]
     _HAS_GATESKIP = False
+
+# Optional Triton norm backend import
+try:
+    from .norms.layer_norm import AdaptiveLayerNorm, FastLayerNorm  # type: ignore
+    from .norms.rms_norm import AdaptiveRMSNorm, RMSNorm  # type: ignore
+    from .norms.triton_backend import (
+        TRITON_AVAILABLE as _NORM_TRITON_AVAILABLE,
+    )
+    from .norms.triton_backend import (  # type: ignore
+        LayerNormTritonFunction,
+        RMSNormTritonFunction,
+        triton_fused_rmsnorm_scale_bias,
+        triton_scale_bias,
+    )
+    from .norms.triton_backend import (
+        _should_use_triton as _norm_should_use_triton,
+    )
+
+    _HAS_TRITON_NORM_BACKEND = True
+except Exception:  # pragma: no cover
+    FastLayerNorm = None  # type: ignore[assignment]
+    AdaptiveLayerNorm = None  # type: ignore[assignment]
+    RMSNorm = None  # type: ignore[assignment]
+    AdaptiveRMSNorm = None  # type: ignore[assignment]
+    LayerNormTritonFunction = None  # type: ignore[assignment]
+    RMSNormTritonFunction = None  # type: ignore[assignment]
+    _NORM_TRITON_AVAILABLE = False
+    _HAS_TRITON_NORM_BACKEND = False
 
 
 # ---------------------------------------------------------------------------
@@ -79,11 +115,141 @@ def _apply_norm(norm_layer: Optional[nn.Module], x: torch.Tensor) -> torch.Tenso
     return norm_layer(x)
 
 
+def _resolve_norm_module(norm_layer: Optional[nn.Module]) -> Optional[nn.Module]:
+    if norm_layer is None:
+        return None
+    norm_fn = getattr(norm_layer, "norm", None)
+    if callable(norm_fn) and isinstance(norm_fn, nn.Module):
+        return norm_fn
+    return norm_layer
+
+
+def _apply_norm_triton_if_possible(
+    norm_layer: Optional[nn.Module], x: torch.Tensor
+) -> torch.Tensor:
+    """
+    Dedicated Triton norm fast path for post-norm branches.
+    Falls back to module forward when unsupported.
+    """
+    mod = _resolve_norm_module(norm_layer)
+    if mod is None:
+        return x
+    if not _HAS_TRITON_NORM_BACKEND:
+        return _apply_norm(norm_layer, x)
+    if not _NORM_TRITON_AVAILABLE:
+        return _apply_norm(norm_layer, x)
+    if not x.is_cuda:
+        return _apply_norm(norm_layer, x)
+
+    # FastLayerNorm: uses custom autograd Triton function.
+    if FastLayerNorm is not None and isinstance(mod, FastLayerNorm):
+        if (
+            getattr(mod, "elementwise_affine", False)
+            and getattr(mod, "weight", None) is not None
+            and getattr(mod, "bias", None) is not None
+            and _norm_should_use_triton(x, min_numel=1024)
+        ):
+            return LayerNormTritonFunction.apply(x, mod.weight, mod.bias, mod.eps)
+        return mod(x)
+
+    # RMSNorm: uses custom autograd Triton function.
+    if RMSNorm is not None and isinstance(mod, RMSNorm):
+        if (
+            getattr(mod, "elementwise_affine", False)
+            and getattr(mod, "weight", None) is not None
+            and _norm_should_use_triton(x, min_numel=1024)
+        ):
+            return RMSNormTritonFunction.apply(x, mod.weight, mod.eps)
+        return mod(x)
+
+    # AdaptiveLayerNorm: Triton LN + Triton scale/bias (inference/no-grad only).
+    if AdaptiveLayerNorm is not None and isinstance(mod, AdaptiveLayerNorm):
+        if not torch.is_grad_enabled() and _norm_should_use_triton(x, min_numel=2048):
+            base = mod.norm
+            y = LayerNormTritonFunction.apply(x, base.weight, base.bias, base.eps)
+            y = triton_scale_bias(y, mod.alpha, mod.beta)
+            return mod.dropout(y)
+        return mod(x)
+
+    # AdaptiveRMSNorm: Triton fused path only in non-global + inference/no-grad mode.
+    if AdaptiveRMSNorm is not None and isinstance(mod, AdaptiveRMSNorm):
+        if (
+            (not getattr(mod, "global_rms", False))
+            and not torch.is_grad_enabled()
+            and _norm_should_use_triton(x, min_numel=2048)
+        ):
+            y = triton_fused_rmsnorm_scale_bias(
+                x=x,
+                rms_weight=mod.weight,
+                alpha=mod.alpha,
+                beta=mod.beta,
+                eps=mod.eps,
+            )
+            return mod.dropout(y)
+        return mod(x)
+
+    # Unknown norm type -> existing behavior.
+    return _apply_norm(norm_layer, x)
+
+
+def _can_use_triton_add(
+    residual: torch.Tensor,
+    update: torch.Tensor,
+    *,
+    p: float,
+    training: bool,
+) -> bool:
+    # Keep training/dropout path on PyTorch to preserve RNG semantics.
+    if (p > 0.0) and training:
+        return False
+    if not TRITON_AVAILABLE:
+        return False
+    if (not residual.is_cuda) or (not update.is_cuda):
+        return False
+    if residual.shape != update.shape:
+        return False
+    if residual.dtype != update.dtype:
+        return False
+    if residual.numel() == 0:
+        return False
+    return True
+
+
+if TRITON_AVAILABLE:
+
+    @triton.jit
+    def _add_kernel(
+        residual_ptr,
+        update_ptr,
+        out_ptr,
+        n_elements,
+        BLOCK: tl.constexpr,
+    ):
+        pid = tl.program_id(0)
+        offs = pid * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n_elements
+        a = tl.load(residual_ptr + offs, mask=mask, other=0.0)
+        b = tl.load(update_ptr + offs, mask=mask, other=0.0)
+        tl.store(out_ptr + offs, a + b, mask=mask)
+
+
+def _triton_add(residual: torch.Tensor, update: torch.Tensor) -> torch.Tensor:
+    out = torch.empty_like(residual)
+    r = residual.contiguous().view(-1)
+    u = update.contiguous().view(-1)
+    o = out.view(-1)
+    n = o.numel()
+    block = 1024
+    grid = (triton.cdiv(n, block),)
+    _add_kernel[grid](r, u, o, n, BLOCK=block)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Fused primitives (tensor + scalar p)
 # ---------------------------------------------------------------------------
 
-@torch.jit.script_if_tracing
+
 def fused_dropout_add(
     residual: torch.Tensor,
     update: torch.Tensor,
@@ -105,6 +271,9 @@ def fused_dropout_add(
     # Fast-path for p == 0.0 or eval mode avoids F.dropout call.
     if p > 0.0 and training:
         update = F.dropout(update, p=p, training=True)
+        return residual + update
+    if _can_use_triton_add(residual, update, p=p, training=training):
+        return _triton_add(residual, update)
     return residual + update
 
 
@@ -124,14 +293,14 @@ def fused_dropout_add_norm(
     Works with NormWrapper or plain norm modules.
     """
     out = fused_dropout_add(residual, update, p=p, training=training)
-    out = _apply_norm(norm_layer, out)
+    out = _apply_norm_triton_if_possible(norm_layer, out)
     return out
 
 
 def fused_dropout_gateskip_norm(
     residual: torch.Tensor,
     update: torch.Tensor,
-    gate: Optional[nn.Module],         # expected: ResidualGate
+    gate: Optional[nn.Module],  # expected: ResidualGate
     use_gateskip: bool,
     gate_budget: Optional[float],
     aux_l2_terms: Optional[List[torch.Tensor]],
@@ -165,16 +334,20 @@ def fused_dropout_gateskip_norm(
             use_gateskip, residual, update, gate, gate_budget, aux, gate_lambda
         )
     else:
-        out = residual + update
+        if _can_use_triton_add(residual, update, p=p, training=training):
+            out = _triton_add(residual, update)
+        else:
+            out = residual + update
         skip_mask = None
 
-    out = _apply_norm(norm_layer, out)
+    out = _apply_norm_triton_if_possible(norm_layer, out)
     return out, skip_mask
 
 
 # ---------------------------------------------------------------------------
 # Convenience wrappers (module-based)
 # ---------------------------------------------------------------------------
+
 
 def fused_dropout_add_from_layer(
     residual: torch.Tensor,

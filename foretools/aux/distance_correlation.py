@@ -1,24 +1,29 @@
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 try:
     import dcor as _dcor_pkg
+
     HAS_DCOR = True
 except Exception:
     HAS_DCOR = False
 
 try:
     from numba import njit, prange
+
     HAS_NUMBA = True
 except Exception:
     HAS_NUMBA = False
-    def njit(*a, **k):
-        def wrap(fn): return fn
-        return wrap
-    prange = range
 
+    def njit(*a, **k):
+        def wrap(fn):
+            return fn
+
+        return wrap
+
+    prange = range
 
 
 class DistanceCorrelation:
@@ -59,7 +64,9 @@ class DistanceCorrelation:
         self.use_coreset = bool(use_coreset)
 
     # ---------- Public API ----------
-    def matrix(self, df: pd.DataFrame, pearson_scr: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    def matrix(
+        self, df: pd.DataFrame, pearson_scr: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
         cols = list(df.columns)
         p = len(cols)
         if p < 2:
@@ -75,7 +82,10 @@ class DistanceCorrelation:
         for i in range(p):
             xi = X[:, i].astype(np.float64, copy=False)
             for j in range(i + 1, p):
-                if pearson_scr is not None and pearson_scr.iat[i, j] < self.pearson_gate:
+                if (
+                    pearson_scr is not None
+                    and pearson_scr.iat[i, j] < self.pearson_gate
+                ):
                     continue
                 yj = X[:, j].astype(np.float64, copy=False)
 
@@ -159,7 +169,9 @@ class DistanceCorrelation:
         row_sums = np.empty_like(row_sums_sorted)
         row_sums[order] = row_sums_sorted
 
-        grand_sum = float(prefix[-1] * n - 2.0 * np.sum((idxs + 1) * s) + np.sum(s))  # equals sum_{i<j} 2*|…|
+        grand_sum = float(
+            prefix[-1] * n - 2.0 * np.sum((idxs + 1) * s) + np.sum(s)
+        )  # equals sum_{i<j} 2*|…|
         # A robust way: the grand mean of the distance matrix:
         grand_mean = float(row_sums.mean() / n)
 
@@ -177,7 +189,7 @@ class DistanceCorrelation:
         s_xx = 0.0
         s_yy = 0.0
 
-        for bi in prange(n_blocks):   # parallelize across i-blocks
+        for bi in prange(n_blocks):  # parallelize across i-blocks
             i0 = bi * block_size
             i1 = min(n, i0 + block_size)
             for j0 in range(0, n, block_size):
@@ -199,7 +211,7 @@ class DistanceCorrelation:
                         s_yy += ay * ay
 
         return s_xy, s_xx, s_yy
-    
+
     # ---------- Helpers ----------
     def _standardize(self, X: np.ndarray) -> np.ndarray:
         mu = np.nanmean(X, axis=0, keepdims=True)

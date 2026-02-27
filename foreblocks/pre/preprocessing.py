@@ -35,7 +35,7 @@ from joblib import Parallel, delayed
 from scipy.signal import find_peaks, welch
 from scipy.stats import entropy, kurtosis, skew
 from sklearn.impute import KNNImputer
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer, PowerTransformer
 from statsmodels.tsa.stattools import acf, adfuller, pacf
 from tabulate import tabulate
 from tqdm import tqdm
@@ -57,12 +57,14 @@ Mode = Literal["fit", "transform"]
 # ---- optional deps -----------------------------------------------------------
 try:
     from pykalman import KalmanFilter  # noqa: F401
+
     HAS_KALMAN = True
 except Exception:
     HAS_KALMAN = False
 
 try:
     from PyEMD import EMD  # noqa: F401
+
     HAS_EMD = True
 except Exception:
     HAS_EMD = False
@@ -188,7 +190,9 @@ def detect_stationarity(data: np.ndarray, D: int) -> List[float]:
     return pvals
 
 
-def detect_seasonality(data: np.ndarray, D: int) -> Tuple[List[bool], List[Optional[int]]]:
+def detect_seasonality(
+    data: np.ndarray, D: int
+) -> Tuple[List[bool], List[Optional[int]]]:
     seasonal_flags: List[bool] = []
     detected_periods: List[Optional[int]] = []
 
@@ -290,6 +294,20 @@ def estimate_ewt_bands(data: np.ndarray, D: int) -> List[int]:
     return band_estimates
 
 
+def _get_iterative_imputer_class() -> Optional[Any]:
+    try:
+        from fancyimpute import IterativeImputer as IterativeImputerCls
+
+        return IterativeImputerCls
+    except Exception:
+        try:
+            from sklearn.impute import IterativeImputer as IterativeImputerCls
+
+            return IterativeImputerCls
+        except Exception:
+            return None
+
+
 def summarize_configuration(params: Dict[str, Any]) -> None:
     print(
         "\n"
@@ -297,10 +315,19 @@ def summarize_configuration(params: Dict[str, Any]) -> None:
             [
                 ["Dataset Dimensions", params["dimensions"]],
                 ["Missing Values", f"{params['missing_rate']:.2%}"],
-                ["Stationarity", "Non-stationary" if params["detrend"] else "Stationary"],
+                [
+                    "Stationarity",
+                    "Non-stationary" if params["detrend"] else "Stationary",
+                ],
                 ["Seasonality", "Present" if params["seasonal"] else "Not detected"],
-                ["Transformation", "Log (selective)" if params["log_transform"] else "None"],
-                ["Signal Processing", params["filter_method"] if params["apply_filter"] else "None"],
+                [
+                    "Transformation",
+                    "Log (selective)" if params["log_transform"] else "None",
+                ],
+                [
+                    "Signal Processing",
+                    params["filter_method"] if params["apply_filter"] else "None",
+                ],
                 ["Imputation", params["impute_method"] or "None"],
                 ["Outlier Detection", params["outlier_method"]],
                 ["Outlier Threshold", f"{params['outlier_threshold']:.2f}"],
@@ -409,7 +436,7 @@ class TimeSeriesPreprocessor:
     plot_max_features: int = 8
 
     # Learned / fitted attributes
-    scaler: Optional[StandardScaler] = field(default=None, init=False)
+    scaler: Optional[Any] = field(default=None, init=False)
     log_offset: Optional[np.ndarray] = field(default=None, init=False)
     diff_values: Optional[np.ndarray] = field(default=None, init=False)
     trend_component: Optional[np.ndarray] = field(default=None, init=False)
@@ -422,6 +449,7 @@ class TimeSeriesPreprocessor:
     outlier_calibration_: Dict[str, Any] = field(default_factory=dict, init=False)
 
     # Auto-config results
+    scaling_method: str = field(default="standard", init=False) # 'standard', 'robust', 'quantile', 'log_only'
     filter_method: str = field(default="savgol", init=False)
     seasonal: bool = field(default=False, init=False)
 
@@ -483,7 +511,10 @@ class TimeSeriesPreprocessor:
         if self.log_transform_flags is not None:
             return
         _, _, _, skews, kurts = compute_basic_stats(data)
-        flags = [self._should_log_transform(float(sk), float(ku)) for sk, ku in zip(skews, kurts)]
+        flags = [
+            self._should_log_transform(float(sk), float(ku))
+            for sk, ku in zip(skews, kurts)
+        ]
         if not self.log_transform:
             flags = [False] * data.shape[1]
         self.log_transform_flags = flags
@@ -572,9 +603,13 @@ class TimeSeriesPreprocessor:
             - 0.4 * float(missing_rate > 0.45)
         )
         self.log_transform = log_score > 0.75
-        self.log_transform_flags = log_recommend_per_channel if self.log_transform else [False] * D
+        self.log_transform_flags = (
+            log_recommend_per_channel if self.log_transform else [False] * D
+        )
 
-        extreme_ratio = float(np.nanmean(np.any(np.abs(self._centered(x, means)) > 6.0 * stds, axis=0)))
+        extreme_ratio = float(
+            np.nanmean(np.any(np.abs(self._centered(x, means)) > 6.0 * stds, axis=0))
+        )
         strong_periods = len(set(int(p) for p in periods if (p is not None and p > 1)))
 
         stats: Dict[str, Any] = {
@@ -585,7 +620,9 @@ class TimeSeriesPreprocessor:
             "med_flatness": float(med_flat),
             "med_snr": float(med_snr),
             "med_pacf": float(med_pacf),
-            "seasonal_fraction": float(np.mean(seasonal_flags)) if len(seasonal_flags) else 0.0,
+            "seasonal_fraction": float(np.mean(seasonal_flags))
+            if len(seasonal_flags)
+            else 0.0,
             "strong_periods": int(strong_periods),
             "extreme_ratio": float(extreme_ratio),
             "heavy_tails_fraction": float(heavy_tails_fraction),
@@ -597,22 +634,38 @@ class TimeSeriesPreprocessor:
 
         archetype = "heuristic_robust"
 
-        if stats["missing_rate"] < 0.02 and stats["med_flatness"] > 0.80 and stats["med_snr"] > 3.0:
+        if (
+            stats["missing_rate"] < 0.02
+            and stats["med_flatness"] > 0.80
+            and stats["med_snr"] > 3.0
+        ):
             archetype = "clean_high_quality"
             self.filter_method, self.apply_filter = "none", False
             self.impute_method = "none" if stats["missing_rate"] == 0 else "interpolate"
             self.outlier_method, self.outlier_threshold = "quantile", 3.5
 
-        elif stats["med_pacf"] > 0.7 and stats["med_snr"] < 2.2 and stats["seasonal_fraction"] < 0.4:
+        elif (
+            stats["med_pacf"] > 0.7
+            and stats["med_snr"] < 2.2
+            and stats["seasonal_fraction"] < 0.4
+        ):
             archetype = "noisy_autoregressive"
             self.filter_method, self.apply_filter = "savgol", True
-            self.impute_method = "interpolate" if (stats["missing_rate"] < 0.12 and stats["nan_run_ratio"] < 0.05) else "saits"
+            self.impute_method = (
+                "interpolate"
+                if (stats["missing_rate"] < 0.12 and stats["nan_run_ratio"] < 0.05)
+                else "saits"
+            )
             self.outlier_method = "mad"
             self.outlier_threshold = float(
-                3.3 + 1.0 * stats["high_skew_fraction"] + 0.6 * stats["heavy_tails_fraction"]
+                3.3
+                + 1.0 * stats["high_skew_fraction"]
+                + 0.6 * stats["heavy_tails_fraction"]
             )
 
-        elif stats["missing_rate"] > 0.30 and (stats["med_pacf"] < 0.35 or stats["nan_run_ratio"] > 0.08):
+        elif stats["missing_rate"] > 0.30 and (
+            stats["med_pacf"] < 0.35 or stats["nan_run_ratio"] > 0.08
+        ):
             archetype = "sparse_irregular"
             self.filter_method, self.apply_filter = "none", False
             self.impute_method = "saits" if stats["missing_rate"] < 0.70 else "ffill"
@@ -620,11 +673,17 @@ class TimeSeriesPreprocessor:
 
         elif stats["extreme_ratio"] > 0.10 or stats["heavy_tails_fraction"] > 0.45:
             archetype = "heavy_tailed_outliers"
-            self.filter_method, self.apply_filter = ("wiener", True) if stats["D"] <= 64 else ("savgol", True)
-            self.impute_method = "iterative" if stats["missing_rate"] < 0.15 else "saits"
+            self.filter_method, self.apply_filter = (
+                ("wiener", True) if stats["D"] <= 64 else ("savgol", True)
+            )
+            self.impute_method = (
+                "iterative" if stats["missing_rate"] < 0.15 else "saits"
+            )
             self.outlier_method = "mad"
             self.outlier_threshold = float(
-                4.6 + 1.5 * stats["heavy_tails_fraction"] + 0.5 * stats["high_skew_fraction"]
+                4.6
+                + 1.5 * stats["heavy_tails_fraction"]
+                + 0.5 * stats["high_skew_fraction"]
             )
 
         else:
@@ -645,16 +704,29 @@ class TimeSeriesPreprocessor:
             if stats["missing_rate"] == 0:
                 self.impute_method = "none"
             elif stats["missing_rate"] < 0.08 and stats["nan_run_ratio"] < 0.03:
-                self.impute_method = "interpolate" if stats["med_pacf"] > 0.55 else "knn"
+                self.impute_method = (
+                    "interpolate" if stats["med_pacf"] > 0.55 else "knn"
+                )
             elif stats["missing_rate"] < 0.25:
-                self.impute_method = "saits" if (stats["nan_run_ratio"] > 0.06 or stats["D"] >= 5) else "iterative"
+                self.impute_method = (
+                    "saits"
+                    if (stats["nan_run_ratio"] > 0.06 or stats["D"] >= 5)
+                    else "iterative"
+                )
             else:
                 self.impute_method = "saits"
 
             # Outlier method
-            if stats["heavy_tails_fraction"] > 0.35 or stats["high_skew_fraction"] > 0.4:
+            if (
+                stats["heavy_tails_fraction"] > 0.35
+                or stats["high_skew_fraction"] > 0.4
+            ):
                 self.outlier_method = "mad"
-            elif self.available_methods.get("tranad", False) and stats["T"] > 2000 and stats["D"] <= 64:
+            elif (
+                self.available_methods.get("tranad", False)
+                and stats["T"] > 2000
+                and stats["D"] <= 64
+            ):
                 self.outlier_method = "tranad"
             elif self.available_methods.get("ecod", False) and stats["D"] > 8:
                 self.outlier_method = "ecod"
@@ -686,18 +758,31 @@ class TimeSeriesPreprocessor:
         if stats["T"] >= 200 and stats["missing_rate"] < 0.35:
             try:
                 pvals = detect_stationarity(x, D)
-                self.detrend = any(p > 0.05 for p in pvals) or (stats["med_pacf"] > 0.55)
+                self.detrend = any(p > 0.05 for p in pvals) or (
+                    stats["med_pacf"] > 0.55
+                )
             except Exception:
-                self.detrend = (stats["med_pacf"] > 0.55)
+                self.detrend = stats["med_pacf"] > 0.55
         else:
-            self.detrend = (stats["med_pacf"] > 0.55)
+            self.detrend = stats["med_pacf"] > 0.55
 
-        self.seasonal = (stats["seasonal_fraction"] > 0.25) or (stats["strong_periods"] >= 2)
-        raw_bands = 3.0 + 0.9 * stats["strong_periods"] + 1.5 * (1.0 - stats["med_flatness"])
+        self.seasonal = (stats["seasonal_fraction"] > 0.25) or (
+            stats["strong_periods"] >= 2
+        )
+        raw_bands = (
+            3.0 + 0.9 * stats["strong_periods"] + 1.5 * (1.0 - stats["med_flatness"])
+        )
         self.ewt_bands = int(max(3, min(12, round(raw_bands))))
 
         if not self.log_transform:
             self.log_transform_flags = [False] * D
+
+        if stats["high_skew_fraction"] > 0.5 or (stats["scale_heterogeneity"] > 10.0):
+             self.scaling_method = "quantile"
+        elif stats["extreme_ratio"] > 0.15 or stats["heavy_tails_fraction"] > 0.4:
+             self.scaling_method = "robust" 
+        else:
+             self.scaling_method = "standard"
 
         if verbose:
             summarize_configuration(
@@ -707,6 +792,7 @@ class TimeSeriesPreprocessor:
                     "pattern": archetype,
                     "log_transform": self.log_transform,
                     "log_fraction": stats["log_fraction_recommended"],
+                    "scaling_method": self.scaling_method, # New field
                     "filter_method": self.filter_method,
                     "apply_filter": self.apply_filter,
                     "impute_method": self.impute_method,
@@ -744,13 +830,17 @@ class TimeSeriesPreprocessor:
         self.fitted_ = True
         return X, y, processed, tf
 
-    def transform(self, data: np.ndarray, time_stamps: Optional[np.ndarray] = None) -> np.ndarray:
+    def transform(
+        self, data: np.ndarray, time_stamps: Optional[np.ndarray] = None
+    ) -> np.ndarray:
         if not self.fitted_:
             raise RuntimeError("Preprocessor not fitted. Call fit_transform first.")
 
         x = _as_2d(data)
         if self.feature_dim_ is not None and x.shape[1] != self.feature_dim_:
-            raise ValueError(f"Feature dim mismatch: got {x.shape[1]}, expected {self.feature_dim_}")
+            raise ValueError(
+                f"Feature dim mismatch: got {x.shape[1]}, expected {self.feature_dim_}"
+            )
 
         processed = self._run_pipeline(x, mode="transform", time_stamps=time_stamps)
 
@@ -797,12 +887,18 @@ class TimeSeriesPreprocessor:
                     trend_to_add[:, i] = trend[:n]
                 else:
                     look_back = min(10, len(trend) - 1) if len(trend) > 1 else 1
-                    slope = (trend[-1] - trend[-look_back - 1]) / look_back if look_back > 0 else 0.0
+                    slope = (
+                        (trend[-1] - trend[-look_back - 1]) / look_back
+                        if look_back > 0
+                        else 0.0
+                    )
                     for j in range(n):
                         if j < len(trend):
                             trend_to_add[j, i] = trend[j]
                         else:
-                            trend_to_add[j, i] = trend[-1] + slope * (j - len(trend) + 1)
+                            trend_to_add[j, i] = trend[-1] + slope * (
+                                j - len(trend) + 1
+                            )
             flat = flat + trend_to_add
 
         # Inverse log
@@ -822,7 +918,9 @@ class TimeSeriesPreprocessor:
     # -------------------------------------------------------------------------
     # Canonical pipeline runner (removes duplication)
     # -------------------------------------------------------------------------
-    def _run_pipeline(self, x: np.ndarray, *, mode: Mode, time_stamps: Optional[np.ndarray]) -> np.ndarray:
+    def _run_pipeline(
+        self, x: np.ndarray, *, mode: Mode, time_stamps: Optional[np.ndarray]
+    ) -> np.ndarray:
         """
         Runs the preprocessing stages in a single place.
 
@@ -838,17 +936,23 @@ class TimeSeriesPreprocessor:
                 processed = self._impute_missing(processed)
                 self._maybe_plot(x, processed, "After Imputation", time_stamps)
             if np.any(np.isnan(processed)):
-                raise ValueError("NaNs remain after imputation. Enable apply_imputation or change method.")
+                raise ValueError(
+                    "NaNs remain after imputation. Enable apply_imputation or change method."
+                )
 
         # 2) Log transform (fit learns offsets; transform uses learned)
         self._ensure_log_flags(processed)
         if any(self.log_transform_flags or []):
             if mode == "fit":
-                processed, self.log_offset = apply_log_transform(processed, self.log_transform_flags)
+                processed, self.log_offset = apply_log_transform(
+                    processed, self.log_transform_flags
+                )
             else:
                 if self.log_offset is None:
                     raise RuntimeError("log_offset is not fitted.")
-                processed, _ = apply_log_transform(processed, self.log_transform_flags, offsets=self.log_offset)
+                processed, _ = apply_log_transform(
+                    processed, self.log_transform_flags, offsets=self.log_offset
+                )
 
         # 3) Outliers (kept: user-controlled; beware leakage but you already chose this)
         if self.remove_outliers:
@@ -864,18 +968,31 @@ class TimeSeriesPreprocessor:
         # 5) Filtering
         if self.apply_filter:
             processed = self._apply_filter(processed, method=self.filter_method)
-            self._maybe_plot(x, processed, f"After {self.filter_method.capitalize()} Filtering", time_stamps)
+            self._maybe_plot(
+                x,
+                processed,
+                f"After {self.filter_method.capitalize()} Filtering",
+                time_stamps,
+            )
 
         # 6) Differencing
         if self.differencing:
             if mode == "fit":
                 self.diff_values = processed[0:1].copy()
-            processed = np.vstack([np.zeros_like(processed[0]), np.diff(processed, axis=0)])
+            processed = np.vstack(
+                [np.zeros_like(processed[0]), np.diff(processed, axis=0)]
+            )
 
-        # 7) Normalization
+        # 7) Normalization / Scaling (Adaptive)
         if self.normalize:
             if mode == "fit":
-                self.scaler = StandardScaler()
+                if self.scaling_method == "robust":
+                     self.scaler = RobustScaler(quantile_range=(5.0, 95.0))
+                elif self.scaling_method == "quantile":
+                     self.scaler = QuantileTransformer(output_distribution="normal", random_state=42)
+                else: # standard
+                     self.scaler = StandardScaler()
+                
                 processed = self.scaler.fit_transform(processed)
             else:
                 if self.scaler is None:
@@ -884,7 +1001,9 @@ class TimeSeriesPreprocessor:
 
         return processed
 
-    def _maybe_make_time_features(self, time_stamps: Optional[np.ndarray], *, T: int) -> Optional[np.ndarray]:
+    def _maybe_make_time_features(
+        self, time_stamps: Optional[np.ndarray], *, T: int
+    ) -> Optional[np.ndarray]:
         if time_stamps is None or not self.generate_time_features:
             return None
         tf = self._generate_time_features(time_stamps)
@@ -939,17 +1058,7 @@ class TimeSeriesPreprocessor:
         method = (self.outlier_method or "iqr").lower()
         x = np.asarray(data, dtype=float)
 
-        if self.outlier_thresholds_ is None or self.outlier_thresholds_.shape != (x.shape[1],):
-            try:
-                self.outlier_thresholds_ = self._calibrate_outlier_thresholds(
-                    x,
-                    base=float(self.outlier_threshold),
-                    method=method,
-                    q=0.995 if x.shape[0] >= 1000 else 0.99,
-                    clamp=(2.5, 8.0),
-                )
-            except Exception:
-                self.outlier_thresholds_ = None
+        self._ensure_outlier_thresholds(x, method)
 
         if method in {"tranad", "isolation_forest", "ecod", "lof"}:
             agg_thr = (
@@ -957,7 +1066,9 @@ class TimeSeriesPreprocessor:
                 if self.outlier_thresholds_ is not None
                 else float(self.outlier_threshold)
             )
-            return _remove_outliers(x, method, agg_thr, seq_len=self.horizon, epochs=self.epochs)
+            return _remove_outliers(
+                x, method, agg_thr, seq_len=self.horizon, epochs=self.epochs
+            )
 
         n_features = x.shape[1]
         thresholds = self.outlier_thresholds_
@@ -974,6 +1085,23 @@ class TimeSeriesPreprocessor:
         cleaned_cols.sort(key=lambda t: t[0])
         return np.stack([col for _, col in cleaned_cols], axis=1)
 
+    def _ensure_outlier_thresholds(self, data: np.ndarray, method: str) -> None:
+        x = np.asarray(data, dtype=float)
+        if self.outlier_thresholds_ is not None and self.outlier_thresholds_.shape == (
+            x.shape[1],
+        ):
+            return
+        try:
+            self.outlier_thresholds_ = self._calibrate_outlier_thresholds(
+                x,
+                base=float(self.outlier_threshold),
+                method=method,
+                q=0.995 if x.shape[0] >= 1000 else 0.99,
+                clamp=(2.5, 8.0),
+            )
+        except Exception:
+            self.outlier_thresholds_ = None
+
     # -------------------------------------------------------------------------
     # Imputation (kept)
     # -------------------------------------------------------------------------
@@ -988,42 +1116,45 @@ class TimeSeriesPreprocessor:
 
         if method == "auto":
             missing_rate = float(np.mean(pd.isna(df.values)))
-            FancyIter = None
+            IterativeImputerCls = (
+                _get_iterative_imputer_class() if missing_rate >= 0.15 else None
+            )
 
-            if missing_rate >= 0.15:
+            if IterativeImputerCls is not None and missing_rate >= 0.15:
                 try:
-                    from fancyimpute import IterativeImputer as FancyIter
-                except Exception:
-                    FancyIter = None
-                if FancyIter is None:
-                    try:
-                        from sklearn.impute import IterativeImputer as FancyIter
-                    except Exception:
-                        FancyIter = None
-
-            if FancyIter is not None and missing_rate >= 0.15:
-                try:
-                    return FancyIter(random_state=0, max_iter=10).fit_transform(df.values)
+                    return IterativeImputerCls(
+                        random_state=0, max_iter=10
+                    ).fit_transform(df.values)
                 except Exception:
                     pass
 
-            def impute_column(i: int, col_name: Any, window_size: int = 24) -> Tuple[int, np.ndarray]:
+            def impute_column(
+                i: int, col_name: Any, window_size: int = 24
+            ) -> Tuple[int, np.ndarray]:
                 series = df[col_name]
                 mr = float(series.isna().mean())
                 try:
                     if mr == 0.0:
                         return i, series.values.astype(float)
                     if mr < 0.05:
-                        filled = series.interpolate(method="linear", limit_direction="both")
+                        filled = series.interpolate(
+                            method="linear", limit_direction="both"
+                        )
                         return i, filled.ffill().bfill().values
                     if mr < 0.2:
-                        return i, KNNImputer(n_neighbors=3).fit_transform(series.to_frame()).ravel()
+                        return i, KNNImputer(n_neighbors=3).fit_transform(
+                            series.to_frame()
+                        ).ravel()
                 except Exception as e:
                     print(f"[WARN] Column impute fallback for {col_name}: {e}")
 
                 vals = series.values.astype(float)
                 for t in range(len(vals)):
-                    if np.isnan(vals[t]) and t >= window_size and not np.isnan(vals[t - window_size]):
+                    if (
+                        np.isnan(vals[t])
+                        and t >= window_size
+                        and not np.isnan(vals[t - window_size])
+                    ):
                         vals[t] = vals[t - window_size]
                 m = float(np.nanmean(vals)) if np.isfinite(np.nanmean(vals)) else 0.0
                 vals = np.where(np.isnan(vals), m, vals)
@@ -1031,7 +1162,9 @@ class TimeSeriesPreprocessor:
 
             results = Parallel(n_jobs=-1)(
                 delayed(impute_column)(i, col, self.window_size)
-                for i, col in enumerate(tqdm(df.columns, desc="Imputing Missing Values"))
+                for i, col in enumerate(
+                    tqdm(df.columns, desc="Imputing Missing Values")
+                )
             )
             results.sort(key=lambda x: x[0])
             return np.column_stack([col for _, col in results])
@@ -1047,26 +1180,26 @@ class TimeSeriesPreprocessor:
         if method == "knn":
             return KNNImputer(n_neighbors=5).fit_transform(df.values)
         if method == "iterative":
-            try:
-                from fancyimpute import IterativeImputer as FancyIter
-            except Exception:
-                try:
-                    from sklearn.impute import IterativeImputer as FancyIter
-                except Exception:
-                    raise ImportError("Iterative imputer not available.")
-            return FancyIter(random_state=0).fit_transform(df.values)
+            IterativeImputerCls = _get_iterative_imputer_class()
+            if IterativeImputerCls is None:
+                raise ImportError("Iterative imputer not available.")
+            return IterativeImputerCls(random_state=0).fit_transform(df.values)
 
         raise ValueError(f"Unsupported imputation method: {method}")
 
     # -------------------------------------------------------------------------
     # EWT / Filtering (kept)
     # -------------------------------------------------------------------------
-    def _apply_filter(self, data: np.ndarray, method: str = "savgol", **kwargs) -> np.ndarray:
+    def _apply_filter(
+        self, data: np.ndarray, method: str = "savgol", **kwargs
+    ) -> np.ndarray:
         return _dispatch_filter(self, data, method, **kwargs)
 
     def _apply_ewt_and_detrend(self, data: np.ndarray) -> np.ndarray:
-        output, ewt_components, ewt_boundaries, trend_components = apply_ewt_and_detrend_parallel(
-            data, self.ewt_bands, self.detrend, self.trend_imf_idx
+        output, ewt_components, ewt_boundaries, trend_components = (
+            apply_ewt_and_detrend_parallel(
+                data, self.ewt_bands, self.detrend, self.trend_imf_idx
+            )
         )
         self.ewt_components = ewt_components
         self.ewt_boundaries = ewt_boundaries
@@ -1077,7 +1210,9 @@ class TimeSeriesPreprocessor:
     # -------------------------------------------------------------------------
     # Time features + Windowing (kept)
     # -------------------------------------------------------------------------
-    def _generate_time_features(self, timestamps: np.ndarray, freq: str = "h") -> np.ndarray:
+    def _generate_time_features(
+        self, timestamps: np.ndarray, freq: str = "h"
+    ) -> np.ndarray:
         df = pd.DataFrame({"ts": pd.to_datetime(timestamps)})
         df["month"] = df.ts.dt.month / 12.0
         df["day"] = df.ts.dt.day / 31.0
@@ -1129,7 +1264,11 @@ class TimeSeriesPreprocessor:
                 tf_all = sliding_window_view(tf2, window_shape=self.window_size, axis=0)
                 tf = tf_all[:max_idx, :, :]
 
-            return np.asarray(X), np.asarray(y), (np.asarray(tf) if tf is not None else None)
+            return (
+                np.asarray(X),
+                np.asarray(y),
+                (np.asarray(tf) if tf is not None else None),
+            )
 
         except Exception:
             X_list: List[np.ndarray] = []
@@ -1138,7 +1277,11 @@ class TimeSeriesPreprocessor:
 
             for i in tqdm(range(max_idx), desc="Creating sequences"):
                 X_list.append(x[i : i + self.window_size])
-                y_list.append(x[i + self.window_size : i + self.window_size + self.horizon][:, feats_idx])
+                y_list.append(
+                    x[i + self.window_size : i + self.window_size + self.horizon][
+                        :, feats_idx
+                    ]
+                )
                 if time_feats is not None:
                     tf_list.append(time_feats[i : i + self.window_size])
 
@@ -1158,7 +1301,9 @@ class TimeSeriesPreprocessor:
         time_stamps: Optional[np.ndarray] = None,
         max_features: Optional[int] = None,
     ) -> None:
-        max_features = self.plot_max_features if max_features is None else int(max_features)
+        max_features = (
+            self.plot_max_features if max_features is None else int(max_features)
+        )
 
         original = np.atleast_2d(original)
         cleaned = np.atleast_2d(cleaned)
@@ -1174,7 +1319,9 @@ class TimeSeriesPreprocessor:
 
         x = time_stamps if time_stamps is not None else np.arange(original.shape[0])
         if len(x) != original.shape[0]:
-            raise ValueError(f"Length of x ({len(x)}) != n_samples ({original.shape[0]})")
+            raise ValueError(
+                f"Length of x ({len(x)}) != n_samples ({original.shape[0]})"
+            )
 
         d = original.shape[1]
         idx = list(range(min(d, max_features)))

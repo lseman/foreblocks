@@ -50,6 +50,7 @@ class FeatureConfig:
     min_samples: int = 10
 
     # Selection parameters
+    selector_method: str = "mi"  # "mi" | "rfecv" | "boruta" | "auto"
     use_quantile_transform: bool = True
     mi_threshold: float = 0.001
     shap_threshold: float = 0.001
@@ -132,3 +133,4 @@ class FeatureConfig:
     rff_gamma: Union[float, str] = "auto"
     rff_kernel: str = "rbf"
     rff_max_features: int = 50
+    rff_handle_missing_features: str = "impute"  # "error" | "ignore" | "impute"

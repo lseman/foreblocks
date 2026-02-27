@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import math
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
-import torch.fft as fft
 import torch.nn as nn
-import torch.nn.functional as F
 
 from foreblocks.core.model import BaseHead
 from foreblocks.ui.node_spec import node
@@ -39,14 +36,23 @@ class DecompositionHead(nn.Module):
         self.feature_dim = int(feature_dim)
         self.hidden_dim = int(hidden_dim) if hidden_dim is not None else self.feature_dim
         self.kernel_size = int(kernel_size)
+        if self.kernel_size < 1:
+            raise ValueError(f"kernel_size must be >= 1, got {self.kernel_size}")
+        if self.kernel_size % 2 == 0:
+            raise ValueError(
+                f"kernel_size must be odd for length-preserving decomposition, got {self.kernel_size}"
+            )
 
         if groups is None:
             groups = self.feature_dim  # per-channel filtering
         groups = int(groups)
+        if groups < 1:
+            raise ValueError(f"groups must be >= 1, got {groups}")
         if self.feature_dim % groups != 0:
             raise ValueError(
                 f"groups must divide feature_dim (feature_dim={self.feature_dim}, groups={groups})"
             )
+        self.groups = groups
 
         padding = self.kernel_size // 2
         self.decomp = nn.Conv1d(
@@ -54,12 +60,16 @@ class DecompositionHead(nn.Module):
             out_channels=self.feature_dim,
             kernel_size=self.kernel_size,
             padding=padding,
-            groups=groups,
+            groups=self.groups,
             bias=False,
         )
-        # Initialize as exact moving average (constant)
+        # Initialize as grouped moving-average:
+        # average over time and over channels within each group.
         with torch.no_grad():
-            self.decomp.weight.fill_(1.0 / float(self.kernel_size))
+            channels_per_group = self.feature_dim // self.groups
+            self.decomp.weight.fill_(
+                1.0 / float(self.kernel_size * channels_per_group)
+            )
 
         self.post_proj = (
             nn.Linear(self.feature_dim, self.hidden_dim)
@@ -69,6 +79,8 @@ class DecompositionHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # x: [B,T,F]
+        if x.ndim != 3:
+            raise RuntimeError(f"Expected x with shape [B,T,F], got {tuple(x.shape)}")
         F_in = x.size(-1)
         if F_in != self.feature_dim:
             raise RuntimeError(

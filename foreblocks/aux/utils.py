@@ -21,7 +21,10 @@ from typing import Optional
 from typing import Tuple
 from typing import Union
 
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
 import numpy as np
 import torch
 import torch.nn as nn
@@ -100,6 +103,7 @@ class TrainingConfig:
     log_interval: int = 10
     save_best_model: bool = True
     save_model_path: Optional[str] = None
+    experiment_name: str = "default_experiment" # New: for MLTracker
 
     # -------------------------------------------------
     # MoE logging toggles

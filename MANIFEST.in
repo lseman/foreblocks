@@ -47,7 +47,6 @@ recursive-include foreblocks/blocks wavelets.py
 recursive-include foreblocks core.py
 recursive-include foreblocks/darts __init__.py
 recursive-include foreblocks/darts darts.py
-recursive-include foreblocks/darts darts_base.py
 recursive-include foreblocks/darts darts_metrics.py
 recursive-include foreblocks/darts darts_plot.py
 recursive-include foreblocks/darts darts_run.py

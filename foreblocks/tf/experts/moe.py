@@ -2,6 +2,7 @@
 # -----------------------------------------------------------------------------
 # Enhanced dMoE FeedForward (fast path)
 #  - Router: softmax over Top-K only
+#  - Routing mode: token_choice (default) or expert_choice
 #  - Dispatcher: vectorized capacity prune
 #  - bf16 autocast for experts + router (CUDA only)
 #  - Optional pre-stacked expert weights reuse per step
@@ -13,25 +14,36 @@ from __future__ import annotations
 import inspect
 import math
 import time
-from torch._tensor import Tensor
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch._tensor import Tensor
 
 # Optional import: adjust to your package path
 try:
     from .moe_logging import MoELogger  # type: ignore
 except Exception:
     MoELogger = None  # type: ignore
+from .routers import (
+    AdaptiveNoisyTopKRouter,
+    ContinuousTopKRouter,
+    HashTopKRouter,
+    LinearRouter,
+    NoisyTopKRouter,
+    Router,
+    StraightThroughTopKRouter,
+)
+from .dispatchers import DroplessPackedDispatcher, ExpertChoiceDispatcher
 
 # Optional grouped kernel path (can accept prepacked B* if your wrapper supports)
 try:
     # Prefer a wrapper that accepts B12_cat_prepacked / B3_cat_prepacked
-    from ..compute.kernels import grouped_mlp_swiglu  # type: ignore
+    from ..compute.kernels import fused_router_topk, grouped_mlp_swiglu  # type: ignore
 except Exception:
     grouped_mlp_swiglu = None  # fallback uses Python loop
+    fused_router_topk = None  # type: ignore
 
 
 # -----------------------------------------------------------------------------
@@ -106,269 +118,6 @@ def optimized_topk_routing(logits: torch.Tensor, k: int):
 
 
 # -----------------------------------------------------------------------------
-# Vectorized dropless dispatcher (with capacity pruning)
-# -----------------------------------------------------------------------------
-class DroplessPackedDispatcher:
-    """
-    Packs tokens by expert, keeps at most per_expert_cap items per expert.
-    - Fully vectorized capacity pruning (no Python per-expert loop).
-    - Returns packed_x / packed_w and (experts_seq, tokens_seq, offsets).
-
-    NOTE: Do *not* decorate pack() with @torch.no_grad:
-    we want gradients to flow from expert outputs back to the inputs.
-    """
-
-    def __init__(self, num_experts: int, top_k: int, capacity_factor: float = 1.25):
-        self.num_experts = int(num_experts)
-        self.top_k = int(top_k)
-        self.capacity_factor = float(capacity_factor)
-
-        # Reusable buffers (grown as needed)
-        self._buffer_size = 0
-        self._sort_buffer: Optional[torch.Tensor] = None
-        self._offsets_buffer: Optional[torch.Tensor] = None
-
-    def _ensure_buffers(self, size: int, device: torch.device):
-        if self._sort_buffer is None or self._buffer_size < size:
-            self._buffer_size = size
-            self._sort_buffer = torch.empty(size, dtype=torch.long, device=device)
-            self._offsets_buffer = torch.empty(
-                self.num_experts + 1, dtype=torch.long, device=device
-            )
-
-    def pack(
-        self,
-        x_flat: torch.Tensor,  # [T, D]
-        topk_p: torch.Tensor,  # [T, K]
-        topk_i: torch.Tensor,  # [T, K]
-        capacity_factor: Optional[float] = None,
-    ):
-        device = x_flat.device
-        T, D = x_flat.shape
-        K = topk_i.shape[1]
-        S = T * K
-        if S == 0:
-            empty = x_flat.new_zeros((0, D))
-            empty_long = x_flat.new_zeros((0,), dtype=torch.long)
-            empty_offsets = x_flat.new_zeros((self.num_experts + 1,), dtype=torch.long)
-            return empty, empty, empty_long, empty_long, empty_offsets, 0
-
-        self._ensure_buffers(S, device)
-
-        # Flatten routing decisions
-        experts = topk_i.reshape(-1)  # [S]
-        weights = topk_p.reshape(-1)  # [S]
-        tokens = torch.arange(T, device=device, dtype=torch.long).repeat_interleave(
-            K
-        )  # [S]
-
-        # Drop masked/zero-weight routes (used for adaptive K)
-        if (weights <= 0).any():
-            keep = weights > 0
-            if keep.sum().item() == 0:
-                empty = x_flat.new_zeros((0, D))
-                empty_long = x_flat.new_zeros((0,), dtype=torch.long)
-                empty_offsets = x_flat.new_zeros(
-                    (self.num_experts + 1,), dtype=torch.long
-                )
-                return empty, empty, empty_long, empty_long, empty_offsets, 0
-            experts = experts[keep]
-            weights = weights[keep]
-            tokens = tokens[keep]
-            S = int(weights.numel())
-            self._ensure_buffers(S, device)
-
-        # Sort by expert (stable)
-        torch.argsort(experts, stable=True, out=self._sort_buffer[:S])
-        sort_idx = self._sort_buffer[:S]
-        experts_sorted = experts[sort_idx]  # [S]
-        weights_sorted = weights[sort_idx]  # [S]
-        tokens_sorted = tokens[sort_idx]  # [S]
-
-        # Offsets via bincount
-        counts = torch.bincount(experts_sorted, minlength=self.num_experts)  # [E]
-        self._offsets_buffer.zero_()
-        torch.cumsum(counts, 0, out=self._offsets_buffer[1:])
-        offsets = self._offsets_buffer.clone()  # [E+1]
-
-        # Pack inputs and weights
-        packed_x = x_flat.index_select(0, tokens_sorted)  # [S, D]
-        packed_w = weights_sorted.unsqueeze(1)  # [S, 1]
-
-        # Vectorized capacity prune
-        total_capacity = math.ceil(T * K * (capacity_factor or self.capacity_factor))
-        per_expert_cap = max(1, math.ceil(total_capacity / self.num_experts))
-
-        # rank within expert block: rank = arange(S) - offsets[experts_sorted]
-        idx_in_expert = torch.arange(S, device=device) - offsets[experts_sorted]
-        kept_mask = idx_in_expert < per_expert_cap
-        kept = kept_mask.nonzero(as_tuple=True)[0]
-        dropped = int(S - kept.numel())
-
-        if dropped > 0:
-            experts_sorted = experts_sorted[kept]
-            tokens_sorted = tokens_sorted[kept]
-            packed_x = packed_x[kept]
-            packed_w = packed_w[kept]
-            # recompute offsets after pruning
-            counts = torch.bincount(experts_sorted, minlength=self.num_experts)
-            offsets = torch.cumsum(
-                torch.cat([torch.zeros(1, device=device, dtype=torch.long), counts]),
-                dim=0,
-            )
-
-        return packed_x, packed_w, experts_sorted, tokens_sorted, offsets, dropped
-
-    @staticmethod
-    def scatter_back(
-        out_accum: torch.Tensor, packed_y: torch.Tensor, tokens_seq: torch.Tensor
-    ):
-        out_accum.index_add_(0, tokens_seq, packed_y)
-        return out_accum
-
-
-# -----------------------------------------------------------------------------
-# Router (noisy top-k variant)
-# -----------------------------------------------------------------------------
-class NoisyTopKRouter(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        num_experts: int,
-        input_dropout: float = 0.0,
-        jitter: float = 0.01,
-        use_bias: bool = False,
-        clamp_range: Tuple[float, float] = (-1e4, 1e4),
-    ):
-        super().__init__()
-        self.num_experts = int(num_experts)
-        self.router = nn.Linear(d_model, num_experts, bias=use_bias)
-        self.input_dropout = nn.Dropout(input_dropout) if input_dropout > 0 else None
-        self.jitter = float(jitter)
-        self.clamp_min, self.clamp_max = clamp_range
-        self._init_router()
-
-        # Exposed metrics (detached copies for hooks/logging)
-        self.last_gate_logits: Optional[torch.Tensor] = None
-        self.last_topk_idx: Optional[torch.Tensor] = None
-        self.last_tokens_dropped: int = 0
-        self.last_aux_loss: float = 0.0
-        self.last_latency_ms: float = 0.0
-        self.last_meta: Optional[Dict[str, Any]] = None
-
-    def _init_router(self):
-        with torch.no_grad():
-            std = 0.02
-            bound = std * math.sqrt(3)
-            self.router.weight.uniform_(-bound, bound)
-            if self.router.bias is not None:
-                self.router.bias.zero_()
-
-    def forward(self, x: torch.Tensor, return_raw_logits: bool = False):
-        if x.numel() == 0:
-            shp = (*x.shape[:-1], self.num_experts)
-            z = x.new_zeros(shp)
-            return (z, z, z) if return_raw_logits else (z, z)
-
-        if self.training and self.input_dropout is not None:
-            x = self.input_dropout(x)
-
-        raw = self.router(x)
-        if self.training and self.jitter > 0:
-            logits = (raw + torch.randn_like(raw) * self.jitter).clamp_(
-                self.clamp_min, self.clamp_max
-            )
-        else:
-            logits = raw.clamp_(self.clamp_min, self.clamp_max)
-
-        # For speed, don’t compute full softmax here; downstream uses Top-K only.
-        if return_raw_logits:
-            # Dummy placeholders for compatibility with previous code paths
-            return raw, logits, logits  # (raw, logits, "probs_like")
-        else:
-            return logits, logits
-
-
-# -----------------------------------------------------------------------------
-# Router (adaptive-K noisy top-k variant)
-# -----------------------------------------------------------------------------
-class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
-    def __init__(
-        self,
-        d_model: int,
-        num_experts: int,
-        max_k: int = 4,
-        k_head_dim: int = 32,
-        k_tau: float = 1.0,
-        input_dropout: float = 0.0,
-        jitter: float = 0.01,
-        use_bias: bool = False,
-        clamp_range: Tuple[float, float] = (-1e4, 1e4),
-    ):
-        super().__init__(
-            d_model=d_model,
-            num_experts=num_experts,
-            input_dropout=input_dropout,
-            jitter=jitter,
-            use_bias=use_bias,
-            clamp_range=clamp_range,
-        )
-        self.max_k = int(max_k)
-        self.k_tau = float(k_tau)
-        self.k_head = nn.Linear(d_model, k_head_dim, bias=True)
-        self.k_logits = nn.Linear(k_head_dim, self.max_k, bias=True)
-        nn.init.normal_(self.k_logits.weight, mean=0.0, std=0.02)
-
-        self.last_k_logits: Optional[torch.Tensor] = None
-        self.last_k: Optional[torch.Tensor] = None
-        self.last_k_probs: Optional[torch.Tensor] = None
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        return_raw_logits: bool = False,
-        tau: Optional[float] = None,
-    ):
-        if x.numel() == 0:
-            shp = (*x.shape[:-1], self.num_experts)
-            z = x.new_zeros(shp)
-            k_shp = (*x.shape[:-1], self.max_k)
-            kz = x.new_zeros(k_shp)
-            k_idx = x.new_zeros((*x.shape[:-1],), dtype=torch.long)
-            return (z, z, z, kz, k_idx, kz) if return_raw_logits else (z, z, k_idx)
-
-        if self.training and self.input_dropout is not None:
-            x = self.input_dropout(x)
-
-        raw = self.router(x)
-        if self.training and self.jitter > 0:
-            logits = (raw + torch.randn_like(raw) * self.jitter).clamp_(
-                self.clamp_min, self.clamp_max
-            )
-        else:
-            logits = raw.clamp_(self.clamp_min, self.clamp_max)
-
-        k_feat = self.k_head(x)
-        k_logits = self.k_logits(k_feat)
-        use_tau = self.k_tau if tau is None else float(tau)
-        if self.training:
-            k_probs = F.softmax(k_logits / max(use_tau, 1e-3), dim=-1)
-            k_sample = F.gumbel_softmax(k_logits, tau=max(use_tau, 1e-3), hard=True)
-            per_token_k = (k_sample.argmax(-1) + 1).long()
-        else:
-            k_probs = F.softmax(k_logits, dim=-1)
-            per_token_k = (k_logits.argmax(-1) + 1).long()
-
-        self.last_k_logits = k_logits.detach()
-        self.last_k = per_token_k.detach()
-        self.last_k_probs = k_probs.detach()
-
-        if return_raw_logits:
-            return raw, logits, logits, k_logits, per_token_k, k_probs
-        return logits, logits, per_token_k
-
-
-# -----------------------------------------------------------------------------
 # Experts
 # -----------------------------------------------------------------------------
 class MoE_SwiGLUExpert(nn.Module):
@@ -427,6 +176,27 @@ class MoE_FFNExpert(nn.Module):
         return self.fc2(x)
 
 
+class MTPHead(nn.Module):
+    """Simple multi-token/multi-horizon prediction head bank."""
+
+    def __init__(self, d_model: int, n_extra: int = 3, init_scale: float = 0.02):
+        super().__init__()
+        self.n_extra = int(n_extra)
+        self.extra_heads = nn.ModuleList(
+            [nn.Linear(d_model, d_model, bias=False) for _ in range(self.n_extra)]
+        )
+        std = float(init_scale) / math.sqrt(max(self.n_extra + 1, 1))
+        for h in self.extra_heads:
+            nn.init.normal_(h.weight, mean=0.0, std=std)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # [N, D] -> [N, H, D]
+        if self.n_extra <= 0:
+            return x.new_zeros((x.size(0), 0, x.size(-1)))
+        preds = [h(x) for h in self.extra_heads]
+        return torch.stack(preds, dim=1)
+
+
 # -----------------------------------------------------------------------------
 # dMoE FFN (fast path)
 # -----------------------------------------------------------------------------
@@ -445,6 +215,14 @@ class MoEFeedForwardDMoE(nn.Module):
         z_loss_weight: float = 1e-3,
         moe_capacity_factor: float = 1.25,
         router_type: str = "noisy_topk",
+        router_temperature: float = 1.0,
+        router_perturb_noise: float = 0.0,
+        router_hash_num_hashes: int = 2,
+        router_hash_num_buckets: int = 64,
+        router_hash_bucket_size: int = 8,
+        router_hash_seed: int = 17,
+        routing_mode: str = "token_choice",
+        expert_choice_tokens_per_expert: Optional[int] = None,
         use_bias: bool = False,
         input_dropout: float = 0.0,
         jitter: float = 0.01,
@@ -466,8 +244,15 @@ class MoEFeedForwardDMoE(nn.Module):
         compile_experts: bool = True,
         # Optional grouped-kernel controls
         use_grouped_kernel: bool = True,
+        use_fused_router_topk: bool = True,
         triton_use_fp16_acc: bool = False,
         triton_use_shared_b: bool = False,
+        router_expert_bias_init: float = 0.0,
+        router_bias_update_rate: float = 0.01,
+        router_bias_clip: float = 2.0,
+        mtp_num_heads: int = 0,
+        mtp_loss_weight: float = 0.0,
+        mtp_init_scale: float = 0.02,
     ):
         super().__init__()
         num_experts = int(num_experts)
@@ -481,12 +266,65 @@ class MoEFeedForwardDMoE(nn.Module):
             raise ValueError("num_experts - num_shared must be >= 1")
         top_k = int(min(top_k, num_routed))
         shared_combine = str(shared_combine)
+        router_type = str(router_type).lower()
+        if router_type == "soft_topk":
+            router_type = "continuous_topk"
+        if router_type == "rs_topk":
+            router_type = "relaxed_sort_topk"
+        if router_type == "perturb_and_pick":
+            router_type = "perturb_and_pick_topk"
+        routing_mode = str(routing_mode).lower()
         if shared_combine not in ("add", "concat"):
             raise ValueError("shared_combine must be 'add' or 'concat'")
+        allowed_router_types = {
+            "noisy_topk",
+            "adaptive_noisy_topk",
+            "linear",
+            "st_topk",
+            "continuous_topk",
+            "relaxed_sort_topk",
+            "perturb_and_pick_topk",
+            "hash_topk",
+            "multi_hash_topk",
+        }
+        if router_type not in allowed_router_types:
+            raise ValueError(
+                "router_type must be one of "
+                f"{sorted(allowed_router_types)}, got '{router_type}'"
+            )
+        if routing_mode not in ("token_choice", "expert_choice"):
+            raise ValueError("routing_mode must be 'token_choice' or 'expert_choice'")
+        if routing_mode == "expert_choice" and router_type == "adaptive_noisy_topk":
+            raise ValueError(
+                "routing_mode='expert_choice' does not support "
+                "router_type='adaptive_noisy_topk'"
+            )
+        if router_temperature <= 0:
+            raise ValueError("router_temperature must be > 0")
+        if router_perturb_noise < 0:
+            raise ValueError("router_perturb_noise must be >= 0")
+        if router_hash_num_hashes < 1:
+            raise ValueError("router_hash_num_hashes must be >= 1")
+        if router_hash_num_buckets < 2:
+            raise ValueError("router_hash_num_buckets must be >= 2")
+        if router_hash_bucket_size < 1:
+            raise ValueError("router_hash_bucket_size must be >= 1")
+        if (
+            expert_choice_tokens_per_expert is not None
+            and int(expert_choice_tokens_per_expert) < 1
+        ):
+            raise ValueError("expert_choice_tokens_per_expert must be >= 1 when set")
+        ec_tokens_desc = (
+            str(int(expert_choice_tokens_per_expert))
+            if expert_choice_tokens_per_expert is not None
+            else "auto"
+        )
         print(
             f"MoEFeedForwardDMoE: E={num_experts} (shared={num_shared}, routed={num_routed}), "
-            f"K={top_k}, swiglu={use_swiglu}, shared={shared_combine}, "
-            f"cap={moe_capacity_factor}, router={router_type}"
+            f"K={top_k}, routing={routing_mode}, ec_tokens={ec_tokens_desc}, "
+            f"swiglu={use_swiglu}, shared={shared_combine}, "
+            f"cap={moe_capacity_factor}, router={router_type}, "
+            f"aux_lb=off, bias_lr={router_bias_update_rate}"
         )
         self.d_model = d_model
         self.d_ff = d_ff
@@ -494,6 +332,13 @@ class MoEFeedForwardDMoE(nn.Module):
         self.num_shared = num_shared
         self.num_routed_experts = num_routed
         self.top_k = top_k
+        self.routing_mode = routing_mode
+        self.expert_choice_tokens_per_expert = (
+            int(expert_choice_tokens_per_expert)
+            if expert_choice_tokens_per_expert is not None
+            else None
+        )
+        self.router_type = router_type
         self.shared_combine = shared_combine
         self.load_balance_weight = float(load_balance_weight)
         self.z_loss_weight = float(z_loss_weight)
@@ -501,11 +346,15 @@ class MoEFeedForwardDMoE(nn.Module):
         self.use_gradient_checkpointing = bool(use_gradient_checkpointing)
         self.adaptive_k_baseline_momentum = float(adaptive_k_baseline_momentum)
         self.adaptive_k_sparsity_lambda = float(adaptive_k_sparsity_lambda)
+        self.router_bias_update_rate = float(router_bias_update_rate)
+        self.router_bias_clip = float(router_bias_clip)
+        self.mtp_loss_weight = float(mtp_loss_weight)
 
         self.moe_logger = moe_logger
         self.step_getter = step_getter
         self.log_latency = bool(log_latency)
         self.use_grouped_kernel = bool(use_grouped_kernel)
+        self.use_fused_router_topk = bool(use_fused_router_topk)
         self.triton_use_fp16_acc = bool(triton_use_fp16_acc)
         self.triton_use_shared_b = bool(triton_use_shared_b)
         self._grouped_kernel_prepacked = _supports_grouped_prepacked()
@@ -513,6 +362,7 @@ class MoEFeedForwardDMoE(nn.Module):
         self.input_norm = nn.LayerNorm(d_model)
 
         # Router
+        router: Router
         if router_type == "adaptive_noisy_topk":
             router = AdaptiveNoisyTopKRouter(
                 d_model=d_model,
@@ -523,6 +373,58 @@ class MoEFeedForwardDMoE(nn.Module):
                 input_dropout=input_dropout,
                 jitter=jitter,
                 use_bias=use_bias,
+                expert_bias_init=router_expert_bias_init,
+            )
+        elif router_type == "st_topk":
+            router = StraightThroughTopKRouter(
+                d_model=d_model,
+                num_experts=num_routed,
+                top_k=top_k,
+                temperature=router_temperature,
+                input_dropout=input_dropout,
+                jitter=jitter,
+                use_bias=use_bias,
+                expert_bias_init=router_expert_bias_init,
+            )
+        elif router_type in ("continuous_topk", "relaxed_sort_topk", "perturb_and_pick_topk"):
+            # relaxed_sort_topk and perturb_and_pick_topk use the same continuous
+            # top-k implementation with configurable perturbation.
+            perturb_std = (
+                router_perturb_noise
+                if router_type != "relaxed_sort_topk"
+                else max(router_perturb_noise, 1e-2)
+            )
+            router = ContinuousTopKRouter(
+                d_model=d_model,
+                num_experts=num_routed,
+                top_k=top_k,
+                temperature=router_temperature,
+                perturb_std=perturb_std,
+                input_dropout=input_dropout,
+                jitter=jitter,
+                use_bias=use_bias,
+                expert_bias_init=router_expert_bias_init,
+            )
+        elif router_type in ("hash_topk", "multi_hash_topk"):
+            num_hashes = 1 if router_type == "hash_topk" else max(2, router_hash_num_hashes)
+            router = HashTopKRouter(
+                d_model=d_model,
+                num_experts=num_routed,
+                top_k=top_k,
+                num_hashes=num_hashes,
+                num_buckets=router_hash_num_buckets,
+                bucket_size=router_hash_bucket_size,
+                hash_seed=router_hash_seed,
+                input_dropout=input_dropout,
+                jitter=jitter,
+                use_bias=use_bias,
+                expert_bias_init=router_expert_bias_init,
+            )
+        elif router_type == "linear":
+            router = LinearRouter(
+                d_model=d_model,
+                num_experts=num_routed,
+                use_bias=use_bias,
             )
         elif router_type == "noisy_topk":
             router = NoisyTopKRouter(
@@ -531,10 +433,10 @@ class MoEFeedForwardDMoE(nn.Module):
                 input_dropout=input_dropout,
                 jitter=jitter,
                 use_bias=use_bias,
+                expert_bias_init=router_expert_bias_init,
             )
         else:
-            router = nn.Linear(d_model, num_routed, bias=use_bias)
-            nn.init.normal_(router.weight, mean=0.0, std=0.02)
+            raise ValueError(f"unsupported router_type '{router_type}'")
         self.router = maybe_compile(router, enabled=compile_router)
 
         # Experts
@@ -580,9 +482,25 @@ class MoEFeedForwardDMoE(nn.Module):
             self.shared_scale = None
             self.shared_proj = None
 
+        # Optional MTP head bank (off by default).
+        self.mtp_num_heads = int(mtp_num_heads)
+        self.mtp_heads = (
+            MTPHead(
+                d_model=d_model, n_extra=self.mtp_num_heads, init_scale=mtp_init_scale
+            )
+            if self.mtp_num_heads > 0
+            else None
+        )
+
         # Dispatcher
         self.dispatcher = DroplessPackedDispatcher(
             num_routed, self.top_k, moe_capacity_factor
+        )
+        self.expert_choice_dispatcher = ExpertChoiceDispatcher(
+            num_experts=num_routed,
+            top_k=self.top_k,
+            capacity_factor=self.moe_capacity_factor,
+            tokens_per_expert=self.expert_choice_tokens_per_expert,
         )
 
         # Metrics / buffers
@@ -599,6 +517,7 @@ class MoEFeedForwardDMoE(nn.Module):
         self.last_per_token_k: Optional[torch.Tensor] = None
         self.last_log_prob_k: Optional[torch.Tensor] = None
         self.register_buffer("adaptive_k_baseline", torch.tensor(0.0))
+        self.last_mtp_loss = torch.tensor(0.0)
 
     # ---------- Prepack expert weights (bf16) and reuse per step ----------
     @torch.no_grad()
@@ -637,16 +556,17 @@ class MoEFeedForwardDMoE(nn.Module):
         Optional[torch.Tensor],
         Optional[torch.Tensor],
         Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
     ]:
         """
-        Handle NoisyTopKRouter/AdaptiveNoisyTopKRouter (return_raw_logits=True)
-        and plain Linear.
+        Unified router output parser.
+        Returns:
+          logits, per_token_k, k_logits, k_probs, precomputed_top_p, precomputed_top_i
         """
         out = None
         try:
-            out = self.router(
-                x_flat, return_raw_logits=True, tau=tau
-            )  # preferred for AdaptiveNoisyTopKRouter
+            out = self.router(x_flat, return_raw_logits=True, tau=tau)
         except TypeError:
             try:
                 out = self.router(x_flat, return_raw_logits=True)
@@ -655,6 +575,8 @@ class MoEFeedForwardDMoE(nn.Module):
         per_token_k = None
         k_logits = None
         k_probs = None
+        top_p = None
+        top_i = None
         if isinstance(out, tuple):
             if len(out) >= 2:
                 logits = out[1]
@@ -665,9 +587,12 @@ class MoEFeedForwardDMoE(nn.Module):
                 per_token_k = out[4]
             if len(out) >= 6:
                 k_probs = out[5]
+            if len(out) >= 8:
+                top_p = out[6]
+                top_i = out[7]
         else:
             logits = out
-        return logits, per_token_k, k_logits, k_probs
+        return logits, per_token_k, k_logits, k_probs, top_p, top_i
 
     def _adaptive_topk_routing(
         self, logits: torch.Tensor, per_token_k: torch.Tensor
@@ -690,6 +615,41 @@ class MoEFeedForwardDMoE(nn.Module):
             decay = float(self.momentum)
             self.expert_usage.mul_(decay).add_(cur, alpha=1.0 - decay)
 
+    def _update_expert_usage_ema_from_assignments(self, experts_seq: torch.Tensor):
+        with torch.no_grad():
+            if experts_seq.numel() == 0:
+                return
+            cur = torch.bincount(experts_seq, minlength=self.num_routed_experts).to(
+                dtype=self.expert_usage.dtype
+            )
+            cur = cur / cur.sum().clamp_min(1.0)
+            decay = float(self.momentum)
+            self.expert_usage.mul_(decay).add_(cur, alpha=1.0 - decay)
+
+    def _get_router_expert_bias(self) -> Optional[torch.Tensor]:
+        r = self.router
+        if hasattr(r, "expert_bias"):
+            return getattr(r, "expert_bias")
+        # torch.compile wrappers often keep original module here
+        orig = getattr(r, "_orig_mod", None)
+        if orig is not None and hasattr(orig, "expert_bias"):
+            return getattr(orig, "expert_bias")
+        return None
+
+    def _maybe_update_router_bias(self):
+        if (not self.training) or self.router_bias_update_rate <= 0:
+            return
+        bias = self._get_router_expert_bias()
+        if bias is None:
+            return
+        with torch.no_grad():
+            usage = self.expert_usage
+            usage = usage / usage.sum().clamp_min(1e-12)
+            target = torch.full_like(usage, 1.0 / self.num_routed_experts)
+            bias.add_(self.router_bias_update_rate * (target - usage))
+            if self.router_bias_clip > 0:
+                bias.clamp_(-self.router_bias_clip, self.router_bias_clip)
+
     def _maybe_start_timer(self):
         if not self.log_latency:
             return None
@@ -704,6 +664,55 @@ class MoEFeedForwardDMoE(nn.Module):
             torch.cuda.synchronize()
         return (time.perf_counter() - t0) * 1000.0
 
+    def _reshape_mtp_targets(
+        self, mtp_targets: torch.Tensor, num_tokens: int
+    ) -> torch.Tensor:
+        if mtp_targets.dim() == 3:
+            # [N, H, D]
+            tgt = mtp_targets
+        elif mtp_targets.dim() == 4:
+            # [B, T, H, D] -> [B*T, H, D]
+            tgt = mtp_targets.reshape(-1, mtp_targets.size(-2), mtp_targets.size(-1))
+        else:
+            raise ValueError(
+                f"mtp_targets must be [N,H,D] or [B,T,H,D], got {tuple(mtp_targets.shape)}"
+            )
+
+        if tgt.size(0) != num_tokens:
+            raise ValueError(
+                f"mtp_targets token count {tgt.size(0)} does not match routed tokens {num_tokens}"
+            )
+        if tgt.size(-1) != self.d_model:
+            raise ValueError(
+                f"mtp_targets feature dim {tgt.size(-1)} does not match d_model {self.d_model}"
+            )
+        return tgt
+
+    def _compute_mtp_loss(
+        self, out_flat: torch.Tensor, mtp_targets: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        if (
+            (not self.training)
+            or self.mtp_heads is None
+            or self.mtp_loss_weight <= 0
+            or mtp_targets is None
+        ):
+            return out_flat.new_zeros(())
+
+        mtp_preds = self.mtp_heads(out_flat)  # [N, H, D]
+        if mtp_preds.size(1) == 0:
+            return out_flat.new_zeros(())
+
+        target = self._reshape_mtp_targets(mtp_targets, out_flat.size(0)).to(
+            device=mtp_preds.device, dtype=mtp_preds.dtype
+        )
+        if target.size(1) < mtp_preds.size(1):
+            raise ValueError(
+                f"mtp_targets horizon {target.size(1)} < mtp_num_heads {mtp_preds.size(1)}"
+            )
+        target = target[:, : mtp_preds.size(1), :]
+        return self.mtp_loss_weight * F.mse_loss(mtp_preds, target)
+
     # ---------- Forward ----------
     def forward(
         self,
@@ -711,6 +720,7 @@ class MoEFeedForwardDMoE(nn.Module):
         return_aux_loss: bool = True,
         tau: float = 1.0,
         downstream_loss: Optional[torch.Tensor] = None,
+        mtp_targets: Optional[torch.Tensor] = None,
         *,
         meta: Optional[Dict[str, Any]] = None,
     ):
@@ -746,30 +756,67 @@ class MoEFeedForwardDMoE(nn.Module):
                 shared_out = None
                 shared_cat = None
 
-            logits, per_token_k, _k_logits, _k_probs = self._compute_router_outputs(
-                x_flat, tau=tau
+            logits, per_token_k, _k_logits, _k_probs, _router_top_p, _router_top_i = (
+                self._compute_router_outputs(x_flat, tau=tau)
             )  # [T, E]
-            if per_token_k is None:
-                top_p, top_i = optimized_topk_routing(logits, self.top_k)
+            if self.routing_mode == "expert_choice":
                 self.last_per_token_k = None
                 self.last_log_prob_k = None
-            else:
-                top_p, top_i = self._adaptive_topk_routing(logits, per_token_k)
-                # Cache K stats for REINFORCE-style loss
-                log_probs = F.log_softmax(_k_logits, dim=-1)
-                log_prob_k = log_probs.gather(-1, per_token_k.unsqueeze(-1)).squeeze(-1)
-                self.last_per_token_k = per_token_k.detach()
-                self.last_log_prob_k = log_prob_k
-
-            if self.training:
-                self._update_expert_usage_ema(top_p, top_i)
-
-            # Pack (vectorized capacity prune)
-            packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
-                self.dispatcher.pack(
-                    x_flat, top_p, top_i, capacity_factor=self.moe_capacity_factor
+                top_i = torch.topk(
+                    logits,
+                    k=min(self.top_k, self.num_routed_experts),
+                    dim=-1,
+                    sorted=False,
+                ).indices
+                packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
+                    self.expert_choice_dispatcher.pack(x_flat, logits)
                 )
-            )
+                if self.training:
+                    self._update_expert_usage_ema_from_assignments(experts_seq)
+                    self._maybe_update_router_bias()
+            else:
+                if _router_top_p is not None and _router_top_i is not None:
+                    top_p, top_i = _router_top_p, _router_top_i
+                    self.last_per_token_k = None
+                    self.last_log_prob_k = None
+                elif per_token_k is None:
+                    can_use_fused_topk = (
+                        (fused_router_topk is not None)
+                        and self.use_fused_router_topk
+                        and (not self.training)
+                        and logits.is_cuda
+                        and (self.top_k in (1, 2))
+                    )
+                    if can_use_fused_topk:
+                        top_p, top_i = fused_router_topk(logits, self.top_k)
+                    else:
+                        top_p, top_i = optimized_topk_routing(logits, self.top_k)
+                    self.last_per_token_k = None
+                    self.last_log_prob_k = None
+                else:
+                    if _k_logits is None:
+                        raise RuntimeError(
+                            "router returned per_token_k without k_logits"
+                        )
+                    top_p, top_i = self._adaptive_topk_routing(logits, per_token_k)
+                    # Cache K stats for REINFORCE-style loss
+                    log_probs = F.log_softmax(_k_logits, dim=-1)
+                    log_prob_k = log_probs.gather(
+                        -1, (per_token_k - 1).unsqueeze(-1)
+                    ).squeeze(-1)
+                    self.last_per_token_k = per_token_k.detach()
+                    self.last_log_prob_k = log_prob_k
+
+                if self.training:
+                    self._update_expert_usage_ema(top_p, top_i)
+                    self._maybe_update_router_bias()
+
+                # Pack (vectorized capacity prune)
+                packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
+                    self.dispatcher.pack(
+                        x_flat, top_p, top_i, capacity_factor=self.moe_capacity_factor
+                    )
+                )
             self._last_num_assignments = int(experts_seq.numel())
 
             if packed_x.numel() == 0:
@@ -781,6 +828,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 out = out.reshape_as(x_norm)
                 aux = x.new_zeros(())
                 self.aux_loss = aux.detach()
+                self.last_mtp_loss = aux.detach()
                 latency_ms = self._maybe_stop_timer(t0)
                 self._populate_router_last(
                     logits,
@@ -867,6 +915,9 @@ class MoEFeedForwardDMoE(nn.Module):
             aux = self._compute_aux_loss(
                 logits, Toks, experts_seq, num_assignments=self._last_num_assignments
             )
+            mtp_loss = self._compute_mtp_loss(out_flat, mtp_targets)
+            aux = aux + mtp_loss
+            self.last_mtp_loss = mtp_loss.detach()
             if (
                 self.training
                 and downstream_loss is not None
@@ -892,6 +943,7 @@ class MoEFeedForwardDMoE(nn.Module):
         else:
             aux = x.new_zeros(())
             self.aux_loss = aux.detach()
+            self.last_mtp_loss = aux.detach()
 
         latency_ms = self._maybe_stop_timer(t0)
         self._populate_router_last(
@@ -930,26 +982,8 @@ class MoEFeedForwardDMoE(nn.Module):
             log_z = torch.logsumexp(logits.view(-1, self.num_routed_experts), dim=-1)
             aux = aux + self.z_loss_weight * 0.5 * (log_z**2).mean()
 
-        # Load-balance loss (uses post-capacity f and average p over E)
-        if self.load_balance_weight > 0:
-            # Full softmax here only for loss (off hot path)
-            probs = F.softmax(logits, dim=-1)
-            with torch.no_grad():
-                counts = torch.bincount(
-                    experts_seq, minlength=self.num_routed_experts
-                ).float()
-                if num_assignments is None:
-                    denom = max(1, (num_tokens * self.top_k))
-                else:
-                    denom = max(1, int(num_assignments))
-                f = counts / denom
-            p = probs.mean(dim=0)
-            aux = (
-                aux
-                + self.load_balance_weight
-                * self.num_routed_experts
-                * (f * p).pow(2).sum()
-            )
+        # Classic load-balance auxiliary loss intentionally removed.
+        # Expert utilization is handled via router expert-bias adaptation.
 
         return aux
 
@@ -984,11 +1018,18 @@ class MoEFeedForwardDMoE(nn.Module):
         eps = float(self._eps)
         usage = self.expert_usage.clamp_min(eps)
         entropy = -(usage * usage.log()).sum()
+        target = torch.full_like(usage, 1.0 / max(self.num_routed_experts, 1))
+        uniform_mse = (usage - target).pow(2).mean()
+        bias = self._get_router_expert_bias()
+        if bias is None:
+            bias = torch.zeros_like(usage)
         return {
             "expert_usage": self.expert_usage.clone(),
             "usage_entropy": entropy,
             "max_usage": self.expert_usage.max(),
             "min_usage": self.expert_usage.min(),
+            "usage_uniform_mse": uniform_mse,
+            "router_expert_bias": bias.detach().clone(),
         }
 
     @torch.no_grad()
@@ -1101,6 +1142,7 @@ class FeedForwardBlock(nn.Module):
     Unified FFN wrapper.
     - use_moe=True -> MoEFeedForwardDMoE (fast path)
     - use_moe=False -> standard FFN (with optional SwiGLU)
+    - routing_mode='token_choice' (default) or 'expert_choice'
     """
 
     def __init__(
@@ -1118,6 +1160,14 @@ class FeedForwardBlock(nn.Module):
         z_loss_weight: float = 1e-3,
         moe_capacity_factor: float = 1.25,
         router_type: str = "noisy_topk",
+        router_temperature: float = 1.0,
+        router_perturb_noise: float = 0.0,
+        router_hash_num_hashes: int = 2,
+        router_hash_num_buckets: int = 64,
+        router_hash_bucket_size: int = 8,
+        router_hash_seed: int = 17,
+        routing_mode: str = "token_choice",
+        expert_choice_tokens_per_expert: Optional[int] = None,
         use_bias: bool = False,
         input_dropout: float = 0.0,
         jitter: float = 0.01,
@@ -1139,8 +1189,15 @@ class FeedForwardBlock(nn.Module):
         compile_experts: bool = True,
         # Optional grouped-kernel flags (forwarded to MoEFeedForwardDMoE)
         use_grouped_kernel: bool = True,
+        use_fused_router_topk: bool = True,
         triton_use_fp16_acc: bool = False,
         triton_use_shared_b: bool = False,
+        router_expert_bias_init: float = 0.0,
+        router_bias_update_rate: float = 0.01,
+        router_bias_clip: float = 2.0,
+        mtp_num_heads: int = 0,
+        mtp_loss_weight: float = 0.0,
+        mtp_init_scale: float = 0.02,
     ):
         super().__init__()
         self.use_moe = bool(use_moe)
@@ -1158,6 +1215,14 @@ class FeedForwardBlock(nn.Module):
                 z_loss_weight=z_loss_weight,
                 moe_capacity_factor=moe_capacity_factor,
                 router_type=router_type,
+                router_temperature=router_temperature,
+                router_perturb_noise=router_perturb_noise,
+                router_hash_num_hashes=router_hash_num_hashes,
+                router_hash_num_buckets=router_hash_num_buckets,
+                router_hash_bucket_size=router_hash_bucket_size,
+                router_hash_seed=router_hash_seed,
+                routing_mode=routing_mode,
+                expert_choice_tokens_per_expert=expert_choice_tokens_per_expert,
                 use_bias=use_bias,
                 input_dropout=input_dropout,
                 jitter=jitter,
@@ -1176,8 +1241,15 @@ class FeedForwardBlock(nn.Module):
                 compile_router=compile_router,
                 compile_experts=compile_experts,
                 use_grouped_kernel=use_grouped_kernel,
+                use_fused_router_topk=use_fused_router_topk,
                 triton_use_fp16_acc=triton_use_fp16_acc,
                 triton_use_shared_b=triton_use_shared_b,
+                router_expert_bias_init=router_expert_bias_init,
+                router_bias_update_rate=router_bias_update_rate,
+                router_bias_clip=router_bias_clip,
+                mtp_num_heads=mtp_num_heads,
+                mtp_loss_weight=mtp_loss_weight,
+                mtp_init_scale=mtp_init_scale,
             )
             self._supports_aux = True
         else:

@@ -3,9 +3,7 @@ ForeBlocks DARTS: Neural Architecture Search for Time Series Forecasting
 """
 
 # Neural Building Blocks
-# Core DARTS Components
-from .darts import (  # Temporal Operations; Attention Mechanisms; Spectral Analysis; Advanced Neural Blocks
-    DARTSCell, TimeSeriesDARTS)
+from .architecture import DARTSCell, TimeSeriesDARTS
 
 # Zero-Cost Metrics and Search Functions
 

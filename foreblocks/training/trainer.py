@@ -4,6 +4,8 @@ Enhanced Trainer with NAS support for HeadComposer
 
 import contextlib
 import copy
+import datetime
+import warnings
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -20,7 +22,11 @@ from foreblocks.ui.node_spec import node
 # Optional: import your MoE classes and HeadComposer
 try:
     from foreblocks.tf.experts.moe import FeedForwardBlock, MoEFeedForwardDMoE
-    from foreblocks.tf.experts.moe_logging import MoELogger, ReportInputs, build_moe_report
+    from foreblocks.tf.experts.moe_logging import (
+        MoELogger,
+        ReportInputs,
+        build_moe_report,
+    )
 except Exception:
     MoELogger = None
     ReportInputs = None
@@ -29,8 +35,13 @@ except Exception:
         raise RuntimeError("MoE logging not available")
 
 
+from foreblocks.aux.utils import (
+    LossComputer,
+    NASHelper,
+    TrainingConfig,
+    TrainingHistory,
+)
 from foreblocks.evaluation.model_evaluator import ModelEvaluator
-from foreblocks.aux.utils import LossComputer, NASHelper, TrainingConfig, TrainingHistory
 
 # ============================================================
 # Conformal helpers (Trainer-side only)
@@ -129,11 +140,56 @@ class Trainer:
             ]
         ] = None,
         alpha_optimizer: Optional[torch.optim.Optimizer] = None,
+        mltracker: Optional[Any] = None,  # Pass an existing MLTracker instance
+        mltracker_uri: Optional[
+            str
+        ] = None,  # DB directory; defaults to <project_root>/mltracker_data
+        auto_track: bool = True,  # Auto-create MLTracker when none is supplied
     ):
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.use_wandb = use_wandb
+
+        # ------------------------------------------------------------------
+        # Resolve the DB path to an absolute location anchored at the project
+        # root (3 levels up from this file: training/ → foreblocks/ → root).
+        # This ensures the same DB is used regardless of notebook CWD.
+        # Priority: explicit argument > MLTRACKER_DIR env var > package-relative default
+        # ------------------------------------------------------------------
+        import os as _os
+        from pathlib import Path as _Path
+
+        if mltracker_uri is None:
+            mltracker_uri = _os.environ.get(
+                "MLTRACKER_DIR",
+                str(
+                    _Path(__file__).resolve().parent.parent / "mltracker/mltracker_data"
+                ),
+            )
+            print(f"[MLTracker] Resolved mltracker_uri to: {mltracker_uri}")
+
+        # ------------------------------------------------------------------
+        # Auto-tracking: create an MLTracker from the DB path when none is
+        # provided and auto_track=True.  The MLTracker writes directly to
+        # SQLite — no API server required.
+        # ------------------------------------------------------------------
+        if mltracker is not None:
+            self.mltracker = mltracker
+        elif auto_track:
+            try:
+                from foreblocks.mltracker.mltracker import MLTracker
+
+                self.mltracker = MLTracker(tracking_uri=mltracker_uri)
+            except Exception as _mt_err:
+                print(
+                    f"[MLTracker] Auto-track init failed, tracking disabled: {_mt_err}"
+                )
+                self.mltracker = None
+        else:
+            self.mltracker = None
+        self._mltracker_uri = mltracker_uri
+        self._last_run_id: Optional[str] = None  # set each time train() starts a run
 
         # -----------------------------------------
         # Config init
@@ -324,6 +380,38 @@ class Trainer:
         else:
             yield
 
+    @staticmethod
+    def _unpack_batch(
+        batch: Any,
+    ) -> Tuple[Any, Optional[Any], Optional[Any]]:
+        """Normalize batch formats to (X, y, time_feat)."""
+        if isinstance(batch, (list, tuple)):
+            if len(batch) == 3:
+                return batch[0], batch[1], batch[2]
+            if len(batch) == 2:
+                return batch[0], batch[1], None
+            if len(batch) >= 1:
+                y = batch[1] if len(batch) > 1 else None
+                time_feat = batch[2] if len(batch) > 2 else None
+                return batch[0], y, time_feat
+            return batch, None, None
+        return batch, None, None
+
+    def _move_batch_to_device(
+        self,
+        X: Any,
+        y: Optional[Any],
+        time_feat: Optional[Any] = None,
+    ) -> Tuple[Any, Optional[Any], Optional[Any]]:
+        """Move available tensors in a batch to the trainer device."""
+        if torch.is_tensor(X):
+            X = X.to(self.device)
+        if torch.is_tensor(y):
+            y = y.to(self.device)
+        if torch.is_tensor(time_feat):
+            time_feat = time_feat.to(self.device)
+        return X, y, time_feat
+
     def _forward_pass(
         self,
         X: torch.Tensor,
@@ -363,7 +451,10 @@ class Trainer:
         try:
             result = self.model(X, y, time_feat, self.current_epoch, meta=meta)
         except TypeError:
-            result = self.model(X, y, time_feat, self.current_epoch)
+            try:
+                result = self.model(X, y, time_feat, self.current_epoch)
+            except TypeError:
+                result = self.model(X)
 
         outputs = result[0] if isinstance(result, tuple) else result
         return outputs, aux
@@ -432,26 +523,8 @@ class Trainer:
                     dataloader_iter = iter(dataloader)
                     batch = next(dataloader_iter)
 
-                if isinstance(batch, (list, tuple)):
-                    if len(batch) == 3:
-                        X, y, time_feat = batch
-                    elif len(batch) == 2:
-                        X, y = batch
-                        time_feat = None
-                    else:
-                        X, y, time_feat = (
-                            batch[0],
-                            batch[1],
-                            (batch[2] if len(batch) > 2 else None),
-                        )
-                else:
-                    X, y, time_feat = batch, None, None
-
-                X = X.to(self.device)
-                if y is not None:
-                    y = y.to(self.device)
-                if time_feat is not None:
-                    time_feat = time_feat.to(self.device)
+                X, y, time_feat = self._unpack_batch(batch)
+                X, y, time_feat = self._move_batch_to_device(X, y, time_feat)
 
                 with torch.set_grad_enabled(True):
                     with self._amp_context():
@@ -551,26 +624,8 @@ class Trainer:
 
         try:
             for batch_idx, batch in enumerate(train_loader):
-                if isinstance(batch, (list, tuple)):
-                    if len(batch) == 3:
-                        X, y, time_feat = batch
-                    elif len(batch) == 2:
-                        X, y = batch
-                        time_feat = None
-                    else:
-                        X, y, time_feat = (
-                            batch[0],
-                            batch[1],
-                            (batch[2] if len(batch) > 2 else None),
-                        )
-                else:
-                    X, y, time_feat = batch, None, None
-
-                X = X.to(self.device)
-                if y is not None:
-                    y = y.to(self.device)
-                if time_feat is not None:
-                    time_feat = time_feat.to(self.device)
+                X, y, time_feat = self._unpack_batch(batch)
+                X, y, time_feat = self._move_batch_to_device(X, y, time_feat)
 
                 with self._amp_context():
                     outputs, aux = self._forward_pass(X, y, time_feat, batch_idx)
@@ -602,13 +657,8 @@ class Trainer:
         n = 0
 
         for batch in dataloader:
-            if isinstance(batch, (list, tuple)) and len(batch) >= 2:
-                X, y = batch[0], batch[1]
-            else:
-                X, y = batch, None
-            X = X.to(self.device)
-            if y is not None:
-                y = y.to(self.device)
+            X, y, _ = self._unpack_batch(batch)
+            X, y, _ = self._move_batch_to_device(X, y, None)
 
             with self._amp_context():
                 try:
@@ -626,6 +676,158 @@ class Trainer:
 
         return (total_loss / max(n, 1)) if n > 0 else float("nan")
 
+    def _init_mltracker_run_context(
+        self, run_name: Optional[str]
+    ) -> Tuple[Any, Optional[str]]:
+        run_context = contextlib.nullcontext()
+        if not self.mltracker:
+            return run_context, run_name
+
+        try:
+            exp_name = getattr(self.config, "experiment_name", "default_experiment")
+            if not run_name:
+                run_name = f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            run_context = self.mltracker.run(
+                experiment_name=exp_name, run_name=run_name
+            )
+        except Exception as e:
+            print(f"[MLTracker] Warning: Failed to initialize run context: {e}")
+        return run_context, run_name
+
+    def _get_mltracker_params(self) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        if hasattr(self.config, "__dict__"):
+            params.update(self.config.__dict__)
+        elif isinstance(self.config, dict):
+            params.update(self.config)
+        return params
+
+    def _log_mltracker_params(self):
+        if not self.mltracker:
+            return
+        try:
+            self.mltracker.log_params(self._get_mltracker_params())
+        except Exception as e:
+            print(f"[MLTracker] Warning: Failed to log params: {e}")
+
+    @staticmethod
+    def _build_mltracker_metrics(
+        train_loss: float,
+        lr: float,
+        components: Dict[str, float],
+        val_loss: Optional[float],
+    ) -> Dict[str, float]:
+        metrics = {"train_loss": train_loss, "lr": lr}
+        if val_loss is not None:
+            metrics["val_loss"] = val_loss
+        for k, v in components.items():
+            metrics[f"comp/{k}"] = float(v)
+        return metrics
+
+    def _log_mltracker_metrics(
+        self,
+        epoch: int,
+        train_loss: float,
+        lr: float,
+        components: Dict[str, float],
+        val_loss: Optional[float],
+    ):
+        if not self.mltracker:
+            return
+        try:
+            metrics = self._build_mltracker_metrics(
+                train_loss, lr, components, val_loss
+            )
+            self.mltracker.log_metrics(metrics, step=epoch)
+        except Exception as e:
+            print(f"[MLTracker] Warning: Failed to log metrics: {e}")
+
+    def _log_mltracker_model_info(self):
+        """Log model architecture metadata as params and system/git info as tags."""
+        if not self.mltracker:
+            return
+        try:
+            # Model summary
+            total_params = sum(p.numel() for p in self.model.parameters())
+            trainable_params = sum(
+                p.numel() for p in self.model.parameters() if p.requires_grad
+            )
+            self.mltracker.log_params(
+                {
+                    "model/class": type(self.model).__name__,
+                    "model/total_params": total_params,
+                    "model/trainable_params": trainable_params,
+                    "model/device": str(self.device),
+                }
+            )
+        except Exception as e:
+            print(f"[MLTracker] Warning: Failed to log model info: {e}")
+        # System + git tags (best-effort)
+        try:
+            from foreblocks.mltracker.mltracker import _maybe_git_info, _sys_info
+
+            self.mltracker.set_tags({f"sys:{k}": v for k, v in _sys_info().items()})
+            git = _maybe_git_info()
+            if git:
+                self.mltracker.set_tags({f"git:{k}": v for k, v in git.items()})
+        except Exception:
+            pass
+
+    def _log_mltracker_final(
+        self,
+        total_epochs: int,
+        stopped_early: bool,
+    ):
+        """Log end-of-training summary metrics and tags."""
+        if not self.mltracker:
+            return
+        try:
+            summary: Dict[str, Any] = {"epochs_completed": total_epochs}
+            if self.best_val_loss < float("inf"):
+                summary["best_val_loss"] = self.best_val_loss
+            self.mltracker.log_metrics(summary, step=total_epochs)
+            self.mltracker.set_tags(
+                {
+                    "trainer/early_stopped": str(stopped_early),
+                    "trainer/device": str(self.device),
+                    "trainer/amp": str(self.config.use_amp),
+                }
+            )
+        except Exception as e:
+            print(f"[MLTracker] Warning: Failed to log final summary: {e}")
+
+    def _log_to_last_run(
+        self,
+        metrics: Dict[str, float],
+        step: Optional[int] = None,
+        prefix: str = "",
+    ) -> None:
+        """Log metrics to the most recently finished training run without re-opening it."""
+        if not self.mltracker or not self._last_run_id:
+            return
+        _prev = self.mltracker._active_run
+        try:
+            self.mltracker._active_run = self._last_run_id
+            prefixed = {f"{prefix}{k}": v for k, v in metrics.items()}
+            self.mltracker.log_metrics(prefixed, step=step if step is not None else 0)
+        except Exception as e:
+            print(f"[MLTracker] Warning: Failed to log eval metrics: {e}")
+        finally:
+            self.mltracker._active_run = _prev
+
+    def _log_model_to_last_run(self, model_name: str = "model") -> None:
+        """Log model artifacts (including architecture) to the most recent run."""
+        if not self.mltracker or not self._last_run_id:
+            return
+        _prev = self.mltracker._active_run
+        try:
+            self.mltracker._active_run = self._last_run_id
+            self.mltracker.log_model(self.model, model_name=model_name)
+        except Exception as e:
+            print(f"[MLTracker] Warning: Failed to log model artifacts: {e}")
+        finally:
+            self.mltracker._active_run = _prev
+
     # =====================================================================
     # TRAIN LOOP — REMOVED AUTO-CALIBRATION (data leakage)
     # =====================================================================
@@ -636,67 +838,97 @@ class Trainer:
         callbacks: Optional[List[Any]] = None,
         epochs: Optional[int] = None,
         moe_report_outdir: Optional[str] = None,
+        run_name: Optional[str] = None,  # New: Optional run name for MLTracker
     ) -> TrainingHistory:
         callbacks = callbacks or []
         num_epochs = epochs if epochs is not None else self.config.num_epochs
 
-        with tqdm(range(num_epochs), desc="Training", unit="epoch") as pbar:
-            for epoch in pbar:
-                self.current_epoch = epoch
+        run_context, run_name = self._init_mltracker_run_context(run_name)
 
-                for cb in callbacks:
-                    if hasattr(cb, "on_epoch_begin"):
-                        cb.on_epoch_begin(self, epoch)
+        with run_context:
+            # capture run id so metrics() / plot_prediction() can log back to it
+            if self.mltracker and self.mltracker._active_run:
+                self._last_run_id = self.mltracker._active_run
+            self._log_mltracker_params()
+            self._log_mltracker_model_info()
 
-                train_loss, components = self.train_epoch(train_loader, val_loader)
-                val_loss = self.evaluate(val_loader) if val_loader else None
+            with tqdm(range(num_epochs), desc="Training", unit="epoch") as pbar:
+                for epoch in pbar:
+                    self.current_epoch = epoch
 
-                lr = self.optimizer.param_groups[0]["lr"]
-                model_info = (
-                    self.model.get_model_size()
-                    if hasattr(self.model, "get_model_size")
-                    else None
-                )
+                    for cb in callbacks:
+                        if hasattr(cb, "on_epoch_begin"):
+                            cb.on_epoch_begin(self, epoch)
 
-                alpha_info = None
-                if self.config.train_nas and self.nas_helper.has_nas:
-                    alpha_info = self.nas_helper.collect_alpha_report()
+                    train_loss, components = self.train_epoch(train_loader, val_loader)
+                    val_loss = self.evaluate(val_loader) if val_loader else None
 
-                self.history.record_epoch(
-                    train_loss, val_loss, lr, components, model_info, alpha_info
-                )
+                    lr = self.optimizer.param_groups[0]["lr"]
+                    model_info = (
+                        self.model.get_model_size()
+                        if hasattr(self.model, "get_model_size")
+                        else None
+                    )
 
-                if val_loader:
-                    if val_loss + self.config.min_delta < self.best_val_loss:
-                        self.best_val_loss = val_loss
-                        self.epochs_without_improvement = 0
-                        self.best_model_state = copy.deepcopy(self.model.state_dict())
-                    else:
-                        self.epochs_without_improvement += 1
-                    if self.epochs_without_improvement >= self.config.patience:
-                        print(f"\nEarly stopping at epoch {epoch + 1}")
-                        break
+                    alpha_info = None
+                    if self.config.train_nas and self.nas_helper.has_nas:
+                        alpha_info = self.nas_helper.collect_alpha_report()
 
-                pbar.set_postfix({"train": train_loss, "val": val_loss, "lr": lr})
+                    self.history.record_epoch(
+                        train_loss, val_loss, lr, components, model_info, alpha_info
+                    )
 
-                if self.scheduler:
-                    self.scheduler.step(val_loss if val_loader else train_loss)
+                    if val_loader:
+                        if val_loss + self.config.min_delta < self.best_val_loss:
+                            self.best_val_loss = val_loss
+                            self.epochs_without_improvement = 0
+                            self.best_model_state = copy.deepcopy(
+                                self.model.state_dict()
+                            )
+                        else:
+                            self.epochs_without_improvement += 1
+                        if self.epochs_without_improvement >= self.config.patience:
+                            print(f"\\nEarly stopping at epoch {epoch + 1}")
+                            break
 
-                for cb in callbacks:
-                    if hasattr(cb, "on_epoch_end"):
-                        cb.on_epoch_end(
-                            self,
-                            epoch,
-                            {
-                                "epoch": epoch,
-                                "train_loss": train_loss,
-                                "val_loss": val_loss,
-                                "lr": lr,
-                            },
-                        )
+                    pbar.set_postfix({"train": train_loss, "val": val_loss, "lr": lr})
+
+                    if self.scheduler:
+                        self.scheduler.step(val_loss if val_loader else train_loss)
+
+                    for cb in callbacks:
+                        if hasattr(cb, "on_epoch_end"):
+                            cb.on_epoch_end(
+                                self,
+                                epoch,
+                                {
+                                    "epoch": epoch,
+                                    "train_loss": train_loss,
+                                    "val_loss": val_loss,
+                                    "lr": lr,
+                                },
+                            )
+
+                    self._log_mltracker_metrics(
+                        epoch=epoch,
+                        train_loss=train_loss,
+                        lr=lr,
+                        components=components,
+                        val_loss=val_loss,
+                    )
+
+            self._log_mltracker_final(
+                total_epochs=epoch + 1,
+                stopped_early=self.epochs_without_improvement >= self.config.patience
+                if val_loader
+                else False,
+            )
 
         if self.best_model_state:
             self.model.load_state_dict(self.best_model_state)
+
+        # Persist final model + architecture artifacts to the completed run.
+        self._log_model_to_last_run(model_name="model")
 
         # NOTE: Auto-calibration REMOVED — call calibrate_conformal() manually
         # with held-out data to avoid data leakage
@@ -1033,6 +1265,24 @@ class Trainer:
             plt.tight_layout()
             if show:
                 plt.show()
+            # Save plot as artifact in the last training run
+            if self.mltracker and self._last_run_id:
+                try:
+                    import os as _os
+                    import tempfile
+
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".png", delete=False
+                    ) as tmp:
+                        tmp_path = tmp.name
+                    fig.savefig(tmp_path, dpi=120, bbox_inches="tight")
+                    _prev = self.mltracker._active_run
+                    self.mltracker._active_run = self._last_run_id
+                    self.mltracker.log_artifact(tmp_path, artifact_path="plots")
+                    self.mltracker._active_run = _prev
+                    _os.unlink(tmp_path)
+                except Exception:
+                    pass  # artifact logging is best-effort
             return fig
 
         pred_np = (
@@ -1076,13 +1326,32 @@ class Trainer:
         plt.tight_layout()
         if show:
             plt.show()
+        # Save plot as artifact in the last training run
+        if self.mltracker and self._last_run_id:
+            try:
+                import os as _os
+                import tempfile
+
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp_path = tmp.name
+                fig.savefig(tmp_path, dpi=120, bbox_inches="tight")
+                _prev = self.mltracker._active_run
+                self.mltracker._active_run = self._last_run_id
+                self.mltracker.log_artifact(tmp_path, artifact_path="plots")
+                self.mltracker._active_run = _prev
+                _os.unlink(tmp_path)
+            except Exception as _e:
+                pass  # artifact logging is best-effort
         return fig
 
     def metrics(
         self, X_val: torch.Tensor, y_val: torch.Tensor, batch_size: int = 256
     ) -> Dict[str, float]:
         evaluator = ModelEvaluator(self)
-        return evaluator.compute_metrics(X_val, y_val, batch_size)
+        result = evaluator.compute_metrics(X_val, y_val, batch_size)
+        # Log each metric back to the last training run (prefixed with "eval/")
+        self._log_to_last_run(result, prefix="eval/")
+        return result
 
     def cv(
         self,

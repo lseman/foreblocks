@@ -7,7 +7,6 @@ MLTracker - Lightweight ML Experiment Tracking System (smart version)
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import functools
 import hashlib
@@ -24,7 +23,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Union
 
 try:
     import getpass
@@ -52,7 +51,7 @@ def _safe_repr(x: Any, limit: int = _JSON_LIMIT) -> str:
     except Exception:
         s = f"<unrepr {type(x).__name__}>"
     if len(s) > limit:
-        s = s[:limit] + f"... <{len(s)-limit} more>"
+        s = s[:limit] + f"... <{len(s) - limit} more>"
     return s
 
 
@@ -79,7 +78,9 @@ def _try_jsonable(x: Any) -> Any:
 
 def _hashdict(d: Mapping[str, Any]) -> str:
     try:
-        payload = json.dumps({k: _try_jsonable(v) for k, v in sorted(d.items())}, sort_keys=True)
+        payload = json.dumps(
+            {k: _try_jsonable(v) for k, v in sorted(d.items())}, sort_keys=True
+        )
     except Exception:
         payload = repr(sorted(d.items()))
     return hashlib.md5(payload.encode()).hexdigest()[:16]
@@ -91,7 +92,9 @@ def _maybe_git_info() -> Dict[str, str]:
         import subprocess
 
         def run(cmd):
-            return subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+            return (
+                subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+            )
 
         root = run(["git", "rev-parse", "--show-toplevel"])
         info["git_root"] = root
@@ -125,7 +128,64 @@ def _sys_info() -> Dict[str, str]:
     return {k: v for k, v in d.items() if v is not None}
 
 
+def _module_tree(module: Any, name: str = "model") -> Dict[str, Any]:
+    children = []
+    if hasattr(module, "named_children"):
+        try:
+            children = list(module.named_children())
+        except Exception:
+            children = []
+
+    def _count_params(recurse: bool, trainable_only: bool = False) -> int:
+        if not hasattr(module, "parameters"):
+            return 0
+        try:
+            params = module.parameters(recurse=recurse)
+            if trainable_only:
+                return int(
+                    sum(p.numel() for p in params if getattr(p, "requires_grad", False))
+                )
+            return int(sum(p.numel() for p in params))
+        except Exception:
+            return 0
+
+    node = {
+        "name": str(name),
+        "type": module.__class__.__name__,
+        "num_params": _count_params(recurse=False),
+        "trainable_params": _count_params(recurse=False, trainable_only=True),
+        "children": [],
+    }
+
+    for child_name, child in children:
+        node["children"].append(_module_tree(child, child_name))
+    return node
+
+
+def _model_summary(model: Any) -> Dict[str, int]:
+    if not hasattr(model, "parameters"):
+        return {"total": 0, "trainable": 0, "non_trainable": 0}
+    try:
+        total = int(sum(p.numel() for p in model.parameters()))
+        trainable = int(
+            sum(
+                p.numel()
+                for p in model.parameters()
+                if getattr(p, "requires_grad", False)
+            )
+        )
+    except Exception:
+        total = 0
+        trainable = 0
+    return {
+        "total": total,
+        "trainable": trainable,
+        "non_trainable": max(0, total - trainable),
+    }
+
+
 # -------------------------- tracker --------------------------
+
 
 class MLTracker:
     """Main tracking class for ML experiments"""
@@ -219,9 +279,15 @@ class MLTracker:
             """)
 
             # Helpful indexes
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_exp_time ON runs(experiment_id, start_time DESC)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_key_step ON metrics(run_id, key, step)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_params_key ON params(run_id, key)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_exp_time ON runs(experiment_id, start_time DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_metrics_key_step ON metrics(run_id, key, step)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_params_key ON params(run_id, key)"
+            )
 
     # ---------- Experiments ----------
     def create_experiment(self, name: str) -> int:
@@ -245,9 +311,15 @@ class MLTracker:
             return int(row[0]) if row else None
 
     # ---------- Runs ----------
-    def start_run(self, experiment_name: str = "default", run_name: Optional[str] = None) -> str:
-        exp_id = self.get_experiment(experiment_name) or self.create_experiment(experiment_name)
-        run_id = hashlib.md5(f"{exp_id}_{_now_iso()}_{os.getpid()}".encode()).hexdigest()[:16]
+    def start_run(
+        self, experiment_name: str = "default", run_name: Optional[str] = None
+    ) -> str:
+        exp_id = self.get_experiment(experiment_name) or self.create_experiment(
+            experiment_name
+        )
+        import uuid
+
+        run_id = uuid.uuid4().hex[:16]
 
         with self._get_db() as conn:
             conn.execute(
@@ -331,7 +403,9 @@ class MLTracker:
         if not self._active_run:
             raise RuntimeError("No active run. Call start_run() first.")
         if len(data) > _BIN_LIMIT:
-            raise ValueError(f"Refusing to store binary > {_BIN_LIMIT} bytes via decorator helper")
+            raise ValueError(
+                f"Refusing to store binary > {_BIN_LIMIT} bytes via decorator helper"
+            )
         run_artifact_dir = self.artifacts_path / self._active_run / artifact_path
         run_artifact_dir.mkdir(parents=True, exist_ok=True)
         dest = run_artifact_dir / filename
@@ -339,12 +413,27 @@ class MLTracker:
         with self._get_db() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO artifacts (run_id, path, artifact_type) VALUES (?, ?, ?)",
-                (self._active_run, str(Path(artifact_path) / filename), Path(filename).suffix.lstrip(".")),
+                (
+                    self._active_run,
+                    str(Path(artifact_path) / filename),
+                    Path(filename).suffix.lstrip("."),
+                ),
             )
 
-    def log_figure(self, fig, filename: str = "figure.png", artifact_path: str = "figures", dpi: int = 120):
+    def log_figure(
+        self,
+        fig,
+        filename: str = "figure.png",
+        artifact_path: str = "figures",
+        dpi: int = 120,
+    ):
         buf = io.BytesIO()
-        fig.savefig(buf, format=Path(filename).suffix.lstrip(".") or "png", dpi=dpi, bbox_inches="tight")
+        fig.savefig(
+            buf,
+            format=Path(filename).suffix.lstrip(".") or "png",
+            dpi=dpi,
+            bbox_inches="tight",
+        )
         self.log_bytes(buf.getvalue(), filename=filename, artifact_path=artifact_path)
 
     def log_model(self, model: Any, model_name: str = "model"):
@@ -352,13 +441,72 @@ class MLTracker:
             raise RuntimeError("No active run. Call start_run() first.")
         model_dir = self.artifacts_path / self._active_run / "models"
         model_dir.mkdir(parents=True, exist_ok=True)
+
         model_path = model_dir / f"{model_name}.pkl"
-        with open(model_path, "wb") as f:
-            pickle.dump(model, f)
+        model_pickle_ok = True
+        try:
+            with open(model_path, "wb") as f:
+                pickle.dump(model, f)
+        except Exception:
+            model_pickle_ok = False
+
+        arch_txt_path = model_dir / f"{model_name}_architecture.txt"
+        arch_json_path = model_dir / f"{model_name}_architecture.json"
+
+        summary = _model_summary(model)
+        try:
+            model_text = str(model)
+        except Exception:
+            model_text = f"<{type(model).__name__}>"
+
+        with open(arch_txt_path, "w", encoding="utf-8") as f:
+            f.write(model_text)
+            f.write("\n\n")
+            f.write(f"Total params: {summary['total']:,}\n")
+            f.write(f"Trainable params: {summary['trainable']:,}\n")
+            f.write(f"Non-trainable params: {summary['non_trainable']:,}\n")
+
+        try:
+            arch_payload = {
+                "summary": summary,
+                "tree": _module_tree(model, name=model.__class__.__name__),
+            }
+        except Exception:
+            arch_payload = {
+                "summary": summary,
+                "tree": {
+                    "name": model.__class__.__name__,
+                    "type": model.__class__.__name__,
+                    "num_params": summary["total"],
+                    "trainable_params": summary["trainable"],
+                    "children": [],
+                },
+            }
+
+        with open(arch_json_path, "w", encoding="utf-8") as f:
+            json.dump(arch_payload, f, indent=2)
+
         with self._get_db() as conn:
+            if model_pickle_ok:
+                conn.execute(
+                    "INSERT OR REPLACE INTO artifacts (run_id, path, artifact_type) VALUES (?, ?, ?)",
+                    (self._active_run, f"models/{model_name}.pkl", "model"),
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO artifacts (run_id, path, artifact_type) VALUES (?, ?, ?)",
-                (self._active_run, f"models/{model_name}.pkl", "model"),
+                (
+                    self._active_run,
+                    f"models/{model_name}_architecture.txt",
+                    "architecture",
+                ),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO artifacts (run_id, path, artifact_type) VALUES (?, ?, ?)",
+                (
+                    self._active_run,
+                    f"models/{model_name}_architecture.json",
+                    "architecture-json",
+                ),
             )
 
     def load_model(self, run_id: str, model_name: str = "model"):
@@ -369,13 +517,18 @@ class MLTracker:
     # ---------- Queries ----------
     def get_run(self, run_id: str) -> Dict[str, Any]:
         with self._get_db() as conn:
-            run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            run = conn.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
             if not run:
                 raise ValueError(f"Run {run_id} not found")
 
-            params = {row["key"]: row["value"] for row in conn.execute(
-                "SELECT key, value FROM params WHERE run_id = ?", (run_id,)
-            )}
+            params = {
+                row["key"]: row["value"]
+                for row in conn.execute(
+                    "SELECT key, value FROM params WHERE run_id = ?", (run_id,)
+                )
+            }
             # latest value per metric
             metrics: Dict[str, float] = {}
             for row in conn.execute(
@@ -385,9 +538,12 @@ class MLTracker:
                 if row["key"] not in metrics:
                     metrics[row["key"]] = float(row["value"])
 
-            tags = {row["key"]: row["value"] for row in conn.execute(
-                "SELECT key, value FROM tags WHERE run_id = ?", (run_id,)
-            )}
+            tags = {
+                row["key"]: row["value"]
+                for row in conn.execute(
+                    "SELECT key, value FROM tags WHERE run_id = ?", (run_id,)
+                )
+            }
 
             return {
                 "run_id": run["run_id"],
@@ -401,6 +557,18 @@ class MLTracker:
                 "tags": tags,
             }
 
+    def delete_run(self, run_id: str) -> None:
+        """Permanently remove a run and all its associated data from the DB."""
+        with self._get_db() as conn:
+            row = conn.execute(
+                "SELECT run_id FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Run {run_id} not found")
+            for table in ("params", "metrics", "tags", "artifacts"):
+                conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+
     def search_runs(self, experiment_name: Optional[str] = None) -> List[Dict]:
         with self._get_db() as conn:
             if experiment_name:
@@ -412,7 +580,9 @@ class MLTracker:
                     (exp_id,),
                 ).fetchall()
             else:
-                rows = conn.execute("SELECT run_id FROM runs ORDER BY start_time DESC").fetchall()
+                rows = conn.execute(
+                    "SELECT run_id FROM runs ORDER BY start_time DESC"
+                ).fetchall()
             return [self.get_run(r["run_id"]) for r in rows]
 
     # ---------- Context manager ----------
@@ -432,7 +602,15 @@ class MLTracker:
         experiment: str = "default",
         run_name: Optional[str] = "{func}__{timestamp}",
         log_args: bool = True,
-        ignore: Iterable[str] = ("self", "cls", "data", "dataset", "loader", "X", "Y"),  # skip heavy objects
+        ignore: Iterable[str] = (
+            "self",
+            "cls",
+            "data",
+            "dataset",
+            "loader",
+            "X",
+            "Y",
+        ),  # skip heavy objects
         capture_system: bool = True,
         capture_git: bool = True,
         log_return: Union[None, str, Literal["metrics", "artifact"]] = None,
@@ -454,6 +632,7 @@ class MLTracker:
             * "artifact": pickle the return into artifacts/return.pkl
             * None: do nothing special with return
         """
+
         def decorator(fn):
             sig = inspect.signature(fn)
 
@@ -490,27 +669,58 @@ class MLTracker:
                 # log function params snapshot
                 if log_args and params_snapshot:
                     # log both as params (stringified) and a single artifact with full JSON
-                    self.log_params({f"arg:{k}": _safe_repr(v) for k, v in params_snapshot.items()})
+                    self.log_params(
+                        {f"arg:{k}": _safe_repr(v) for k, v in params_snapshot.items()}
+                    )
                     try:
-                        byts = json.dumps(params_snapshot, default=str, indent=2).encode()
+                        byts = json.dumps(
+                            params_snapshot, default=str, indent=2
+                        ).encode()
                         if len(byts) <= _BIN_LIMIT:
-                            self.log_bytes(byts, filename="call_args.json", artifact_path="inputs")
+                            self.log_bytes(
+                                byts, filename="call_args.json", artifact_path="inputs"
+                            )
                     except Exception:
                         pass
 
                 # small helper injected into function (if user accepts it)
                 class _Helper:
-                    def metric(_, key: str, value: float, step: int = 0): self.log_metric(key, float(value), step)
-                    def metrics(_, mdict: Mapping[str, float], step: int = 0): self.log_metrics(mdict, step)
-                    def params(_, pdict: Mapping[str, Any]): self.log_params(pdict)
-                    def tag(_, key: str, value: str): self.set_tag(key, value)
-                    def tags(_, tdict: Mapping[str, str]): self.set_tags(tdict)
-                    def artifact(_, path: Union[str, Path], artifact_path: str = ""): self.log_artifact(path, artifact_path)
-                    def bytes(_, data: bytes, filename: str, artifact_path: str = ""): self.log_bytes(data, filename, artifact_path)
-                    def figure(_, fig, filename: str = "figure.png", artifact_path: str = "figures", dpi: int = 120): self.log_figure(fig, filename, artifact_path, dpi)
-                    def model(_, model: Any, model_name: str = "model"): self.log_model(model, model_name)
+                    def metric(_, key: str, value: float, step: int = 0):
+                        self.log_metric(key, float(value), step)
+
+                    def metrics(_, mdict: Mapping[str, float], step: int = 0):
+                        self.log_metrics(mdict, step)
+
+                    def params(_, pdict: Mapping[str, Any]):
+                        self.log_params(pdict)
+
+                    def tag(_, key: str, value: str):
+                        self.set_tag(key, value)
+
+                    def tags(_, tdict: Mapping[str, str]):
+                        self.set_tags(tdict)
+
+                    def artifact(_, path: Union[str, Path], artifact_path: str = ""):
+                        self.log_artifact(path, artifact_path)
+
+                    def bytes(_, data: bytes, filename: str, artifact_path: str = ""):
+                        self.log_bytes(data, filename, artifact_path)
+
+                    def figure(
+                        _,
+                        fig,
+                        filename: str = "figure.png",
+                        artifact_path: str = "figures",
+                        dpi: int = 120,
+                    ):
+                        self.log_figure(fig, filename, artifact_path, dpi)
+
+                    def model(_, model: Any, model_name: str = "model"):
+                        self.log_model(model, model_name)
+
                     @property
-                    def run_id(_): return self._active_run
+                    def run_id(_):
+                        return self._active_run
 
                 injected = {}
                 if inject_param in sig.parameters:
@@ -525,15 +735,22 @@ class MLTracker:
                     # post-process return
                     if log_return == "metrics" and isinstance(result, Mapping):
                         # only floats/ints become metrics
-                        numeric = {k: float(v) for k, v in result.items()
-                                   if isinstance(v, (int, float))}
+                        numeric = {
+                            k: float(v)
+                            for k, v in result.items()
+                            if isinstance(v, (int, float))
+                        }
                         if numeric:
                             self.log_metrics(numeric, step=0)
                     elif log_return == "artifact":
                         try:
                             blob = pickle.dumps(result)
                             if len(blob) <= _BIN_LIMIT:
-                                self.log_bytes(blob, filename=return_artifact_name, artifact_path="return")
+                                self.log_bytes(
+                                    blob,
+                                    filename=return_artifact_name,
+                                    artifact_path="return",
+                                )
                         except Exception:
                             pass
 
@@ -544,6 +761,7 @@ class MLTracker:
                     raise
 
             return wrapper
+
         return decorator
 
 
@@ -554,21 +772,44 @@ if __name__ == "__main__":
 
     # Traditional context manager still works
     with tracker.run("classification_experiment", "random_forest_v1"):
-        tracker.log_params({"model_type": "random_forest", "n_estimators": 100, "max_depth": 10, "random_state": 42})
+        tracker.log_params(
+            {
+                "model_type": "random_forest",
+                "n_estimators": 100,
+                "max_depth": 10,
+                "random_state": 42,
+            }
+        )
         for epoch in range(5):
-            tracker.log_metrics({"train_loss": 0.5 - epoch * 0.08, "val_loss": 0.6 - epoch * 0.07, "accuracy": 0.7 + epoch * 0.05}, step=epoch)
+            tracker.log_metrics(
+                {
+                    "train_loss": 0.5 - epoch * 0.08,
+                    "val_loss": 0.6 - epoch * 0.07,
+                    "accuracy": 0.7 + epoch * 0.05,
+                },
+                step=epoch,
+            )
         tracker.set_tags({"team": "data-science", "version": "v1.0"})
         tracker.log_model({"type": "random_forest", "params": {}}, "rf_model")
 
     # Autolog example: we inject `_mlt` and return metrics to auto-log
-    @tracker.autolog(experiment="autolog_demo", run_name="{func}__{hash}__{timestamp}", log_args=True, log_return="metrics")
+    @tracker.autolog(
+        experiment="autolog_demo",
+        run_name="{func}__{hash}__{timestamp}",
+        log_args=True,
+        log_return="metrics",
+    )
     def train_epoch(config: Dict[str, Any], data=None, _mlt=None):
         # log inside the function
         _mlt.params({"optimizer": config.get("optimizer", "adam")})
         for step in range(3):
             _mlt.metric("loss", 0.9 - 0.2 * step, step=step)
         # metrics to be auto-logged from return value:
-        return {"val_loss": 0.3, "acc": 0.88, "note": "only numeric keys are logged as metrics"}
+        return {
+            "val_loss": 0.3,
+            "acc": 0.88,
+            "note": "only numeric keys are logged as metrics",
+        }
 
     train_epoch({"lr": 3e-4, "optimizer": "adamW", "depth": 12})
     print("Runs in autolog_demo:", len(tracker.search_runs("autolog_demo")))

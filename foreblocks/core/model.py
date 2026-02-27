@@ -5,7 +5,6 @@ import torch.nn as nn
 
 from foreblocks.ui.node_spec import node
 
-
 # =============================================================================
 # Graph utilities
 # =============================================================================
@@ -483,7 +482,9 @@ class ForecastingModel(nn.Module):
             loss = loss + (aux if torch.is_tensor(aux) else loss.new_tensor(aux))
 
         # in get_aux_loss()
-        if self.head_composer is not None and hasattr(self.head_composer, "get_aux_loss"):
+        if self.head_composer is not None and hasattr(
+            self.head_composer, "get_aux_loss"
+        ):
             loss = loss + self.head_composer.get_aux_loss().to(device)
         elif self.head_composer is not None and hasattr(self.head_composer, "aux_loss"):
             aux = self.head_composer.aux_loss
@@ -654,6 +655,64 @@ class ForecastingModel(nn.Module):
         """Apply final normalization/postprocessing exactly once."""
         return self.output_postprocessor(self.output_normalization(x))
 
+    def _get_strategy_fn(self):
+        """Resolve active strategy to its forward implementation."""
+        return {
+            "direct": self._forward_direct,
+            "autoregressive": self._forward_autoregressive,
+            "seq2seq": self._forward_seq2seq,
+            "transformer_seq2seq": self._forward_seq2seq,
+        }[self.strategy]
+
+    def _run_strategy(
+        self,
+        src: torch.Tensor,
+        targets: Optional[torch.Tensor],
+        time_features: Optional[torch.Tensor],
+        epoch: Optional[int],
+    ) -> torch.Tensor:
+        """Run selected strategy and return raw predictions."""
+        return self._get_strategy_fn()(src, targets, time_features, epoch)
+
+    def _encode_memory(
+        self,
+        src: torch.Tensor,
+        time_features: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Encode source (with optional time features) and align to decoder dim."""
+        if self.encoder is None:
+            raise RuntimeError("Encoder is required for this strategy.")
+        enc = (
+            self.encoder(src, time_features=time_features)
+            if time_features is not None
+            else self.encoder(src)
+        )
+        enc_out = enc[0] if isinstance(enc, tuple) else enc
+        return self._align_memory_to_decoder(enc_out)
+
+    @staticmethod
+    def _targets_to_horizon(
+        targets: Optional[torch.Tensor],
+        horizon: int,
+        *,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        """Clip/pad targets to exactly `horizon` steps."""
+        if targets is None:
+            return None
+        if targets.size(1) >= horizon:
+            return targets[:, :horizon, :]
+        pad = torch.zeros(
+            batch_size,
+            horizon - targets.size(1),
+            targets.size(2),
+            device=device,
+            dtype=dtype,
+        )
+        return torch.cat([targets, pad], dim=1)
+
     def _next_decoder_input(
         self,
         output: torch.Tensor,
@@ -665,6 +724,47 @@ class ForecastingModel(nn.Module):
         if use_tf and targets is not None:
             return targets[:, t : t + 1, :]
         return output if output.dim() == 3 else output.unsqueeze(1)
+
+    def _rollout_decoder(
+        self,
+        *,
+        decoder_input: torch.Tensor,
+        steps: int,
+        targets: Optional[torch.Tensor],
+        epoch: Optional[int],
+        step_fn: Callable[[torch.Tensor, int], torch.Tensor],
+        select_fn: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
+        aggregate: str = "cat",
+    ) -> torch.Tensor:
+        """
+        Generic autoregressive rollout helper used by decoder-based strategies.
+
+        Args:
+            decoder_input: initial decoder input [B, 1, Din] (or prompt slice).
+            steps: number of decoding steps.
+            targets: optional teacher-forcing targets [B, H, Dout].
+            epoch: training epoch for scheduled sampling.
+            step_fn: returns per-step raw output tensor.
+            select_fn: optional projection/slicing before aggregation.
+            aggregate: 'cat' for sequence tensors or 'stack' for step vectors.
+        """
+        use_tf = self._should_use_teacher_forcing(targets, epoch)
+        outputs = []
+
+        for t in range(steps):
+            step_out = step_fn(decoder_input, t)
+            selected = select_fn(step_out)
+            outputs.append(selected)
+
+            if t < steps - 1:
+                next_in = self._next_decoder_input(selected, targets, t, use_tf)
+                decoder_input = self.dec_feedback_proj(next_in)
+
+        if aggregate == "cat":
+            return torch.cat(outputs, dim=1)
+        if aggregate == "stack":
+            return torch.stack(outputs, dim=1)
+        raise ValueError(f"Unknown aggregate mode: {aggregate}")
 
     def _should_use_teacher_forcing(
         self,
@@ -818,13 +918,7 @@ class ForecastingModel(nn.Module):
             comp_state = None
 
         # Strategy (RAW)
-        strategy_fn = {
-            "direct": self._forward_direct,
-            "autoregressive": self._forward_autoregressive,
-            "seq2seq": self._forward_seq2seq,
-            "transformer_seq2seq": self._forward_seq2seq,
-        }[self.strategy]
-        raw = strategy_fn(x_enc, targets, time_features, epoch)
+        raw = self._run_strategy(x_enc, targets, time_features, epoch)
 
         # Composer inverse BEFORE final postprocess/normalization
         if self.head_composer is not None:
@@ -891,20 +985,7 @@ class ForecastingModel(nn.Module):
             comp_state = None
 
         # Temporal strategy on flattened streams (RAW)
-        if self.strategy in ("seq2seq", "transformer_seq2seq"):
-            out_3d = self._forward_seq2seq(
-                x_enc, targets=targets_3d, time_features=time_3d, epoch=epoch
-            )
-        elif self.strategy == "autoregressive":
-            out_3d = self._forward_autoregressive(
-                x_enc, targets=targets_3d, time_features=time_3d, epoch=epoch
-            )
-        elif self.strategy == "direct":
-            out_3d = self._forward_direct(
-                x_enc, targets=targets_3d, time_features=time_3d, epoch=epoch
-            )
-        else:
-            raise ValueError(f"Unsupported strategy for 4D: {self.strategy}")
+        out_3d = self._run_strategy(x_enc, targets_3d, time_3d, epoch)
 
         # Composer inverse (if present) BEFORE reshaping back
         if self.head_composer is not None:
@@ -943,19 +1024,20 @@ class ForecastingModel(nn.Module):
         """Autoregressive prediction strategy."""
         if self.decoder is None:
             raise RuntimeError("Autoregressive strategy requires a decoder.")
-        outputs = []
         decoder_input = self.dec_init_proj(src[:, -1:, :])
-        use_tf = self._should_use_teacher_forcing(targets, epoch)
 
-        for t in range(self.target_len):
-            out = self.decoder(decoder_input)
-            out = self.output_head(out)  # map to output dims; keep RAW
-            outputs.append(out)
-            if t < self.target_len - 1:
-                next_in = self._next_decoder_input(out, targets, t, use_tf)
-                decoder_input = self.dec_feedback_proj(next_in)
+        def step_fn(x_in: torch.Tensor, _: int) -> torch.Tensor:
+            out = self.decoder(x_in)
+            return self.output_head(out)  # map to output dims; keep RAW
 
-        return torch.cat(outputs, dim=1)  # RAW
+        return self._rollout_decoder(
+            decoder_input=decoder_input,
+            steps=self.target_len,
+            targets=targets,
+            epoch=epoch,
+            step_fn=step_fn,
+            aggregate="cat",
+        )  # RAW
 
     def _forward_seq2seq(
         self,
@@ -984,21 +1066,24 @@ class ForecastingModel(nn.Module):
         enc_out, enc_hidden = self.encoder(src)
         dec_hidden = self._prepare_decoder_hidden(enc_hidden)
         decoder_input = self.dec_init_proj(src[:, -1:, :])
-        use_tf = self._should_use_teacher_forcing(targets, epoch)
-        outputs = []
 
-        for t in range(self.target_len):
-            dec_out, dec_hidden = self.decoder(decoder_input, dec_hidden)
+        def step_fn(x_in: torch.Tensor, _: int) -> torch.Tensor:
+            nonlocal dec_hidden
+            dec_out, dec_hidden = self.decoder(x_in, dec_hidden)
             if self.use_attention:
                 context, _ = self.attention_module(dec_hidden, enc_out)
                 dec_out = torch.cat([dec_out, context], dim=-1)
-            dec_out = self.output_head(dec_out)  # RAW mapping
-            outputs.append(dec_out.squeeze(1) if dec_out.dim() == 3 else dec_out)
-            if t < self.target_len - 1:
-                next_in = self._next_decoder_input(dec_out, targets, t, use_tf)
-                decoder_input = self.dec_feedback_proj(next_in)
+            return self.output_head(dec_out)  # RAW mapping
 
-        return torch.stack(outputs, dim=1)  # RAW
+        return self._rollout_decoder(
+            decoder_input=decoder_input,
+            steps=self.target_len,
+            targets=targets,
+            epoch=epoch,
+            step_fn=step_fn,
+            select_fn=lambda out: out.squeeze(1) if out.dim() == 3 else out,
+            aggregate="stack",
+        )  # RAW
 
     def _forward_transformer_style(
         self,
@@ -1009,14 +1094,7 @@ class ForecastingModel(nn.Module):
     ) -> torch.Tensor:
         """Transformer-style seq2seq forward pass."""
         device = src.device
-        memory = (
-            self.encoder(src, time_features=time_features)
-            if time_features is not None
-            else self.encoder(src)
-        )
-        memory = self._align_memory_to_decoder(
-            memory[0] if isinstance(memory, tuple) else memory
-        )
+        memory = self._encode_memory(src, time_features=time_features)
 
         decoder_input = (
             src[:, -self.label_len :, :]
@@ -1024,6 +1102,7 @@ class ForecastingModel(nn.Module):
             else src[:, -1:, :]
         )
         decoder_input = self.dec_init_proj(decoder_input)
+        prompt_len = decoder_input.size(1)
 
         outputs = []
         use_tf = self._should_use_teacher_forcing(targets, epoch)
@@ -1031,8 +1110,23 @@ class ForecastingModel(nn.Module):
         for t in range(self.pred_len):
             L_tgt = decoder_input.size(1)
             tgt_mask = self._causal_mask(L_tgt, device=device)
+            mtp_base = None
+            if self.training and (targets is not None):
+                n_future = max(0, L_tgt - prompt_len)
+                if n_future > 0:
+                    gt_now = self.dec_feedback_proj(targets[:, :n_future, :])
+                    mtp_base = torch.cat(
+                        [decoder_input[:, :prompt_len, :], gt_now], dim=1
+                    )
+                else:
+                    mtp_base = decoder_input
             try:
-                out = self.decoder(decoder_input, memory, tgt_mask=tgt_mask)
+                out = self.decoder(
+                    decoder_input,
+                    memory,
+                    tgt_mask=tgt_mask,
+                    mtp_targets=mtp_base,
+                )
             except TypeError:
                 out = self.decoder(decoder_input, memory)
             out = self.output_head(out)  # RAW mapping
@@ -1081,9 +1175,7 @@ class ForecastingModel(nn.Module):
         L_dec = L_label + H
 
         # ----- Encoder -----
-        enc = self.encoder(src, time_features=time_features)
-        enc_out = enc[0] if isinstance(enc, tuple) else enc
-        enc_out = self._align_memory_to_decoder(enc_out)
+        enc_out = self._encode_memory(src, time_features=time_features)
 
         # ----- Build decoder features: [known label] + [future zeros] -----
         dec_known_feats = (
@@ -1101,19 +1193,16 @@ class ForecastingModel(nn.Module):
 
         # ----- Teacher forcing over the horizon (no last_src_step, direct fill) -----
         use_tf = self.training and teacher_forcing != "none" and targets is not None
+        tgt_full = None
         if use_tf:
             # Ensure targets cover H steps (pad if shorter)
-            if targets.size(1) < H:
-                pad = torch.zeros(
-                    B,
-                    H - targets.size(1),
-                    targets.size(2),
-                    device=targets.device,
-                    dtype=targets.dtype,
-                )
-                tgt_full = torch.cat([targets, pad], dim=1)
-            else:
-                tgt_full = targets
+            tgt_full = self._targets_to_horizon(
+                targets,
+                H,
+                batch_size=B,
+                device=targets.device,
+                dtype=targets.dtype,
+            )
 
             # Project GT to d_model (if output features differ from input features,
             # provide a dedicated proj)
@@ -1143,6 +1232,21 @@ class ForecastingModel(nn.Module):
         else:
             dec_future_emb = zeros_emb
             force_mask = torch.zeros(B, H, dtype=torch.bool, device=device)
+
+        mtp_base = None
+        if self.training and (targets is not None):
+            if tgt_full is None:
+                tgt_full = self._targets_to_horizon(
+                    targets,
+                    H,
+                    batch_size=B,
+                    device=targets.device,
+                    dtype=targets.dtype,
+                )
+            gt_future_in = self.dec_feedback_proj(tgt_full[:, :H, :])  # [B, H, dec_in]
+            mtp_base = torch.cat(
+                [dec_known_emb, gt_future_in], dim=1
+            )  # [B, L_dec, dec_in]
 
         # Final decoder input
         dec_input = torch.cat(
@@ -1191,6 +1295,7 @@ class ForecastingModel(nn.Module):
                 tgt_key_padding_mask=tgt_key_padding_mask,
                 memory_key_padding_mask=None,
                 time_features=dec_time,
+                mtp_targets=mtp_base,
             )
         except TypeError:
             try:

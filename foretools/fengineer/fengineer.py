@@ -41,6 +41,8 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         self.correlation_filter_ = None
         self.selector_ = None
         self.final_scaler_ = None
+        self.output_features_ = []
+        self.output_fill_values_ = pd.Series(dtype="float64")
         self.fitted_ = False
 
         # Track feature creation statistics
@@ -77,6 +79,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                     gamma=getattr(self.config, "rff_gamma", "auto"),
                     kernel=getattr(self.config, "rff_kernel", "rbf"),
                     max_features=getattr(self.config, "rff_max_features", 50),
+                    handle_missing_features=getattr(
+                        self.config, "rff_handle_missing_features", "impute"
+                    ),
                 ),
             ),
         }
@@ -157,6 +162,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 print("⚠️  No features selected - pipeline may need tuning")
 
         # Print feature creation summary
+        self.output_features_ = current_X.columns.tolist()
+        # Keep training-time fill values so transform does not depend on tiny batch stats.
+        self.output_fill_values_ = current_X.median(numeric_only=True)
         self._print_feature_summary()
 
         self.fitted_ = True
@@ -184,20 +192,34 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         # Apply feature selection
         if self.selector_ is not None:
             selected_features = self.selector_.get_selected_features()
-            available_features = [
-                col for col in selected_features if col in current_X.columns
-            ]
+            if selected_features:
+                missing_selected = [c for c in selected_features if c not in current_X.columns]
+                if missing_selected:
+                    current_X = current_X.copy()
+                    for col in missing_selected:
+                        current_X[col] = np.nan
+                current_X = current_X[selected_features]
 
-            if available_features:
-                current_X = current_X[available_features]
+        # Enforce fitted output schema/order for robust inference on small/unseen batches.
+        if self.output_features_:
+            missing_output = [c for c in self.output_features_ if c not in current_X.columns]
+            if missing_output:
+                current_X = current_X.copy()
+                for col in missing_output:
+                    current_X[col] = np.nan
+            current_X = current_X[self.output_features_]
+            current_X = current_X.apply(pd.to_numeric, errors="coerce")
 
-                # Apply final scaling
-                if self.final_scaler_ is not None:
-                    X_filled = current_X.fillna(current_X.median())
-                    X_scaled = self.final_scaler_.transform(X_filled)
-                    return pd.DataFrame(
-                        X_scaled, columns=current_X.columns, index=X.index
-                    )
+            fill_values = self.output_fill_values_.reindex(self.output_features_)
+            fill_values = fill_values.fillna(0.0)
+            current_X = current_X.fillna(fill_values)
+
+        # Apply final scaling
+        if self.final_scaler_ is not None and not current_X.empty:
+            X_scaled = self.final_scaler_.transform(current_X)
+            return pd.DataFrame(
+                X_scaled, columns=current_X.columns, index=X.index
+            )
 
         return current_X if not current_X.empty else pd.DataFrame(index=X.index)
 

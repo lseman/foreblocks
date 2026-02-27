@@ -7,7 +7,7 @@ from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 
 from foretools.aux.adaptive_mi import AdaptiveMI
-from foretools.fengineer.rfecv import AdvancedRFECV, RFECVConfig
+from .rfecv import AdvancedRFECV, RFECVConfig
 
 
 class FeatureSelector:
@@ -17,7 +17,8 @@ class FeatureSelector:
         self.shap_scores_: Optional[pd.Series] = None
         self.selected_features_: List[str] = []
 
-        # RFECV integration
+        # Selector integration
+        self.selector_method = str(getattr(config, "selector_method", "mi")).lower()
         self.use_rfecv = getattr(config, 'use_rfecv', True)
         self.rfecv_selector_ = None
         self.selection_method_ = "mi"  # Default to MI
@@ -59,36 +60,51 @@ class FeatureSelector:
         )
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "FeatureSelector":
-        """Fit feature selector with optional RFECV."""
-        
-        # Determine if we should use RFECV based on dataset characteristics
-        n_features = X.shape[1]
-        n_samples = X.shape[0]
-        
-        # 1. Use Boruta if enabled (High precision)
-        if getattr(self.config, 'use_boruta', False):
+        """Fit feature selector with configurable method selection."""
+        method = self._resolve_selector_method()
+
+        if method == "boruta":
             print("🌲 Running Boruta feature selection...")
             success = self._fit_boruta(X, y)
             if success:
                 self.selection_method_ = "boruta"
                 return self
+            print("   ⚠️  Boruta failed, falling back to MI selection")
 
-        # 2. Use RFECV if explicitly enabled or if dataset is suitable
-        should_use_rfecv = self.use_rfecv
-        
-        if should_use_rfecv:
+        elif method == "rfecv":
             print("🔄 Using RFECV feature selection...")
             success = self._fit_rfecv(X, y)
             if success:
                 self.selection_method_ = "rfecv"
                 return self
-            else:
-                print("   ⚠️  RFECV failed, falling back to MI selection")
-        
-        # 3. Fallback to original MI-based selection
+            print("   ⚠️  RFECV failed, falling back to MI selection")
+
+        # Fallback/default MI-based selection
         print("📊 Using Mutual Information feature selection...")
         self.selection_method_ = "mi"
         return self._fit_mi(X, y)
+
+    def _resolve_selector_method(self) -> str:
+        """Resolve selector strategy with backward compatibility."""
+        allowed = {"auto", "mi", "rfecv", "boruta"}
+        method = self.selector_method
+        if method not in allowed:
+            warnings.warn(
+                f"Unknown selector_method='{method}'. Falling back to 'auto'."
+            )
+            method = "auto"
+
+        # Preserve historical behavior when using auto:
+        # boruta (if enabled) -> rfecv (if enabled) -> mi
+        if method == "auto":
+            if getattr(self.config, "use_boruta", False):
+                return "boruta"
+            if self.use_rfecv:
+                return "rfecv"
+            return "mi"
+
+        # Explicit method overrides legacy booleans.
+        return method
 
     def _fit_boruta(self, X: pd.DataFrame, y: pd.Series) -> bool:
         """Fit Boruta selector."""

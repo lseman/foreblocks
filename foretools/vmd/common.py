@@ -315,7 +315,7 @@ class VMDParameters:
     init: int = 1
     max_iter: int = 300
     # omega update stabilization (frequency-center damping)
-    omega_momentum: float = 0.3
+    omega_momentum: float = 0.0
     omega_shrinkage: float = 0.0
     omega_max_step: float = 0.0
     # mode-specific bandwidth penalty (alpha_k) adaptation
@@ -328,7 +328,7 @@ class VMDParameters:
     adaptive_alpha_skip_dc: bool = True
 
     # boundary
-    boundary_method: str = "reflect"
+    boundary_method: str = "mirror"
     use_soft_junction: bool = False
     window_alpha: Optional[float] = None  # if None -> auto
 
