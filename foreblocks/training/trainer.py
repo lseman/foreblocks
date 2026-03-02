@@ -1267,7 +1267,7 @@ class Trainer:
             if save_path:
                 fig.savefig(save_path, dpi=120, bbox_inches="tight")
             if show:
-                plt.show()
+            plt.show()
             # Save plot as artifact in the last training run
             if self.mltracker and self._last_run_id:
                 try:

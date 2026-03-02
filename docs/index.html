@@ -237,34 +237,34 @@ pip install -e .</code></pre>
     </div>
     <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
       <div class="card rounded-2xl p-6">
-        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Multiple Strategies</h3>
-        <p class="text-sm" style="color:#6a6a90">Seq2Seq, Autoregressive, Direct multi-step, Transformer Seq2Seq &#8212; swap strategies instantly.</p>
+        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg></div>
+        <h3 class="font-semibold text-white mb-1.5">ForecastingModel Core</h3>
+        <p class="text-sm" style="color:#6a6a90">One <code>nn.Module</code> class powers all strategies &#8212; <code>seq2seq</code>, <code>autoregressive</code>, <code>direct</code>, <code>transformer_seq2seq</code> &#8212; via a unified forward pass.</p>
       </div>
       <div class="card rounded-2xl p-6">
-        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Modular Design</h3>
-        <p class="text-sm" style="color:#6a6a90">Swap encoders, decoders, attention heads, and output layers through a clean composable API.</p>
+        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></div>
+        <h3 class="font-semibold text-white mb-1.5">Composable Blocks</h3>
+        <p class="text-sm" style="color:#6a6a90">Mix and match <code>LSTMEncoder</code>, <code>TransformerEncoder</code>, Fourier, Wavelet, TCN, xLSTM, and Graph blocks as encoders or preprocessing heads.</p>
       </div>
       <div class="card rounded-2xl p-6">
         <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Advanced Models</h3>
-        <p class="text-sm" style="color:#6a6a90">LSTM, GRU, Transformer, VAE; Fourier &amp; Wavelet blocks for frequency-domain learning.</p>
+        <h3 class="font-semibold text-white mb-1.5">Processing Heads</h3>
+        <p class="text-sm" style="color:#6a6a90"><code>RevinHead</code>, <code>DAINHead</code>, <code>DecompositionHead</code>, <code>PatchEmbedHead</code>, <code>Time2VecHead</code>, <code>FFTTopKHead</code> &#8212; attach at <code>input</code>, <code>output</code>, or <code>input_norm</code>.</p>
       </div>
       <div class="card rounded-2xl p-6">
         <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Adaptive Preprocessing</h3>
-        <p class="text-sm" style="color:#6a6a90">Normalization, differencing, detrending, EWT, outlier handling &#8212; auto-tuned for your data.</p>
+        <h3 class="font-semibold text-white mb-1.5">Conformal Prediction</h3>
+        <p class="text-sm" style="color:#6a6a90">Built-in uncertainty intervals via <code>Trainer</code>: Split, EnbPI, Rolling ACI, AgACI, CPTC, AFOCP &#8212; enabled with one config flag.</p>
       </div>
       <div class="card rounded-2xl p-6">
         <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Attention Modules</h3>
-        <p class="text-sm" style="color:#6a6a90">Pluggable dot-product, additive, and multi-head attention for temporal alignment.</p>
+        <h3 class="font-semibold text-white mb-1.5">NAS &amp; HeadComposer</h3>
+        <p class="text-sm" style="color:#6a6a90"><code>HeadComposer</code> learns differentiable weights over head candidates. Enable with <code>train_nas=True</code> in <code>TrainingConfig</code> for automatic architecture search.</p>
       </div>
       <div class="card rounded-2xl p-6">
         <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Trainer &amp; Utilities</h3>
-        <p class="text-sm" style="color:#6a6a90">Callbacks, early stopping, built-in metrics, and visual diagnostics for fast iteration.</p>
+        <h3 class="font-semibold text-white mb-1.5">Trainer &amp; MLTracker</h3>
+        <p class="text-sm" style="color:#6a6a90">AMP, gradient clipping, LR schedulers, early stopping, <code>ModelEvaluator</code>, and automatic SQLite experiment tracking via <code>MLTracker</code>.</p>
       </div>
     </div>
   </div>
@@ -278,60 +278,84 @@ pip install -e .</code></pre>
     <div class="text-center mb-12">
       <div class="stag">Recipes</div>
       <h2 class="text-3xl sm:text-4xl font-bold text-white">Model Configurations</h2>
-      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Copy-paste configurations for common architectures.</p>
+      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Compose encoders, decoders, and heads into a <code>ForecastingModel</code> in just a few lines.</p>
     </div>
     <div class="grid md:grid-cols-2 gap-5 mb-5">
       <div class="card rounded-2xl p-6">
-        <div class="flex items-center gap-3 mb-4"><div class="snum">1</div><div><h3 class="font-semibold text-white">Seq2Seq (LSTM)</h3><p class="text-xs" style="color:#5a5a7a">Encoder-decoder with recurrent hidden state</p></div></div>
+        <div class="flex items-center gap-3 mb-4"><div class="snum">1</div><div><h3 class="font-semibold text-white">Seq2Seq LSTM</h3><p class="text-xs" style="color:#5a5a7a">Compose encoder + decoder + train with Trainer</p></div></div>
         <div class="relative">
           <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+          <pre class="line-numbers"><code class="language-python">from foreblocks import ForecastingModel, Trainer, TrainingConfig
+from foreblocks.blocks.enc_dec import LSTMEncoder, LSTMDecoder
+from foreblocks.aux import create_dataloaders
 
-cfg = ModelConfig(
-    model_type="lstm", strategy="seq2seq",
-    input_size=3, output_size=1,
-    hidden_size=64, target_len=24,
-    num_encoder_layers=2, num_decoder_layers=2,
+enc = LSTMEncoder(input_size=3, hidden_size=64, num_layers=2)
+dec = LSTMDecoder(input_size=1, hidden_size=64, output_size=1, num_layers=2)
+
+model = ForecastingModel(
+    encoder=enc, decoder=dec,
+    forecasting_strategy="seq2seq", model_type="lstm",
+    target_len=24, output_size=1,
 )
-model = TimeSeriesSeq2Seq(model_config=cfg)</code></pre>
+
+train_loader, val_loader = create_dataloaders(X_train, y_train, batch_size=32)
+trainer = Trainer(model, config=TrainingConfig(num_epochs=50, patience=10))
+history = trainer.train(train_loader, val_loader)</code></pre>
         </div>
       </div>
       <div class="card rounded-2xl p-6">
         <div class="flex items-center gap-3 mb-4"><div class="snum">2</div><div><h3 class="font-semibold text-white">Transformer Seq2Seq</h3><p class="text-xs" style="color:#5a5a7a">Multi-head self-attention for long-range context</p></div></div>
         <div class="relative">
           <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+          <pre class="line-numbers"><code class="language-python">from foreblocks import ForecastingModel, Trainer, TrainingConfig
+from foreblocks.tf.transformer import TransformerEncoder, TransformerDecoder
 
-cfg = ModelConfig(
-  model_type="transformer", strategy="transformer_seq2seq",
-  input_size=4, output_size=4,
-  hidden_size=128, dim_feedforward=512,
-  nheads=8, num_encoder_layers=3, num_decoder_layers=3,
-  target_len=96,
+enc = TransformerEncoder(input_size=4, hidden_size=128,
+                         nheads=8, num_layers=3, dim_feedforward=512)
+dec = TransformerDecoder(input_size=4, hidden_size=128, output_size=4,
+                         nheads=8, num_layers=3, dim_feedforward=512)
+
+model = ForecastingModel(
+    encoder=enc, decoder=dec,
+    forecasting_strategy="transformer_seq2seq", model_type="transformer",
+    target_len=96, output_size=4,
 )
-model = TimeSeriesSeq2Seq(model_config=cfg)</code></pre>
+cfg = TrainingConfig(num_epochs=100, learning_rate=1e-4, use_amp=True)
+trainer = Trainer(model, config=cfg)</code></pre>
         </div>
       </div>
     </div>
     <div class="card rounded-2xl p-6">
-      <div class="flex items-center gap-3 mb-4"><div class="snum">3</div><div><h3 class="font-semibold text-white">Autoregressive &amp; Direct Multi-Step</h3><p class="text-xs" style="color:#5a5a7a">Switch strategies without touching the data pipeline</p></div></div>
+      <div class="flex items-center gap-3 mb-4"><div class="snum">3</div><div><h3 class="font-semibold text-white">Heads, Attention &amp; Conformal Intervals</h3><p class="text-xs" style="color:#5a5a7a">Post-hoc composition and uncertainty quantification</p></div></div>
       <div class="grid md:grid-cols-2 gap-4">
         <div class="relative">
           <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">cfg.strategy = "autoregressive"  # one-step teacher forcing
-# or
-cfg.strategy = "direct"          # predict all steps at once</code></pre>
+          <pre class="line-numbers"><code class="language-python"># Attach preprocessing heads post-hoc
+from foreblocks.core.heads.revin_head import RevinHead
+from foreblocks.core.att import AttentionLayer
+
+model.add_head(RevinHead(input_size=3), position="input_norm")
+model.add_head(
+    AttentionLayer(method="dot",
+                   encoder_hidden_size=64,
+                   decoder_hidden_size=64),
+    position="attention"
+)
+print(model.list_heads())</code></pre>
         </div>
         <div class="relative">
           <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python"># Add pluggable attention
-from foreblocks.attention import AttentionLayer
-attn = AttentionLayer(
-    method="dot",
-    encoder_hidden_size=64,
-    decoder_hidden_size=64,
+          <pre class="line-numbers"><code class="language-python"># Conformal prediction intervals
+from foreblocks import TrainingConfig, Trainer
+
+cfg = TrainingConfig(
+    conformal_enabled=True,
+    conformal_method="enbpi",   # split | rolling | agaci | cptc ...
+    conformal_quantile=0.9,
 )
-model = TimeSeriesSeq2Seq(model_config=cfg, attention_module=attn)</code></pre>
+trainer = Trainer(model, config=cfg)
+trainer.calibrate_conformal(cal_loader)
+lower, upper = trainer.predict_with_intervals(X_test)</code></pre>
         </div>
       </div>
     </div>
@@ -351,34 +375,45 @@ model = TimeSeriesSeq2Seq(model_config=cfg, attention_module=attn)</code></pre>
     <div class="card rounded-2xl p-6 mb-8 max-w-4xl mx-auto">
       <div class="flex items-center gap-3 mb-4">
         <div class="ibox"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div>
-        <h3 class="font-semibold text-white">Minimal Example</h3>
+        <h3 class="font-semibold text-white">Minimal End-to-End Example</h3>
       </div>
       <div class="relative">
         <button class="copy-btn">Copy</button>
-        <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
-import pandas as pd, torch
+        <pre class="line-numbers"><code class="language-python">import numpy as np
+from foreblocks import ForecastingModel, Trainer, TrainingConfig
+from foreblocks.blocks.enc_dec import LSTMEncoder, LSTMDecoder
+from foreblocks.aux import create_dataloaders
 
-data = pd.read_csv('your_data.csv').values  # n_samples x n_features
+# 1. Build encoder / decoder
+enc = LSTMEncoder(input_size=4, hidden_size=64, num_layers=2)
+dec = LSTMDecoder(input_size=1, hidden_size=64, output_size=1, num_layers=2)
 
-cfg = ModelConfig(model_type="lstm", input_size=data.shape[1],
-                  output_size=1, hidden_size=64, target_len=24)
-model = TimeSeriesSeq2Seq(model_config=cfg)
+# 2. Assemble ForecastingModel
+model = ForecastingModel(
+    encoder=enc, decoder=dec,
+    forecasting_strategy="seq2seq",
+    model_type="lstm",
+    target_len=24, output_size=1,
+)
 
-X_train, y_train, _ = model.preprocess(data, self_tune=True)
-from torch.utils.data import DataLoader, TensorDataset
-loader = DataLoader(
-    TensorDataset(torch.tensor(X_train, dtype=torch.float32),
-                  torch.tensor(y_train, dtype=torch.float32)),
-    batch_size=32, shuffle=True)
+# 3. Prepare data
+X = np.random.randn(1000, 30, 4).astype("float32")  # [samples, seq_len, features]
+y = np.random.randn(1000, 24, 1).astype("float32")  # [samples, target_len, outputs]
+train_loader, val_loader = create_dataloaders(X, y, batch_size=32, val_split=0.2)
 
-history = model.train_model(loader)
-# predictions = model.predict(X_test)</code></pre>
+# 4. Train
+cfg = TrainingConfig(num_epochs=50, learning_rate=1e-3, patience=10, use_amp=True)
+trainer = Trainer(model, config=cfg)
+history = trainer.train(train_loader, val_loader)
+
+# 5. Evaluate
+metrics = trainer.metrics(val_loader)  # returns dict of MAE, RMSE, MAPE ...</code></pre>
       </div>
     </div>
     <div class="grid sm:grid-cols-3 gap-4 max-w-4xl mx-auto">
-      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#6366f1">STEP 01</div><h4 class="font-semibold text-white mb-1">Choose Strategy</h4><p class="text-sm" style="color:#6a6a90"><code>seq2seq</code>, <code>autoregressive</code>, <code>direct</code>, or <code>transformer_seq2seq</code>.</p></div>
-      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#22d3ee">STEP 02</div><h4 class="font-semibold text-white mb-1">Configure</h4><p class="text-sm" style="color:#6a6a90">Hidden sizes, attention type, preprocessing options, trainer settings.</p></div>
-      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#6366f1">STEP 03</div><h4 class="font-semibold text-white mb-1">Train &amp; Evaluate</h4><p class="text-sm" style="color:#6a6a90">Built-in metrics, callbacks, early stopping, and plots to iterate quickly.</p></div>
+      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#6366f1">STEP 01</div><h4 class="font-semibold text-white mb-1">Compose Your Model</h4><p class="text-sm" style="color:#6a6a90">Pick encoder/decoder blocks and attach preprocessing <code>heads</code> at any position in <code>ForecastingModel</code>.</p></div>
+      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#22d3ee">STEP 02</div><h4 class="font-semibold text-white mb-1">Configure Trainer</h4><p class="text-sm" style="color:#6a6a90"><code>TrainingConfig</code> covers AMP, gradient clipping, LR scheduler, NAS alphas, and conformal settings.</p></div>
+      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#6366f1">STEP 03</div><h4 class="font-semibold text-white mb-1">Train, Evaluate &amp; Track</h4><p class="text-sm" style="color:#6a6a90"><code>trainer.train()</code>, <code>trainer.metrics()</code>, <code>trainer.plot_prediction()</code>, and auto-logged to MLTracker.</p></div>
     </div>
   </div>
 </section>
@@ -393,36 +428,102 @@ history = model.train_model(loader)
       <h2 class="text-3xl sm:text-4xl font-bold text-white">API Cheatsheet</h2>
       <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Core classes and common configuration knobs at a glance.</p>
     </div>
-    <div class="grid md:grid-cols-2 gap-5 max-w-4xl mx-auto">
+
+    <!-- Row 1: 2-col -->
+    <div class="grid md:grid-cols-2 gap-5 max-w-5xl mx-auto mb-5">
+
+      <!-- Core Classes -->
       <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-4 flex items-center gap-2"><span class="w-1.5 h-5 rounded-full inline-block" style="background:#6366f1"></span> Key Classes</h3>
+        <h3 class="font-semibold text-white mb-4 flex items-center gap-2">
+          <span class="w-1.5 h-5 rounded-full inline-block shrink-0" style="background:#6366f1"></span> Core Classes
+        </h3>
         <ul class="space-y-2 text-sm" style="color:#7878a0">
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> <code>TimeSeriesSeq2Seq</code>, <code>ForecastingModel</code></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> <code>ModelConfig</code>, <code>TrainingConfig</code></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> <code>TimeSeriesPreprocessor</code></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> <code>AttentionLayer</code></li>
-        </ul>
-        <h3 class="font-semibold text-white mt-6 mb-4 flex items-center gap-2"><span class="w-1.5 h-5 rounded-full inline-block" style="background:#22d3ee"></span> Common Config Keys</h3>
-        <ul class="space-y-2 text-sm" style="color:#7878a0">
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span> <code>model_type</code>: <code>lstm</code> | <code>gru</code> | <code>transformer</code></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span> <code>strategy</code>: <code>seq2seq</code> | <code>autoregressive</code> | <code>direct</code></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span> <code>target_len</code>, <code>hidden_size</code>, <code>nheads</code>, layers</li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>ForecastingModel</code> <span style="color:#4a4a68">— main <code>nn.Module</code></span></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>Trainer</code> <span style="color:#4a4a68">— training loop, conformal &amp; NAS</span></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>TrainingConfig</code>, <code>ModelConfig</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>ModelEvaluator</code>, <code>TimeSeriesDataset</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>AttentionLayer</code>, <code>HeadComposer</code>, <code>HeadSpec</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>create_dataloaders(X, y, batch_size, val_split)</code></div></li>
         </ul>
       </div>
+
+      <!-- ForecastingModel Constructor -->
       <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-4 flex items-center gap-2"><span class="w-1.5 h-5 rounded-full inline-block" style="background:#6366f1"></span> Preprocessing Options</h3>
+        <h3 class="font-semibold text-white mb-4 flex items-center gap-2">
+          <span class="w-1.5 h-5 rounded-full inline-block shrink-0" style="background:#22d3ee"></span> ForecastingModel Constructor
+        </h3>
         <ul class="space-y-2 text-sm" style="color:#7878a0">
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> Normalization, differencing, detrending</li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> EWT, Fourier / Wavelet feature extraction</li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> Outlier removal, missing-value imputation</li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>encoder</code>, <code>decoder</code>, <code>head</code> <span style="color:#4a4a68">— any <code>nn.Module</code></span></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span>
+            <div><code>forecasting_strategy</code>
+              <div class="flex flex-wrap gap-1 mt-1">
+                <span class="badge bi" style="font-size:.65rem">seq2seq</span>
+                <span class="badge bi" style="font-size:.65rem">autoregressive</span>
+                <span class="badge bi" style="font-size:.65rem">direct</span>
+                <span class="badge bi" style="font-size:.65rem">transformer_seq2seq</span>
+              </div>
+            </div>
+          </li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>input_preprocessor</code>, <code>input_normalization</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>output_postprocessor</code>, <code>output_normalization</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>attention_module</code>, <code>head_composer</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>teacher_forcing_ratio</code>, <code>target_len</code>, <code>label_len</code></div></li>
         </ul>
-        <h3 class="font-semibold text-white mt-6 mb-4 flex items-center gap-2"><span class="w-1.5 h-5 rounded-full inline-block" style="background:#22d3ee"></span> Links</h3>
-        <div class="space-y-2">
-          <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm" style="color:#a0a0c0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)"><span>GitHub Repository</span><span style="color:#5a5a7a">&#8599;</span></a>
-          <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm" style="color:#a0a0c0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)"><span>PyPI Package</span><span style="color:#5a5a7a">&#8599;</span></a>
+      </div>
+    </div>
+
+    <!-- Row 2: 2-col -->
+    <div class="grid md:grid-cols-2 gap-5 max-w-5xl mx-auto">
+
+      <!-- ForecastingModel Methods -->
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold text-white mb-4 flex items-center gap-2">
+          <span class="w-1.5 h-5 rounded-full inline-block shrink-0" style="background:#6366f1"></span> ForecastingModel Methods
+        </h3>
+        <ul class="space-y-2 text-sm" style="color:#7878a0">
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span>
+            <div><code>add_head(module, position)</code>
+              <div class="flex flex-wrap gap-1 mt-1">
+                <span class="badge bc" style="font-size:.65rem">encoder</span>
+                <span class="badge bc" style="font-size:.65rem">decoder</span>
+                <span class="badge bc" style="font-size:.65rem">attention</span>
+                <span class="badge bc" style="font-size:.65rem">input</span>
+                <span class="badge bc" style="font-size:.65rem">output</span>
+                <span class="badge bc" style="font-size:.65rem">input_norm</span>
+                <span class="badge bc" style="font-size:.65rem">output_norm</span>
+                <span class="badge bc" style="font-size:.65rem">head</span>
+              </div>
+            </div>
+          </li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>remove_head(position)</code>, <code>list_heads()</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>add_graph_block(block, where)</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>get_model_size()</code>, <code>benchmark_inference()</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>set_head_composer(composer)</code>, <code>clear_head_composer()</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>get_aux_loss()</code>, <code>get_kl()</code></div></li>
+        </ul>
+      </div>
+
+      <!-- Trainer Methods -->
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold text-white mb-4 flex items-center gap-2">
+          <span class="w-1.5 h-5 rounded-full inline-block shrink-0" style="background:#22d3ee"></span> Trainer Methods
+        </h3>
+        <ul class="space-y-2 text-sm" style="color:#7878a0">
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>train(train_loader, val_loader)</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>evaluate(loader)</code>, <code>metrics(loader)</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>calibrate_conformal(cal_loader)</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>predict_with_intervals(X)</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>compute_coverage(y, lower, upper)</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>plot_prediction()</code>, <code>plot_intervals()</code>, <code>cv()</code></div></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>save(path)</code>, <code>load(path)</code></div></li>
+        </ul>
+        <div class="mt-4 pt-4 flex gap-2" style="border-top:1px solid rgba(255,255,255,.06)">
+          <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="flex-1 flex items-center justify-between px-3 py-2 rounded-lg text-xs" style="color:#a0a0c0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)"><span>GitHub</span><span style="color:#5a5a7a">&#8599;</span></a>
+          <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="flex-1 flex items-center justify-between px-3 py-2 rounded-lg text-xs" style="color:#a0a0c0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)"><span>PyPI</span><span style="color:#5a5a7a">&#8599;</span></a>
         </div>
       </div>
     </div>
+
   </div>
 </section>
 
@@ -438,35 +539,67 @@ history = model.train_model(loader)
     </div>
     <div class="grid gap-6 max-w-4xl mx-auto">
       <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-1">LSTM + Attention</h3>
-        <p class="text-sm mb-4" style="color:#6a6a90">Plug dot-product attention into a Seq2Seq LSTM.</p>
+        <h3 class="font-semibold text-white mb-1">LSTM Seq2Seq with ReVIN + Dot-Product Attention</h3>
+        <p class="text-sm mb-4" style="color:#6a6a90">Compose encoder/decoder, attach a normalisation head and attention, then train.</p>
         <div class="relative">
           <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
-from foreblocks.attention import AttentionLayer
+          <pre class="line-numbers"><code class="language-python">from foreblocks import ForecastingModel, Trainer, TrainingConfig
+from foreblocks.blocks.enc_dec import LSTMEncoder, LSTMDecoder
+from foreblocks.core.att import AttentionLayer
+from foreblocks.core.heads.revin_head import RevinHead
+from foreblocks.aux import create_dataloaders
 
-cfg = ModelConfig(model_type="lstm", input_size=3, output_size=1,
-                  hidden_size=64, target_len=24)
+enc = LSTMEncoder(input_size=3, hidden_size=64, num_layers=2)
+dec = LSTMDecoder(input_size=1, hidden_size=64, output_size=1, num_layers=2)
 attn = AttentionLayer(method="dot", encoder_hidden_size=64, decoder_hidden_size=64)
-model = TimeSeriesSeq2Seq(model_config=cfg, attention_module=attn)</code></pre>
+
+model = ForecastingModel(
+    encoder=enc, decoder=dec,
+    forecasting_strategy="seq2seq", model_type="lstm",
+    target_len=24, output_size=1,
+    attention_module=attn,
+)
+model.add_head(RevinHead(input_size=3), position="input_norm")
+
+train_loader, val_loader = create_dataloaders(X_train, y_train)
+trainer = Trainer(model, config=TrainingConfig(num_epochs=80, patience=12))
+history = trainer.train(train_loader, val_loader)
+trainer.plot_prediction(val_loader)</code></pre>
         </div>
       </div>
       <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-1">Transformer (Multi-variate)</h3>
-        <p class="text-sm mb-4" style="color:#6a6a90">Large Transformer for multi-feature forecasting with custom training config.</p>
+        <h3 class="font-semibold text-white mb-1">NAS with HeadComposer</h3>
+        <p class="text-sm mb-4" style="color:#6a6a90">Let the <code>Trainer</code> learn which preprocessing heads work best via differentiable architecture search.</p>
         <div class="relative">
           <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig, TrainingConfig
+          <pre class="line-numbers"><code class="language-python">from foreblocks import ForecastingModel, Trainer, TrainingConfig
+from foreblocks.blocks.enc_dec import LSTMEncoder, LSTMDecoder
+from foreblocks.core.heads.head_helper import HeadComposer, HeadSpec
+from foreblocks.core.heads.revin_head import RevinHead
+from foreblocks.core.heads.fft_topk_head import FFTTopKHead
+from foreblocks.core.heads.differencing_head import DifferencingHead
 
-cfg = ModelConfig(
-  model_type="transformer", strategy="transformer_seq2seq",
-  input_size=4, output_size=4, hidden_size=128,
-  dim_feedforward=512, nheads=8,
-  num_encoder_layers=3, num_decoder_layers=3,
-  target_len=96,
+composer = HeadComposer([
+    HeadSpec("revin",       RevinHead(input_size=4)),
+    HeadSpec("fft_topk",   FFTTopKHead(top_k=16)),
+    HeadSpec("diff",       DifferencingHead()),
+])
+
+enc = LSTMEncoder(input_size=4, hidden_size=128, num_layers=2)
+dec = LSTMDecoder(input_size=1, hidden_size=128, output_size=1, num_layers=2)
+model = ForecastingModel(
+    encoder=enc, decoder=dec,
+    forecasting_strategy="seq2seq", model_type="lstm",
+    target_len=48, output_size=1,
+    head_composer=composer,
 )
-train = TrainingConfig(num_epochs=100, learning_rate=1e-4, patience=15)
-model = TimeSeriesSeq2Seq(model_config=cfg, training_config=train)</code></pre>
+
+cfg = TrainingConfig(
+    num_epochs=100, learning_rate=1e-3,
+    train_nas=True, nas_warmup_epochs=10,
+)
+trainer = Trainer(model, config=cfg)
+trainer.train(train_loader, val_loader)</code></pre>
         </div>
       </div>
     </div>

@@ -1,6 +1,6 @@
 # foreBlocks: Modular Deep Learning Library for Time Series Forecasting
 
-[![PyPI Version](https://img.shields.io/pypi/v/tracernaut.svg)](https://pypi.org/project/foreblocks/)
+[![PyPI Version](https://img.shields.io/pypi/v/foreblocks.svg)](https://pypi.org/project/foreblocks/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/foreblocks.svg)](https://pypi.org/project/foreblocks/)
 [![License](https://img.shields.io/github/license/lseman/foreblocks)](LICENSE)
 
@@ -9,158 +9,143 @@
 
 **foreBlocks** is a flexible and modular deep learning library for time series forecasting, built on PyTorch. It provides a wide range of neural network architectures and forecasting strategies through a clean, research-friendly API — enabling fast experimentation and scalable deployment.
 
-🔗 **[GitHub Repository](https://github.com/lseman/foreblocks)**
+🔗 **[GitHub Repository](https://github.com/lseman/foreblocks)** · **[PyPI](https://pypi.org/project/foreblocks/)**
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-# Clone and install
-git clone https://github.com/lseman/foreblocks
-cd foreblocks
-pip install -e .
-````
-
-Or install directly via PyPI:
-
-```bash
 pip install foreblocks
 ```
 
+Or install from source:
+
+```bash
+git clone https://github.com/lseman/foreblocks.git
+cd foreblocks
+pip install -e .
+```
+
 ```python
-from foreblocks import TimeSeriesSeq2Seq, ModelConfig, TrainingConfig
-import pandas as pd
 import torch
+from foreblocks import (
+    ForecastingModel, Trainer, TrainingConfig,
+    create_dataloaders, LSTMEncoder, LSTMDecoder,
+)
 
-# Load your time series dataset
-data = pd.read_csv('your_data.csv')
-X = data.values
+# Build a seq2seq LSTM forecaster
+encoder = LSTMEncoder(input_size=8, hidden_size=128, num_layers=2)
+decoder = LSTMDecoder(hidden_size=128, output_size=1, num_layers=2)
 
-# Configure the model
-model_config = ModelConfig(
-    model_type="lstm",
-    input_size=X.shape[1],
-    output_size=1,
-    hidden_size=64,
+model = ForecastingModel(
+    encoder=encoder,
+    decoder=decoder,
+    forecasting_strategy="seq2seq",
     target_len=24,
-    teacher_forcing_ratio=0.5
 )
 
-# Initialize and train
-model = TimeSeriesSeq2Seq(model_config=model_config)
-X_train, y_train, _ = model.preprocess(X, self_tune=True)
-
-# Create DataLoader and start training
-from torch.utils.data import DataLoader, TensorDataset
-train_dataset = TensorDataset(
-    torch.tensor(X_train, dtype=torch.float32),
-    torch.tensor(y_train, dtype=torch.float32)
+# Create data loaders
+train_loader, val_loader = create_dataloaders(
+    X_train, y_train, X_val, y_val, batch_size=32
 )
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
-history = model.train_model(train_loader)
-predictions = model.predict(X_test)
+# Train
+config = TrainingConfig(num_epochs=100, learning_rate=1e-3, use_amp=True)
+trainer = Trainer(model, config=config)
+trainer.train(train_loader, val_loader)
 ```
 
 ---
 
 ## ✨ Key Features
 
-| Feature                     | Description                                                        |
-| --------------------------- | ------------------------------------------------------------------ |
-| 🔧 **Multiple Strategies**  | Seq2Seq, Autoregressive, and Direct forecasting modes              |
-| 🧩 **Modular Design**       | Easily swap and extend model components                            |
-| 🤖 **Advanced Models**      | LSTM, GRU, Transformer, VAE, and more                              |
-| ⚡ **Smart Preprocessing**   | Automatic normalization, differencing, EWT, and outlier handling   |
-| 🎯 **Attention Modules**    | Pluggable attention layers for enhanced temporal modeling          |
-| 📊 **Multivariate Support** | Designed for multi-feature time series with dynamic input handling |
-| 📈 **Training Utilities**   | Built-in trainer with callbacks, metrics, and visualizations       |
-| 🔍 **Transparent API**      | Clean and extensible codebase with complete documentation          |
-
----
-
-## 📖 Documentation
-
-| Section       | Description                                      | Link                           |
-| ------------- | ------------------------------------------------ | ------------------------------ |
-| Preprocessing | EWT, normalization, differencing, outliers       | [Guide](docs/preprocessor.md)  |
-| Custom Blocks | Registering new encoder/decoder/attention blocks | [Guide](docs/custom_blocks.md) |
-| Transformers  | Transformer-based modules                        | [Docs](docs/transformer.md)    |
-| Fourier       | Frequency-based forecasting layers               | [Docs](docs/fourier.md)        |
-| Wavelet       | Wavelet transform modules                        | [Docs](docs/wavelet.md)        |
-| DARTS         | Architecture search for forecasting              | [Docs](docs/darts.md)          |
+| Feature | Description |
+|---|---|
+| **`ForecastingModel`** | Unified model wrapping any encoder/decoder pair with pluggable heads |
+| **Modular Blocks** | LSTM, GRU, Transformer, TCN, xLSTM, ODE, Graph, Fourier, Wavelet |
+| **Head System** | 13+ composable heads: RevIN, DAIN, Decomposition, PatchEmbed, FFT, Wavelet, Time2Vec, … |
+| **Forecasting Strategies** | `seq2seq`, `autoregressive`, `direct`, `transformer_seq2seq` |
+| **Conformal Prediction** | 7 methods: `split`, `local`, `rolling`, `agaci`, `enbpi`, `cptc`, `afocp` |
+| **NAS via HeadComposer** | Differentiable head search with configurable alpha LR and warmup |
+| **`Trainer`** | AMP, gradient clipping, early stopping, LR scheduling, MLTracker SQLite logging |
+| **`ModelEvaluator`** | MAE, RMSE, MAPE, SMAPE, MASE, coverage, sharpness, Winkler score |
 
 ---
 
 ## 🏗️ Architecture Overview
 
-ForeBlocks is built around clean and extensible abstractions:
+```
+Input Tensor  ──┬──[input head]──► Encoder ──[encoder head]──►
+                │                                               │
+                │                                               ▼
+                │                                     Attention Module
+                │                                               │
+                └──────────────────────────────────────────────►
+                                                                │
+                                                                ▼
+                                                    Decoder ──[decoder head]──►
+                                                                │
+                                                      [output head / head_only]
+                                                                │
+                                                         Output Tensor
+```
 
-* `TimeSeriesSeq2Seq`: High-level interface for forecasting workflows
-* `ForecastingModel`: Core model engine combining encoders, decoders, and heads
-* `TimeSeriesPreprocessor`: Adaptive preprocessing with feature engineering
-* `Trainer`: Handles training loop, validation, and visual feedback
+`ForecastingModel` glues any encoder, decoder, and attention module together and routes each forward pass through the chosen `forecasting_strategy`. Heads can be inserted at eight positions (`input`, `encoder`, `attention`, `decoder`, `output`, `input_norm`, `output_norm`, `head`) via `add_head()`.
 
 ---
 
-## 🔮 Forecasting Models
+## 🔮 Forecasting Strategies
 
-### 1. **Sequence-to-Sequence** (default)
+### LSTM Seq2Seq
 
 ```python
-ModelConfig(
-    model_type="lstm",
-    strategy="seq2seq",
-    input_size=3,
-    output_size=1,
-    hidden_size=64,
-    num_encoder_layers=2,
-    num_decoder_layers=2,
-    target_len=24
+from foreblocks import ForecastingModel, LSTMEncoder, LSTMDecoder
+
+encoder = LSTMEncoder(input_size=8, hidden_size=128, num_layers=2)
+decoder = LSTMDecoder(hidden_size=128, output_size=1, num_layers=2)
+
+model = ForecastingModel(
+    encoder=encoder, decoder=decoder,
+    forecasting_strategy="seq2seq",
+    target_len=24,
 )
 ```
 
-### 2. **Autoregressive**
+### Transformer Seq2Seq
 
 ```python
-ModelConfig(
-    model_type="lstm",
-    strategy="autoregressive",
-    input_size=1,
-    output_size=1,
-    hidden_size=64,
-    target_len=12
+from foreblocks import ForecastingModel, TransformerEncoder, TransformerDecoder
+
+encoder = TransformerEncoder(input_size=8, d_model=128, nhead=4, num_layers=3)
+decoder = TransformerDecoder(d_model=128, output_size=1, nhead=4, num_layers=3)
+
+model = ForecastingModel(
+    encoder=encoder, decoder=decoder,
+    forecasting_strategy="transformer_seq2seq",
+    target_len=24,
 )
 ```
 
-### 3. **Direct Multi-Step**
+### Autoregressive & Direct
 
 ```python
-ModelConfig(
-    model_type="lstm",
-    strategy="direct",
-    input_size=5,
-    output_size=1,
-    hidden_size=128,
-    target_len=48
+from foreblocks import ForecastingModel, LSTMEncoder
+
+encoder = LSTMEncoder(input_size=8, hidden_size=128, num_layers=2)
+
+# Autoregressive: step-by-step, feeding last prediction as next input
+ar_model = ForecastingModel(
+    encoder=encoder,
+    forecasting_strategy="autoregressive",
+    target_len=24, output_size=1,
 )
-```
 
-### 4. **Transformer-based**
-
-```python
-ModelConfig(
-    model_type="transformer",
-    strategy="transformer_seq2seq",
-    input_size=4,
-    output_size=4,
-    hidden_size=128,
-    dim_feedforward=512,
-    nheads=8,
-    num_encoder_layers=3,
-    num_decoder_layers=3,
-    target_len=96
+# Direct: single-shot multi-step projection
+direct_model = ForecastingModel(
+    encoder=encoder,
+    forecasting_strategy="direct",
+    target_len=24, output_size=1,
 )
 ```
 
@@ -168,117 +153,81 @@ ModelConfig(
 
 ## ⚙️ Advanced Features
 
-### Multi-Encoder/Decoder
+### Head System
 
 ```python
-ModelConfig(
-    multi_encoder_decoder=True,
-    input_size=5,
-    output_size=1,
-    hidden_size=64,
-    model_type="lstm",
-    target_len=24
-)
+from foreblocks.core.heads import RevinHead, PatchEmbedHead, FFTTopKHead
+
+# Add a reversible instance normalisation head at the input
+model.add_head(RevinHead(num_features=8), position="input")
+
+# Stack patch embedding before the encoder
+model.add_head(PatchEmbedHead(input_size=8, patch_size=16, d_model=128), position="encoder")
+
+# FFT spectral filtering at the output
+model.add_head(FFTTopKHead(top_k=16), position="output")
+
+# Inspect all heads
+print(model.list_heads())
 ```
 
-### Attention Integration
+Available heads: `RevinHead`, `DAINHead`, `DecompositionHead`, `DifferencingHead`,
+`DropoutTSHead`, `FFTTopKHead`, `HaarWaveletTopKHead`, `LearnableFourierSeasonalHead`,
+`MultiKernelConvHead`, `MultiscaleConvHead`, `PatchEmbedHead`, `Time2VecHead`, `TimeAttentionHead`
+
+### Neural Architecture Search (HeadComposer)
 
 ```python
-from foreblocks.attention import AttentionLayer
+from foreblocks import TrainingConfig
+from foreblocks.core.heads import HeadComposer, HeadSpec, RevinHead, DAINHead, PatchEmbedHead
 
-attention = AttentionLayer(
-    method="dot",
-    attention_backend="self",
-    encoder_hidden_size=64,
-    decoder_hidden_size=64
-)
+# Define a search space
+candidates = [RevinHead(8), DAINHead(8), PatchEmbedHead(8, 16, 128)]
+composer = HeadComposer([HeadSpec(h) for h in candidates])
+model.set_head_composer(composer)
 
-model = TimeSeriesSeq2Seq(
-    model_config=model_config,
-    attention_module=attention
+# Enable NAS in training
+config = TrainingConfig(
+    num_epochs=100,
+    train_nas=True,
+    nas_alpha_lr=3e-4,
+    nas_warmup_epochs=10,
 )
+trainer = Trainer(model, config=config)
+trainer.train(train_loader, val_loader)
 ```
 
-### Custom Preprocessing
+### Conformal Prediction Intervals
 
 ```python
-X_train, y_train, _ = model.preprocess(
-    X,
-    normalize=True,
-    differencing=True,
-    detrend=True,
-    apply_ewt=True,
-    window_size=48,
-    horizon=24,
-    remove_outliers=True,
-    outlier_method="iqr",
-    self_tune=True
+from foreblocks import TrainingConfig, Trainer
+
+config = TrainingConfig(
+    conformal_enabled=True,
+    conformal_method="enbpi",   # split | local | rolling | agaci | enbpi | cptc | afocp
+    conformal_quantile=0.9,
 )
+trainer = Trainer(model, config=config)
+trainer.train(train_loader, val_loader)
+
+# Calibrate on held-out data, then predict with intervals
+trainer.calibrate_conformal(cal_loader)
+preds, lower, upper = trainer.predict_with_intervals(X_test)
+coverage = trainer.compute_coverage(y_test, lower, upper)
+trainer.plot_intervals(y_test, lower, upper)
 ```
 
 ### Scheduled Sampling
 
 ```python
-def schedule(epoch): return max(0.0, 1.0 - 0.1 * epoch)
+from foreblocks.aux.utils import linear_schedule, exponential_schedule, inverse_sigmoid_schedule
 
-model = TimeSeriesSeq2Seq(
-    model_config=model_config,
-    scheduled_sampling_fn=schedule
-)
-```
-
----
-
-## 🧪 Examples
-
-### LSTM + Attention
-
-```python
-model_config = ModelConfig(
-    model_type="lstm",
-    input_size=3,
-    output_size=1,
-    hidden_size=64,
-    target_len=24
-)
-
-attention = AttentionLayer(
-    method="dot",
-    encoder_hidden_size=64,
-    decoder_hidden_size=64
-)
-
-model = TimeSeriesSeq2Seq(
-    model_config=model_config,
-    attention_module=attention
-)
-```
-
-### Transformer Model
-
-```python
-model_config = ModelConfig(
-    model_type="transformer",
-    input_size=4,
-    output_size=4,
-    hidden_size=128,
-    dim_feedforward=512,
-    nheads=8,
-    num_encoder_layers=3,
-    num_decoder_layers=3,
-    target_len=96
-)
-
-training_config = TrainingConfig(
-    num_epochs=100,
-    learning_rate=1e-4,
-    weight_decay=1e-5,
-    patience=15
-)
-
-model = TimeSeriesSeq2Seq(
-    model_config=model_config,
-    training_config=training_config
+# Linear decay: teacher forcing ratio goes from 1.0 → 0.0 over training
+model = ForecastingModel(
+    encoder=encoder, decoder=decoder,
+    forecasting_strategy="seq2seq",
+    target_len=24,
+    scheduled_sampling_fn=linear_schedule(start=1.0, end=0.0, total_steps=100),
 )
 ```
 
@@ -286,86 +235,118 @@ model = TimeSeriesSeq2Seq(
 
 ## 🛠️ Configuration Reference
 
-### `ModelConfig`
-
-| Parameter               | Type  | Description                        | Default |
-| ----------------------- | ----- | ---------------------------------- | ------- |
-| `model_type`            | str   | "lstm", "gru", "transformer", etc. | "lstm"  |
-| `input_size`            | int   | Number of input features           | —       |
-| `output_size`           | int   | Number of output features          | —       |
-| `hidden_size`           | int   | Hidden layer dimension             | 64      |
-| `target_len`            | int   | Forecast steps                     | —       |
-| `num_encoder_layers`    | int   | Encoder depth                      | 1       |
-| `num_decoder_layers`    | int   | Decoder depth                      | 1       |
-| `teacher_forcing_ratio` | float | Ratio of teacher forcing           | 0.5     |
-
 ### `TrainingConfig`
 
-| Parameter       | Type  | Description             | Default |
-| --------------- | ----- | ----------------------- | ------- |
-| `num_epochs`    | int   | Training epochs         | 100     |
-| `learning_rate` | float | Learning rate           | 1e-3    |
-| `batch_size`    | int   | Mini-batch size         | 32      |
-| `patience`      | int   | Early stopping patience | 10      |
-| `weight_decay`  | float | L2 regularization       | 0.0     |
+| Parameter | Default | Description |
+|---|---|---|
+| `num_epochs` | `100` | Maximum training epochs |
+| `learning_rate` | `0.001` | Optimiser learning rate |
+| `batch_size` | `32` | Mini-batch size |
+| `patience` | `10` | Early-stopping patience (epochs) |
+| `use_amp` | `True` | Mixed-precision (AMP) training |
+| `gradient_clip_val` | `None` | Gradient norm clipping value |
+| `scheduler_type` | `None` | LR scheduler: `cosine`, `step`, `plateau`, … |
+| `weight_decay` | `0.0` | L2 regularisation coefficient |
+| `train_nas` | `False` | Enable differentiable NAS |
+| `nas_alpha_lr` | `3e-4` | Architecture parameter learning rate |
+| `nas_warmup_epochs` | `5` | Epochs before NAS search begins |
+| `conformal_enabled` | `False` | Enable conformal prediction |
+| `conformal_method` | `"split"` | Conformal method (`split`, `local`, `rolling`, `agaci`, `enbpi`, `cptc`, `afocp`) |
+| `conformal_quantile` | `0.9` | Coverage target quantile |
+
+### `ModelConfig`
+
+| Parameter | Description |
+|---|---|
+| `input_size` | Number of input features |
+| `hidden_size` | Encoder/decoder hidden units |
+| `num_layers` | Number of recurrent/transformer layers |
+| `output_size` | Number of output targets |
+| `target_len` | Forecast horizon |
+| `dropout` | Dropout rate |
+| `forecasting_strategy` | One of `seq2seq`, `autoregressive`, `direct`, `transformer_seq2seq` |
+| `model_type` | One of `lstm`, `transformer`, `informer-like`, `head_only` |
+| `use_attention` | Whether to add an attention module |
+| `nhead` | Number of attention heads (Transformer) |
+
+---
+
+## 📖 Documentation
+
+| Resource | Link |
+|---|---|
+| Full Docs | [lseman.github.io/foreblocks](https://lseman.github.io/foreblocks) |
+| GitHub Repo | [github.com/lseman/foreblocks](https://github.com/lseman/foreblocks) |
+| PyPI Package | [pypi.org/project/foreblocks](https://pypi.org/project/foreblocks/) |
+| Issue Tracker | [GitHub Issues](https://github.com/lseman/foreblocks/issues) |
 
 ---
 
 ## 🩺 Troubleshooting
 
 <details>
-<summary><strong>🔴 Dimension Mismatch</strong></summary>
+<summary><strong>CUDA out of memory</strong></summary>
 
-* Confirm `input_size` and `output_size` match your data
-* Ensure encoder/decoder hidden sizes are compatible
+Reduce `batch_size` in `TrainingConfig`, or enable gradient checkpointing:
 
+```python
+config = TrainingConfig(batch_size=8, gradient_clip_val=1.0)
+```
+
+Alternatively, use `use_amp=True` (default) to reduce memory via mixed precision.
 </details>
 
 <details>
-<summary><strong>🟡 Memory Issues</strong></summary>
+<summary><strong>Loss is NaN during training</strong></summary>
 
-* Reduce `batch_size`, `hidden_size`, or sequence length
-* Use gradient accumulation or mixed precision
+Common causes:
+- Learning rate too high → lower `learning_rate`
+- Inputs not normalised → add a `RevinHead` or `DAINHead` at `position="input"`
+- Gradient explosion → set `gradient_clip_val=1.0`
 
+```python
+model.add_head(RevinHead(num_features=input_size), position="input")
+config = TrainingConfig(learning_rate=1e-4, gradient_clip_val=1.0)
+```
 </details>
 
 <details>
-<summary><strong>🟠 Poor Predictions</strong></summary>
+<summary><strong>Conformal intervals are too wide</strong></summary>
 
-* Try different `strategy`
-* Use attention mechanisms
-* Fine-tune hyperparameters (e.g. `hidden_size`, dropout)
+Try a different conformal method or adjust the quantile:
 
-</details>
-
-<details>
-<summary><strong>🔵 Training Instability</strong></summary>
-
-* Clip gradients (`clip_grad_norm_`)
-* Use learning rate schedulers (`ReduceLROnPlateau`)
-
+```python
+config = TrainingConfig(
+    conformal_enabled=True,
+    conformal_method="agaci",   # adaptive method
+    conformal_quantile=0.80,    # 80 % coverage
+)
+```
 </details>
 
 ---
 
 ## 💡 Best Practices
 
-* ✅ Always normalize input data
-* ✅ Evaluate with appropriate multi-step metrics (e.g. MAPE, MAE)
-* ✅ Try simple models (LSTM) before complex ones (Transformer)
-* ✅ Use `self_tune=True` in preprocessing for best defaults
-* ✅ Split validation data chronologically
+- **Always normalise inputs** — use `RevinHead` or `DAINHead` at `position="input"` unless your data is already z-scored.
+- **Start simple** — begin with `seq2seq` + LSTM before exploring Transformer or `head_only` strategies.
+- **Use AMP** — `use_amp=True` is the default; disable only when debugging NaN losses.
+- **Monitor with MLTracker** — `Trainer` auto-creates a SQLite experiment log; pass `auto_track=True` (default).
+- **Validate conformal coverage** — after calibration, call `compute_coverage()` and aim for ≥ your target quantile.
+- **NAS warmup** — set `nas_warmup_epochs` to at least 5–10 % of `num_epochs` to stabilise base weights before architecture search.
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions! Visit the [GitHub repo](https://github.com/lseman/foreblocks) to:
+Contributions are welcome! Please:
 
-* Report bugs 🐛
-* Request features 💡
-* Improve documentation 📚
-* Submit PRs 🔧
+1. Fork the repository and create a feature branch.
+2. Run `npm test` / `pytest` and ensure all tests pass.
+3. Follow existing code style (`ruff` / `black`).
+4. Open a pull request with a clear description.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ---
 
