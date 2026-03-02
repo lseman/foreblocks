@@ -12,6 +12,16 @@ def normalize_metric_value(metric: str, value: float) -> float:
         normalized = np.log1p(max(float(value), 0.0))
         return 0.0 if np.isnan(normalized) else float(normalized)
 
+    # Gradient-family metrics can vary by many orders of magnitude.
+    # Use log scaling to keep weighting numerically stable across candidates.
+    if metric in {"fisher", "snip", "sensitivity"}:
+        normalized = np.log1p(max(float(value), 0.0))
+        return 0.0 if np.isnan(normalized) else float(normalized)
+
+    if metric in {"grasp"}:
+        normalized = np.sign(value) * np.log1p(abs(float(value)))
+        return 0.0 if np.isnan(normalized) else float(normalized)
+
     if metric in {"naswot", "jacobian"}:
         normalized = np.sign(value) * np.log1p(abs(float(value)))
         return 0.0 if np.isnan(normalized) else float(normalized)

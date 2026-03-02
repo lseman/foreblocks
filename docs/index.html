@@ -1,206 +1,291 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ForeBlocks — Modular Deep Learning for Time‑Series Forecasting</title>
-
-  <!-- Tailwind CSS -->
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>ForeBlocks &#8212; Modular Time-Series Forecasting</title>
+  <meta name="description" content="ForeBlocks is a modular PyTorch library for research-grade time-series forecasting with LSTM, Transformers, Fourier/Wavelet blocks, and adaptive preprocessing."/>
+  <meta property="og:title" content="ForeBlocks &#8212; Modular Time-Series Forecasting"/>
+  <meta property="og:description" content="Clean, extensible PyTorch library: LSTM, Transformers, Fourier/Wavelet, adaptive preprocessing."/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
   <script src="https://cdn.tailwindcss.com"></script>
-
-  <!-- Prism.js (CSS + core + autoloader + line-numbers) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/line-numbers/prism-line-numbers.css">
-  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-core.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/autoloader/prism-autoloader.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/line-numbers/prism-line-numbers.min.js" defer></script>
-
-  <!-- MathJax (v3) -->
-  <script>
-    window.MathJax = {
-      tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]], displayMath: [["$$", "$$"], ["\\[", "\\]"]] },
-      chtml: { linebreaks: { automatic: false }, matchFontHeight: true },
-      options: { skipHtmlTags: ['script','noscript','style','textarea','pre'] },
-      svg: { fontCache: 'global' }
-    };
-  </script>
-  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet"/>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js" defer></script>
 
   <style>
-    html { scroll-behavior: smooth }
-    .card { backdrop-filter: blur(4px) }
-    .theorem { background:#eff6ff;border-left:4px solid #3b82f6;padding:.75rem 1rem;border-radius:.5rem }
-    .def { background:#f0fdf4;border-left:4px solid #22c55e;padding:.75rem 1rem;border-radius:.5rem }
-    .warn { background:#fef2f2;border-left:4px solid #ef4444;padding:.75rem 1rem;border-radius:.5rem }
-    .insight { background:#fefce8;border-left:4px solid #eab308;padding:.75rem 1rem;border-radius:.5rem }
-    .step { background:#f8fafc;border:2px solid #e2e8f0;padding:1rem;border-radius:.75rem;margin:1rem 0 }
-    code { background:#f1f5f9;padding:.15rem .35rem;border-radius:.35rem }
-    pre code { background:transparent;padding:0 }
-    .step-number { background:#0ea5e9;color:#fff;border-radius:50%;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:14px }
-    .math-nowrap { overflow-x:auto;white-space:nowrap }
-    .kbd { border:1px solid #cbd5e1;background:#f8fafc;border-radius:.375rem;padding:.125rem .375rem;font-size:.75rem }
-    /* Landing grid backdrop */
-    .bg-grid{background-image:linear-gradient(to right,rgba(15,23,42,.06) 1px,transparent 1px),linear-gradient(to bottom,rgba(15,23,42,.06) 1px,transparent 1px);background-size:24px 24px;mask-image:radial-gradient(ellipse at 50% 20%,rgba(0,0,0,.9),rgba(0,0,0,.15) 60%,transparent 75%)}
-    /* Soft gradient glow */
-    .glow{position:absolute;inset:-20% -10% auto -10%;height:55vh;background:radial-gradient(60% 60% at 50% 40%, rgba(59,130,246,.25), rgba(14,165,233,.18) 40%, rgba(34,197,94,.12) 70%, transparent 75%);filter:blur(40px);pointer-events:none}
-    /* Fade-in and up */
-    .fade-up{opacity:0;transform:translateY(12px);animation:fadeUp .7s ease forwards .1s}
-    @keyframes fadeUp{to{opacity:1;transform:none}}
-    /* Nav active state */
-    .nav-link{position:relative}
-    .nav-link.active{color:rgb(15 23 42);font-weight:700}
-    .nav-link.active::after{content:"";position:absolute;left:0;right:0;bottom:-8px;height:2px;background:rgb(15 23 42);border-radius:9999px}
-  </style>
-  <style>
-    :root { --nav-h:72px; }
-    .alt-section { scroll-margin-top: calc(var(--nav-h) + 12px); }
+    :root {
+      --bg-base:  #06060f;
+      --border:   rgba(255,255,255,0.07);
+      --border-h: rgba(99,102,241,0.45);
+      --accent:   #6366f1;
+      --text:     #e8e8ff;
+      --muted:    #7878a0;
+    }
+    * { font-family: 'Inter', system-ui, sans-serif; }
+    code, pre { font-family: 'JetBrains Mono', 'Fira Code', monospace !important; }
+    html, body { background: var(--bg-base); color: var(--text); min-height: 100vh; }
+
+    .hero-blob { position:absolute; border-radius:50%; filter:blur(90px); pointer-events:none; animation:float 10s ease-in-out infinite; }
+    .blob-1 { width:640px; height:640px; background:radial-gradient(circle,rgba(99,102,241,.28),transparent 70%); top:-220px; left:-120px; animation-delay:0s; }
+    .blob-2 { width:520px; height:520px; background:radial-gradient(circle,rgba(34,211,238,.18),transparent 70%); top:-80px; right:-160px; animation-delay:-5s; }
+    .blob-3 { width:440px; height:440px; background:radial-gradient(circle,rgba(139,92,246,.16),transparent 70%); bottom:60px; left:50%; animation-delay:-2.5s; }
+    @keyframes float { 0%,100%{transform:translateY(0) scale(1);} 50%{transform:translateY(-28px) scale(1.04);} }
+
+    .hero-grid {
+      position:absolute; inset:0; pointer-events:none;
+      background-image: linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px), linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);
+      background-size:56px 56px;
+      mask-image:radial-gradient(ellipse 80% 60% at 50% 50%,black,transparent);
+    }
+
+    .grad { background:linear-gradient(135deg,#a5b4fc 0%,#6366f1 45%,#22d3ee 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+
+    .navbar { background:rgba(6,6,15,.88); border-bottom:1px solid rgba(255,255,255,.06); backdrop-filter:blur(20px); }
+    .nav-link { color:var(--muted); font-size:.875rem; font-weight:500; transition:color .15s; position:relative; }
+    .nav-link:hover { color:var(--text); }
+    .nav-link.active { color:#a5b4fc; }
+    .nav-link.active::after { content:''; position:absolute; bottom:-4px; left:0; right:0; height:2px; border-radius:1px; background:linear-gradient(90deg,#6366f1,#22d3ee); }
+
+    .card { background:rgba(17,17,40,.8); border:1px solid var(--border); backdrop-filter:blur(10px); transition:border-color .2s,box-shadow .2s,transform .2s; }
+    .card:hover { border-color:var(--border-h); box-shadow:0 0 24px rgba(99,102,241,.1),0 8px 32px rgba(0,0,0,.4); transform:translateY(-2px); }
+
+    pre[class*="language-"] { background:#0b0b1e !important; border:none !important; border-radius:10px !important; margin:0 !important; }
+    code[class*="language-"] { font-size:.81rem !important; }
+    .line-numbers .line-numbers-rows { border-right-color:rgba(255,255,255,.07) !important; }
+    .line-numbers-rows > span::before { color:rgba(255,255,255,.18) !important; }
+
+    :not(pre) > code { font-size:.82em; padding:2px 6px; border-radius:4px; background:rgba(99,102,241,.14); color:#a5b4fc; border:1px solid rgba(99,102,241,.22); }
+
+    .copy-btn { position:absolute; top:10px; right:10px; z-index:10; font-family:'Inter',sans-serif; font-size:.7rem; font-weight:600; padding:4px 10px; border-radius:6px; cursor:pointer; transition:all .15s; background:rgba(255,255,255,.07); color:rgba(255,255,255,.55); border:1px solid rgba(255,255,255,.1); }
+    .copy-btn:hover { background:rgba(255,255,255,.13); color:#fff; }
+
+    .terminal { background:#0a0a18; border:1px solid rgba(255,255,255,.07); border-radius:12px; overflow:hidden; }
+    .term-bar  { background:#111126; padding:10px 16px; display:flex; align-items:center; gap:6px; border-bottom:1px solid rgba(255,255,255,.05); }
+    .tdot { width:12px; height:12px; border-radius:50%; }
+
+    .stag { font-size:.68rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#6366f1; margin-bottom:8px; }
+    .ibox  { width:44px; height:44px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0; background:rgba(99,102,241,.11); border:1px solid rgba(99,102,241,.2); }
+    .ibox2 { background:rgba(34,211,238,.09); border-color:rgba(34,211,238,.2); }
+    .snum  { width:32px; height:32px; border-radius:8px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:.875rem; font-weight:700; background:linear-gradient(135deg,#6366f1,#22d3ee); color:#fff; }
+    .div   { height:1px; background:linear-gradient(90deg,transparent,rgba(99,102,241,.28),rgba(34,211,238,.2),transparent); }
+    .badge { display:inline-flex; align-items:center; gap:4px; padding:2px 10px; border-radius:999px; font-size:.73rem; font-weight:600; border:1px solid; }
+    .bi    { background:rgba(99,102,241,.11); border-color:rgba(99,102,241,.3); color:#a5b4fc; }
+    .bc    { background:rgba(34,211,238,.09); border-color:rgba(34,211,238,.28); color:#67e8f9; }
+    .fu    { animation:fu .7s ease both; }
+    .fu1   { animation-delay:.1s; }
+    .fu2   { animation-delay:.2s; }
+    .fu3   { animation-delay:.3s; }
+    @keyframes fu { from{opacity:0;transform:translateY(26px)} to{opacity:1;transform:translateY(0)} }
+    ::-webkit-scrollbar { width:6px; height:6px; }
+    ::-webkit-scrollbar-track  { background:var(--bg-base); }
+    ::-webkit-scrollbar-thumb  { background:rgba(99,102,241,.3); border-radius:3px; }
+    ::-webkit-scrollbar-thumb:hover { background:rgba(99,102,241,.5); }
   </style>
 </head>
+<body>
 
-<body class="min-h-screen text-slate-800 bg-gradient-to-br from-slate-50 to-sky-50">
-
-  <!-- ======= Sticky Nav ======= -->
-  <nav id="topnav" class="fixed top-0 inset-x-0 z-50 transition-colors">
-    <div class="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
-      <a href="#" class="flex items-center gap-2">
-        <img src="logo.svg" alt="ForeBlocks logo" class="w-8 h-8 object-contain">
-        <span class="font-extrabold tracking-tight text-slate-900">ForeBlocks</span>
-      </a>
-      <div class="hidden md:flex items-center gap-5 text-sm">
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#get">Get</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#features">Features</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#models">Models</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#usage">Usage</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#api">API</a>
-        <a class="nav-link hover:text-slate-900 text-slate-600" href="#examples">Examples</a>
-        <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-black">GitHub</a>
-      </div>
-    </div>
-  </nav>
-
-  <!-- ======= Full-Viewport Hero ======= -->
-  <header class="relative h-[100svh] flex items-center">
-    <div aria-hidden="true" class="absolute inset-0 bg-grid"></div>
-    <div aria-hidden="true" class="glow"></div>
-
-    <div class="relative mx-auto max-w-7xl px-6 w-full">
-      <img src="logo.svg" alt="ForeBlocks logo" class="block mx-auto mb-8 w-40 sm:w-56 md:w-64 lg:w-72 xl:w-80 h-auto object-contain" />
-      <div class="flex items-center gap-3 mb-6">
-        <div>
-          <h1 class="text-5xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-[1.05]">ForeBlocks — <span class="text-sky-600">Modular Time‑Series Forecasting</span></h1>
-          <p class="mt-1 text-xs tracking-wide text-slate-500">Flexible PyTorch library for research‑grade forecasting</p>
-        </div>
-      </div>
-      <div class="grid lg:grid-cols-[1.2fr_.8fr] gap-10 items-center">
-        <!-- Hero copy -->
-        <div class="fade-up">
-          <p class="mt-5 text-lg md:text-xl text-slate-700 max-w-2xl">
-            A clean, extensible library for building state‑of‑the‑art forecasters: LSTM/GRU, Transformers, Fourier/Wavelet, VAE, and more. Includes adaptive preprocessing, attention, multiple forecasting strategies, and a research‑friendly API.
-          </p>
-          <div class="mt-8 flex flex-wrap gap-3">
-            <a href="#get" class="px-5 py-3 rounded-xl bg-sky-600 text-white font-semibold shadow hover:bg-sky-700">Get ForeBlocks</a>
-            <a href="#features" class="px-5 py-3 rounded-xl bg-white ring-1 ring-slate-200 shadow-sm font-semibold hover:bg-slate-50">Explore Features</a>
-            <a href="#examples" class="px-5 py-3 rounded-xl bg-white ring-1 ring-slate-200 shadow-sm font-semibold hover:bg-slate-50">See Examples</a>
-          </div>
-        </div>
-
-        <!-- Hero side card -->
-        <aside class="fade-up w-full lg:w-auto">
-          <div class="bg-white/70 border border-slate-200 rounded-2xl p-5 shadow card">
-            <h3 class="text-lg font-semibold mb-2">Project Links</h3>
-            <div class="space-y-2">
-              <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-900 text-white hover:bg-black">
-                <span class="font-semibold">GitHub: lseman/foreblocks</span>
-                <span class="kbd">↗</span>
-              </a>
-              <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="flex items-center justify-between px-3 py-2 rounded-lg bg-sky-600 text-white hover:bg-sky-700">
-                <span class="font-semibold">PyPI: foreblocks</span>
-                <span class="kbd">↗</span>
-              </a>
-              <a href="#get" class="block px-3 py-2 rounded-lg bg-white ring-1 ring-slate-200 text-center hover:bg-slate-50">Install &amp; Build</a>
-            </div>
-            <p class="text-xs text-slate-500 mt-3">Open‑source research library. Transformers • Seq2Seq • Fourier/Wavelet • Adaptive Preprocessing</p>
-          </div>
-        </aside>
-      </div>
-    </div>
-
-    <!-- Scroll cue -->
-    <a href="#get" class="absolute bottom-6 left-1/2 -translate-x-1/2 inline-flex flex-col items-center gap-1 text-slate-500 hover:text-slate-700" aria-label="Scroll to Get section">
-      <span class="text-xs tracking-wide">Scroll</span>
-      <svg class="w-5 h-5 animate-bounce" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+<!-- NAVBAR -->
+<nav id="topnav" class="navbar fixed top-0 inset-x-0 z-50">
+  <div class="max-w-7xl mx-auto px-5 flex items-center justify-between h-14">
+    <a href="#" class="flex items-center gap-2.5 shrink-0">
+      <img src="logo.svg" alt="ForeBlocks" class="h-7 w-auto"/>
+      <span class="font-bold text-[15px] text-white hidden sm:block tracking-tight">ForeBlocks</span>
     </a>
-  </header>
+    <div class="flex items-center gap-0.5">
+      <a href="#get"      class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Install</a>
+      <a href="#features" class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Features</a>
+      <a href="#models"   class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Models</a>
+      <a href="#usage"    class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Usage</a>
+      <a href="#api"      class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">API</a>
+      <a href="#examples" class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Examples</a>
+      <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
+         class="ml-3 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold text-white bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 transition-all">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
 
-  <!-- ======= Sections ======= -->
-  <section id="get" class="alt-section py-14">
-    <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Get ForeBlocks</h2>
-      <div class="grid lg:grid-cols-1 gap-6">
-        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
-          <h3 class="text-xl font-semibold mb-3">Quick Install (PyPI)</h3>
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-bash">pip install foreblocks</code></pre>
+<!-- HERO -->
+<header class="relative min-h-screen flex items-center pt-14 overflow-hidden">
+  <div class="absolute inset-0 pointer-events-none" aria-hidden="true">
+    <div class="hero-blob blob-1"></div>
+    <div class="hero-blob blob-2"></div>
+    <div class="hero-blob blob-3"></div>
+    <div class="hero-grid"></div>
+  </div>
+
+  <div class="relative max-w-7xl mx-auto px-6 py-24 w-full text-center">
+    <div class="flex flex-wrap items-center justify-center gap-2 mb-10 fu">
+      <span class="badge bi"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> PyTorch</span>
+      <span class="badge bc">Research-grade</span>
+      <span class="badge bi">Open Source</span>
+      <span class="badge bc">MIT License</span>
+    </div>
+
+    <div class="fu fu1">
+      <img src="logo.svg" alt="ForeBlocks logo" class="mx-auto mb-8 w-28 sm:w-36 md:w-44 h-auto"/>
+      <h1 class="text-5xl sm:text-6xl md:text-7xl font-extrabold tracking-tight leading-[1.05] text-white">
+        Fore<span class="grad">Blocks</span>
+      </h1>
+      <p class="mt-4 text-xl sm:text-2xl font-medium" style="color:#9090b8">Modular Time-Series Forecasting for PyTorch</p>
+      <p class="mt-3 text-base max-w-2xl mx-auto" style="color:#5a5a80">
+        Build state-of-the-art forecasters with composable LSTM, Transformer, Fourier &amp; Wavelet blocks &#8212; research-friendly API, adaptive preprocessing, pluggable attention.
+      </p>
+    </div>
+
+    <div class="mt-8 flex flex-wrap items-center justify-center gap-3 fu fu2">
+      <a href="#get" class="px-6 py-3 rounded-xl font-semibold text-white text-sm bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 shadow-lg shadow-indigo-950/60 transition-all hover:scale-105">Get Started</a>
+      <a href="#features" class="px-6 py-3 rounded-xl font-semibold text-sm transition-all border border-white/10 hover:border-indigo-500/40 hover:text-white bg-white/5 hover:bg-white/10 backdrop-blur-sm" style="color:#9090c0">Explore Features</a>
+      <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
+         class="px-6 py-3 rounded-xl font-semibold text-sm flex items-center gap-2 transition-all border border-white/10 hover:border-white/20 hover:text-white bg-white/5 hover:bg-white/10" style="color:#9090c0">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+
+    <div class="max-w-sm mx-auto mt-10 fu fu3">
+      <div class="terminal">
+        <div class="term-bar">
+          <div class="tdot" style="background:#ff5f56"></div>
+          <div class="tdot" style="background:#ffbd2e"></div>
+          <div class="tdot" style="background:#27c93f"></div>
+          <span class="ml-3 text-xs" style="color:#44446a;font-family:'JetBrains Mono',monospace">terminal</span>
+        </div>
+        <div class="p-4 text-left">
+          <div class="flex items-center gap-2 text-sm" style="font-family:'JetBrains Mono',monospace">
+            <span style="color:#6366f1">$</span>
+            <span style="color:#e2e2f0">pip install <span style="color:#22d3ee">foreblocks</span></span>
           </div>
-          <p class="text-sm text-slate-600 mt-3"><b>Requires:</b> Python ≥ 3.9, PyTorch, NumPy, pandas.</p>
-        </article>
+        </div>
+      </div>
+    </div>
+  </div>
 
-        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card" id="build">
-          <h3 class="text-xl font-semibold mb-3">Install from Source</h3>
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-bash">git clone https://github.com/lseman/foreblocks
+  <a href="#get" aria-label="Scroll down" class="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 transition-colors" style="color:#363660">
+    <span class="text-xs tracking-widest font-medium">SCROLL</span>
+    <svg class="w-4 h-4 animate-bounce" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+  </a>
+</header>
+
+<div class="div"></div>
+
+<!-- GET -->
+<section id="get" class="py-20">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <div class="stag">Installation</div>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">Get ForeBlocks</h2>
+      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Up and running in seconds. Install from PyPI or clone from GitHub.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-5 max-w-4xl mx-auto">
+      <div class="card rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="ibox"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg></div>
+          <div><h3 class="font-semibold text-white">Quick Install (PyPI)</h3><p class="text-xs" style="color:#5a5a7a">Recommended</p></div>
+        </div>
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre class="line-numbers"><code class="language-bash">pip install foreblocks</code></pre>
+        </div>
+        <p class="text-xs mt-3" style="color:#4a4a68">Requires Python &ge; 3.9, PyTorch, NumPy, pandas.</p>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="ibox"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg></div>
+          <div><h3 class="font-semibold text-white">Install from Source</h3><p class="text-xs" style="color:#5a5a7a">Latest dev version</p></div>
+        </div>
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre class="line-numbers"><code class="language-bash">git clone https://github.com/lseman/foreblocks
 cd foreblocks
 pip install -e .</code></pre>
-          </div>
-        </article>
-      </div>
-    </div>
-  </section>
-
-  <section id="features" class="alt-section py-14">
-    <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Key Features</h2>
-      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <div class="border border-slate-200 rounded-xl p-5 bg-white">
-          <h3 class="font-semibold mb-1">Multiple Strategies</h3>
-          <p class="text-sm text-slate-700">Seq2Seq, Autoregressive, Direct multi‑step, Transformer Seq2Seq.</p>
-        </div>
-        <div class="border border-slate-200 rounded-xl p-5 bg-white">
-          <h3 class="font-semibold mb-1">Modular Design</h3>
-          <p class="text-sm text-slate-700">Swap encoders/decoders, attention, and heads through a clean API.</p>
-        </div>
-        <div class="border border-slate-200 rounded-xl p-5 bg-white">
-          <h3 class="font-semibold mb-1">Advanced Models</h3>
-          <p class="text-sm text-slate-700">LSTM, GRU, Transformer, VAE; Fourier & Wavelet blocks.</p>
-        </div>
-        <div class="border border-slate-200 rounded-xl p-5 bg-white">
-          <h3 class="font-semibold mb-1">Adaptive Preprocessing</h3>
-          <p class="text-sm text-slate-700">Normalization, differencing, detrending, EWT, outlier handling.</p>
-        </div>
-        <div class="border border-slate-200 rounded-xl p-5 bg-white">
-          <h3 class="font-semibold mb-1">Attention Modules</h3>
-          <p class="text-sm text-slate-700">Pluggable attention layers for temporal alignment and context.</p>
-        </div>
-        <div class="border border-slate-200 rounded-xl p-5 bg-white">
-          <h3 class="font-semibold mb-1">Trainer & Utilities</h3>
-          <p class="text-sm text-slate-700">Callbacks, metrics, early stopping, visualizations.</p>
         </div>
       </div>
     </div>
-  </section>
+    <div class="flex flex-wrap justify-center gap-3 mt-7">
+      <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
+         class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
+         style="color:#c0c0e0;background:#161b22;border:1px solid rgba(255,255,255,.1)">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub: lseman/foreblocks
+      </a>
+      <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/"
+         class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
+         style="color:#a5b4fc;background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.28)">
+        PyPI: foreblocks
+      </a>
+    </div>
+  </div>
+</section>
 
-  <section id="models" class="alt-section py-14">
-    <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Model Recipes</h2>
+<div class="div"></div>
 
-      <div class="grid md:grid-cols-2 gap-6 mb-6">
-        <article class="step h-full">
-          <div class="flex items-center gap-3 mb-3"><span class="step-number">1</span><h3 class="text-xl font-semibold">Seq2Seq (LSTM)</h3></div>
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+<!-- FEATURES -->
+<section id="features" class="py-20" style="background:rgba(255,255,255,.015)">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <div class="stag">Capabilities</div>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">Key Features</h2>
+      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Everything you need for research-grade time-series work in one composable library.</p>
+    </div>
+    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+      <div class="card rounded-2xl p-6">
+        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></div>
+        <h3 class="font-semibold text-white mb-1.5">Multiple Strategies</h3>
+        <p class="text-sm" style="color:#6a6a90">Seq2Seq, Autoregressive, Direct multi-step, Transformer Seq2Seq &#8212; swap strategies instantly.</p>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg></div>
+        <h3 class="font-semibold text-white mb-1.5">Modular Design</h3>
+        <p class="text-sm" style="color:#6a6a90">Swap encoders, decoders, attention heads, and output layers through a clean composable API.</p>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg></div>
+        <h3 class="font-semibold text-white mb-1.5">Advanced Models</h3>
+        <p class="text-sm" style="color:#6a6a90">LSTM, GRU, Transformer, VAE; Fourier &amp; Wavelet blocks for frequency-domain learning.</p>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg></div>
+        <h3 class="font-semibold text-white mb-1.5">Adaptive Preprocessing</h3>
+        <p class="text-sm" style="color:#6a6a90">Normalization, differencing, detrending, EWT, outlier handling &#8212; auto-tuned for your data.</p>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg></div>
+        <h3 class="font-semibold text-white mb-1.5">Attention Modules</h3>
+        <p class="text-sm" style="color:#6a6a90">Pluggable dot-product, additive, and multi-head attention for temporal alignment.</p>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div>
+        <h3 class="font-semibold text-white mb-1.5">Trainer &amp; Utilities</h3>
+        <p class="text-sm" style="color:#6a6a90">Callbacks, early stopping, built-in metrics, and visual diagnostics for fast iteration.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="div"></div>
+
+<!-- MODELS -->
+<section id="models" class="py-20">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <div class="stag">Recipes</div>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">Model Configurations</h2>
+      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Copy-paste configurations for common architectures.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-5 mb-5">
+      <div class="card rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4"><div class="snum">1</div><div><h3 class="font-semibold text-white">Seq2Seq (LSTM)</h3><p class="text-xs" style="color:#5a5a7a">Encoder-decoder with recurrent hidden state</p></div></div>
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
 
 cfg = ModelConfig(
     model_type="lstm", strategy="seq2seq",
@@ -209,14 +294,13 @@ cfg = ModelConfig(
     num_encoder_layers=2, num_decoder_layers=2,
 )
 model = TimeSeriesSeq2Seq(model_config=cfg)</code></pre>
-          </div>
-        </article>
-
-        <article class="step h-full">
-          <div class="flex items-center gap-3 mb-3"><span class="step-number">2</span><h3 class="text-xl font-semibold">Transformer Seq2Seq</h3></div>
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+        </div>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4"><div class="snum">2</div><div><h3 class="font-semibold text-white">Transformer Seq2Seq</h3><p class="text-xs" style="color:#5a5a7a">Multi-head self-attention for long-range context</p></div></div>
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
 
 cfg = ModelConfig(
   model_type="transformer", strategy="transformer_seq2seq",
@@ -226,139 +310,153 @@ cfg = ModelConfig(
   target_len=96,
 )
 model = TimeSeriesSeq2Seq(model_config=cfg)</code></pre>
-          </div>
-        </article>
+        </div>
       </div>
-
-      <article class="step">
-        <div class="flex items-center gap-3 mb-3"><span class="step-number">3</span><h3 class="text-xl font-semibold">Autoregressive & Direct Multi‑Step</h3></div>
-        <p class="text-slate-700">Switch strategies while keeping the same data pipeline.</p>
-        <div class="grid md:grid-cols-2 gap-4">
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">cfg.strategy = "autoregressive"  # one-step teacher forcing
+    </div>
+    <div class="card rounded-2xl p-6">
+      <div class="flex items-center gap-3 mb-4"><div class="snum">3</div><div><h3 class="font-semibold text-white">Autoregressive &amp; Direct Multi-Step</h3><p class="text-xs" style="color:#5a5a7a">Switch strategies without touching the data pipeline</p></div></div>
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre class="line-numbers"><code class="language-python">cfg.strategy = "autoregressive"  # one-step teacher forcing
 # or
 cfg.strategy = "direct"          # predict all steps at once</code></pre>
-          </div>
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python"># Add attention
-from foreblocks.attention import AttentionLayer
-attn = AttentionLayer(method="dot", encoder_hidden_size=64, decoder_hidden_size=64)
-model = TimeSeriesSeq2Seq(model_config=cfg, attention_module=attn)</code></pre>
-          </div>
         </div>
-      </article>
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre class="line-numbers"><code class="language-python"># Add pluggable attention
+from foreblocks.attention import AttentionLayer
+attn = AttentionLayer(
+    method="dot",
+    encoder_hidden_size=64,
+    decoder_hidden_size=64,
+)
+model = TimeSeriesSeq2Seq(model_config=cfg, attention_module=attn)</code></pre>
+        </div>
+      </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section id="usage" class="alt-section py-14">
-    <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Quick Start</h2>
+<div class="div"></div>
 
-      <div class="grid md:grid-cols-1 gap-8">
-        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
-          <h3 class="text-xl font-semibold mb-3">Minimal Example</h3>
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+<!-- USAGE -->
+<section id="usage" class="py-20" style="background:rgba(255,255,255,.015)">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <div class="stag">Quick Start</div>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">From Data to Forecast in Minutes</h2>
+      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Load data, configure, train, predict &#8212; that's the entire workflow.</p>
+    </div>
+    <div class="card rounded-2xl p-6 mb-8 max-w-4xl mx-auto">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="ibox"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div>
+        <h3 class="font-semibold text-white">Minimal Example</h3>
+      </div>
+      <div class="relative">
+        <button class="copy-btn">Copy</button>
+        <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
 import pandas as pd, torch
 
-# Load your time‑series (n_samples × n_features)
-data = pd.read_csv('your_data.csv').values
+data = pd.read_csv('your_data.csv').values  # n_samples x n_features
 
-cfg = ModelConfig(model_type="lstm", input_size=data.shape[1], output_size=1,
-                  hidden_size=64, target_len=24)
+cfg = ModelConfig(model_type="lstm", input_size=data.shape[1],
+                  output_size=1, hidden_size=64, target_len=24)
 model = TimeSeriesSeq2Seq(model_config=cfg)
 
 X_train, y_train, _ = model.preprocess(data, self_tune=True)
 from torch.utils.data import DataLoader, TensorDataset
-loader = DataLoader(TensorDataset(torch.tensor(X_train, dtype=torch.float32),
-                                  torch.tensor(y_train, dtype=torch.float32)),
-                    batch_size=32, shuffle=True)
+loader = DataLoader(
+    TensorDataset(torch.tensor(X_train, dtype=torch.float32),
+                  torch.tensor(y_train, dtype=torch.float32)),
+    batch_size=32, shuffle=True)
 
 history = model.train_model(loader)
 # predictions = model.predict(X_test)</code></pre>
-          </div>
-        </article>
       </div>
+    </div>
+    <div class="grid sm:grid-cols-3 gap-4 max-w-4xl mx-auto">
+      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#6366f1">STEP 01</div><h4 class="font-semibold text-white mb-1">Choose Strategy</h4><p class="text-sm" style="color:#6a6a90"><code>seq2seq</code>, <code>autoregressive</code>, <code>direct</code>, or <code>transformer_seq2seq</code>.</p></div>
+      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#22d3ee">STEP 02</div><h4 class="font-semibold text-white mb-1">Configure</h4><p class="text-sm" style="color:#6a6a90">Hidden sizes, attention type, preprocessing options, trainer settings.</p></div>
+      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#6366f1">STEP 03</div><h4 class="font-semibold text-white mb-1">Train &amp; Evaluate</h4><p class="text-sm" style="color:#6a6a90">Built-in metrics, callbacks, early stopping, and plots to iterate quickly.</p></div>
+    </div>
+  </div>
+</section>
 
-      <div class="mt-10 grid md:grid-cols-3 gap-4">
-        <div class="border border-slate-200 rounded-xl p-4 bg-white">
-          <div class="text-slate-500 text-xs font-semibold">STEP 1</div>
-          <h4 class="font-semibold">Choose strategy</h4>
-          <p class="text-sm text-slate-700"><code>seq2seq</code>, <code>autoregressive</code>, <code>direct</code>, or <code>transformer_seq2seq</code>.</p>
-        </div>
-        <div class="border border-slate-200 rounded-xl p-4 bg-white">
-          <div class="text-slate-500 text-xs font-semibold">STEP 2</div>
-          <h4 class="font-semibold">Configure</h4>
-          <p class="text-sm text-slate-700">Hidden sizes, attention, preprocessing, trainer options.</p>
-        </div>
-        <div class="border border-slate-200 rounded-xl p-4 bg-white">
-          <div class="text-slate-500 text-xs font-semibold">STEP 3</div>
-          <h4 class="font-semibold">Train & Evaluate</h4>
-          <p class="text-sm text-slate-700">Use built‑in metrics, callbacks, and plots to iterate quickly.</p>
+<div class="div"></div>
+
+<!-- API -->
+<section id="api" class="py-20">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <div class="stag">Reference</div>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">API Cheatsheet</h2>
+      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Core classes and common configuration knobs at a glance.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-5 max-w-4xl mx-auto">
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold text-white mb-4 flex items-center gap-2"><span class="w-1.5 h-5 rounded-full inline-block" style="background:#6366f1"></span> Key Classes</h3>
+        <ul class="space-y-2 text-sm" style="color:#7878a0">
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> <code>TimeSeriesSeq2Seq</code>, <code>ForecastingModel</code></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> <code>ModelConfig</code>, <code>TrainingConfig</code></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> <code>TimeSeriesPreprocessor</code></li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> <code>AttentionLayer</code></li>
+        </ul>
+        <h3 class="font-semibold text-white mt-6 mb-4 flex items-center gap-2"><span class="w-1.5 h-5 rounded-full inline-block" style="background:#22d3ee"></span> Common Config Keys</h3>
+        <ul class="space-y-2 text-sm" style="color:#7878a0">
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span> <code>model_type</code>: <code>lstm</code> | <code>gru</code> | <code>transformer</code></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span> <code>strategy</code>: <code>seq2seq</code> | <code>autoregressive</code> | <code>direct</code></li>
+          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span> <code>target_len</code>, <code>hidden_size</code>, <code>nheads</code>, layers</li>
+        </ul>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold text-white mb-4 flex items-center gap-2"><span class="w-1.5 h-5 rounded-full inline-block" style="background:#6366f1"></span> Preprocessing Options</h3>
+        <ul class="space-y-2 text-sm" style="color:#7878a0">
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> Normalization, differencing, detrending</li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> EWT, Fourier / Wavelet feature extraction</li>
+          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span> Outlier removal, missing-value imputation</li>
+        </ul>
+        <h3 class="font-semibold text-white mt-6 mb-4 flex items-center gap-2"><span class="w-1.5 h-5 rounded-full inline-block" style="background:#22d3ee"></span> Links</h3>
+        <div class="space-y-2">
+          <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm" style="color:#a0a0c0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)"><span>GitHub Repository</span><span style="color:#5a5a7a">&#8599;</span></a>
+          <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm" style="color:#a0a0c0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)"><span>PyPI Package</span><span style="color:#5a5a7a">&#8599;</span></a>
         </div>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section id="api" class="alt-section py-14">
-    <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">API Cheatsheet</h2>
-      <div class="grid md:grid-cols-2 gap-6">
-        <div class="border border-slate-200 rounded-xl p-4 bg-white">
-          <h3 class="font-semibold mb-2">Key Classes</h3>
-          <ul class="list-disc ml-6 text-sm text-slate-700 space-y-1">
-            <li><code>TimeSeriesSeq2Seq</code>, <code>ForecastingModel</code></li>
-            <li><code>ModelConfig</code>, <code>TrainingConfig</code></li>
-            <li><code>TimeSeriesPreprocessor</code></li>
-            <li><code>AttentionLayer</code></li>
-          </ul>
-          <h3 class="font-semibold mt-4 mb-2">Common Config</h3>
-          <ul class="list-disc ml-6 text-sm text-slate-700 space-y-1">
-            <li><code>model_type</code>: <code>lstm</code> | <code>gru</code> | <code>transformer</code> | ...</li>
-            <li><code>strategy</code>: <code>seq2seq</code> | <code>autoregressive</code> | <code>direct</code> | <code>transformer_seq2seq</code></li>
-            <li><code>target_len</code>, <code>hidden_size</code>, <code>nheads</code>, layers</li>
-          </ul>
-        </div>
-        <div class="border border-slate-200 rounded-xl p-4 bg-white">
-          <h3 class="font-semibold mb-2">Preprocessing</h3>
-          <ul class="list-disc ml-6 text-sm text-slate-700 space-y-1">
-            <li>Normalization, differencing, detrending</li>
-            <li>EWT, Fourier/Wavelet features</li>
-            <li>Outlier removal, missing‑value imputation</li>
-          </ul>
-        </div>
-      </div>
+<div class="div"></div>
+
+<!-- EXAMPLES -->
+<section id="examples" class="py-20" style="background:rgba(255,255,255,.015)">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <div class="stag">Examples</div>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">Worked Examples</h2>
+      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Practical snippets for the most common use cases.</p>
     </div>
-  </section>
-
-  <section id="examples" class="alt-section py-14">
-    <div class="max-w-7xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-8">Worked Examples</h2>
-      <div class="grid lg:grid-cols-1 gap-8">
-        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
-          <h3 class="text-lg font-semibold mb-2">LSTM + Attention</h3>
-          <p class="text-slate-700">Plug a simple dot‑product attention into a Seq2Seq LSTM.</p>
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
+    <div class="grid gap-6 max-w-4xl mx-auto">
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold text-white mb-1">LSTM + Attention</h3>
+        <p class="text-sm mb-4" style="color:#6a6a90">Plug dot-product attention into a Seq2Seq LSTM.</p>
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig
 from foreblocks.attention import AttentionLayer
 
 cfg = ModelConfig(model_type="lstm", input_size=3, output_size=1,
                   hidden_size=64, target_len=24)
 attn = AttentionLayer(method="dot", encoder_hidden_size=64, decoder_hidden_size=64)
 model = TimeSeriesSeq2Seq(model_config=cfg, attention_module=attn)</code></pre>
-          </div>
-        </article>
-
-        <article class="bg-white border border-slate-200 rounded-2xl p-6 shadow card">
-          <h3 class="text-lg font-semibold mb-2">Transformer (Multi‑variate)</h3>
-          <p class="text-slate-700">A larger transformer for multi‑feature forecasting.</p>
-          <div class="relative">
-            <button class="copy-btn absolute right-2 top-2 text-xs px-2 py-1 rounded-md bg-slate-800 text-white">Copy</button>
-            <pre class="line-numbers text-sm leading-6 overflow-x-auto p-4 rounded-lg border border-slate-200 bg-slate-50"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig, TrainingConfig
+        </div>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold text-white mb-1">Transformer (Multi-variate)</h3>
+        <p class="text-sm mb-4" style="color:#6a6a90">Large Transformer for multi-feature forecasting with custom training config.</p>
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre class="line-numbers"><code class="language-python">from foreblocks import TimeSeriesSeq2Seq, ModelConfig, TrainingConfig
 
 cfg = ModelConfig(
   model_type="transformer", strategy="transformer_seq2seq",
@@ -369,146 +467,105 @@ cfg = ModelConfig(
 )
 train = TrainingConfig(num_epochs=100, learning_rate=1e-4, patience=15)
 model = TimeSeriesSeq2Seq(model_config=cfg, training_config=train)</code></pre>
-          </div>
-        </article>
-      </div>
-      <div class="text-center mt-6">
-        <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white font-semibold hover:bg-black">Browse more examples on GitHub <span class="kbd">↗</span></a>
+        </div>
       </div>
     </div>
-  </section>
-
-  <!-- ======= Footer ======= -->
-  <footer class="py-10 bg-slate-900 text-slate-200">
-    <div class="max-w-7xl mx-auto px-6">
-      <div class="flex flex-col md:flex-row items-center justify-between gap-4">
-        <p class="text-sm">© <span id="year"></span> ForeBlocks — Time‑Series Forecasting Library</p>
-        <div class="text-xs text-slate-400">Seq2Seq • Transformer • Fourier • Wavelet • Attention • Adaptive Preprocessing</div>
-      </div>
-      <div class="mt-4 pt-4 border-t border-slate-700 text-center text-xs text-slate-400">Research‑friendly API • Clean modular design • Trainer with callbacks & metrics</div>
+    <div class="text-center mt-8">
+      <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
+         class="inline-flex items-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 shadow-lg shadow-indigo-950/60 transition-all hover:scale-105">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        Browse More Examples on GitHub
+      </a>
     </div>
-  </footer>
+  </div>
+</section>
 
-  <!-- Copy buttons, year, smooth anchors, sticky nav & section alternator & nav highlight -->
-  <script>
-    document.addEventListener("DOMContentLoaded", () => {
-      // Copy buttons
-      document.querySelectorAll('.copy-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const pre = btn.nextElementSibling;
-          const code = pre && pre.querySelector('code');
-          if (!code) return;
-          const text = code.innerText;
-          navigator.clipboard.writeText(text).then(() => {
-            const old = btn.textContent; btn.textContent = 'Copied!';
-            setTimeout(() => btn.textContent = old, 1200);
-          });
-        });
-      });
+<!-- FOOTER -->
+<footer style="background:#040409;border-top:1px solid rgba(255,255,255,.055)" class="py-12">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="flex flex-col md:flex-row items-center justify-between gap-6">
+      <div class="flex items-center gap-3">
+        <img src="logo.svg" alt="ForeBlocks" class="h-8 w-auto opacity-75"/>
+        <div><div class="font-bold text-white text-sm">ForeBlocks</div><div class="text-xs" style="color:#44446a">Modular Time-Series Forecasting</div></div>
+      </div>
+      <div class="flex flex-wrap justify-center gap-x-5 gap-y-1 text-xs" style="color:#44446a">
+        <span>Seq2Seq</span><span>Transformer</span><span>Fourier</span><span>Wavelet</span><span>Attention</span><span>Adaptive Preprocessing</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style="color:#8080a8;border:1px solid rgba(255,255,255,.09)">
+          <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+          GitHub
+        </a>
+        <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style="color:#8080a8;border:1px solid rgba(255,255,255,.09)">PyPI</a>
+      </div>
+    </div>
+    <div class="mt-8 pt-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs" style="color:#30304a;border-top:1px solid rgba(255,255,255,.04)">
+      <span>&#169; <span id="year"></span> ForeBlocks &#8212; Open Source MIT License</span>
+      <span>Research-friendly API &#183; Clean modular design &#183; Trainer with callbacks &amp; metrics</span>
+    </div>
+  </div>
+</footer>
 
-      // Ensure line numbers
-      document.querySelectorAll('pre').forEach(pre => pre.classList.add('line-numbers'));
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const y = document.getElementById('year');
+  if (y) y.textContent = new Date().getFullYear();
 
-      // Update year
-      const y = document.getElementById('year');
-      if (y) y.textContent = new Date().getFullYear();
-
-      // Smooth anchor scroll
-      document.querySelectorAll('a[href^="#"]').forEach(a => {
-        a.addEventListener('click', (e) => {
-          const href = a.getAttribute('href');
-          if (!href || href === '#') return;
-          const t = document.querySelector(href);
-          if (t) { e.preventDefault(); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
-        });
-      });
-    });
-  </script>
-  <script>
-    document.addEventListener("DOMContentLoaded", () => {
-      const nav = document.getElementById('topnav');
-      const hero = document.querySelector('header');
-
-      const solid = () => nav && nav.classList.add('backdrop-blur','bg-white/80','border-b','border-slate-200');
-      const clear = () => nav && nav.classList.remove('backdrop-blur','bg-white/80','border-b','border-slate-200');
-      solid();
-
-      let navH = nav ? nav.getBoundingClientRect().height : 72;
-
-      // Active nav highlight
-      const links = Array.from(document.querySelectorAll('.nav-link'));
-      const linkById = new Map(links.filter(a => a.hash).map(a => [a.hash.slice(1), a]));
-      const sections = Array.from(document.querySelectorAll('.alt-section'));
-
-      const setActive = (id) => {
-        links.forEach(a => a.classList.remove('active'));
-        const el = linkById.get(id);
-        if (el) el.classList.add('active');
-      };
-
-      links.forEach(a => { a.addEventListener('click', () => { const id = a.hash && a.hash.slice(1); if (id) setActive(id); }); });
-
-      const vis = new Map(); // id -> ratio
-      const chooseAndSetActive = () => {
-        let bestId = null, bestRatio = 0, bestDist = Infinity; const headerY = navH + 8;
-        sections.forEach(sec => { const id = sec.id; const ratio = vis.get(id) || 0; if (ratio > 0) { const rect = sec.getBoundingClientRect(); const dist = Math.abs(rect.top - headerY); if (ratio > bestRatio || (ratio === bestRatio && dist < bestDist)) { bestRatio = ratio; bestDist = dist; bestId = id; } } });
-        if (!bestId) { let nearestId = null, nearestDist = Infinity; sections.forEach(sec => { const rect = sec.getBoundingClientRect(); const dist = Math.abs(rect.top - headerY); if (dist < nearestDist) { nearestDist = dist; nearestId = sec.id; } }); bestId = nearestId; }
-        if (bestId) setActive(bestId);
-      };
-
-      const thresholds = Array.from({ length: 11 }, (_, i) => i / 10);
-      let sectionObserver = new IntersectionObserver((entries) => {
-        entries.forEach(entry => { vis.set(entry.target.id, entry.intersectionRatio); });
-        chooseAndSetActive();
-      }, { rootMargin: `-${navH + 8}px 0px -55% 0px`, threshold: thresholds });
-      sections.forEach(s => sectionObserver.observe(s));
-
-      // Navbar transparency when hero fully visible
-      let heroObserver = null;
-      const makeHeroObserver = () => {
-        if (!hero) return; if (heroObserver) heroObserver.disconnect();
-        heroObserver = new IntersectionObserver((entries) => {
-          entries.forEach(entry => { if (entry.isIntersecting && entry.intersectionRatio === 1) { clear(); } else { solid(); } });
-        }, { threshold: [0,1] });
-        heroObserver.observe(hero);
-      };
-      makeHeroObserver();
-
-      const init = () => {
-        if (location.hash) { const id = location.hash.slice(1); setActive(id); const target = document.getElementById(id); if (target) target.scrollIntoView({ behavior: 'instant', block: 'start' }); } else { chooseAndSetActive(); }
-      };
-      requestAnimationFrame(init);
-
-      // Alternating section backgrounds
-      const applyAlternating = () => {
-        const secs = Array.from(document.querySelectorAll('.alt-section'));
-        secs.forEach((sec, idx) => {
-          sec.classList.remove('bg-white','bg-slate-50');
-          sec.classList.add(idx % 2 === 0 ? 'bg-white' : 'bg-slate-50');
-        });
-      };
-      requestAnimationFrame(applyAlternating);
-      window.addEventListener('resize', applyAlternating);
-      const mo = new MutationObserver(() => applyAlternating());
-      mo.observe(document.body, { childList: true, subtree: true });
-
-      // Recompute observers on resize
-      window.addEventListener('resize', () => {
-        const newNavH = nav ? nav.getBoundingClientRect().height : 72;
-        if (newNavH !== navH) {
-          navH = newNavH;
-          sectionObserver.disconnect();
-          sections.forEach(s => vis.set(s.id, 0));
-          sectionObserver = new IntersectionObserver((entries) => {
-            entries.forEach(entry => vis.set(entry.target.id, entry.intersectionRatio));
-            chooseAndSetActive();
-          }, { rootMargin: `-${navH + 8}px 0px -55% 0px`, threshold: thresholds });
-          sections.forEach(s => sectionObserver.observe(s));
-          makeHeroObserver();
-        }
-        chooseAndSetActive();
+  document.querySelectorAll('.copy-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const pre = btn.nextElementSibling;
+      const code = pre && pre.querySelector('code');
+      if (!code) return;
+      navigator.clipboard.writeText(code.innerText).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.style.color = '#22d3ee';
+        setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 1500);
       });
     });
-  </script>
+  });
+
+  document.querySelectorAll('pre').forEach(p => p.classList.add('line-numbers'));
+
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const t = document.querySelector(a.getAttribute('href') || '');
+      if (t) { e.preventDefault(); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    });
+  });
+
+  const links    = Array.from(document.querySelectorAll('.nav-link[href^="#"]'));
+  const sections = Array.from(document.querySelectorAll('section[id]'));
+  const linkMap  = new Map(links.filter(a => a.hash).map(a => [a.hash.slice(1), a]));
+  const vis      = new Map();
+
+  const setActive = id => {
+    links.forEach(a => a.classList.remove('active'));
+    const el = linkMap.get(id);
+    if (el) el.classList.add('active');
+  };
+
+  const pickActive = () => {
+    let bestId = null, best = -1;
+    sections.forEach(s => { const r = vis.get(s.id) || 0; if (r > best) { best = r; bestId = s.id; } });
+    if (bestId) setActive(bestId);
+  };
+
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => vis.set(e.target.id, e.intersectionRatio));
+    pickActive();
+  }, { rootMargin: '-56px 0px -55% 0px', threshold: Array.from({length:11},(_,i)=>i/10) });
+
+  sections.forEach(s => obs.observe(s));
+
+  if (location.hash) {
+    const id = location.hash.slice(1);
+    setActive(id);
+    const t = document.getElementById(id);
+    if (t) requestAnimationFrame(() => t.scrollIntoView({ behavior: 'instant' }));
+  }
+});
+</script>
+
 </body>
 </html>

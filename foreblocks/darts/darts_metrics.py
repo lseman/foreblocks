@@ -36,6 +36,7 @@ class Config:
     snip_mode: str = "init"
     heavy_metrics_batches: int = 1
     gradient_max_samples: int = 4
+    fisher_per_sample: bool = True
     conditioning_every_n_layers: int = 3
     conditioning_min_out_features: int = 0
     conditioning_power_iters: int = 6
@@ -186,6 +187,13 @@ class MetricsComputer:
                 if torch.is_tensor(value):
                     return value
         raise TypeError(f"Unsupported model output type for metrics: {type(output)}")
+
+    @staticmethod
+    def _has_cudnn_rnn_modules(model: nn.Module) -> bool:
+        for module in model.modules():
+            if isinstance(module, (nn.LSTM, nn.GRU, nn.RNN)):
+                return True
+        return False
 
     def _finite_difference_sensitivity(self, model, inputs: torch.Tensor) -> float:
         """Finite-difference input sensitivity fallback (autograd-free)."""
@@ -351,12 +359,12 @@ class MetricsComputer:
                 # forward can fail; ensure this graph-producing pass runs in train mode.
                 model.train()
                 shared_inputs = inputs.detach().clone().requires_grad_(True)
-                with self.helper.safe_mode(model):
-                    shared_outputs = model(shared_inputs)
+                # Keep CuDNN enabled for speed by default.
+                # GRASP handles CuDNN double-backward via retry path in _grasp.
+                shared_outputs = model(shared_inputs)
             else:
                 with torch.no_grad():
-                    with self.helper.safe_mode(model):
-                        shared_outputs = model(inputs)
+                    shared_outputs = model(inputs)
 
             # Process all metrics that only need activations
             results.update(
@@ -694,6 +702,16 @@ class MetricsComputer:
 
             # ----- Fisher -----
             def _fisher():
+                if not bool(getattr(self.config, "fisher_per_sample", True)):
+                    vals = [
+                        g.pow(2).sum().item()
+                        for g in grads_first_order
+                        if g is not None and torch.isfinite(g).all()
+                    ]
+                    if not vals:
+                        return 0.0
+                    return float(sum(vals) / max(len(vals), 1))
+
                 fisher_per_sample = []
                 x_f = x.detach()
                 y_f = y.detach()

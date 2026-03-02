@@ -1,6 +1,7 @@
+import copy
 import math
 import warnings
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -37,7 +38,15 @@ class SwiGLUFFN(nn.Module):
 class LinearSelfAttention(nn.Module):
     """Improved linear self-attention with consistent behavior"""
 
-    def __init__(self, dim, heads=4, dropout=0.0, causal=False):
+    def __init__(
+        self,
+        dim,
+        heads=4,
+        dropout=0.0,
+        causal=False,
+        rope_base: float = 500000.0,
+        rope_max_seq_len: int = 1024,
+    ):
         super().__init__()
         self.heads = heads
         self.dim = dim
@@ -53,15 +62,14 @@ class LinearSelfAttention(nn.Module):
         self.out_proj = nn.Linear(dim, dim, bias=False)
         self.dropout_p = dropout
 
-        # Rotary embedding on q/k when head dimension supports pairwise rotation.
-        self.rotary_emb = (
-            RotaryPositionalEncoding(self.head_dim) if self.head_dim % 2 == 0 else None
+        # Always enable RoPE; odd dimensions are handled via partial rotation.
+        self.rotary_emb = RotaryPositionalEncoding(
+            self.head_dim,
+            max_seq_len=rope_max_seq_len,
+            base=rope_base,
         )
 
     def _apply_rotary(self, q: torch.Tensor, k: torch.Tensor):
-        if self.rotary_emb is None:
-            return q, k
-
         seq_len = q.size(-2)
         cos, sin = self.rotary_emb.get_embeddings_for_length(seq_len, q.device)
         cos = cos.to(dtype=q.dtype)
@@ -131,6 +139,7 @@ class LightweightTransformerEncoder(nn.Module):
         nhead=4,
         max_seq_len=512,
         causal=False,
+        rope_base: float = 500000.0,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -145,7 +154,12 @@ class LightweightTransformerEncoder(nn.Module):
                 nn.ModuleDict(
                     {
                         "self_attn": LinearSelfAttention(
-                            latent_dim, heads=nhead, dropout=dropout, causal=causal
+                            latent_dim,
+                            heads=nhead,
+                            dropout=dropout,
+                            causal=causal,
+                            rope_base=rope_base,
+                            rope_max_seq_len=max_seq_len,
                         ),
                         "ffn": SwiGLUFFN(latent_dim, expand=4),
                         "norm1": RMSNorm(latent_dim),
@@ -214,6 +228,7 @@ class LightweightTransformerDecoder(nn.Module):
         nhead=4,
         max_seq_len=512,
         causal=True,
+        rope_base: float = 500000.0,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -229,7 +244,12 @@ class LightweightTransformerDecoder(nn.Module):
                 nn.ModuleDict(
                     {
                         "self_attn": LinearSelfAttention(
-                            latent_dim, heads=nhead, dropout=dropout, causal=causal
+                            latent_dim,
+                            heads=nhead,
+                            dropout=dropout,
+                            causal=causal,
+                            rope_base=rope_base,
+                            rope_max_seq_len=max_seq_len,
                         ),
                         "cross_attn": nn.MultiheadAttention(
                             latent_dim,
@@ -383,6 +403,59 @@ class ArchitectureNormalizer(nn.Module):
             return output
 
 
+class SearchableDecomposition(nn.Module):
+    """Searchable decomposition front-end for trend/seasonal mixing."""
+
+    def __init__(self, c_in: int, kernel_size: int = 25):
+        super().__init__()
+        self.c_in = int(c_in)
+        self.kernel_size = int(max(3, kernel_size))
+        if self.kernel_size % 2 == 0:
+            self.kernel_size += 1
+
+        # [none, moving_avg_trend, seasonal_residual, learnable_filter]
+        self.alpha_logits = nn.Parameter(torch.randn(4) * 0.01)
+        pad = self.kernel_size // 2
+        self.avg_pool = nn.AvgPool1d(
+            kernel_size=self.kernel_size,
+            stride=1,
+            padding=pad,
+            count_include_pad=False,
+        )
+        self.learnable_filter = nn.Conv1d(
+            self.c_in,
+            self.c_in,
+            kernel_size=5,
+            stride=1,
+            padding=2,
+            groups=self.c_in,
+            bias=False,
+        )
+        nn.init.dirac_(self.learnable_filter.weight)
+
+    def forward(self, x: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+        if x.dim() != 3:
+            return x
+
+        tau = max(float(temperature), 1e-3)
+        weights = F.softmax(self.alpha_logits / tau, dim=0)
+
+        x_t = x.transpose(1, 2)
+        trend = self.avg_pool(x_t).transpose(1, 2)
+        seasonal = x - trend
+        filtered = self.learnable_filter(x_t).transpose(1, 2)
+
+        return (
+            weights[0] * x
+            + weights[1] * trend
+            + weights[2] * seasonal
+            + weights[3] * filtered
+        )
+
+    def get_alphas(self) -> torch.Tensor:
+        return F.softmax(self.alpha_logits, dim=0)
+
+
 class SequenceStateAdapter:
     """Shared hidden-state adapter for mixed/fixed encoder-decoder blocks."""
 
@@ -501,6 +574,7 @@ class BaseMixedSequenceBlock(nn.Module):
         num_layers: int = 2,
         num_options: int = 3,
         single_path_search: bool = True,
+        arch_path_keep_prob: float = 0.85,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -510,6 +584,7 @@ class BaseMixedSequenceBlock(nn.Module):
         self.temperature = temperature
         self.num_layers = num_layers
         self.single_path_search = single_path_search
+        self.arch_path_keep_prob = float(min(max(arch_path_keep_prob, 0.0), 1.0))
         self._warned_no_grad_sampling = False
 
         self.lstm = nn.LSTM(
@@ -588,6 +663,26 @@ class BaseMixedSequenceBlock(nn.Module):
         else:
             weights = F.softmax(logits / tau, dim=-1)
 
+        if (
+            self.training
+            and self.single_path_search
+            and torch.is_grad_enabled()
+            and self.arch_path_keep_prob < 1.0
+        ):
+            keep = torch.full_like(weights, self.arch_path_keep_prob)
+            mask = torch.bernoulli(keep)
+            if mask.dim() == 2:
+                zero_rows = mask.sum(dim=-1, keepdim=True) == 0
+                if zero_rows.any():
+                    top_idx = weights.argmax(dim=-1, keepdim=True)
+                    for r in torch.where(zero_rows.squeeze(-1))[0].tolist():
+                        mask[r, top_idx[r, 0]] = 1.0
+            elif mask.dim() == 1 and mask.sum().item() == 0:
+                mask[weights.argmax(dim=-1)] = 1.0
+
+            weights = weights * mask
+            weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+
         if layer_idx is None:
             return weights
 
@@ -607,6 +702,37 @@ class BaseMixedSequenceBlock(nn.Module):
 
     def set_temperature(self, temp: float):
         self.temperature = max(float(temp), 1e-3)
+
+    def orthogonal_regularization(self) -> torch.Tensor:
+        """Orthogonal regularization over recurrent hidden-to-hidden matrices."""
+        reg = None
+        for rnn in [self.lstm, self.gru]:
+            for name, param in rnn.named_parameters():
+                if "weight_hh" not in name or param.dim() != 2:
+                    continue
+
+                rows, cols = param.shape
+                if cols <= 0:
+                    continue
+
+                if rows % cols == 0:
+                    gates = rows // cols
+                    chunks = param.view(gates, cols, cols)
+                    for mat in chunks:
+                        gram = mat @ mat.t()
+                        eye = torch.eye(cols, device=mat.device, dtype=mat.dtype)
+                        term = (gram - eye).pow(2).mean()
+                        reg = term if reg is None else reg + term
+                else:
+                    gram = param @ param.t()
+                    eye = torch.eye(rows, device=param.device, dtype=param.dtype)
+                    term = (gram - eye).pow(2).mean()
+                    reg = term if reg is None else reg + term
+
+        if reg is None:
+            ref = self.alphas
+            return ref.new_zeros(())
+        return reg
 
 
 class BaseFixedSequenceBlock(nn.Module):
@@ -698,6 +824,7 @@ class MixedEncoder(BaseMixedSequenceBlock):
         dropout: float = 0.1,
         temperature: float = 1.0,
         single_path_search: bool = True,
+        arch_path_keep_prob: float = 0.85,
     ):
         super().__init__(
             input_dim=input_dim,
@@ -708,13 +835,16 @@ class MixedEncoder(BaseMixedSequenceBlock):
             num_layers=2,
             num_options=3,
             single_path_search=single_path_search,
+            arch_path_keep_prob=arch_path_keep_prob,
         )
+        self.searchable_decomp = SearchableDecomposition(c_in=input_dim)
 
         self.transformer = LightweightTransformerEncoder(
             input_dim=input_dim, latent_dim=latent_dim, num_layers=2, dropout=dropout
         )
 
         self.encoders = nn.ModuleList([self.lstm, self.gru, self.transformer])
+        self.encoder_names = ["lstm", "gru", "transformer"]
         # Normalization and compatibility
         self.normalizer = ArchitectureNormalizer(latent_dim)
 
@@ -725,6 +855,7 @@ class MixedEncoder(BaseMixedSequenceBlock):
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Forward pass with improved compatibility"""
+        x = self.searchable_decomp(x, temperature=self.temperature)
         layer_weights = self._get_arch_weights()
         output_weights = self._get_output_arch_weights()
 
@@ -806,6 +937,13 @@ class MixedEncoder(BaseMixedSequenceBlock):
             c_blended = (layer_weights_expanded * c_stack).sum(dim=1)
 
         return output, context, (h_blended, c_blended)
+
+    def get_alphas(self) -> torch.Tensor:
+        """Expose architecture + decomposition weights for monitoring."""
+        base = super().get_alphas()
+        if hasattr(self, "searchable_decomp"):
+            return torch.cat([base, self.searchable_decomp.get_alphas()])
+        return base
 
 
 class AttentionBridge(nn.Module):
@@ -903,6 +1041,66 @@ class AttentionBridge(nn.Module):
         return output
 
 
+class LinearAttentionBridge(nn.Module):
+    """Lightweight cross linear-attention bridge."""
+
+    def __init__(self, d_model: int, num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.d_model = int(d_model)
+        self.num_heads = min(max(1, int(num_heads)), self.d_model)
+        while self.d_model % self.num_heads != 0 and self.num_heads > 1:
+            self.num_heads -= 1
+        self.head_dim = self.d_model // self.num_heads
+        self.scale = self.head_dim**-0.5
+
+        self.q_proj = nn.Linear(self.d_model, self.d_model, bias=False)
+        self.k_proj = nn.Linear(self.d_model, self.d_model, bias=False)
+        self.v_proj = nn.Linear(self.d_model, self.d_model, bias=False)
+        self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
+        self.dropout_p = float(max(dropout, 0.0))
+
+    @staticmethod
+    def _feature_map(x: torch.Tensor) -> torch.Tensor:
+        return F.elu(x) + 1.0
+
+    def forward(
+        self,
+        decoder_hidden: torch.Tensor,
+        encoder_output: Optional[torch.Tensor] = None,
+        encoder_context: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if encoder_output is None and encoder_context is None:
+            return decoder_hidden
+
+        source = encoder_output if encoder_output is not None else encoder_context
+        if source.dim() == 2:
+            source = source.unsqueeze(1)
+
+        B, L_dec, D = decoder_hidden.shape
+        L_enc = source.size(1)
+
+        q = self.q_proj(decoder_hidden)
+        k = self.k_proj(source)
+        v = self.v_proj(source)
+
+        q = q.view(B, L_dec, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, L_enc, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, L_enc, self.num_heads, self.head_dim).transpose(1, 2)
+
+        q_feat = self._feature_map(q * self.scale)
+        k_feat = self._feature_map(k)
+        kv = torch.einsum("bhtd,bhtv->bhdv", k_feat, v)
+        k_sum = k_feat.sum(dim=2)
+        denom = torch.einsum("bhtd,bhd->bht", q_feat, k_sum).clamp_min(1e-6)
+        out = torch.einsum("bhtd,bhdv->bhtv", q_feat, kv) / denom.unsqueeze(-1)
+
+        out = out.transpose(1, 2).contiguous().view(B, L_dec, D)
+        out = self.out_proj(out)
+        if self.training and self.dropout_p > 0:
+            out = F.dropout(out, p=self.dropout_p)
+        return out
+
+
 class LearnedPoolingBridge(nn.Module):
     """Compress encoder sequences into a fixed-size decoder memory."""
 
@@ -956,6 +1154,10 @@ class MixedDecoder(BaseMixedSequenceBlock):
         use_learned_memory_pooling: bool = True,
         memory_num_queries: int = 8,
         single_path_search: bool = True,
+        arch_path_keep_prob: float = 0.85,
+        attention_temperature_mult: float = 0.7,
+        min_attention_temperature: float = 0.25,
+        memory_query_options: Optional[List[int]] = None,
     ):
         super().__init__(
             input_dim=input_dim,
@@ -966,11 +1168,16 @@ class MixedDecoder(BaseMixedSequenceBlock):
             num_layers=2,
             num_options=3,
             single_path_search=single_path_search,
+            arch_path_keep_prob=arch_path_keep_prob,
         )
 
         self.use_attention_bridge = use_attention_bridge
         self.attention_layers = attention_layers
         self.use_learned_memory_pooling = use_learned_memory_pooling
+        self.attention_temperature_mult = float(max(attention_temperature_mult, 1e-3))
+        self.min_attention_temperature = float(max(min_attention_temperature, 1e-3))
+        self.searchable_decomp = SearchableDecomposition(c_in=input_dim)
+        self.default_memory_num_queries = int(max(1, memory_num_queries))
 
         self.transformer = LightweightTransformerDecoder(
             input_dim=input_dim, latent_dim=latent_dim, num_layers=2, dropout=dropout
@@ -983,25 +1190,54 @@ class MixedDecoder(BaseMixedSequenceBlock):
 
         # Architecture normalization
         self.normalizer = ArchitectureNormalizer(latent_dim)
-        self.memory_pool_bridge = (
-            LearnedPoolingBridge(
-                dim=latent_dim,
-                num_queries=memory_num_queries,
-                num_heads=4,
-                dropout=dropout,
-            )
-            if use_learned_memory_pooling
-            else None
+        self.memory_query_options = (
+            list(memory_query_options)
+            if memory_query_options is not None
+            else [4, 8, 16]
         )
+        self.memory_query_options = [
+            int(max(1, q)) for q in self.memory_query_options if int(max(1, q)) > 0
+        ]
+        if not self.memory_query_options:
+            self.memory_query_options = [4, 8, 16]
+        if self.default_memory_num_queries not in self.memory_query_options:
+            self.memory_query_options = sorted(
+                set(self.memory_query_options + [self.default_memory_num_queries])
+            )
+        self.default_memory_query_idx = self.memory_query_options.index(
+            self.default_memory_num_queries
+        )
+
+        if use_learned_memory_pooling:
+            self.memory_pool_bridges = nn.ModuleList(
+                [
+                    LearnedPoolingBridge(
+                        dim=latent_dim,
+                        num_queries=num_queries,
+                        num_heads=4,
+                        dropout=dropout,
+                    )
+                    for num_queries in self.memory_query_options
+                ]
+            )
+            memory_query_init = 0.01 * torch.randn(len(self.memory_query_options))
+            self.register_parameter(
+                "memory_query_alphas", nn.Parameter(memory_query_init)
+            )
+        else:
+            self.memory_pool_bridges = None
 
         # Unified attention bridge
         if use_attention_bridge:
             self.attention_bridge = AttentionBridge(
                 latent_dim, num_heads=4, dropout=dropout
             )
+            self.linear_attention_bridge = LinearAttentionBridge(
+                latent_dim, num_heads=4, dropout=dropout
+            )
 
-            # Attention choice parameters — small random logits for symmetry breaking
-            attention_init = 0.01 * torch.randn(2)  # [use_attention, no_attention]
+            # Attention choice parameters: [none, sdp_attention, linear_attention]
+            attention_init = 0.01 * torch.randn(3)
             self.register_parameter("attention_alphas", nn.Parameter(attention_init))
 
     def _get_decoder_weights(self) -> torch.Tensor:
@@ -1013,7 +1249,10 @@ class MixedDecoder(BaseMixedSequenceBlock):
         if not (self.use_attention_bridge and hasattr(self, "attention_alphas")):
             return None
 
-        tau = max(float(self.temperature), 1e-3)
+        tau = max(
+            float(self.temperature) * self.attention_temperature_mult,
+            self.min_attention_temperature,
+        )
         if self._should_use_stochastic_arch_sampling():
             if self.single_path_search:
                 return self._sample_straight_through_gumbel(
@@ -1021,6 +1260,25 @@ class MixedDecoder(BaseMixedSequenceBlock):
                 )
             return F.gumbel_softmax(self.attention_alphas, tau=tau, hard=False, dim=0)
         return F.softmax(self.attention_alphas / tau, dim=0)
+
+    def _get_memory_query_weights(self) -> Optional[torch.Tensor]:
+        if not (
+            self.use_learned_memory_pooling
+            and hasattr(self, "memory_query_alphas")
+            and self.memory_pool_bridges is not None
+        ):
+            return None
+
+        tau = max(float(self.temperature), 1e-3)
+        if self._should_use_stochastic_arch_sampling():
+            if self.single_path_search:
+                return self._sample_straight_through_gumbel(
+                    self.memory_query_alphas, tau=tau, dim=0
+                )
+            return F.gumbel_softmax(
+                self.memory_query_alphas, tau=tau, hard=False, dim=0
+            )
+        return F.softmax(self.memory_query_alphas / tau, dim=0)
 
     def _build_shared_memory(
         self,
@@ -1042,10 +1300,47 @@ class MixedDecoder(BaseMixedSequenceBlock):
         if source.dim() == 2:
             source = source.unsqueeze(1)
 
-        if self.memory_pool_bridge is not None:
-            return self.memory_pool_bridge(source)
+        if self.memory_pool_bridges is not None:
+            memory_weights = self._get_memory_query_weights()
+            if memory_weights is None:
+                pooled = self.memory_pool_bridges[self.default_memory_query_idx](source)
+                return self._resize_memory_queries(
+                    pooled, self.default_memory_num_queries
+                )
+
+            if self.training and self.single_path_search:
+                chosen = int(torch.argmax(memory_weights.detach()).item())
+                pooled = self.memory_pool_bridges[chosen](source)
+                pooled = self._resize_memory_queries(
+                    pooled, self.default_memory_num_queries
+                )
+                return memory_weights[chosen] * pooled
+
+            pooled_outputs = [
+                self._resize_memory_queries(
+                    bridge(source), self.default_memory_num_queries
+                )
+                for bridge in self.memory_pool_bridges
+            ]
+            return sum(w * out for w, out in zip(memory_weights, pooled_outputs))
 
         return source
+
+    @staticmethod
+    def _resize_memory_queries(memory: torch.Tensor, target_queries: int) -> torch.Tensor:
+        """Resize [B, Q, D] memory tokens to a common Q for weighted mixing."""
+        if memory.dim() != 3:
+            return memory
+        q = int(memory.size(1))
+        target = int(max(1, target_queries))
+        if q == target:
+            return memory
+        return F.interpolate(
+            memory.transpose(1, 2),
+            size=target,
+            mode="linear",
+            align_corners=False,
+        ).transpose(1, 2)
 
     def forward(
         self,
@@ -1056,6 +1351,7 @@ class MixedDecoder(BaseMixedSequenceBlock):
         encoder_context: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Forward pass with improved compatibility"""
+        tgt = self.searchable_decomp(tgt, temperature=self.temperature)
         batch_size = tgt.size(0)
         single_path_active = self.training and self.single_path_search
 
@@ -1126,38 +1422,79 @@ class MixedDecoder(BaseMixedSequenceBlock):
 
         can_attend = self.use_attention_bridge and attention_source is not None
         attention_weights = self._get_attention_weights() if can_attend else None
-        use_attention_prob = (
-            attention_weights[0]
-            if attention_weights is not None
-            else tgt.new_tensor(1.0 if can_attend else 0.0)
-        )
-        attention_enabled_hard = can_attend and (
-            attention_weights is None
-            or int(torch.argmax(attention_weights.detach()).item()) == 0
-        )
 
         output_final_by_arch = {}
         for arch_idx in required_arches:
             base_out = output_by_arch[arch_idx]
-            if can_attend and (
-                (single_path_active and attention_enabled_hard)
-                or not single_path_active
-            ):
-                attended = self.attention_bridge(
+            if can_attend and attention_weights is not None:
+                if attention_weights.numel() == 2:
+                    # Backward compatibility with old [use_attention, no_attention].
+                    none_weight = attention_weights[1]
+                    sdp_weight = attention_weights[0]
+                    linear_weight = attention_weights.new_tensor(0.0)
+                else:
+                    # Current order: [none, sdp_attention, linear_attention].
+                    none_weight = attention_weights[0]
+                    sdp_weight = attention_weights[1]
+                    linear_weight = (
+                        attention_weights[2]
+                        if attention_weights.numel() > 2
+                        else attention_weights.new_tensor(0.0)
+                    )
+
+                if single_path_active:
+                    selected_att_idx = int(torch.argmax(attention_weights.detach()).item())
+                    if attention_weights.numel() == 2:
+                        if selected_att_idx == 0:
+                            attended = self.attention_bridge(
+                                base_out,
+                                encoder_output=attention_source,
+                                encoder_context=encoder_context,
+                            )
+                            output_final_by_arch[arch_idx] = sdp_weight * attended
+                        else:
+                            output_final_by_arch[arch_idx] = none_weight * base_out
+                    else:
+                        if selected_att_idx == 0:
+                            output_final_by_arch[arch_idx] = none_weight * base_out
+                        elif selected_att_idx == 1:
+                            attended = self.attention_bridge(
+                                base_out,
+                                encoder_output=attention_source,
+                                encoder_context=encoder_context,
+                            )
+                            output_final_by_arch[arch_idx] = sdp_weight * attended
+                        else:
+                            linear_attended = self.linear_attention_bridge(
+                                base_out,
+                                encoder_output=attention_source,
+                                encoder_context=encoder_context,
+                            )
+                            output_final_by_arch[arch_idx] = (
+                                linear_weight * linear_attended
+                            )
+                else:
+                    sdp_attended = self.attention_bridge(
+                        base_out,
+                        encoder_output=attention_source,
+                        encoder_context=encoder_context,
+                    )
+                    linear_attended = self.linear_attention_bridge(
+                        base_out,
+                        encoder_output=attention_source,
+                        encoder_context=encoder_context,
+                    )
+                    output_final_by_arch[arch_idx] = (
+                        none_weight * base_out
+                        + sdp_weight * sdp_attended
+                        + linear_weight * linear_attended
+                    )
+            elif can_attend:
+                output_final_by_arch[arch_idx] = self.attention_bridge(
                     base_out,
                     encoder_output=attention_source,
                     encoder_context=encoder_context,
                 )
-                if attention_weights is not None:
-                    output_final_by_arch[arch_idx] = (
-                        use_attention_prob * attended
-                        + (1 - use_attention_prob) * base_out
-                    )
-                else:
-                    output_final_by_arch[arch_idx] = attended
-            elif can_attend and single_path_active and attention_weights is not None:
-                # Keep ST gradient signal to attention logits on the no-attention path.
-                output_final_by_arch[arch_idx] = (1 - use_attention_prob) * base_out
             else:
                 output_final_by_arch[arch_idx] = base_out
 
@@ -1202,13 +1539,18 @@ class MixedDecoder(BaseMixedSequenceBlock):
 
     def get_alphas(self) -> torch.Tensor:
         """Get architecture parameters for compatibility"""
-        decoder_alphas = super().get_alphas()
+        parts = [super().get_alphas()]
+
+        if hasattr(self, "searchable_decomp"):
+            parts.append(self.searchable_decomp.get_alphas())
+
+        if self.use_learned_memory_pooling and hasattr(self, "memory_query_alphas"):
+            parts.append(F.softmax(self.memory_query_alphas, dim=0))
 
         if self.use_attention_bridge and hasattr(self, "attention_alphas"):
-            attention_alphas = F.softmax(self.attention_alphas, dim=0)
-            return torch.cat([decoder_alphas, attention_alphas])
+            parts.append(F.softmax(self.attention_alphas, dim=0))
 
-        return decoder_alphas
+        return torch.cat(parts)
 
 
 class ArchitectureConverter:
@@ -1296,6 +1638,7 @@ class ArchitectureConverter:
         best_type = ArchitectureConverter.get_best_architecture(
             mixed_decoder.get_alphas()
         )
+        attention_variant = kwargs.get("attention_variant", "sdp")
 
         # Create fixed decoder
         fixed_decoder = FixedDecoder(
@@ -1305,12 +1648,17 @@ class ArchitectureConverter:
             use_attention_bridge=kwargs.get(
                 "use_attention_bridge", mixed_decoder.use_attention_bridge
             ),
-            **{k: v for k, v in kwargs.items() if k != "use_attention_bridge"},
+            attention_variant=attention_variant,
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k not in {"use_attention_bridge", "attention_variant"}
+            },
         )
 
         # Transfer weights
         ArchitectureConverter._transfer_decoder_weights(
-            mixed_decoder, fixed_decoder, best_type
+            mixed_decoder, fixed_decoder, best_type, attention_variant=attention_variant
         )
         return fixed_decoder
 
@@ -1347,11 +1695,24 @@ class ArchitectureConverter:
                 fixed_encoder.context_proj.load_state_dict(
                     mixed_encoder.context_proj.state_dict()
                 )
+            if hasattr(mixed_encoder, "searchable_decomp"):
+                fixed_encoder.searchable_decomp = copy.deepcopy(
+                    mixed_encoder.searchable_decomp
+                ).to(next(fixed_encoder.parameters()).device)
+                if hasattr(fixed_encoder.searchable_decomp, "alpha_logits"):
+                    with torch.no_grad():
+                        logits = fixed_encoder.searchable_decomp.alpha_logits
+                        hard = torch.full_like(logits, -10.0)
+                        hard[int(torch.argmax(logits).item())] = 10.0
+                        logits.copy_(hard)
+                    fixed_encoder.searchable_decomp.alpha_logits.requires_grad_(False)
         except Exception as e:
             print(f"Warning: Could not transfer encoder weights: {e}")
 
     @staticmethod
-    def _transfer_decoder_weights(mixed_decoder, fixed_decoder, arch_type: str):
+    def _transfer_decoder_weights(
+        mixed_decoder, fixed_decoder, arch_type: str, attention_variant: str = "sdp"
+    ):
         """Transfer weights from mixed to fixed decoder"""
         try:
             # Transfer the specific architecture weights
@@ -1374,6 +1735,17 @@ class ArchitectureConverter:
                 fixed_decoder.normalizer.load_state_dict(
                     mixed_decoder.normalizer.state_dict()
                 )
+            if hasattr(mixed_decoder, "searchable_decomp"):
+                fixed_decoder.searchable_decomp = copy.deepcopy(
+                    mixed_decoder.searchable_decomp
+                ).to(next(fixed_decoder.parameters()).device)
+                if hasattr(fixed_decoder.searchable_decomp, "alpha_logits"):
+                    with torch.no_grad():
+                        logits = fixed_decoder.searchable_decomp.alpha_logits
+                        hard = torch.full_like(logits, -10.0)
+                        hard[int(torch.argmax(logits).item())] = 10.0
+                        logits.copy_(hard)
+                    fixed_decoder.searchable_decomp.alpha_logits.requires_grad_(False)
 
             # Transfer attention bridge weights if present
             if (
@@ -1382,9 +1754,16 @@ class ArchitectureConverter:
                 and hasattr(fixed_decoder, "attention_bridge")
             ):
                 try:
-                    fixed_decoder.attention_bridge.load_state_dict(
-                        mixed_decoder.attention_bridge.state_dict()
-                    )
+                    if attention_variant == "linear" and hasattr(
+                        mixed_decoder, "linear_attention_bridge"
+                    ):
+                        fixed_decoder.attention_bridge.load_state_dict(
+                            mixed_decoder.linear_attention_bridge.state_dict()
+                        )
+                    else:
+                        fixed_decoder.attention_bridge.load_state_dict(
+                            mixed_decoder.attention_bridge.state_dict()
+                        )
                 except Exception as e:
                     print(f"Warning: Could not transfer attention bridge weights: {e}")
 
@@ -1416,9 +1795,13 @@ class FixedEncoder(BaseFixedSequenceBlock):
         # Optional modules copied from MixedEncoder by ArchitectureConverter.
         self.normalizer = None
         self.context_proj = None
+        self.searchable_decomp = None
 
     def forward(self, x: torch.Tensor) -> tuple:
         """Forward pass optimized for single architecture"""
+        if self.searchable_decomp is not None:
+            x = self.searchable_decomp(x, temperature=0.01)
+
         if self.rnn_type == "transformer":
             output, context, state = self.rnn(x)
         else:
@@ -1459,8 +1842,10 @@ class FixedDecoder(BaseFixedSequenceBlock):
         dropout: float = 0.0,
         use_attention_bridge: bool = False,
         attention_layers: int = 1,
+        attention_variant: str = "sdp",
     ):
         self.use_attention_bridge = use_attention_bridge
+        self.attention_variant = str(attention_variant).lower()
 
         super().__init__(
             rnn=rnn,
@@ -1474,10 +1859,16 @@ class FixedDecoder(BaseFixedSequenceBlock):
 
         # Simple attention bridge for fixed decoder
         if use_attention_bridge:
-            self.attention_bridge = AttentionBridge(
-                latent_dim, num_heads=4, dropout=dropout
-            )
+            if self.attention_variant == "linear":
+                self.attention_bridge = LinearAttentionBridge(
+                    latent_dim, num_heads=4, dropout=dropout
+                )
+            else:
+                self.attention_bridge = AttentionBridge(
+                    latent_dim, num_heads=4, dropout=dropout
+                )
         self.normalizer = None
+        self.searchable_decomp = None
 
     def forward(
         self,
@@ -1487,6 +1878,9 @@ class FixedDecoder(BaseFixedSequenceBlock):
         encoder_output: torch.Tensor = None,
     ) -> tuple:
         """Forward pass optimized for single architecture"""
+        if self.searchable_decomp is not None:
+            tgt = self.searchable_decomp(tgt, temperature=0.01)
+
         batch_size = tgt.size(0)
 
         # Get RNN parameters
@@ -1521,86 +1915,109 @@ class FixedDecoder(BaseFixedSequenceBlock):
 
 
 class RotaryPositionalEncoding(nn.Module):
-    """Streamlined rotary positional encoding with efficient caching"""
+    """Rotary positional encoding with odd-dim support and per-device dynamic caches."""
 
-    def __init__(self, dim: int, max_seq_len: int = 512, base: float = 10000.0):
+    def __init__(self, dim: int, max_seq_len: int = 1024, base: float = 500000.0):
         super().__init__()
-        self.dim = dim
-        self.max_seq_len = max_seq_len
-        self.base = base
+        self.dim = int(dim)
+        self.rotary_dim = int(self.dim - (self.dim % 2))
+        self.max_seq_len = int(max_seq_len) * 2
+        self.base = float(base)
 
-        # Pre-compute and cache frequency bands
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        if self.rotary_dim > 0:
+            inv_freq = 1.0 / (
+                self.base
+                ** (torch.arange(0, self.rotary_dim, 2, dtype=torch.float32) / self.rotary_dim)
+            )
+        else:
+            inv_freq = torch.zeros(0, dtype=torch.float32)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
-        # Pre-compute embeddings for common sequence lengths
-        self._init_cached_embeddings(max_seq_len)
+        self._device_cache: Dict[str, Dict[str, torch.Tensor]] = {}
+        self._init_cache(self.max_seq_len)
 
-    def _init_cached_embeddings(self, max_len: int):
-        """Pre-compute embeddings for efficiency"""
-        t = torch.arange(max_len, dtype=torch.float)
-        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
+    def _cache_key(self, device: torch.device) -> str:
+        if device.type == "cuda":
+            index = 0 if device.index is None else int(device.index)
+            return f"cuda:{index}"
+        return device.type
 
-        self.register_buffer("cached_cos", emb.cos(), persistent=False)
-        self.register_buffer("cached_sin", emb.sin(), persistent=False)
+    def _compute_chunk(
+        self, start: int, end: int, device: torch.device
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.rotary_dim == 0:
+            empty = torch.zeros(end - start, 0, device=device, dtype=self.inv_freq.dtype)
+            return empty, empty
 
-    def _compute_embeddings(self, seq_len: int, device: torch.device) -> tuple:
-        """Compute embeddings on-the-fly for longer sequences"""
-        t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
-        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        return emb.cos(), emb.sin()
+        t = torch.arange(start, end, device=device, dtype=self.inv_freq.dtype)
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq.to(device))
+        cos = freqs.cos()
+        sin = freqs.sin()
+        return cos, sin
 
-    def forward(self, seq_len: int, device: torch.device = None) -> tuple:
-        """Generate cos and sin embeddings with efficient caching"""
+    def _init_cache(self, max_len: int) -> None:
+        cos, sin = self._compute_chunk(0, int(max_len), self.inv_freq.device)
+        self.register_buffer("cached_cos", cos, persistent=False)
+        self.register_buffer("cached_sin", sin, persistent=False)
+        key = self._cache_key(self.inv_freq.device)
+        self._device_cache[key] = {"cos": self.cached_cos, "sin": self.cached_sin}
+
+    def _ensure_cache(self, seq_len: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+        key = self._cache_key(device)
+
+        if key not in self._device_cache:
+            base_cos = self.cached_cos.to(device)
+            base_sin = self.cached_sin.to(device)
+            self._device_cache[key] = {"cos": base_cos, "sin": base_sin}
+
+        cache = self._device_cache[key]
+        cos = cache["cos"]
+        sin = cache["sin"]
+        cached_len = int(cos.size(0))
+
+        if seq_len > cached_len:
+            new_len = max(seq_len, cached_len * 2)
+            add_cos, add_sin = self._compute_chunk(cached_len, new_len, device)
+            cos = torch.cat([cos, add_cos], dim=0)
+            sin = torch.cat([sin, add_sin], dim=0)
+            cache["cos"] = cos
+            cache["sin"] = sin
+
+        return cache["cos"][:seq_len], cache["sin"][:seq_len]
+
+    def forward(self, seq_len: int, device: torch.device = None) -> Tuple[torch.Tensor, torch.Tensor]:
         if device is None:
             device = self.inv_freq.device
-
-        if seq_len <= self.cached_cos.size(0):
-            # Use cached embeddings
-            cos = self.cached_cos[:seq_len]
-            sin = self.cached_sin[:seq_len]
-
-            # Only move to device if necessary
-            if cos.device != device:
-                cos = cos.to(device)
-                sin = sin.to(device)
-
-            return cos, sin
-        else:
-            # Compute on-the-fly for longer sequences
-            return self._compute_embeddings(seq_len, device)
+        return self._ensure_cache(int(seq_len), device)
 
     def apply_rotary_pos_emb(
         self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
-        """Apply rotary positional embedding efficiently"""
+        """Apply RoPE to the largest even sub-dimension and passthrough any tail dims."""
         seq_len = x.size(-2)
         head_dim = x.size(-1)
+        rotary_dim = min(self.rotary_dim, head_dim - (head_dim % 2))
+        if rotary_dim <= 0:
+            return x
 
-        # Handle odd head dimensions gracefully
-        if head_dim % 2 != 0:
-            raise ValueError(
-                f"Head dimension {head_dim} must be even for rotary embeddings"
-            )
+        half = rotary_dim // 2
+        cos = cos[:seq_len, :half].view(1, 1, seq_len, half).to(dtype=x.dtype)
+        sin = sin[:seq_len, :half].view(1, 1, seq_len, half).to(dtype=x.dtype)
 
-        half_dim = head_dim // 2
-
-        # Ensure dimensions match and reshape for broadcasting
-        cos = cos[:seq_len, :half_dim].view(1, 1, seq_len, half_dim)
-        sin = sin[:seq_len, :half_dim].view(1, 1, seq_len, half_dim)
-
-        # Split and apply rotation in one operation
-        x_even, x_odd = x.chunk(2, dim=-1)
-        return torch.cat(
+        x_rot = x[..., :rotary_dim]
+        x_even = x_rot[..., :half]
+        x_odd = x_rot[..., half:rotary_dim]
+        rotated = torch.cat(
             [x_even * cos - x_odd * sin, x_even * sin + x_odd * cos], dim=-1
         )
 
+        if rotary_dim < head_dim:
+            return torch.cat([rotated, x[..., rotary_dim:]], dim=-1)
+        return rotated
+
     def get_embeddings_for_length(
         self, seq_len: int, device: torch.device = None
-    ) -> tuple:
-        """Convenient method to get embeddings for specific length"""
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.forward(seq_len, device)
 
 

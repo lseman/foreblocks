@@ -12,7 +12,7 @@ Kept:
   - soft-junction taper_len clamp FIX (min with ext_len)
 - Optuna pruning/reporting safety (no forced matplotlib)
 - Optional Torch refinement guarded
-- Minimal MVMD (shared omega estimate)
+- Joint MVMD (shared omega enforced during iteration)
 - Hierarchical VMD + optional EMD hybrid
 
 Main refactor:
@@ -32,39 +32,27 @@ from __future__ import annotations
 
 import os
 import pickle
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+import warnings
+from typing import List, Tuple
 
 import numpy as np
 import pyfftw
 import pyfftw.interfaces.numpy_fft as fftw_np
-import scipy
-from scipy.interpolate import Akima1DInterpolator, PchipInterpolator, interp1d
-from scipy.signal import find_peaks, hilbert
+import scipy.stats
+
+from .config import VMDParameters
+from .emd import EMDVariants
 
 # -----------------------------------------------------------------------------
 # Optional torch refinement
 # -----------------------------------------------------------------------------
 try:
     import torch
-    import torch.nn as nn
-    from torch.optim import Adam
 
     TORCH_AVAILABLE = True
 except Exception:
     TORCH_AVAILABLE = False
     torch = None
-    nn = None
-    Adam = None
-
-
-# Notebook detection (Optuna progress bar can be annoying in some envs)
-try:
-    from IPython import get_ipython
-
-    IS_NOTEBOOK = get_ipython() is not None
-except Exception:
-    IS_NOTEBOOK = False
 
 
 # -----------------------------------------------------------------------------
@@ -272,7 +260,7 @@ class FractalDimension:
         return float(np.clip(dim, 1.0, 2.0))
 
     @staticmethod
-    def estimate_complexity(signal: np.ndarray, method: str = "auto") -> float:
+    def estimate(signal: np.ndarray, method: str = "auto") -> float:
         if method == "higuchi":
             return FractalDimension.higuchi(signal)
         if method == "dbc":
@@ -292,105 +280,22 @@ class FractalDimension:
             return float(np.median(estimates))
         raise ValueError(f"Unknown FD method: {method}")
 
-
-def box_counting_dimension(signal: np.ndarray, **kwargs) -> float:
-    return FractalDimension.estimate_complexity(signal, method="auto")
+    estimate_complexity = estimate
 
 
-# -----------------------------------------------------------------------------
-# Config
-# -----------------------------------------------------------------------------
-@dataclass
-class VMDParameters:
-    # Optuna
-    n_trials: int = 30
-    max_K: int = 6
+def fractal_dimension(signal: np.ndarray, **kwargs) -> float:
+    """
+    Composite fractal-dimension estimate.
 
-    # VMD
-    tol: float = 1e-6
-    alpha_min: float = 500
-    alpha_max: float = 5000
-    tau: float = 0.0
-    DC: int = 0
-    init: int = 1
-    max_iter: int = 300
-    # omega update stabilization (frequency-center damping)
-    omega_momentum: float = 0.0
-    omega_shrinkage: float = 0.0
-    omega_max_step: float = 0.0
-    # mode-specific bandwidth penalty (alpha_k) adaptation
-    adaptive_alpha: bool = False
-    adaptive_alpha_start_iter: int = 10
-    adaptive_alpha_update_every: int = 5
-    adaptive_alpha_lr: float = 0.15
-    adaptive_alpha_min_scale: float = 0.3
-    adaptive_alpha_max_scale: float = 6.0
-    adaptive_alpha_skip_dc: bool = True
-
-    # boundary
-    boundary_method: str = "mirror"
-    use_soft_junction: bool = False
-    window_alpha: Optional[float] = None  # if None -> auto
-
-    # post
-    apply_tapering: bool = True
-    mode_energy_floor: float = 0.01
-    merge_freq_tol: float = 0.15
-
-    # extras
-    use_fs_vmd: bool = False
-    use_mvmd: bool = False
-
-    # K selection
-    k_selection: str = "penalized"  # "penalized" | "fbd" | "entropy" | "optuna"
-    k_penalty_lambda: float = 0.02
-    k_overlap_mu: float = 0.10
-    # global optimizer toggle
-    search_method: str = "optuna"  # "optuna" | "entropy"
-    # entropy-based K+alpha estimation
-    entropy_alpha_default: float = 2000.0
-    entropy_embed_dim: int = 3
-    entropy_delay: int = 1
-    entropy_classes: int = 6
-    entropy_weight_pe: float = 0.5
-    entropy_weight_de: float = 0.5
-    entropy_k_penalty: float = 0.02
-    entropy_alpha_span: float = 2.0
-    entropy_alpha_grid_points: int = 7
-    entropy_overlap_weight: float = 0.25
-    entropy_alpha_full_range: bool = False
-    # DE objective details
-    entropy_scales: int = 3
-    entropy_refined_composite: bool = True
-    entropy_w_recon: float = 0.55
-    entropy_w_mode_de: float = 0.30
-    entropy_w_overlap: float = 0.10
-    entropy_w_k: float = 0.05
-    entropy_w_residual_de: float = 0.15
-    entropy_recon_threshold: float = 0.03
-    entropy_recon_penalty: float = 6.0
-
-    # decorrelation (augmented Lagrangian)
-    enforce_uncorrelated: bool = True
-    corr_rho: float = 0.05  # dual ascent step
-    corr_update_every: int = 5  # update Gamma every N iterations
-    corr_ema: float = 0.8  # EMA smoothing for corr estimates
-    corr_floor: float = 1e-12
+    Despite the legacy name ``box_counting_dimension``, this function does not
+    return a pure box-counting dimension. It returns the median of the Higuchi,
+    differential box-counting, and Katz estimates for a more stable aggregate
+    complexity score.
+    """
+    return FractalDimension.estimate(signal, method="auto")
 
 
-@dataclass
-class HierarchicalParameters:
-    max_levels: int = 3
-    energy_threshold: float = 0.01
-    min_samples_per_level: int = 100
-
-    # downsampling behavior
-    use_anti_aliasing_level_0: bool = True
-    use_anti_aliasing_higher_levels: bool = False
-    min_samples_for_fir_decimation: int = 600
-
-    # hybrid
-    use_emd_hybrid: bool = False
+box_counting_dimension = fractal_dimension
 
 
 # -----------------------------------------------------------------------------
@@ -399,13 +304,14 @@ class HierarchicalParameters:
 class FFTWManager:
     def __init__(self, wisdom_file: str = "vmd_fftw_wisdom.dat"):
         self.wisdom_file = wisdom_file
+        self._warned_backend_keys = set()
         self._setup_fftw()
         self.load_wisdom()
 
     def _setup_fftw(self):
         pyfftw.interfaces.cache.enable()
         pyfftw.interfaces.cache.set_keepalive_time(7200)
-        pyfftw.config.NUM_THREADS = -1
+        pyfftw.config.NUM_THREADS = max(1, os.cpu_count() or 4)
 
     def load_wisdom(self):
         if os.path.exists(self.wisdom_file):
@@ -421,6 +327,136 @@ class FFTWManager:
                 pickle.dump(pyfftw.export_wisdom(), f)
         except Exception:
             pass
+
+    def _warn_once(self, key: str, message: str) -> None:
+        if key in self._warned_backend_keys:
+            return
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
+        self._warned_backend_keys.add(key)
+
+    def resolve_backend(
+        self, backend: str = "fftw", device: str = "auto"
+    ) -> Tuple[str, str]:
+        name = str(backend).lower()
+        dev = str(device).lower()
+
+        if name not in ("fftw", "torch"):
+            self._warn_once(
+                f"fft_backend_invalid:{name}",
+                f"Unknown fft_backend={backend!r}; falling back to 'fftw'.",
+            )
+            return "fftw", "cpu"
+
+        if name == "torch":
+            if not TORCH_AVAILABLE or torch is None:
+                self._warn_once(
+                    "fft_backend_torch_missing",
+                    "fft_backend='torch' requested but PyTorch is unavailable; "
+                    "falling back to 'fftw'.",
+                )
+                return "fftw", "cpu"
+
+            if dev == "auto":
+                dev = "cuda" if torch.cuda.is_available() else "cpu"
+            elif dev not in ("cpu", "cuda"):
+                self._warn_once(
+                    f"fft_device_invalid:{dev}",
+                    f"Unknown fft_device={device!r}; using 'auto' resolution.",
+                )
+                dev = "cuda" if torch.cuda.is_available() else "cpu"
+
+            if dev == "cuda" and not torch.cuda.is_available():
+                self._warn_once(
+                    "fft_backend_cuda_unavailable",
+                    "fft_device='cuda' requested but CUDA is unavailable; "
+                    "falling back to CPU torch FFT.",
+                )
+                dev = "cpu"
+
+            return "torch", dev
+
+        return "fftw", "cpu"
+
+    @staticmethod
+    def _numpy_axes(axes, ndim: int):
+        if axes is None:
+            return tuple(range(ndim))
+        if isinstance(axes, tuple):
+            return axes
+        if isinstance(axes, list):
+            return tuple(axes)
+        return int(axes)
+
+    @staticmethod
+    def _to_numpy(x):
+        if TORCH_AVAILABLE and torch is not None and isinstance(x, torch.Tensor):
+            return x.detach().cpu().numpy()
+        return np.asarray(x)
+
+    @staticmethod
+    def _to_torch(x, device: str):
+        if isinstance(x, np.ndarray):
+            return torch.as_tensor(x, device=device)
+        if isinstance(x, torch.Tensor):
+            return x.to(device=device)
+        return torch.as_tensor(np.asarray(x), device=device)
+
+    def fft(self, x, axis: int = -1, backend: str = "fftw", device: str = "auto"):
+        name, dev = self.resolve_backend(backend, device)
+        if name == "torch":
+            xt = self._to_torch(x, dev)
+            return self._to_numpy(torch.fft.fft(xt, dim=axis))
+        return fftw_np.fft(np.asarray(x), axis=axis)
+
+    def ifft(self, x, axis: int = -1, backend: str = "fftw", device: str = "auto"):
+        name, dev = self.resolve_backend(backend, device)
+        if name == "torch":
+            xt = self._to_torch(x, dev)
+            return self._to_numpy(torch.fft.ifft(xt, dim=axis))
+        return fftw_np.ifft(np.asarray(x), axis=axis)
+
+    def rfft(self, x, axis: int = -1, backend: str = "fftw", device: str = "auto"):
+        name, dev = self.resolve_backend(backend, device)
+        if name == "torch":
+            xt = self._to_torch(x, dev)
+            return self._to_numpy(torch.fft.rfft(xt, dim=axis))
+        return fftw_np.rfft(np.asarray(x), axis=axis)
+
+    def fftshift(self, x, axes=None, backend: str = "fftw", device: str = "auto"):
+        name, dev = self.resolve_backend(backend, device)
+        if name == "torch":
+            xt = self._to_torch(x, dev)
+            dims = self._numpy_axes(axes, xt.ndim)
+            return self._to_numpy(torch.fft.fftshift(xt, dim=dims))
+        return fftw_np.fftshift(np.asarray(x), axes=axes)
+
+    def ifftshift(self, x, axes=None, backend: str = "fftw", device: str = "auto"):
+        name, dev = self.resolve_backend(backend, device)
+        if name == "torch":
+            xt = self._to_torch(x, dev)
+            dims = self._numpy_axes(axes, xt.ndim)
+            return self._to_numpy(torch.fft.ifftshift(xt, dim=dims))
+        return fftw_np.ifftshift(np.asarray(x), axes=axes)
+
+    def fftfreq(
+        self, n: int, d: float = 1.0, backend: str = "fftw", device: str = "auto"
+    ):
+        name, dev = self.resolve_backend(backend, device)
+        if name == "torch":
+            return self._to_numpy(
+                torch.fft.fftfreq(int(n), d=float(d), device=dev, dtype=torch.float64)
+            )
+        return np.fft.fftfreq(int(n), d=float(d))
+
+    def rfftfreq(
+        self, n: int, d: float = 1.0, backend: str = "fftw", device: str = "auto"
+    ):
+        name, dev = self.resolve_backend(backend, device)
+        if name == "torch":
+            return self._to_numpy(
+                torch.fft.rfftfreq(int(n), d=float(d), device=dev, dtype=torch.float64)
+            )
+        return fftw_np.rfftfreq(int(n), d=float(d))
 
 
 # -----------------------------------------------------------------------------
@@ -659,6 +695,10 @@ class SignalAnalyzer:
             p.alpha_min *= 0.75
             p.alpha_max *= 0.8
 
+        # Keep the alpha search interval ordered and non-degenerate after all
+        # multiplicative corrections.
+        p.alpha_max = max(p.alpha_max, p.alpha_min * 1.5)
+
         # Long signal corrections
         if N > 4000:
             p.n_trials = max(10, p.n_trials // 2)
@@ -676,392 +716,6 @@ class SignalAnalyzer:
         )
 
         return p
-
-
-# -----------------------------------------------------------------------------
-# EMD Variants (kept as-is with your stability improvements)
-# -----------------------------------------------------------------------------
-class EMDVariants:
-    @staticmethod
-    def emd(
-        signal: np.ndarray,
-        max_imfs: int = 10,
-        max_sifts: int = 100,
-        sift_threshold: float = 0.05,
-        energy_threshold: float = 1e-8,
-        envelope_method: str = "akima",
-    ) -> List[np.ndarray]:
-        x = np.asarray(signal, dtype=np.float64)
-        N = x.size
-
-        if N < 10 or np.allclose(x, x[0], atol=1e-12):
-            return [x.copy()]
-
-        imfs = []
-        residual = x.copy()
-        original_energy = np.sum(x**2) + 1e-12
-
-        for _ in range(max_imfs):
-            if np.sum(residual**2) / original_energy < energy_threshold:
-                break
-            if EMDVariants._is_monotonic(residual):
-                break
-
-            imf = EMDVariants._sift(
-                residual,
-                max_sifts=max_sifts,
-                threshold=sift_threshold,
-                envelope_method=envelope_method,
-            )
-            if imf is None:
-                break
-
-            imfs.append(imf)
-            residual = residual - imf
-
-            if np.std(imf) < 1e-10 * np.std(x):
-                break
-
-        if len(imfs) == 0 or np.sum(residual**2) > energy_threshold * original_energy:
-            imfs.append(residual)
-
-        return imfs
-
-    @staticmethod
-    def _sift(
-        signal: np.ndarray,
-        max_sifts: int = 100,
-        threshold: float = 0.05,
-        envelope_method: str = "akima",
-    ) -> Optional[np.ndarray]:
-        h = signal.copy()
-        N = len(h)
-
-        for iteration in range(max_sifts):
-            max_idx, max_val = EMDVariants._find_extrema(h, kind="max")
-            min_idx, min_val = EMDVariants._find_extrema(h, kind="min")
-
-            if len(max_idx) < 3 or len(min_idx) < 3:
-                return h if iteration > 0 else None
-
-            upper = EMDVariants._interpolate_envelope(
-                max_idx, max_val, N, method=envelope_method
-            )
-            lower = EMDVariants._interpolate_envelope(
-                min_idx, min_val, N, method=envelope_method
-            )
-            if upper is None or lower is None:
-                return h if iteration > 0 else None
-
-            mean_env = 0.5 * (upper + lower)
-            h_new = h - mean_env
-
-            diff = np.sum((h_new - h) ** 2) / (np.sum(h**2) + 1e-12)
-            h = h_new
-
-            if diff < threshold:
-                break
-            if np.std(mean_env) < threshold * np.std(h):
-                break
-
-        return h
-
-    @staticmethod
-    def _find_extrema(
-        signal: np.ndarray, kind: str = "max"
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        x = signal
-        N = len(x)
-
-        if kind == "max":
-            peaks, _ = find_peaks(x)
-            if N > 2:
-                if x[0] > x[1]:
-                    peaks = np.concatenate([[0], peaks])
-                if x[-1] > x[-2]:
-                    peaks = np.concatenate([peaks, [N - 1]])
-        else:
-            peaks, _ = find_peaks(-x)
-            if N > 2:
-                if x[0] < x[1]:
-                    peaks = np.concatenate([[0], peaks])
-                if x[-1] < x[-2]:
-                    peaks = np.concatenate([peaks, [N - 1]])
-
-        peaks = np.unique(peaks)
-        return peaks, x[peaks]
-
-    @staticmethod
-    def _interpolate_envelope(
-        idx: np.ndarray,
-        values: np.ndarray,
-        N: int,
-        method: str = "akima",
-    ) -> Optional[np.ndarray]:
-        if len(idx) < 2:
-            return None
-
-        order = np.argsort(idx)
-        idx = idx[order]
-        values = values[order]
-
-        unique_mask = np.concatenate([[True], np.diff(idx) > 0])
-        idx = idx[unique_mask]
-        values = values[unique_mask]
-        if len(idx) < 2:
-            return None
-
-        x_interp = np.arange(N)
-
-        try:
-            if method == "akima" and len(idx) >= 5:
-                interp_func = Akima1DInterpolator(idx, values)
-                envelope = interp_func(x_interp)
-            elif method == "pchip" and len(idx) >= 2:
-                interp_func = PchipInterpolator(idx, values, extrapolate=True)
-                envelope = interp_func(x_interp)
-            elif method == "cubic" and len(idx) >= 4:
-                interp_func = interp1d(
-                    idx,
-                    values,
-                    kind="cubic",
-                    fill_value="extrapolate",
-                    bounds_error=False,
-                )
-                envelope = interp_func(x_interp)
-            else:
-                envelope = np.interp(x_interp, idx, values)
-
-            if np.any(~np.isfinite(envelope)):
-                envelope = np.interp(x_interp, idx, values)
-
-            return envelope
-        except Exception:
-            try:
-                return np.interp(x_interp, idx, values)
-            except Exception:
-                return None
-
-    @staticmethod
-    def _is_monotonic(signal: np.ndarray) -> bool:
-        diff = np.diff(signal)
-        return np.all(diff >= -1e-10) or np.all(diff <= 1e-10)
-
-    @staticmethod
-    def _precompute_noise_imf_bank(
-        N: int,
-        n_ensembles: int,
-        max_imfs: int,
-        max_sifts_noise: int = 50,
-        seed: Optional[int] = None,
-        envelope_method: str = "akima",
-    ) -> Tuple[np.ndarray, List[List[np.ndarray]]]:
-        rng = np.random.default_rng(seed)
-        noises = rng.standard_normal((n_ensembles, N)).astype(np.float64, copy=False)
-
-        bank: List[List[np.ndarray]] = []
-        for i in range(n_ensembles):
-            imfs_i = EMDVariants.emd(
-                noises[i],
-                max_imfs=max_imfs,
-                max_sifts=max_sifts_noise,
-                sift_threshold=0.1,
-                energy_threshold=1e-10,
-                envelope_method=envelope_method,
-            )
-            bank.append([np.asarray(imf, dtype=np.float64) for imf in imfs_i])
-
-        return noises, bank
-
-    @staticmethod
-    def _get_noise_component(
-        bank_i: List[np.ndarray], noise_fallback: np.ndarray, k: int
-    ) -> np.ndarray:
-        if k < len(bank_i):
-            return bank_i[k]
-        return noise_fallback
-
-    @staticmethod
-    def ceemdan(
-        signal: np.ndarray,
-        noise_std: float = 0.2,
-        n_ensembles: int = 100,
-        max_imfs: int = 10,
-        epsilon: float = 1e-6,
-        seed: Optional[int] = 0,
-        envelope_method: str = "akima",
-        max_sifts_signal: int = 100,
-        max_sifts_noise: int = 40,
-        **emd_kwargs,
-    ) -> List[np.ndarray]:
-        x = np.asarray(signal, dtype=np.float64)
-        N = x.size
-        if N < 20:
-            return [x.copy()]
-
-        x_std0 = float(np.std(x))
-        if x_std0 < 1e-12 or np.allclose(x, x[0], atol=1e-12):
-            return [x.copy()]
-
-        n_ensembles = int(max(1, n_ensembles))
-        max_imfs = int(max(1, max_imfs))
-
-        noises, noise_bank = EMDVariants._precompute_noise_imf_bank(
-            N=N,
-            n_ensembles=n_ensembles,
-            max_imfs=max_imfs,
-            max_sifts_noise=int(max_sifts_noise),
-            seed=seed,
-            envelope_method=envelope_method,
-        )
-
-        imfs: List[np.ndarray] = []
-        residual = x.copy()
-
-        for k in range(max_imfs):
-            res_std = float(np.std(residual))
-            if res_std < float(epsilon) * x_std0:
-                break
-            if EMDVariants._is_monotonic(residual):
-                break
-
-            beta_k = float(noise_std) / float(k + 1)
-            amp = beta_k * res_std
-
-            imf_sum = np.zeros(N, dtype=np.float64)
-            valid = 0
-
-            for i in range(n_ensembles):
-                e_k = EMDVariants._get_noise_component(noise_bank[i], noises[i], k)
-                noisy = residual + amp * e_k
-
-                trial_imfs = EMDVariants.emd(
-                    noisy,
-                    max_imfs=1,
-                    max_sifts=int(max_sifts_signal),
-                    envelope_method=envelope_method,
-                    **emd_kwargs,
-                )
-                if len(trial_imfs) > 0:
-                    imf_sum += np.asarray(trial_imfs[0], dtype=np.float64)
-                    valid += 1
-
-            if valid == 0:
-                break
-
-            imf_k = imf_sum / float(valid)
-            imfs.append(imf_k)
-            residual = residual - imf_k
-
-        if np.sum(residual**2) > (float(epsilon) ** 2) * (np.sum(x**2) + 1e-12):
-            imfs.append(residual)
-
-        return imfs
-
-    @staticmethod
-    def iceemdan(
-        signal: np.ndarray,
-        noise_std: float = 0.2,
-        n_ensembles: int = 100,
-        max_imfs: int = 10,
-        epsilon: float = 1e-6,
-        seed: Optional[int] = 0,
-        envelope_method: str = "akima",
-        max_sifts_noise: int = 40,
-        **emd_kwargs,
-    ) -> List[np.ndarray]:
-        x = np.asarray(signal, dtype=np.float64)
-        N = x.size
-        if N < 20:
-            return [x.copy()]
-
-        x_std0 = float(np.std(x))
-        if x_std0 < 1e-12 or np.allclose(x, x[0], atol=1e-12):
-            return [x.copy()]
-
-        n_ensembles = int(max(1, n_ensembles))
-        max_imfs = int(max(1, max_imfs))
-
-        noises, noise_bank = EMDVariants._precompute_noise_imf_bank(
-            N=N,
-            n_ensembles=n_ensembles,
-            max_imfs=max_imfs,
-            max_sifts_noise=int(max_sifts_noise),
-            seed=seed,
-            envelope_method=envelope_method,
-        )
-
-        imfs: List[np.ndarray] = []
-        residual = x.copy()
-
-        for k in range(max_imfs):
-            res_std = float(np.std(residual))
-            if res_std < float(epsilon) * x_std0:
-                break
-            if EMDVariants._is_monotonic(residual):
-                break
-
-            beta_k = float(noise_std) / float(k + 1)
-            amp = beta_k * res_std
-
-            local_mean_sum = np.zeros(N, dtype=np.float64)
-            valid = 0
-
-            for i in range(n_ensembles):
-                e_k = EMDVariants._get_noise_component(noise_bank[i], noises[i], k)
-                noisy = residual + amp * e_k
-
-                trial_imfs = EMDVariants.emd(
-                    noisy,
-                    max_imfs=1,
-                    max_sifts=1,
-                    envelope_method=envelope_method,
-                    **emd_kwargs,
-                )
-                if len(trial_imfs) > 0:
-                    first_imf = np.asarray(trial_imfs[0], dtype=np.float64)
-                    local_mean_sum += noisy - first_imf
-                    valid += 1
-
-            if valid == 0:
-                break
-
-            avg_local_mean = local_mean_sum / float(valid)
-            imf_k = residual - avg_local_mean
-
-            imfs.append(imf_k)
-            residual = avg_local_mean
-
-        if np.sum(residual**2) > (float(epsilon) ** 2) * (np.sum(x**2) + 1e-12):
-            imfs.append(residual)
-
-        return imfs
-
-    @staticmethod
-    def compute_orthogonality_index(imfs: List[np.ndarray]) -> float:
-        if len(imfs) < 2:
-            return 0.0
-        n_imfs = len(imfs)
-        total_energy = sum(np.sum(imf**2) for imf in imfs)
-        if total_energy < 1e-12:
-            return 0.0
-        cross_terms = 0.0
-        for i in range(n_imfs):
-            for j in range(i + 1, n_imfs):
-                cross_terms += np.abs(np.sum(imfs[i] * imfs[j]))
-        oi = 2 * cross_terms / total_energy
-        return float(oi)
-
-    @staticmethod
-    def compute_instantaneous_frequency(
-        imf: np.ndarray, fs: float = 1.0
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        analytic = hilbert(imf)
-        amplitude = np.abs(analytic)
-        phase = np.unwrap(np.angle(analytic))
-        inst_freq = np.gradient(phase) * fs / (2 * np.pi)
-        inst_freq = np.clip(inst_freq, 0, fs / 2)
-        return inst_freq, amplitude
 
 
 # -----------------------------------------------------------------------------
@@ -1126,9 +780,11 @@ class ModeProcessor:
         residual_energy = np.sum((x - recon) ** 2) / total_energy
 
         dom_freqs = [ModeProcessor.dominant_frequency(m, fs) for m in modes]
-        overlap_penalty = (
-            np.mean(np.exp(-np.diff(np.sort(dom_freqs)))) if len(dom_freqs) > 1 else 0.0
-        )
+        if len(dom_freqs) > 1:
+            gaps = np.diff(np.sort(dom_freqs))
+            overlap_penalty = float(np.mean(np.exp(-gaps / (np.median(gaps) + 1e-12))))
+        else:
+            overlap_penalty = 0.0
 
         oi = EMDVariants.compute_orthogonality_index(modes)
 
@@ -1151,8 +807,3 @@ class ModeProcessor:
         spec = np.abs(fftw_np.rfft(x)) + 1e-12
         p = spec / (np.sum(spec) + 1e-12)
         return float(-np.sum(p * np.log(p + 1e-12)))
-
-
-# -----------------------------------------------------------------------------
-# VMD core
-# -----------------------------------------------------------------------------

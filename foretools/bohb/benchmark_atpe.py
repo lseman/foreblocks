@@ -1,7 +1,7 @@
 
 import time
 import numpy as np
-from bohb import BOHB, torch_mlp_objective
+from .bohb import BOHB, torch_mlp_objective
 
 def benchmark():
     config_space = {
@@ -40,6 +40,34 @@ def benchmark():
     print(f"Benchmark finished in {end_time - start_time:.2f} seconds")
     print(f"Best Loss: {best_loss}")
     print(f"Best Config: {best_cfg}")
+    
+    print("\nStarting parallel benchmark (parallel_jobs=4)...")
+    start_time_par = time.time()
+    bohb_par = BOHB(
+        config_space=config_space,
+        evaluate_fn=torch_mlp_objective,
+        min_budget=1,
+        max_budget=27, 
+        eta=3,
+        n_iterations=2,
+        verbose=False,
+        seed=42,
+        parallel_jobs=4,
+        tpe_overrides={
+            "gamma": 0.15,
+            "n_startup_trials": 5,
+            "n_ei_candidates": 24,
+            "atpe": True,
+            "atpe_params": {"filter_type": "zscore", "filter_threshold": 2.0},
+            "blocking_threshold": 0.7,
+        }
+    )
+    best_cfg_par, best_loss_par = bohb_par.run()
+    end_time_par = time.time()
+    
+    print(f"Parallel Benchmark finished in {end_time_par - start_time_par:.2f} seconds")
+    print(f"Parallel Best Loss: {best_loss_par}")
+    
     return best_loss, end_time - start_time
 
 if __name__ == "__main__":

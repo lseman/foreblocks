@@ -2,6 +2,7 @@
 import concurrent.futures
 import copy
 import logging
+import math
 import random
 import threading
 import time
@@ -393,6 +394,8 @@ class DARTSTrainer:
         min_ops: int = 2,
         max_ops: Optional[int] = None,
         require_identity: bool = True,
+        edge_to_op_target: float = 1.0,
+        edge_to_op_max_ratio: float = 1.8,
     ) -> Dict[str, Any]:
         ops_pool = [op for op in allowed_ops if op != "Identity"]
         max_ops_local = min(
@@ -409,11 +412,34 @@ class DARTSTrainer:
                 ["Identity"] if require_identity else [rng.choice(allowed_ops)]
             )
 
+        node_candidates = list(range(int(node_range[0]), int(node_range[1]) + 1))
+        # Keep edge count proportional to available operations to reduce
+        # edge-level operation collapse in dense cells.
+        op_budget = max(len(selected_ops) - (1 if require_identity else 0), 1)
+        desired_edges = max(1, int(round(op_budget * max(float(edge_to_op_target), 0.2))))
+        max_edges = max(3, int(math.ceil(op_budget * max(float(edge_to_op_max_ratio), 1.0))))
+        feasible_nodes = [
+            n for n in node_candidates if (n * (n - 1) // 2) <= max_edges
+        ]
+        feasible_nodes = feasible_nodes if feasible_nodes else node_candidates
+
+        weighted_nodes = []
+        for n in feasible_nodes:
+            edges = n * (n - 1) // 2
+            closeness = math.exp(-abs(edges - desired_edges) / max(desired_edges, 1))
+            compactness = 1.0 / (1.0 + 0.08 * float(edges))
+            weighted_nodes.append(max(closeness * compactness, 1e-6))
+
+        try:
+            num_nodes = rng.choices(feasible_nodes, weights=weighted_nodes, k=1)[0]
+        except Exception:
+            num_nodes = rng.choice(feasible_nodes)
+
         return {
             "selected_ops": selected_ops,
             "hidden_dim": rng.choice(hidden_dim_choices),
             "num_cells": rng.randint(cell_range[0], cell_range[1]),
-            "num_nodes": rng.randint(node_range[0], node_range[1]),
+            "num_nodes": int(num_nodes),
         }
 
     def _build_candidate_model(self, cfg: Dict[str, Any]) -> nn.Module:
@@ -544,13 +570,22 @@ class DARTSTrainer:
         dataloader,
         max_samples: int = 32,
         num_batches: int = 1,
+        fast_mode: bool = True,
     ) -> Dict[str, Any]:
         """Compute zero-cost *raw* metrics once (no weighting)."""
 
         def create_custom_config(
             max_samples: int = 32, max_outputs: int = 10
         ) -> Config:
-            return Config(max_samples=max_samples, max_outputs=max_outputs)
+            cfg = Config(max_samples=max_samples, max_outputs=max_outputs)
+            if fast_mode:
+                cfg.jacobian_probes = 1
+                cfg.gradient_max_samples = max(
+                    1, min(int(max_samples), int(getattr(cfg, "gradient_max_samples", 4)), 2)
+                )
+                cfg.fisher_per_sample = False
+                cfg.snip_mode = "current"
+            return cfg
 
         cfg = create_custom_config(max_samples=max_samples, max_outputs=10)
         nas_evaluator = ZeroCostNAS(config=cfg)
@@ -586,6 +621,7 @@ class DARTSTrainer:
         dataloader,
         max_samples: int = 32,
         num_batches: int = 1,
+        fast_mode: bool = True,
         ablation: bool = False,
         n_random: int = 20,
         random_sigma: float = 0.25,
@@ -599,10 +635,21 @@ class DARTSTrainer:
             timeout_seconds: float = 30.0,
             enable_mixed_precision: bool = False,
             weights: Optional[Dict[str, float]] = None,
+            fast_mode: bool = True,
         ) -> Config:
             cfg = Config(max_samples=max_samples, max_outputs=max_outputs)
             cfg.timeout = float(timeout_seconds)
             cfg.enable_mixed_precision = bool(enable_mixed_precision)
+            if fast_mode:
+                # Speed-oriented defaults for Phase-1 ranking.
+                cfg.jacobian_probes = 1
+                cfg.gradient_max_samples = max(
+                    1, min(int(max_samples), int(getattr(cfg, "gradient_max_samples", 4)), 2)
+                )
+                cfg.fisher_per_sample = False
+                cfg.snip_mode = "current"
+                cfg.heavy_metrics_batches = 1
+                cfg.conditioning_every_n_layers = max(2, cfg.conditioning_every_n_layers)
             if weights is not None:
                 cfg.weights = weights
             return cfg
@@ -614,6 +661,7 @@ class DARTSTrainer:
             timeout_seconds=30.0,
             enable_mixed_precision=True,
             weights=None,  # use default weights from Config
+            fast_mode=fast_mode,
         )
 
         # print("Evaluating zero-cost metrics with baseline weights...")
@@ -646,6 +694,7 @@ class DARTSTrainer:
                 timeout_seconds=30.0,
                 enable_mixed_precision=True,
                 weights=w,
+                fast_mode=fast_mode,
             )
             nas_evaluator = ZeroCostNAS(config=cfg)
             out = nas_evaluator.evaluate_model(
@@ -699,6 +748,11 @@ class DARTSTrainer:
         hessian_fd_eps: float = 1e-2,
         hessian_update_freq: int = 1,
         bilevel_split_seed: int = 42,
+        state_mix_ortho_reg_weight: float = 1e-3,
+        edge_diversity_weight: float = 0.03,
+        edge_usage_balance_weight: float = 0.04,
+        edge_identity_cap: float = 0.45,
+        edge_identity_cap_weight: float = 0.02,
     ) -> Dict[str, Any]:
         """Simplified DARTS training with essential features"""
 
@@ -818,13 +872,23 @@ class DARTSTrainer:
         prev_edge_probs = {}
         last_edge_entropy = float("nan")
         last_edge_sharpen_weight = 0.0
-        edge_diversity_weight = 0.02
 
         if verbose:
             print(f"🔍 Training DARTS for {epochs} epochs")
             print(f"   Arch LR: {arch_learning_rate}, Model LR: {model_learning_rate}")
             print(
                 f"   Bilevel: {use_bilevel_optimization}, SWA: {use_swa}, AMP: {use_amp}"
+            )
+            if hasattr(model, "max_active_edges_per_node"):
+                print(
+                    f"   Cell edge budget: max_active_edges_per_node="
+                    f"{int(getattr(model, 'max_active_edges_per_node', 0))}, "
+                    f"progressive_edge_budget={bool(getattr(model, 'progressive_edge_budget', False))}"
+                )
+            print(
+                f"   Edge regularization: cosine={edge_diversity_weight:.3f}, "
+                f"usage={edge_usage_balance_weight:.3f}, "
+                f"identity_cap={edge_identity_cap:.2f}@{edge_identity_cap_weight:.3f}"
             )
             print("-" * 60)
 
@@ -898,6 +962,16 @@ class DARTSTrainer:
                         )
 
                         total_arch_loss = arch_loss + reg_losses["total"]
+                        ortho_reg = torch.tensor(0.0, device=self.device)
+                        if (
+                            state_mix_ortho_reg_weight > 0.0
+                            and hasattr(model, "get_orthogonal_regularization")
+                        ):
+                            ortho_reg = model.get_orthogonal_regularization()
+                            total_arch_loss = (
+                                total_arch_loss
+                                + float(state_mix_ortho_reg_weight) * ortho_reg
+                            )
 
                         hessian_penalty = torch.tensor(0.0, device=self.device)
                         if (
@@ -934,11 +1008,18 @@ class DARTSTrainer:
                         # different operations instead of collapsing to one op.
                         edge_diversity_loss = torch.tensor(0.0, device=self.device)
                         edge_diversity_pairs = 0
+                        edge_usage_balance_loss = torch.tensor(
+                            0.0, device=self.device
+                        )
+                        edge_usage_cells = 0
+                        edge_identity_cap_loss = torch.tensor(0.0, device=self.device)
+                        edge_identity_cells = 0
                         for cell in getattr(model, "cells", []):
                             if not hasattr(cell, "edges"):
                                 continue
 
-                            edge_prob_vectors = []
+                            edge_probs_by_name = []
+                            union_op_names = []
                             for edge in cell.edges:
                                 probs = None
                                 if (
@@ -972,18 +1053,69 @@ class DARTSTrainer:
                                     )
                                     probs = F.softmax(edge._alphas / temp, dim=0)
 
-                                if probs is not None and probs.numel() > 1:
-                                    edge_prob_vectors.append(
-                                        probs / probs.norm(p=2).clamp_min(1e-8)
-                                    )
+                                if (
+                                    probs is None
+                                    or probs.numel() <= 1
+                                    or not hasattr(edge, "available_ops")
+                                    or len(edge.available_ops) != probs.numel()
+                                ):
+                                    continue
 
-                            for i in range(len(edge_prob_vectors)):
-                                for j in range(i + 1, len(edge_prob_vectors)):
-                                    cos_ij = torch.dot(
-                                        edge_prob_vectors[i], edge_prob_vectors[j]
-                                    )
+                                probs = probs.clamp_min(1e-8)
+                                probs = probs / probs.sum().clamp_min(1e-8)
+                                prob_map = {}
+                                for op_idx, op_name in enumerate(edge.available_ops):
+                                    prob_map[op_name] = probs[op_idx]
+                                    if op_name not in union_op_names:
+                                        union_op_names.append(op_name)
+                                edge_probs_by_name.append(prob_map)
+
+                            if len(edge_probs_by_name) < 2 or len(union_op_names) <= 1:
+                                continue
+
+                            prototype_map = edge_probs_by_name[0]
+                            prototype_key = union_op_names[0]
+                            base_zero = prototype_map[prototype_key].new_tensor(0.0)
+                            aligned_probs = []
+                            for prob_map in edge_probs_by_name:
+                                vec = torch.stack(
+                                    [
+                                        prob_map.get(op_name, base_zero)
+                                        for op_name in union_op_names
+                                    ],
+                                    dim=0,
+                                )
+                                vec = vec / vec.sum().clamp_min(1e-8)
+                                aligned_probs.append(vec)
+
+                            for i in range(len(aligned_probs)):
+                                vi = aligned_probs[i] / aligned_probs[i].norm(
+                                    p=2
+                                ).clamp_min(1e-8)
+                                for j in range(i + 1, len(aligned_probs)):
+                                    vj = aligned_probs[j] / aligned_probs[j].norm(
+                                        p=2
+                                    ).clamp_min(1e-8)
+                                    cos_ij = torch.dot(vi, vj)
                                     edge_diversity_loss = edge_diversity_loss + cos_ij
                                     edge_diversity_pairs += 1
+
+                            mean_probs = torch.stack(aligned_probs, dim=0).mean(dim=0)
+                            mean_probs = mean_probs / mean_probs.sum().clamp_min(1e-8)
+                            entropy = -(mean_probs * torch.log(mean_probs + 1e-8)).sum()
+                            norm_entropy = entropy / np.log(max(mean_probs.numel(), 2))
+                            edge_usage_balance_loss = (
+                                edge_usage_balance_loss + (1.0 - norm_entropy)
+                            )
+                            edge_usage_cells += 1
+
+                            if "Identity" in union_op_names and edge_identity_cap < 1.0:
+                                identity_idx = union_op_names.index("Identity")
+                                identity_prob = mean_probs[identity_idx]
+                                edge_identity_cap_loss = edge_identity_cap_loss + F.relu(
+                                    identity_prob - float(edge_identity_cap)
+                                )
+                                edge_identity_cells += 1
 
                         if edge_diversity_pairs > 0:
                             edge_diversity_loss = (
@@ -992,6 +1124,16 @@ class DARTSTrainer:
                             total_arch_loss = (
                                 total_arch_loss
                                 + edge_diversity_weight * edge_diversity_loss
+                            )
+                        if edge_usage_cells > 0:
+                            total_arch_loss = total_arch_loss + (
+                                edge_usage_balance_weight
+                                * (edge_usage_balance_loss / edge_usage_cells)
+                            )
+                        if edge_identity_cells > 0 and edge_identity_cap_weight > 0:
+                            total_arch_loss = total_arch_loss + (
+                                edge_identity_cap_weight
+                                * (edge_identity_cap_loss / edge_identity_cells)
                             )
 
                         # Late-phase sharpening: reduce edge entropy so operation

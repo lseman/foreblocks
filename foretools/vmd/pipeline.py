@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import math
 import time
+import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -11,32 +13,17 @@ import optuna
 from numba import njit
 from scipy.signal import decimate
 
-try:
-    from .common import (
-        BoundaryHandler,
-        EMDVariants,
-        FFTWManager,
-        HierarchicalParameters,
-        ModeProcessor,
-        SignalAnalyzer,
-        VMDParameters,
-        _energy,
-        box_counting_dimension,
-    )
-    from .core import VMDCore, refine_modes_cross_nn, refine_modes_nn
-except Exception:
-    from vmd_common import (
-        BoundaryHandler,
-        EMDVariants,
-        FFTWManager,
-        HierarchicalParameters,
-        ModeProcessor,
-        SignalAnalyzer,
-        VMDParameters,
-        _energy,
-        box_counting_dimension,
-    )
-    from vmd_core import VMDCore, refine_modes_cross_nn, refine_modes_nn
+from .common import (
+    BoundaryHandler,
+    FFTWManager,
+    ModeProcessor,
+    SignalAnalyzer,
+    _energy,
+    box_counting_dimension,
+)
+from .config import HierarchicalParameters, VMDParameters
+from .core import VMDCore, refine_modes_cross_nn, refine_modes_nn
+from .emd import EMDVariants
 
 # Notebook detection (Optuna progress bar can be annoying in some envs)
 try:
@@ -49,25 +36,9 @@ from scipy.stats import kurtosis
 
 
 @njit(cache=True)
-def _factorial_int(n: int) -> int:
-    out = 1
-    for i in range(2, n + 1):
-        out *= i
-    return out
-
-
-@njit(cache=True)
-def _pow_int(base: int, exp: int) -> int:
-    out = 1
-    for _ in range(exp):
-        out *= base
-    return out
-
-
-@njit(cache=True)
 def _coarse_grain_mean_numba(x: np.ndarray, scale: int) -> np.ndarray:
     if scale <= 1:
-        return x.copy()
+        return x
     n = (x.size // scale) * scale
     if n < scale:
         return x.copy()
@@ -91,7 +62,12 @@ def _permutation_entropy_numba(
     if windows < 2 or m < 2 or delay < 1:
         return 0.0
 
-    bins = _pow_int(m, m)
+    # Canonical permutation-pattern encoding (Lehmer rank), bins = m!
+    fact = np.empty(m + 1, dtype=np.int64)
+    fact[0] = 1
+    for i in range(1, m + 1):
+        fact[i] = fact[i - 1] * i
+    bins = int(fact[m])
     counts = np.zeros(bins, dtype=np.int64)
     idx = np.empty(m, dtype=np.int64)
 
@@ -113,10 +89,13 @@ def _permutation_entropy_numba(
             idx[b + 1] = key_idx
 
         code = 0
-        mul = 1
         for a in range(m):
-            code += int(idx[a]) * mul
-            mul *= m
+            smaller = 0
+            ia = idx[a]
+            for b in range(a + 1, m):
+                if idx[b] < ia:
+                    smaller += 1
+            code += smaller * int(fact[m - 1 - a])
         counts[code] += 1
 
     total = float(windows)
@@ -131,7 +110,7 @@ def _permutation_entropy_numba(
             h -= p * math.log(p + eps)
     if normalize == 0:
         return h
-    hmax = math.log(float(_factorial_int(m)) + eps)
+    hmax = math.log(float(fact[m]) + eps)
     return h / (hmax + eps)
 
 
@@ -149,7 +128,9 @@ def _dispersion_entropy_numba(
     if std < 1e-12:
         return 0.0
 
-    bins = _pow_int(c, m)
+    bins = 1
+    for _ in range(m):
+        bins *= c
     counts = np.zeros(bins, dtype=np.int64)
     inv_sqrt2 = 1.0 / math.sqrt(2.0)
 
@@ -181,7 +162,7 @@ def _dispersion_entropy_numba(
             h -= p * math.log(p + eps)
     if normalize == 0:
         return h
-    hmax = math.log(float(_pow_int(c, m)) + eps)
+    hmax = math.log(float(bins) + eps)
     return h / (hmax + eps)
 
 
@@ -202,18 +183,208 @@ class VMDOptimizer:
         self.core = VMDCore(fftw)
         self.proc = ModeProcessor()
         self.analyzer = SignalAnalyzer()
+        self._core_decompose_params = set(
+            inspect.signature(self.core.decompose).parameters
+        )
+        self._core_chirp_params = (
+            set(inspect.signature(self.core.decompose_chirp).parameters)
+            if hasattr(self.core, "decompose_chirp")
+            else set()
+        )
+        self._core_mv_params = set(
+            inspect.signature(self.core.decompose_multivariate).parameters
+        )
 
         # cache: (K, alpha_bin) -> (modes_list, freqs_list, cost)
         self._cache: Dict[
             Tuple[int, int], Tuple[List[np.ndarray], List[float], float]
         ] = {}
+        self._cache_mv: Dict[
+            Tuple[int, int], Tuple[List[np.ndarray], List[float], float]
+        ] = {}
+
+    def _call_core_decompose(
+        self,
+        *,
+        signal: np.ndarray,
+        alpha: float,
+        fs: float,
+        K: int,
+        init: int,
+        p: VMDParameters,
+        precomp: Optional[Dict[str, Any]],
+        trial: Optional[optuna.Trial] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        params = self._core_decompose_params
+        use_if_tracking = bool(getattr(p, "if_tracking", False))
+        kwargs: Dict[str, Any] = {
+            "signal": signal,
+            "alpha": float(alpha),
+            "tau": float(p.tau),
+            "K": int(K),
+            "DC": int(p.DC),
+            "init": int(init),
+            "random_seed": getattr(p, "random_seed", None),
+            "tol": float(p.tol),
+            "max_iter": int(p.max_iter),
+            "fs": float(fs),
+            "precomputed_fft": (None if use_if_tracking else precomp),
+            "trial": trial,
+            "enforce_uncorrelated": bool(p.enforce_uncorrelated),
+            "corr_rho": float(p.corr_rho),
+            "corr_update_every": int(p.corr_update_every),
+            "corr_ema": float(p.corr_ema),
+            "adaptive_alpha": bool(p.adaptive_alpha),
+            "adaptive_alpha_start_iter": int(p.adaptive_alpha_start_iter),
+            "adaptive_alpha_update_every": int(p.adaptive_alpha_update_every),
+            "adaptive_alpha_lr": float(p.adaptive_alpha_lr),
+            "adaptive_alpha_min_scale": float(p.adaptive_alpha_min_scale),
+            "adaptive_alpha_max_scale": float(p.adaptive_alpha_max_scale),
+            "adaptive_alpha_skip_dc": bool(p.adaptive_alpha_skip_dc),
+            "omega_momentum": float(p.omega_momentum),
+            "omega_shrinkage": float(p.omega_shrinkage),
+            "omega_max_step": float(p.omega_max_step),
+            "admm_over_relax": float(getattr(p, "admm_over_relax", 1.0)),
+            # Backward/forward-compatible optional knobs.
+            "if_window_size": int(getattr(p, "if_window_size", 256)),
+            "if_hop_size": int(getattr(p, "if_hop_size", 128)),
+            "if_center_smooth": float(getattr(p, "if_center_smooth", 0.85)),
+            "omega_tol": (
+                float(getattr(p, "tol_omega"))
+                if getattr(p, "tol_omega", None) is not None
+                else 1e-8
+            ),
+            "use_anderson": bool(getattr(p, "use_anderson", False)),
+            "anderson_m": int(getattr(p, "anderson_m", 5)),
+            "gram_schmidt_every": int(getattr(p, "gram_schmidt_every", 0)),
+            "fft_backend": str(getattr(p, "fft_backend", "fftw")),
+            "fft_device": str(getattr(p, "fft_device", "auto")),
+        }
+
+        # Route IF/chirp requests to decompose_chirp when available.
+        if use_if_tracking and hasattr(self.core, "decompose_chirp"):
+            cparams = self._core_chirp_params
+            chirp_kwargs: Dict[str, Any] = {
+                "signal": signal,
+                "alpha": float(alpha),
+                "tau": float(p.tau),
+                "K": int(K),
+                "DC": int(p.DC),
+                "init": int(init),
+                "random_seed": getattr(p, "random_seed", None),
+                "tol": float(p.tol),
+                "max_iter": int(p.max_iter),
+                "fs": float(fs),
+                "admm_over_relax": float(getattr(p, "admm_over_relax", 1.0)),
+                "if_window_size": int(getattr(p, "if_window_size", 256)),
+                "if_hop_size": int(getattr(p, "if_hop_size", 128)),
+                "if_center_smooth": float(getattr(p, "if_center_smooth", 0.85)),
+                "if_update_step": float(getattr(p, "if_update_step", 1.0)),
+                "vncmd_min_track_gap": getattr(p, "vncmd_min_track_gap", None),
+                "vncmd_envelope_ridge_scale": float(
+                    getattr(p, "vncmd_envelope_ridge_scale", 0.0)
+                ),
+                "boundary_method": str(p.boundary_method),
+                "use_soft_junction": bool(p.use_soft_junction),
+                "window_alpha": p.window_alpha,
+                "use_anderson": bool(getattr(p, "use_anderson", False)),
+                "omega_tol": (
+                    float(getattr(p, "tol_omega"))
+                    if getattr(p, "tol_omega", None) is not None
+                    else 1e-8
+                ),
+                "trial": trial,
+                "fft_backend": str(getattr(p, "fft_backend", "fftw")),
+                "fft_device": str(getattr(p, "fft_device", "auto")),
+            }
+            filtered = (
+                chirp_kwargs
+                if "kwargs" in cparams
+                else {k: v for k, v in chirp_kwargs.items() if k in cparams}
+            )
+            out = self.core.decompose_chirp(**filtered)
+            if isinstance(out, tuple) and len(out) >= 3:
+                return out[0], out[1], out[2]
+            raise RuntimeError("decompose_chirp returned unexpected output format")
+
+        if ("warm_start_state" in params) and (
+            getattr(p, "warm_start_u_hat", None) is not None
+            or getattr(p, "warm_start_omega", None) is not None
+        ):
+            ws: Dict[str, Any] = {}
+            if getattr(p, "warm_start_u_hat", None) is not None:
+                ws["u_hat"] = np.asarray(p.warm_start_u_hat, dtype=np.complex128)
+            if getattr(p, "warm_start_omega", None) is not None:
+                ws["omega"] = np.asarray(p.warm_start_omega, dtype=np.float64)
+            if "u_hat" in ws:
+                T_ws = int(ws["u_hat"].shape[0])
+            elif precomp is not None and "T" in precomp:
+                T_ws = int(precomp["T"])
+            else:
+                T_ws = int(signal.size)
+            ws["lam"] = np.zeros(T_ws, dtype=np.complex128)
+            kwargs["warm_start_state"] = ws
+            kwargs["init"] = 5
+
+        filtered = {k: v for k, v in kwargs.items() if k in params}
+        return self.core.decompose(**filtered)
+
+    def _call_core_decompose_multivariate(
+        self,
+        *,
+        signals: np.ndarray,
+        fs: float,
+        p: VMDParameters,
+        K: Optional[int] = None,
+        alpha: Optional[float] = None,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray], np.ndarray]:
+        params = self._core_mv_params
+        kwargs: Dict[str, Any] = {
+            "signals": signals,
+            "alpha": float(alpha if alpha is not None else p.alpha_min),
+            "tau": float(p.tau),
+            "K": int(K if K is not None else p.max_K),
+            "DC": int(p.DC),
+            "init": int(p.init),
+            "random_seed": getattr(p, "random_seed", None),
+            "tol": float(p.tol),
+            "max_iter": int(p.max_iter),
+            "boundary_method": str(p.boundary_method),
+            "use_soft_junction": bool(p.use_soft_junction),
+            "window_alpha": p.window_alpha,
+            "fs": float(fs),
+            "admm_over_relax": float(getattr(p, "admm_over_relax", 1.0)),
+            "omega_momentum": float(p.omega_momentum),
+            "omega_shrinkage": float(p.omega_shrinkage),
+            "omega_max_step": float(p.omega_max_step),
+            "omega_tol": (
+                float(getattr(p, "tol_omega"))
+                if getattr(p, "tol_omega", None) is not None
+                else 1e-8
+            ),
+            "enforce_uncorrelated": bool(p.enforce_uncorrelated),
+            "use_anderson": bool(getattr(p, "use_anderson", False)),
+            "anderson_m": int(getattr(p, "anderson_m", 5)),
+            "fft_backend": str(getattr(p, "fft_backend", "fftw")),
+            "fft_device": str(getattr(p, "fft_device", "auto")),
+        }
+        filtered = {k: v for k, v in kwargs.items() if k in params}
+        return self.core.decompose_multivariate(**filtered)
 
     # -----------------------------
     # Shared helpers
     # -----------------------------
     @staticmethod
-    def _alpha_bin(alpha: float, step: float = 10.0) -> int:
-        return int(np.round(float(alpha) / step) * step)
+    def _alpha_bin(alpha: float, log_digits: int = 5) -> int:
+        """
+        Alpha cache key in log-space.
+        Preserves relative precision across scales and avoids coarse linear bins.
+        """
+        a = float(alpha)
+        if not np.isfinite(a) or a <= 0.0:
+            return -1
+        scale = float(10 ** int(log_digits))
+        return int(np.round(np.log(a) * scale))
 
     @staticmethod
     def _kurtosis_reward(
@@ -227,15 +398,6 @@ class VMDOptimizer:
         weights = np.linspace(0.4, 1.0, len(kurts))
         weighted_kurt = np.average(kurts, weights=weights)
         return float(weighted_kurt * high_freq_weight)
-
-    @staticmethod
-    def _interp_to_len(y: np.ndarray, new_len: int) -> np.ndarray:
-        y = np.asarray(y, dtype=np.float64)
-        if y.size == new_len:
-            return y
-        xo = np.linspace(0.0, 1.0, y.size)
-        xn = np.linspace(0.0, 1.0, new_len)
-        return np.interp(xn, xo, y).astype(np.float64, copy=False)
 
     def _postprocess_modes(
         self,
@@ -351,12 +513,14 @@ class VMDOptimizer:
         c = int(max(2, p.entropy_classes))
         d = int(max(1, p.entropy_delay))
 
-        vals: List[float] = []
+        vals: List[float] = [
+            self._dispersion_entropy(x, m=m, c=c, delay=d, normalize=True)
+        ]
         if scales == 1:
-            return self._dispersion_entropy(x, m=m, c=c, delay=d, normalize=True)
+            return vals[0]
 
-        for s in range(1, scales + 1):
-            if bool(p.entropy_refined_composite) and s > 1:
+        for s in range(2, scales + 1):
+            if bool(p.entropy_refined_composite):
                 for off in range(s):
                     xs = np.asarray(x, dtype=np.float64)[off:]
                     cg = self._coarse_grain(xs, s)
@@ -373,8 +537,6 @@ class VMDOptimizer:
                         self._dispersion_entropy(cg, m=m, c=c, delay=d, normalize=True)
                     )
 
-        if not vals:
-            return self._dispersion_entropy(x, m=m, c=c, delay=d, normalize=True)
         return float(np.mean(vals))
 
     def _entropy_K_score(
@@ -390,6 +552,12 @@ class VMDOptimizer:
         """
         More modern / literature-aligned version (2023–2025 style)
         Focus: low average mode RCMDE + acceptable recon error + kurtosis reward
+
+        The default weights are chosen to sum to roughly 1.0 before the
+        kurtosis reward / penalty terms, but user overrides are not
+        renormalized. Changing them therefore changes the absolute score scale,
+        so entropy scores are only directly comparable across runs that use the
+        same weight configuration.
         """
         if not modes_list:
             return float("inf")
@@ -414,19 +582,36 @@ class VMDOptimizer:
         # K penalty (soft — avoid unnecessary modes)
         kn = float(K) / float(max(2, p.max_K))
 
+        # These weights are read directly from VMDParameters and are not
+        # normalized here. Override them only if you also accept that the
+        # absolute score scale will shift across runs.
+        w_mode = float(getattr(p, "entropy_w_mode_de", 0.55))
+        w_recon = float(getattr(p, "entropy_w_recon", 0.18))
+        w_resid = float(getattr(p, "entropy_w_residual_de", 0.12))
+        w_overlap = float(
+            getattr(
+                p,
+                "entropy_w_overlap",
+                getattr(p, "entropy_overlap_weight", 0.08),
+            )
+        )
+        w_k = float(getattr(p, "entropy_w_k", getattr(p, "entropy_k_penalty", 0.07)))
+
         # Composite score (lower = better)
         score = (
-            0.55 * avg_mode_ent  # dominant: modes should be regular
-            + 0.18 * err_norm  # reconstruction fidelity
-            + 0.12 * (1.0 - residual_ent)  # residual should be complex/random
-            + 0.08 * overlap_pen
-            + 0.07 * kn
+            w_mode * avg_mode_ent  # dominant: modes should be regular
+            + w_recon * err_norm  # reconstruction fidelity
+            + w_resid * (1.0 - residual_ent)  # residual should be complex/random
+            + w_overlap * overlap_pen
+            + w_k * kn
             - 0.20 * kurt_reward  # reward (negative term)
         )
 
         # Hard penalty if reconstruction is too bad
         if err_norm > float(p.entropy_recon_threshold or 0.15):
-            score += 5.0 * (err_norm - float(p.entropy_recon_threshold))
+            score += float(getattr(p, "entropy_recon_penalty", 5.0)) * (
+                err_norm - float(p.entropy_recon_threshold)
+            )
 
         # Small legacy term (optional bridge)
         score += 0.05 * float(legacy_cost)
@@ -458,7 +643,7 @@ class VMDOptimizer:
         for K in range(2, int(p.max_K) + 1):
             for alpha in alpha_grid:
                 try:
-                    modes_list, freqs_list, cost = self._evaluate_candidate(
+                    modes_list, freqs_list, cost, _ = self._evaluate_candidate(
                         K=int(K),
                         alpha=float(alpha),
                         signal=signal,
@@ -473,7 +658,12 @@ class VMDOptimizer:
                     )
                     if score < bestScore:
                         bestK, bestScore, bestAlpha = int(K), float(score), float(alpha)
-                except Exception:
+                except Exception as e:
+                    warnings.warn(
+                        f"Entropy candidate failed for K={K}, alpha={float(alpha):.3g}: {e}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
                     continue
         if bestK is None:
             bestK = int(max(2, p.max_K))
@@ -490,7 +680,8 @@ class VMDOptimizer:
         p: VMDParameters,
         trial: Optional[optuna.Trial] = None,
         allow_cache: bool = True,
-    ) -> Tuple[List[np.ndarray], List[float], float]:
+        return_raw_u: bool = False,
+    ) -> Tuple[List[np.ndarray], List[float], float, Optional[np.ndarray]]:
         """
         The canonical evaluation path:
           - optional cache
@@ -498,47 +689,110 @@ class VMDOptimizer:
           - postprocess (filter/merge/sort)
           - compute cost on postprocessed modes
         """
-        alpha_b = self._alpha_bin(alpha, step=10.0)
-        key = (int(K), int(alpha_b))
-        if allow_cache and key in self._cache:
-            return self._cache[key]
+        if p.warm_start_u_hat is not None or p.warm_start_omega is not None:
+            allow_cache = False
 
-        # try:
-        u, _, _ = self.core.decompose(
-            signal,
+        alpha_b = self._alpha_bin(alpha)
+        cacheable_alpha = alpha_b != -1
+        key = (int(K), int(alpha_b))
+        if allow_cache and cacheable_alpha and key in self._cache:
+            cm, cf, cc = self._cache[key]
+            raw = None
+            return [m.copy() for m in cm], list(cf), float(cc), raw
+
+        u, _, _ = self._call_core_decompose(
+            signal=signal,
             alpha=float(alpha),
-            tau=float(p.tau),
-            K=int(K),
-            DC=int(p.DC),
-            init=int(p.init),
-            tol=float(p.tol),
-            max_iter=int(p.max_iter),
             fs=float(fs),
-            # use_fs_vmd=bool(p.use_fs_vmd),
-            precomputed_fft=precomp,
+            K=int(K),
+            init=int(p.init),
+            p=p,
+            precomp=precomp,
             trial=trial,
-            enforce_uncorrelated=bool(p.enforce_uncorrelated),
-            corr_rho=float(p.corr_rho),
-            corr_update_every=int(p.corr_update_every),
-            corr_ema=float(p.corr_ema),
-            adaptive_alpha=bool(p.adaptive_alpha),
-            adaptive_alpha_start_iter=int(p.adaptive_alpha_start_iter),
-            adaptive_alpha_update_every=int(p.adaptive_alpha_update_every),
-            adaptive_alpha_lr=float(p.adaptive_alpha_lr),
-            adaptive_alpha_min_scale=float(p.adaptive_alpha_min_scale),
-            adaptive_alpha_max_scale=float(p.adaptive_alpha_max_scale),
-            adaptive_alpha_skip_dc=bool(p.adaptive_alpha_skip_dc),
-            omega_momentum=float(p.omega_momentum),
-            omega_shrinkage=float(p.omega_shrinkage),
-            omega_max_step=float(p.omega_max_step),
         )
         modes_list, freqs_list = self._postprocess_modes(u, signal, fs, p)
         cost = float(self.proc.cost_signal(modes_list, signal, fs))
+        raw_out = np.asarray(u, dtype=np.float64).copy() if return_raw_u else None
 
-        if allow_cache and len(self._cache) < 80:
-            self._cache[key] = (modes_list, freqs_list, cost)
+        if allow_cache and cacheable_alpha and len(self._cache) < 80:
+            self._cache[key] = (
+                [m.copy() for m in modes_list],
+                list(freqs_list),
+                float(cost),
+            )
 
-        return modes_list, freqs_list, cost
+        return [m.copy() for m in modes_list], list(freqs_list), float(cost), raw_out
+
+    def _postprocess_modes_mv(
+        self,
+        modes: np.ndarray,  # (C, K, N)
+        signals: np.ndarray,  # (C, N)
+        fs: float,
+        p: VMDParameters,
+    ) -> Tuple[List[np.ndarray], List[float], float]:
+        X = np.asarray(signals, dtype=np.float64)
+        U = np.asarray(modes, dtype=np.float64)
+        if X.ndim != 2 or U.ndim != 3:
+            return [], [], float("inf")
+
+        C = int(X.shape[0])
+        all_modes: List[np.ndarray] = []
+        all_freqs: List[float] = []
+        channel_costs: List[float] = []
+
+        for ch in range(C):
+            modes_ch, freqs_ch = self._postprocess_modes(U[ch], X[ch], fs, p)
+            all_modes.extend([np.asarray(m, dtype=np.float64).copy() for m in modes_ch])
+            all_freqs.extend([float(f) for f in freqs_ch])
+            channel_costs.append(float(self.proc.cost_signal(modes_ch, X[ch], fs)))
+
+        if not all_modes:
+            return [], [], float(np.mean(channel_costs) if channel_costs else 10.0)
+
+        all_modes, all_freqs = self.proc.sort_modes_by_frequency(
+            all_modes, fs, low_to_high=True
+        )
+        return all_modes, all_freqs, float(np.mean(channel_costs))
+
+    def _evaluate_candidate_mv(
+        self,
+        *,
+        K: int,
+        alpha: float,
+        signals: np.ndarray,  # (C, N)
+        fs: float,
+        p: VMDParameters,
+        allow_cache: bool = True,
+        return_raw_u: bool = False,
+    ) -> Tuple[List[np.ndarray], List[float], float, Optional[np.ndarray]]:
+        if p.warm_start_u_hat is not None or p.warm_start_omega is not None:
+            allow_cache = False
+
+        alpha_b = self._alpha_bin(alpha)
+        cacheable_alpha = alpha_b != -1
+        key = (int(K), int(alpha_b))
+        if allow_cache and cacheable_alpha and key in self._cache_mv:
+            cm, cf, cc = self._cache_mv[key]
+            return [m.copy() for m in cm], list(cf), float(cc), None
+
+        u, _, _ = self._call_core_decompose_multivariate(
+            signals=signals,
+            fs=float(fs),
+            p=p,
+            K=int(K),
+            alpha=float(alpha),
+        )
+        modes_list, freqs_list, cost = self._postprocess_modes_mv(u, signals, fs, p)
+        raw_out = np.asarray(u, dtype=np.float64).copy() if return_raw_u else None
+
+        if allow_cache and cacheable_alpha and len(self._cache_mv) < 80:
+            self._cache_mv[key] = (
+                [m.copy() for m in modes_list],
+                list(freqs_list),
+                float(cost),
+            )
+
+        return [m.copy() for m in modes_list], list(freqs_list), float(cost), raw_out
 
     # -----------------------------
     # K selection
@@ -557,38 +811,26 @@ class VMDOptimizer:
             bestK, bestScore = None, float("inf")
             for K in K_candidates:
                 try:
-                    u, _, _ = self.core.decompose(
-                        signal,
+                    u, _, _ = self._call_core_decompose(
+                        signal=signal,
                         alpha=float(alpha_default),
-                        tau=float(p.tau),
-                        K=int(K),
-                        DC=int(p.DC),
-                        init=1,
-                        tol=float(p.tol),
-                        max_iter=int(p.max_iter),
                         fs=float(fs),
-                        # use_fs_vmd=bool(p.use_fs_vmd),
-                        precomputed_fft=precomp,
-                        enforce_uncorrelated=bool(p.enforce_uncorrelated),
-                        corr_rho=float(p.corr_rho),
-                        corr_update_every=int(p.corr_update_every),
-                        corr_ema=float(p.corr_ema),
-                        adaptive_alpha=bool(p.adaptive_alpha),
-                        adaptive_alpha_start_iter=int(p.adaptive_alpha_start_iter),
-                        adaptive_alpha_update_every=int(p.adaptive_alpha_update_every),
-                        adaptive_alpha_lr=float(p.adaptive_alpha_lr),
-                        adaptive_alpha_min_scale=float(p.adaptive_alpha_min_scale),
-                        adaptive_alpha_max_scale=float(p.adaptive_alpha_max_scale),
-                        adaptive_alpha_skip_dc=bool(p.adaptive_alpha_skip_dc),
-                        omega_momentum=float(p.omega_momentum),
-                        omega_shrinkage=float(p.omega_shrinkage),
-                        omega_max_step=float(p.omega_max_step),
+                        K=int(K),
+                        init=1,
+                        p=p,
+                        precomp=precomp,
+                        trial=None,
                     )
                     res = np.asarray(signal, dtype=np.float64) - np.sum(u, axis=0)
                     score = float(box_counting_dimension(res))
                     if score < bestScore:
                         bestK, bestScore = int(K), score
-                except Exception:
+                except Exception as e:
+                    warnings.warn(
+                        f"FBD K selection failed at K={K}: {e}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
                     continue
             return int(bestK) if bestK is not None else int(p.max_K)
 
@@ -596,38 +838,94 @@ class VMDOptimizer:
         bestK, bestScore = None, float("inf")
         for K in K_candidates:
             try:
-                u, _, _ = self.core.decompose(
-                    signal,
+                u, _, _ = self._call_core_decompose(
+                    signal=signal,
                     alpha=float(alpha_default),
-                    tau=float(p.tau),
-                    K=int(K),
-                    DC=int(p.DC),
-                    init=int(p.init),
-                    tol=float(p.tol),
-                    max_iter=int(p.max_iter),
                     fs=float(fs),
-                    # use_fs_vmd=bool(p.use_fs_vmd),
-                    precomputed_fft=precomp,
-                    enforce_uncorrelated=bool(p.enforce_uncorrelated),
-                    corr_rho=float(p.corr_rho),
-                    corr_update_every=int(p.corr_update_every),
-                    corr_ema=float(p.corr_ema),
-                    adaptive_alpha=bool(p.adaptive_alpha),
-                    adaptive_alpha_start_iter=int(p.adaptive_alpha_start_iter),
-                    adaptive_alpha_update_every=int(p.adaptive_alpha_update_every),
-                    adaptive_alpha_lr=float(p.adaptive_alpha_lr),
-                    adaptive_alpha_min_scale=float(p.adaptive_alpha_min_scale),
-                    adaptive_alpha_max_scale=float(p.adaptive_alpha_max_scale),
-                    adaptive_alpha_skip_dc=bool(p.adaptive_alpha_skip_dc),
-                    omega_momentum=float(p.omega_momentum),
-                    omega_shrinkage=float(p.omega_shrinkage),
-                    omega_max_step=float(p.omega_max_step),
+                    K=int(K),
+                    init=int(p.init),
+                    p=p,
+                    precomp=precomp,
+                    trial=None,
                 )
                 score = self._penalized_K_score(signal, fs, u, p, int(K))
                 if score < bestScore:
                     bestK, bestScore = int(K), float(score)
-            except Exception:
+            except Exception as e:
+                warnings.warn(
+                    f"Penalized K selection failed at K={K}: {e}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 continue
+
+        return int(bestK) if bestK is not None else int(p.max_K)
+
+    def select_K_mv(
+        self,
+        signals: np.ndarray,
+        fs: float,
+        p: VMDParameters,
+        alpha_default: float = 2000.0,
+    ) -> int:
+        X = np.asarray(signals, dtype=np.float64)
+        if X.ndim != 2:
+            raise ValueError("MVMD requires signals shaped (channels, samples)")
+
+        K_candidates = range(2, int(p.max_K) + 1)
+        bestK, bestScore = None, float("inf")
+
+        if p.k_selection.lower() == "fbd":
+            for K in K_candidates:
+                try:
+                    u, _, _ = self._call_core_decompose_multivariate(
+                        signals=X,
+                        fs=float(fs),
+                        p=p,
+                        K=int(K),
+                        alpha=float(alpha_default),
+                    )
+                    score = 0.0
+                    for ch in range(X.shape[0]):
+                        recon = np.sum(u[ch], axis=0)
+                        res = X[ch] - recon
+                        score += float(box_counting_dimension(res))
+                    score /= float(max(1, X.shape[0]))
+                    if score < bestScore:
+                        bestK, bestScore = int(K), float(score)
+                except Exception as e:
+                    warnings.warn(
+                        f"MVMD FBD K={K} failed: {e}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+            return int(bestK) if bestK is not None else int(p.max_K)
+
+        for K in K_candidates:
+            try:
+                modes_list, freqs_list, cost, _ = self._evaluate_candidate_mv(
+                    K=int(K),
+                    alpha=float(alpha_default),
+                    signals=X,
+                    fs=float(fs),
+                    p=p,
+                    allow_cache=True,
+                    return_raw_u=False,
+                )
+                overlap = self._freq_overlap_penalty(freqs_list)
+                score = (
+                    float(cost)
+                    + float(p.k_penalty_lambda) * float(K)
+                    + float(p.k_overlap_mu) * float(overlap)
+                )
+                if score < bestScore:
+                    bestK, bestScore = int(K), float(score)
+            except Exception as e:
+                warnings.warn(
+                    f"MVMD penalized K={K} failed: {e}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         return int(bestK) if bestK is not None else int(p.max_K)
 
@@ -648,7 +946,7 @@ class VMDOptimizer:
                 "alpha", float(p.alpha_min), float(p.alpha_max), log=True
             )
         )
-        _, _, cost = self._evaluate_candidate(
+        _, _, cost, _ = self._evaluate_candidate(
             K=K,
             alpha=alpha,
             signal=signal,
@@ -674,7 +972,7 @@ class VMDOptimizer:
                 "alpha", float(p.alpha_min), float(p.alpha_max), log=True
             )
         )
-        _, _, cost = self._evaluate_candidate(
+        _, _, cost, _ = self._evaluate_candidate(
             K=int(K_fixed),
             alpha=alpha,
             signal=signal,
@@ -683,6 +981,54 @@ class VMDOptimizer:
             p=p,
             trial=trial,
             allow_cache=True,
+        )
+        return float(cost)
+
+    def _objective_full_mv(
+        self,
+        trial: optuna.Trial,
+        signals: np.ndarray,
+        fs: float,
+        p: VMDParameters,
+    ) -> float:
+        K = int(trial.suggest_int("K", 2, int(p.max_K)))
+        alpha = float(
+            trial.suggest_float(
+                "alpha", float(p.alpha_min), float(p.alpha_max), log=True
+            )
+        )
+        _, _, cost, _ = self._evaluate_candidate_mv(
+            K=K,
+            alpha=alpha,
+            signals=np.asarray(signals, dtype=np.float64),
+            fs=float(fs),
+            p=p,
+            allow_cache=True,
+            return_raw_u=False,
+        )
+        return float(cost)
+
+    def _objective_alpha_only_mv(
+        self,
+        trial: optuna.Trial,
+        signals: np.ndarray,
+        fs: float,
+        p: VMDParameters,
+        K_fixed: int,
+    ) -> float:
+        alpha = float(
+            trial.suggest_float(
+                "alpha", float(p.alpha_min), float(p.alpha_max), log=True
+            )
+        )
+        _, _, cost, _ = self._evaluate_candidate_mv(
+            K=int(K_fixed),
+            alpha=alpha,
+            signals=np.asarray(signals, dtype=np.float64),
+            fs=float(fs),
+            p=p,
+            allow_cache=True,
+            return_raw_u=False,
         )
         return float(cost)
 
@@ -701,10 +1047,10 @@ class VMDOptimizer:
         return_raw_modes: bool = True,
         **overrides,
     ):
-        self._cache.clear()
         x = np.asarray(signal, dtype=np.float64)
 
         if use_mvmd:
+            self._cache_mv.clear()
             if x.ndim != 2:
                 raise ValueError("MVMD requires signal shaped (channels, samples)")
             p = (
@@ -712,28 +1058,134 @@ class VMDOptimizer:
                 if auto_params
                 else VMDParameters()
             )
+            # `overrides` target VMDParameters fields rather than optimize()
+            # signature parameters, so caller-side convenience kwargs must stay
+            # aligned with the dataclass attribute names.
             for k, v in overrides.items():
                 if hasattr(p, k):
                     setattr(p, k, v)
 
-            modes, _, _ = self.core.decompose_multivariate(
-                x,
-                alpha=float(p.alpha_min),
-                tau=float(p.tau),
-                K=int(p.max_K),
-                DC=int(p.DC),
-                init=int(p.init),
-                tol=float(p.tol),
-                max_iter=int(p.max_iter),
-                boundary_method=str(p.boundary_method),
-                use_soft_junction=bool(p.use_soft_junction),
-                window_alpha=p.window_alpha,
-                fs=float(fs),
-            )
-            flat = modes.reshape(-1, x.shape[1])
-            return flat, [0.0] * flat.shape[0], (int(p.max_K), float(p.alpha_min), 0.0)
+            if (
+                str(p.search_method).lower() == "entropy"
+                or p.k_selection.lower() == "entropy"
+            ):
+                warnings.warn(
+                    "Entropy K/alpha search is not implemented for MVMD in this "
+                    "pipeline; falling back to Optuna search.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
+            best_K_fixed: Optional[int] = None
+            if p.k_selection.lower() in ("penalized", "fbd"):
+                best_K_fixed = self.select_K_mv(
+                    x, float(fs), p, alpha_default=float(p.entropy_alpha_default)
+                )
+
+            study = optuna.create_study(direction="minimize")
+            show_bar = bool(IS_NOTEBOOK)
+
+            if best_K_fixed is not None:
+                n_trials = max(10, int(p.n_trials) // 2)
+                study.optimize(
+                    lambda t: self._objective_alpha_only_mv(
+                        t, x, float(fs), p, best_K_fixed
+                    ),
+                    n_trials=int(n_trials),
+                    show_progress_bar=show_bar,
+                )
+                best_alpha = float(study.best_params["alpha"])
+                best_K = int(best_K_fixed)
+            else:
+                study.optimize(
+                    lambda t: self._objective_full_mv(t, x, float(fs), p),
+                    n_trials=int(p.n_trials),
+                    show_progress_bar=show_bar,
+                )
+                best_alpha = float(study.best_params["alpha"])
+                best_K = int(study.best_params["K"])
+
+            modes_list, freqs_list, best_cost, raw_from_eval = (
+                self._evaluate_candidate_mv(
+                    K=int(best_K),
+                    alpha=float(best_alpha),
+                    signals=x,
+                    fs=float(fs),
+                    p=p,
+                    allow_cache=False,
+                    return_raw_u=bool(return_raw_modes),
+                )
+            )
+
+            if refine_modes and modes_list:
+                if str(refine_method).lower() == "cross_mode":
+                    refined = refine_modes_cross_nn(
+                        np.stack(modes_list, axis=0), epochs=int(refine_epochs)
+                    )
+                else:
+                    refined = refine_modes_nn(
+                        np.stack(modes_list, axis=0), epochs=int(refine_epochs)
+                    )
+                modes_list = [
+                    refined[i].astype(np.float64, copy=False)
+                    for i in range(refined.shape[0])
+                ]
+                modes_list, freqs_list = self.proc.sort_modes_by_frequency(
+                    modes_list, fs
+                )
+
+            if bool(p.apply_tapering) and modes_list:
+                taper_len = int(min(100, x.shape[1] // 10))
+                modes_list = BoundaryHandler.taper_boundaries(modes_list, taper_len)
+
+            self.fftw.save_wisdom()
+
+            post_modes_arr = (
+                np.stack(modes_list, axis=0)
+                if modes_list
+                else np.zeros((0, x.shape[1]), dtype=np.float64)
+            )
+
+            if bool(return_raw_modes):
+                raw_mv = (
+                    np.asarray(raw_from_eval, dtype=np.float64)
+                    if raw_from_eval is not None
+                    else np.zeros((0, 0, x.shape[1]), dtype=np.float64)
+                )
+                raw_flat = (
+                    raw_mv.reshape(-1, raw_mv.shape[-1])
+                    if raw_mv.ndim == 3
+                    else np.zeros((0, x.shape[1]), dtype=np.float64)
+                )
+                raw_freqs = [
+                    float(self.proc.dominant_frequency(raw_flat[i], fs))
+                    for i in range(raw_flat.shape[0])
+                ]
+                optinfo: Dict[str, Any] = {
+                    "best": (int(best_K), float(best_alpha), float(best_cost)),
+                    "raw_modes": raw_flat,
+                    "raw_freqs": raw_freqs,
+                    "post_modes": post_modes_arr,
+                    "post_freqs": list(freqs_list),
+                    "mv_shape": tuple(raw_mv.shape),
+                }
+                return raw_flat, raw_freqs, optinfo
+
+            return (
+                post_modes_arr,
+                freqs_list,
+                (
+                    int(best_K),
+                    float(best_alpha),
+                    float(best_cost),
+                ),
+            )
+
+        self._cache.clear()
         p = self.analyzer.assess_complexity(x, fs) if auto_params else VMDParameters()
+        # `overrides` target VMDParameters fields rather than optimize()
+        # signature parameters, so caller-side convenience kwargs must stay
+        # aligned with the dataclass attribute names.
         for k, v in overrides.items():
             if hasattr(p, k):
                 setattr(p, k, v)
@@ -743,27 +1195,22 @@ class VMDOptimizer:
             boundary_method=str(p.boundary_method),
             use_soft_junction=bool(p.use_soft_junction),
             window_alpha=p.window_alpha,
+            fft_backend=str(getattr(p, "fft_backend", "fftw")),
+            fft_device=str(getattr(p, "fft_device", "auto")),
         )
 
-        best_K_fixed: Optional[int] = None
-        if p.k_selection.lower() in ("penalized", "fbd"):
-            best_K_fixed = self.select_K(x, fs, p, precomp, alpha_default=2000.0)
-
-        if (
+        use_entropy_search = (
             str(p.search_method).lower() == "entropy"
             or p.k_selection.lower() == "entropy"
-        ):
+        )
+        best_K_fixed: Optional[int] = None
+        if (not use_entropy_search) and p.k_selection.lower() in ("penalized", "fbd"):
+            # The entropy search path performs its own K sweep, so skip the
+            # separate penalized/FBD pre-pass to avoid redundant decomposition.
+            best_K_fixed = self.select_K(x, fs, p, precomp, alpha_default=2000.0)
+
+        if use_entropy_search:
             best_K, best_alpha, _ = self.estimate_K_alpha_entropy(x, fs, p, precomp)
-            modes_list, freqs_list, best_cost = self._evaluate_candidate(
-                K=int(best_K),
-                alpha=float(best_alpha),
-                signal=x,
-                fs=float(fs),
-                precomp=precomp,
-                p=p,
-                trial=None,
-                allow_cache=False,
-            )
         else:
             study = optuna.create_study(direction="minimize")
             show_bar = bool(IS_NOTEBOOK)
@@ -788,50 +1235,26 @@ class VMDOptimizer:
                 best_alpha = float(study.best_params["alpha"])
                 best_K = int(study.best_params["K"])
 
-            best_cost = float(study.best_value)
-            modes_list, freqs_list, _ = self._evaluate_candidate(
-                K=int(best_K),
-                alpha=float(best_alpha),
-                signal=x,
-                fs=float(fs),
-                precomp=precomp,
-                p=p,
-                trial=None,
-                allow_cache=False,
-            )
+        modes_list, freqs_list, best_cost, raw_from_eval = self._evaluate_candidate(
+            K=int(best_K),
+            alpha=float(best_alpha),
+            signal=x,
+            fs=float(fs),
+            precomp=precomp,
+            p=p,
+            trial=None,
+            allow_cache=False,
+            return_raw_u=bool(return_raw_modes),
+        )
 
         raw_modes_np: Optional[np.ndarray] = None
         raw_freqs_list: List[float] = []
         if bool(return_raw_modes):
-            raw_u, _, _ = self.core.decompose(
-                x,
-                alpha=float(best_alpha),
-                tau=float(p.tau),
-                K=int(best_K),
-                DC=int(p.DC),
-                init=int(p.init),
-                tol=float(p.tol),
-                max_iter=int(p.max_iter),
-                fs=float(fs),
-                # use_fs_vmd=bool(p.use_fs_vmd),
-                precomputed_fft=precomp,
-                trial=None,
-                enforce_uncorrelated=bool(p.enforce_uncorrelated),
-                corr_rho=float(p.corr_rho),
-                corr_update_every=int(p.corr_update_every),
-                corr_ema=float(p.corr_ema),
-                adaptive_alpha=bool(p.adaptive_alpha),
-                adaptive_alpha_start_iter=int(p.adaptive_alpha_start_iter),
-                adaptive_alpha_update_every=int(p.adaptive_alpha_update_every),
-                adaptive_alpha_lr=float(p.adaptive_alpha_lr),
-                adaptive_alpha_min_scale=float(p.adaptive_alpha_min_scale),
-                adaptive_alpha_max_scale=float(p.adaptive_alpha_max_scale),
-                adaptive_alpha_skip_dc=bool(p.adaptive_alpha_skip_dc),
-                omega_momentum=float(p.omega_momentum),
-                omega_shrinkage=float(p.omega_shrinkage),
-                omega_max_step=float(p.omega_max_step),
+            raw_modes_np = (
+                np.asarray(raw_from_eval, dtype=np.float64)
+                if raw_from_eval is not None
+                else np.zeros((0, x.size), dtype=np.float64)
             )
-            raw_modes_np = np.asarray(raw_u, dtype=np.float64)
             raw_freqs_list = [
                 float(self.proc.dominant_frequency(raw_modes_np[k], fs))
                 for k in range(raw_modes_np.shape[0])
@@ -963,6 +1386,8 @@ class HierarchicalVMD:
 
             try:
                 t0 = time.time()
+                # These are VMDParameters overrides, not explicit optimize()
+                # keyword parameters. They rely on matching dataclass fields.
                 modes_level, freqs_level, opt_params = self.opt.optimize(
                     signal_level,
                     fs_level,
@@ -976,7 +1401,7 @@ class HierarchicalVMD:
 
                 if params.use_emd_hybrid and modes_level.shape[0] > 0:
                     ent = [
-                        ModeProcessor.entropy(modes_level[i])
+                        self.opt.proc.entropy(modes_level[i])
                         for i in range(modes_level.shape[0])
                     ]
                     idx = int(np.argmax(ent))
@@ -1015,8 +1440,8 @@ class HierarchicalVMD:
                 print("Stopping: residual below threshold")
                 break
 
-        merged = ModeProcessor.merge_similar_modes(all_modes, fs, freq_tol=0.2)
-        sorted_modes, sorted_freqs = ModeProcessor.sort_modes_by_frequency(merged, fs)
+        merged = self.opt.proc.merge_similar_modes(all_modes, fs, freq_tol=0.2)
+        sorted_modes, sorted_freqs = self.opt.proc.sort_modes_by_frequency(merged, fs)
 
         if refine_modes and sorted_modes:
             if str(refine_method).lower() == "cross_mode":
@@ -1028,7 +1453,7 @@ class HierarchicalVMD:
                     np.stack(sorted_modes, axis=0), epochs=int(refine_epochs)
                 )
             sorted_modes = [refined[i] for i in range(refined.shape[0])]
-            sorted_modes, sorted_freqs = ModeProcessor.sort_modes_by_frequency(
+            sorted_modes, sorted_freqs = self.opt.proc.sort_modes_by_frequency(
                 sorted_modes, fs
             )
 

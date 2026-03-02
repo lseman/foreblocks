@@ -48,8 +48,8 @@ def fast_mad_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
     if mad < 1e-6:
         mad = np.nanmean(deviations) + 1e-8
 
-    # Apply modified Z-score
-    mod_z = np.abs((x - med) / mad) * 1.4826
+    # Correct modified Z-score (Iglewicz and Hoaglin)
+    mod_z = 0.6745 * np.abs(x - med) / mad
 
     # Apply adaptive threshold (optional nonlinear taper)
     adapt_thresh = threshold + 0.5 * (np.std(mod_z[valid]) > 3.5)

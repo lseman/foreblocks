@@ -33,21 +33,23 @@ import pandas as pd
 import torch
 from joblib import Parallel, delayed
 from scipy.signal import find_peaks, welch
-from scipy.stats import entropy, kurtosis, skew
+from scipy.stats import entropy, kurtosis, skew, jarque_bera
 from sklearn.impute import KNNImputer
 from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer, PowerTransformer
 from statsmodels.tsa.stattools import acf, adfuller, pacf
+from statsmodels.stats.diagnostic import acorr_ljungbox
 from tabulate import tabulate
 from tqdm import tqdm
 
 # ---- local deps (explicit) ---------------------------------------------------
-from .ewt import apply_ewt_and_detrend_parallel
 from .filters import (
     adaptive_savgol_filter,
     emd_filter,
     kalman_filter,
     lowess_filter,
     wiener_filter,
+    ssa_filter,
+    stl_filter,
 )
 from .impute import SAITSImputer
 from .outlier import _remove_outliers, _remove_outliers_parallel
@@ -264,6 +266,23 @@ def analyze_signal_quality(data: np.ndarray, D: int) -> Tuple[List[float], List[
     return flatness_scores, snr_scores
 
 
+def score_ljung_box(data: np.ndarray, D: int) -> List[float]:
+    """Formal test for whether the series is structurally autoregressive vs white noise."""
+    pvals: List[float] = []
+    for i in range(D):
+        clean = data[:, i][~np.isnan(data[:, i])]
+        if len(clean) < 30:
+            pvals.append(1.0)
+            continue
+        try:
+            # Test up to 10 lags, take the minimum p-value indicating any structure
+            res = acorr_ljungbox(clean, lags=[min(10, len(clean) // 3)], return_df=True)
+            pvals.append(float(res["lb_pvalue"].min()))
+        except Exception:
+            pvals.append(1.0)
+    return pvals
+
+
 def score_pacf(data: np.ndarray, D: int) -> List[int]:
     scores: List[int] = []
     for i in range(D):
@@ -296,15 +315,17 @@ def estimate_ewt_bands(data: np.ndarray, D: int) -> List[int]:
 
 def _get_iterative_imputer_class() -> Optional[Any]:
     try:
-        from fancyimpute import IterativeImputer as IterativeImputerCls
+        from fancyimpute import IterativeImputer
 
-        return IterativeImputerCls
-    except Exception:
+        return IterativeImputer
+    except ImportError:
         try:
-            from sklearn.impute import IterativeImputer as IterativeImputerCls
+            from sklearn.experimental import enable_iterative_imputer
+            from sklearn.impute import IterativeImputer
+            from sklearn.ensemble import HistGradientBoostingRegressor
 
-            return IterativeImputerCls
-        except Exception:
+            return IterativeImputer
+        except ImportError:
             return None
 
 
@@ -387,6 +408,21 @@ def _dispatch_filter(self_ref, data: np.ndarray, method: str, **kwargs) -> np.nd
             keep_ratio=kwargs.get("keep_ratio", 0.5),
             n_jobs=kwargs.get("n_jobs", 1),
         ),
+        "ssa": lambda: ssa_filter(
+            data,
+            window_length=kwargs.get("window_length", None),
+            n_components=kwargs.get("n_components", 2),
+            fill_nans_for_filter=kwargs.get("fill_nans_for_filter", True),
+        ),
+        "stl": lambda: stl_filter(
+            data,
+            period=kwargs.get("period", 7),
+            robust=kwargs.get("robust", True),
+            seasonal=kwargs.get("seasonal", 7),
+            trend=kwargs.get("trend", None),
+            return_component=kwargs.get("return_component", "trend_seasonal"),
+            fill_nans_for_filter=kwargs.get("fill_nans_for_filter", True),
+        ),
     }
 
     if m not in dispatch:
@@ -430,6 +466,7 @@ class TimeSeriesPreprocessor:
     apply_filter: bool = False
     self_tune: bool = False
     generate_time_features: bool = False
+    verbose: bool = False
 
     # UX / plots
     plot: bool = False
@@ -449,7 +486,7 @@ class TimeSeriesPreprocessor:
     outlier_calibration_: Dict[str, Any] = field(default_factory=dict, init=False)
 
     # Auto-config results
-    scaling_method: str = field(default="standard", init=False) # 'standard', 'robust', 'quantile', 'log_only'
+    scaling_method: str = field(default="standard", init=False) # 'standard', 'robust', 'quantile', 'log_only', 'box_cox'
     filter_method: str = field(default="savgol", init=False)
     seasonal: bool = field(default=False, init=False)
 
@@ -494,7 +531,10 @@ class TimeSeriesPreprocessor:
             return float("nan")
         med = float(np.median(x))
         mad = float(np.median(np.abs(x - med)))
-        return 1.4826 * mad + 1e-12
+        
+        # Calculate base threshold scale relative to the raw absolute deviations.
+        # Modified Z-score uses 0.6745. The conversion from Z-threshold to raw value is therefore / 0.6745
+        return (mad / 0.6745) + 1e-12
 
     def _maybe_plot(
         self,
@@ -536,6 +576,7 @@ class TimeSeriesPreprocessor:
         missing_rate = 1.0 - float(np.mean(coverage))
 
         flatness_scores, snr_scores = analyze_signal_quality(x, D)
+        ljung_box_pvals = score_ljung_box(x, D)
         pacf_scores = score_pacf(x, D)
         seasonal_flags, periods = detect_seasonality(x, D)
 
@@ -549,6 +590,24 @@ class TimeSeriesPreprocessor:
         med_flat = _nanmedian(flatness_scores)
         med_snr = _nanmedian(snr_scores)
         med_pacf = _nanmedian(pacf_scores)
+        
+        # Determine formal AR structure via Ljung-Box p-values
+        is_autoregressive = _frac(np.array(ljung_box_pvals) < 0.05) > 0.25
+
+        # Jarque-Bera Test for formal Non-Normality / Heavy Tails
+        jb_pvals: List[float] = []
+        for i in range(D):
+            clean = x[:, i][~np.isnan(x[:, i])]
+            if len(clean) > 8:
+                try:
+                    res = jarque_bera(clean)
+                    jb_pvals.append(float(res.pvalue))
+                except Exception:
+                    jb_pvals.append(1.0)
+            else:
+                jb_pvals.append(1.0)
+                
+        is_heavy_tailed = _frac(np.array(jb_pvals) < 0.01) > 0.25
 
         skew_abs = np.abs(np.asarray(skews, dtype=float))
         kurt = np.asarray(kurts, dtype=float)
@@ -620,11 +679,13 @@ class TimeSeriesPreprocessor:
             "med_flatness": float(med_flat),
             "med_snr": float(med_snr),
             "med_pacf": float(med_pacf),
+            "is_autoregressive": bool(is_autoregressive),
             "seasonal_fraction": float(np.mean(seasonal_flags))
             if len(seasonal_flags)
             else 0.0,
             "strong_periods": int(strong_periods),
             "extreme_ratio": float(extreme_ratio),
+            "is_heavy_tailed": bool(is_heavy_tailed),
             "heavy_tails_fraction": float(heavy_tails_fraction),
             "high_skew_fraction": float(high_skew_fraction),
             "scale_heterogeneity": float(scale_heterogeneity),
@@ -638,6 +699,7 @@ class TimeSeriesPreprocessor:
             stats["missing_rate"] < 0.02
             and stats["med_flatness"] > 0.80
             and stats["med_snr"] > 3.0
+            and not stats["is_heavy_tailed"]
         ):
             archetype = "clean_high_quality"
             self.filter_method, self.apply_filter = "none", False
@@ -645,7 +707,7 @@ class TimeSeriesPreprocessor:
             self.outlier_method, self.outlier_threshold = "quantile", 3.5
 
         elif (
-            stats["med_pacf"] > 0.7
+            (stats["med_pacf"] > 0.7 or stats["is_autoregressive"])
             and stats["med_snr"] < 2.2
             and stats["seasonal_fraction"] < 0.4
         ):
@@ -664,17 +726,17 @@ class TimeSeriesPreprocessor:
             )
 
         elif stats["missing_rate"] > 0.30 and (
-            stats["med_pacf"] < 0.35 or stats["nan_run_ratio"] > 0.08
+            (stats["med_pacf"] < 0.35 and not stats["is_autoregressive"]) or stats["nan_run_ratio"] > 0.08
         ):
             archetype = "sparse_irregular"
             self.filter_method, self.apply_filter = "none", False
             self.impute_method = "saits" if stats["missing_rate"] < 0.70 else "ffill"
             self.outlier_method, self.outlier_threshold = "mad", 4.5
 
-        elif stats["extreme_ratio"] > 0.10 or stats["heavy_tails_fraction"] > 0.45:
+        elif stats["extreme_ratio"] > 0.10 or stats["heavy_tails_fraction"] > 0.45 or stats["is_heavy_tailed"]:
             archetype = "heavy_tailed_outliers"
             self.filter_method, self.apply_filter = (
-                ("wiener", True) if stats["D"] <= 64 else ("savgol", True)
+                ("ssa", True) if stats["D"] <= 64 else ("savgol", True)
             )
             self.impute_method = (
                 "iterative" if stats["missing_rate"] < 0.15 else "saits"
@@ -685,13 +747,18 @@ class TimeSeriesPreprocessor:
                 + 1.5 * stats["heavy_tails_fraction"]
                 + 0.5 * stats["high_skew_fraction"]
             )
+            self.scaling_method = "box_cox"
 
         else:
             # Filtering
             if stats["T"] < 200:
                 self.filter_method, self.apply_filter = "none", False
             else:
-                if stats["missing_rate"] > 0.25 and stats["T"] > 400:
+                if stats["strong_periods"] >= 1 and stats["missing_rate"] < 0.2:
+                    self.filter_method, self.apply_filter = "stl", True
+                elif stats["heavy_tails_fraction"] > 0.3 or stats["med_snr"] < 1.0:
+                    self.filter_method, self.apply_filter = "ssa", True
+                elif stats["missing_rate"] > 0.25 and stats["T"] > 400:
                     self.filter_method, self.apply_filter = "kalman", True
                 elif stats["med_flatness"] < 0.45 and stats["T"] > 800:
                     self.filter_method, self.apply_filter = "savgol", True
@@ -720,6 +787,7 @@ class TimeSeriesPreprocessor:
             if (
                 stats["heavy_tails_fraction"] > 0.35
                 or stats["high_skew_fraction"] > 0.4
+                or stats["is_heavy_tailed"]
             ):
                 self.outlier_method = "mad"
             elif (
@@ -758,13 +826,11 @@ class TimeSeriesPreprocessor:
         if stats["T"] >= 200 and stats["missing_rate"] < 0.35:
             try:
                 pvals = detect_stationarity(x, D)
-                self.detrend = any(p > 0.05 for p in pvals) or (
-                    stats["med_pacf"] > 0.55
-                )
+                self.detrend = any(p > 0.05 for p in pvals) or stats["is_autoregressive"]
             except Exception:
-                self.detrend = stats["med_pacf"] > 0.55
+                self.detrend = stats["is_autoregressive"]
         else:
-            self.detrend = stats["med_pacf"] > 0.55
+            self.detrend = stats["is_autoregressive"]
 
         self.seasonal = (stats["seasonal_fraction"] > 0.25) or (
             stats["strong_periods"] >= 2
@@ -928,11 +994,17 @@ class TimeSeriesPreprocessor:
         - fit: may learn offsets/scaler/diff seed; uses auto_configure results.
         - transform: reuses learned offsets/scaler; does NOT silently change configuration.
         """
+        def _vprint(msg: str) -> None:
+            if self.verbose:
+                print(f"[Preprocessing] {msg}")
+
         processed = np.array(x, dtype=float, copy=True)
+        _vprint(f"Starting {mode} pipeline (shape: {x.shape})")
 
         # 1) Impute (optional)
         if np.any(np.isnan(processed)):
             if self.apply_imputation:
+                _vprint(f"Applying imputation ({self.impute_method})")
                 processed = self._impute_missing(processed)
                 self._maybe_plot(x, processed, "After Imputation", time_stamps)
             if np.any(np.isnan(processed)):
@@ -943,6 +1015,7 @@ class TimeSeriesPreprocessor:
         # 2) Log transform (fit learns offsets; transform uses learned)
         self._ensure_log_flags(processed)
         if any(self.log_transform_flags or []):
+            _vprint("Applying selective log transformation")
             if mode == "fit":
                 processed, self.log_offset = apply_log_transform(
                     processed, self.log_transform_flags
@@ -956,17 +1029,21 @@ class TimeSeriesPreprocessor:
 
         # 3) Outliers (kept: user-controlled; beware leakage but you already chose this)
         if self.remove_outliers:
+            _vprint(f"Applying outlier removal ({self.outlier_method})")
             processed = self._parallel_outlier_clean(processed)
             self._maybe_plot(x, processed, "After Outlier Removal", time_stamps)
             if np.any(np.isnan(processed)) and self.apply_imputation:
+                _vprint("Re-applying imputation after outlier removal")
                 processed = self._impute_missing(processed)
 
         # 4) EWT + detrend
         if self.apply_ewt:
+            _vprint(f"Applying EWT & detrending ({self.ewt_bands} bands)")
             processed = self._apply_ewt_and_detrend(processed)
 
         # 5) Filtering
         if self.apply_filter:
+            _vprint(f"Applying signal filtering ({self.filter_method})")
             processed = self._apply_filter(processed, method=self.filter_method)
             self._maybe_plot(
                 x,
@@ -977,6 +1054,7 @@ class TimeSeriesPreprocessor:
 
         # 6) Differencing
         if self.differencing:
+            _vprint("Applying differencing")
             if mode == "fit":
                 self.diff_values = processed[0:1].copy()
             processed = np.vstack(
@@ -985,19 +1063,24 @@ class TimeSeriesPreprocessor:
 
         # 7) Normalization / Scaling (Adaptive)
         if self.normalize:
+            _vprint(f"Applying normalization ({getattr(self, 'scaling_method', 'standard')})")
             if mode == "fit":
                 if self.scaling_method == "robust":
                      self.scaler = RobustScaler(quantile_range=(5.0, 95.0))
                 elif self.scaling_method == "quantile":
                      self.scaler = QuantileTransformer(output_distribution="normal", random_state=42)
+                elif self.scaling_method == "box_cox":
+                     self.scaler = PowerTransformer(method="yeo-johnson")
                 else: # standard
                      self.scaler = StandardScaler()
                 
-                processed = self.scaler.fit_transform(processed)
+                if getattr(self, "scaling_method", "") != "log_only":
+                     processed = self.scaler.fit_transform(processed)
             else:
-                if self.scaler is None:
+                if self.scaler is None and getattr(self, "scaling_method", "") != "log_only":
                     raise RuntimeError("scaler is not fitted.")
-                processed = self.scaler.transform(processed)
+                if getattr(self, "scaling_method", "") != "log_only":
+                    processed = self.scaler.transform(processed)
 
         return processed
 
@@ -1119,12 +1202,12 @@ class TimeSeriesPreprocessor:
             IterativeImputerCls = (
                 _get_iterative_imputer_class() if missing_rate >= 0.15 else None
             )
-
+            
             if IterativeImputerCls is not None and missing_rate >= 0.15:
                 try:
-                    return IterativeImputerCls(
-                        random_state=0, max_iter=10
-                    ).fit_transform(df.values)
+                    from sklearn.ensemble import HistGradientBoostingRegressor
+                    estimator = HistGradientBoostingRegressor(random_state=0, max_iter=30, early_stopping=True, max_bins=64)
+                    return IterativeImputerCls(estimator=estimator, random_state=0, max_iter=3, n_nearest_features=10).fit_transform(df.values)
                 except Exception:
                     pass
 
@@ -1183,7 +1266,9 @@ class TimeSeriesPreprocessor:
             IterativeImputerCls = _get_iterative_imputer_class()
             if IterativeImputerCls is None:
                 raise ImportError("Iterative imputer not available.")
-            return IterativeImputerCls(random_state=0).fit_transform(df.values)
+            from sklearn.ensemble import HistGradientBoostingRegressor
+            estimator = HistGradientBoostingRegressor(random_state=0, max_iter=30, early_stopping=True, max_bins=64)
+            return IterativeImputerCls(estimator=estimator, random_state=0, max_iter=3, n_nearest_features=10).fit_transform(df.values)
 
         raise ValueError(f"Unsupported imputation method: {method}")
 

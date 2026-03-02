@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/data/solver/ad/tree/build20/_deps/cpm-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

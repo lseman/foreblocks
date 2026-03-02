@@ -1,0 +1,1616 @@
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineSystem.cmake:12 (find_program)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_UNAME"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "uname"
+    candidate_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/usr/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+      - "/bin/"
+    searched_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/uname"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/uname"
+      - "/home/seman/.npm-global/bin/uname"
+      - "/home/seman/.atuin/bin/uname"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/uname"
+      - "/home/seman/go/bin/uname"
+      - "/home/seman/.local/bin/uname"
+      - "/home/seman/bin/uname"
+      - "/home/seman/.scripts/uname"
+      - "/home/seman/.cargo/bin/uname"
+      - "/usr/local/sbin/uname"
+      - "/usr/local/bin/uname"
+    found: "/usr/bin/uname"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineSystem.cmake:212 (message)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      The system is: Linux - 6.18.9 - x86_64
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeUnixFindMake.cmake:5 (find_program)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_MAKE_PROGRAM"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "gmake"
+      - "make"
+      - "smake"
+    candidate_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/usr/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    searched_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/gmake"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/gmake"
+      - "/home/seman/.npm-global/bin/gmake"
+      - "/home/seman/.atuin/bin/gmake"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/gmake"
+      - "/home/seman/go/bin/gmake"
+      - "/home/seman/.local/bin/gmake"
+      - "/home/seman/bin/gmake"
+      - "/home/seman/.scripts/gmake"
+      - "/home/seman/.cargo/bin/gmake"
+      - "/usr/local/sbin/gmake"
+      - "/usr/local/bin/gmake"
+    found: "/usr/bin/gmake"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompiler.cmake:73 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:69 (_cmake_find_compiler)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_CXX_COMPILER"
+    description: "CXX compiler"
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "c++"
+      - "CC"
+      - "g++"
+      - "aCC"
+      - "cl"
+      - "bcc"
+      - "xlC"
+      - "icpx"
+      - "icx"
+      - "clang++"
+    candidate_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/usr/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    searched_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/c++"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/c++"
+      - "/home/seman/.npm-global/bin/c++"
+      - "/home/seman/.atuin/bin/c++"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/c++"
+      - "/home/seman/go/bin/c++"
+      - "/home/seman/.local/bin/c++"
+      - "/home/seman/bin/c++"
+      - "/home/seman/.scripts/c++"
+      - "/home/seman/.cargo/bin/c++"
+      - "/usr/local/sbin/c++"
+      - "/usr/local/bin/c++"
+    found: "/usr/bin/c++"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:462 (find_file)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:500 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCXXCompilerId.cpp.in"
+    candidate_directories:
+      - "/usr/share/cmake/Modules/"
+    found: "/usr/share/cmake/Modules/CMakeCXXCompilerId.cpp.in"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler: /usr/bin/c++ 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
+      
+      The CXX compiler identification is GNU, found in:
+        /data/solver/ad/tree/build-cuda/CMakeFiles/4.2.3/CompilerIdCXX/a.out
+      
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_AR"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ar"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/ar"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_RANLIB"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ranlib"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/ranlib"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_STRIP"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "strip"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/strip"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_LINKER"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ld"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/ld"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_NM"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "nm"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/nm"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_OBJDUMP"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "objdump"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/objdump"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_OBJCOPY"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "objcopy"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/objcopy"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_READELF"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "readelf"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/readelf"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_DLLTOOL"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "dlltool"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    searched_directories:
+      - "/usr/bin/dlltool"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/dlltool"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/dlltool"
+      - "/home/seman/.npm-global/bin/dlltool"
+      - "/home/seman/.atuin/bin/dlltool"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/dlltool"
+      - "/home/seman/go/bin/dlltool"
+      - "/home/seman/.local/bin/dlltool"
+      - "/home/seman/bin/dlltool"
+      - "/home/seman/.scripts/dlltool"
+      - "/home/seman/.cargo/bin/dlltool"
+      - "/usr/local/sbin/dlltool"
+      - "/usr/local/bin/dlltool"
+      - "/opt/bin/dlltool"
+      - "/usr/lib/llvm/21/bin/dlltool"
+    found: "/usr/lib/llvm/20/bin/dlltool"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_ADDR2LINE"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "addr2line"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    found: "/usr/bin/addr2line"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_TAPI"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "tapi"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    searched_directories:
+      - "/usr/bin/tapi"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/tapi"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/tapi"
+      - "/home/seman/.npm-global/bin/tapi"
+      - "/home/seman/.atuin/bin/tapi"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/tapi"
+      - "/home/seman/go/bin/tapi"
+      - "/home/seman/.local/bin/tapi"
+      - "/home/seman/bin/tapi"
+      - "/home/seman/.scripts/tapi"
+      - "/home/seman/.cargo/bin/tapi"
+      - "/usr/local/sbin/tapi"
+      - "/usr/local/bin/tapi"
+      - "/opt/bin/tapi"
+      - "/usr/lib/llvm/21/bin/tapi"
+      - "/usr/lib/llvm/20/bin/tapi"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/tapi"
+      - "/opt/cuda/bin/tapi"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/tapi"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/Compiler/GNU-FindBinUtils.cmake:18 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:207 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_CXX_COMPILER_AR"
+    description: "A wrapper around 'ar' adding the appropriate '--plugin' option for the GCC compiler"
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "gcc-ar-15.2"
+      - "gcc-ar-15"
+      - "gcc-ar15"
+      - "gcc-ar"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    searched_directories:
+      - "/usr/bin/gcc-ar-15.2"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/gcc-ar-15.2"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/gcc-ar-15.2"
+      - "/home/seman/.npm-global/bin/gcc-ar-15.2"
+      - "/home/seman/.atuin/bin/gcc-ar-15.2"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/gcc-ar-15.2"
+      - "/home/seman/go/bin/gcc-ar-15.2"
+      - "/home/seman/.local/bin/gcc-ar-15.2"
+      - "/home/seman/bin/gcc-ar-15.2"
+      - "/home/seman/.scripts/gcc-ar-15.2"
+      - "/home/seman/.cargo/bin/gcc-ar-15.2"
+      - "/usr/local/sbin/gcc-ar-15.2"
+      - "/usr/local/bin/gcc-ar-15.2"
+      - "/opt/bin/gcc-ar-15.2"
+      - "/usr/lib/llvm/21/bin/gcc-ar-15.2"
+      - "/usr/lib/llvm/20/bin/gcc-ar-15.2"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/gcc-ar-15.2"
+      - "/opt/cuda/bin/gcc-ar-15.2"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/gcc-ar-15.2"
+      - "/usr/bin/gcc-ar-15"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/gcc-ar-15"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/gcc-ar-15"
+      - "/home/seman/.npm-global/bin/gcc-ar-15"
+      - "/home/seman/.atuin/bin/gcc-ar-15"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/gcc-ar-15"
+      - "/home/seman/go/bin/gcc-ar-15"
+      - "/home/seman/.local/bin/gcc-ar-15"
+      - "/home/seman/bin/gcc-ar-15"
+      - "/home/seman/.scripts/gcc-ar-15"
+      - "/home/seman/.cargo/bin/gcc-ar-15"
+      - "/usr/local/sbin/gcc-ar-15"
+      - "/usr/local/bin/gcc-ar-15"
+      - "/opt/bin/gcc-ar-15"
+      - "/usr/lib/llvm/21/bin/gcc-ar-15"
+      - "/usr/lib/llvm/20/bin/gcc-ar-15"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/gcc-ar-15"
+      - "/opt/cuda/bin/gcc-ar-15"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/gcc-ar-15"
+      - "/usr/bin/gcc-ar15"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/gcc-ar15"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/gcc-ar15"
+      - "/home/seman/.npm-global/bin/gcc-ar15"
+      - "/home/seman/.atuin/bin/gcc-ar15"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/gcc-ar15"
+      - "/home/seman/go/bin/gcc-ar15"
+      - "/home/seman/.local/bin/gcc-ar15"
+      - "/home/seman/bin/gcc-ar15"
+      - "/home/seman/.scripts/gcc-ar15"
+      - "/home/seman/.cargo/bin/gcc-ar15"
+      - "/usr/local/sbin/gcc-ar15"
+      - "/usr/local/bin/gcc-ar15"
+      - "/opt/bin/gcc-ar15"
+      - "/usr/lib/llvm/21/bin/gcc-ar15"
+      - "/usr/lib/llvm/20/bin/gcc-ar15"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/gcc-ar15"
+      - "/opt/cuda/bin/gcc-ar15"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/gcc-ar15"
+    found: "/usr/bin/gcc-ar"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/Compiler/GNU-FindBinUtils.cmake:30 (find_program)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:207 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_CXX_COMPILER_RANLIB"
+    description: "A wrapper around 'ranlib' adding the appropriate '--plugin' option for the GCC compiler"
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "gcc-ranlib-15.2"
+      - "gcc-ranlib-15"
+      - "gcc-ranlib15"
+      - "gcc-ranlib"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+    searched_directories:
+      - "/usr/bin/gcc-ranlib-15.2"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/gcc-ranlib-15.2"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/gcc-ranlib-15.2"
+      - "/home/seman/.npm-global/bin/gcc-ranlib-15.2"
+      - "/home/seman/.atuin/bin/gcc-ranlib-15.2"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/gcc-ranlib-15.2"
+      - "/home/seman/go/bin/gcc-ranlib-15.2"
+      - "/home/seman/.local/bin/gcc-ranlib-15.2"
+      - "/home/seman/bin/gcc-ranlib-15.2"
+      - "/home/seman/.scripts/gcc-ranlib-15.2"
+      - "/home/seman/.cargo/bin/gcc-ranlib-15.2"
+      - "/usr/local/sbin/gcc-ranlib-15.2"
+      - "/usr/local/bin/gcc-ranlib-15.2"
+      - "/opt/bin/gcc-ranlib-15.2"
+      - "/usr/lib/llvm/21/bin/gcc-ranlib-15.2"
+      - "/usr/lib/llvm/20/bin/gcc-ranlib-15.2"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/gcc-ranlib-15.2"
+      - "/opt/cuda/bin/gcc-ranlib-15.2"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/gcc-ranlib-15.2"
+      - "/usr/bin/gcc-ranlib-15"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/gcc-ranlib-15"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/gcc-ranlib-15"
+      - "/home/seman/.npm-global/bin/gcc-ranlib-15"
+      - "/home/seman/.atuin/bin/gcc-ranlib-15"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/gcc-ranlib-15"
+      - "/home/seman/go/bin/gcc-ranlib-15"
+      - "/home/seman/.local/bin/gcc-ranlib-15"
+      - "/home/seman/bin/gcc-ranlib-15"
+      - "/home/seman/.scripts/gcc-ranlib-15"
+      - "/home/seman/.cargo/bin/gcc-ranlib-15"
+      - "/usr/local/sbin/gcc-ranlib-15"
+      - "/usr/local/bin/gcc-ranlib-15"
+      - "/opt/bin/gcc-ranlib-15"
+      - "/usr/lib/llvm/21/bin/gcc-ranlib-15"
+      - "/usr/lib/llvm/20/bin/gcc-ranlib-15"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/gcc-ranlib-15"
+      - "/opt/cuda/bin/gcc-ranlib-15"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/gcc-ranlib-15"
+      - "/usr/bin/gcc-ranlib15"
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/gcc-ranlib15"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/gcc-ranlib15"
+      - "/home/seman/.npm-global/bin/gcc-ranlib15"
+      - "/home/seman/.atuin/bin/gcc-ranlib15"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/gcc-ranlib15"
+      - "/home/seman/go/bin/gcc-ranlib15"
+      - "/home/seman/.local/bin/gcc-ranlib15"
+      - "/home/seman/bin/gcc-ranlib15"
+      - "/home/seman/.scripts/gcc-ranlib15"
+      - "/home/seman/.cargo/bin/gcc-ranlib15"
+      - "/usr/local/sbin/gcc-ranlib15"
+      - "/usr/local/bin/gcc-ranlib15"
+      - "/opt/bin/gcc-ranlib15"
+      - "/usr/lib/llvm/21/bin/gcc-ranlib15"
+      - "/usr/lib/llvm/20/bin/gcc-ranlib15"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/gcc-ranlib15"
+      - "/opt/cuda/bin/gcc-ranlib15"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/gcc-ranlib15"
+    found: "/usr/bin/gcc-ranlib"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:83 (try_compile)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    checks:
+      - "Detecting CXX compiler ABI info"
+    directories:
+      source: "/data/solver/ad/tree/build-cuda/CMakeFiles/CMakeScratch/TryCompile-Bs2fta"
+      binary: "/data/solver/ad/tree/build-cuda/CMakeFiles/CMakeScratch/TryCompile-Bs2fta"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_CXX_SCAN_FOR_MODULES: "OFF"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_CXX_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: '/data/solver/ad/tree/build-cuda/CMakeFiles/CMakeScratch/TryCompile-Bs2fta'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_34286/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_34286.dir/build.make CMakeFiles/cmTC_34286.dir/build
+        gmake[1]: Entering directory '/data/solver/ad/tree/build-cuda/CMakeFiles/CMakeScratch/TryCompile-Bs2fta'
+        Building CXX object CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o
+        /usr/bin/c++   -v -o CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp
+        Using built-in specs.
+        COLLECT_GCC=/usr/bin/c++
+        OFFLOAD_TARGET_NAMES=nvptx-none
+        OFFLOAD_TARGET_DEFAULT=1
+        Target: x86_64-pc-linux-gnu
+        Configured with: /var/tmp/portage/sys-devel/gcc-15.2.1_p20251122/work/gcc-15-20251122/configure --host=x86_64-pc-linux-gnu --build=x86_64-pc-linux-gnu --prefix=/usr --bindir=/usr/x86_64-pc-linux-gnu/gcc-bin/15 --includedir=/usr/lib/gcc/x86_64-pc-linux-gnu/15/include --datadir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15 --mandir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15/man --infodir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15/info --with-gxx-include-dir=/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15 --disable-silent-rules --disable-dependency-tracking --with-python-dir=/share/gcc-data/x86_64-pc-linux-gnu/15/python --enable-languages=c,c++,fortran --enable-obsolete --enable-secureplt --disable-werror --with-system-zlib --enable-nls --without-included-gettext --disable-libunwind-exceptions --enable-checking=release --with-bugurl=https://bugs.gentoo.org/ --with-pkgversion='Gentoo 15.2.1_p20251122 p4' --with-gcc-major-version-only --enable-libstdcxx-time --enable-lto --disable-libstdcxx-pch --enable-shared --enable-threads=posix --enable-__cxa_atexit --enable-clocale=gnu --enable-multilib --with-multilib-list=m32,m64 --disable-fixed-point --enable-targets=all --enable-offload-defaulted --enable-offload-targets=nvptx-none --enable-libgomp --disable-libssp --disable-libada --enable-cet --disable-systemtap --disable-valgrind-annotations --disable-vtable-verify --disable-libvtv --with-zstd --with-isl --disable-isl-version-check --enable-default-pie --enable-host-pie --enable-host-bind-now --enable-default-ssp --disable-fixincludes --with-gxx-libcxx-include-dir=/usr/include/c++/v1 --with-build-config='bootstrap-O3 bootstrap-lto bootstrap-cet'
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 15.2.1 20251122 (Gentoo 15.2.1_p20251122 p4) 
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_34286.dir/'
+         /usr/libexec/gcc/x86_64-pc-linux-gnu/15/cc1plus -quiet -v -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_34286.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -foffload-options=-fno-stack-protector -fcf-protection -foffload-options=-fcf-protection=none -o /tmp/cc6XPD8l.s
+        GNU C++17 (Gentoo 15.2.1_p20251122 p4) version 15.2.1 20251122 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 15.2.1 20251122, GMP version 6.3.0, MPFR version 4.2.2, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        ignoring nonexistent directory "/usr/local/include"
+        ignoring nonexistent directory "/usr/lib/gcc/x86_64-pc-linux-gnu/15/include-fixed"
+        ignoring nonexistent directory "/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/include"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15
+         /usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/x86_64-pc-linux-gnu
+         /usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/backward
+         /usr/lib/gcc/x86_64-pc-linux-gnu/15/include
+         /usr/include
+        End of search list.
+        Compiler executable checksum: bf6b8201749dc2a6a8ec56cc720ee360
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_34286.dir/'
+         /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/as -v --64 -o CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o /tmp/cc6XPD8l.s
+        GNU assembler version 2.45.1 (x86_64-pc-linux-gnu) using BFD version (Gentoo 2.45.1 p1) 2.45.1
+        COMPILER_PATH=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/:/usr/libexec/gcc/x86_64-pc-linux-gnu/15/:/usr/libexec/gcc/x86_64-pc-linux-gnu/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/:/usr/lib/gcc/x86_64-pc-linux-gnu/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/
+        LIBRARY_PATH=/usr/lib/gcc/x86_64-pc-linux-gnu/15/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/:/lib/../lib64/:/usr/lib/../lib64/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.'
+        Linking CXX executable cmTC_34286
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_34286.dir/link.txt --verbose=1
+        Using built-in specs.
+        COLLECT_GCC=/usr/bin/c++
+        COLLECT_LTO_WRAPPER=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/lto-wrapper
+        OFFLOAD_TARGET_NAMES=nvptx-none
+        OFFLOAD_TARGET_DEFAULT=1
+        Target: x86_64-pc-linux-gnu
+        Configured with: /var/tmp/portage/sys-devel/gcc-15.2.1_p20251122/work/gcc-15-20251122/configure --host=x86_64-pc-linux-gnu --build=x86_64-pc-linux-gnu --prefix=/usr --bindir=/usr/x86_64-pc-linux-gnu/gcc-bin/15 --includedir=/usr/lib/gcc/x86_64-pc-linux-gnu/15/include --datadir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15 --mandir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15/man --infodir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15/info --with-gxx-include-dir=/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15 --disable-silent-rules --disable-dependency-tracking --with-python-dir=/share/gcc-data/x86_64-pc-linux-gnu/15/python --enable-languages=c,c++,fortran --enable-obsolete --enable-secureplt --disable-werror --with-system-zlib --enable-nls --without-included-gettext --disable-libunwind-exceptions --enable-checking=release --with-bugurl=https://bugs.gentoo.org/ --with-pkgversion='Gentoo 15.2.1_p20251122 p4' --with-gcc-major-version-only --enable-libstdcxx-time --enable-lto --disable-libstdcxx-pch --enable-shared --enable-threads=posix --enable-__cxa_atexit --enable-clocale=gnu --enable-multilib --with-multilib-list=m32,m64 --disable-fixed-point --enable-targets=all --enable-offload-defaulted --enable-offload-targets=nvptx-none --enable-libgomp --disable-libssp --disable-libada --enable-cet --disable-systemtap --disable-valgrind-annotations --disable-vtable-verify --disable-libvtv --with-zstd --with-isl --disable-isl-version-check --enable-default-pie --enable-host-pie --enable-host-bind-now --enable-default-ssp --disable-fixincludes --with-gxx-libcxx-include-dir=/usr/include/c++/v1 --with-build-config='bootstrap-O3 bootstrap-lto bootstrap-cet'
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 15.2.1 20251122 (Gentoo 15.2.1_p20251122 p4) 
+        COMPILER_PATH=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/:/usr/libexec/gcc/x86_64-pc-linux-gnu/15/:/usr/libexec/gcc/x86_64-pc-linux-gnu/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/:/usr/lib/gcc/x86_64-pc-linux-gnu/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/
+        LIBRARY_PATH=/usr/lib/gcc/x86_64-pc-linux-gnu/15/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/:/lib/../lib64/:/usr/lib/../lib64/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_34286' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_34286.'
+         /usr/libexec/gcc/x86_64-pc-linux-gnu/15/collect2 -plugin /usr/libexec/gcc/x86_64-pc-linux-gnu/15/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/lto-wrapper -plugin-opt=-fresolution=/tmp/ccL1rqM2.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie -z now -o cmTC_34286 /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/Scrt1.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crti.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/crtbeginS.o -L/usr/lib/gcc/x86_64-pc-linux-gnu/15 -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-pc-linux-gnu/15/crtendS.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crtn.o
+        collect2 version 15.2.1 20251122
+        /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/ld -plugin /usr/libexec/gcc/x86_64-pc-linux-gnu/15/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/lto-wrapper -plugin-opt=-fresolution=/tmp/ccL1rqM2.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie -z now -o cmTC_34286 /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/Scrt1.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crti.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/crtbeginS.o -L/usr/lib/gcc/x86_64-pc-linux-gnu/15 -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-pc-linux-gnu/15/crtendS.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crtn.o
+        GNU ld (Gentoo 2.45.1 p1) 2.45.1
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_34286' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_34286.'
+        /usr/bin/c++  -v -Wl,-v CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_34286
+        gmake[1]: Leaving directory '/data/solver/ad/tree/build-cuda/CMakeFiles/CMakeScratch/TryCompile-Bs2fta'
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:217 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Parsed CXX implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15]
+          add: [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/x86_64-pc-linux-gnu]
+          add: [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/backward]
+          add: [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include]
+          add: [/usr/include]
+        end of search list found
+        collapse include dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15] ==> [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15]
+        collapse include dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/x86_64-pc-linux-gnu] ==> [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/x86_64-pc-linux-gnu]
+        collapse include dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/backward] ==> [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/backward]
+        collapse include dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include] ==> [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include]
+        collapse include dir [/usr/include] ==> [/usr/include]
+        implicit include dirs: [/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15;/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/x86_64-pc-linux-gnu;/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/backward;/usr/lib/gcc/x86_64-pc-linux-gnu/15/include;/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:253 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Parsed CXX implicit link information:
+        link line regex: [^( *|.*[/\\])(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        linker tool regex: [^[ 	]*(->|"|[0-9]+>[ 	-]*Build:[ 	0-9]+ ms[ 	]*)?[ 	]*(([^"]*[/\\])?(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)))("|,| |$)]
+        ignore line: [Change Dir: '/data/solver/ad/tree/build-cuda/CMakeFiles/CMakeScratch/TryCompile-Bs2fta']
+        ignore line: []
+        ignore line: [Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_34286/fast]
+        ignore line: [/usr/bin/gmake  -f CMakeFiles/cmTC_34286.dir/build.make CMakeFiles/cmTC_34286.dir/build]
+        ignore line: [gmake[1]: Entering directory '/data/solver/ad/tree/build-cuda/CMakeFiles/CMakeScratch/TryCompile-Bs2fta']
+        ignore line: [Building CXX object CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o]
+        ignore line: [/usr/bin/c++   -v -o CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Using built-in specs.]
+        ignore line: [COLLECT_GCC=/usr/bin/c++]
+        ignore line: [OFFLOAD_TARGET_NAMES=nvptx-none]
+        ignore line: [OFFLOAD_TARGET_DEFAULT=1]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: /var/tmp/portage/sys-devel/gcc-15.2.1_p20251122/work/gcc-15-20251122/configure --host=x86_64-pc-linux-gnu --build=x86_64-pc-linux-gnu --prefix=/usr --bindir=/usr/x86_64-pc-linux-gnu/gcc-bin/15 --includedir=/usr/lib/gcc/x86_64-pc-linux-gnu/15/include --datadir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15 --mandir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15/man --infodir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15/info --with-gxx-include-dir=/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15 --disable-silent-rules --disable-dependency-tracking --with-python-dir=/share/gcc-data/x86_64-pc-linux-gnu/15/python --enable-languages=c c++ fortran --enable-obsolete --enable-secureplt --disable-werror --with-system-zlib --enable-nls --without-included-gettext --disable-libunwind-exceptions --enable-checking=release --with-bugurl=https://bugs.gentoo.org/ --with-pkgversion='Gentoo 15.2.1_p20251122 p4' --with-gcc-major-version-only --enable-libstdcxx-time --enable-lto --disable-libstdcxx-pch --enable-shared --enable-threads=posix --enable-__cxa_atexit --enable-clocale=gnu --enable-multilib --with-multilib-list=m32 m64 --disable-fixed-point --enable-targets=all --enable-offload-defaulted --enable-offload-targets=nvptx-none --enable-libgomp --disable-libssp --disable-libada --enable-cet --disable-systemtap --disable-valgrind-annotations --disable-vtable-verify --disable-libvtv --with-zstd --with-isl --disable-isl-version-check --enable-default-pie --enable-host-pie --enable-host-bind-now --enable-default-ssp --disable-fixincludes --with-gxx-libcxx-include-dir=/usr/include/c++/v1 --with-build-config='bootstrap-O3 bootstrap-lto bootstrap-cet']
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 15.2.1 20251122 (Gentoo 15.2.1_p20251122 p4) ]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_34286.dir/']
+        ignore line: [ /usr/libexec/gcc/x86_64-pc-linux-gnu/15/cc1plus -quiet -v -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_34286.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -foffload-options=-fno-stack-protector -fcf-protection -foffload-options=-fcf-protection=none -o /tmp/cc6XPD8l.s]
+        ignore line: [GNU C++17 (Gentoo 15.2.1_p20251122 p4) version 15.2.1 20251122 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 15.2.1 20251122  GMP version 6.3.0  MPFR version 4.2.2  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [ignoring nonexistent directory "/usr/local/include"]
+        ignore line: [ignoring nonexistent directory "/usr/lib/gcc/x86_64-pc-linux-gnu/15/include-fixed"]
+        ignore line: [ignoring nonexistent directory "/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15]
+        ignore line: [ /usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/x86_64-pc-linux-gnu]
+        ignore line: [ /usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15/backward]
+        ignore line: [ /usr/lib/gcc/x86_64-pc-linux-gnu/15/include]
+        ignore line: [ /usr/include]
+        ignore line: [End of search list.]
+        ignore line: [Compiler executable checksum: bf6b8201749dc2a6a8ec56cc720ee360]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_34286.dir/']
+        ignore line: [ /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/as -v --64 -o CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o /tmp/cc6XPD8l.s]
+        ignore line: [GNU assembler version 2.45.1 (x86_64-pc-linux-gnu) using BFD version (Gentoo 2.45.1 p1) 2.45.1]
+        ignore line: [COMPILER_PATH=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/:/usr/libexec/gcc/x86_64-pc-linux-gnu/15/:/usr/libexec/gcc/x86_64-pc-linux-gnu/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/:/usr/lib/gcc/x86_64-pc-linux-gnu/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/]
+        ignore line: [LIBRARY_PATH=/usr/lib/gcc/x86_64-pc-linux-gnu/15/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/:/lib/../lib64/:/usr/lib/../lib64/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.']
+        ignore line: [Linking CXX executable cmTC_34286]
+        ignore line: [/usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_34286.dir/link.txt --verbose=1]
+        ignore line: [Using built-in specs.]
+        ignore line: [COLLECT_GCC=/usr/bin/c++]
+        ignore line: [COLLECT_LTO_WRAPPER=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/lto-wrapper]
+        ignore line: [OFFLOAD_TARGET_NAMES=nvptx-none]
+        ignore line: [OFFLOAD_TARGET_DEFAULT=1]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: /var/tmp/portage/sys-devel/gcc-15.2.1_p20251122/work/gcc-15-20251122/configure --host=x86_64-pc-linux-gnu --build=x86_64-pc-linux-gnu --prefix=/usr --bindir=/usr/x86_64-pc-linux-gnu/gcc-bin/15 --includedir=/usr/lib/gcc/x86_64-pc-linux-gnu/15/include --datadir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15 --mandir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15/man --infodir=/usr/share/gcc-data/x86_64-pc-linux-gnu/15/info --with-gxx-include-dir=/usr/lib/gcc/x86_64-pc-linux-gnu/15/include/g++-v15 --disable-silent-rules --disable-dependency-tracking --with-python-dir=/share/gcc-data/x86_64-pc-linux-gnu/15/python --enable-languages=c c++ fortran --enable-obsolete --enable-secureplt --disable-werror --with-system-zlib --enable-nls --without-included-gettext --disable-libunwind-exceptions --enable-checking=release --with-bugurl=https://bugs.gentoo.org/ --with-pkgversion='Gentoo 15.2.1_p20251122 p4' --with-gcc-major-version-only --enable-libstdcxx-time --enable-lto --disable-libstdcxx-pch --enable-shared --enable-threads=posix --enable-__cxa_atexit --enable-clocale=gnu --enable-multilib --with-multilib-list=m32 m64 --disable-fixed-point --enable-targets=all --enable-offload-defaulted --enable-offload-targets=nvptx-none --enable-libgomp --disable-libssp --disable-libada --enable-cet --disable-systemtap --disable-valgrind-annotations --disable-vtable-verify --disable-libvtv --with-zstd --with-isl --disable-isl-version-check --enable-default-pie --enable-host-pie --enable-host-bind-now --enable-default-ssp --disable-fixincludes --with-gxx-libcxx-include-dir=/usr/include/c++/v1 --with-build-config='bootstrap-O3 bootstrap-lto bootstrap-cet']
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 15.2.1 20251122 (Gentoo 15.2.1_p20251122 p4) ]
+        ignore line: [COMPILER_PATH=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/:/usr/libexec/gcc/x86_64-pc-linux-gnu/15/:/usr/libexec/gcc/x86_64-pc-linux-gnu/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/:/usr/lib/gcc/x86_64-pc-linux-gnu/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/]
+        ignore line: [LIBRARY_PATH=/usr/lib/gcc/x86_64-pc-linux-gnu/15/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/:/lib/../lib64/:/usr/lib/../lib64/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib/:/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_34286' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_34286.']
+        link line: [ /usr/libexec/gcc/x86_64-pc-linux-gnu/15/collect2 -plugin /usr/libexec/gcc/x86_64-pc-linux-gnu/15/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/lto-wrapper -plugin-opt=-fresolution=/tmp/ccL1rqM2.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie -z now -o cmTC_34286 /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/Scrt1.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crti.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/crtbeginS.o -L/usr/lib/gcc/x86_64-pc-linux-gnu/15 -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-pc-linux-gnu/15/crtendS.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crtn.o]
+          arg [/usr/libexec/gcc/x86_64-pc-linux-gnu/15/collect2] ==> ignore
+          arg [-plugin] ==> ignore
+          arg [/usr/libexec/gcc/x86_64-pc-linux-gnu/15/liblto_plugin.so] ==> ignore
+          arg [-plugin-opt=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/lto-wrapper] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/ccL1rqM2.res] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [--eh-frame-hdr] ==> ignore
+          arg [-m] ==> ignore
+          arg [elf_x86_64] ==> ignore
+          arg [-dynamic-linker] ==> ignore
+          arg [/lib64/ld-linux-x86-64.so.2] ==> ignore
+          arg [-pie] ==> ignore
+          arg [-znow] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_34286] ==> ignore
+          arg [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/Scrt1.o] ==> obj [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/Scrt1.o]
+          arg [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crti.o] ==> obj [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crti.o]
+          arg [/usr/lib/gcc/x86_64-pc-linux-gnu/15/crtbeginS.o] ==> obj [/usr/lib/gcc/x86_64-pc-linux-gnu/15/crtbeginS.o]
+          arg [-L/usr/lib/gcc/x86_64-pc-linux-gnu/15] ==> dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15]
+          arg [-L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64] ==> dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64]
+          arg [-L/lib/../lib64] ==> dir [/lib/../lib64]
+          arg [-L/usr/lib/../lib64] ==> dir [/usr/lib/../lib64]
+          arg [-L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib] ==> dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib]
+          arg [-L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../..] ==> dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../..]
+          arg [-L/lib] ==> dir [/lib]
+          arg [-L/usr/lib] ==> dir [/usr/lib]
+          arg [-v] ==> ignore
+          arg [CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [-lstdc++] ==> lib [stdc++]
+          arg [-lm] ==> lib [m]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [-lc] ==> lib [c]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [/usr/lib/gcc/x86_64-pc-linux-gnu/15/crtendS.o] ==> obj [/usr/lib/gcc/x86_64-pc-linux-gnu/15/crtendS.o]
+          arg [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crtn.o] ==> obj [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crtn.o]
+        ignore line: [collect2 version 15.2.1 20251122]
+        ignore line: [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/ld -plugin /usr/libexec/gcc/x86_64-pc-linux-gnu/15/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-pc-linux-gnu/15/lto-wrapper -plugin-opt=-fresolution=/tmp/ccL1rqM2.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie -z now -o cmTC_34286 /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/Scrt1.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crti.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/crtbeginS.o -L/usr/lib/gcc/x86_64-pc-linux-gnu/15 -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib -L/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_34286.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-pc-linux-gnu/15/crtendS.o /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crtn.o]
+        linker tool for 'CXX': /usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/ld
+        collapse obj [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/Scrt1.o] ==> [/usr/lib64/Scrt1.o]
+        collapse obj [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crti.o] ==> [/usr/lib64/crti.o]
+        collapse obj [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64/crtn.o] ==> [/usr/lib64/crtn.o]
+        collapse library dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15] ==> [/usr/lib/gcc/x86_64-pc-linux-gnu/15]
+        collapse library dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../lib64] ==> [/usr/lib64]
+        collapse library dir [/lib/../lib64] ==> [/lib64]
+        collapse library dir [/usr/lib/../lib64] ==> [/usr/lib64]
+        collapse library dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/lib] ==> [/usr/x86_64-pc-linux-gnu/lib]
+        collapse library dir [/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../..] ==> [/usr/lib]
+        collapse library dir [/lib] ==> [/lib]
+        collapse library dir [/usr/lib] ==> [/usr/lib]
+        implicit libs: [stdc++;m;gcc_s;gcc;c;gcc_s;gcc]
+        implicit objs: [/usr/lib64/Scrt1.o;/usr/lib64/crti.o;/usr/lib/gcc/x86_64-pc-linux-gnu/15/crtbeginS.o;/usr/lib/gcc/x86_64-pc-linux-gnu/15/crtendS.o;/usr/lib64/crtn.o]
+        implicit dirs: [/usr/lib/gcc/x86_64-pc-linux-gnu/15;/usr/lib64;/lib64;/usr/x86_64-pc-linux-gnu/lib;/usr/lib;/lib]
+        implicit fwks: []
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/Internal/CMakeDetermineLinkerId.cmake:38 (message)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:299 (cmake_determine_linker_id)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Running the CXX compiler's linker: "/usr/lib/gcc/x86_64-pc-linux-gnu/15/../../../../x86_64-pc-linux-gnu/bin/ld" "-v"
+      GNU ld (Gentoo 2.45.1 p1) 2.45.1
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/FindGit.cmake:111 (find_program)"
+      - "/usr/share/cmake/Modules/FetchContent.cmake:1884 (find_package)"
+      - "/usr/share/cmake/Modules/FetchContent.cmake:1619 (__FetchContent_populateSubbuild)"
+      - "/usr/share/cmake/Modules/FetchContent.cmake:2155:EVAL:2 (__FetchContent_doPopulation)"
+      - "/usr/share/cmake/Modules/FetchContent.cmake:2155 (cmake_language)"
+      - "/usr/share/cmake/Modules/FetchContent.cmake:2394 (__FetchContent_Populate)"
+      - "CMakeLists.txt:33 (FetchContent_MakeAvailable)"
+    mode: "program"
+    variable: "GIT_EXECUTABLE"
+    description: "Git command line client"
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "git"
+    candidate_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/usr/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+      - "/usr/local/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/"
+      - "/usr/bin/"
+      - "/usr/sbin/"
+      - "/usr/"
+      - "/bin/"
+      - "/sbin/"
+      - "/usr/X11R6/bin/"
+      - "/usr/X11R6/sbin/"
+      - "/usr/X11R6/"
+      - "/usr/pkg/bin/"
+      - "/usr/pkg/sbin/"
+      - "/usr/pkg/"
+      - "/opt/bin/"
+      - "/opt/sbin/"
+      - "/opt/"
+      - "/bin/"
+    searched_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/git"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/git"
+      - "/home/seman/.npm-global/bin/git"
+      - "/home/seman/.atuin/bin/git"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/git"
+      - "/home/seman/go/bin/git"
+      - "/home/seman/.local/bin/git"
+      - "/home/seman/bin/git"
+      - "/home/seman/.scripts/git"
+      - "/home/seman/.cargo/bin/git"
+      - "/usr/local/sbin/git"
+      - "/usr/local/bin/git"
+    found: "/usr/bin/git"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/usr"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+      CMAKE_SYSTEM_PROGRAM_PATH:
+        - "/usr/bin"
+        - "/bin"
+...

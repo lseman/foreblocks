@@ -12,6 +12,8 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 # filters.py (modernized / SOTA)
 # - keeps same public API:
 #     adaptive_savgol_filter, kalman_filter, lowess_filter, wiener_filter, emd_filter
+# - newly added SOTA methods:
+#     ssa_filter, stl_filter
 # - more robust NaN handling, edge cases, and numeric safety
 # - deterministic + configurable parallel backend
 # - adds optional robust pre-centering for SavGol (improves stability)
@@ -20,8 +22,11 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 # =============================================================================
 
 
-
 # Optional imports
+try:
+    from statsmodels.tsa.seasonal import STL
+except Exception:
+    STL = None
 try:
     from pykalman import KalmanFilter  # type: ignore
 except Exception:
@@ -389,5 +394,144 @@ def emd_filter(
     cols.sort(key=lambda t: t[0])
     for j, colf in cols:
         out[:, j] = colf
+
+    return out
+
+
+# =============================================================================
+# SSA (Singular Spectrum Analysis)
+# =============================================================================
+def ssa_filter(
+    data: np.ndarray,
+    window_length: Optional[int] = None,
+    n_components: int = 2,
+    *,
+    fill_nans_for_filter: bool = True,
+) -> np.ndarray:
+    """
+    SOTA Singular Spectrum Analysis (SSA) filter.
+    Decomposes the time series into a trajectory matrix, performs SVD, 
+    and reconstructs the signal using only the top `n_components` 
+    (assumed to be trend + dominant oscillations, discarding noise).
+    """
+    x = _as_2d(data)
+    T, F = x.shape
+    out = np.full_like(x, np.nan)
+
+    # Heuristic for embedding window length if not provided
+    if window_length is None:
+        window_length = min(T // 2, 50)
+    
+    L = int(max(2, window_length))
+    K = T - L + 1
+    
+    if K < 1:
+        # Time series too short for the window
+        return x.copy()
+
+    for i in range(F):
+        col = x[:, i]
+        mask = ~np.isnan(col)
+        
+        if mask.sum() < L + 2:
+            out[mask, i] = col[mask]
+            continue
+            
+        col_work = col.copy()
+        if fill_nans_for_filter and np.isnan(col_work).any():
+            col_work = _nan_interp_1d(col_work)
+
+        # 1. Embedding
+        X = np.column_stack([col_work[j : j + L] for j in range(K)])
+        
+        # 2. SVD
+        try:
+            U, s, Vh = np.linalg.svd(X, full_matrices=False)
+            
+            # 3. Grouping (select top components)
+            d = min(n_components, len(s))
+            X_elem = np.zeros_like(X)
+            for j in range(d):
+                X_elem += s[j] * np.outer(U[:, j], Vh[j, :])
+            
+            # 4. Diagonal Averaging (Reconstruction)
+            rec = np.zeros(T)
+            counts = np.zeros(T)
+            
+            for c in range(K):
+                for r in range(L):
+                    rec[r + c] += X_elem[r, c]
+                    counts[r + c] += 1
+                    
+            rec = rec / np.maximum(counts, 1)
+            
+            out[mask, i] = rec[mask]
+        except Exception:
+            out[mask, i] = col[mask]
+
+    return out
+
+
+# =============================================================================
+# STL (Seasonal and Trend decomposition using Loess)
+# =============================================================================
+def stl_filter(
+    data: np.ndarray,
+    period: int,
+    *,
+    robust: bool = True,
+    seasonal: int = 7,
+    trend: Optional[int] = None,
+    return_component: str = "trend_seasonal",  # "trend", "seasonal", or "trend_seasonal"
+    fill_nans_for_filter: bool = True,
+) -> np.ndarray:
+    """
+    STL (Seasonal and Trend decomposition using Loess).
+    Filters the signal by isolating the Trend and/or Seasonal components,
+    effectively removing the 'Residual' noise.
+    """
+    if STL is None:
+        raise ImportError("statsmodels is required for STL")
+
+    x = _as_2d(data)
+    T, F = x.shape
+    out = np.full_like(x, np.nan)
+    
+    # STL requires odd seasonal window >= 7
+    seasonal_w = max(7, _odd_at_least(seasonal, 7))
+
+    for i in range(F):
+        col = x[:, i]
+        mask = ~np.isnan(col)
+        
+        # STL needs at least two periods
+        if mask.sum() < 2 * period:
+            out[mask, i] = col[mask]
+            continue
+            
+        col_work = col.copy()
+        if fill_nans_for_filter and np.isnan(col_work).any():
+            col_work = _nan_interp_1d(col_work)
+            
+        try:
+            stl_model = STL(
+                col_work, 
+                period=period, 
+                seasonal=seasonal_w, 
+                trend=trend, 
+                robust=robust
+            )
+            res = stl_model.fit()
+            
+            if return_component == "trend":
+                filtered = res.trend
+            elif return_component == "seasonal":
+                filtered = res.seasonal
+            else:
+                filtered = res.trend + res.seasonal
+                
+            out[mask, i] = filtered[mask]
+        except Exception:
+            out[mask, i] = col[mask]
 
     return out

@@ -45,6 +45,7 @@ except Exception:
 from .utils import safe_log
 from .tpe import TPE, TPEConf
 from .utils import _canonical_config_key
+from .trial import Trial, TrialPruned
 
 # -----------------------------------------------------------------------------
 # BOHB (Hyperband + TPE proposer)
@@ -55,7 +56,7 @@ class BOHB:
     def __init__(
         self,
         config_space: Dict[str, Tuple],
-        evaluate_fn: Callable[[Dict[str, Any], float], float],
+        evaluate_fn: Callable[..., float],  # Can be (config, budget) or (config, budget, trial)
         min_budget: float = 1.0,
         max_budget: float = 81.0,
         eta: int = 3,
@@ -70,6 +71,7 @@ class BOHB:
         seed: Optional[int] = None,
         tpe_conf: Optional[TPEConf] = None,
         tpe_overrides: Optional[Dict[str, Any]] = None,
+        parallel_jobs: int = 1,
     ):
         self.config_space = config_space
         self.evaluate_fn = evaluate_fn
@@ -85,6 +87,7 @@ class BOHB:
         self.early_prune = bool(early_prune)
         self.seed = seed
         self._rng = np.random.default_rng(seed)
+        self.parallel_jobs = int(parallel_jobs)
 
         conf = TPEConf() if tpe_conf is None else tpe_conf
         conf_kwargs = conf.to_kwargs()
@@ -168,22 +171,56 @@ class BOHB:
                         print(f"  Round {i}/{s}: evaluating {n_i} @ budget {r_i:.4g}")
 
                     results: List[Tuple[Dict[str, Any], float]] = []
-                    # Only evaluate as many as needed; configs list is already at least n.
-                    for cfg in configs[:n_i]:
-                        loss = self._evaluate_with_cache(cfg, r_i, it, s, i)
-                        if loss is None:
-                            continue
+                    
+                    if self.parallel_jobs > 1:
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_jobs) as executor:
+                            future_to_cfg = {
+                                executor.submit(self._evaluate_with_cache, cfg, r_i, it, s, i): cfg
+                                for cfg in configs[:n_i]
+                            }
+                            for future in concurrent.futures.as_completed(future_to_cfg):
+                                cfg = future_to_cfg[future]
+                                try:
+                                    loss = future.result()
+                                except Exception as exc:
+                                    if self.handle_errors:
+                                        if self.verbose:
+                                            print(f"    Eval error in parallel job: {exc}")
+                                        loss = None
+                                    else:
+                                        raise exc
+                                
+                                if loss is None:
+                                    continue
+                                
+                                results.append((cfg, loss))
+                                self.tpe.observe(cfg, loss, budget=r_i)
 
-                        results.append((cfg, loss))
-                        self.tpe.observe(cfg, loss, budget=r_i)
+                                if loss < self.best_loss:
+                                    self.best_loss = float(loss)
+                                    self.best_config = dict(cfg)
+                                    if self.verbose:
+                                        print(
+                                            f"    New best: {self.best_loss:.6g}  cfg={self.best_config}"
+                                        )
+                    else:
+                        # Only evaluate as many as needed; configs list is already at least n.
+                        for cfg in configs[:n_i]:
+                            loss = self._evaluate_with_cache(cfg, r_i, it, s, i)
+                            if loss is None:
+                                continue
 
-                        if loss < self.best_loss:
-                            self.best_loss = float(loss)
-                            self.best_config = dict(cfg)
-                            if self.verbose:
-                                print(
-                                    f"    New best: {self.best_loss:.6g}  cfg={self.best_config}"
-                                )
+                            results.append((cfg, loss))
+                            self.tpe.observe(cfg, loss, budget=r_i)
+
+                            if loss < self.best_loss:
+                                self.best_loss = float(loss)
+                                self.best_config = dict(cfg)
+                                if self.verbose:
+                                    print(
+                                        f"    New best: {self.best_loss:.6g}  cfg={self.best_config}"
+                                    )
 
                     if not results:
                         if self.verbose:
@@ -245,8 +282,15 @@ class BOHB:
                 print("    (cache hit)")
             return self.config_cache[cache_key]
 
+        trial = Trial(config=config, budget=budget, bohb_instance=self)
+
         try:
-            raw_loss = self.evaluate_fn(config, float(budget))
+            import inspect
+            sig = inspect.signature(self.evaluate_fn)
+            if len(sig.parameters) >= 3:
+                raw_loss = self.evaluate_fn(config, float(budget), trial)
+            else:
+                raw_loss = self.evaluate_fn(config, float(budget))
             loss = raw_loss
             if not isinstance(loss, (int, float)) or np.isnan(loss) or np.isinf(loss):
                 raise ValueError(f"Invalid loss: {loss}")
@@ -277,6 +321,13 @@ class BOHB:
                 }
             )
             return loss
+        except TrialPruned:
+            if self.verbose:
+                print("    Trial Pruned (Intermediate step gracefully terminated).")
+            # To handle pruning politely, we inject a highly penalized loss, or return None.
+            # Returning None usually causes Successive Halving to discard it if there are enough other samples,
+            # but if all fail, it raises. Using a soft penalty is safer to keep it trackable as an observation:
+            return None
         except Exception as e:
             if self.handle_errors:
                 if self.verbose:
@@ -435,6 +486,27 @@ class BOHB:
             )
         return roll < p
 
+    def _should_prune_step(self, trial: Trial, step: int, loss: float) -> bool:
+        """
+        Intermediate Trial reporting logic:
+        Decide if a Trial should be terminated at this specific step.
+        """
+        if not self.early_prune:
+            return False
+
+        # Gather previous trials' performance at this exact step
+        past_step_losses = []
+        # As BOHB has no global "trial registry", we might need to rely on fully evaluated configs.
+        # But for an advanced implementation, let's keep it simple: 
+        # If the loss is severely worse than `best_loss` globally scaled by step.
+        if self.best_loss == float("inf"):
+            return False
+            
+        # Very rough fallback: if intermediate loss > 2x best_loss, prune.
+        if loss > self.best_loss * 2.5:
+            return True
+        return False
+
     def get_optimization_history(self) -> List[Dict[str, Any]]:
         return list(self.history)
 
@@ -525,7 +597,7 @@ def realistic_nn_objective(config: Dict[str, Any], budget: float) -> float:
     return max(1e-3, float(final_loss))
 
 
-def torch_mlp_objective(config: Dict[str, Any], budget: float) -> float:
+def torch_mlp_objective(config: Dict[str, Any], budget: float, trial=None) -> float:
     """
     Small Torch MLP objective for BOHB demo.
     budget controls epochs (rounded to int >= 1).
@@ -565,7 +637,7 @@ def torch_mlp_objective(config: Dict[str, Any], budget: float) -> float:
 
     epochs = max(1, int(round(float(budget))))
     model.train()
-    for _ in range(epochs):
+    for ep in range(epochs):
         idx = torch.randint(0, n_train, (batch_size,))
         xb = X_train[idx]
         yb = y_train[idx]
@@ -574,6 +646,15 @@ def torch_mlp_objective(config: Dict[str, Any], budget: float) -> float:
         loss = criterion(pred, yb)
         loss.backward()
         optimizer.step()
+        
+        # Report intermediate validation loss at the end of each epoch if trial is provided
+        if trial is not None:
+            model.eval()
+            with torch.no_grad():
+                val_pred = model(X_val)
+                val_loss = criterion(val_pred, y_val).item()
+            model.train()
+            trial.report(ep, val_loss)
 
     model.eval()
     with torch.no_grad():

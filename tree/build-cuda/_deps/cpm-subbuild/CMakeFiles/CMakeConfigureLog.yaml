@@ -1,0 +1,85 @@
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineSystem.cmake:12 (find_program)"
+      - "CMakeLists.txt:16 (project)"
+    mode: "program"
+    variable: "CMAKE_UNAME"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "uname"
+    candidate_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/"
+      - "/home/seman/.npm-global/bin/"
+      - "/home/seman/.atuin/bin/"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/"
+      - "/home/seman/go/bin/"
+      - "/home/seman/.local/bin/"
+      - "/home/seman/bin/"
+      - "/home/seman/.scripts/"
+      - "/home/seman/.cargo/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/usr/bin/"
+      - "/opt/bin/"
+      - "/usr/lib/llvm/21/bin/"
+      - "/usr/lib/llvm/20/bin/"
+      - "/opt/intel/oneapi/mkl/2025.3/bin/"
+      - "/opt/cuda/bin/"
+      - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64/"
+      - "/bin/"
+    searched_directories:
+      - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI/uname"
+      - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli/uname"
+      - "/home/seman/.npm-global/bin/uname"
+      - "/home/seman/.atuin/bin/uname"
+      - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin/uname"
+      - "/home/seman/go/bin/uname"
+      - "/home/seman/.local/bin/uname"
+      - "/home/seman/bin/uname"
+      - "/home/seman/.scripts/uname"
+      - "/home/seman/.cargo/bin/uname"
+      - "/usr/local/sbin/uname"
+      - "/usr/local/bin/uname"
+    found: "/usr/bin/uname"
+    search_context:
+      ENV{PATH}:
+        - "/home/seman/.codex/tmp/arg0/codex-arg0KwKTAI"
+        - "/home/seman/.vscode-server/cli/servers/Stable-c3a26841a84f20dfe0850d0a5a9bd01da4f003ea/server/bin/remote-cli"
+        - "/home/seman/.npm-global/bin"
+        - "/home/seman/.atuin/bin"
+        - "/data/toolchain/llvm/stage2-prof-use-lto/install/bin"
+        - "/home/seman/go/bin"
+        - "/home/seman/.local/bin"
+        - "/home/seman/bin"
+        - "/home/seman/.scripts"
+        - "/home/seman/.cargo/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/opt/bin"
+        - "/usr/lib/llvm/21/bin"
+        - "/usr/lib/llvm/20/bin"
+        - "/opt/intel/oneapi/mkl/2025.3/bin"
+        - "/opt/cuda/bin"
+        - "/home/seman/.vscode-server/extensions/openai.chatgpt-0.4.76/bin/linux-x86_64"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineSystem.cmake:212 (message)"
+      - "CMakeLists.txt:16 (project)"
+    message: |
+      The system is: Linux - 6.18.9 - x86_64
+...

@@ -1193,6 +1193,7 @@ class Trainer:
         names: Optional[Union[str, list]] = None,
         pred_color: str = "orange",
         series_color: str = "blue",
+        save_path: Optional[str] = None,
     ) -> plt.Figure:
         evaluator = ModelEvaluator(self)
         predictions = evaluator.predict(X_val)
@@ -1263,6 +1264,8 @@ class Trainer:
 
             axes[-1].set_xlabel("Time Step")
             plt.tight_layout()
+            if save_path:
+                fig.savefig(save_path, dpi=120, bbox_inches="tight")
             if show:
                 plt.show()
             # Save plot as artifact in the last training run

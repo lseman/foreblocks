@@ -7,13 +7,15 @@ import warnings
 # External Libraries - Core
 # ============================
 import numpy as np
+
 # ============================
 # Scientific Computing & ML
 # ============================
 import statsmodels.api as sm
 from joblib import Parallel, delayed
 
-from .ewt_core import EWT1D
+from foretools.ewt.ewt_core import EWT1D
+
 # ============================
 # Visualization
 # ============================

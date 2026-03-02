@@ -3,16 +3,15 @@
 
 from .common import (
     BoundaryHandler,
-    EMDVariants,
     FFTWManager,
     FractalDimension,
-    HierarchicalParameters,
     ModeProcessor,
     SignalAnalyzer,
-    VMDParameters,
     _energy,
     box_counting_dimension,
+    fractal_dimension,
 )
+from .config import HierarchicalParameters, VMDParameters
 from .core import (
     CrossModeRefiner,
     InformerRefiner,
@@ -20,11 +19,14 @@ from .core import (
     refine_modes_cross_nn,
     refine_modes_nn,
 )
+from .emd import EMDVariants
 from .pipeline import FastVMD, HierarchicalVMD, VMDOptimizer
+from .variants import VariationalVariants
 
 __all__ = [
     "_energy",
     "FractalDimension",
+    "fractal_dimension",
     "box_counting_dimension",
     "VMDParameters",
     "HierarchicalParameters",
@@ -34,6 +36,7 @@ __all__ = [
     "EMDVariants",
     "ModeProcessor",
     "VMDCore",
+    "VariationalVariants",
     "CrossModeRefiner",
     "InformerRefiner",
     "refine_modes_nn",

@@ -115,6 +115,8 @@ class DARTSConfig:
     adaptive_bias_scale: float = 0.15
     performance_ema_decay: float = 0.95
     pc_ratio: float = 0.25
+    max_active_edges_per_node: int = 2
+    progressive_edge_budget: bool = True
     use_drnas: bool = True
     drnas_concentration: float = 8.0
     use_fair_darts_hierarchical: bool = True
@@ -793,6 +795,8 @@ class DARTSCell(nn.Module):
         adaptive_bias_scale: float = 0.15,
         performance_ema_decay: float = 0.95,
         pc_ratio: float = 0.25,
+        max_active_edges_per_node: int = 2,
+        progressive_edge_budget: bool = True,
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
@@ -816,6 +820,8 @@ class DARTSCell(nn.Module):
         self.adaptive_bias_scale = adaptive_bias_scale
         self.performance_ema_decay = performance_ema_decay
         self.pc_ratio = float(min(max(pc_ratio, 0.0), 1.0))
+        self.max_active_edges_per_node = max(0, int(max_active_edges_per_node))
+        self.progressive_edge_budget = bool(progressive_edge_budget)
         self.use_drnas = use_drnas
         self.drnas_concentration = drnas_concentration
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
@@ -1003,6 +1009,23 @@ class DARTSCell(nn.Module):
         """Get edge index efficiently"""
         return self._edge_indices[(node_idx, input_idx)]
 
+    def _max_in_edges_for_node(self, node_idx: int) -> int:
+        """Active incoming-edge budget for a node."""
+        full_count = int(max(node_idx, 1))
+        if self.max_active_edges_per_node <= 0:
+            return full_count
+
+        max_k = min(int(self.max_active_edges_per_node), full_count)
+        if not self.progressive_edge_budget:
+            return max_k
+
+        stage = str(getattr(self, "progressive_stage", "advanced"))
+        if stage == "basic":
+            return min(1, full_count)
+        if stage == "intermediate":
+            return min(2, max_k, full_count)
+        return max_k
+
     def _aggregate_inputs(self, inputs, edge_indices):
         """Aggregate inputs with different strategies"""
         if len(inputs) == 1:
@@ -1069,6 +1092,7 @@ class DARTSCell(nn.Module):
 
         for node_idx in range(1, self.num_nodes):
             node_inputs, edge_indices = [], []
+            candidate_edges = []
 
             for input_idx in range(node_idx):
                 edge_idx = self._get_edge_index(node_idx, input_idx)
@@ -1076,23 +1100,33 @@ class DARTSCell(nn.Module):
 
                 # Apply edge importance gating
                 edge_weight = torch.sigmoid(self.edge_importance[edge_idx])
-
                 if edge_weight.item() > 0.1:  # Skip unimportant edges
-                    # Use gradient checkpointing if enabled
-                    if self.training and self.use_checkpoint:
-                        out = torch.utils.checkpoint.checkpoint(
-                            edge, nodes[input_idx], use_reentrant=False
-                        )
-                    else:
-                        out = edge(nodes[input_idx])
+                    candidate_edges.append(
+                        (float(edge_weight.detach().item()), edge_idx, input_idx, edge_weight)
+                    )
 
-                    # Apply edge weight
-                    out = out * edge_weight
-                    node_inputs.append(out)
-                    edge_indices.append(edge_idx)
+            max_in_edges = self._max_in_edges_for_node(node_idx)
+            if len(candidate_edges) > max_in_edges:
+                candidate_edges.sort(key=lambda x: x[0], reverse=True)
+                candidate_edges = candidate_edges[:max_in_edges]
 
-                    # Accumulate efficiency penalty
-                    # total_efficiency_penalty += edge.get_efficiency_penalty()
+            for _, edge_idx, input_idx, edge_weight in candidate_edges:
+                edge = self.edges[edge_idx]
+                # Use gradient checkpointing if enabled
+                if self.training and self.use_checkpoint:
+                    out = torch.utils.checkpoint.checkpoint(
+                        edge, nodes[input_idx], use_reentrant=False
+                    )
+                else:
+                    out = edge(nodes[input_idx])
+
+                # Apply edge weight
+                out = out * edge_weight
+                node_inputs.append(out)
+                edge_indices.append(edge_idx)
+
+                # Accumulate efficiency penalty
+                # total_efficiency_penalty += edge.get_efficiency_penalty()
 
             if node_inputs:
                 # Aggregate inputs
@@ -1195,6 +1229,8 @@ class TimeSeriesDARTS(nn.Module):
         adaptive_bias_scale: float = 0.15,
         performance_ema_decay: float = 0.95,
         pc_ratio: float = 0.25,
+        max_active_edges_per_node: int = 2,
+        progressive_edge_budget: bool = True,
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
@@ -1224,6 +1260,8 @@ class TimeSeriesDARTS(nn.Module):
             "adaptive_bias_scale": adaptive_bias_scale,
             "performance_ema_decay": performance_ema_decay,
             "pc_ratio": pc_ratio,
+            "max_active_edges_per_node": max_active_edges_per_node,
+            "progressive_edge_budget": progressive_edge_budget,
             "use_drnas": use_drnas,
             "drnas_concentration": drnas_concentration,
             "use_fair_darts_hierarchical": use_fair_darts_hierarchical,
@@ -1260,6 +1298,8 @@ class TimeSeriesDARTS(nn.Module):
         self.adaptive_bias_scale = adaptive_bias_scale
         self.performance_ema_decay = performance_ema_decay
         self.pc_ratio = float(min(max(pc_ratio, 0.0), 1.0))
+        self.max_active_edges_per_node = max(0, int(max_active_edges_per_node))
+        self.progressive_edge_budget = bool(progressive_edge_budget)
         self.use_drnas = use_drnas
         self.drnas_concentration = drnas_concentration
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
@@ -1312,6 +1352,8 @@ class TimeSeriesDARTS(nn.Module):
             "adaptive_bias_scale": cfg.adaptive_bias_scale,
             "performance_ema_decay": cfg.performance_ema_decay,
             "pc_ratio": cfg.pc_ratio,
+            "max_active_edges_per_node": cfg.max_active_edges_per_node,
+            "progressive_edge_budget": cfg.progressive_edge_budget,
             "use_drnas": cfg.use_drnas,
             "drnas_concentration": cfg.drnas_concentration,
             "use_fair_darts_hierarchical": cfg.use_fair_darts_hierarchical,
@@ -1357,6 +1399,8 @@ class TimeSeriesDARTS(nn.Module):
                     adaptive_bias_scale=self.adaptive_bias_scale,
                     performance_ema_decay=self.performance_ema_decay,
                     pc_ratio=self.pc_ratio,
+                    max_active_edges_per_node=self.max_active_edges_per_node,
+                    progressive_edge_budget=self.progressive_edge_budget,
                     use_drnas=self.use_drnas,
                     drnas_concentration=self.drnas_concentration,
                     use_fair_darts_hierarchical=self.use_fair_darts_hierarchical,
@@ -1712,6 +1756,15 @@ class TimeSeriesDARTS(nn.Module):
                 cell.set_temperature(temp)
         self.forecast_encoder.set_temperature(temp)
         self.forecast_decoder.set_temperature(temp)
+
+    def get_orthogonal_regularization(self) -> torch.Tensor:
+        """Aggregate recurrent state-mixing orthogonal regularization."""
+        reg = torch.tensor(0.0, device=self.norm_alpha.device)
+        if hasattr(self.forecast_encoder, "orthogonal_regularization"):
+            reg = reg + self.forecast_encoder.orthogonal_regularization()
+        if hasattr(self.forecast_decoder, "orthogonal_regularization"):
+            reg = reg + self.forecast_decoder.orthogonal_regularization()
+        return reg
 
     def _schedule_progressive_stage(self, epoch: int, total_epochs: int) -> str:
         """Automatically schedule progressive search stages across all cells."""
