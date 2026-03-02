@@ -1,7 +1,0 @@
-build/
-build-core/
-*.so
-*.dylib
-*.pyd
-__pycache__/
-.ipynb_checkpoints/

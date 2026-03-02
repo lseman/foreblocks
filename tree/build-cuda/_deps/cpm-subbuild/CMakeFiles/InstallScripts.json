@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/data/solver/ad/tree/build-cuda/_deps/cpm-subbuild/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
