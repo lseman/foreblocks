@@ -8,18 +8,9 @@ Key additions:
 4. Alpha reporting and discretization utilities
 """
 
-import contextlib
-import copy
 import logging
-from dataclasses import dataclass
-from dataclasses import field
-from typing import Any
-from typing import Callable
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
-from typing import Union
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import matplotlib.pyplot as plt
@@ -28,49 +19,30 @@ except ImportError:
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler
-from torch.amp import autocast
-from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
-from tqdm import tqdm
+from torch.utils.data import DataLoader, Dataset
 
 from foreblocks.core.heads.head_helper import HeadComposer
-from foreblocks.core.heads.head_helper import HeadSpec
-from foreblocks.ui.node_spec import node
-
 
 # Optional: import your MoE classes and HeadComposer
 try:
-    from foreblocks.tf.experts.moe import FeedForwardBlock
-    from foreblocks.tf.experts.moe import MoEFeedForwardDMoE
-    from foreblocks.tf.experts.moe_logging import MoELogger
-    from foreblocks.tf.experts.moe_logging import ReportInputs
-    from foreblocks.tf.experts.moe_logging import build_moe_report
+    from foreblocks.tf.experts.moe_logging import (
+        MoELogger,
+        ReportInputs,
+        build_moe_report,
+    )
 except Exception:
     MoELogger = None
     ReportInputs = None
+
     def build_moe_report(*args, **kwargs):
         raise RuntimeError("MoE logging not available")
 
 # Try to import HeadComposer for NAS detection
 
-from foreblocks.evaluation.model_evaluator import ModelEvaluator
-
 
 # ============================================================================
 # Configuration Management
 # ============================================================================
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
-
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
-
-
-from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
-from typing import Optional, List
 
 
 @dataclass
@@ -103,7 +75,7 @@ class TrainingConfig:
     log_interval: int = 10
     save_best_model: bool = True
     save_model_path: Optional[str] = None
-    experiment_name: str = "default_experiment" # New: for MLTracker
+    experiment_name: str = "default_experiment"  # New: for MLTracker
 
     # -------------------------------------------------
     # MoE logging toggles
@@ -133,7 +105,7 @@ class TrainingConfig:
     conformal_enabled: bool = False
 
     # Method selection
-    # Options: "split", "local", "jackknife", "quantile", "tsp", 
+    # Options: "split", "local", "jackknife", "quantile", "tsp",
     #          "rolling", "agaci", "enbpi", "cptc", "afocp"
     conformal_method: str = "split"
 
@@ -149,7 +121,9 @@ class TrainingConfig:
     conformal_rolling_alpha: float = 0.1
 
     # --- AgACI ---
-    conformal_agaci_gammas: Optional[List[float]] = None  # Default: [0.001, 0.005, 0.01, 0.05, 0.1, 0.2]
+    conformal_agaci_gammas: Optional[List[float]] = (
+        None  # Default: [0.001, 0.005, 0.01, 0.05, 0.1, 0.2]
+    )
 
     # --- EnbPI ---
     conformal_enbpi_B: int = 20
@@ -222,17 +196,26 @@ class TrainingConfig:
             "afocp_online_steps": self.conformal_afocp_online_steps,
         }
 
+
 # ============================================================================
 # Dataset (unchanged)
 # ============================================================================
 
+
 class TimeSeriesDataset(Dataset):
     """Clean dataset for time series data"""
 
-    def __init__(self, X: np.ndarray, y: Optional[np.ndarray] = None, time_feat: Optional[np.ndarray] = None):
+    def __init__(
+        self,
+        X: np.ndarray,
+        y: Optional[np.ndarray] = None,
+        time_feat: Optional[np.ndarray] = None,
+    ):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32) if y is not None else None
-        self.t = torch.tensor(time_feat, dtype=torch.long) if time_feat is not None else None
+        self.t = (
+            torch.tensor(time_feat, dtype=torch.long) if time_feat is not None else None
+        )
 
     def __len__(self) -> int:
         return len(self.X)
@@ -242,7 +225,9 @@ class TimeSeriesDataset(Dataset):
             return self.X[idx]
         if self.t is None:
             return self.X[idx], self.y[idx]
-        return (self.X[idx], self.y[idx]) if self.y is not None else self.X[idx], self.t[idx]
+        return (self.X[idx], self.y[idx]) if self.y is not None else self.X[
+            idx
+        ], self.t[idx]
 
 
 def create_dataloaders(
@@ -277,6 +262,7 @@ def create_dataloaders(
 # Loss Computation (unchanged)
 # ============================================================================
 
+
 class LossComputer:
     """Handles all loss computation logic"""
 
@@ -305,21 +291,30 @@ class LossComputer:
         self.components["task_loss"] = task_loss.item()
 
         # Distillation loss
-        if hasattr(self.model, "compute_distillation_loss") and "teacher_outputs" in aux_data:
+        if (
+            hasattr(self.model, "compute_distillation_loss")
+            and "teacher_outputs" in aux_data
+        ):
             distill_loss, distill_components = self.model.compute_distillation_loss(
                 outputs, aux_data["teacher_outputs"], targets, self.criterion
             )
             total_loss = distill_loss
-            self.components.update({
-                f"distill_{k}": v.item() if isinstance(v, torch.Tensor) else v
-                for k, v in distill_components.items()
-            })
+            self.components.update(
+                {
+                    f"distill_{k}": v.item() if isinstance(v, torch.Tensor) else v
+                    for k, v in distill_components.items()
+                }
+            )
 
         # L1
         if self.config.l1_regularization > 0:
-            l1_loss = sum(p.abs().sum() for p in self.model.parameters() if p.requires_grad)
+            l1_loss = sum(
+                p.abs().sum() for p in self.model.parameters() if p.requires_grad
+            )
             total_loss += self.config.l1_regularization * l1_loss
-            self.components["l1_loss"] = (self.config.l1_regularization * l1_loss).item()
+            self.components["l1_loss"] = (
+                self.config.l1_regularization * l1_loss
+            ).item()
 
         # KL
         if hasattr(self.model, "get_kl"):
@@ -342,6 +337,7 @@ class LossComputer:
 # Training History (enhanced with alpha tracking)
 # ============================================================================
 
+
 @dataclass
 class TrainingHistory:
     train_losses: List[float] = field(default_factory=list)
@@ -352,7 +348,9 @@ class TrainingHistory:
     model_info: List[Dict[str, Any]] = field(default_factory=list)
 
     # ── NEW: NAS tracking ──
-    alpha_values: List[Dict[str, Any]] = field(default_factory=list)  # Per-epoch alpha snapshots
+    alpha_values: List[Dict[str, Any]] = field(
+        default_factory=list
+    )  # Per-epoch alpha snapshots
 
     def record_epoch(
         self,
@@ -371,7 +369,9 @@ class TrainingHistory:
         if "task_loss" in loss_components:
             self.task_losses.append(loss_components["task_loss"])
 
-        distill_loss = sum(v for k, v in loss_components.items() if k.startswith("distill_"))
+        distill_loss = sum(
+            v for k, v in loss_components.items() if k.startswith("distill_")
+        )
         if distill_loss > 0:
             self.distillation_losses.append(distill_loss)
 
@@ -385,6 +385,7 @@ class TrainingHistory:
 # ============================================================================
 # NAS Helper - detects and manages HeadComposer alphas
 # ============================================================================
+
 
 class NASHelper:
     """
@@ -420,8 +421,9 @@ class NASHelper:
             return list(self.model.parameters())
 
         # Collect alpha param IDs to exclude
-        alpha_ids = {id(p) for _, composer in self.composers
-                    for p in composer.arch_parameters()}
+        alpha_ids = {
+            id(p) for _, composer in self.composers for p in composer.arch_parameters()
+        }
 
         # Return all other params
         weight_params = []
@@ -445,10 +447,10 @@ class NASHelper:
             logging.info(f"Discretized alphas in {name} with threshold={thresh}")
 
 
-
 # ============================================================================
 # Utility: Plot alpha evolution
 # ============================================================================
+
 
 def plot_alpha_evolution(history: TrainingHistory, figsize: Tuple[int, int] = (15, 6)):
     """
@@ -500,14 +502,14 @@ def plot_alpha_evolution(history: TrainingHistory, figsize: Tuple[int, int] = (1
 
         for head_name, metrics in heads.items():
             for metric, values in metrics.items():
-                if metric in ['w_head', 'p_on']:  # Plot relevant metrics
+                if metric in ["w_head", "p_on"]:  # Plot relevant metrics
                     label = f"{head_name}.{metric}"
-                    ax.plot(epochs, values, label=label, marker='o', markersize=3)
+                    ax.plot(epochs, values, label=label, marker="o", markersize=3)
 
         ax.set_title(f"Alpha Evolution: {composer_name}")
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Alpha Value")
-        ax.legend(loc='best', fontsize=8)
+        ax.legend(loc="best", fontsize=8)
         ax.grid(True, alpha=0.3)
         ax.set_ylim([-0.1, 1.1])
 

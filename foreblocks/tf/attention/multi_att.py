@@ -333,19 +333,19 @@ class MultiAttention(nn.Module):
             self.nsa_gate_proj = None
 
             if attention_type == "frequency":
-                from .multi_att_helper import FrequencyAttention
+                from .frequency_att import FrequencyAttention
 
                 self.freq_attention = FrequencyAttention(
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
                 )
             elif attention_type == "dwt":
-                from .multi_att_helper import DWTAttention
+                from .dwt_att import DWTAttention
 
                 self.dwt_attention = DWTAttention(
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
                 )
             elif attention_type == "autocor":
-                from .multi_att_helper import AutoCorrelation, AutoCorrelationLayer
+                from .autocor_att import AutoCorrelation, AutoCorrelationLayer
 
                 autocorr = AutoCorrelation(
                     mask_flag=True,

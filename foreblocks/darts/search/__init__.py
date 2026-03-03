@@ -1,3 +1,5 @@
+# New focused sub-modules
+from . import ablation, multi_fidelity, nas_metrics, robust_pool, scoring, zero_cost
 from .candidate_scoring import (
     candidate_diversity_bonus,
     candidate_signature,

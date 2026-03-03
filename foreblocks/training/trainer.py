@@ -21,12 +21,13 @@ from foreblocks.ui.node_spec import node
 
 # Optional: import your MoE classes and HeadComposer
 try:
-    from foreblocks.tf.experts.moe import FeedForwardBlock, MoEFeedForwardDMoE
+    from foreblocks.tf.experts.moe import MoEFeedForwardDMoE
     from foreblocks.tf.experts.moe_logging import (
         MoELogger,
         ReportInputs,
         build_moe_report,
     )
+    from foreblocks.tf.ff import FeedForwardBlock
 except Exception:
     MoELogger = None
     ReportInputs = None
@@ -1267,7 +1268,7 @@ class Trainer:
             if save_path:
                 fig.savefig(save_path, dpi=120, bbox_inches="tight")
             if show:
-            plt.show()
+                plt.show()
             # Save plot as artifact in the last training run
             if self.mltracker and self._last_run_id:
                 try:

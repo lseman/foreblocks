@@ -26,6 +26,7 @@ try:
     from .moe_logging import MoELogger  # type: ignore
 except Exception:
     MoELogger = None  # type: ignore
+from .dispatchers import DroplessPackedDispatcher, ExpertChoiceDispatcher
 from .routers import (
     AdaptiveNoisyTopKRouter,
     ContinuousTopKRouter,
@@ -35,7 +36,6 @@ from .routers import (
     Router,
     StraightThroughTopKRouter,
 )
-from .dispatchers import DroplessPackedDispatcher, ExpertChoiceDispatcher
 
 # Optional grouped kernel path (can accept prepacked B* if your wrapper supports)
 try:
@@ -386,7 +386,11 @@ class MoEFeedForwardDMoE(nn.Module):
                 use_bias=use_bias,
                 expert_bias_init=router_expert_bias_init,
             )
-        elif router_type in ("continuous_topk", "relaxed_sort_topk", "perturb_and_pick_topk"):
+        elif router_type in (
+            "continuous_topk",
+            "relaxed_sort_topk",
+            "perturb_and_pick_topk",
+        ):
             # relaxed_sort_topk and perturb_and_pick_topk use the same continuous
             # top-k implementation with configurable perturbation.
             perturb_std = (
@@ -406,7 +410,9 @@ class MoEFeedForwardDMoE(nn.Module):
                 expert_bias_init=router_expert_bias_init,
             )
         elif router_type in ("hash_topk", "multi_hash_topk"):
-            num_hashes = 1 if router_type == "hash_topk" else max(2, router_hash_num_hashes)
+            num_hashes = (
+                1 if router_type == "hash_topk" else max(2, router_hash_num_hashes)
+            )
             router = HashTopKRouter(
                 d_model=d_model,
                 num_experts=num_routed,
@@ -1095,195 +1101,5 @@ class MoEFeedForwardDMoE(nn.Module):
 
 
 # -----------------------------------------------------------------------------
-# Standard FFN (non-MoE)
+# Backward-compatibility re-exports (FF moved to foreblocks.tf.ff)
 # -----------------------------------------------------------------------------
-class _StandardFeedForwardBlock(nn.Module):
-    def __init__(
-        self, d_model, dim_ff, dropout=0.0, use_swiglu=True, activation="gelu"
-    ):
-        super().__init__()
-        self.use_swiglu = bool(use_swiglu)
-        self.dropout_p = float(dropout)
-        if self.use_swiglu:
-            swiglu_dim = int(dim_ff * 4 // 3)
-            self.w1 = nn.Linear(d_model, swiglu_dim, bias=False)
-            self.w2 = nn.Linear(d_model, swiglu_dim, bias=False)
-            self.w3 = nn.Linear(swiglu_dim, d_model, bias=False)
-            nn.init.xavier_uniform_(self.w1.weight)
-            nn.init.xavier_uniform_(self.w2.weight)
-            nn.init.xavier_uniform_(self.w3.weight)
-        else:
-            self.fc1 = nn.Linear(d_model, dim_ff, bias=False)
-            self.fc2 = nn.Linear(dim_ff, d_model, bias=False)
-            self.activation = getattr(F, activation.lower(), F.gelu)
-            nn.init.xavier_uniform_(self.fc1.weight)
-            nn.init.xavier_uniform_(self.fc2.weight)
-
-    def forward(self, x):
-        if self.use_swiglu:
-            u = self.w1(x)
-            v = self.w2(x)
-            h = F.silu(u) * v
-            if self.training and self.dropout_p > 0:
-                h = F.dropout(h, p=self.dropout_p, training=True)
-            return self.w3(h)
-        else:
-            y = self.activation(self.fc1(x))
-            if self.training and self.dropout_p > 0:
-                y = F.dropout(y, p=self.dropout_p, training=True)
-            return self.fc2(y)
-
-
-# -----------------------------------------------------------------------------
-# Public wrapper
-# -----------------------------------------------------------------------------
-class FeedForwardBlock(nn.Module):
-    """
-    Unified FFN wrapper.
-    - use_moe=True -> MoEFeedForwardDMoE (fast path)
-    - use_moe=False -> standard FFN (with optional SwiGLU)
-    - routing_mode='token_choice' (default) or 'expert_choice'
-    """
-
-    def __init__(
-        self,
-        d_model: int,
-        dim_ff: int,
-        dropout: float = 0.0,
-        use_swiglu: bool = True,
-        activation: str = "gelu",
-        use_moe: bool = False,
-        num_experts: int = 8,
-        num_shared: int = 1,
-        top_k: int = 2,
-        load_balance_weight: float = 1e-2,
-        z_loss_weight: float = 1e-3,
-        moe_capacity_factor: float = 1.25,
-        router_type: str = "noisy_topk",
-        router_temperature: float = 1.0,
-        router_perturb_noise: float = 0.0,
-        router_hash_num_hashes: int = 2,
-        router_hash_num_buckets: int = 64,
-        router_hash_bucket_size: int = 8,
-        router_hash_seed: int = 17,
-        routing_mode: str = "token_choice",
-        expert_choice_tokens_per_expert: Optional[int] = None,
-        use_bias: bool = False,
-        input_dropout: float = 0.0,
-        jitter: float = 0.01,
-        expert_dropout: float = 0.0,
-        use_gradient_checkpointing: bool = False,
-        d_ff_shared: Optional[int] = None,
-        shared_scale_init: float = 1.0,
-        shared_combine: str = "add",
-        adaptive_k_head_dim: int = 32,
-        adaptive_k_tau: float = 1.0,
-        adaptive_k_baseline_momentum: float = 0.99,
-        adaptive_k_sparsity_lambda: float = 0.0,
-        # Optional logging passthrough:
-        moe_logger: Optional["MoELogger"] = None,
-        step_getter: Optional[Callable[[], int]] = None,
-        log_latency: bool = False,
-        # Optional compile flags (forwarded to MoEFeedForwardDMoE)
-        compile_router: bool = True,
-        compile_experts: bool = True,
-        # Optional grouped-kernel flags (forwarded to MoEFeedForwardDMoE)
-        use_grouped_kernel: bool = True,
-        use_fused_router_topk: bool = True,
-        triton_use_fp16_acc: bool = False,
-        triton_use_shared_b: bool = False,
-        router_expert_bias_init: float = 0.0,
-        router_bias_update_rate: float = 0.01,
-        router_bias_clip: float = 2.0,
-        mtp_num_heads: int = 0,
-        mtp_loss_weight: float = 0.0,
-        mtp_init_scale: float = 0.02,
-    ):
-        super().__init__()
-        self.use_moe = bool(use_moe)
-        if self.use_moe:
-            self.block = MoEFeedForwardDMoE(
-                d_model=d_model,
-                d_ff=dim_ff,
-                num_experts=num_experts,
-                num_shared=num_shared,
-                top_k=top_k,
-                dropout=dropout,
-                use_swiglu=use_swiglu,
-                activation=activation,
-                load_balance_weight=load_balance_weight,
-                z_loss_weight=z_loss_weight,
-                moe_capacity_factor=moe_capacity_factor,
-                router_type=router_type,
-                router_temperature=router_temperature,
-                router_perturb_noise=router_perturb_noise,
-                router_hash_num_hashes=router_hash_num_hashes,
-                router_hash_num_buckets=router_hash_num_buckets,
-                router_hash_bucket_size=router_hash_bucket_size,
-                router_hash_seed=router_hash_seed,
-                routing_mode=routing_mode,
-                expert_choice_tokens_per_expert=expert_choice_tokens_per_expert,
-                use_bias=use_bias,
-                input_dropout=input_dropout,
-                jitter=jitter,
-                expert_dropout=expert_dropout,
-                use_gradient_checkpointing=use_gradient_checkpointing,
-                d_ff_shared=d_ff_shared,
-                shared_scale_init=shared_scale_init,
-                shared_combine=shared_combine,
-                adaptive_k_head_dim=adaptive_k_head_dim,
-                adaptive_k_tau=adaptive_k_tau,
-                adaptive_k_baseline_momentum=adaptive_k_baseline_momentum,
-                adaptive_k_sparsity_lambda=adaptive_k_sparsity_lambda,
-                moe_logger=moe_logger,
-                step_getter=step_getter,
-                log_latency=log_latency,
-                compile_router=compile_router,
-                compile_experts=compile_experts,
-                use_grouped_kernel=use_grouped_kernel,
-                use_fused_router_topk=use_fused_router_topk,
-                triton_use_fp16_acc=triton_use_fp16_acc,
-                triton_use_shared_b=triton_use_shared_b,
-                router_expert_bias_init=router_expert_bias_init,
-                router_bias_update_rate=router_bias_update_rate,
-                router_bias_clip=router_bias_clip,
-                mtp_num_heads=mtp_num_heads,
-                mtp_loss_weight=mtp_loss_weight,
-                mtp_init_scale=mtp_init_scale,
-            )
-            self._supports_aux = True
-        else:
-            self.block = _StandardFeedForwardBlock(
-                d_model=d_model,
-                dim_ff=dim_ff,
-                dropout=dropout,
-                use_swiglu=use_swiglu,
-                activation=activation,
-            )
-            self._supports_aux = False
-
-    def forward(self, x, return_aux_loss: bool = False, **kwargs):
-        if self.use_moe:
-            out, aux = self.block(x, return_aux_loss=True, **kwargs)
-            return (out, aux) if return_aux_loss else out
-        else:
-            y = self.block(x)
-            return (y, x.new_zeros(())) if return_aux_loss else y
-
-    def compute_adaptive_k_reinforce_loss(
-        self, reward: torch.Tensor, detach_reward: bool = True
-    ) -> torch.Tensor:
-        if not self.use_moe:
-            return reward.new_zeros(())
-        if not hasattr(self.block, "compute_adaptive_k_reinforce_loss"):
-            return reward.new_zeros(())
-        return self.block.compute_adaptive_k_reinforce_loss(
-            reward, detach_reward=detach_reward
-        )
-
-    def get_last_per_token_k(self) -> Optional[torch.Tensor]:
-        if not self.use_moe:
-            return None
-        if not hasattr(self.block, "get_last_per_token_k"):
-            return None
-        return self.block.get_last_per_token_k()

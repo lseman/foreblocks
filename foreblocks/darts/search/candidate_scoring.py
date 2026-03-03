@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from ..scoring import normalize_metric_value
+from .scoring import normalize_metric_value
 
 
 def candidate_diversity_bonus(selected_ops: List[str], all_ops: List[str]) -> float:

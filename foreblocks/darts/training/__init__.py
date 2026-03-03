@@ -1,3 +1,5 @@
+# New focused sub-modules
+from . import darts_loop, final_trainer
 from .helpers import (
     AlphaTracker,
     ArchitectureRegularizer,
@@ -7,6 +9,8 @@ from .helpers import (
 )
 
 __all__ = [
+    "darts_loop",
+    "final_trainer",
     "AlphaTracker",
     "ArchitectureRegularizer",
     "BilevelOptimizer",

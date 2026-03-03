@@ -36,11 +36,12 @@ import torch.nn.functional as F
 
 from foreblocks.ui.node_spec import node
 
+from .attention.gated_delta import GatedDeltaNet
 from .attention.kimi_att import KimiAttention
 from .attention.lin_att import LinearAttention
 from .attention.multi_att import MultiAttention
 from .embeddings import InformerTimeEmbedding, PositionalEncoding
-from .experts.moe import *  # FeedForwardBlock (and optionally MoE)
+from .ff import FeedForwardBlock
 from .fusions import (
     fused_dropout_add,  # fused helpers
     fused_dropout_add_norm,
@@ -643,6 +644,9 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         self.self_attn_kimi = KimiAttention(
             d_model=d_model, n_heads=nhead, dropout=dropout
         )
+        self.self_attn_gdn = GatedDeltaNet(
+            d_model=d_model, n_heads=nhead, dropout=dropout
+        )
 
         self.layer_attention_type = str(layer_attention_type)
 
@@ -673,6 +677,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             return self.self_attn_sype
         if t == "kimi":
             return self.self_attn_kimi
+        if t == "gated_delta":
+            return self.self_attn_gdn
         return self.self_attn_std
 
     def _ensure_mhc_mixers(self) -> None:
@@ -882,6 +888,11 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             dropout=dropout,
             cross_attention=False,
         )
+        self.self_attn_gdn = GatedDeltaNet(
+            d_model=d_model,
+            n_heads=nhead,
+            dropout=dropout,
+        )
         self.layer_attention_type = str(layer_attention_type)
 
         # Cross-attention: always standard MultiAttention
@@ -928,6 +939,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             return self.self_attn_sype
         if t == "kimi":
             return self.self_attn_kimi
+        if t == "gated_delta":
+            return self.self_attn_gdn
         return self.self_attn_std
 
     def _ensure_mhc_mixers(self) -> None:
@@ -1217,6 +1230,9 @@ class BaseTransformer(nn.Module, ABC):
             "kimi",
             "hybrid_kimi",
             "kimi_3to1",
+            "gated_delta",
+            "hybrid_gdn",
+            "gdn_3to1",
         ] = "standard",
         # mHC toggles
         use_mhc: bool = False,
@@ -1253,7 +1269,12 @@ class BaseTransformer(nn.Module, ABC):
         # Backward-compatible behavior:
         # if caller sets att_type to a routed mode but leaves attention_mode default,
         # promote attention_mode so the intended path is used.
-        if attention_mode == "standard" and att_type in {"linear", "sype", "kimi"}:
+        if attention_mode == "standard" and att_type in {
+            "linear",
+            "sype",
+            "kimi",
+            "gated_delta",
+        }:
             attention_mode = att_type
         self.attention_mode = attention_mode
         self.att_type = att_type
@@ -1445,6 +1466,12 @@ class BaseTransformer(nn.Module, ABC):
             return "kimi" if layer_idx < (self.num_layers - 1) else "standard"
         if mode == "kimi_3to1":
             return "kimi" if (layer_idx % 4) < 3 else "standard"
+        if mode == "gated_delta":
+            return "gated_delta"
+        if mode in ("hybrid_gdn", "gdn_hybrid"):
+            return "gated_delta" if layer_idx < (self.num_layers - 1) else "standard"
+        if mode == "gdn_3to1":
+            return "gated_delta" if (layer_idx % 4) < 3 else "standard"
         raise ValueError(f"Unknown attention_mode: {mode}")
 
     def _build_layer_kwargs(
