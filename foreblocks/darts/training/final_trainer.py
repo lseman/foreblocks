@@ -40,6 +40,7 @@ def train_final_model(
     use_onecycle: bool = True,
     swa_start_ratio: float = 0.33,
     grad_clip_norm: float = 1.0,
+    use_amp: bool = False,
 ) -> Dict[str, Any]:
     """
     Train the *fixed-operation* model resulting from architecture derivation.
@@ -83,7 +84,8 @@ def train_final_model(
 
     # ── SWA ───────────────────────────────────────────────────────────────
     swa_model = torch.optim.swa_utils.AveragedModel(model).to(device)
-    scaler = GradScaler()
+    _amp_enabled = use_amp and device.startswith("cuda")
+    scaler = GradScaler(enabled=_amp_enabled)
     swa_start = int(epochs * swa_start_ratio)
 
     # ── State ─────────────────────────────────────────────────────────────
@@ -115,10 +117,11 @@ def train_final_model(
         )
 
         for batch_idx, (batch_x, batch_y, *_) in enumerate(train_pbar):
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
             optimizer.zero_grad()
 
-            with autocast_ctx(device, enabled=True):
+            with autocast_ctx(device, enabled=_amp_enabled):
                 preds = model(batch_x)
                 loss = loss_fn(preds, batch_y)
 
@@ -169,7 +172,9 @@ def train_final_model(
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            # Keep best weights on the same device to avoid blocking GPU→CPU copies
+            # on every improvement step; moved to CPU only at load time.
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -196,7 +201,9 @@ def train_final_model(
 
     # ── Final evaluation ──────────────────────────────────────────────────
     model.load_state_dict(best_state, strict=False)
-    test_results = _evaluate_test_set(trainer, model, test_loader, loss_type)
+    test_results = _evaluate_test_set(
+        trainer, model, test_loader, loss_type, amp_enabled=_amp_enabled
+    )
     training_time = time.time() - start_time
 
     results = {
@@ -271,7 +278,9 @@ def _finalize_swa(
     return False
 
 
-def _evaluate_test_set(trainer, model: nn.Module, test_loader, loss_type: str) -> Dict:
+def _evaluate_test_set(
+    trainer, model: nn.Module, test_loader, loss_type: str, *, amp_enabled: bool = False
+) -> Dict:
     """Evaluate model on the test set and return loss + metrics dict."""
     print("\nEvaluating on test set...")
     device = trainer.device
@@ -284,8 +293,9 @@ def _evaluate_test_set(trainer, model: nn.Module, test_loader, loss_type: str) -
     with torch.no_grad():
         test_pbar = create_progress_bar(test_loader, "Test Evaluation")
         for batch_x, batch_y, *_ in test_pbar:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            with autocast_ctx(device, enabled=True):
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
+            with autocast_ctx(device, enabled=amp_enabled):
                 preds = model(batch_x)
                 batch_loss = loss_fn(preds, batch_y).item()
             test_loss += batch_loss

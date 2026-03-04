@@ -6,49 +6,98 @@ build-backend = "setuptools.build_meta"
 name = "foreblocks"
 version = "0.1.7"
 description = "Modular Time Series Forecasting Library"
-authors = [
-    { name = "Laio Seman", email = "laioseman@gmail.com" }
-]
+authors = [{ name = "Laio Seman", email = "laioseman@gmail.com" }]
 
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
-keywords = ["time series", "forecasting", "deep learning", "transformer", "lstm", "pytorch"]
+keywords = [
+    "time series",
+    "forecasting",
+    "deep learning",
+    "transformer",
+    "lstm",
+    "pytorch",
+    "nas",
+    "darts",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+# ── Core runtime dependencies ─────────────────────────────────────────────
+# All of these are unconditionally imported somewhere in foreblocks/ or foretools/.
 dependencies = [
-    "torch>=1.12",
-    "numpy",
-    "scikit-learn",
-    "matplotlib",
-    "PyWavelets",
-    "pytorch_wavelets",
-    "wandb",
-    "ipykernel>=6.29.5",
-    "neuralforecast>=2.0.1",
-    "openpyxl>=3.1.5",
-    "statsmodels>=0.14.1",
-    "tabulate>=0.9.0",
-    "numba>=0.58.1",
-    "google>=3.0.0",
-    "pysr>=1.5.9",
-    "ruptures>=1.1.9",
-    "basedpyright>=1.33.0",
-    "fastapi",
-    "uvicorn",
-    "pydantic",
+    # Deep learning
+    "torch>=2.0", # SDPBackend, autocast, compile — 2.x API used throughout
+
+    # Numerics
+    "numpy>=1.24",
+    "scipy>=1.10", # signal processing, statistics, interpolation
+    "numba>=0.57", # pre/outlier.py: @njit kernels
+
+    # Data handling
+    "pandas>=1.5", # CSV loader, DARTS evaluator, benchmark
+
+    # ML utilities
+    "scikit-learn>=1.2", # preprocessing, imputation, metrics
+
+    # Sequence/tensor utilities
+    "einops>=0.6", # tf/embeddings/rotary.py, third_party/flash_softpick_attn
+    "tqdm>=4.64",  # training loops, preprocessing progress bars
+    "joblib>=1.3", # parallel preprocessing (filters, EWT, preprocessing)
+
+    # Statistical modelling
+    "statsmodels>=0.14", # preprocessing: acf/pacf/adfuller, filters: lowess
+
+    # Reporting
+    "tabulate>=0.9", # preprocessing summary tables
+
+    # Visualisation
+    "matplotlib>=3.6", # evaluation plots
 ]
+
+[project.optional-dependencies]
+# ── mltracker REST API ────────────────────────────────────────────────────
+mltracker = ["fastapi>=0.100", "uvicorn>=0.22", "pydantic>=2.0"]
+
+# ── foretools extras ──────────────────────────────────────────────────────
+vmd = [
+    "pyfftw>=0.13", # VMD decomposition (foretools/vmd/common.py)
+    "optuna>=3.0",  # VMD hyperparameter search
+]
+
+# ── Wavelet backends (optional — gracefully absent) ───────────────────────
+wavelets = [
+    "PyWavelets>=1.4",       # tf/attention/dwt_att.py (try/except guarded)
+    "pytorch_wavelets>=1.3", # blocks/wavelets.py
+]
+
+# ── Benchmarking against external baselines ──────────────────────────────
+benchmark = ["neuralforecast>=2.0", "openpyxl>=3.1"]
+
+# ── Changepoint detection (foreminer, try/except guarded) ─────────────────
+foreminer = ["ruptures>=1.1"]
+
+# ── Full install ──────────────────────────────────────────────────────────
+all = ["foreblocks[mltracker,vmd,wavelets,benchmark,foreminer]"]
+
+# ── Development tools (not packaged) ─────────────────────────────────────
+dev = ["pytest>=7.0", "ipykernel>=6.0", "ruff", "basedpyright"]
 
 [project.urls]
 Homepage = "https://github.com/lseman/foreblocks"
 Repository = "https://github.com/lseman/foreblocks"
+
+[project.scripts]
+mltracker-tui = "foreblocks.mltracker.mltracker_tui:main"
 
 [tool.setuptools]
 include-package-data = true
@@ -68,7 +117,4 @@ skip_gitignore = true
 filter_files = true
 
 [tool.pyrefly]
-project-includes = [
-    "**/*.py*",
-    "**/*.ipynb",
-]
+project-includes = ["**/*.py*", "**/*.ipynb"]

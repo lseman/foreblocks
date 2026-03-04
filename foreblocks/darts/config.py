@@ -26,8 +26,9 @@ DEFAULT_OPS: List[str] = [
     "MultiScaleConv",
     "PyramidConv",
     "PatchEmbed",
-    "Mamba",
     "InvertedAttention",
+    "NBeats",
+    "TimesNet",
 ]
 
 
@@ -92,6 +93,14 @@ class DARTSTrainConfig:
     edge_usage_balance_weight: float = 0.04
     edge_identity_cap: float = 0.45
     edge_identity_cap_weight: float = 0.02
+    # EMA smoothing for arch gradients (0.0 = disabled).  Values in [0.7, 0.9]
+    # reduce variance from the noisy bilevel validation estimate and are
+    # recommended when the validation split is small.
+    arch_grad_ema_beta: float = 0.0
+    # β-DARTS: L2 regularization weight on raw arch logits.  Prevents premature
+    # commitment / skip-connection dominance by penalising large logit magnitudes.
+    # Values in [5e-4, 2e-3] are a good starting range; 0.0 disables.
+    beta_darts_weight: float = 0.0
 
 
 # ---------------------------------------------------------------------------

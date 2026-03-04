@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 from foreblocks.tf.norms import RevIN
 
-from .base_blocks import MixedDecoder, MixedEncoder
+from .base_blocks import MambaBranch, MixedDecoder, MixedEncoder
 from .operation_blocks import (
     ConvMixerOp,
     DLinearOp,
@@ -19,15 +19,16 @@ from .operation_blocks import (
     GRNOp,
     IdentityOp,
     InvertedAttentionOp,
-    MambaOp,
     MLPMixerOp,
     MultiScaleConvOp,
+    NBeatsOp,
     PatchEmbedOp,
     PyramidConvOp,
     ResidualMLPOp,
     RMSNorm,
     TCNOp,
     TimeConvOp,
+    TimesNetOp,
     WaveletOp,
 )
 
@@ -121,6 +122,17 @@ class DARTSConfig:
     drnas_concentration: float = 8.0
     use_fair_darts_hierarchical: bool = True
 
+    # β-DARTS: L2 regularization weight on arch logits to prevent premature
+    # commitment (skip-connection collapse).  Set to e.g. 1e-3 to enable.
+    beta_darts_weight: float = 0.0
+
+    # Architecture topology:
+    #   "encoder_decoder" — MixedEncoder + autoregressive MixedDecoder
+    #   "encoder_only"    — MixedEncoder + direct projection head
+    #   "decoder_only"    — DARTS cells last-token + direct projection head
+    #   "mamba"           — stacked Mamba SSM branch + direct projection head
+    arch_mode: str = "encoder_decoder"
+
     @classmethod
     def with_search_profile(
         cls, profile: str = "conservative", **overrides
@@ -138,6 +150,21 @@ class DARTSConfig:
                 "use_drnas": True,
                 "drnas_concentration": 10.0,
                 "use_fair_darts_hierarchical": True,
+            },
+            "balanced": {
+                # Middle ground: stable enough for small datasets, expressive
+                # enough to discover non-trivial operators.
+                "group_temperature_mult": 1.5,
+                "min_group_temperature": 0.75,
+                "min_op_temperature": 0.35,
+                "group_min_prob": 0.03,
+                "competition_power": 1.25,
+                "adaptive_bias_scale": 0.15,
+                "performance_ema_decay": 0.95,
+                "use_drnas": True,
+                "drnas_concentration": 8.0,
+                "use_fair_darts_hierarchical": True,
+                "beta_darts_weight": 1e-3,
             },
             "aggressive": {
                 "group_temperature_mult": 1.2,
@@ -228,23 +255,30 @@ class MixedOp(nn.Module):
             "GRN": lambda: GRNOp(input_dim, latent_dim),
             "MultiScaleConv": lambda: MultiScaleConvOp(input_dim, latent_dim),
             "PyramidConv": lambda: PyramidConvOp(input_dim, latent_dim),
-            "Mamba": lambda: MambaOp(input_dim, latent_dim),
             "PatchEmbed": lambda: PatchEmbedOp(input_dim, latent_dim, patch_size=16),
             "iTransformerBlock": lambda: InvertedAttentionOp(input_dim, latent_dim),
             "TimeMixer": lambda: MLPMixerOp(input_dim, latent_dim, seq_length),
             "DLinear": lambda: DLinearOp(input_dim, latent_dim),
+            "NBeats": lambda: NBeatsOp(input_dim, latent_dim),
+            "TimesNet": lambda: TimesNetOp(input_dim, latent_dim),
         }
 
         # Group operations by complexity/type for hierarchical search
         self.operation_groups = {
             "basic": ["Identity", "ResidualMLP", "DLinear"],
-            "temporal": ["TimeConv", "TCN", "ConvMixer", "TimeMixer"],
+            "temporal": [
+                "TimeConv",
+                "TCN",
+                "ConvMixer",
+                "TimeMixer",
+                "NBeats",
+                "TimesNet",
+            ],
             "frequency": ["Fourier", "Wavelet"],
             "advanced": [
                 "GRN",
                 "MultiScaleConv",
                 "PyramidConv",
-                "Mamba",
                 "PatchEmbed",
                 "iTransformerBlock",
             ],
@@ -270,10 +304,11 @@ class MixedOp(nn.Module):
             "GRN": 0.6,
             "MultiScaleConv": 0.3,
             "PyramidConv": 0.2,
-            "Mamba": 0.65,
             "PatchEmbed": 0.7,
             "iTransformerBlock": 0.55,
             "TimeMixer": 0.68,
+            "NBeats": 0.72,
+            "TimesNet": 0.60,
             "DLinear": 0.9,
         }
 
@@ -314,7 +349,9 @@ class MixedOp(nn.Module):
 
         cache_key = self._efficiency_cache_key()
         if cache_key in MixedOp._efficiency_cache:
-            self.op_efficiency.update(copy.deepcopy(MixedOp._efficiency_cache[cache_key]))
+            self.op_efficiency.update(
+                copy.deepcopy(MixedOp._efficiency_cache[cache_key])
+            )
             self._dynamic_efficiency_profiled = True
             self._flops_profiled = True
             return
@@ -336,7 +373,9 @@ class MixedOp(nn.Module):
         ref_param = next(self.parameters(), None)
         device = ref_param.device if ref_param is not None else torch.device("cpu")
         dtype = ref_param.dtype if ref_param is not None else torch.float32
-        dummy = torch.randn(2, self.seq_length, self.latent_dim, device=device, dtype=dtype)
+        dummy = torch.randn(
+            2, self.seq_length, self.latent_dim, device=device, dtype=dtype
+        )
 
         inverse_scores: Dict[str, float] = {}
         for op_name, op in zip(self.available_ops, self.ops):
@@ -481,7 +520,9 @@ class MixedOp(nn.Module):
                 )
                 op_scores = op_scores / max(op_scores.numel(), 1)
             else:
-                op_scores = self._sample_op_weights(op_logits, independent_sigmoid=False)
+                op_scores = self._sample_op_weights(
+                    op_logits, independent_sigmoid=False
+                )
                 op_scores = op_scores.pow(self.competition_power)
                 op_scores = op_scores / op_scores.sum().clamp_min(1e-8)
 
@@ -649,7 +690,9 @@ class MixedOp(nn.Module):
         fallback_out = self.ops[self.fallback_idx](x)
         return self._ensure_output_dim(fallback_out)
 
-    def _hierarchical_probability_vector(self, temperature: float = 1.0) -> torch.Tensor:
+    def _hierarchical_probability_vector(
+        self, temperature: float = 1.0
+    ) -> torch.Tensor:
         group_temp = max(self.group_temperature * temperature, 1e-6)
         op_temp = max(self.op_temperature * temperature, 1e-6)
 
@@ -849,10 +892,11 @@ class DARTSCell(nn.Module):
                 "Wavelet",
                 "MultiScaleConv",
                 "PyramidConv",
-                "Mamba",
                 "PatchEmbed",
                 "iTransformerBlock",
                 "TimeMixer",
+                "NBeats",
+                "TimesNet",
             ],
         }
 
@@ -908,8 +952,8 @@ class DARTSCell(nn.Module):
     def set_progressive_stage(self, stage: str) -> bool:
         """Set progressive stage and rebuild edge search spaces if needed."""
         target_ops = self._ops_for_stage(stage)
-        needs_update = (
-            stage != self.progressive_stage or target_ops != list(self.available_ops)
+        needs_update = stage != self.progressive_stage or target_ops != list(
+            self.available_ops
         )
         if not needs_update:
             return False
@@ -1090,6 +1134,13 @@ class DARTSCell(nn.Module):
 
         total_efficiency_penalty = 0
 
+        # Precompute edge importance values as plain Python floats so that
+        # control-flow branches (the > 0.1 threshold) never appear inside the
+        # dynamo-traced compute graph, avoiding unnecessary graph breaks.
+        with torch.no_grad():
+            _ew_vals: list[float] = torch.sigmoid(self.edge_importance).tolist()
+        _edge_weights = torch.sigmoid(self.edge_importance)  # tracked for backprop
+
         for node_idx in range(1, self.num_nodes):
             node_inputs, edge_indices = [], []
             candidate_edges = []
@@ -1098,11 +1149,16 @@ class DARTSCell(nn.Module):
                 edge_idx = self._get_edge_index(node_idx, input_idx)
                 edge = self.edges[edge_idx]
 
-                # Apply edge importance gating
-                edge_weight = torch.sigmoid(self.edge_importance[edge_idx])
-                if edge_weight.item() > 0.1:  # Skip unimportant edges
+                # Apply edge importance gating (no .item() inside traced graph)
+                ew_val = _ew_vals[edge_idx]
+                if ew_val > 0.1:  # Skip unimportant edges
                     candidate_edges.append(
-                        (float(edge_weight.detach().item()), edge_idx, input_idx, edge_weight)
+                        (
+                            ew_val,
+                            edge_idx,
+                            input_idx,
+                            _edge_weights[edge_idx],
+                        )
                     )
 
             max_in_edges = self._max_in_edges_for_node(node_idx)
@@ -1151,7 +1207,11 @@ class DARTSCell(nn.Module):
     def advance_progressive_stage(self):
         """Advance to next progressive search stage"""
         stages = ["basic", "intermediate", "advanced"]
-        current_idx = stages.index(self.progressive_stage) if self.progressive_stage in stages else 0
+        current_idx = (
+            stages.index(self.progressive_stage)
+            if self.progressive_stage in stages
+            else 0
+        )
         if current_idx < len(stages) - 1:
             self.set_progressive_stage(stages[current_idx + 1])
 
@@ -1234,8 +1294,17 @@ class TimeSeriesDARTS(nn.Module):
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
+        arch_mode: str = "encoder_decoder",
+        mamba_num_layers: int = 3,
+        mamba_expand: int = 2,
     ):
         super().__init__()
+
+        _VALID_ARCH_MODES = {"encoder_decoder", "encoder_only", "decoder_only", "mamba"}
+        if arch_mode not in _VALID_ARCH_MODES:
+            raise ValueError(
+                f"arch_mode must be one of {sorted(_VALID_ARCH_MODES)}, got '{arch_mode}'"
+            )
 
         self._config = {
             "input_dim": input_dim,
@@ -1265,6 +1334,9 @@ class TimeSeriesDARTS(nn.Module):
             "use_drnas": use_drnas,
             "drnas_concentration": drnas_concentration,
             "use_fair_darts_hierarchical": use_fair_darts_hierarchical,
+            "arch_mode": arch_mode,
+            "mamba_num_layers": mamba_num_layers,
+            "mamba_expand": mamba_expand,
         }
 
         # Store configuration
@@ -1303,6 +1375,9 @@ class TimeSeriesDARTS(nn.Module):
         self.use_drnas = use_drnas
         self.drnas_concentration = drnas_concentration
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
+        self.arch_mode = arch_mode
+        self.mamba_num_layers = int(mamba_num_layers)
+        self.mamba_expand = int(mamba_expand)
 
         # Searchable normalization
         self.norm_strategy = SearchableNorm(self.input_dim)
@@ -1357,6 +1432,7 @@ class TimeSeriesDARTS(nn.Module):
             "use_drnas": cfg.use_drnas,
             "drnas_concentration": cfg.drnas_concentration,
             "use_fair_darts_hierarchical": cfg.use_fair_darts_hierarchical,
+            "arch_mode": cfg.arch_mode,
         }
         params.update(overrides)
         return cls(**params)
@@ -1434,34 +1510,73 @@ class TimeSeriesDARTS(nn.Module):
             nn.LayerNorm(self.hidden_dim),
             nn.GELU(),
         )
-        # Encoder and decoder
-        self.forecast_encoder = MixedEncoder(
-            self.hidden_dim,
-            self.latent_dim,
-            seq_len=self.seq_length,
-            dropout=self.dropout,
-            temperature=self.temperature,
-            single_path_search=self.single_path_search,
-        )
+        # Encoder and decoder — built conditionally on arch_mode
+        if self.arch_mode in ("encoder_decoder", "encoder_only"):
+            self.forecast_encoder = MixedEncoder(
+                self.hidden_dim,
+                self.latent_dim,
+                seq_len=self.seq_length,
+                dropout=self.dropout,
+                temperature=self.temperature,
+                single_path_search=self.single_path_search,
+            )
+        else:
+            self.forecast_encoder = None  # type: ignore[assignment]
 
-        self.forecast_decoder = MixedDecoder(
-            self.input_dim,
-            self.latent_dim,
-            seq_len=self.seq_length,
-            dropout=self.dropout,
-            temperature=self.temperature,
-            use_attention_bridge=self.use_attention_bridge,
-            attention_layers=self.attention_layers,
-            use_learned_memory_pooling=self.use_learned_memory_pooling,
-            memory_num_queries=self.memory_num_queries,
-            single_path_search=self.single_path_search,
-        )
+        if self.arch_mode == "encoder_decoder":
+            self.forecast_decoder = MixedDecoder(
+                self.input_dim,
+                self.latent_dim,
+                seq_len=self.seq_length,
+                dropout=self.dropout,
+                temperature=self.temperature,
+                use_attention_bridge=self.use_attention_bridge,
+                attention_layers=self.attention_layers,
+                use_learned_memory_pooling=self.use_learned_memory_pooling,
+                memory_num_queries=self.memory_num_queries,
+                single_path_search=self.single_path_search,
+            )
+        else:
+            self.forecast_decoder = None  # type: ignore[assignment]
+
+        # Encoder-only direct forecast head: pool last encoder state → project
+        if self.arch_mode == "encoder_only":
+            self.enc_only_head = nn.Sequential(
+                nn.Linear(self.latent_dim, self.latent_dim),
+                nn.LayerNorm(self.latent_dim),
+                nn.GELU(),
+                nn.Dropout(self.dropout),
+                nn.Linear(self.latent_dim, self.forecast_horizon * self.input_dim),
+            )
+
+        # Decoder-only direct forecast head: last DARTS-cell token → project
+        if self.arch_mode == "decoder_only":
+            self.dec_only_head = nn.Sequential(
+                nn.Linear(self.hidden_dim, self.hidden_dim),
+                nn.LayerNorm(self.hidden_dim),
+                nn.GELU(),
+                nn.Dropout(self.dropout),
+                nn.Linear(self.hidden_dim, self.forecast_horizon * self.input_dim),
+            )
+
+        # Mamba branch: stacked SSM layers + direct forecast head
+        if self.arch_mode == "mamba":
+            self.mamba_branch = MambaBranch(
+                hidden_dim=self.hidden_dim,
+                latent_dim=self.latent_dim,
+                forecast_horizon=self.forecast_horizon,
+                input_dim=self.input_dim,
+                num_layers=self.mamba_num_layers,
+                expand=self.mamba_expand,
+                dropout=self.dropout,
+            )
 
         # Feature fusion
         self.gate_fuse = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim * 2),
         )
 
+        # output_layer is only used in encoder_decoder mode
         self.output_layer = nn.Linear(self.latent_dim, self.input_dim, bias=False)
 
         self.residual_weights = nn.ParameterList(
@@ -1563,7 +1678,19 @@ class TimeSeriesDARTS(nn.Module):
         # Global skip connection
         final_features = final_features + self.global_skip * original_input
 
-        # Encoding
+        # ── Branch on architecture topology ──────────────────────────────
+        selected_norm = getattr(self, "selected_norm", None)
+
+        if self.arch_mode == "mamba":
+            return self._forward_mamba(final_features, x_seq, selected_norm)
+
+        if self.arch_mode == "encoder_only":
+            return self._forward_encoder_only(final_features, x_seq, selected_norm)
+
+        if self.arch_mode == "decoder_only":
+            return self._forward_decoder_only(final_features, x_seq, selected_norm)
+
+        # ── encoder_decoder (original path) ──────────────────────────────
         h_enc, context, encoder_state = self.forecast_encoder(final_features)
 
         # Decoding
@@ -1607,9 +1734,65 @@ class TimeSeriesDARTS(nn.Module):
         forecasts_tensor = self.norm_strategy.apply_output_denorm(
             forecasts_tensor,
             self.norm_alpha,
-            selected_norm=getattr(self, "selected_norm", None),
+            selected_norm=selected_norm,
         )
         return forecasts_tensor
+
+    def _forward_encoder_only(
+        self,
+        final_features: torch.Tensor,
+        x_seq: torch.Tensor,
+        selected_norm: Optional[str],
+    ) -> torch.Tensor:
+        """Non-autoregressive path: encode → pool last state → direct projection."""
+        B = x_seq.shape[0]
+        h_enc, _context, _state = self.forecast_encoder(final_features)
+        # Mean-pool over time for a compact representation, then last-token blend
+        pooled = h_enc.mean(dim=1) * 0.5 + h_enc[:, -1, :] * 0.5  # [B, latent_dim]
+        pooled = self._ensure_dtype(pooled)
+        out = self.enc_only_head(pooled)  # [B, H*C]
+        out = out.view(B, self.forecast_horizon, self.input_dim)
+        out = self.norm_strategy.apply_output_denorm(
+            out, self.norm_alpha, selected_norm=selected_norm
+        )
+        return out
+
+    def _forward_decoder_only(
+        self,
+        final_features: torch.Tensor,
+        x_seq: torch.Tensor,
+        selected_norm: Optional[str],
+    ) -> torch.Tensor:
+        """Decoder-only path: DARTS backbone → last token → direct projection."""
+        B = x_seq.shape[0]
+        # Use last-token representation (causal / auto-regressive spirit)
+        last_token = final_features[:, -1, :]  # [B, hidden_dim]
+        last_token = self._ensure_dtype(last_token)
+        out = self.dec_only_head(last_token)  # [B, H*C]
+        out = out.view(B, self.forecast_horizon, self.input_dim)
+        out = self.norm_strategy.apply_output_denorm(
+            out, self.norm_alpha, selected_norm=selected_norm
+        )
+        return out
+
+    def _forward_mamba(
+        self,
+        final_features: torch.Tensor,
+        x_seq: torch.Tensor,
+        selected_norm: Optional[str],
+    ) -> torch.Tensor:
+        """Mamba SSM path: stacked SSM layers → pooling → direct projection.
+
+        The DARTS cells serve as the feature extraction backbone;
+        ``MambaBranch`` then reads the full sequence and projects directly
+        to the forecast horizon without autoregressive decoding.
+        """
+        final_features = self._ensure_dtype(final_features)
+        out = self.mamba_branch(final_features)  # [B, forecast_horizon, input_dim]
+        out = self.norm_strategy.apply_output_denorm(
+            out, self.norm_alpha, selected_norm=selected_norm
+        )
+        return out
 
     # Analysis methods
     def get_all_alphas(self) -> Dict[str, torch.Tensor]:
@@ -1628,12 +1811,15 @@ class TimeSeriesDARTS(nn.Module):
                         alphas[f"cell_{i}_edge_{j}"] = edge.get_alphas()
 
         # Encoder/decoder alphas
-        alphas["encoder"] = self.forecast_encoder.get_alphas()
-        alphas["decoder"] = self.forecast_decoder.get_alphas()
+        if self.forecast_encoder is not None:
+            alphas["encoder"] = self.forecast_encoder.get_alphas()
+        if self.forecast_decoder is not None:
+            alphas["decoder"] = self.forecast_decoder.get_alphas()
 
         # Attention alphas
         if (
             self.use_attention_bridge
+            and self.forecast_decoder is not None
             and hasattr(self.forecast_decoder, "attention_alphas")
             and self.forecast_decoder.attention_alphas is not None
         ):
@@ -1653,7 +1839,9 @@ class TimeSeriesDARTS(nn.Module):
                 continue
 
             above_threshold = {
-                op: w for op, w in component_weights.items() if float(w) >= float(threshold)
+                op: w
+                for op, w in component_weights.items()
+                if float(w) >= float(threshold)
             }
             candidate_pool = above_threshold if above_threshold else component_weights
             max_op = max(candidate_pool, key=candidate_pool.get)
@@ -1715,6 +1903,8 @@ class TimeSeriesDARTS(nn.Module):
             ("encoder", self.forecast_encoder),
             ("decoder", self.forecast_decoder),
         ]:
+            if component is None:
+                continue
             if hasattr(component, "get_alphas"):
                 try:
                     alphas = component.get_alphas()
@@ -1754,15 +1944,21 @@ class TimeSeriesDARTS(nn.Module):
         for cell in self.cells:
             if hasattr(cell, "set_temperature"):
                 cell.set_temperature(temp)
-        self.forecast_encoder.set_temperature(temp)
-        self.forecast_decoder.set_temperature(temp)
+        if self.forecast_encoder is not None:
+            self.forecast_encoder.set_temperature(temp)
+        if self.forecast_decoder is not None:
+            self.forecast_decoder.set_temperature(temp)
 
     def get_orthogonal_regularization(self) -> torch.Tensor:
         """Aggregate recurrent state-mixing orthogonal regularization."""
         reg = torch.tensor(0.0, device=self.norm_alpha.device)
-        if hasattr(self.forecast_encoder, "orthogonal_regularization"):
+        if self.forecast_encoder is not None and hasattr(
+            self.forecast_encoder, "orthogonal_regularization"
+        ):
             reg = reg + self.forecast_encoder.orthogonal_regularization()
-        if hasattr(self.forecast_decoder, "orthogonal_regularization"):
+        if self.forecast_decoder is not None and hasattr(
+            self.forecast_decoder, "orthogonal_regularization"
+        ):
             reg = reg + self.forecast_decoder.orthogonal_regularization()
         return reg
 
@@ -1835,14 +2031,20 @@ class TimeSeriesDARTS(nn.Module):
             progress = min(max(progress, 0.0), 1.0)
 
             if schedule == "cosine":
-                temp = final_t + (self.initial_temperature - final_t) * (
-                    1.0 + math.cos(math.pi * progress)
-                ) / 2.0
+                temp = (
+                    final_t
+                    + (self.initial_temperature - final_t)
+                    * (1.0 + math.cos(math.pi * progress))
+                    / 2.0
+                )
             elif schedule == "exponential":
                 ratio = final_t / max(self.initial_temperature, 1e-8)
                 temp = self.initial_temperature * math.exp(math.log(ratio) * progress)
             elif schedule == "linear":
-                temp = self.initial_temperature + (final_t - self.initial_temperature) * progress
+                temp = (
+                    self.initial_temperature
+                    + (final_t - self.initial_temperature) * progress
+                )
             elif schedule == "step":
                 if progress < 0.3:
                     temp = self.initial_temperature
@@ -1984,7 +2186,11 @@ class TimeSeriesDARTS(nn.Module):
             if cell_idx < 0 or cell_idx >= len(self.cells):
                 continue
             cell = self.cells[cell_idx]
-            if not hasattr(cell, "edges") or edge_idx < 0 or edge_idx >= len(cell.edges):
+            if (
+                not hasattr(cell, "edges")
+                or edge_idx < 0
+                or edge_idx >= len(cell.edges)
+            ):
                 continue
 
             edge = cell.edges[edge_idx]

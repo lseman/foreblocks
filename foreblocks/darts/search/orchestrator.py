@@ -35,7 +35,9 @@ def evaluate_search_candidate(
     cfg = make_default_search_candidate_config(trainer, rng=rng)
     model = trainer._build_candidate_model(cfg)
     print(
-        f"Evaluating candidate {candidate_id} with config: {cfg['selected_ops']}, hidden_dim={cfg['hidden_dim']}, num_cells={cfg['num_cells']}, num_nodes={cfg['num_nodes']}"
+        f"Evaluating candidate {candidate_id} with config: {cfg['selected_ops']}, "
+        f"hidden_dim={cfg['hidden_dim']}, num_cells={cfg['num_cells']}, "
+        f"num_nodes={cfg['num_nodes']}, arch_mode={cfg.get('arch_mode', 'encoder_decoder')}"
     )
     metrics = trainer.evaluate_zero_cost_metrics(
         model, val_loader, max_samples=max_samples, num_batches=num_batches

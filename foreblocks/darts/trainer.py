@@ -70,7 +70,6 @@ _DEFAULT_OPS = [
     "MultiScaleConv",
     "PyramidConv",
     "PatchEmbed",
-    "Mamba",
     "InvertedAttention",
 ]
 
@@ -94,17 +93,29 @@ class DARTSTrainer:
         seq_length: int = 12,
         device: str = "auto",
         all_ops: Optional[List[str]] = None,
+        arch_modes: Optional[List[str]] = None,
     ):
         if hidden_dims is None:
             hidden_dims = [32, 64, 128]
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
+        _all_arch_modes = ["encoder_decoder", "encoder_only", "decoder_only"]
+        if arch_modes is None:
+            arch_modes = _all_arch_modes
+        else:
+            invalid = [m for m in arch_modes if m not in _all_arch_modes]
+            if invalid:
+                raise ValueError(
+                    f"Invalid arch_modes {invalid}. Valid options: {_all_arch_modes}"
+                )
+
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         self.forecast_horizon = forecast_horizon
         self.seq_length = seq_length
         self.device = device
+        self.arch_modes = list(arch_modes)
         self.use_gumbel = True
         self.alpha_tracker = AlphaTracker(
             as_probability_vector_fn=_as_probability_vector
@@ -119,6 +130,7 @@ class DARTSTrainer:
         print(f"DARTSTrainer initialised on {device}")
         print(f"  input_dim={input_dim}  forecast_horizon={forecast_horizon}")
         print(f"  operations available: {len(self.all_ops)}")
+        print(f"  arch_modes: {self.arch_modes}")
 
     # ─────────────────────────────────────────────────────────────────────
     # Internal utilities (kept inline — tightly coupled to instance state)
@@ -310,7 +322,8 @@ class DARTSTrainer:
         total = 0.0
         with torch.no_grad():
             for bx, by, *_ in dataloader:
-                bx, by = bx.to(self.device), by.to(self.device)
+                bx = bx.to(self.device, non_blocking=True)
+                by = by.to(self.device, non_blocking=True)
                 total += loss_fn(model(bx), by).item()
         return total / max(len(dataloader), 1)
 
@@ -387,6 +400,7 @@ class DARTSTrainer:
             "hidden_dim": rng.choice(hidden_dim_choices),
             "num_cells": rng.randint(cell_range[0], cell_range[1]),
             "num_nodes": int(num_nodes),
+            "arch_mode": rng.choice(getattr(self, "arch_modes", ["encoder_decoder"])),
         }
 
     def _build_candidate_model(self, cfg: Dict[str, Any]) -> nn.Module:
@@ -399,6 +413,7 @@ class DARTSTrainer:
             num_cells=cfg["num_cells"],
             num_nodes=cfg["num_nodes"],
             selected_ops=cfg["selected_ops"],
+            arch_mode=cfg.get("arch_mode", "encoder_decoder"),
         ).to(self.device)
 
     def _create_bilevel_loaders(self, train_loader, seed: int = 42):
@@ -409,11 +424,22 @@ class DARTSTrainer:
         train_ds, arch_ds = torch.utils.data.random_split(
             dataset, [train_size, arch_size], generator=g
         )
+        _pin = train_loader.pin_memory
         train_model_loader = torch.utils.data.DataLoader(
-            train_ds, batch_size=train_loader.batch_size, shuffle=True
+            train_ds,
+            batch_size=train_loader.batch_size,
+            shuffle=True,
+            pin_memory=_pin,
+            num_workers=train_loader.num_workers,
+            persistent_workers=bool(train_loader.num_workers > 0),
         )
         train_arch_loader = torch.utils.data.DataLoader(
-            arch_ds, batch_size=train_loader.batch_size, shuffle=True
+            arch_ds,
+            batch_size=train_loader.batch_size,
+            shuffle=True,
+            pin_memory=_pin,
+            num_workers=train_loader.num_workers,
+            persistent_workers=bool(train_loader.num_workers > 0),
         )
         return train_arch_loader, train_model_loader
 
@@ -547,9 +573,12 @@ class DARTSTrainer:
         epochs: int = 50,
         arch_learning_rate: float = 3e-3,
         model_learning_rate: float = 1e-3,
-        weight_decay: float = 1e-4,
+        # ── weight-decay ────────────────────────────────────────────────
+        model_weight_decay: float = 1e-4,
         arch_weight_decay: float = 1e-3,
-        temperature: float = 1.0,
+        # legacy alias kept for backward compatibility
+        weight_decay: Optional[float] = None,
+        # ── bilevel / optimization ───────────────────────────────────────
         use_swa: bool = False,
         use_bilevel_optimization: bool = True,
         gradient_accumulation_steps: int = 1,
@@ -557,26 +586,99 @@ class DARTSTrainer:
         loss_type: str = "huber",
         patience: int = 15,
         verbose: bool = True,
-        use_progressive_training: bool = False,
+        warmup_epochs: int = 2,
+        architecture_update_freq: int = 3,
+        # ── regularization ───────────────────────────────────────────────
+        regularization_types: Optional[List[str]] = None,
+        regularization_weights: Optional[List[float]] = None,
+        # legacy: if False, disables regularization entirely
         use_regularization: bool = True,
+        # ── temperature ──────────────────────────────────────────────────
+        temperature_schedule: str = "cosine",
+        # ── hessian penalty ──────────────────────────────────────────────
         hessian_penalty_weight: float = 0.0,
-        edge_diversity_weight: float = 0.0,
+        hessian_fd_eps: float = 1e-2,
+        hessian_update_freq: int = 1,
+        # ── edge diversity / identity cap ────────────────────────────────
+        edge_diversity_weight: float = 0.03,
+        edge_usage_balance_weight: float = 0.04,
+        edge_identity_cap: float = 0.45,
+        edge_identity_cap_weight: float = 0.02,
+        # legacy aliases
+        identity_dominance_cap: Optional[float] = None,
+        # ── edge sharpening ──────────────────────────────────────────────
+        edge_sharpening_max_weight: float = 0.03,
+        edge_sharpening_start_frac: float = 0.35,
+        # legacy aliases
+        edge_sharpening_strength: Optional[float] = None,
         edge_sharpening_start_epoch: Optional[int] = None,
-        edge_sharpening_strength: float = 0.01,
-        identity_dominance_cap: float = 0.7,
-        pruning_enabled: bool = False,
+        # ── progressive shrinking / pruning ──────────────────────────────
+        progressive_shrinking: bool = True,
+        hybrid_pruning_start_epoch: int = 20,
+        hybrid_pruning_interval: int = 10,
+        hybrid_pruning_base_threshold: float = 0.15,
+        hybrid_pruning_strategy: str = "performance",
+        hybrid_pruning_freeze_logit: float = -20.0,
+        # legacy aliases
+        use_progressive_training: Optional[bool] = None,
+        pruning_enabled: Optional[bool] = None,
         pruning_start_epoch: Optional[int] = None,
-        pruning_threshold: float = 0.05,
-        pruning_hard_epoch: Optional[int] = None,
-        log_arch_gradients: bool = False,
+        pruning_threshold: Optional[float] = None,
+        # ── misc ─────────────────────────────────────────────────────────
+        bilevel_split_seed: int = 42,
+        state_mix_ortho_reg_weight: float = 1e-3,
+        arch_grad_ema_beta: float = 0.0,
+        beta_darts_weight: float = 0.0,
+        # silently absorbed legacy-only kwargs
+        temperature: float = 1.0,  # noqa: superseded by temperature_schedule
+        pruning_hard_epoch: Optional[int] = None,  # noqa: not used in new loop
+        log_arch_gradients: bool = False,  # noqa: controlled via verbose
     ) -> Dict[str, Any]:
         """
         Run DARTS bilevel architecture search training.
 
         Returns dict with ``model``, ``best_val_loss``, ``train_losses``,
         ``val_losses``, ``alpha_values``, ``diversity_scores``,
-        ``training_time``, ``search_stats``.
+        ``training_time``, ``final_metrics``.
         """
+        # ── resolve legacy aliases ────────────────────────────────────────
+        eff_model_wd = weight_decay if weight_decay is not None else model_weight_decay
+        eff_edge_id_cap = (
+            identity_dominance_cap
+            if identity_dominance_cap is not None
+            else edge_identity_cap
+        )
+        eff_sharpen_w = (
+            edge_sharpening_strength
+            if edge_sharpening_strength is not None
+            else edge_sharpening_max_weight
+        )
+        eff_progressive = (
+            progressive_shrinking
+            if use_progressive_training is None
+            else bool(use_progressive_training)
+        )
+        if pruning_enabled is not None and not pruning_enabled:
+            eff_progressive = False
+        eff_prune_start = (
+            pruning_start_epoch
+            if pruning_start_epoch is not None
+            else hybrid_pruning_start_epoch
+        )
+        eff_prune_thresh = (
+            pruning_threshold
+            if pruning_threshold is not None
+            else hybrid_pruning_base_threshold
+        )
+        if edge_sharpening_start_epoch is not None and epochs > 0:
+            eff_sharpen_frac = float(edge_sharpening_start_epoch) / float(epochs)
+        else:
+            eff_sharpen_frac = edge_sharpening_start_frac
+
+        if not use_regularization:
+            regularization_types = []
+            regularization_weights = []
+
         return _dl_mod.train_darts_model(
             self,
             model,
@@ -585,9 +687,8 @@ class DARTSTrainer:
             epochs=epochs,
             arch_learning_rate=arch_learning_rate,
             model_learning_rate=model_learning_rate,
-            weight_decay=weight_decay,
+            model_weight_decay=eff_model_wd,
             arch_weight_decay=arch_weight_decay,
-            temperature=temperature,
             use_swa=use_swa,
             use_bilevel_optimization=use_bilevel_optimization,
             gradient_accumulation_steps=gradient_accumulation_steps,
@@ -595,18 +696,30 @@ class DARTSTrainer:
             loss_type=loss_type,
             patience=patience,
             verbose=verbose,
-            use_progressive_training=use_progressive_training,
-            use_regularization=use_regularization,
+            warmup_epochs=warmup_epochs,
+            architecture_update_freq=architecture_update_freq,
+            regularization_types=regularization_types,
+            regularization_weights=regularization_weights,
+            temperature_schedule=temperature_schedule,
             hessian_penalty_weight=hessian_penalty_weight,
+            hessian_fd_eps=hessian_fd_eps,
+            hessian_update_freq=hessian_update_freq,
             edge_diversity_weight=edge_diversity_weight,
-            edge_sharpening_start_epoch=edge_sharpening_start_epoch,
-            edge_sharpening_strength=edge_sharpening_strength,
-            identity_dominance_cap=identity_dominance_cap,
-            pruning_enabled=pruning_enabled,
-            pruning_start_epoch=pruning_start_epoch,
-            pruning_threshold=pruning_threshold,
-            pruning_hard_epoch=pruning_hard_epoch,
-            log_arch_gradients=log_arch_gradients,
+            edge_usage_balance_weight=edge_usage_balance_weight,
+            edge_identity_cap=eff_edge_id_cap,
+            edge_identity_cap_weight=edge_identity_cap_weight,
+            edge_sharpening_max_weight=eff_sharpen_w,
+            edge_sharpening_start_frac=eff_sharpen_frac,
+            progressive_shrinking=eff_progressive,
+            hybrid_pruning_start_epoch=eff_prune_start,
+            hybrid_pruning_interval=hybrid_pruning_interval,
+            hybrid_pruning_base_threshold=eff_prune_thresh,
+            hybrid_pruning_strategy=hybrid_pruning_strategy,
+            hybrid_pruning_freeze_logit=hybrid_pruning_freeze_logit,
+            bilevel_split_seed=bilevel_split_seed,
+            state_mix_ortho_reg_weight=state_mix_ortho_reg_weight,
+            arch_grad_ema_beta=arch_grad_ema_beta,
+            beta_darts_weight=beta_darts_weight,
         )
 
     # ── Final model training ──────────────────────────────────────────────
@@ -623,6 +736,10 @@ class DARTSTrainer:
         weight_decay: float = 1e-5,
         patience: int = 20,
         loss_type: str = "huber",
+        use_onecycle: bool = True,
+        swa_start_ratio: float = 0.33,
+        grad_clip_norm: float = 1.0,
+        # legacy-only kwargs silently absorbed
         verbose: bool = True,
         use_amp: bool = False,
         gradient_accumulation_steps: int = 1,
@@ -649,13 +766,10 @@ class DARTSTrainer:
             weight_decay=weight_decay,
             patience=patience,
             loss_type=loss_type,
-            verbose=verbose,
+            use_onecycle=use_onecycle,
+            swa_start_ratio=swa_start_ratio,
+            grad_clip_norm=grad_clip_norm,
             use_amp=use_amp,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            use_swa=use_swa,
-            swa_start=swa_start,
-            swa_lr=swa_lr,
-            compute_final_metrics=compute_final_metrics,
         )
 
     # ── Multi-fidelity search ─────────────────────────────────────────────
@@ -678,6 +792,7 @@ class DARTSTrainer:
         run_name: Optional[str] = None,
         retrain_final_from_scratch: bool = True,
         discrete_arch_threshold: float = 0.3,
+        use_amp: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
         """Run the complete multi-fidelity DARTS search pipeline."""
@@ -698,6 +813,7 @@ class DARTSTrainer:
             run_name=run_name,
             retrain_final_from_scratch=retrain_final_from_scratch,
             discrete_arch_threshold=discrete_arch_threshold,
+            use_amp=use_amp,
             **kwargs,
         )
 

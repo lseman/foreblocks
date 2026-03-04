@@ -60,6 +60,8 @@ def run_multi_fidelity_search(
     logger=None,
     retrain_final_from_scratch: bool = True,
     discrete_arch_threshold: float = 0.3,
+    use_amp: bool = False,
+    **kwargs,
 ) -> Dict[str, Any]:
     """
     Run the complete multi-fidelity DARTS search pipeline.
@@ -253,6 +255,7 @@ def run_multi_fidelity_search(
             val_loader=val_loader,
             epochs=search_epochs,
             use_swa=False,
+            use_amp=use_amp,
         )
         t_search = time.perf_counter() - t_s0
 
@@ -360,6 +363,7 @@ def run_multi_fidelity_search(
         epochs=final_epochs,
         learning_rate=5e-4,
         weight_decay=1e-5,
+        use_amp=use_amp,
     )
 
     # Quick training-curve plot

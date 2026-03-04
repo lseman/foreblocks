@@ -76,6 +76,25 @@
     .badge { display:inline-flex; align-items:center; gap:4px; padding:2px 10px; border-radius:999px; font-size:.73rem; font-weight:600; border:1px solid; }
     .bi    { background:rgba(99,102,241,.11); border-color:rgba(99,102,241,.3); color:#a5b4fc; }
     .bc    { background:rgba(34,211,238,.09); border-color:rgba(34,211,238,.28); color:#67e8f9; }
+    .tab-btn {
+      border:1px solid rgba(255,255,255,.1);
+      background:rgba(255,255,255,.03);
+      color:#9090c0;
+      font-size:.82rem;
+      font-weight:600;
+      border-radius:.8rem;
+      padding:.55rem .9rem;
+      transition:all .15s;
+    }
+    .tab-btn:hover { border-color:rgba(99,102,241,.35); color:#d8d8ff; }
+    .tab-btn.active {
+      color:#d8e0ff;
+      border-color:rgba(99,102,241,.6);
+      background:linear-gradient(135deg, rgba(99,102,241,.22), rgba(34,211,238,.12));
+      box-shadow:0 0 0 1px rgba(99,102,241,.25) inset;
+    }
+    .tab-panel { display:none; }
+    .tab-panel.active { display:block; }
     .fu    { animation:fu .7s ease both; }
     .fu1   { animation-delay:.1s; }
     .fu2   { animation-delay:.2s; }
@@ -100,6 +119,7 @@
       <a href="#get"      class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Install</a>
       <a href="#features" class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Features</a>
       <a href="#models"   class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Models</a>
+      <a href="#impl"     class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Implementation</a>
       <a href="#usage"    class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Usage</a>
       <a href="#api"      class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">API</a>
       <a href="#examples" class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Examples</a>
@@ -356,6 +376,96 @@ cfg = TrainingConfig(
 trainer = Trainer(model, config=cfg)
 trainer.calibrate_conformal(cal_loader)
 lower, upper = trainer.predict_with_intervals(X_test)</code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="div"></div>
+
+<!-- IMPLEMENTATION DETAILS -->
+<section id="impl" class="py-20" style="background:rgba(255,255,255,.015)">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <div class="stag">Engineering Notes</div>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">Custom Transformer &amp; MoE</h2>
+      <p class="mt-3 max-w-2xl mx-auto text-sm" style="color:#6a6a90">Focused view of the implementation choices behind ForeBlocks' transformer stack and MoE path.</p>
+    </div>
+
+    <div class="card rounded-2xl p-6" data-tab-group="impl-tabs">
+      <div class="flex flex-wrap gap-2 mb-5" role="tablist" aria-label="Implementation tabs">
+        <button class="tab-btn active" type="button" data-tab-target="transformer" aria-selected="true">Transformer Implementation</button>
+        <button class="tab-btn" type="button" data-tab-target="moe" aria-selected="false">MoE Implementation</button>
+      </div>
+
+      <div class="tab-panel active" data-tab-panel="transformer">
+        <div class="grid lg:grid-cols-2 gap-5">
+          <div>
+            <h3 class="font-semibold text-white mb-3">What is custom in our transformer</h3>
+            <ul class="space-y-2 text-sm" style="color:#7878a0">
+              <li>&#8226; Unified encoder/decoder base with <code>att_type</code> + <code>attention_mode</code> routing.</li>
+              <li>&#8226; Patch pathways (<code>patch_encoder</code>, <code>patch_decoder</code>) and CT-PatchTST mode for long context.</li>
+              <li>&#8226; Configurable norms (<code>norm_strategy</code>, <code>custom_norm</code>) and SwiGLU feedforward.</li>
+              <li>&#8226; Optional dynamic depth controls with layer skipping budgets.</li>
+              <li>&#8226; Incremental decoding support in decoder for efficient autoregressive inference.</li>
+            </ul>
+          </div>
+          <div class="relative">
+            <button class="copy-btn">Copy</button>
+            <pre class="line-numbers"><code class="language-python">from foreblocks import TransformerEncoder
+
+enc = TransformerEncoder(
+    input_size=8,
+    d_model=256,
+    nhead=8,
+    num_layers=4,
+    att_type="standard",
+    attention_mode="hybrid",
+    norm_strategy="pre_norm",
+    custom_norm="rms",
+    patch_encoder=True,
+    patch_len=16,
+    patch_stride=8,
+    use_layer_skipping=True,
+)
+</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab-panel="moe">
+        <div class="grid lg:grid-cols-2 gap-5">
+          <div>
+            <h3 class="font-semibold text-white mb-3">What is custom in our MoE</h3>
+            <ul class="space-y-2 text-sm" style="color:#7878a0">
+              <li>&#8226; dMoE-style FFN path activated with <code>use_moe=True</code>.</li>
+              <li>&#8226; Routing controls: <code>routing_mode</code>, <code>router_type</code>, <code>top_k</code>, temperature/noise.</li>
+              <li>&#8226; Auxiliary balancing via <code>load_balance_weight</code>, <code>z_loss_weight</code>, and <code>moe_aux_lambda</code>.</li>
+              <li>&#8226; Shared expert support (<code>num_shared</code>, <code>shared_combine</code>) for stable capacity scaling.</li>
+              <li>&#8226; Performance knobs for grouped kernels and optional Triton-backed paths.</li>
+            </ul>
+          </div>
+          <div class="relative">
+            <button class="copy-btn">Copy</button>
+            <pre class="line-numbers"><code class="language-python">from foreblocks import TransformerEncoder
+
+enc = TransformerEncoder(
+    input_size=8,
+    d_model=256,
+    nhead=8,
+    num_layers=4,
+    use_moe=True,
+    num_experts=8,
+    top_k=2,
+    routing_mode="token_choice",
+    router_type="noisy_topk",
+    load_balance_weight=1e-2,
+    z_loss_weight=1e-3,
+    moe_aux_lambda=1.0,
+)
+</code></pre>
+          </div>
         </div>
       </div>
     </div>
@@ -671,6 +781,30 @@ document.addEventListener("DOMContentLoaded", () => {
   const sections = Array.from(document.querySelectorAll('section[id]'));
   const linkMap  = new Map(links.filter(a => a.hash).map(a => [a.hash.slice(1), a]));
   const vis      = new Map();
+
+  document.querySelectorAll('[data-tab-group]').forEach(group => {
+    const buttons = Array.from(group.querySelectorAll('[data-tab-target]'));
+    const panels = Array.from(group.querySelectorAll('[data-tab-panel]'));
+    if (!buttons.length || !panels.length) return;
+
+    const activate = (name) => {
+      buttons.forEach(btn => {
+        const isActive = btn.getAttribute('data-tab-target') === name;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      });
+      panels.forEach(panel => {
+        panel.classList.toggle('active', panel.getAttribute('data-tab-panel') === name);
+      });
+    };
+
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => activate(btn.getAttribute('data-tab-target')));
+    });
+
+    const defaultTab = buttons.find(b => b.classList.contains('active')) || buttons[0];
+    activate(defaultTab.getAttribute('data-tab-target'));
+  });
 
   const setActive = id => {
     links.forEach(a => a.classList.remove('active'));

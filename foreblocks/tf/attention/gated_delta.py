@@ -49,7 +49,7 @@ import torch.nn.functional as F
 
 try:
     import triton
-    import triton.language as tl
+    import triton.language as tl  # noqa: F401
 
     _HAS_TRITON = True
 except Exception:

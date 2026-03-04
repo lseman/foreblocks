@@ -6,7 +6,6 @@ recursive-include .github/workflows workflow.yml
 include .gitignore
 recursive-include docs custom_blocks.md
 recursive-include docs darts.md
-recursive-include docs fourier.md
 recursive-include docs/imgs darts_module.svg
 recursive-include docs/imgs darts_module_logo.svg
 recursive-include docs/imgs foreblocks_inkscape_compatible.svg
@@ -21,7 +20,6 @@ recursive-include docs/imgs transformer_diagram_fixed.svg
 recursive-include docs moe.md
 recursive-include docs preprocessor.md
 recursive-include docs transformer.md
-recursive-include docs wavelets.md
 recursive-include examples explainability.ipynb
 recursive-include examples fourier_block.ipynb
 recursive-include examples nha_block.ipynb

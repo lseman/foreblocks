@@ -46,7 +46,7 @@ def derive_final_architecture(
     new_model = copy.deepcopy(model)
     new_model.eval()
     variant_attrs = {
-        "encoder": {0: "lstm", 1: "gru", 2: "transformer"},
+        "encoder": {0: "lstm", 1: "gru", 2: "transformer", 3: "patch_encoder"},
         "decoder": {0: "lstm", 1: "gru", 2: "transformer"},
     }
 
@@ -120,7 +120,9 @@ def derive_final_architecture(
             if weights is None or weights.numel() == 0:
                 continue
             for op_idx, w in enumerate(weights):
-                score = float(w.item()) * (0.65 + 0.35 * float(edge_importance[edge_idx]))
+                score = float(w.item()) * (
+                    0.65 + 0.35 * float(edge_importance[edge_idx])
+                )
                 candidates.append((score, edge_idx, int(op_idx)))
         candidates.sort(key=lambda x: x[0], reverse=True)
 
@@ -133,7 +135,9 @@ def derive_final_architecture(
             op_name = edge.available_ops[op_idx]
             if op_name in used_unique_ops:
                 continue
-            if op_name == "Identity" and len(used_unique_ops) < max(target_unique - 1, 1):
+            if op_name == "Identity" and len(used_unique_ops) < max(
+                target_unique - 1, 1
+            ):
                 continue
 
             assignments[edge_idx] = op_idx
@@ -141,15 +145,12 @@ def derive_final_architecture(
             op_counts_by_name[op_name] = op_counts_by_name.get(op_name, 0) + 1
 
         # Pass 2: fill remaining edges with repetition-aware penalties.
-        remaining_edges = [
-            idx
-            for idx in range(n_edges)
-            if assignments[idx] is None
-        ]
+        remaining_edges = [idx for idx in range(n_edges) if assignments[idx] is None]
         # Prefer to place higher-confidence undecided edges first.
         remaining_edges.sort(
             key=lambda e_idx: (
-                float(edge_weight_list[e_idx].max().item()) * float(edge_importance[e_idx])
+                float(edge_weight_list[e_idx].max().item())
+                * float(edge_importance[e_idx])
                 if edge_weight_list[e_idx] is not None
                 and edge_weight_list[e_idx].numel() > 0
                 else -1e9
@@ -217,7 +218,9 @@ def derive_final_architecture(
                         if weights is not None and weights.numel() > int(op_idx)
                         else -1e9
                     )
-                    holders.append((confidence * float(edge_importance[edge_idx]), edge_idx))
+                    holders.append(
+                        (confidence * float(edge_importance[edge_idx]), edge_idx)
+                    )
 
                 holders.sort(key=lambda x: x[0])
                 replaced = False
@@ -247,7 +250,9 @@ def derive_final_architecture(
                         old_name = edge.available_ops[old_idx]
                         assignments[edge_idx] = cand_idx
 
-                        op_counts_by_name[old_name] = op_counts_by_name.get(old_name, 1) - 1
+                        op_counts_by_name[old_name] = (
+                            op_counts_by_name.get(old_name, 1) - 1
+                        )
                         if op_counts_by_name[old_name] <= 0:
                             op_counts_by_name.pop(old_name, None)
                         op_counts_by_name[cand_name] = cand_count + 1
@@ -286,7 +291,9 @@ def derive_final_architecture(
                 "seasonal_residual",
                 "learnable_filter",
             ]
-            mode = mode_names[top_idx] if top_idx < len(mode_names) else f"mode_{top_idx}"
+            mode = (
+                mode_names[top_idx] if top_idx < len(mode_names) else f"mode_{top_idx}"
+            )
             enabled = mode != "none"
             status = "enabled" if enabled else "disabled"
             print(
@@ -319,13 +326,9 @@ def derive_final_architecture(
 
             # Print decomposition status near normalization for clearer architecture trace.
             if hasattr(new_model, "forecast_encoder"):
-                _print_decomposition_choice(
-                    new_model.forecast_encoder, "Encoder"
-                )
+                _print_decomposition_choice(new_model.forecast_encoder, "Encoder")
             if hasattr(new_model, "forecast_decoder"):
-                _print_decomposition_choice(
-                    new_model.forecast_decoder, "Decoder"
-                )
+                _print_decomposition_choice(new_model.forecast_decoder, "Decoder")
         except Exception as e:
             print(f"Warning: Could not fix input normalization: {e}")
 
@@ -340,9 +343,7 @@ def derive_final_architecture(
             ):
                 with torch.no_grad():
                     edge_importance = (
-                        torch.sigmoid(cell.edge_importance.detach())
-                        .cpu()
-                        .tolist()
+                        torch.sigmoid(cell.edge_importance.detach()).cpu().tolist()
                     )
             selected_indices, op_counts = _assign_cell_edges_with_diversity(
                 cell, edge_weights, edge_importance=edge_importance
@@ -380,7 +381,7 @@ def derive_final_architecture(
     ):
         try:
             if hasattr(new_model.forecast_encoder, "get_alphas"):
-                encoder_weights = new_model.forecast_encoder.get_alphas()[:3]
+                encoder_weights = new_model.forecast_encoder.get_alphas()[:4]
             else:
                 encoder_weights = F.softmax(new_model.forecast_encoder.alphas, dim=-1)
             top_idx = encoder_weights.argmax().item()
@@ -446,7 +447,9 @@ def derive_final_architecture(
                             attention_variant = "linear"
                     else:
                         # Backward compatibility: [use_attention, no_attention]
-                        attention_choice = "no_attention" if max_idx == 1 else "attention"
+                        attention_choice = (
+                            "no_attention" if max_idx == 1 else "attention"
+                        )
                         attention_variant = "sdp"
 
                     print("   → Using Attention Bridge:", attention_choice)
@@ -456,15 +459,10 @@ def derive_final_architecture(
                     attention_variant = "sdp"
 
             if use_attention and attention_choice != "no_attention":
-                if (
-                    attention_variant == "linear"
-                    and hasattr(new_model.forecast_decoder, "linear_attention_bridge")
-                ):
+                if hasattr(new_model.forecast_decoder, "attention_bridge"):
                     selected_attention_bridge = (
-                        new_model.forecast_decoder.linear_attention_bridge
+                        new_model.forecast_decoder.attention_bridge
                     )
-                elif hasattr(new_model.forecast_decoder, "attention_bridge"):
-                    selected_attention_bridge = new_model.forecast_decoder.attention_bridge
 
             use_attention_final = use_attention and attention_choice != "no_attention"
 

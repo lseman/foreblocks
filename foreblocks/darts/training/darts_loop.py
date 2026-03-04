@@ -78,6 +78,8 @@ def train_darts_model(
     edge_usage_balance_weight: float = 0.04,
     edge_identity_cap: float = 0.45,
     edge_identity_cap_weight: float = 0.02,
+    arch_grad_ema_beta: float = 0.0,
+    beta_darts_weight: float = 0.0,
 ) -> Dict[str, Any]:
     """
     Run one DARTS bilevel training cycle.
@@ -178,6 +180,7 @@ def train_darts_model(
         train_arch_loader=train_arch_loader,
         val_loader=val_loader,
         train_model_loader=train_model_loader,
+        arch_grad_ema_beta=arch_grad_ema_beta,
     )
 
     # ── Regularization & temperature ──────────────────────────────────────
@@ -262,11 +265,15 @@ def train_darts_model(
             alpha_values.append(trainer.alpha_tracker.extract_alpha_values(model))
 
         # -- Architecture parameter updates ----------------------------------
-        if epoch >= warmup_epochs and epoch % architecture_update_freq == 0:
-            for _ in range(2):
+        _arch_freq = _dynamic_arch_update_freq(
+            epoch, epochs, warmup_epochs, architecture_update_freq
+        )
+        _arch_iters = _dynamic_inner_arch_iters(epoch, epochs, warmup_epochs)
+        if epoch >= warmup_epochs and epoch % _arch_freq == 0:
+            for _ in range(_arch_iters):
                 arch_batch = bilevel_optimizer.next_arch_batch()
-                arch_x = arch_batch[0].to(device)
-                arch_y = arch_batch[1].to(device)
+                arch_x = arch_batch[0].to(device, non_blocking=True)
+                arch_y = arch_batch[1].to(device, non_blocking=True)
                 bilevel_optimizer.zero_arch_grads()
 
                 with autocast_ctx(device, enabled=use_amp):
@@ -289,6 +296,18 @@ def train_darts_model(
                             + float(state_mix_ortho_reg_weight) * ortho_reg
                         )
 
+                    # β-DARTS: L2 regularization on raw arch logits.
+                    # Penalising large logit magnitudes prevents any single
+                    # operation from dominating early in search (a.k.a.
+                    # skip-connection collapse).  Inspired by Ye et al.
+                    # "β-DARTS: β-Decay Regularization for Differentiable
+                    # Architecture Search", NeurIPS 2022.
+                    if beta_darts_weight > 0.0 and arch_params:
+                        beta_reg = beta_darts_weight * sum(
+                            p.pow(2).mean() for p in arch_params
+                        )
+                        total_arch_loss = total_arch_loss + beta_reg
+
                     # Hessian penalty
                     hessian_penalty = torch.tensor(0.0, device=device)
                     if (
@@ -299,8 +318,8 @@ def train_darts_model(
                         and model_params
                     ):
                         h_batch = bilevel_optimizer.next_hessian_batch()
-                        h_train_x = h_batch[0].to(device)
-                        h_train_y = h_batch[1].to(device)
+                        h_train_x = h_batch[0].to(device, non_blocking=True)
+                        h_train_y = h_batch[1].to(device, non_blocking=True)
                         hessian_penalty = finite_difference_hessian_penalty(
                             model=model,
                             loss_fn=loss_fn,
@@ -496,6 +515,51 @@ def train_darts_model(
 # ---------------------------------------------------------------------------
 
 
+def _dynamic_arch_update_freq(
+    epoch: int, epochs: int, warmup_epochs: int, base_freq: int
+) -> int:
+    """Return the arch-update frequency adapted to the current training phase.
+
+    Architecture gradients are noisiest while model weights are still
+    unstable (early training), so updates should be *less* frequent then
+    and *more* frequent in the late commitment phase.
+
+    Phase           progress (post-warmup)   returned frequency
+    Early                  < 40 %            ``base_freq + 2``
+    Mid             40 – 70 %                ``base_freq``
+    Late                   > 70 %            ``max(1, base_freq − 1)``
+    """
+    if epoch <= warmup_epochs:
+        return base_freq
+    progress = (epoch - warmup_epochs) / max(1, epochs - warmup_epochs)
+    if progress < 0.40:
+        return base_freq + 2
+    if progress < 0.70:
+        return base_freq
+    return max(1, base_freq - 1)
+
+
+def _dynamic_inner_arch_iters(epoch: int, epochs: int, warmup_epochs: int) -> int:
+    """Return the number of arch inner-loop gradient steps for this epoch.
+
+    More iterations in the late phase give the architecture more gradient
+    signal once model weights have converged.
+
+    Phase   progress    iterations
+    Early    < 40 %        1
+    Mid     40–70 %        2
+    Late     > 70 %        3
+    """
+    if epoch <= warmup_epochs:
+        return 1
+    progress = (epoch - warmup_epochs) / max(1, epochs - warmup_epochs)
+    if progress < 0.40:
+        return 1
+    if progress < 0.70:
+        return 2
+    return 3
+
+
 def _run_model_training_epoch(
     *,
     model: nn.Module,
@@ -527,7 +591,8 @@ def _run_model_training_epoch(
 
     model_optimizer.zero_grad()
     for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
-        batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+        batch_x = batch_x.to(device, non_blocking=True)
+        batch_y = batch_y.to(device, non_blocking=True)
 
         with autocast_ctx(device, enabled=use_amp):
             preds = model(batch_x)
@@ -579,7 +644,8 @@ def _run_validation_epoch(
             else val_loader
         )
         for batch_data in val_pbar:
-            x, y = batch_data[0].to(device), batch_data[1].to(device)
+            x = batch_data[0].to(device, non_blocking=True)
+            y = batch_data[1].to(device, non_blocking=True)
             with autocast_ctx(device, enabled=use_amp):
                 val_loss += loss_fn(model(x), y).item()
             if verbose and hasattr(val_pbar, "set_postfix"):
@@ -945,10 +1011,13 @@ def _log_arch_gradients(model: nn.Module) -> None:
         return
     enc_gn = enc.grad.norm().item() if enc.grad is not None else float("nan")
     dec_gn = dec.grad.norm().item() if dec.grad is not None else float("nan")
-    cos = F.cosine_similarity(
-        enc.detach().view(-1), dec.detach().view(-1), dim=0
-    ).item()
+    ev, dv = enc.detach().view(-1), dec.detach().view(-1)
+    if ev.shape == dv.shape:
+        cos = F.cosine_similarity(ev, dv, dim=0).item()
+        cos_str = f"{cos:.4f}"
+    else:
+        cos_str = f"n/a(enc={ev.numel()},dec={dv.numel()})"
     print(
-        f"  [Arch Grad] enc={enc_gn:.6e}, dec={dec_gn:.6e}, cos={cos:.4f}, "
+        f"  [Arch Grad] enc={enc_gn:.6e}, dec={dec_gn:.6e}, cos={cos_str}, "
         f"shared={enc is dec}"
     )

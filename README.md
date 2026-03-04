@@ -276,6 +276,10 @@ model = ForecastingModel(
 | Resource | Link |
 |---|---|
 | Full Docs | [lseman.github.io/foreblocks](https://lseman.github.io/foreblocks) |
+| Custom Blocks Guide | [docs/custom_blocks.md](docs/custom_blocks.md) |
+| Transformer Guide | [docs/transformer.md](docs/transformer.md) |
+| Preprocessor Guide | [docs/preprocessor.md](docs/preprocessor.md) |
+| DARTS Guide | [docs/darts.md](docs/darts.md) |
 | GitHub Repo | [github.com/lseman/foreblocks](https://github.com/lseman/foreblocks) |
 | PyPI Package | [pypi.org/project/foreblocks](https://pypi.org/project/foreblocks/) |
 | Issue Tracker | [GitHub Issues](https://github.com/lseman/foreblocks/issues) |

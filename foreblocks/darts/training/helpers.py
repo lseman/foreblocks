@@ -43,6 +43,7 @@ class RegularizationType(Enum):
     DIVERSITY = "diversity"
     SPARSITY = "sparsity"
     EFFICIENCY = "efficiency"
+    SCHEDULED = "scheduled"
 
 
 class ArchitectureRegularizer:
@@ -79,6 +80,9 @@ class ArchitectureRegularizer:
             ),
             RegularizationType.EFFICIENCY: lambda m, p, e, t: (
                 self._efficiency_regularization(m)
+            ),
+            RegularizationType.SCHEDULED: lambda m, p, e, t: (
+                self._scheduled_regularization(p, e, t)
             ),
         }
 
@@ -213,15 +217,18 @@ class ArchitectureRegularizer:
         efficiency_loss = self._zero_on_model_device(model)
         op_costs = {
             "Identity": 0.0,
-            "ResidualMLP": 0.2,
-            "TimeConv": 0.3,
+            "ResidualMLP": 0.15,
+            "TimeConv": 0.25,
             "TCN": 0.5,
-            "ConvMixer": 0.4,
+            "ConvMixer": 0.45,
             "Fourier": 0.6,
             "Wavelet": 0.6,
-            "GRN": 0.4,
+            "GRN": 0.35,
             "MultiScaleConv": 0.7,
             "PyramidConv": 0.8,
+            # Extended op pool — ops added after initial table
+            "PatchEmbed": 0.35,
+            "InvertedAttention": 0.65,
         }
 
         for module in model.modules():
@@ -237,6 +244,43 @@ class ArchitectureRegularizer:
                     continue
 
         return efficiency_loss
+
+    def _scheduled_regularization(
+        self,
+        arch_params: List[torch.Tensor],
+        epoch: int,
+        total_epochs: int,
+    ) -> torch.Tensor:
+        """Cosine-blend from entropy bonus (exploration) to sparsity penalty
+        (exploitation) over the course of training.
+
+        - Progress < 0.40: pure entropy *bonus* (negative contribution) —
+          encourages diverse, high-entropy architecture distributions.
+        - Progress > 0.70: pure sparsity *penalty* (positive contribution) —
+          encourages decisive, low-entropy commitment to specific ops.
+        - In between: smooth cosine interpolation from –1 to +1.
+        """
+        if not arch_params:
+            return self._zero_on_arch_device(arch_params)
+
+        progress = min(1.0, max(0.0, epoch / max(total_epochs, 1)))
+        transition_start, transition_end = 0.40, 0.70
+        if progress <= transition_start:
+            blend = -1.0  # exploration bonus
+        elif progress >= transition_end:
+            blend = 1.0  # exploitation penalty
+        else:
+            t = (progress - transition_start) / (transition_end - transition_start)
+            blend = float(-np.cos(np.pi * t))  # smoothly −1 → +1
+
+        scheduled_loss = self._zero_on_arch_device(arch_params)
+        for probs in self._iter_arch_probs(arch_params):
+            n = probs.size(-1)
+            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()
+            normalized_entropy = entropy / np.log(max(n, 2))
+            scheduled_loss = scheduled_loss + float(blend) * normalized_entropy
+
+        return scheduled_loss
 
 
 class TemperatureScheduler:
@@ -306,6 +350,7 @@ class BilevelOptimizer:
         train_arch_loader,
         val_loader,
         train_model_loader,
+        arch_grad_ema_beta: float = 0.0,
     ):
         self.arch_optimizer = arch_optimizer
         self.arch_scheduler = arch_scheduler
@@ -317,6 +362,11 @@ class BilevelOptimizer:
         self.train_arch_loader = train_arch_loader
         self.val_loader = val_loader
         self.train_model_loader = train_model_loader
+
+        # EMA buffer for arch gradients.  beta > 0 smooths noisy bilevel
+        # gradient estimates; beta = 0.0 (default) disables the feature.
+        self.arch_grad_ema_beta = float(arch_grad_ema_beta)
+        self._arch_grad_ema: Dict[int, torch.Tensor] = {}
 
         self.train_arch_iter = (
             iter(train_arch_loader)
@@ -365,6 +415,21 @@ class BilevelOptimizer:
         if not already_backward:
             scaler.scale(total_arch_loss).backward()
         scaler.unscale_(self.arch_optimizer)
+
+        # Optional EMA smoothing: blend raw arch grads with a running average
+        # to reduce variance from the noisy bilevel validation estimate.
+        if self.arch_grad_ema_beta > 0.0:
+            beta = self.arch_grad_ema_beta
+            for p in self.arch_params:
+                if p.grad is None:
+                    continue
+                pid = id(p)
+                g = p.grad.detach().clone()
+                if pid not in self._arch_grad_ema:
+                    self._arch_grad_ema[pid] = g
+                else:
+                    self._arch_grad_ema[pid].mul_(beta).add_(g, alpha=1.0 - beta)
+                p.grad.copy_(self._arch_grad_ema[pid])
 
         if self.edge_arch_params:
             torch.nn.utils.clip_grad_norm_(self.edge_arch_params, max_norm=5.0)

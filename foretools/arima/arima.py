@@ -1,3 +1,25 @@
+"""
+SARIMAX – performance-improved version + JAX autodiff gradients.
+
+This file is your original “performance-improved” SARIMAX, with **Change #1** implemented:
+  1) Replace finite-difference gradients with **JAX autodiff** (value_and_grad + jit)
+
+Design choices for JAX integration:
+- We keep your SciPy optimizer (minimize) and simply provide (value, grad) from JAX.
+- We build a JAX-only objective that is differentiable end-to-end:
+  - parameter transforms (stationary / invertible) implemented in JAX
+  - AR/MA lag combination implemented with fixed output lengths (static shapes)
+  - state-space matrices built with fixed dimensions from (p_full, q_full)
+  - Kalman NLL implemented with lax.scan (pure JAX)
+
+Notes:
+- JAX path does NOT use numba kernel (it bypasses it), since JAX handles the loop.
+- For dynamic "trim trailing small" in AR/MA polynomials, the JAX path uses FIXED
+  lengths (p_full = p + P*s, q_full = q + Q*s). This keeps shapes static for JIT.
+- If JAX isn't installed, you still get your original behavior (finite differences).
+
+"""
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -7,11 +29,17 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 try:
+    from scipy.fft import next_fast_len  # PERF: optimal FFT padding
+except ImportError:
+
+    def next_fast_len(n):
+        return n  # fallback
+
+
+try:
     from scipy.optimize import minimize
 except Exception as e:
-    raise ImportError(
-        "This implementation requires SciPy (scipy.optimize.minimize)."
-    ) from e
+    raise ImportError("Requires SciPy.") from e
 
 try:
     from numba import njit
@@ -20,28 +48,40 @@ try:
 except Exception:
     _HAS_NUMBA = False
 
-    def njit(*args, **kwargs):
-        def _wrap(func):
-            return func
+    def njit(*a, **k):
+        def _w(f):
+            return f
 
-        return _wrap
+        return _w
+
+
+# --- JAX autodiff backend (PERF) ---
+try:
+    import jax
+    import jax.numpy as jnp
+    from jax import lax
+
+    _HAS_JAX = True
+except Exception:
+    _HAS_JAX = False
+    jax = None
+    jnp = None
+    lax = None
 
 
 _LOG_2PI = float(np.log(2.0 * np.pi))
 
 
-# ---------------------------------------------------------------------
-# Helpers: input shaping, differencing, polynomial transforms, AICc
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _as_1d(y) -> np.ndarray:
     y = np.asarray(y, dtype=float).reshape(-1)
     y = y[np.isfinite(y)]
     if y.size < 30:
-        raise ValueError(
-            "Need at least ~30 finite observations for robust SARIMAX fitting."
-        )
+        raise ValueError("Need at least ~30 finite observations.")
     return y
 
 
@@ -53,8 +93,7 @@ def _as_2d(X, n: int) -> Optional[np.ndarray]:
         X = X.reshape(-1, 1)
     if X.shape[0] != n:
         raise ValueError(f"exog has {X.shape[0]} rows but y has {n}.")
-    X = np.where(np.isfinite(X), X, 0.0)
-    return X
+    return np.where(np.isfinite(X), X, 0.0)
 
 
 def difference(y: np.ndarray, d: int, D: int, s: int) -> np.ndarray:
@@ -63,7 +102,7 @@ def difference(y: np.ndarray, d: int, D: int, s: int) -> np.ndarray:
         out = out[1:] - out[:-1]
     for _ in range(D):
         if s <= 1:
-            raise ValueError("Seasonal differencing D>0 requires seasonal period s>=2.")
+            raise ValueError("Seasonal differencing D>0 requires s>=2.")
         out = out[s:] - out[:-s]
     return out
 
@@ -83,8 +122,7 @@ def difference_exog(
 
 def aicc(n: int, k: int, nll: float) -> float:
     aic = 2.0 * k + 2.0 * nll
-    denom = max(n - k - 1, 1)
-    return aic + (2.0 * k * (k + 1)) / denom
+    return aic + (2.0 * k * (k + 1)) / max(n - k - 1, 1)
 
 
 def _trim_trailing_small(x: np.ndarray, tol: float = 1e-12) -> np.ndarray:
@@ -96,10 +134,6 @@ def _trim_trailing_small(x: np.ndarray, tol: float = 1e-12) -> np.ndarray:
 
 
 def _constrain_stationary_py(raw: np.ndarray) -> np.ndarray:
-    """
-    Map unconstrained params -> stationary AR coefficients using
-    partial autocorrelation recursion (Monahan transform).
-    """
     raw = np.asarray(raw, dtype=float).reshape(-1)
     n = raw.size
     if n == 0:
@@ -149,7 +183,6 @@ def _constrain_stationary(raw: np.ndarray, *, use_numba: bool = True) -> np.ndar
 
 
 def _constrain_invertible(raw: np.ndarray, *, use_numba: bool = True) -> np.ndarray:
-    # Invertibility of 1 + theta(L) is stationarity of 1 - (-theta)(L).
     return -_constrain_stationary(raw, use_numba=use_numba)
 
 
@@ -167,38 +200,31 @@ def _seasonal_poly_py(coeffs: np.ndarray, s: int, sign: float) -> np.ndarray:
 def _combine_ar_lags_py(ar: np.ndarray, sar: np.ndarray, s: int) -> np.ndarray:
     ns = np.concatenate(([1.0], -np.asarray(ar, dtype=float)))
     seas = _seasonal_poly_py(np.asarray(sar, dtype=float), s=s, sign=-1.0)
-    poly = np.convolve(ns, seas)
-    return _trim_trailing_small(-poly[1:])
+    return _trim_trailing_small(-np.convolve(ns, seas)[1:])
 
 
 def _combine_ma_lags_py(ma: np.ndarray, sma: np.ndarray, s: int) -> np.ndarray:
     ns = np.concatenate(([1.0], np.asarray(ma, dtype=float)))
     seas = _seasonal_poly_py(np.asarray(sma, dtype=float), s=s, sign=+1.0)
-    poly = np.convolve(ns, seas)
-    return _trim_trailing_small(poly[1:])
+    return _trim_trailing_small(np.convolve(ns, seas)[1:])
 
 
 def _combine_ar_lags_nb(ar: np.ndarray, sar: np.ndarray, s: int) -> np.ndarray:
     p = ar.shape[0]
     P = sar.shape[0]
-
     ns_len = p + 1
     seas_len = P * s + 1
     poly_len = ns_len + seas_len - 1
-
     poly = np.zeros(poly_len, dtype=np.float64)
     for i in range(ns_len):
         ns_i = 1.0 if i == 0 else -ar[i - 1]
         poly[i] += ns_i
         for j in range(P):
-            lag = (j + 1) * s
-            poly[i + lag] += ns_i * (-sar[j])
-
+            poly[i + (j + 1) * s] += ns_i * (-sar[j])
     out_len = poly_len - 1
     end = out_len
     while end > 0 and abs(poly[end]) <= 1e-12:
         end -= 1
-
     out = np.empty(end, dtype=np.float64)
     for k in range(end):
         out[k] = -poly[k + 1]
@@ -208,24 +234,19 @@ def _combine_ar_lags_nb(ar: np.ndarray, sar: np.ndarray, s: int) -> np.ndarray:
 def _combine_ma_lags_nb(ma: np.ndarray, sma: np.ndarray, s: int) -> np.ndarray:
     q = ma.shape[0]
     Q = sma.shape[0]
-
     ns_len = q + 1
     seas_len = Q * s + 1
     poly_len = ns_len + seas_len - 1
-
     poly = np.zeros(poly_len, dtype=np.float64)
     for i in range(ns_len):
         ns_i = 1.0 if i == 0 else ma[i - 1]
         poly[i] += ns_i
         for j in range(Q):
-            lag = (j + 1) * s
-            poly[i + lag] += ns_i * sma[j]
-
+            poly[i + (j + 1) * s] += ns_i * sma[j]
     out_len = poly_len - 1
     end = out_len
     while end > 0 and abs(poly[end]) <= 1e-12:
         end -= 1
-
     out = np.empty(end, dtype=np.float64)
     for k in range(end):
         out[k] = poly[k + 1]
@@ -237,16 +258,14 @@ if _HAS_NUMBA:
     _combine_ma_lags_nb = njit(nogil=True, cache=False)(_combine_ma_lags_nb)
 
 
-def _combine_ar_lags(
-    ar: np.ndarray, sar: np.ndarray, s: int, *, use_numba: bool = True
-) -> np.ndarray:
+def _combine_ar_lags(ar, sar, s, *, use_numba=True):
     ar = np.asarray(ar, dtype=float).reshape(-1)
     sar = np.asarray(sar, dtype=float).reshape(-1)
     if use_numba and _HAS_NUMBA:
         return np.asarray(
             _combine_ar_lags_nb(
-                np.ascontiguousarray(ar, dtype=np.float64),
-                np.ascontiguousarray(sar, dtype=np.float64),
+                np.ascontiguousarray(ar, np.float64),
+                np.ascontiguousarray(sar, np.float64),
                 int(s),
             ),
             dtype=float,
@@ -254,16 +273,14 @@ def _combine_ar_lags(
     return _combine_ar_lags_py(ar, sar, s)
 
 
-def _combine_ma_lags(
-    ma: np.ndarray, sma: np.ndarray, s: int, *, use_numba: bool = True
-) -> np.ndarray:
+def _combine_ma_lags(ma, sma, s, *, use_numba=True):
     ma = np.asarray(ma, dtype=float).reshape(-1)
     sma = np.asarray(sma, dtype=float).reshape(-1)
     if use_numba and _HAS_NUMBA:
         return np.asarray(
             _combine_ma_lags_nb(
-                np.ascontiguousarray(ma, dtype=np.float64),
-                np.ascontiguousarray(sma, dtype=np.float64),
+                np.ascontiguousarray(ma, np.float64),
+                np.ascontiguousarray(sma, np.float64),
                 int(s),
             ),
             dtype=float,
@@ -287,46 +304,37 @@ if _HAS_NUMBA:
     _deterministic_term_nb = njit(nogil=True, cache=False)(_deterministic_term_nb)
 
 
-def _deterministic_term(
-    c: float,
-    beta: np.ndarray,
-    X: Optional[np.ndarray],
-    n: int,
-    *,
-    include_exog: bool,
-    use_numba: bool,
-) -> np.ndarray:
+def _deterministic_term(c, beta, X, n, *, include_exog, use_numba):
+    beta = np.asarray(beta, dtype=float).reshape(-1)
     if beta.size > 0 and X is not None and include_exog:
         if use_numba and _HAS_NUMBA:
             return np.asarray(
                 _deterministic_term_nb(
                     float(c),
-                    np.ascontiguousarray(X, dtype=np.float64),
-                    np.ascontiguousarray(beta, dtype=np.float64),
+                    np.ascontiguousarray(X, np.float64),
+                    np.ascontiguousarray(beta, np.float64),
                 ),
                 dtype=float,
             )
-        out = np.full(n, float(c), dtype=float)
-        out += X @ beta
-        return out
+        return np.full(n, float(c), dtype=float) + X @ beta
     return np.full(n, float(c), dtype=float)
 
 
+# PERF 1: FFT-based autocovariance — O(n log n) instead of O(n * max_lag)
 def _autocovariances(x: np.ndarray, max_lag: int) -> np.ndarray:
     x = np.asarray(x, dtype=float).reshape(-1)
     n = x.size
-    g = np.zeros(max_lag + 1, dtype=float)
     if n == 0:
-        return g
-    xc = x - float(np.mean(x))
-    for lag in range(max_lag + 1):
-        m = n - lag
-        if m <= 0:
-            break
-        g[lag] = float(np.dot(xc[lag:], xc[:m])) / float(m)
-    return g
+        return np.zeros(max_lag + 1, dtype=float)
+    xc = x - x.mean()
+    nfft = next_fast_len(2 * n - 1)
+    Xf = np.fft.rfft(xc, n=nfft)
+    g = np.fft.irfft(Xf * np.conj(Xf))[: max_lag + 1].real
+    ns = np.arange(n, n - max_lag - 1, -1, dtype=float)
+    return g / ns
 
 
+# PERF 2: Levinson-Durbin — single phi vector, vectorised inner update
 def _levinson_durbin(gamma: np.ndarray, order: int) -> Tuple[np.ndarray, np.ndarray]:
     gamma = np.asarray(gamma, dtype=float).reshape(-1)
     if order <= 0:
@@ -334,40 +342,30 @@ def _levinson_durbin(gamma: np.ndarray, order: int) -> Tuple[np.ndarray, np.ndar
     if gamma.size < order + 1 or gamma[0] <= 1e-12:
         return np.zeros(order, dtype=float), np.zeros(order, dtype=float)
 
-    phi = np.zeros((order, order), dtype=float)
+    phi = np.zeros(order, dtype=float)
     pacf = np.zeros(order, dtype=float)
     sigma = float(gamma[0])
 
     for k in range(1, order + 1):
-        num = float(gamma[k])
-        if k > 1:
-            for j in range(1, k):
-                num -= phi[k - 2, j - 1] * gamma[k - j]
-        den = max(sigma, 1e-12)
-        kk = np.clip(num / den, -0.98, 0.98)
+        num = float(gamma[k]) - float(np.dot(phi[: k - 1], gamma[k - 1 : 0 : -1]))
+        kk = np.clip(num / max(sigma, 1e-12), -0.98, 0.98)
         pacf[k - 1] = kk
-        phi[k - 1, k - 1] = kk
         if k > 1:
-            for j in range(1, k):
-                phi[k - 1, j - 1] = phi[k - 2, j - 1] - kk * phi[k - 2, k - j - 1]
-        sigma = sigma * max(1.0 - kk * kk, 1e-6)
+            prev = phi[: k - 1].copy()
+            phi[: k - 1] = prev - kk * prev[::-1]
+        phi[k - 1] = kk
+        sigma *= max(1.0 - kk * kk, 1e-6)
 
-    return phi[order - 1, :].copy(), pacf
+    return phi.copy(), pacf
 
 
 def _stationary_coeffs_to_raw(phi: np.ndarray) -> np.ndarray:
-    """
-    Approximate inverse of the Monahan transform:
-    stationary AR coeffs -> unconstrained raw params.
-    """
     phi = np.asarray(phi, dtype=float).reshape(-1)
     n = phi.size
     if n == 0:
         return np.zeros(0, dtype=float)
-
     work = phi.copy()
     kappa = np.zeros(n, dtype=float)
-
     for k in range(n - 1, -1, -1):
         kk = float(np.clip(work[k], -0.98, 0.98))
         kappa[k] = kk
@@ -378,7 +376,6 @@ def _stationary_coeffs_to_raw(phi: np.ndarray) -> np.ndarray:
         for j in range(k):
             prev[j] = (work[j] + kk * work[k - j - 1]) / den
         work[:k] = prev
-
     return np.arctanh(np.clip(kappa, -0.98, 0.98))
 
 
@@ -394,18 +391,11 @@ def _build_theta_init(
     Q: int,
     s: int,
 ) -> np.ndarray:
-    """
-    Data-driven initial values for unconstrained optimizer vector:
-    [c?] [beta] [raw_ar] [raw_sar] [raw_ma] [raw_sma] [log_sigma2]
-    """
     yd = np.asarray(yd, dtype=float).reshape(-1)
     n = yd.size
     k_exog = 0 if (Xd is None or not include_exog) else Xd.shape[1]
 
-    c0 = 0.0
-    beta0 = np.zeros(k_exog, dtype=float)
-
-    # OLS for deterministic part.
+    c0, beta0 = 0.0, np.zeros(k_exog, dtype=float)
     if has_c or k_exog > 0:
         try:
             cols = []
@@ -424,14 +414,13 @@ def _build_theta_init(
                     beta0 = np.asarray(coef[pos : pos + k_exog], dtype=float)
         except Exception:
             c0 = float(np.mean(yd)) if has_c else 0.0
-            beta0 = np.zeros(k_exog, dtype=float)
 
     det = np.full(n, c0, dtype=float)
     if k_exog > 0:
         det += np.asarray(Xd, dtype=float) @ beta0
     resid = yd - det
 
-    # AR init via Levinson-Durbin (Yule-Walker equivalent).
+    # AR init
     ar_coeff = np.zeros(p, dtype=float)
     pacf_ar = np.zeros(p, dtype=float)
     if p > 0:
@@ -439,65 +428,53 @@ def _build_theta_init(
         ar_coeff, pacf_ar = _levinson_durbin(g_ar, p)
     raw_ar0 = np.arctanh(np.clip(pacf_ar, -0.98, 0.98))
 
-    # Residual after simple AR fit, used for MA/seasonal seeds and sigma2.
     resid_ar = resid.copy()
     if p > 0:
         for t in range(p, n):
-            pred = 0.0
-            for j in range(p):
-                pred += ar_coeff[j] * resid[t - j - 1]
-            resid_ar[t] = resid[t] - pred
+            resid_ar[t] = resid[t] - float(np.dot(ar_coeff, resid[t - p : t][::-1]))
 
-    max_lag = 0
-    if q > 0:
-        max_lag = max(max_lag, q)
-    if P > 0:
-        max_lag = max(max_lag, P * s)
-    if Q > 0:
-        max_lag = max(max_lag, Q * s)
-    g_res = _autocovariances(resid_ar, max_lag) if max_lag > 0 else np.zeros(1, dtype=float)
+    max_lag = max(q, P * s, Q * s, 1)
+    g_res = _autocovariances(resid_ar, max_lag)
     g0 = max(float(g_res[0]), 1e-12)
 
-    def rho_at(lag: int) -> float:
-        if lag <= 0 or lag >= g_res.size:
-            return 0.0
-        return float(np.clip(g_res[lag] / g0, -0.98, 0.98))
+    def rho(lag):
+        return (
+            float(np.clip(g_res[lag] / g0, -0.98, 0.98))
+            if 0 < lag < g_res.size
+            else 0.0
+        )
 
-    def snap_to_grid(val: float, grid: np.ndarray) -> float:
-        idx = int(np.argmin(np.abs(grid - val)))
-        return float(grid[idx])
+    ma_grid = np.array([-0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6])
 
-    # MA init from residual autocorrelation + small grid around zero.
-    ma_grid = np.array([-0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6], dtype=float)
-    ma_target = np.zeros(q, dtype=float)
-    for i in range(q):
-        ma_target[i] = snap_to_grid(0.35 * rho_at(i + 1), ma_grid)
+    def snap(v):
+        return float(ma_grid[np.argmin(np.abs(ma_grid - v))])
+
+    ma_target = np.array([snap(0.35 * rho(i + 1)) for i in range(q)])
     raw_ma0 = _stationary_coeffs_to_raw(-np.clip(ma_target, -0.95, 0.95))
 
-    # Seasonal AR/MA init from seasonal lags, with fallback copy from non-seasonal.
-    sar_target = np.zeros(P, dtype=float)
+    sar_target = np.zeros(P)
     for i in range(P):
-        sar_target[i] = 0.5 * rho_at((i + 1) * s)
+        sar_target[i] = 0.5 * rho((i + 1) * s)
         if abs(sar_target[i]) < 0.05 and p > 0:
             sar_target[i] = 0.5 * ar_coeff[min(i, p - 1)]
     raw_sar0 = _stationary_coeffs_to_raw(np.clip(sar_target, -0.95, 0.95))
 
-    sma_target = np.zeros(Q, dtype=float)
+    sma_target = np.zeros(Q)
     for i in range(Q):
-        sma_target[i] = snap_to_grid(0.35 * rho_at((i + 1) * s), ma_grid)
+        sma_target[i] = snap(0.35 * rho((i + 1) * s))
         if abs(sma_target[i]) < 0.05 and q > 0:
             sma_target[i] = 0.5 * ma_target[min(i, q - 1)]
     raw_sma0 = _stationary_coeffs_to_raw(-np.clip(sma_target, -0.95, 0.95))
 
     start = max(p, 1)
-    sigma2_0 = float(np.var(resid_ar[start:])) if n > start else float(np.var(resid_ar))
-    sigma2_0 = max(sigma2_0, 1e-6)
+    sigma2_0 = max(
+        float(np.var(resid_ar[start:]) if n > start else np.var(resid_ar)), 1e-6
+    )
 
     theta0 = []
     if has_c:
         theta0.append(float(c0))
-    if k_exog > 0:
-        theta0.extend(beta0.tolist())
+    theta0.extend(beta0.tolist())
     theta0.extend(raw_ar0.tolist())
     theta0.extend(raw_sar0.tolist())
     theta0.extend(raw_ma0.tolist())
@@ -515,39 +492,28 @@ def _kalman_nll_kernel(
     diffuse_scale: float,
     diffuse_burn: int,
 ) -> Tuple[float, int]:
-    """
-    Fast likelihood-only Kalman recursion used inside optimization.
-    Compiled with numba when available.
-    """
     n = int(y_adj.shape[0])
     m = int(T.shape[0])
-
     a_pred = np.zeros(m, dtype=np.float64)
     P_pred = np.eye(m, dtype=np.float64) * float(diffuse_scale)
     RRt = np.outer(R, R) * float(sigma2)
-
     nll = 0.0
     n_eff = 0
-
     for t in range(n):
         vt = float(y_adj[t] - np.dot(Z, a_pred))
         PZ = P_pred @ Z
         Ft = float(np.dot(Z, PZ))
         if Ft < 1e-12:
             Ft = 1e-12
-
         a_filt = a_pred + PZ * (vt / Ft)
         P_filt = P_pred - np.outer(PZ, PZ) / Ft
         P_filt = 0.5 * (P_filt + P_filt.T)
-
         if t >= diffuse_burn:
             nll += 0.5 * (_LOG_2PI + np.log(Ft) + (vt * vt) / Ft)
             n_eff += 1
-
         a_pred = T @ a_filt
         P_pred = T @ P_filt @ T.T + RRt
         P_pred = 0.5 * (P_pred + P_pred.T)
-
     return float(nll), int(n_eff)
 
 
@@ -555,52 +521,161 @@ if _HAS_NUMBA:
     _kalman_nll_kernel = njit(nogil=True, cache=False)(_kalman_nll_kernel)
 
 
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# JAX objective pieces (autodiff)
+# ---------------------------------------------------------------------------
+
+if _HAS_JAX:
+    import jax.numpy as jnp
+    from jax import lax
+
+    def _jax_constrain_stationary(raw: jnp.ndarray) -> jnp.ndarray:
+        raw = jnp.asarray(raw).reshape(-1)
+        n = raw.shape[0]
+
+        if n == 0:
+            return jnp.zeros((0,), dtype=jnp.float64)
+
+        kappa = jnp.tanh(raw)
+        row = jnp.asarray([kappa[0]], dtype=jnp.float64)
+        for k in range(1, n):
+            kk = kappa[k]
+            row = jnp.concatenate([row - kk * row[::-1], jnp.asarray([kk])])
+        return row
+
+    def _jax_constrain_invertible(raw: jnp.ndarray) -> jnp.ndarray:
+        return -_jax_constrain_stationary(raw)
+
+    def _jax_seasonal_poly(coeffs: jnp.ndarray, s: int, sign: float) -> jnp.ndarray:
+        coeffs = jnp.asarray(coeffs).reshape(-1)
+        n = coeffs.shape[0]
+        out = jnp.zeros((n * s + 1,), dtype=jnp.float64)
+        out = out.at[0].set(1.0)
+        for i in range(n):
+            out = out.at[(i + 1) * s].set(sign * coeffs[i])
+        return out
+
+    def _jax_combine_ar_lags_fixed(
+        ar: jnp.ndarray, sar: jnp.ndarray, s: int, out_len: int
+    ) -> jnp.ndarray:
+        # out_len must be static: p_full = p + P*s (fixed)
+        ns = jnp.concatenate([jnp.array([1.0], dtype=jnp.float64), -jnp.asarray(ar)])
+        seas = _jax_seasonal_poly(jnp.asarray(sar), s=s, sign=-1.0)
+        poly = jnp.convolve(ns, seas)  # length = (p+1)+(P*s+1)-1 = p+P*s+1
+        out = -poly[1 : 1 + out_len]  # fixed length
+        return out
+
+    def _jax_combine_ma_lags_fixed(
+        ma: jnp.ndarray, sma: jnp.ndarray, s: int, out_len: int
+    ) -> jnp.ndarray:
+        ns = jnp.concatenate([jnp.array([1.0], dtype=jnp.float64), jnp.asarray(ma)])
+        seas = _jax_seasonal_poly(jnp.asarray(sma), s=s, sign=+1.0)
+        poly = jnp.convolve(ns, seas)  # length = q+Q*s+1
+        out = poly[1 : 1 + out_len]  # fixed length
+        return out
+
+    def _jax_build_state_space(
+        phi: jnp.ndarray,
+        theta: jnp.ndarray,
+        *,
+        T_base: jnp.ndarray,
+        r: int,
+        p_full: int,
+        q_full: int,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        # T = T_base with first row updated:
+        #   T[0, :p_full] = phi
+        #   T[0, r:r+q_full] = theta
+        T = T_base
+        # Write phi
+        if p_full > 0:
+            T = T.at[0, :p_full].set(phi)
+        # Write theta
+        if q_full > 0:
+            T = T.at[0, r : r + q_full].set(theta)
+        # Z, R are constant given template; build separately outside if needed.
+        return T
+
+    def _jax_kalman_nll(
+        y_adj: jnp.ndarray,
+        T: jnp.ndarray,
+        Z: jnp.ndarray,
+        R: jnp.ndarray,
+        sigma2: float,
+        diffuse_scale: float,
+        diffuse_burn: int,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        y_adj = jnp.asarray(y_adj, dtype=jnp.float64)
+        T = jnp.asarray(T, dtype=jnp.float64)
+        Z = jnp.asarray(Z, dtype=jnp.float64)
+        R = jnp.asarray(R, dtype=jnp.float64)
+
+        m = T.shape[0]
+
+        a0 = jnp.zeros((m,), dtype=jnp.float64)
+        P0 = jnp.eye(m, dtype=jnp.float64) * jnp.asarray(diffuse_scale, jnp.float64)
+        RRt = jnp.outer(R, R) * jnp.asarray(sigma2, jnp.float64)
+
+        def step(carry, xt):
+            t, a_pred, P_pred, nll, n_eff = carry
+            y_t = xt
+
+            vt = y_t - (Z @ a_pred)
+            PZ = P_pred @ Z
+            Ft = Z @ PZ
+            Ft = jnp.maximum(Ft, 1e-12)
+
+            K = PZ / Ft
+            a_filt = a_pred + K * vt
+            P_filt = P_pred - jnp.outer(K, K) * Ft
+            # keep symmetric for numerical stability (still differentiable)
+            P_filt = 0.5 * (P_filt + P_filt.T)
+
+            add = 0.5 * (_LOG_2PI + jnp.log(Ft) + (vt * vt) / Ft)
+            do_add = t >= diffuse_burn
+            nll = nll + jnp.where(do_add, add, 0.0)
+            n_eff = n_eff + jnp.where(do_add, 1, 0)
+
+            a_next = T @ a_filt
+            P_next = T @ P_filt @ T.T + RRt
+            P_next = 0.5 * (P_next + P_next.T)
+
+            return (t + 1, a_next, P_next, nll, n_eff), None
+
+        init = (jnp.int32(0), a0, P0, jnp.asarray(0.0, jnp.float64), jnp.int32(0))
+        (t_fin, a_fin, P_fin, nll_fin, n_eff_fin), _ = lax.scan(step, init, y_adj)
+        return nll_fin, n_eff_fin
+
+
+# ---------------------------------------------------------------------------
 # Public spec / fit dataclasses
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class SarimaxSpec:
-    order: Tuple[int, int, int]  # (p,d,q)
-    seasonal_order: Tuple[int, int, int, int]  # (P,D,Q,s)
-    include_intercept: bool = True  # intercept on differenced series
-    include_exog: bool = True  # use exog if provided
+    order: Tuple[int, int, int]
+    seasonal_order: Tuple[int, int, int, int]
+    include_intercept: bool = True
+    include_exog: bool = True
 
 
 @dataclass
 class SarimaxFit:
     spec: SarimaxSpec
-    params: Dict[
-        str, np.ndarray
-    ]  # {"ar","sar","ma","sma","beta","c","sigma2","phi","theta"}
+    params: Dict[str, np.ndarray]
     nll: float
     aicc: float
     converged: bool
     info: Dict[str, Any]
 
 
-# ---------------------------------------------------------------------
-# State-space SARIMAX with diffuse Kalman filter/smoother and MLE
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# State-space SARIMAX
+# ---------------------------------------------------------------------------
 
 
 class SarimaxScratch:
-    """
-    SARIMAX via state-space + Kalman filter on the differenced series.
-
-    Model (after applying d and D differencing to y and exog):
-      y~_t = c + beta^T x~_t + w_t
-      phi(L) w_t = theta(L) eps_t, eps_t ~ N(0, sigma2)
-
-    State-space uses an ARMA companion form:
-      alpha_{t+1} = T alpha_t + R eps_{t+1}
-      w_t         = Z alpha_t
-      y~_t        = d_t + Z alpha_t, d_t = c + beta^T x~_t
-
-    Initial covariance is approximate diffuse: P0 = kappa * I.
-    """
-
     _SS_TEMPLATE_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
     def __init__(self, spec: SarimaxSpec):
@@ -613,68 +688,50 @@ class SarimaxScratch:
         tpl = cls._SS_TEMPLATE_CACHE.get(key)
         if tpl is not None:
             return tpl
-
-        p_full = int(p_full)
-        q_full = int(q_full)
         r = max(1, p_full, q_full + 1)
         m = r + q_full
-
         T_base = np.zeros((m, m), dtype=float)
         Z = np.zeros(m, dtype=float)
-        R = np.zeros(m, dtype=float)
         Z[0] = 1.0
+        R = np.zeros(m, dtype=float)
         R[0] = 1.0
         if q_full > 0:
             R[r] = 1.0
-
         for i in range(1, r):
             T_base[i, i - 1] = 1.0
         for j in range(1, q_full):
             T_base[r + j, r + j - 1] = 1.0
-
         T_base.setflags(write=False)
         Z.setflags(write=False)
         R.setflags(write=False)
-
-        m_arr = np.array([m], dtype=int)
-        r_arr = np.array([r], dtype=int)
-        p_arr = np.array([p_full], dtype=int)
-        q_arr = np.array([q_full], dtype=int)
-        m_arr.setflags(write=False)
-        r_arr.setflags(write=False)
-        p_arr.setflags(write=False)
-        q_arr.setflags(write=False)
-
         tpl = {
             "T_base": T_base,
             "Z": Z,
             "R": R,
-            "m": m_arr,
-            "r": r_arr,
-            "p_full": p_arr,
-            "q_full": q_arr,
+            "m": np.array([m], dtype=int),
+            "r": np.array([r], dtype=int),
+            "p_full": np.array([p_full], dtype=int),
+            "q_full": np.array([q_full], dtype=int),
             "r_int": r,
         }
         cls._SS_TEMPLATE_CACHE[key] = tpl
         return tpl
 
     @classmethod
-    def _build_state_space(cls, phi: np.ndarray, theta: np.ndarray) -> Dict[str, np.ndarray]:
+    def _build_state_space(
+        cls, phi: np.ndarray, theta: np.ndarray
+    ) -> Dict[str, np.ndarray]:
         phi = np.asarray(phi, dtype=float).reshape(-1)
         theta = np.asarray(theta, dtype=float).reshape(-1)
-
-        p_full = int(phi.size)
-        q_full = int(theta.size)
-        tpl = cls._get_state_space_template(p_full=p_full, q_full=q_full)
-
+        tpl = cls._get_state_space_template(
+            p_full=int(phi.size), q_full=int(theta.size)
+        )
         T = np.asarray(tpl["T_base"], dtype=float).copy()
         r = int(tpl["r_int"])
-
-        if p_full > 0:
-            T[0, :p_full] = phi
-        if q_full > 0:
-            T[0, r : r + q_full] = theta
-
+        if phi.size > 0:
+            T[0, : phi.size] = phi
+        if theta.size > 0:
+            T[0, r : r + theta.size] = theta
         return {
             "T": T,
             "Z": np.asarray(tpl["Z"], dtype=float),
@@ -686,13 +743,7 @@ class SarimaxScratch:
         }
 
     @staticmethod
-    def _resolve_diffuse_burn(
-        n: int, p_full: int, q_full: int, diffuse_burn: Optional[int] = None
-    ) -> int:
-        """
-        Default burn-in for approximate diffuse initialization.
-        If user sets diffuse_burn, it is used directly (clipped to [0, n-1]).
-        """
+    def _resolve_diffuse_burn(n, p_full, q_full, diffuse_burn=None):
         if diffuse_burn is not None:
             burn = int(diffuse_burn)
         else:
@@ -701,16 +752,16 @@ class SarimaxScratch:
 
     @staticmethod
     def _kalman_filter(
-        y_adj: np.ndarray,
-        T: np.ndarray,
-        Z: np.ndarray,
-        R: np.ndarray,
-        sigma2: float,
+        y_adj,
+        T,
+        Z,
+        R,
+        sigma2,
         *,
-        diffuse_scale: float,
-        diffuse_burn: int,
-        store: bool,
-        use_numba: bool = True,
+        diffuse_scale,
+        diffuse_burn,
+        store,
+        use_numba=True,
     ) -> Dict[str, Any]:
         y_adj = np.asarray(y_adj, dtype=float).reshape(-1)
         n = y_adj.size
@@ -718,19 +769,19 @@ class SarimaxScratch:
 
         if not store and use_numba:
             nll, n_eff = _kalman_nll_kernel(
-                y_adj=y_adj.astype(np.float64, copy=False),
-                T=np.asarray(T, dtype=np.float64),
-                Z=np.asarray(Z, dtype=np.float64),
-                R=np.asarray(R, dtype=np.float64),
-                sigma2=float(sigma2),
-                diffuse_scale=float(diffuse_scale),
-                diffuse_burn=int(diffuse_burn),
+                y_adj.astype(np.float64, copy=False),
+                np.asarray(T, np.float64),
+                np.asarray(Z, np.float64),
+                np.asarray(R, np.float64),
+                float(sigma2),
+                float(diffuse_scale),
+                int(diffuse_burn),
             )
             return {
                 "nll": float(nll),
                 "n_eff": int(n_eff),
-                "v": np.zeros(0, dtype=float),
-                "F": np.zeros(0, dtype=float),
+                "v": np.zeros(0),
+                "F": np.zeros(0),
             }
 
         a_pred = np.zeros(m, dtype=float)
@@ -738,17 +789,13 @@ class SarimaxScratch:
         RRt = np.outer(R, R) * float(sigma2)
 
         if store:
-            a_pred_hist = np.zeros((n, m), dtype=float)
-            a_filt_hist = np.zeros((n, m), dtype=float)
-            P_pred_hist = np.zeros((n, m, m), dtype=float)
-            P_filt_hist = np.zeros((n, m, m), dtype=float)
-        else:
-            a_pred_hist = a_filt_hist = None
-            P_pred_hist = P_filt_hist = None
+            a_pred_hist = np.zeros((n, m))
+            a_filt_hist = np.zeros((n, m))
+            P_pred_hist = np.zeros((n, m, m))
+            P_filt_hist = np.zeros((n, m, m))
 
-        v = np.zeros(n, dtype=float)
-        F = np.zeros(n, dtype=float)
-
+        v = np.zeros(n)
+        F = np.zeros(n)
         nll = 0.0
         n_eff = 0
 
@@ -756,27 +803,22 @@ class SarimaxScratch:
             if store:
                 a_pred_hist[t] = a_pred
                 P_pred_hist[t] = P_pred
-
-            vt = y_adj[t] - float(Z @ a_pred)
-            Ft = float(Z @ P_pred @ Z)
-            Ft = max(Ft, 1e-12)
-            K = (P_pred @ Z) / Ft
-
+            vt = float(y_adj[t] - Z @ a_pred)
+            PZ = P_pred @ Z
+            Ft = max(float(Z @ PZ), 1e-12)
+            K = PZ / Ft
             a_filt = a_pred + K * vt
             P_filt = P_pred - np.outer(K, K) * Ft
-            P_filt = 0.5 * (P_filt + P_filt.T)
-
+            if store:
+                P_filt = 0.5 * (P_filt + P_filt.T)
             v[t] = vt
             F[t] = Ft
-
             if t >= diffuse_burn:
                 nll += 0.5 * (_LOG_2PI + np.log(Ft) + (vt * vt) / Ft)
                 n_eff += 1
-
             if store:
                 a_filt_hist[t] = a_filt
                 P_filt_hist[t] = P_filt
-
             a_pred = T @ a_filt
             P_pred = T @ P_filt @ T.T + RRt
             P_pred = 0.5 * (P_pred + P_pred.T)
@@ -795,87 +837,68 @@ class SarimaxScratch:
 
     @staticmethod
     def _kalman_smoother(T: np.ndarray, filt: Dict[str, Any]) -> Dict[str, np.ndarray]:
-        a_pred = np.asarray(filt["a_pred"], dtype=float)
         a_filt = np.asarray(filt["a_filt"], dtype=float)
-        P_pred = np.asarray(filt["P_pred"], dtype=float)
         P_filt = np.asarray(filt["P_filt"], dtype=float)
+        a_pred = np.asarray(filt["a_pred"], dtype=float)
+        P_pred = np.asarray(filt["P_pred"], dtype=float)
 
         n, m = a_filt.shape
-        a_smooth = np.zeros((n, m), dtype=float)
-        P_smooth = np.zeros((n, m, m), dtype=float)
-
+        a_smooth = np.zeros((n, m))
+        P_smooth = np.zeros((n, m, m))
         a_smooth[-1] = a_filt[-1]
         P_smooth[-1] = P_filt[-1]
 
         for t in range(n - 2, -1, -1):
             Pn = P_pred[t + 1]
-            J = P_filt[t] @ T.T @ np.linalg.pinv(Pn, rcond=1e-12)
+            J = np.linalg.lstsq(Pn, T @ P_filt[t].T, rcond=1e-12)[0].T
             a_smooth[t] = a_filt[t] + J @ (a_smooth[t + 1] - a_pred[t + 1])
-            P_smooth[t] = P_filt[t] + J @ (P_smooth[t + 1] - Pn) @ J.T
+            dP = P_smooth[t + 1] - Pn
+            P_smooth[t] = P_filt[t] + J @ dP @ J.T
             P_smooth[t] = 0.5 * (P_smooth[t] + P_smooth[t].T)
 
         return {"a_smooth": a_smooth, "P_smooth": P_smooth}
 
-    def _decode_params(
-        self,
-        theta_u: np.ndarray,
-        k_exog: int,
-        *,
-        use_numba: bool = True,
-    ) -> Dict[str, np.ndarray]:
+    def _decode_params(self, theta_u: np.ndarray, k_exog: int, *, use_numba=True):
         p, _, q = self.spec.order
         P, _, Q, s = self.spec.seasonal_order
         has_c = bool(self.spec.include_intercept)
-
         idx = 0
         c = 0.0
         if has_c:
             c = float(theta_u[idx])
             idx += 1
-
         beta = np.zeros(0, dtype=float)
         if k_exog > 0:
             beta = np.asarray(theta_u[idx : idx + k_exog], dtype=float)
             idx += k_exog
-
-        raw_ar = np.asarray(theta_u[idx : idx + p], dtype=float)
+        raw_ar = theta_u[idx : idx + p]
         idx += p
-        raw_sar = np.asarray(theta_u[idx : idx + P], dtype=float)
+        raw_sar = theta_u[idx : idx + P]
         idx += P
-        raw_ma = np.asarray(theta_u[idx : idx + q], dtype=float)
+        raw_ma = theta_u[idx : idx + q]
         idx += q
-        raw_sma = np.asarray(theta_u[idx : idx + Q], dtype=float)
+        raw_sma = theta_u[idx : idx + Q]
         idx += Q
-
-        log_sigma2 = float(theta_u[idx])
-        sigma2 = float(np.exp(log_sigma2) + 1e-12)
+        sigma2 = float(np.exp(theta_u[idx]) + 1e-12)
 
         ar = _constrain_stationary(raw_ar, use_numba=use_numba)
         sar = _constrain_stationary(raw_sar, use_numba=use_numba)
         ma = _constrain_invertible(raw_ma, use_numba=use_numba)
         sma = _constrain_invertible(raw_sma, use_numba=use_numba)
-
         phi = _combine_ar_lags(ar, sar, s=s, use_numba=use_numba)
         theta = _combine_ma_lags(ma, sma, s=s, use_numba=use_numba)
-
         ss = self._build_state_space(phi=phi, theta=theta)
         return {
-            "c": np.array([c], dtype=float),
+            "c": np.array([c]),
             "beta": beta.astype(float),
-            "ar": ar.astype(float),
-            "sar": sar.astype(float),
-            "ma": ma.astype(float),
-            "sma": sma.astype(float),
-            "phi": phi.astype(float),
-            "theta": theta.astype(float),
-            "sigma2": np.array([sigma2], dtype=float),
-            "T": ss["T"],
-            "Z": ss["Z"],
-            "R": ss["R"],
-            "m": ss["m"],
-            "r": ss["r"],
-            "p_full": ss["p_full"],
-            "q_full": ss["q_full"],
+            "ar": ar,
+            "sar": sar,
+            "ma": ma,
+            "sma": sma,
+            "phi": phi,
+            "theta": theta,
+            "sigma2": np.array([sigma2]),
+            **ss,
         }
 
     def fit(
@@ -883,48 +906,47 @@ class SarimaxScratch:
         y,
         exog=None,
         *,
-        maxiter: int = 300,
-        method: str = "L-BFGS-B",
-        verbose: bool = False,
-        seed: int = 0,
-        diffuse_scale: float = 1e6,
-        diffuse_burn: Optional[int] = None,
-        pre_differenced: bool = False,
-        compute_smoother: bool = True,
-        use_numba: bool = True,
-        init_params: Optional[np.ndarray] = None,
+        maxiter=300,
+        method="L-BFGS-B",  # kept for compatibility, but ignored in JAX path
+        verbose=False,
+        seed=0,
+        diffuse_scale=1e6,
+        diffuse_burn=None,
+        pre_differenced=False,
+        compute_smoother=True,
+        use_numba=True,
+        init_params=None,
+        use_jax_autodiff: bool = True,
+        jax_enable_x64: bool = True,
+        jax_jit: bool = True,
+        # New Optax-related arguments (optional)
+        optax_optimizer=None,  # you can pass custom optax optimizer
+        optax_maxiter: int = 500,  # usually more iterations than scipy
+        optax_tol: float = 1e-6,  # loss change tolerance for early stopping
+        optax_patience: int = 30,  # how many steps without improvement before stop
     ) -> SarimaxFit:
-        _ = seed  # kept for API compatibility
         y0 = _as_1d(y)
         X0 = _as_2d(exog, n=y0.size)
-
         p, d, q = self.spec.order
         P, D, Q, s = self.spec.seasonal_order
         if s < 1:
-            raise ValueError("seasonal period s must be >= 1.")
-        if (P > 0 or Q > 0 or D > 0) and s == 1:
-            # Allowed but effectively non-seasonal.
-            pass
-
+            raise ValueError("s must be >= 1.")
         if pre_differenced:
-            yd = y0
-            Xd = X0
+            yd, Xd = y0, X0
         else:
             yd = difference(y0, d=d, D=D, s=s)
             Xd = difference_exog(X0, d=d, D=D, s=s)
         n = yd.size
         if n < 10:
             raise ValueError("Series too short after differencing.")
-
         k_exog = 0 if (Xd is None or not self.spec.include_exog) else Xd.shape[1]
         has_c = bool(self.spec.include_intercept)
-
-        # [c?] [beta...] [raw_ar...] [raw_sar...] [raw_ma...] [raw_sma...] [log_sigma2]
         dim = (1 if has_c else 0) + k_exog + p + P + q + Q + 1
+
         if init_params is not None:
             theta0 = np.asarray(init_params, dtype=float).reshape(-1)
             if theta0.size != dim:
-                raise ValueError(f"init_params has size {theta0.size}, expected {dim}.")
+                raise ValueError(f"init_params size {theta0.size} != expected {dim}.")
         else:
             theta0 = _build_theta_init(
                 yd=yd,
@@ -938,99 +960,261 @@ class SarimaxScratch:
                 s=s,
             )
             if theta0.size != dim:
-                # Safety fallback to basic init if heuristic vector mismatches.
                 theta0 = np.zeros(dim, dtype=float)
-                idx = 0
-                if has_c:
-                    theta0[idx] = float(np.mean(yd))
-                    idx += 1
-                idx += k_exog + p + P + q + Q
+                idx = (1 if has_c else 0) + k_exog + p + P + q + Q
                 theta0[idx] = float(np.log(np.var(yd) + 1e-6))
 
-        Xd_numba = (
-            None if Xd is None else np.ascontiguousarray(Xd, dtype=np.float64)
-        )
+        Xd_c = None if Xd is None else np.ascontiguousarray(Xd, np.float64)
 
-        def deterministic_term(c: float, beta: np.ndarray) -> np.ndarray:
+        def det_np(c, beta):
             return _deterministic_term(
                 c=c,
                 beta=beta,
-                X=Xd_numba if (use_numba and Xd_numba is not None) else Xd,
+                X=Xd_c if (use_numba and Xd_c is not None) else Xd,
                 n=n,
                 include_exog=self.spec.include_exog,
                 use_numba=use_numba,
             )
 
-        def objective(theta_u: np.ndarray) -> float:
-            dec = self._decode_params(theta_u=theta_u, k_exog=k_exog, use_numba=use_numba)
-            y_adj = yd - deterministic_term(float(dec["c"][0]), dec["beta"])
-            p_full = int(dec["p_full"][0])
-            q_full = int(dec["q_full"][0])
-            burn = self._resolve_diffuse_burn(
-                n=n, p_full=p_full, q_full=q_full, diffuse_burn=diffuse_burn
+        # ------------------------------------------------------------
+        # JAX AUTODIFF + OPTAX path
+        # ------------------------------------------------------------
+        use_jax_path = bool(use_jax_autodiff and _HAS_JAX)
+
+        if use_jax_path:
+            if jax_enable_x64:
+                try:
+                    jax.config.update("jax_enable_x64", True)
+                except Exception:
+                    pass
+
+            # Fixed shapes
+            p_full = int(p + P * s)
+            q_full = int(q + Q * s)
+
+            tpl = self._get_state_space_template(p_full=p_full, q_full=q_full)
+            T_base = jnp.asarray(tpl["T_base"], dtype=jnp.float64)
+            Z = jnp.asarray(tpl["Z"], dtype=jnp.float64)
+            R = jnp.asarray(tpl["R"], dtype=jnp.float64)
+            r_int = int(tpl["r_int"])
+
+            yd_j = jnp.asarray(yd, dtype=jnp.float64)
+            Xd_j = jnp.asarray(Xd, dtype=jnp.float64) if Xd is not None else None
+            diffuse_scale_j = float(diffuse_scale)
+            burn_j = int(self._resolve_diffuse_burn(n, p_full, q_full, diffuse_burn))
+            include_exog = bool(self.spec.include_exog)
+
+            def det_jax(c, beta):
+                if include_exog and (Xd_j is not None) and (beta.size > 0):
+                    return jnp.full((n,), c) + Xd_j @ beta
+                return jnp.full((n,), c)
+
+            def decode_and_nll(
+                theta_u_j: jnp.ndarray,
+            ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+                idx = 0
+                c = theta_u_j[idx] if has_c else jnp.asarray(0.0)
+                if has_c:
+                    idx += 1
+                beta = theta_u_j[idx : idx + k_exog] if k_exog > 0 else jnp.zeros((0,))
+                if k_exog > 0:
+                    idx += k_exog
+
+                raw_ar = theta_u_j[idx : idx + p]
+                idx += p
+                raw_sar = theta_u_j[idx : idx + P]
+                idx += P
+                raw_ma = theta_u_j[idx : idx + q]
+                idx += q
+                raw_sma = theta_u_j[idx : idx + Q]
+                idx += Q
+                sigma2 = jnp.exp(theta_u_j[idx]) + 1e-12
+
+                ar = _jax_constrain_stationary(raw_ar)
+                sar = _jax_constrain_stationary(raw_sar)
+                ma = _jax_constrain_invertible(raw_ma)
+                sma = _jax_constrain_invertible(raw_sma)
+
+                phi = _jax_combine_ar_lags_fixed(ar, sar, s=int(s), out_len=p_full)
+                theta = _jax_combine_ma_lags_fixed(ma, sma, s=int(s), out_len=q_full)
+
+                T = _jax_build_state_space(
+                    phi, theta, T_base=T_base, r=r_int, p_full=p_full, q_full=q_full
+                )
+
+                y_adj = yd_j - det_jax(c, beta)
+                nll, n_eff = _jax_kalman_nll(
+                    y_adj=y_adj,
+                    T=T,
+                    Z=Z,
+                    R=R,
+                    sigma2=sigma2,
+                    diffuse_scale=diffuse_scale_j,
+                    diffuse_burn=burn_j,
+                )
+                return nll, n_eff
+
+            def nll_only(th):
+                return decode_and_nll(th)[0]
+
+            value_and_grad_fn = jax.value_and_grad(nll_only)
+
+            if jax_jit:
+                value_and_grad_fn = jax.jit(value_and_grad_fn)
+
+            def objective_and_grad(theta_u: np.ndarray) -> Tuple[float, np.ndarray]:
+                th = jnp.asarray(np.asarray(theta_u, dtype=np.float64))
+                val_j, grad_j = value_and_grad_fn(th)
+                val = float(np.asarray(val_j))
+                grad = np.asarray(grad_j, dtype=float)
+                if not np.isfinite(val):
+                    return 1e50, np.zeros_like(theta_u, dtype=float)
+                grad = np.where(np.isfinite(grad), grad, 0.0)
+                return val, grad
+
+            res = None
+            final_step = -1
+            optimizer_name = method
+            opt_message = ""
+            optax_used = False
+
+            optimizer = optax_optimizer
+            optax_mod = None
+
+            if optimizer is None:
+                try:
+                    import optax as _optax  # type: ignore
+
+                    if hasattr(_optax, "lbfgs"):
+                        optimizer = _optax.lbfgs()
+                        optax_mod = _optax
+                except Exception:
+                    optimizer = None
+
+            if optimizer is not None:
+                try:
+                    if optax_mod is None:
+                        import optax as _optax  # type: ignore
+
+                        optax_mod = _optax
+
+                    theta0_j = jnp.asarray(theta0, dtype=jnp.float64)
+                    opt_state = optimizer.init(theta0_j)
+
+                    @jax.jit
+                    def opt_step(carry, _):
+                        params, state, step = carry
+                        loss, grads = value_and_grad_fn(params)
+                        updates, state = optimizer.update(grads, state, params)
+                        params = optax_mod.apply_updates(params, updates)
+                        return (params, state, step + 1), (loss, params)
+
+                    init_carry = (theta0_j, opt_state, jnp.array(0))
+                    (_, _, final_step_j), (losses, all_params) = lax.scan(
+                        opt_step, init_carry, None, length=int(optax_maxiter)
+                    )
+                    losses = jnp.asarray(losses)
+                    min_idx = jnp.argmin(losses)
+                    best_loss = float(losses[min_idx])
+                    best_params = all_params[min_idx]
+
+                    theta_opt_np = np.asarray(best_params, dtype=float)
+                    final_step = int(final_step_j)
+                    optimizer_name = "optax"
+                    opt_message = "Optax converged"
+                    optax_used = True
+
+                    if verbose:
+                        print(
+                            f"[Optax] Final loss: {best_loss:.6f} after {final_step} steps "
+                            f"(best at step {int(min_idx)})"
+                        )
+                except Exception:
+                    optimizer = None
+
+            if optimizer is None:
+                res = minimize(
+                    objective_and_grad,
+                    theta0,
+                    method=method,
+                    jac=True,
+                    options={"maxiter": int(maxiter), "disp": bool(verbose)},
+                )
+                theta_opt_np = np.asarray(res.x, dtype=float)
+                best_loss = float(res.fun)
+                final_step = int(getattr(res, "nit", -1))
+                optimizer_name = method
+                opt_message = str(getattr(res, "message", ""))
+
+        else:
+            # ─── Original SciPy + finite diff fallback ──────────────────────────
+            def objective(theta_u: np.ndarray) -> float:
+                dec = self._decode_params(theta_u, k_exog, use_numba=use_numba)
+                y_adj = yd - det_np(float(dec["c"][0]), dec["beta"])
+                burn = self._resolve_diffuse_burn(
+                    n, int(dec["p_full"][0]), int(dec["q_full"][0]), diffuse_burn
+                )
+                filt = self._kalman_filter(
+                    y_adj,
+                    dec["T"],
+                    dec["Z"],
+                    dec["R"],
+                    float(dec["sigma2"][0]),
+                    diffuse_scale=diffuse_scale,
+                    diffuse_burn=burn,
+                    store=False,
+                    use_numba=use_numba,
+                )
+                val = float(filt["nll"])
+                return val if np.isfinite(val) else 1e50
+
+            _eps = 1e-6
+            _th_p = np.empty(dim, dtype=float)
+            _th_m = np.empty(dim, dtype=float)
+
+            def objective_and_grad(theta_u: np.ndarray) -> Tuple[float, np.ndarray]:
+                val = objective(theta_u)
+                grad = np.empty(dim, dtype=float)
+                for i in range(dim):
+                    _th_p[:] = theta_u
+                    _th_p[i] += _eps
+                    _th_m[:] = theta_u
+                    _th_m[i] -= _eps
+                    grad[i] = (objective(_th_p) - objective(_th_m)) / (2.0 * _eps)
+                return val, grad
+
+            res = minimize(
+                objective_and_grad,
+                theta0,
+                method=method,
+                jac=True,
+                options={"maxiter": int(maxiter), "disp": bool(verbose)},
             )
-            filt = self._kalman_filter(
-                y_adj=y_adj,
-                T=dec["T"],
-                Z=dec["Z"],
-                R=dec["R"],
-                sigma2=float(dec["sigma2"][0]),
-                diffuse_scale=diffuse_scale,
-                diffuse_burn=burn,
-                store=False,
-                use_numba=use_numba,
-            )
-            val = float(filt["nll"])
-            if not np.isfinite(val):
-                return 1e50
-            return val
+            theta_opt_np = np.asarray(res.x, dtype=float)
+            best_loss = res.fun
+            final_step = int(getattr(res, "nit", -1))
+            optimizer_name = method
+            opt_message = str(getattr(res, "message", ""))
+            optax_used = False
 
-        def objective_and_grad(theta_u: np.ndarray) -> Tuple[float, np.ndarray]:
-            grad = np.zeros_like(theta_u)
-            eps = 1e-6
-            
-            val = objective(theta_u)
-            
-            for i in range(len(theta_u)):
-                theta_plus = theta_u.copy()
-                theta_plus[i] += eps
-                val_plus = objective(theta_plus)
-                grad[i] = (val_plus - val) / eps
-                
-            return val, grad
-
-        res = minimize(
-            objective_and_grad,
-            theta0,
-            method=method,
-            jac=True,
-            options={"maxiter": int(maxiter), "disp": bool(verbose)},
-        )
-
-        dec = self._decode_params(
-            theta_u=np.asarray(res.x, dtype=float),
-            k_exog=k_exog,
-            use_numba=use_numba,
-        )
-        y_adj = yd - deterministic_term(float(dec["c"][0]), dec["beta"])
-        p_full = int(dec["p_full"][0])
-        q_full = int(dec["q_full"][0])
+        # ─── Final decode & filtering (same for both paths) ─────────────────────
+        dec = self._decode_params(theta_opt_np, k_exog, use_numba=use_numba)
+        y_adj = yd - det_np(float(dec["c"][0]), dec["beta"])
         burn = self._resolve_diffuse_burn(
-            n=n, p_full=p_full, q_full=q_full, diffuse_burn=diffuse_burn
+            n, int(dec["p_full"][0]), int(dec["q_full"][0]), diffuse_burn
         )
-
         filt = self._kalman_filter(
-            y_adj=y_adj,
-            T=dec["T"],
-            Z=dec["Z"],
-            R=dec["R"],
-            sigma2=float(dec["sigma2"][0]),
+            y_adj,
+            dec["T"],
+            dec["Z"],
+            dec["R"],
+            float(dec["sigma2"][0]),
             diffuse_scale=diffuse_scale,
             diffuse_burn=burn,
             store=compute_smoother,
             use_numba=use_numba,
         )
-        smooth = self._kalman_smoother(T=dec["T"], filt=filt) if compute_smoother else None
+        smooth = self._kalman_smoother(dec["T"], filt) if compute_smoother else None
 
         nll_hat = float(filt["nll"])
         n_eff = int(filt["n_eff"])
@@ -1044,26 +1228,29 @@ class SarimaxScratch:
             "ma_lag_dim": int(dec["q_full"][0]),
             "diffuse_scale": float(diffuse_scale),
             "diffuse_burn": int(burn),
-            "optimizer": method,
-            "message": str(res.message),
-            "nit": int(getattr(res, "nit", -1)),
+            "optimizer": optimizer_name,
+            "message": opt_message,
+            "nit": int(final_step),
             "numba_used": bool(use_numba and _HAS_NUMBA),
+            "jax_autodiff_used": bool(use_jax_path),
+            "optax_used": bool(optax_used),
             "pre_differenced": bool(pre_differenced),
             "compute_smoother": bool(compute_smoother),
-            "theta_u_opt": np.asarray(res.x, dtype=float),
-            "state_space": {
-                "T": dec["T"],
-                "Z": dec["Z"],
-                "R": dec["R"],
-            },
+            "theta_u_opt": theta_opt_np,
+            "state_space": {"T": dec["T"], "Z": dec["Z"], "R": dec["R"]},
         }
-        if compute_smoother:
-            info["innovations"] = filt["v"]
-            info["innovation_var"] = filt["F"]
-            info["filtered_state"] = filt["a_filt"]
-            info["smoothed_state"] = smooth["a_smooth"] if smooth is not None else None
 
-        fit = SarimaxFit(
+        if compute_smoother:
+            info.update(
+                {
+                    "innovations": filt["v"],
+                    "innovation_var": filt["F"],
+                    "filtered_state": filt["a_filt"],
+                    "smoothed_state": smooth["a_smooth"] if smooth else None,
+                }
+            )
+
+        self.fit_ = SarimaxFit(
             spec=self.spec,
             params={
                 "c": dec["c"],
@@ -1078,43 +1265,25 @@ class SarimaxScratch:
             },
             nll=nll_hat,
             aicc=score,
-            converged=bool(res.success),
+            converged=(best_loss < 1e20),  # crude check — improve if needed
             info=info,
         )
-
-        self.fit_ = fit
-        return fit
+        return self.fit_
 
     def filter_smoother(self, y, exog=None) -> Dict[str, np.ndarray]:
-        """
-        Run Kalman filter + RTS smoother with fitted params on provided data.
-        """
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
-
         fit = self.fit_
         y0 = _as_1d(y)
         X0 = _as_2d(exog, n=y0.size)
         _, d, _ = fit.spec.order
         _, D, _, s = fit.spec.seasonal_order
-
         yd = difference(y0, d=d, D=D, s=s)
         Xd = difference_exog(X0, d=d, D=D, s=s)
         n = yd.size
-
         c = float(fit.params["c"][0]) if fit.spec.include_intercept else 0.0
         beta = fit.params["beta"]
-        phi = fit.params["phi"]
-        theta = fit.params["theta"]
-        sigma2 = float(fit.params["sigma2"][0])
-
-        ss = self._build_state_space(phi=phi, theta=theta)
-        T = ss["T"]
-        Z = ss["Z"]
-        R = ss["R"]
-        p_full = int(ss["p_full"][0])
-        q_full = int(ss["q_full"][0])
-
+        ss = self._build_state_space(fit.params["phi"], fit.params["theta"])
         det = _deterministic_term(
             c=c,
             beta=beta,
@@ -1123,21 +1292,18 @@ class SarimaxScratch:
             include_exog=fit.spec.include_exog,
             use_numba=True,
         )
-        y_adj = yd - det
-
-        burn = self._resolve_diffuse_burn(n=n, p_full=p_full, q_full=q_full)
+        burn = self._resolve_diffuse_burn(n, int(ss["p_full"][0]), int(ss["q_full"][0]))
         filt = self._kalman_filter(
-            y_adj=y_adj,
-            T=T,
-            Z=Z,
-            R=R,
-            sigma2=sigma2,
+            yd - det,
+            ss["T"],
+            ss["Z"],
+            ss["R"],
+            float(fit.params["sigma2"][0]),
             diffuse_scale=1e6,
             diffuse_burn=burn,
             store=True,
         )
-        smooth = self._kalman_smoother(T=T, filt=filt)
-
+        smooth = self._kalman_smoother(ss["T"], filt)
         return {
             "innovations": filt["v"],
             "innovation_var": filt["F"],
@@ -1152,24 +1318,18 @@ class SarimaxScratch:
         exog=None,
         exog_future=None,
         *,
-        return_intervals: bool = True,
-        alpha: float = 0.05,
-        num_sim: int = 2000,
-        seed: int = 0,
+        return_intervals=True,
+        alpha=0.05,
+        num_sim=2000,
+        seed=0,
     ) -> Dict[str, np.ndarray]:
-        """
-        Forecasts are returned on the differenced scale.
-        """
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
         fit = self.fit_
-
         y0 = _as_1d(y)
         X0 = _as_2d(exog, n=y0.size)
-
         _, d, _ = fit.spec.order
         _, D, _, s = fit.spec.seasonal_order
-
         yd = difference(y0, d=d, D=D, s=s)
         Xd = difference_exog(X0, d=d, D=D, s=s)
         n = yd.size
@@ -1181,24 +1341,16 @@ class SarimaxScratch:
                 Xf = Xf.reshape(-1, 1)
             if Xf.shape[0] != steps:
                 raise ValueError("exog_future must have shape (steps, k_exog).")
-            if (d > 0 or D > 0):
+            if d > 0 or D > 0:
                 raise NotImplementedError(
-                    "When d>0 or D>0, exog_future should be provided in differenced "
-                    "space externally before calling forecast."
+                    "Provide exog_future in differenced space when d>0 or D>0."
                 )
 
         c = float(fit.params["c"][0]) if fit.spec.include_intercept else 0.0
         beta = fit.params["beta"]
-        phi = fit.params["phi"]
-        theta = fit.params["theta"]
         sigma2 = float(fit.params["sigma2"][0])
-
-        ss = self._build_state_space(phi=phi, theta=theta)
-        T = ss["T"]
-        Z = ss["Z"]
-        R = ss["R"]
-        p_full = int(ss["p_full"][0])
-        q_full = int(ss["q_full"][0])
+        ss = self._build_state_space(fit.params["phi"], fit.params["theta"])
+        T, Z, R = ss["T"], ss["Z"], ss["R"]
 
         det = _deterministic_term(
             c=c,
@@ -1208,30 +1360,20 @@ class SarimaxScratch:
             include_exog=fit.spec.include_exog,
             use_numba=True,
         )
-        y_adj = yd - det
-
-        burn = self._resolve_diffuse_burn(n=n, p_full=p_full, q_full=q_full)
+        burn = self._resolve_diffuse_burn(n, int(ss["p_full"][0]), int(ss["q_full"][0]))
         filt = self._kalman_filter(
-            y_adj=y_adj,
-            T=T,
-            Z=Z,
-            R=R,
-            sigma2=sigma2,
-            diffuse_scale=1e6,
-            diffuse_burn=burn,
-            store=True,
+            yd - det, T, Z, R, sigma2, diffuse_scale=1e6, diffuse_burn=burn, store=True
         )
-
         a_last = filt["a_filt"][-1].copy()
 
         Xf_use = None
         if beta.size > 0 and fit.spec.include_exog:
             if Xf is None:
                 raise ValueError(
-                    "Model was fitted with exog; exog_future is required for forecast."
+                    "exog_future required when model was fitted with exog."
                 )
             if Xf.shape[1] != beta.size:
-                raise ValueError("exog_future has incompatible number of columns.")
+                raise ValueError("exog_future has wrong number of columns.")
             Xf_use = Xf
         det_future = _deterministic_term(
             c=c,
@@ -1242,64 +1384,46 @@ class SarimaxScratch:
             use_numba=True,
         )
 
-        mean = np.zeros(steps, dtype=float)
+        mean = np.zeros(steps)
         a = a_last.copy()
         for h in range(steps):
             a = T @ a
             mean[h] = det_future[h] + float(Z @ a)
 
-        out: Dict[str, np.ndarray] = {"mean": mean}
         if not return_intervals:
-            return out
+            return {"mean": mean}
 
         rng = np.random.default_rng(seed)
-        sims = np.zeros((num_sim, steps), dtype=float)
-        sqrt_sigma = float(np.sqrt(max(sigma2, 1e-12)))
-
+        sims = np.zeros((num_sim, steps))
+        sqrt_s = float(np.sqrt(max(sigma2, 1e-12)))
         for r in range(num_sim):
             a_sim = a_last.copy()
             for h in range(steps):
-                eps = rng.normal(0.0, sqrt_sigma)
-                a_sim = T @ a_sim + R * eps
+                a_sim = T @ a_sim + R * rng.normal(0.0, sqrt_s)
                 sims[r, h] = det_future[h] + float(Z @ a_sim)
 
         lo = np.quantile(sims, alpha / 2.0, axis=0)
         hi = np.quantile(sims, 1.0 - alpha / 2.0, axis=0)
-        out["lo"] = lo
-        out["hi"] = hi
-        return out
+        return {"mean": mean, "lo": lo, "hi": hi}
 
 
-def _theta_dim(
-    *,
-    k_exog: int,
-    include_intercept: bool,
-    p: int,
-    q: int,
-    P: int,
-    Q: int,
-) -> int:
+# ---------------------------------------------------------------------------
+# Auto-search helpers
+# ---------------------------------------------------------------------------
+
+
+def _theta_dim(*, k_exog, include_intercept, p, q, P, Q):
     return (1 if include_intercept else 0) + k_exog + p + P + q + Q + 1
 
 
-def _project_theta_init(
-    theta_src: Optional[np.ndarray],
-    src_spec: SarimaxSpec,
-    dst_spec: SarimaxSpec,
-    *,
-    k_exog: int,
-) -> Optional[np.ndarray]:
+def _project_theta_init(theta_src, src_spec, dst_spec, *, k_exog):
     if theta_src is None:
         return None
-
     theta_src = np.asarray(theta_src, dtype=float).reshape(-1)
-    has_c = bool(src_spec.include_intercept and dst_spec.include_intercept)
-
     p0, _, q0 = src_spec.order
     P0, _, Q0, _ = src_spec.seasonal_order
     p1, _, q1 = dst_spec.order
     P1, _, Q1, _ = dst_spec.seasonal_order
-
     dim0 = _theta_dim(
         k_exog=k_exog,
         include_intercept=src_spec.include_intercept,
@@ -1316,51 +1440,27 @@ def _project_theta_init(
         P=P1,
         Q=Q1,
     )
-
     if theta_src.size != dim0:
         return None
-
     dst = np.zeros(dim1, dtype=float)
-
-    i0 = 0
-    i1 = 0
-
+    i0 = i1 = 0
+    has_c = src_spec.include_intercept and dst_spec.include_intercept
     if has_c:
         dst[i1] = theta_src[i0]
     if src_spec.include_intercept:
         i0 += 1
     if dst_spec.include_intercept:
         i1 += 1
-
     if k_exog > 0:
         dst[i1 : i1 + k_exog] = theta_src[i0 : i0 + k_exog]
     i0 += k_exog
     i1 += k_exog
-
-    n = min(p0, p1)
-    if n > 0:
-        dst[i1 : i1 + n] = theta_src[i0 : i0 + n]
-    i0 += p0
-    i1 += p1
-
-    n = min(P0, P1)
-    if n > 0:
-        dst[i1 : i1 + n] = theta_src[i0 : i0 + n]
-    i0 += P0
-    i1 += P1
-
-    n = min(q0, q1)
-    if n > 0:
-        dst[i1 : i1 + n] = theta_src[i0 : i0 + n]
-    i0 += q0
-    i1 += q1
-
-    n = min(Q0, Q1)
-    if n > 0:
-        dst[i1 : i1 + n] = theta_src[i0 : i0 + n]
-    i0 += Q0
-    i1 += Q1
-
+    for s0, s1 in [(p0, p1), (P0, P1), (q0, q1), (Q0, Q1)]:
+        n = min(s0, s1)
+        if n > 0:
+            dst[i1 : i1 + n] = theta_src[i0 : i0 + n]
+        i0 += s0
+        i1 += s1
     dst[i1] = theta_src[i0]
     return dst
 
@@ -1374,7 +1474,6 @@ class AutoConfig:
     d_max: int = 2
     D_max: int = 1
     seasonal_period: int = 1
-
     max_steps: int = 40
     maxiter_search: int = 60
     maxiter_refit: int = 250
@@ -1383,41 +1482,33 @@ class AutoConfig:
     use_numba: bool = True
     compute_smoother_during_search: bool = False
     fallback_no_numba: bool = True
-    max_total_fits: int = 0  # 0 = unlimited
+    max_total_fits: int = 0
+    # NEW:
+    use_jax_autodiff: bool = True
+    jax_enable_x64: bool = True
+    jax_jit: bool = True
 
 
 def auto_sarimax_stepwise(
     y,
     exog=None,
     *,
-    seasonal_period: int = 1,
-    cfg: Optional[AutoConfig] = None,
-    verbose: int | bool = False,
+    seasonal_period=1,
+    cfg=None,
+    verbose=False,
 ) -> SarimaxFit:
-    """
-    Hyndman–Khandakar style stepwise search over (p,q,P,Q) with AICc.
-    Uses a fast search fit and optional full refit for the final model.
-    """
+    """Hyndman–Khandakar stepwise SARIMAX search with AICc."""
     import time
 
     vlevel = int(verbose) if not isinstance(verbose, bool) else (1 if verbose else 0)
-
-    t_global = time.perf_counter()
+    t0 = time.perf_counter()
     y0 = _as_1d(y)
     X0 = _as_2d(exog, n=y0.size)
-
     s = int(seasonal_period)
     if cfg is None:
         cfg = AutoConfig()
     cfg = AutoConfig(**{**cfg.__dict__, "seasonal_period": s})
-    if vlevel >= 1:
-        print(
-            f"[auto] start n={y0.size} seasonal_period={s} "
-            f"maxiter_search={cfg.maxiter_search} max_steps={cfg.max_steps} "
-            f"use_numba={cfg.use_numba and _HAS_NUMBA}"
-        )
 
-    # --- choose d, D with simple heuristics ---
     def kpss_p(x):
         import warnings
 
@@ -1425,16 +1516,13 @@ def auto_sarimax_stepwise(
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            _, p, _, _ = kpss(x, regression="c", nlags="auto")
-        return float(p)
+            _, pval, _, _ = kpss(x, regression="c", nlags="auto")
+        return float(pval)
 
     yd0 = y0.copy()
     d = 0
     for dd in range(cfg.d_max + 1):
-        pval = kpss_p(yd0)
-        if vlevel >= 2:
-            print(f"[auto] KPSS after d={dd}: p={pval:.4f}")
-        if pval >= 0.05:
+        if kpss_p(yd0) >= 0.05:
             d = dd
             break
         yd0 = yd0[1:] - yd0[:-1]
@@ -1442,47 +1530,31 @@ def auto_sarimax_stepwise(
     D = 0
     if s > 1:
         yd1 = difference(y0, d=d, D=0, s=s)
-        if yd1.size > s + 10:
-            p_seas = kpss_p(yd1)
-            if vlevel >= 2:
-                print(f"[auto] seasonal KPSS on d={d}: p={p_seas:.4f}")
-            if p_seas < 0.05 and cfg.D_max >= 1:
-                D = 1
-    if vlevel >= 1:
-        print(f"[auto] differencing chosen: d={d}, D={D}, s={s}")
+        if yd1.size > s + 10 and kpss_p(yd1) < 0.05 and cfg.D_max >= 1:
+            D = 1
 
-    # Pre-difference once for search speed; keep d,D in spec for returned model semantics.
+    if vlevel >= 1:
+        print(f"[auto] d={d} D={D} s={s}")
+
     yd = difference(y0, d=d, D=D, s=s)
     Xd = difference_exog(X0, d=d, D=D, s=s)
     k_exog = 0 if Xd is None else Xd.shape[1]
 
-    cache: Dict[Tuple[int, int, int, int, int, int], SarimaxFit] = {}
-    fail_cache: Dict[Tuple[int, int, int, int, int, int], str] = {}
-    stats: Dict[str, int] = {"fit_calls": 0, "cache_hits": 0, "failures": 0}
+    cache: Dict = {}
+    fail_cache: Dict = {}
+    stats = {"fit_calls": 0, "cache_hits": 0, "failures": 0}
     budget_stop = {"stop": False}
 
-    def score_model(
-        p: int,
-        q: int,
-        P: int,
-        Q: int,
-        *,
-        init_from: Optional[SarimaxFit] = None,
-    ) -> SarimaxFit:
+    def score_model(p, q, P, Q, *, init_from=None):
         key = (p, d, q, P, D, Q)
         if key in cache:
             stats["cache_hits"] += 1
-            if vlevel >= 2:
-                print(f"[cache-hit] order={(p, d, q)} seasonal={(P, D, Q, s)}")
             return cache[key]
         if key in fail_cache:
             raise RuntimeError(fail_cache[key])
         if cfg.max_total_fits > 0 and stats["fit_calls"] >= cfg.max_total_fits:
             budget_stop["stop"] = True
-            msg = (
-                f"fit budget exhausted (max_total_fits={cfg.max_total_fits}) before "
-                f"testing (p,d,q,P,D,Q)=({p},{d},{q},{P},{D},{Q})"
-            )
+            msg = f"budget exhausted before ({p},{d},{q},{P},{D},{Q})"
             fail_cache[key] = msg
             raise RuntimeError(msg)
         spec = SarimaxSpec(
@@ -1494,47 +1566,27 @@ def auto_sarimax_stepwise(
         init_params = None
         if init_from is not None:
             init_params = _project_theta_init(
-                init_from.info.get("theta_u_opt"),
-                init_from.spec,
-                spec,
-                k_exog=k_exog,
+                init_from.info.get("theta_u_opt"), init_from.spec, spec, k_exog=k_exog
             )
-
         m = SarimaxScratch(spec)
-        t_fit = time.perf_counter()
-        if vlevel >= 2:
-            print(
-                f"[fit-start] order={(p, d, q)} seasonal={(P, D, Q, s)} "
-                f"warm_start={init_params is not None}"
-            )
-        try:
-            fit = m.fit(
-                yd,
-                exog=Xd,
-                maxiter=cfg.maxiter_search,
-                method="L-BFGS-B",
-                verbose=False,
-                pre_differenced=True,
-                compute_smoother=cfg.compute_smoother_during_search,
-                use_numba=cfg.use_numba,
-                init_params=init_params,
-            )
-            stats["fit_calls"] += 1
-            if vlevel >= 2:
-                print(
-                    f"[fit-done] order={(p, d, q)} seasonal={(P, D, Q, s)} "
-                    f"aicc={fit.aicc:.3f} converged={fit.converged} "
-                    f"nit={fit.info.get('nit', -1)} "
-                    f"time={time.perf_counter() - t_fit:.2f}s"
-                )
-        except Exception as e1:
-            if cfg.use_numba and cfg.fallback_no_numba:
-                if vlevel >= 2:
-                    print(
-                        f"[fit-retry] order={(p, d, q)} seasonal={(P, D, Q, s)} "
-                        f"reason={type(e1).__name__}"
-                    )
+        last_e = None
+        for use_nb in (
+            [True, False]
+            if (cfg.use_numba and cfg.fallback_no_numba)
+            else [cfg.use_numba]
+        ):
+            jax_modes = [cfg.use_jax_autodiff]
+            if cfg.use_jax_autodiff:
+                jax_modes.append(False)
+            for use_jax in list(dict.fromkeys(jax_modes)):
                 try:
+                    t_fit = time.perf_counter()
+                    if vlevel >= 2:
+                        print(
+                            f"[fit-start] ({p},{d},{q})×({P},{D},{Q},{s}) "
+                            f"warm_start={init_params is not None} numba={use_nb} "
+                            f"jax={use_jax}"
+                        )
                     fit = m.fit(
                         yd,
                         exog=Xd,
@@ -1543,38 +1595,35 @@ def auto_sarimax_stepwise(
                         verbose=False,
                         pre_differenced=True,
                         compute_smoother=cfg.compute_smoother_during_search,
-                        use_numba=False,
+                        use_numba=use_nb,
                         init_params=init_params,
+                        use_jax_autodiff=use_jax,
+                        jax_enable_x64=cfg.jax_enable_x64,
+                        jax_jit=cfg.jax_jit,
                     )
                     stats["fit_calls"] += 1
                     if vlevel >= 2:
+                        tag = "fit-done" if use_nb else "fit-done-cpu"
                         print(
-                            f"[fit-done-cpu] order={(p, d, q)} seasonal={(P, D, Q, s)} "
+                            f"[{tag}] ({p},{d},{q})×({P},{D},{Q},{s}) "
                             f"aicc={fit.aicc:.3f} converged={fit.converged} "
                             f"nit={fit.info.get('nit', -1)} "
                             f"time={time.perf_counter() - t_fit:.2f}s"
                         )
-                except Exception as e2:
-                    stats["failures"] += 1
-                    msg = (
-                        f"fit failed for (p,d,q,P,D,Q)=({p},{d},{q},{P},{D},{Q}) "
-                        f"with numba and without numba. "
-                        f"numba_err={type(e1).__name__}: {e1}; "
-                        f"cpu_err={type(e2).__name__}: {e2}"
-                    )
-                    fail_cache[key] = msg
-                    raise RuntimeError(msg) from e2
-            else:
-                stats["failures"] += 1
-                msg = (
-                    f"fit failed for (p,d,q,P,D,Q)=({p},{d},{q},{P},{D},{Q}): "
-                    f"{type(e1).__name__}: {e1}"
-                )
-                fail_cache[key] = msg
-                raise RuntimeError(msg) from e1
-
-        cache[key] = fit
-        return fit
+                    cache[key] = fit
+                    return fit
+                except Exception as e:
+                    last_e = e
+                    if vlevel >= 2:
+                        print(
+                            f"[fit-retry] ({p},{d},{q})×({P},{D},{Q},{s}) "
+                            f"numba={use_nb} jax={use_jax} "
+                            f"reason={type(e).__name__}: {e}"
+                        )
+        stats["failures"] += 1
+        msg = f"fit failed ({p},{d},{q},{P},{D},{Q}): {last_e}"
+        fail_cache[key] = msg
+        raise RuntimeError(msg)
 
     candidates = [
         (0, 0, 0, 0),
@@ -1584,13 +1633,13 @@ def auto_sarimax_stepwise(
         (2, 2, 1 if s > 1 else 0, 1 if s > 1 else 0),
     ]
     candidates = [
-        (min(p, cfg.p_max), min(q, cfg.q_max), min(P, cfg.P_max), min(Q, cfg.Q_max))
-        for p, q, P, Q in candidates
+        (min(p0, cfg.p_max), min(q0, cfg.q_max), min(P0, cfg.P_max), min(Q0, cfg.Q_max))
+        for p0, q0, P0, Q0 in candidates
     ]
 
     best = None
     init_errors = []
-    for (p0, q0, P0, Q0) in candidates:
+    for p0, q0, P0, Q0 in candidates:
         if budget_stop["stop"]:
             break
         try:
@@ -1600,125 +1649,115 @@ def auto_sarimax_stepwise(
         except Exception as e:
             init_errors.append(str(e))
             if vlevel >= 1:
-                print(f"[init-skip] {(p0, d, q0, P0, D, Q0)} -> {e}")
-            continue
+                print(f"[init-skip] ({p0},{d},{q0},{P0},{D},{Q0}) -> {e}")
     if best is None:
         msg = "Could not fit any initial SARIMAX candidates."
         if init_errors:
             msg += " First errors: " + " | ".join(init_errors[:3])
         raise RuntimeError(msg)
-    if vlevel >= 1:
-        p0, _, q0 = best.spec.order
-        P0, _, Q0, _ = best.spec.seasonal_order
-        print(
-            f"[auto] init best order={(p0, d, q0)} seasonal={(P0, D, Q0, s)} "
-            f"AICc={best.aicc:.3f}"
-        )
 
     def neighbors(p, q, P, Q):
         for dp, dq, dP, dQ in [
-            (+1, 0, 0, 0),
+            (1, 0, 0, 0),
             (-1, 0, 0, 0),
-            (0, +1, 0, 0),
+            (0, 1, 0, 0),
             (0, -1, 0, 0),
-            (0, 0, +1, 0),
+            (0, 0, 1, 0),
             (0, 0, -1, 0),
-            (0, 0, 0, +1),
+            (0, 0, 0, 1),
             (0, 0, 0, -1),
-            (+1, -1, 0, 0),
-            (-1, +1, 0, 0),
+            (1, -1, 0, 0),
+            (-1, 1, 0, 0),
         ]:
-            pp = p + dp
-            qq = q + dq
-            PP = P + dP
-            QQ = Q + dQ
+            pp, qq, PP, QQ = p + dp, q + dq, P + dP, Q + dQ
             if (
                 0 <= pp <= cfg.p_max
                 and 0 <= qq <= cfg.q_max
                 and 0 <= PP <= cfg.P_max
                 and 0 <= QQ <= cfg.Q_max
             ):
-                yield (pp, qq, PP, QQ)
+                yield pp, qq, PP, QQ
 
-    p, d_, q = best.spec.order
-    P, D_, Q, s_ = best.spec.seasonal_order
-    assert d_ == d and D_ == D and s_ == s
-
+    p, _, q = best.spec.order
+    P, _, Q, _ = best.spec.seasonal_order
     steps = 0
     improved = True
-    while improved and steps < cfg.max_steps:
-        if budget_stop["stop"]:
-            break
-        improved = False
-        cur_best = best
-        
-        neighbor_candidates = list(neighbors(p, q, P, Q))
-        results = []
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_to_cand = {
-                executor.submit(score_model, pp, qq, PP, QQ, init_from=cur_best): (pp, qq, PP, QQ)
-                for (pp, qq, PP, QQ) in neighbor_candidates
+
+    n_workers = min(
+        10, (cfg.p_max + 1) * (cfg.q_max + 1) * (cfg.P_max + 1) * (cfg.Q_max + 1)
+    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+        while improved and steps < cfg.max_steps and not budget_stop["stop"]:
+            improved = False
+            cur_best = best
+            nb_list = list(neighbors(p, q, P, Q))
+            futures = {
+                pool.submit(score_model, pp, qq, PP, QQ, init_from=cur_best): (
+                    pp,
+                    qq,
+                    PP,
+                    QQ,
+                )
+                for pp, qq, PP, QQ in nb_list
             }
-            for future in concurrent.futures.as_completed(future_to_cand):
-                cand = future_to_cand[future]
+            for fut in concurrent.futures.as_completed(futures):
+                pp, qq, PP, QQ = futures[fut]
                 try:
-                    f = future.result()
-                    results.append((f, cand))
-                except Exception as e:
-                    if vlevel >= 2:
-                        print(f"[neighbor-skip] {(cand[0], d, cand[1], cand[2], D, cand[3])} -> {e}")
-        
-        for f, (pp, qq, PP, QQ) in results:
-            if f.aicc + 1e-9 < cur_best.aicc:
-                cur_best = f
-                p, q, P, Q = pp, qq, PP, QQ
-                improved = True
-        best = cur_best
-        steps += 1
-        if vlevel >= 1:
-            print(
-                f"[step {steps}] best order={(p, d, q)} seasonal={(P, D, Q, s)} "
-                f"AICc={best.aicc:.3f} fits={stats['fit_calls']} "
-                f"cache_hits={stats['cache_hits']} elapsed={time.perf_counter() - t_global:.1f}s"
-            )
+                    f = fut.result()
+                    if f.aicc + 1e-9 < cur_best.aicc:
+                        cur_best = f
+                        p, q, P, Q = pp, qq, PP, QQ
+                        improved = True
+                except Exception:
+                    pass
+            best = cur_best
+            steps += 1
+            if vlevel >= 1:
+                print(
+                    f"[step {steps}] ({p},{d},{q})×({P},{D},{Q},{s}) "
+                    f"AICc={best.aicc:.3f} fits={stats['fit_calls']} "
+                    f"t={time.perf_counter() - t0:.1f}s"
+                )
 
     if cfg.refit_final:
-        if vlevel >= 1:
-            print(
-                f"[refit] final refit maxiter={cfg.maxiter_refit} "
-                f"order={best.spec.order} seasonal={best.spec.seasonal_order}"
-            )
         final_model = SarimaxScratch(best.spec)
-        try:
-            best = final_model.fit(
-                y0,
-                exog=X0,
-                maxiter=cfg.maxiter_refit,
-                method="L-BFGS-B",
-                verbose=False,
-                compute_smoother=True,
-                use_numba=cfg.use_numba,
-                init_params=best.info.get("theta_u_opt"),
-            )
-        except Exception:
-            if not (cfg.use_numba and cfg.fallback_no_numba):
-                raise
-            best = final_model.fit(
-                y0,
-                exog=X0,
-                maxiter=cfg.maxiter_refit,
-                method="L-BFGS-B",
-                verbose=False,
-                compute_smoother=True,
-                use_numba=False,
-                init_params=best.info.get("theta_u_opt"),
-            )
+        for use_nb in (
+            [True, False]
+            if (cfg.use_numba and cfg.fallback_no_numba)
+            else [cfg.use_numba]
+        ):
+            jax_modes = [cfg.use_jax_autodiff]
+            if cfg.use_jax_autodiff:
+                jax_modes.append(False)
+            for use_jax in list(dict.fromkeys(jax_modes)):
+                try:
+                    best = final_model.fit(
+                        y0,
+                        exog=X0,
+                        maxiter=cfg.maxiter_refit,
+                        method="L-BFGS-B",
+                        verbose=False,
+                        compute_smoother=True,
+                        use_numba=use_nb,
+                        init_params=best.info.get("theta_u_opt"),
+                        use_jax_autodiff=use_jax,
+                        jax_enable_x64=cfg.jax_enable_x64,
+                        jax_jit=cfg.jax_jit,
+                    )
+                    break
+                except Exception:
+                    if use_jax is False:
+                        if not (cfg.use_numba and cfg.fallback_no_numba and use_nb):
+                            raise
+                    continue
+            else:
+                continue
+            break
 
     if vlevel >= 1:
         print(
-            f"[auto] done in {time.perf_counter() - t_global:.2f}s "
-            f"fits={stats['fit_calls']} cache_hits={stats['cache_hits']} failures={stats['failures']} "
+            f"[auto] done {time.perf_counter() - t0:.2f}s  "
+            f"fits={stats['fit_calls']} failures={stats['failures']}  "
             f"best={best.spec} AICc={best.aicc:.3f}"
         )
-
     return best

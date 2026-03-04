@@ -5,7 +5,7 @@ try:
     import triton.language as tl
 
     TRITON_AVAILABLE = True
-except ImportError:
+except Exception:
     TRITON_AVAILABLE = False
     triton = None
     tl = None
@@ -302,9 +302,13 @@ class LayerNormTritonFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, bias, eps):
         if not TRITON_AVAILABLE:
-            raise RuntimeError("LayerNormTritonFunction called but Triton is not available.")
+            raise RuntimeError(
+                "LayerNormTritonFunction called but Triton is not available."
+            )
         if weight is None or bias is None:
-            raise RuntimeError("LayerNormTritonFunction expects non-None weight and bias.")
+            raise RuntimeError(
+                "LayerNormTritonFunction expects non-None weight and bias."
+            )
 
         orig_shape = x.shape
         x = x.view(-1, x.shape[-1]).contiguous()
@@ -340,7 +344,9 @@ class LayerNormTritonFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         if not TRITON_AVAILABLE:
-            raise RuntimeError("LayerNormTritonFunction backward called but Triton is not available.")
+            raise RuntimeError(
+                "LayerNormTritonFunction backward called but Triton is not available."
+            )
 
         x, weight, bias, mean, rstd = ctx.saved_tensors
         orig_shape = ctx.orig_shape
@@ -392,7 +398,9 @@ class RMSNormTritonFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, eps):
         if not TRITON_AVAILABLE:
-            raise RuntimeError("RMSNormTritonFunction called but Triton is not available.")
+            raise RuntimeError(
+                "RMSNormTritonFunction called but Triton is not available."
+            )
         if weight is None:
             raise RuntimeError("RMSNormTritonFunction expects non-None weight.")
 
@@ -427,7 +435,9 @@ class RMSNormTritonFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         if not TRITON_AVAILABLE:
-            raise RuntimeError("RMSNormTritonFunction backward called but Triton is not available.")
+            raise RuntimeError(
+                "RMSNormTritonFunction backward called but Triton is not available."
+            )
 
         x, weight, rms = ctx.saved_tensors
         orig_shape = ctx.orig_shape
@@ -461,7 +471,9 @@ class RMSNormTritonFunction(torch.autograd.Function):
         return grad_input.view(orig_shape), grad_weight, None
 
 
-def triton_scale_bias(x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor | None) -> torch.Tensor:
+def triton_scale_bias(
+    x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor | None
+) -> torch.Tensor:
     if not TRITON_AVAILABLE:
         raise RuntimeError("triton_scale_bias called but Triton is not available.")
 
@@ -493,7 +505,9 @@ def triton_fused_rmsnorm_scale_bias(
     eps: float,
 ) -> torch.Tensor:
     if not TRITON_AVAILABLE:
-        raise RuntimeError("triton_fused_rmsnorm_scale_bias called but Triton is not available.")
+        raise RuntimeError(
+            "triton_fused_rmsnorm_scale_bias called but Triton is not available."
+        )
 
     *lead, H = x.shape
     x_flat = x.reshape(-1, H).contiguous()

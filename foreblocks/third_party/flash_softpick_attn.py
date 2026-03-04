@@ -7,10 +7,17 @@
 from typing import Optional
 
 import torch
-import triton
-import triton.language as tl
+
+try:
+    import triton
+    import triton.language as tl
+    from triton.language import exp, log
+except Exception as _e:
+    raise ImportError(
+        f"flash_softpick_attn requires the 'triton' package. Original error: {_e}"
+    ) from _e
+
 from einops import rearrange, reduce
-from triton.language import exp, log
 
 
 def prepare_lens(offsets: torch.LongTensor) -> torch.LongTensor:
@@ -70,11 +77,13 @@ def parallel_softpick_attn_fwd_kernel(
     i_h = i_hq // G
 
     if USE_OFFSETS:
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(
-            indices + i_t * 2 + 1
-        ).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(
-            tl.int32
+        i_n, i_t = (
+            tl.load(indices + i_t * 2).to(tl.int32),
+            tl.load(indices + i_t * 2 + 1).to(tl.int32),
+        )
+        bos, eos = (
+            tl.load(offsets + i_n).to(tl.int32),
+            tl.load(offsets + i_n + 1).to(tl.int32),
         )
         T = eos - bos
     else:
@@ -238,11 +247,13 @@ def parallel_softpick_attn_bwd_kernel_dq(
     i_h = i_hq // G
 
     if USE_OFFSETS:
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(
-            indices + i_t * 2 + 1
-        ).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(
-            tl.int32
+        i_n, i_t = (
+            tl.load(indices + i_t * 2).to(tl.int32),
+            tl.load(indices + i_t * 2 + 1).to(tl.int32),
+        )
+        bos, eos = (
+            tl.load(offsets + i_n).to(tl.int32),
+            tl.load(offsets + i_n + 1).to(tl.int32),
         )
         T = eos - bos
     else:
@@ -391,11 +402,13 @@ def parallel_softpick_attn_bwd_kernel_dkv(
     i_h = i_hq // G
 
     if USE_OFFSETS:
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(
-            indices + i_t * 2 + 1
-        ).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(
-            tl.int32
+        i_n, i_t = (
+            tl.load(indices + i_t * 2).to(tl.int32),
+            tl.load(indices + i_t * 2 + 1).to(tl.int32),
+        )
+        bos, eos = (
+            tl.load(offsets + i_n).to(tl.int32),
+            tl.load(offsets + i_n + 1).to(tl.int32),
         )
         T = eos - bos
     else:
@@ -689,7 +702,6 @@ def parallel_softpick_attn_bwd(
 
 @torch.compile
 class ParallelSoftpickAttentionFunction(torch.autograd.Function):
-
     @staticmethod
     # @contiguous
     # @autocast_custom_fwd
@@ -793,4 +805,3 @@ def parallel_softpick_attn(
     if head_first:
         o = rearrange(o, "b t h d -> b h t d")
     return o
-
