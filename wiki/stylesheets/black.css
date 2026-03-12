@@ -1,109 +1,355 @@
-html,
-body,
-[data-md-color-scheme],
-.container,
-.bs-sidebar,
-.navbar,
-.navbar-default,
-.content,
-.col-md-9,
-.col-md-3,
-.wm-page-content,
-.wm-content-pane,
-.wm-toc-pane {
-  background: #000000 !important;
-  color: #f5f5f5 !important;
+:root {
+  --fb-bg: #0b0d10;
+  --fb-surface: #12161b;
+  --fb-surface-2: #181d24;
+  --fb-surface-3: #202733;
+  --fb-border: #2a3342;
+  --fb-text: #e8edf5;
+  --fb-text-muted: #a8b3c6;
+  --fb-link: #8ec5ff;
+  --fb-link-hover: #b8dbff;
+  --fb-accent: #6dd3b6;
+  --fb-accent-strong: #8af0d1;
+  --fb-code-bg: #0f1318;
+  --fb-selection: rgba(142, 197, 255, 0.22);
+  --fb-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
 }
 
-body,
+html,
+body {
+  background: var(--fb-bg);
+  color: var(--fb-text);
+}
+
+body {
+  line-height: 1.7;
+}
+
+::selection {
+  background: var(--fb-selection);
+}
+
+a {
+  color: var(--fb-link);
+  text-decoration-color: rgba(142, 197, 255, 0.35);
+}
+
+a:hover,
+a:focus {
+  color: var(--fb-link-hover);
+}
+
 p,
 li,
 td,
 th,
-.navbar-default .navbar-nav > li > a,
-.navbar-default .navbar-brand,
-.bs-sidebar .nav > li > a,
-.wm-toc-pane a,
-a {
-  color: #f5f5f5 !important;
+label,
+.table,
+.table > thead > tr > th,
+.table > tbody > tr > td,
+.table > tbody > tr > th {
+  color: var(--fb-text);
 }
 
-a {
-  text-decoration-color: rgba(255, 255, 255, 0.35);
-}
-
-a:hover,
-a:focus,
-.bs-sidebar .nav > li > a:hover,
-.bs-sidebar .nav > li > a:focus,
-.wm-toc-pane a:hover {
-  color: #8ab4ff !important;
+.container,
+.col-md-9,
+.col-md-3 {
+  background: transparent;
 }
 
 .navbar,
 .navbar-default {
-  background-color: #000000 !important;
-  border-color: #1f1f1f !important;
+  background: rgba(11, 13, 16, 0.96);
+  border-color: var(--fb-border);
+  box-shadow: var(--fb-shadow);
+}
+
+.navbar-default .navbar-brand,
+.navbar-default .navbar-nav > li > a {
+  color: var(--fb-text-muted);
+}
+
+.navbar-default .navbar-brand:hover,
+.navbar-default .navbar-brand:focus,
+.navbar-default .navbar-nav > li > a:hover,
+.navbar-default .navbar-nav > li > a:focus {
+  color: var(--fb-text);
+  background: transparent;
 }
 
 .navbar-default .navbar-nav > .active > a,
 .navbar-default .navbar-nav > .active > a:hover,
 .navbar-default .navbar-nav > .active > a:focus,
+.navbar-default .navbar-nav > .open > a,
+.navbar-default .navbar-nav > .open > a:hover,
+.navbar-default .navbar-nav > .open > a:focus {
+  color: var(--fb-accent-strong);
+  background: transparent;
+}
+
+.navbar-default .navbar-toggle {
+  border-color: var(--fb-border);
+  background: var(--fb-surface);
+}
+
+.navbar-default .navbar-toggle:hover,
+.navbar-default .navbar-toggle:focus {
+  background: var(--fb-surface-2);
+}
+
+.navbar-default .navbar-toggle .icon-bar {
+  background: var(--fb-text);
+}
+
+.navbar-default .navbar-collapse,
+.navbar-default .navbar-form {
+  border-color: var(--fb-border);
+}
+
+.dropdown-menu {
+  background: var(--fb-surface);
+  border: 1px solid var(--fb-border);
+  box-shadow: var(--fb-shadow);
+}
+
+.dropdown-menu > li > a {
+  color: var(--fb-text-muted);
+}
+
+.dropdown-menu > li > a:hover,
+.dropdown-menu > li > a:focus {
+  color: var(--fb-text);
+  background: var(--fb-surface-2);
+}
+
+.dropdown-header {
+  color: var(--fb-text-muted);
+}
+
+.bs-sidebar {
+  background: var(--fb-surface);
+  border: 1px solid var(--fb-border);
+  border-radius: 14px;
+  box-shadow: var(--fb-shadow);
+  padding: 0.85rem 0.75rem;
+}
+
+.bs-sidebar .nav > li > a {
+  color: var(--fb-text-muted);
+  border-left: 2px solid transparent;
+  padding: 0.4rem 0.85rem;
+}
+
+.bs-sidebar .nav > li > a:hover,
+.bs-sidebar .nav > li > a:focus {
+  color: var(--fb-text);
+  background: var(--fb-surface-2);
+  border-left-color: rgba(109, 211, 182, 0.45);
+}
+
 .bs-sidebar .nav > .active > a,
 .bs-sidebar .nav > .active > a:hover,
 .bs-sidebar .nav > .active > a:focus {
-  background: #111111 !important;
-  color: #8ab4ff !important;
-  border-color: #2a2a2a !important;
+  color: var(--fb-accent-strong);
+  background: var(--fb-surface-2);
+  border-left-color: var(--fb-accent);
+  font-weight: 600;
 }
 
-.bs-sidebar,
+.bs-sidebar .nav .nav > li > a {
+  color: var(--fb-text-muted);
+  padding-left: 1.35rem;
+}
+
+.bs-sidebar.affix,
+.bs-sidebar.affix-bottom {
+  top: 88px;
+}
+
+.bs-sidebar .nav > li > a .fa,
+.bs-sidebar .nav > li > a .glyphicon {
+  color: inherit;
+}
+
+.toc {
+  color: var(--fb-text-muted);
+}
+
+.bs-sidenav .nav,
+.bs-sidebar .nav {
+  margin-bottom: 0;
+}
+
+.searchbox input,
+input[type="text"],
+input[type="search"] {
+  background: var(--fb-surface-2);
+  color: var(--fb-text);
+  border: 1px solid var(--fb-border);
+  border-radius: 10px;
+}
+
+.searchbox input::placeholder,
+input::placeholder {
+  color: var(--fb-text-muted);
+}
+
+.form-control:focus {
+  border-color: var(--fb-link);
+  box-shadow: 0 0 0 3px rgba(142, 197, 255, 0.16);
+}
+
+.wm-page-content,
+.wm-content-pane,
 .wm-toc-pane,
-.searchbox,
-.admonition,
-.alert,
-table,
-pre,
-code,
-.highlight pre {
-  border-color: #222222 !important;
+.page-content,
+.col-md-9[role="main"] {
+  background: transparent;
 }
 
-code,
-pre,
-.highlight pre {
-  background: #0d0d0d !important;
-  color: #f5f5f5 !important;
+.col-md-9[role="main"] {
+  color: var(--fb-text);
 }
 
-table {
-  background: #050505 !important;
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: #f5f8fc;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
-thead,
-th {
-  background: #101010 !important;
-  color: #f5f5f5 !important;
+h1 {
+  margin-top: 0.2em;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--fb-border);
 }
 
-tbody tr:nth-child(odd) {
-  background: #050505 !important;
-}
-
-tbody tr:nth-child(even) {
-  background: #0a0a0a !important;
-}
-
-hr {
-  border-top-color: #222222 !important;
+h2,
+h3 {
+  margin-top: 1.8em;
 }
 
 blockquote {
-  border-left-color: #333333 !important;
-  color: #dddddd !important;
+  color: var(--fb-text-muted);
+  background: var(--fb-surface);
+  border-left: 4px solid var(--fb-accent);
+  border-radius: 0 12px 12px 0;
+  padding: 0.9rem 1rem;
+}
+
+pre,
+code,
+.highlight pre,
+.highlight code {
+  background: var(--fb-code-bg);
+  color: var(--fb-text);
+  border-color: var(--fb-border);
+}
+
+pre,
+.highlight pre {
+  border: 1px solid var(--fb-border);
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+}
+
+code {
+  border-radius: 6px;
+  padding: 0.14rem 0.35rem;
+}
+
+table,
+.table {
+  background: var(--fb-surface);
+  border: 1px solid var(--fb-border);
+}
+
+.table > thead > tr > th,
+thead,
+th {
+  background: var(--fb-surface-2);
+  border-bottom-color: var(--fb-border);
+}
+
+.table > tbody > tr > td,
+.table > tbody > tr > th,
+.table > tfoot > tr > td,
+.table > tfoot > tr > th,
+.table > thead > tr > td,
+.table > thead > tr > th {
+  border-top-color: var(--fb-border);
+}
+
+.table-striped > tbody > tr:nth-of-type(odd),
+tbody tr:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+hr {
+  border-top-color: var(--fb-border);
 }
 
 .admonition,
 .alert {
-  background: #0a0a0a !important;
+  background: var(--fb-surface);
+  color: var(--fb-text);
+  border: 1px solid var(--fb-border);
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.admonition-title,
+.alert-title {
+  background: var(--fb-surface-2);
+  color: var(--fb-text);
+  border-bottom: 1px solid var(--fb-border);
+}
+
+.pagination > li > a,
+.pagination > li > span {
+  color: var(--fb-text-muted);
+  background: var(--fb-surface);
+  border-color: var(--fb-border);
+}
+
+.pagination > li > a:hover,
+.pagination > li > span:hover,
+.pagination > li > a:focus,
+.pagination > li > span:focus,
+.pagination > .active > a,
+.pagination > .active > a:hover,
+.pagination > .active > a:focus,
+.pagination > .active > span,
+.pagination > .active > span:hover,
+.pagination > .active > span:focus {
+  color: var(--fb-text);
+  background: var(--fb-surface-2);
+  border-color: var(--fb-link);
+}
+
+.footer,
+footer {
+  color: var(--fb-text-muted);
+  border-top-color: var(--fb-border);
+}
+
+@media (max-width: 991px) {
+  .bs-sidebar {
+    margin-top: 1rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .navbar-default .navbar-nav .open .dropdown-menu > li > a {
+    color: var(--fb-text-muted);
+  }
+
+  .navbar-default .navbar-nav .open .dropdown-menu > li > a:hover,
+  .navbar-default .navbar-nav .open .dropdown-menu > li > a:focus {
+    color: var(--fb-text);
+    background: var(--fb-surface-2);
+  }
 }
