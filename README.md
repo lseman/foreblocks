@@ -150,6 +150,12 @@ Topic guides:
 - [MoE Guide](wiki/moe.md)
 - [DARTS Guide](wiki/darts.md)
 
+Companion tooling:
+
+- [Foretools Overview](wiki/foretools/index.md)
+- [Time Series Generator](wiki/foretools/tsgen.md)
+- [BOHB Search](wiki/foretools/bohb.md)
+
 Useful notebooks and examples:
 
 - [Synthetic Series Notebook](foretools/tsgen/ts_gen_complete_series.ipynb)

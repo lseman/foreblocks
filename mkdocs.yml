@@ -9,6 +9,9 @@ site_dir: site/docs
 theme:
   name: mkdocs
 
+extra_css:
+  - stylesheets/black.css
+
 nav:
   - Home: index.md
   - Overview: overview.md
@@ -16,12 +19,17 @@ nav:
       - Getting Started: getting-started.md
       - Train A Direct Model: tutorials/train-direct-model.md
       - Generate Synthetic Series: tutorials/generate-synthetic-series.md
+      - Optimize With BOHB: tutorials/optimize-with-bohb.md
   - Guides:
       - Preprocessor: preprocessor.md
       - Custom Blocks: custom_blocks.md
       - Transformer: transformer.md
       - Mixture Of Experts: moe.md
       - DARTS: darts.md
+  - Foretools:
+      - Foretools Overview: foretools/index.md
+      - Time Series Generator: foretools/tsgen.md
+      - BOHB Search: foretools/bohb.md
   - Architecture:
       - System Overview: architecture/system-overview.md
       - Forecasting Pipeline: architecture/forecasting-pipeline.md

@@ -31,6 +31,7 @@ This page gives a quick path through the repository for contributors and power u
 | Path | Purpose |
 | --- | --- |
 | `foretools/tsgen/` | synthetic time-series generation |
+| `foretools/bohb/` | BOHB, TPE configuration, pruning, and optimization plots |
 | `foretools/foreminer/` | exploratory analysis and diagnostics |
 | `foretools/fengineer/` | feature engineering utilities |
 | `foretools/vmd/` | decomposition tools |
@@ -43,9 +44,11 @@ This page gives a quick path through the repository for contributors and power u
 - exploring transformer internals: `foreblocks/tf/transformer.py`
 - working on search: `foreblocks/darts/`
 - generating synthetic data: `foretools/tsgen/`
+- running black-box hyperparameter search: `foretools/bohb/`
 
 ## Related pages
 
 - [System Overview](../architecture/system-overview.md)
 - [Public API](public-api.md)
+- [Foretools Overview](../foretools/index.md)
 - [Documentation Workflow](../contributing/docs-workflow.md)

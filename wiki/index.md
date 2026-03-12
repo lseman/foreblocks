@@ -6,6 +6,7 @@ This documentation is organized like a versioned wiki:
 
 - tutorials for runnable starting points
 - guides for major subsystems
+- foretools pages for companion utilities and experimentation tooling
 - architecture pages for internal structure
 - reference pages for stable entry points and configuration
 - contributor docs for maintaining the documentation itself
@@ -23,6 +24,7 @@ If you are new to the project, read these in order:
 - [Getting Started](getting-started.md)
 - [Train a Direct Model](tutorials/train-direct-model.md)
 - [Generate Synthetic Series](tutorials/generate-synthetic-series.md)
+- [Optimize With BOHB](tutorials/optimize-with-bohb.md)
 
 ## Guides
 
@@ -31,6 +33,12 @@ If you are new to the project, read these in order:
 - [Transformer Guide](transformer.md)
 - [MoE Guide](moe.md)
 - [DARTS Guide](darts.md)
+
+## Foretools
+
+- [Foretools Overview](foretools/index.md)
+- [Time Series Generator](foretools/tsgen.md)
+- [BOHB Search](foretools/bohb.md)
 
 ## Architecture
 
@@ -53,3 +61,4 @@ If you are new to the project, read these in order:
 - The top-level `README.md` remains the landing page for GitHub visitors.
 - The canonical docs source lives in `wiki/`, not in a separate GitHub Wiki repository.
 - The published docs URL space is `/docs/`, while the custom landing page remains at site root.
+- `foretools` docs are versioned here as well, even when the code is not exposed through top-level `foreblocks` imports.

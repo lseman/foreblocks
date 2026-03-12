@@ -101,9 +101,11 @@ Dataclasses for model-level and training-level configuration.
 
 - Prefer top-level imports unless you are modifying internals.
 - Treat deep imports as implementation details unless a subsystem guide explicitly recommends them.
+- `foretools` does not currently expose an equally stable top-level import surface. For those utilities, prefer the documented deep imports in the dedicated `Foretools` pages.
 
 ## Related pages
 
 - [Configuration](configuration.md)
 - [Repository Map](repository-map.md)
 - [Overview](../overview.md)
+- [Foretools Overview](../foretools/index.md)

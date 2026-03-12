@@ -16,6 +16,7 @@ The generator lives in:
 There is also a companion notebook:
 
 - `foretools/tsgen/ts_gen_complete_series.ipynb`
+- [Time Series Generator](../foretools/tsgen.md) documents the full API and component behavior
 
 ## Minimal example
 
@@ -74,4 +75,5 @@ This makes the generator especially useful for interpretability and teaching not
 
 - [Getting Started](../getting-started.md)
 - [Preprocessor Guide](../preprocessor.md)
+- [Time Series Generator](../foretools/tsgen.md)
 - [Repository Map](../reference/repository-map.md)

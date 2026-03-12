@@ -31,7 +31,8 @@ Published site layout:
 | Work with transformer backbones | [Transformer Guide](transformer.md) |
 | Enable mixture-of-experts routing | [MoE Guide](moe.md) |
 | Run neural architecture search | [DARTS Guide](darts.md) |
-| Generate synthetic time series | `foretools/tsgen/ts_gen.py` and `foretools/tsgen/ts_gen_complete_series.ipynb` |
+| Generate synthetic time series | [Time Series Generator](foretools/tsgen.md) |
+| Run budgeted hyperparameter search | [BOHB Search](foretools/bohb.md) |
 
 ## Stable Public Surface
 
@@ -70,6 +71,7 @@ When documentation and internals diverge, prefer this exported surface first.
 | `foreblocks/darts` | architecture search, search configs, search evaluation |
 | `foreblocks/mltracker` | experiment tracking UI and storage |
 | `foretools/tsgen` | synthetic series generation and pedagogical notebooks |
+| `foretools/bohb` | budgeted hyperparameter optimization with TPE-backed BOHB |
 | `examples/` | notebooks demonstrating specific subsystems |
 
 ## Recommended Reading Order
@@ -81,6 +83,7 @@ When documentation and internals diverge, prefer this exported surface first.
 5. [Custom Blocks Guide](custom_blocks.md)
 6. [Transformer Guide](transformer.md)
 7. [MoE Guide](moe.md) or [DARTS Guide](darts.md), depending on your use case
+8. [Foretools Overview](foretools/index.md) if you also need synthetic data or search tooling
 
 ## Practical Notes
 
@@ -88,9 +91,11 @@ When documentation and internals diverge, prefer this exported surface first.
 - `ForecastingModel` plus `Trainer` is the main training path.
 - `TimeSeriesPreprocessor` is useful when you want the library to create windows and optional time features from a raw `[T, D]` array.
 - `foretools` is not just internal support code. It contains useful standalone utilities, especially the synthetic time-series generator.
+- The most mature `foretools` docs currently cover `tsgen` and `bohb`, which are the two main workflow-oriented tools in this repository.
 
 ## Suggested Next Steps
 
 - If you want a runnable baseline, follow [Getting Started](getting-started.md).
-- If you want synthetic data for demos or notebooks, open `foretools/tsgen/ts_gen_complete_series.ipynb`.
+- If you want synthetic data for demos or notebooks, read [Time Series Generator](foretools/tsgen.md).
+- If you want to tune models or benchmark search behavior, read [BOHB Search](foretools/bohb.md).
 - If you are extending the library, read the topic guide closest to the subsystem you plan to modify.

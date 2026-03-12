@@ -1,111 +1,89 @@
-# BOHB: Bayesian Optimization & Hyperband (with SOTA TPE)
+# BOHB
 
-A robust, high-performance implementation of **BOHB** (Bayesian Optimization and Hyperband) featuring a State-of-the-Art (SOTA) **Tree-structured Parzen Estimator (TPE)**.
+This directory contains a BOHB-style optimizer that combines Hyperband resource allocation with a configurable TPE sampler.
 
-This implementation enhances standard TPE with modern techniques to handle non-Gaussian distributions, dependencies between parameters, and large-scale optimization tasks efficiently.
+The canonical documentation now lives in the repository wiki:
 
-## 🚀 Key Features
+- `wiki/foretools/bohb.md`
+- `wiki/tutorials/optimize-with-bohb.md`
 
-### SOTA TPE Enhancements
-- **Input Warping (Yeo-Johnson)**: Automatically transforms non-Gaussian parameter distributions to improve Kernel Density Estimation (KDE) accuracy.
-- **Adaptive Multivariate TPE**: Auto-detects when to switch from univariate to multivariate KDE based on sample size ($N \ge 5 \times D$), capturing parameter dependencies.
-- **Adaptive TPE (ATPE)**:
-    - **Dynamic Gamma**: Automatically adjusts the exploration/exploitation trade-off based on optimization progress.
-    - **Global Filtering**: Uses Z-score and clustering to filter out outliers and noise from the observation history *before* modeling.
-    - **Parameter Blocking**: Greedily fixes parameters that are strongly correlated with loss (excessive exploration of converged params is prevented).
-- **Categorical Handling**: Supports continuous, integer, and categorical parameters with smoothing and embedding options.
+This README keeps a short, code-accurate reference close to the implementation.
 
-### Algorithms
-- **BOHB**: Combines Hyperband's efficient resource allocation with TPE's Bayesian guidance.
-- **Hyperband**: Pure random search with aggressive early stopping (bracket-based).
-- **TPE**: Standalone Bayesian optimization.
-
-## 📦 Installation
-
-Requires `numpy` and `scipy`.
-
-```bash
-pip install numpy scipy
-```
-
-## ⚡ Quick Start
-
-### Basic Usage (BOHB)
+## Import surface
 
 ```python
-from bohb import BOHB
-import time
+from foretools.bohb import BOHB, TPEConf
+from foretools.bohb.plotter import OptimizationPlotter
+from foretools.bohb.trial import TrialPruned
+```
 
-# Define your objective function
-def objective(config, budget):
-    # Simulate training
-    loss = (config["x"] - 2)**2 + (config["y"] + 1)**2
-    # Add noise or resource scaling if needed
-    return loss
+## Quick start
 
-# Define search space
+```python
+from foretools.bohb import BOHB
+
 config_space = {
-    "x": ("float", (-5.0, 5.0)),
-    "y": ("float", (-5.0, 5.0)),
-    "method": ("choice", ["sgd", "adam"]),
+    "lr": ("float", (1e-5, 1e-1, "log")),
+    "batch_size": ("choice", [16, 32, 64, 128]),
+    "dropout": ("float", (0.0, 0.5)),
+    "hidden": ("int", (16, 256)),
 }
 
-# Initialize BOHB
+def objective(config, budget):
+    lr_penalty = abs(config["lr"] - 1e-2)
+    batch_penalty = 0.0 if config["batch_size"] == 64 else 0.1
+    dropout_penalty = abs(config["dropout"] - 0.2)
+    hidden_penalty = abs(config["hidden"] - 128) / 128
+    budget_bonus = 1.0 / max(budget, 1.0)
+    return float(lr_penalty + batch_penalty + dropout_penalty + hidden_penalty + budget_bonus)
+
 bohb = BOHB(
     config_space=config_space,
-    evaluate=objective,
-    max_budget=27,
+    evaluate_fn=objective,
     min_budget=1,
+    max_budget=27,
     eta=3,
-    parallel_jobs=1,  # Set >1 for parallel execution
-    verbose=True
+    n_iterations=4,
+    verbose=True,
 )
 
-# Run optimization
-best_config, best_loss = bohb.run(n_iterations=5)
-
-print(f"Best Config: {best_config}")
-print(f"Best Loss: {best_loss}")
+best_config, best_loss = bohb.run()
+print(best_config, best_loss)
 ```
 
-### Enabling SOTA Features (ATPE)
+## Objective signatures
 
-To use the advanced Adaptive TPE features (enabled by default in `TPE` but configurable):
+Supported objective forms:
+
+- `objective(config, budget) -> float`
+- `objective(config, budget, trial) -> float`
+
+The three-argument form enables `Trial.report(step, loss)` and BOHB-side pruning.
+
+## Config space
+
+Supported parameter specs:
+
+- `("float", (lo, hi))`
+- `("float", (lo, hi, "log"))`
+- `("int", (lo, hi))`
+- `("choice", [v1, v2, ...])`
+
+## Results and plotting
 
 ```python
-from bohb import BOHB
+history = bohb.get_optimization_history()
+top_configs = bohb.get_top_configs(5)
 
-bohb = BOHB(
-    ...,
-    # Enable ATPE (default True in TPE, explicitly set here for clarity)
-    atpe=True,
-    atpe_params={
-        "filter_type": "zscore",   # Filter outliers
-        "filter_threshold": 1.5,   # Z-score threshold
-    },
-    blocking_threshold=0.8,        # Correlation threshold for parameter blocking
-    multivariate="auto",           # Auto-enable multivariate KDE
-    warping=True                   # Enable Yeo-Johnson warping
-)
+plotter = OptimizationPlotter.from_bohb(bohb)
+plotter.plot_optimization_history()
+plotter.plot_budget_vs_loss()
+plotter.plot_param_importance()
 ```
 
-## 📊 Benchmarking
+## Notes
 
-A benchmarking script is included to verify performance on synthetic functions.
-
-```bash
-python benchmark_atpe.py
-```
-
-## 🛠 Project Structure
-
-- **`bohb.py`**: Main BOHB and Hyperband implementation.
-- **`tpe.py`**: The enhanced Tree-structured Parzen Estimator core.
-- **`numerics.py`**: Numerical utilities including safe log, robust scaling, and Yeo-Johnson transforms.
-- **`param_models.py`**: Probability density models (Float, Int, Categorical).
-- **`plotter.py`**: Visualization utilities for optimization history.
-- **`batch_selectors.py`**: Strategies for selecting batches of candidates (Diversity, Local Penalization).
-
-## 📄 License
-
-MIT License.
+- `run()` takes no arguments. Configure `n_iterations` when constructing `BOHB`.
+- The constructor argument is `evaluate_fn`, not `evaluate`.
+- `TPEConf` and `tpe_overrides` control the sampler configuration.
+- `history_export_jsonl` and `prior_trials_jsonl` support reuse across runs.
