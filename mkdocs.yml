@@ -1,0 +1,39 @@
+site_name: foreBlocks
+site_description: Modular time-series forecasting for PyTorch
+site_url: https://lseman.github.io/foreblocks/docs/
+repo_url: https://github.com/lseman/foreblocks
+repo_name: lseman/foreblocks
+docs_dir: wiki
+site_dir: site/docs
+
+theme:
+  name: mkdocs
+
+nav:
+  - Home: index.md
+  - Overview: overview.md
+  - Tutorials:
+      - Getting Started: getting-started.md
+      - Train A Direct Model: tutorials/train-direct-model.md
+      - Generate Synthetic Series: tutorials/generate-synthetic-series.md
+  - Guides:
+      - Preprocessor: preprocessor.md
+      - Custom Blocks: custom_blocks.md
+      - Transformer: transformer.md
+      - Mixture Of Experts: moe.md
+      - DARTS: darts.md
+  - Architecture:
+      - System Overview: architecture/system-overview.md
+      - Forecasting Pipeline: architecture/forecasting-pipeline.md
+  - Reference:
+      - Public API: reference/public-api.md
+      - Configuration: reference/configuration.md
+      - Repository Map: reference/repository-map.md
+  - Contributing:
+      - Documentation Workflow: contributing/docs-workflow.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true

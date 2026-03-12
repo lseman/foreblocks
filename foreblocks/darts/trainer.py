@@ -31,6 +31,15 @@ from .architecture import *
 from .architecture.finalization import (
     derive_final_architecture as derive_fixed_architecture,
 )
+from .config import (
+    DEFAULT_ARCH_MODES,
+    DEFAULT_ATTENTION_VARIANTS,
+    DEFAULT_FFN_VARIANTS,
+    DEFAULT_MAMBA_EXPAND_CHOICES,
+    DEFAULT_MAMBA_NUM_LAYER_CHOICES,
+    DEFAULT_OP_FAMILIES,
+    DEFAULT_OPS as SEARCH_DEFAULT_OPS,
+)
 from .evaluation import plotting as _plot_mod
 from .search import ablation as _abl_mod
 from .search import multi_fidelity as _mf_mod
@@ -49,6 +58,7 @@ from .search.orchestrator import (
 )
 from .training import darts_loop as _dl_mod
 from .training import final_trainer as _ft_mod
+from .utils.training import unpack_forecasting_batch
 
 # ── Training helpers ─────────────────────────────────────────────────────
 from .training.helpers import (
@@ -58,20 +68,7 @@ from .training.helpers import (
     default_as_probability_vector as _as_probability_vector,
 )
 
-_DEFAULT_OPS = [
-    "Identity",
-    "TimeConv",
-    "GRN",
-    "Wavelet",
-    "Fourier",
-    "TCN",
-    "ResidualMLP",
-    "ConvMixer",
-    "MultiScaleConv",
-    "PyramidConv",
-    "PatchEmbed",
-    "InvertedAttention",
-]
+_DEFAULT_OPS = list(SEARCH_DEFAULT_OPS)
 
 
 class DARTSTrainer:
@@ -94,13 +91,19 @@ class DARTSTrainer:
         device: str = "auto",
         all_ops: Optional[List[str]] = None,
         arch_modes: Optional[List[str]] = None,
+        op_families: Optional[Dict[str, List[str]]] = None,
+        family_range: Tuple[int, int] = (1, 3),
+        attention_variants: Optional[List[str]] = None,
+        ffn_variants: Optional[List[str]] = None,
+        mamba_num_layer_choices: Optional[List[int]] = None,
+        mamba_expand_choices: Optional[List[int]] = None,
     ):
         if hidden_dims is None:
             hidden_dims = [32, 64, 128]
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        _all_arch_modes = ["encoder_decoder", "encoder_only", "decoder_only"]
+        _all_arch_modes = list(DEFAULT_ARCH_MODES)
         if arch_modes is None:
             arch_modes = _all_arch_modes
         else:
@@ -121,6 +124,47 @@ class DARTSTrainer:
             as_probability_vector_fn=_as_probability_vector
         )
         self.all_ops = list(all_ops) if all_ops is not None else _DEFAULT_OPS
+        self.op_families = self._normalize_op_families(op_families)
+        min_family = max(1, int(family_range[0]))
+        max_family = max(min_family, int(family_range[1]))
+        self.family_range = (min_family, max_family)
+        raw_attention_variants = (
+            list(attention_variants)
+            if attention_variants is not None
+            else list(DEFAULT_ATTENTION_VARIANTS)
+        )
+        self.attention_variants = [
+            str(v).lower()
+            for v in raw_attention_variants
+            if str(v).lower()
+            in {"auto", "sdp", "linear", "probsparse", "cosine", "local"}
+        ] or list(DEFAULT_ATTENTION_VARIANTS)
+        raw_ffn_variants = (
+            list(ffn_variants) if ffn_variants is not None else list(DEFAULT_FFN_VARIANTS)
+        )
+        self.ffn_variants = [
+            str(v).lower()
+            for v in raw_ffn_variants
+            if str(v).lower() in {"auto", "swiglu", "moe"}
+        ] or list(DEFAULT_FFN_VARIANTS)
+        self.mamba_num_layer_choices = [
+            int(v)
+            for v in (
+                list(mamba_num_layer_choices)
+                if mamba_num_layer_choices is not None
+                else list(DEFAULT_MAMBA_NUM_LAYER_CHOICES)
+            )
+            if int(v) > 0
+        ] or list(DEFAULT_MAMBA_NUM_LAYER_CHOICES)
+        self.mamba_expand_choices = [
+            int(v)
+            for v in (
+                list(mamba_expand_choices)
+                if mamba_expand_choices is not None
+                else list(DEFAULT_MAMBA_EXPAND_CHOICES)
+            )
+            if int(v) > 0
+        ] or list(DEFAULT_MAMBA_EXPAND_CHOICES)
 
         # Runtime accumulation
         self.search_history: List[Dict[str, Any]] = []
@@ -130,6 +174,7 @@ class DARTSTrainer:
         print(f"DARTSTrainer initialised on {device}")
         print(f"  input_dim={input_dim}  forecast_horizon={forecast_horizon}")
         print(f"  operations available: {len(self.all_ops)}")
+        print(f"  op families: {list(self.op_families.keys())}")
         print(f"  arch_modes: {self.arch_modes}")
 
     # ─────────────────────────────────────────────────────────────────────
@@ -271,10 +316,14 @@ class DARTSTrainer:
             else enumerate(train_model_loader)
         )
         model_optimizer.zero_grad()
-        for i, (bx, by, *_) in batch_iter:
-            bx, by = bx.to(self.device), by.to(self.device)
+        for i, batch in batch_iter:
+            bx, by, model_kwargs = unpack_forecasting_batch(
+                batch,
+                self.device,
+                include_decoder_targets=True,
+            )
             with self._autocast(use_amp):
-                preds = model(bx)
+                preds = model(bx, **model_kwargs)
                 loss = loss_fn(preds, by) / gradient_accumulation_steps
             scaler.scale(loss).backward()
             if (i + 1) % gradient_accumulation_steps == 0:
@@ -305,9 +354,14 @@ class DARTSTrainer:
                 else val_loader
             )
             for batch in val_iter:
-                bx, by = batch[0].to(self.device), batch[1].to(self.device)
+                bx, by, model_kwargs = unpack_forecasting_batch(
+                    batch,
+                    self.device,
+                    include_decoder_targets=False,
+                    teacher_forcing_ratio=0.0,
+                )
                 with self._autocast(use_amp):
-                    preds = model(bx)
+                    preds = model(bx, **model_kwargs)
                     val_loss += loss_fn(preds, by).item()
         return val_loss / max(len(val_loader), 1)
 
@@ -321,10 +375,14 @@ class DARTSTrainer:
         loss_fn = self._get_loss_function(loss_type)
         total = 0.0
         with torch.no_grad():
-            for bx, by, *_ in dataloader:
-                bx = bx.to(self.device, non_blocking=True)
-                by = by.to(self.device, non_blocking=True)
-                total += loss_fn(model(bx), by).item()
+            for batch in dataloader:
+                bx, by, model_kwargs = unpack_forecasting_batch(
+                    batch,
+                    self.device,
+                    include_decoder_targets=False,
+                    teacher_forcing_ratio=0.0,
+                )
+                total += loss_fn(model(bx, **model_kwargs), by).item()
         return total / max(len(dataloader), 1)
 
     def _compute_metrics(
@@ -341,6 +399,114 @@ class DARTSTrainer:
         r2 = float(1 - ss_res / (ss_tot + 1e-8))
         return {"mse": mse, "rmse": rmse, "mae": mae, "mape": mape, "r2_score": r2}
 
+    def _normalize_op_families(
+        self, op_families: Optional[Dict[str, List[str]]]
+    ) -> Dict[str, List[str]]:
+        family_source = op_families or DEFAULT_OP_FAMILIES
+        allowed_ops = set(self.all_ops)
+        normalized: Dict[str, List[str]] = {}
+        for family_name, ops in family_source.items():
+            filtered = [op for op in ops if op in allowed_ops]
+            if filtered or str(family_name).lower() == "ssm":
+                normalized[str(family_name).lower()] = filtered
+        if not normalized:
+            normalized = {"mlp": [op for op in self.all_ops if op != "Identity"]}
+        return normalized
+
+    def _resolve_candidate_families(
+        self, rng, allowed_ops: List[str]
+    ) -> Tuple[Dict[str, List[str]], List[str], List[str]]:
+        allowed_set = set(allowed_ops)
+        family_space: Dict[str, List[str]] = {}
+        for family_name, ops in self.op_families.items():
+            filtered = [op for op in ops if op in allowed_set]
+            if filtered or (
+                family_name == "ssm" and "mamba" in getattr(self, "arch_modes", [])
+            ):
+                family_space[family_name] = filtered
+
+        family_names = list(family_space.keys())
+        if not family_names:
+            fallback_ops = [op for op in allowed_ops if op != "Identity"]
+            return {"mlp": fallback_ops}, ["mlp"], ["mlp"]
+
+        min_families = min(self.family_range[0], len(family_names))
+        max_families = min(self.family_range[1], len(family_names))
+        if max_families < min_families:
+            max_families = min_families
+        num_families = rng.randint(min_families, max_families)
+        selected_families = rng.sample(family_names, k=num_families)
+        op_families = [name for name in selected_families if family_space.get(name)]
+
+        if not op_families:
+            non_ssm = [name for name, ops in family_space.items() if ops]
+            if non_ssm:
+                fallback = rng.choice(non_ssm)
+                if fallback not in selected_families:
+                    selected_families.append(fallback)
+                op_families = [fallback]
+
+        return family_space, selected_families, op_families
+
+    def _select_family_operations(
+        self,
+        rng,
+        *,
+        family_space: Dict[str, List[str]],
+        op_families: List[str],
+        require_identity: bool,
+        min_ops: int,
+        max_ops: Optional[int],
+    ) -> Tuple[List[str], Dict[str, List[str]]]:
+        guaranteed_ops: List[str] = []
+        family_choices: Dict[str, List[str]] = {}
+
+        for family_name in op_families:
+            family_pool = [op for op in family_space.get(family_name, []) if op != "Identity"]
+            if not family_pool:
+                family_pool = list(family_space.get(family_name, []))
+            if not family_pool:
+                continue
+            chosen_op = rng.choice(family_pool)
+            guaranteed_ops.append(chosen_op)
+            family_choices[family_name] = [chosen_op]
+
+        guaranteed_ops = list(dict.fromkeys(guaranteed_ops))
+        ops_no_id = list(
+            dict.fromkeys(
+                op
+                for family_name in op_families
+                for op in family_space.get(family_name, [])
+                if op != "Identity"
+            )
+        )
+        if not ops_no_id:
+            ops_no_id = [op for op in self.all_ops if op != "Identity"]
+
+        max_ops_local = min(
+            max_ops or len(ops_no_id) + (1 if require_identity else 0),
+            len(ops_no_id) + (1 if require_identity else 0),
+        )
+        min_required = len(guaranteed_ops) + (1 if require_identity else 0)
+        min_ops_local = max(min_ops, min_required)
+        if max_ops_local < min_ops_local:
+            max_ops_local = min_ops_local
+
+        n_ops = rng.randint(min_ops_local, max_ops_local)
+        non_identity_target = max(0, n_ops - (1 if require_identity else 0))
+        extra_pool = [op for op in ops_no_id if op not in guaranteed_ops]
+        extra_count = min(len(extra_pool), max(0, non_identity_target - len(guaranteed_ops)))
+        extra_ops = rng.sample(extra_pool, k=extra_count) if extra_count > 0 else []
+        selected_non_identity = guaranteed_ops + extra_ops
+
+        if not selected_non_identity and ops_no_id:
+            selected_non_identity = [rng.choice(ops_no_id)]
+
+        selected_ops = (
+            ["Identity"] + selected_non_identity if require_identity else selected_non_identity
+        )
+        return selected_ops, family_choices
+
     def _make_candidate_config(
         self,
         rng,
@@ -355,19 +521,17 @@ class DARTSTrainer:
         edge_to_op_target: float = 1.0,
         edge_to_op_max_ratio: float = 1.8,
     ) -> Dict[str, Any]:
-        ops_no_id = [op for op in allowed_ops if op != "Identity"]
-        max_ops_local = min(
-            max_ops or len(allowed_ops),
-            len(ops_no_id) + (1 if require_identity else 0),
+        family_space, selected_families, op_families = self._resolve_candidate_families(
+            rng, allowed_ops
         )
-        min_ops_local = min(min_ops, max_ops_local)
-        n_ops = rng.randint(min_ops_local, max_ops_local)
-        picked = rng.sample(ops_no_id, k=max(0, n_ops - (1 if require_identity else 0)))
-        selected_ops = (["Identity"] + picked) if require_identity else picked
-        if not selected_ops:
-            selected_ops = (
-                ["Identity"] if require_identity else [rng.choice(allowed_ops)]
-            )
+        selected_ops, family_choices = self._select_family_operations(
+            rng,
+            family_space=family_space,
+            op_families=op_families,
+            require_identity=require_identity,
+            min_ops=min_ops,
+            max_ops=max_ops,
+        )
 
         node_candidates = list(range(int(node_range[0]), int(node_range[1]) + 1))
         op_budget = max(len(selected_ops) - (1 if require_identity else 0), 1)
@@ -395,12 +559,42 @@ class DARTSTrainer:
         except Exception:
             num_nodes = rng.choice(feasible)
 
+        if "ssm" in selected_families and "mamba" in getattr(self, "arch_modes", []):
+            arch_mode = "mamba"
+        else:
+            non_mamba_modes = [m for m in self.arch_modes if m != "mamba"]
+            arch_mode = rng.choice(non_mamba_modes or self.arch_modes or ["encoder_decoder"])
+
+        transformer_self_attention_type = (
+            rng.choice(self.attention_variants) if self.attention_variants else "auto"
+        )
+        transformer_ffn_variant = (
+            rng.choice(self.ffn_variants) if "attention" in selected_families else "auto"
+        )
+        family_choices = dict(family_choices)
+        if "attention" in selected_families:
+            family_choices["attention_variant"] = [transformer_self_attention_type]
+            family_choices["attention_ffn"] = [transformer_ffn_variant]
+        if arch_mode == "mamba":
+            family_choices["ssm_variant"] = ["mamba"]
+
         return {
             "selected_ops": selected_ops,
+            "selected_families": selected_families,
+            "family_choices": family_choices,
             "hidden_dim": rng.choice(hidden_dim_choices),
             "num_cells": rng.randint(cell_range[0], cell_range[1]),
             "num_nodes": int(num_nodes),
-            "arch_mode": rng.choice(getattr(self, "arch_modes", ["encoder_decoder"])),
+            "arch_mode": arch_mode,
+            "transformer_self_attention_type": transformer_self_attention_type,
+            "transformer_ffn_variant": transformer_ffn_variant,
+            "transformer_use_moe": transformer_ffn_variant == "moe",
+            "mamba_num_layers": (
+                rng.choice(self.mamba_num_layer_choices) if arch_mode == "mamba" else 3
+            ),
+            "mamba_expand": (
+                rng.choice(self.mamba_expand_choices) if arch_mode == "mamba" else 2
+            ),
         }
 
     def _build_candidate_model(self, cfg: Dict[str, Any]) -> nn.Module:
@@ -414,6 +608,12 @@ class DARTSTrainer:
             num_nodes=cfg["num_nodes"],
             selected_ops=cfg["selected_ops"],
             arch_mode=cfg.get("arch_mode", "encoder_decoder"),
+            transformer_self_attention_type=cfg.get(
+                "transformer_self_attention_type", "auto"
+            ),
+            transformer_ffn_variant=cfg.get("transformer_ffn_variant", "swiglu"),
+            mamba_num_layers=cfg.get("mamba_num_layers", 3),
+            mamba_expand=cfg.get("mamba_expand", 2),
         ).to(self.device)
 
     def _create_bilevel_loaders(self, train_loader, seed: int = 42):
@@ -629,6 +829,8 @@ class DARTSTrainer:
         state_mix_ortho_reg_weight: float = 1e-3,
         arch_grad_ema_beta: float = 0.0,
         beta_darts_weight: float = 0.0,
+        moe_balance_weight: float = 5e-3,
+        transformer_exploration_weight: float = 1e-2,
         # silently absorbed legacy-only kwargs
         temperature: float = 1.0,  # noqa: superseded by temperature_schedule
         pruning_hard_epoch: Optional[int] = None,  # noqa: not used in new loop
@@ -720,6 +922,8 @@ class DARTSTrainer:
             state_mix_ortho_reg_weight=state_mix_ortho_reg_weight,
             arch_grad_ema_beta=arch_grad_ema_beta,
             beta_darts_weight=beta_darts_weight,
+            moe_balance_weight=moe_balance_weight,
+            transformer_exploration_weight=transformer_exploration_weight,
         )
 
     # ── Final model training ──────────────────────────────────────────────

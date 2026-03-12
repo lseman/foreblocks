@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from foreblocks.tf.norms import RevIN
 
 from .base_blocks import MambaBranch, MixedDecoder, MixedEncoder
+from .bb_moe import DARTSFeedForward
 from .operation_blocks import (
     ConvMixerOp,
     DLinearOp,
@@ -129,9 +130,11 @@ class DARTSConfig:
     # Architecture topology:
     #   "encoder_decoder" — MixedEncoder + autoregressive MixedDecoder
     #   "encoder_only"    — MixedEncoder + direct projection head
-    #   "decoder_only"    — DARTS cells last-token + direct projection head
+    #   "decoder_only"    — DARTS cells + autoregressive MixedDecoder
     #   "mamba"           — stacked Mamba SSM branch + direct projection head
     arch_mode: str = "encoder_decoder"
+    transformer_self_attention_type: str = "auto"
+    transformer_ffn_variant: str = "auto"
 
     @classmethod
     def with_search_profile(
@@ -256,6 +259,7 @@ class MixedOp(nn.Module):
             "MultiScaleConv": lambda: MultiScaleConvOp(input_dim, latent_dim),
             "PyramidConv": lambda: PyramidConvOp(input_dim, latent_dim),
             "PatchEmbed": lambda: PatchEmbedOp(input_dim, latent_dim, patch_size=16),
+            "InvertedAttention": lambda: InvertedAttentionOp(input_dim, latent_dim),
             "iTransformerBlock": lambda: InvertedAttentionOp(input_dim, latent_dim),
             "TimeMixer": lambda: MLPMixerOp(input_dim, latent_dim, seq_length),
             "DLinear": lambda: DLinearOp(input_dim, latent_dim),
@@ -265,21 +269,24 @@ class MixedOp(nn.Module):
 
         # Group operations by complexity/type for hierarchical search
         self.operation_groups = {
-            "basic": ["Identity", "ResidualMLP", "DLinear"],
-            "temporal": [
+            "mlp": [
+                "Identity",
+                "ResidualMLP",
+                "GRN",
+                "TimeMixer",
+                "NBeats",
+            ],
+            "conv": [
                 "TimeConv",
                 "TCN",
                 "ConvMixer",
-                "TimeMixer",
-                "NBeats",
-                "TimesNet",
-            ],
-            "frequency": ["Fourier", "Wavelet"],
-            "advanced": [
-                "GRN",
                 "MultiScaleConv",
                 "PyramidConv",
+            ],
+            "frequency": ["Fourier", "Wavelet", "DLinear", "TimesNet"],
+            "attention": [
                 "PatchEmbed",
+                "InvertedAttention",
                 "iTransformerBlock",
             ],
         }
@@ -305,6 +312,7 @@ class MixedOp(nn.Module):
             "MultiScaleConv": 0.3,
             "PyramidConv": 0.2,
             "PatchEmbed": 0.7,
+            "InvertedAttention": 0.55,
             "iTransformerBlock": 0.55,
             "TimeMixer": 0.68,
             "NBeats": 0.72,
@@ -618,8 +626,6 @@ class MixedOp(nn.Module):
 
         outputs = []
         total_weight = 0
-        efficiency_penalty = 0
-
         for op_idx, weight in op_weights:
             # DropPath (stochastic depth)
             if self.training and self.drop_prob > 0.0:
@@ -653,11 +659,6 @@ class MixedOp(nn.Module):
             outputs.append(out * weight)
             total_weight += weight.item()
 
-            # Track efficiency penalty
-            op_name = self.available_ops[op_idx]
-            if op_name in self.op_efficiency:
-                efficiency_penalty += weight.item() * (1 - self.op_efficiency[op_name])
-
             # Update performance tracker if adaptive sampling
             if self.adaptive_sampling and self.training:
                 with torch.no_grad():
@@ -682,8 +683,6 @@ class MixedOp(nn.Module):
 
         if outputs:
             result = sum(outputs) / max(total_weight, 1e-6)
-            # Store efficiency penalty for regularization
-            self._last_efficiency_penalty = efficiency_penalty * 0.01
             return result
 
         # Final fallback
@@ -764,10 +763,6 @@ class MixedOp(nn.Module):
         probs = F.softmax(self._alphas / self.op_temperature, dim=0)
         total_entropy = -(probs * torch.log(probs + 1e-8)).sum()
         return -0.01 * total_entropy  # Encourage exploration
-
-    def get_efficiency_penalty(self) -> torch.Tensor:
-        """Get efficiency penalty for regularization"""
-        return getattr(self, "_last_efficiency_penalty", torch.tensor(0.0))
 
     def set_temperature(self, temp: float):
         """Set temperature for Gumbel softmax"""
@@ -893,6 +888,7 @@ class DARTSCell(nn.Module):
                 "MultiScaleConv",
                 "PyramidConv",
                 "PatchEmbed",
+                "InvertedAttention",
                 "iTransformerBlock",
                 "TimeMixer",
                 "NBeats",
@@ -1132,8 +1128,6 @@ class DARTSCell(nn.Module):
         x_proj = self.input_proj(x)
         nodes = [x_proj]
 
-        total_efficiency_penalty = 0
-
         # Precompute edge importance values as plain Python floats so that
         # control-flow branches (the > 0.1 threshold) never appear inside the
         # dynamo-traced compute graph, avoiding unnecessary graph breaks.
@@ -1181,9 +1175,6 @@ class DARTSCell(nn.Module):
                 node_inputs.append(out)
                 edge_indices.append(edge_idx)
 
-                # Accumulate efficiency penalty
-                # total_efficiency_penalty += edge.get_efficiency_penalty()
-
             if node_inputs:
                 # Aggregate inputs
                 agg = self._aggregate_inputs(node_inputs, edge_indices)
@@ -1198,9 +1189,6 @@ class DARTSCell(nn.Module):
         # Apply final residual and normalization
         final = self._apply_residual(nodes[-1], x_proj, 0)
         result = self.out_norm(final)
-
-        # Store efficiency penalty for regularization
-        self._last_efficiency_penalty = total_efficiency_penalty
 
         return result
 
@@ -1230,10 +1218,6 @@ class DARTSCell(nn.Module):
             total -= 0.005 * agg_entropy
 
         return total
-
-    def get_efficiency_penalty(self) -> torch.Tensor:
-        """Get total efficiency penalty"""
-        return getattr(self, "_last_efficiency_penalty", torch.tensor(0.0))
 
     def set_temperature(self, temp: float):
         """Update temperature for all edges"""
@@ -1295,6 +1279,9 @@ class TimeSeriesDARTS(nn.Module):
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
         arch_mode: str = "encoder_decoder",
+        tie_encoder_decoder_arch: bool = True,
+        transformer_self_attention_type: str = "auto",
+        transformer_ffn_variant: str = "auto",
         mamba_num_layers: int = 3,
         mamba_expand: int = 2,
     ):
@@ -1304,6 +1291,14 @@ class TimeSeriesDARTS(nn.Module):
         if arch_mode not in _VALID_ARCH_MODES:
             raise ValueError(
                 f"arch_mode must be one of {sorted(_VALID_ARCH_MODES)}, got '{arch_mode}'"
+            )
+
+        resolved_self_attention_type = str(transformer_self_attention_type).lower()
+        resolved_transformer_ffn_variant = str(transformer_ffn_variant).lower()
+        if resolved_transformer_ffn_variant not in {"auto", "swiglu", "moe"}:
+            raise ValueError(
+                "transformer_ffn_variant must be one of ['auto', 'moe', 'swiglu'], "
+                f"got '{transformer_ffn_variant}'"
             )
 
         self._config = {
@@ -1335,6 +1330,9 @@ class TimeSeriesDARTS(nn.Module):
             "drnas_concentration": drnas_concentration,
             "use_fair_darts_hierarchical": use_fair_darts_hierarchical,
             "arch_mode": arch_mode,
+            "tie_encoder_decoder_arch": tie_encoder_decoder_arch,
+            "transformer_self_attention_type": resolved_self_attention_type,
+            "transformer_ffn_variant": resolved_transformer_ffn_variant,
             "mamba_num_layers": mamba_num_layers,
             "mamba_expand": mamba_expand,
         }
@@ -1357,7 +1355,7 @@ class TimeSeriesDARTS(nn.Module):
         self.temperature_schedule = temperature_schedule
         self.final_temperature = float(final_temperature)
         self.temperature_warmup_epochs = int(temperature_warmup_epochs)
-        self.use_attention_bridge = use_attention_bridge
+        self.use_attention_bridge = False
         self.attention_layers = attention_layers
         self.single_path_search = single_path_search
         self.use_learned_memory_pooling = use_learned_memory_pooling
@@ -1376,6 +1374,10 @@ class TimeSeriesDARTS(nn.Module):
         self.drnas_concentration = drnas_concentration
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
         self.arch_mode = arch_mode
+        self.tie_encoder_decoder_arch = bool(tie_encoder_decoder_arch)
+        self.transformer_self_attention_type = resolved_self_attention_type
+        self.transformer_ffn_variant = resolved_transformer_ffn_variant
+        self.transformer_use_moe = resolved_transformer_ffn_variant == "moe"
         self.mamba_num_layers = int(mamba_num_layers)
         self.mamba_expand = int(mamba_expand)
 
@@ -1433,6 +1435,8 @@ class TimeSeriesDARTS(nn.Module):
             "drnas_concentration": cfg.drnas_concentration,
             "use_fair_darts_hierarchical": cfg.use_fair_darts_hierarchical,
             "arch_mode": cfg.arch_mode,
+            "transformer_self_attention_type": cfg.transformer_self_attention_type,
+            "transformer_ffn_variant": cfg.transformer_ffn_variant,
         }
         params.update(overrides)
         return cls(**params)
@@ -1519,24 +1523,35 @@ class TimeSeriesDARTS(nn.Module):
                 dropout=self.dropout,
                 temperature=self.temperature,
                 single_path_search=self.single_path_search,
+                include_patch=True,
+                transformer_self_attention_type=self.transformer_self_attention_type,
+                transformer_use_moe=self.transformer_use_moe,
+                transformer_ffn_variant=self.transformer_ffn_variant,
+                use_checkpoint=self.use_gradient_checkpointing,
             )
         else:
             self.forecast_encoder = None  # type: ignore[assignment]
 
-        if self.arch_mode == "encoder_decoder":
+        if self.arch_mode in ("encoder_decoder", "decoder_only"):
+            self.decoder_use_attention_bridge = False
             self.forecast_decoder = MixedDecoder(
                 self.input_dim,
                 self.latent_dim,
                 seq_len=self.seq_length,
                 dropout=self.dropout,
                 temperature=self.temperature,
-                use_attention_bridge=self.use_attention_bridge,
+                use_attention_bridge=False,
                 attention_layers=self.attention_layers,
                 use_learned_memory_pooling=self.use_learned_memory_pooling,
                 memory_num_queries=self.memory_num_queries,
                 single_path_search=self.single_path_search,
+                transformer_self_attention_type=self.transformer_self_attention_type,
+                transformer_use_moe=self.transformer_use_moe,
+                transformer_ffn_variant=self.transformer_ffn_variant,
+                use_checkpoint=self.use_gradient_checkpointing,
             )
         else:
+            self.decoder_use_attention_bridge = False
             self.forecast_decoder = None  # type: ignore[assignment]
 
         # Encoder-only direct forecast head: pool last encoder state → project
@@ -1549,14 +1564,13 @@ class TimeSeriesDARTS(nn.Module):
                 nn.Linear(self.latent_dim, self.forecast_horizon * self.input_dim),
             )
 
-        # Decoder-only direct forecast head: last DARTS-cell token → project
+        # Decoder-only context projection for autoregressive decoder memory.
         if self.arch_mode == "decoder_only":
-            self.dec_only_head = nn.Sequential(
-                nn.Linear(self.hidden_dim, self.hidden_dim),
-                nn.LayerNorm(self.hidden_dim),
+            self.dec_context_proj = nn.Sequential(
+                nn.Linear(self.hidden_dim, self.latent_dim, bias=False),
+                nn.LayerNorm(self.latent_dim),
                 nn.GELU(),
                 nn.Dropout(self.dropout),
-                nn.Linear(self.hidden_dim, self.forecast_horizon * self.input_dim),
             )
 
         # Mamba branch: stacked SSM layers + direct forecast head
@@ -1578,6 +1592,24 @@ class TimeSeriesDARTS(nn.Module):
 
         # output_layer is only used in encoder_decoder mode
         self.output_layer = nn.Linear(self.latent_dim, self.input_dim, bias=False)
+        self.decoder_query_mode_names = (
+            "repeat_last",
+            "zeros",
+            "learned_horizon_queries",
+            "shifted_target",
+            "future_covariate_queries",
+        )
+        if self.forecast_decoder is not None:
+            self.decoder_query_mode = "auto"
+            self.decoder_query_alphas = nn.Parameter(
+                0.01 * torch.randn(len(self.decoder_query_mode_names))
+            )
+            self.learned_horizon_queries = nn.Parameter(
+                torch.zeros(1, self.forecast_horizon, self.input_dim)
+            )
+            nn.init.trunc_normal_(self.learned_horizon_queries, std=0.02)
+        else:
+            self.decoder_query_mode = "repeat_last"
 
         self.residual_weights = nn.ParameterList(
             [nn.Parameter(torch.tensor(0.1)) for _ in range(self.num_cells)]
@@ -1604,6 +1636,7 @@ class TimeSeriesDARTS(nn.Module):
         self,
         x_seq: torch.Tensor,
         x_future: Optional[torch.Tensor] = None,
+        decoder_targets: Optional[torch.Tensor] = None,
         teacher_forcing_ratio: float = 0.5,
     ) -> torch.Tensor:
         """Forward pass"""
@@ -1688,49 +1721,42 @@ class TimeSeriesDARTS(nn.Module):
             return self._forward_encoder_only(final_features, x_seq, selected_norm)
 
         if self.arch_mode == "decoder_only":
-            return self._forward_decoder_only(final_features, x_seq, selected_norm)
+            return self._forward_decoder_only(
+                final_features,
+                x_seq,
+                selected_norm,
+                x_future=x_future,
+                decoder_targets=decoder_targets,
+                teacher_forcing_ratio=teacher_forcing_ratio,
+            )
 
         # ── encoder_decoder (original path) ──────────────────────────────
         h_enc, context, encoder_state = self.forecast_encoder(final_features)
 
-        # Decoding
-        forecasts = []
-        decoder_input = x_seq[:, -1:, :]
+        forced_decoder_output_idx = None
+        forced_decoder_layer_idx = None
+        if self.tie_encoder_decoder_arch and self.arch_mode == "encoder_decoder":
+            forced_decoder_output_idx = getattr(
+                self.forecast_encoder, "last_selected_output_idx", None
+            )
+            forced_decoder_layer_idx = getattr(
+                self.forecast_encoder, "last_selected_layer_idx", None
+            )
+
         decoder_hidden = encoder_state
 
-        # Ensure consistent dtypes
-        decoder_input = self._ensure_dtype(decoder_input)
         context = self._ensure_dtype(context)
         h_enc = self._ensure_dtype(h_enc)
 
-        if isinstance(decoder_hidden, tuple):
-            decoder_hidden = tuple(self._ensure_dtype(h) for h in decoder_hidden)
-        else:
-            decoder_hidden = self._ensure_dtype(decoder_hidden)
-
-        for t in range(self.forecast_horizon):
-            # Decoder step
-            out, decoder_hidden = self.forecast_decoder(
-                decoder_input, context, decoder_hidden, h_enc
-            )
-
-            # Post-processing
-            prediction = self.output_layer(out)
-            forecasts.append(prediction.squeeze(1))
-
-            # Teacher forcing
-            if (
-                self.training
-                and x_future is not None
-                and t < x_future.size(1)
-                and torch.rand(1).item() < teacher_forcing_ratio
-            ):
-                decoder_input = x_future[:, t : t + 1]
-                decoder_input = self._ensure_dtype(decoder_input)
-            else:
-                decoder_input = prediction
-
-        forecasts_tensor = torch.stack(forecasts, dim=1)
+        forecasts_tensor = self._decode_with_style(
+            x_seq=x_seq,
+            x_future=x_future,
+            decoder_targets=decoder_targets,
+            teacher_forcing_ratio=teacher_forcing_ratio,
+            memory=context,
+            encoder_output=h_enc,
+            decoder_hidden=decoder_hidden,
+        )
         forecasts_tensor = self.norm_strategy.apply_output_denorm(
             forecasts_tensor,
             self.norm_alpha,
@@ -1762,18 +1788,287 @@ class TimeSeriesDARTS(nn.Module):
         final_features: torch.Tensor,
         x_seq: torch.Tensor,
         selected_norm: Optional[str],
+        x_future: Optional[torch.Tensor] = None,
+        decoder_targets: Optional[torch.Tensor] = None,
+        teacher_forcing_ratio: float = 0.5,
     ) -> torch.Tensor:
-        """Decoder-only path: DARTS backbone → last token → direct projection."""
-        B = x_seq.shape[0]
-        # Use last-token representation (causal / auto-regressive spirit)
-        last_token = final_features[:, -1, :]  # [B, hidden_dim]
-        last_token = self._ensure_dtype(last_token)
-        out = self.dec_only_head(last_token)  # [B, H*C]
-        out = out.view(B, self.forecast_horizon, self.input_dim)
-        out = self.norm_strategy.apply_output_denorm(
-            out, self.norm_alpha, selected_norm=selected_norm
+        """Decoder-only path: DARTS backbone context + autoregressive decoder."""
+        if self.forecast_decoder is None:
+            raise RuntimeError("decoder_only mode requires forecast_decoder")
+
+        context = self.dec_context_proj(final_features)
+        context = self._ensure_dtype(context)
+
+        decoder_hidden = None
+        forecasts_tensor = self._decode_with_style(
+            x_seq=x_seq,
+            x_future=x_future,
+            decoder_targets=decoder_targets,
+            teacher_forcing_ratio=teacher_forcing_ratio,
+            memory=context,
+            encoder_output=context,
+            decoder_hidden=decoder_hidden,
         )
-        return out
+        forecasts_tensor = self.norm_strategy.apply_output_denorm(
+            forecasts_tensor,
+            self.norm_alpha,
+            selected_norm=selected_norm,
+        )
+        return forecasts_tensor
+
+    def _get_decoder_style_weights(self, decoder) -> Optional[torch.Tensor]:
+        if decoder is None:
+            return None
+        getter = getattr(decoder, "get_decode_style_weights", None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception:
+                pass
+
+        style = getattr(decoder, "decode_style", None)
+        if isinstance(style, str):
+            ref = next(decoder.parameters(), None)
+            if ref is not None:
+                weights = ref.new_zeros(2)
+                weights[1 if style == "informer" else 0] = 1.0
+                return weights
+        return None
+
+    def _get_decoder_query_mode_weights(self) -> Optional[torch.Tensor]:
+        logits = getattr(self, "decoder_query_alphas", None)
+        if isinstance(logits, torch.Tensor):
+            tau = max(float(getattr(self, "temperature", 1.0)), 1e-3)
+            if self.training:
+                return F.gumbel_softmax(
+                    logits,
+                    tau=tau,
+                    hard=bool(getattr(self, "single_path_search", False)),
+                    dim=0,
+                )
+            probs = F.softmax(logits / tau, dim=0)
+            if bool(getattr(self, "single_path_search", False)):
+                hard = torch.zeros_like(probs)
+                hard[int(torch.argmax(probs).item())] = 1.0
+                return hard
+            return probs
+
+        direct = getattr(self, "decoder_query_mode", None)
+        if isinstance(direct, str) and direct in getattr(self, "decoder_query_mode_names", ()):
+            ref = self.norm_alpha
+            weights = ref.new_zeros(len(self.decoder_query_mode_names))
+            weights[self.decoder_query_mode_names.index(direct)] = 1.0
+            return weights
+        return None
+
+    def get_decoder_query_mode_probs(self) -> Optional[torch.Tensor]:
+        logits = getattr(self, "decoder_query_alphas", None)
+        if isinstance(logits, torch.Tensor):
+            return F.softmax(logits.detach(), dim=0)
+        weights = self._get_decoder_query_mode_weights()
+        if weights is not None:
+            return weights.detach()
+        return None
+
+    def resolve_decoder_query_mode(self) -> str:
+        probs = self.get_decoder_query_mode_probs()
+        if probs is None:
+            return "repeat_last"
+        idx = int(torch.argmax(probs).item())
+        if 0 <= idx < len(self.decoder_query_mode_names):
+            return self.decoder_query_mode_names[idx]
+        return "repeat_last"
+
+    def freeze_decoder_query_mode(self, query_mode: str) -> None:
+        resolved = (
+            str(query_mode).lower()
+            if str(query_mode).lower() in self.decoder_query_mode_names
+            else "repeat_last"
+        )
+        self.decoder_query_mode = resolved
+        if hasattr(self, "decoder_query_alphas"):
+            del self.decoder_query_alphas
+
+    def _build_parallel_decoder_input(
+        self,
+        x_seq: torch.Tensor,
+        x_future: Optional[torch.Tensor] = None,
+        decoder_targets: Optional[torch.Tensor] = None,
+        teacher_forcing_ratio: float = 0.5,
+    ) -> torch.Tensor:
+        last_token = x_seq[:, -1:, :]
+        horizon = int(self.forecast_horizon)
+        history_len = max(1, horizon // 2)
+        history_len = min(history_len, int(x_seq.size(1)))
+        history_prefix = self._ensure_dtype(x_seq[:, -history_len:, :])
+        repeated = last_token.expand(-1, horizon, -1).clone()
+        zeros = torch.zeros_like(repeated)
+        learned = repeated + self.learned_horizon_queries[:, :horizon, :]
+
+        shifted = repeated
+        if (
+            decoder_targets is not None
+            and decoder_targets.dim() == 3
+            and decoder_targets.size(1) > 0
+        ):
+            shifted = torch.cat([last_token, decoder_targets[:, :-1, :]], dim=1)
+            if shifted.size(1) < horizon:
+                pad = shifted[:, -1:, :].expand(-1, horizon - shifted.size(1), -1)
+                shifted = torch.cat([shifted, pad], dim=1)
+            shifted = shifted[:, :horizon, :]
+
+        future_covariates = repeated
+        if x_future is not None and x_future.dim() == 3 and x_future.size(1) > 0:
+            future_covariates = x_future[:, :horizon, :]
+            if future_covariates.size(1) < horizon:
+                pad = future_covariates[:, -1:, :].expand(
+                    -1, horizon - future_covariates.size(1), -1
+                )
+                future_covariates = torch.cat([future_covariates, pad], dim=1)
+
+        candidates = {
+            "repeat_last": repeated,
+            "zeros": zeros,
+            "learned_horizon_queries": learned,
+            "shifted_target": shifted
+            if (
+                self.training
+                and decoder_targets is not None
+                and torch.rand(1).item() < teacher_forcing_ratio
+            )
+            else repeated,
+            "future_covariate_queries": future_covariates,
+        }
+
+        mode_weights = self._get_decoder_query_mode_weights()
+        if mode_weights is None or mode_weights.numel() != len(self.decoder_query_mode_names):
+            return self._ensure_dtype(repeated)
+
+        active_indices = [
+            idx for idx, w in enumerate(mode_weights.detach()) if float(w.item()) > 0.0
+        ] or [0]
+        mixed = None
+        for idx in active_indices:
+            name = self.decoder_query_mode_names[idx]
+            contrib = mode_weights[idx] * self._ensure_dtype(candidates[name][:, :horizon, :])
+            mixed = contrib if mixed is None else mixed + contrib
+        future_block = self._ensure_dtype(mixed if mixed is not None else repeated)
+        return self._ensure_dtype(torch.cat([history_prefix, future_block], dim=1))
+
+    def _decode_autoregressive_path(
+        self,
+        x_seq: torch.Tensor,
+        decoder_targets: Optional[torch.Tensor],
+        teacher_forcing_ratio: float,
+        memory: torch.Tensor,
+        encoder_output: torch.Tensor,
+        decoder_hidden,
+    ) -> torch.Tensor:
+        forecasts = []
+        decoder_input = self._ensure_dtype(x_seq[:, -1:, :])
+        hidden = decoder_hidden
+
+        if isinstance(hidden, tuple):
+            hidden = tuple(self._ensure_dtype(h) for h in hidden)
+        elif hidden is not None:
+            hidden = self._ensure_dtype(hidden)
+
+        mem = self._ensure_dtype(memory)
+        enc_out = self._ensure_dtype(encoder_output)
+
+        for t in range(self.forecast_horizon):
+            out, hidden = self.forecast_decoder(
+                decoder_input,
+                mem,
+                hidden,
+                enc_out,
+            )
+            prediction = self.output_layer(out)
+            forecasts.append(prediction.squeeze(1))
+
+            if (
+                self.training
+                and decoder_targets is not None
+                and t < decoder_targets.size(1)
+                and torch.rand(1).item() < teacher_forcing_ratio
+            ):
+                decoder_input = self._ensure_dtype(decoder_targets[:, t : t + 1])
+            else:
+                decoder_input = self._ensure_dtype(prediction)
+
+        return torch.stack(forecasts, dim=1)
+
+    def _decode_parallel_informer_path(
+        self,
+        x_seq: torch.Tensor,
+        x_future: Optional[torch.Tensor],
+        decoder_targets: Optional[torch.Tensor],
+        teacher_forcing_ratio: float,
+        memory: torch.Tensor,
+        encoder_output: torch.Tensor,
+        decoder_hidden,
+    ) -> torch.Tensor:
+        decoder_input = self._build_parallel_decoder_input(
+            x_seq,
+            x_future=x_future,
+            decoder_targets=decoder_targets,
+            teacher_forcing_ratio=teacher_forcing_ratio,
+        )
+        hidden = decoder_hidden
+        if isinstance(hidden, tuple):
+            hidden = tuple(self._ensure_dtype(h) for h in hidden)
+        elif hidden is not None:
+            hidden = self._ensure_dtype(hidden)
+
+        out, _ = self.forecast_decoder(
+            decoder_input,
+            self._ensure_dtype(memory),
+            hidden,
+            self._ensure_dtype(encoder_output),
+        )
+        prediction = self.output_layer(out)
+        return prediction[:, -self.forecast_horizon :, :]
+
+    def _decode_with_style(
+        self,
+        *,
+        x_seq: torch.Tensor,
+        x_future: Optional[torch.Tensor],
+        decoder_targets: Optional[torch.Tensor],
+        teacher_forcing_ratio: float,
+        memory: torch.Tensor,
+        encoder_output: torch.Tensor,
+        decoder_hidden,
+    ) -> torch.Tensor:
+        style_weights = self._get_decoder_style_weights(self.forecast_decoder)
+        if style_weights is None or style_weights.numel() < 2:
+            return self._decode_autoregressive_path(
+                x_seq,
+                decoder_targets,
+                teacher_forcing_ratio,
+                memory,
+                encoder_output,
+                decoder_hidden,
+            )
+
+        ar_out = self._decode_autoregressive_path(
+            x_seq,
+            decoder_targets,
+            teacher_forcing_ratio,
+            memory,
+            encoder_output,
+            decoder_hidden,
+        )
+        informer_out = self._decode_parallel_informer_path(
+            x_seq,
+            x_future,
+            decoder_targets,
+            teacher_forcing_ratio,
+            memory,
+            encoder_output,
+            decoder_hidden,
+        )
+        return style_weights[0] * ar_out + style_weights[1] * informer_out
 
     def _forward_mamba(
         self,
@@ -1810,22 +2105,163 @@ class TimeSeriesDARTS(nn.Module):
                     if hasattr(edge, "get_alphas"):
                         alphas[f"cell_{i}_edge_{j}"] = edge.get_alphas()
 
-        # Encoder/decoder alphas
-        if self.forecast_encoder is not None:
-            alphas["encoder"] = self.forecast_encoder.get_alphas()
-        if self.forecast_decoder is not None:
-            alphas["decoder"] = self.forecast_decoder.get_alphas()
+        def _extract_self_attn_probs(component):
+            if component is None:
+                return None
+            submodule = getattr(component, "transformer", None)
+            if submodule is None:
+                submodule = getattr(component, "rnn", None)
+            if submodule is None:
+                return None
+            layers = getattr(submodule, "layers", None)
+            if not layers:
+                return None
+            first = layers[0]
+            self_attn = None
+            if isinstance(first, dict):
+                self_attn = first.get("self_attn")
+            elif hasattr(first, "get"):
+                self_attn = first.get("self_attn")
+            elif hasattr(first, "__contains__") and "self_attn" in first:
+                self_attn = first["self_attn"]
+            logits = getattr(self_attn, "attn_alphas", None) if self_attn is not None else None
+            if logits is None:
+                return None
+            return F.softmax(logits, dim=0)
 
-        # Attention alphas
-        if (
-            self.use_attention_bridge
-            and self.forecast_decoder is not None
-            and hasattr(self.forecast_decoder, "attention_alphas")
-            and self.forecast_decoder.attention_alphas is not None
-        ):
-            alphas["attention_bridge"] = F.softmax(
-                self.forecast_decoder.attention_alphas, dim=0
+        def _extract_cross_attn_probs(component):
+            if component is None:
+                return None
+            submodule = getattr(component, "transformer", None)
+            if submodule is None:
+                submodule = getattr(component, "rnn", None)
+            if submodule is None:
+                return None
+            layers = getattr(submodule, "layers", None)
+            if not layers:
+                return None
+            first = layers[0]
+            cross_attn = None
+            if isinstance(first, dict):
+                cross_attn = first.get("cross_attn")
+            elif hasattr(first, "get"):
+                cross_attn = first.get("cross_attn")
+            elif hasattr(first, "__contains__") and "cross_attn" in first:
+                cross_attn = first["cross_attn"]
+            logits = getattr(cross_attn, "attn_alphas", None) if cross_attn is not None else None
+            if logits is None:
+                return None
+            return F.softmax(logits, dim=0)
+
+        def _extract_attention_position_probs(component, key: str):
+            if component is None:
+                return None
+            submodule = getattr(component, "transformer", None)
+            if submodule is None:
+                submodule = getattr(component, "rnn", None)
+            if submodule is None:
+                return None
+            layers = getattr(submodule, "layers", None)
+            if not layers:
+                return None
+            first = layers[0]
+            attn = None
+            if isinstance(first, dict):
+                attn = first.get(key)
+            elif hasattr(first, "get"):
+                attn = first.get(key)
+            elif hasattr(first, "__contains__") and key in first:
+                attn = first[key]
+            logits = getattr(attn, "position_alphas", None) if attn is not None else None
+            if logits is None:
+                return None
+            return F.softmax(logits, dim=0)
+
+        def _extract_ffn_probs(component):
+            if component is None:
+                return None
+            submodule = getattr(component, "transformer", None)
+            if submodule is None:
+                submodule = getattr(component, "rnn", None)
+            if submodule is None:
+                return None
+            layers = getattr(submodule, "layers", None)
+            if not layers:
+                return None
+            first = layers[0]
+            ffn = None
+            if isinstance(first, dict):
+                ffn = first.get("ffn")
+            elif hasattr(first, "get"):
+                ffn = first.get("ffn")
+            elif hasattr(first, "__contains__") and "ffn" in first:
+                ffn = first["ffn"]
+            if ffn is None:
+                return None
+            logits = getattr(ffn, "ffn_alphas", None)
+            if logits is not None:
+                return F.softmax(logits, dim=0)
+            mode = getattr(ffn, "ffn_mode", None)
+            modes = tuple(getattr(ffn, "MODE_NAMES", ()))
+            if isinstance(mode, str) and mode in modes:
+                ref = next(ffn.parameters())
+                out = ref.new_zeros(len(modes))
+                out[modes.index(mode)] = 1.0
+                return out
+            return None
+
+        # Encoder/decoder transformer search alphas
+        if self.forecast_encoder is not None:
+            alphas["encoder"] = torch.tensor([1.0], device=self.norm_alpha.device)
+            patch_alpha = getattr(
+                getattr(self.forecast_encoder, "transformer", None),
+                "patch_alpha_logits",
+                None,
             )
+            if patch_alpha is not None:
+                alphas["encoder_tokenizer"] = F.softmax(patch_alpha, dim=0)
+            enc_attn = _extract_self_attn_probs(self.forecast_encoder)
+            if enc_attn is not None:
+                alphas["encoder_self_attention"] = enc_attn
+            enc_pos = _extract_attention_position_probs(self.forecast_encoder, "self_attn")
+            if enc_pos is not None:
+                alphas["encoder_attention_position"] = enc_pos
+            enc_ffn = _extract_ffn_probs(self.forecast_encoder)
+            if enc_ffn is not None:
+                alphas["encoder_ffn"] = enc_ffn
+        if self.forecast_decoder is not None:
+            alphas["decoder"] = torch.tensor([1.0], device=self.norm_alpha.device)
+            if hasattr(self.forecast_decoder, "decode_style_alphas"):
+                alphas["decoder_style"] = F.softmax(
+                    self.forecast_decoder.decode_style_alphas, dim=0
+                )
+            if hasattr(self, "decoder_query_alphas"):
+                alphas["decoder_query_generator"] = F.softmax(
+                    self.decoder_query_alphas, dim=0
+                )
+            dec_attn = _extract_self_attn_probs(self.forecast_decoder)
+            if dec_attn is not None:
+                alphas["decoder_self_attention"] = dec_attn
+            dec_self_pos = _extract_attention_position_probs(
+                self.forecast_decoder, "self_attn"
+            )
+            if dec_self_pos is not None:
+                alphas["decoder_attention_position"] = dec_self_pos
+            dec_cross_attn = _extract_cross_attn_probs(self.forecast_decoder)
+            if dec_cross_attn is not None:
+                alphas["decoder_cross_attention"] = dec_cross_attn
+            dec_cross_pos = _extract_attention_position_probs(
+                self.forecast_decoder, "cross_attn"
+            )
+            if dec_cross_pos is not None:
+                alphas["decoder_cross_attention_position"] = dec_cross_pos
+            dec_ffn = _extract_ffn_probs(self.forecast_decoder)
+            if dec_ffn is not None:
+                alphas["decoder_ffn"] = dec_ffn
+            if hasattr(self.forecast_decoder, "memory_query_alphas"):
+                alphas["decoder_memory_queries"] = F.softmax(
+                    self.forecast_decoder.memory_query_alphas, dim=0
+                )
 
         return alphas
 
@@ -1898,44 +2334,222 @@ class TimeSeriesDARTS(nn.Module):
                         except Exception:
                             continue
 
-        # Encoder/Decoder weights
-        for component_name, component in [
-            ("encoder", self.forecast_encoder),
-            ("decoder", self.forecast_decoder),
-        ]:
-            if component is None:
-                continue
-            if hasattr(component, "get_alphas"):
-                try:
-                    alphas = component.get_alphas()
-                    if alphas.numel() > 0:
-                        names = getattr(
-                            component,
-                            f"{component_name}_names",
-                            [f"op_{i}" for i in range(len(alphas))],
-                        )
-                        alpha_slice = alphas[: len(names)]
-                        finite_ok = torch.isfinite(alpha_slice).all().item()
-                        looks_like_probs = (
-                            finite_ok
-                            and alpha_slice.min().item() >= -1e-6
-                            and alpha_slice.max().item() <= 1.0 + 1e-6
-                        )
-                        if looks_like_probs:
-                            soft_alphas = alpha_slice.clamp_min(1e-8)
-                            soft_alphas = soft_alphas / soft_alphas.sum().clamp_min(
-                                1e-8
-                            )
-                        else:
-                            soft_alphas = F.softmax(alpha_slice, dim=0)
-                        weights[component_name] = {
-                            name: weight.item()
-                            for name, weight in zip(names, soft_alphas)
+        weights["encoder"] = {"transformer": 1.0} if self.forecast_encoder is not None else {}
+        weights["decoder"] = {"transformer": 1.0} if self.forecast_decoder is not None else {}
+
+        if self.forecast_encoder is not None:
+            patch_alpha = getattr(
+                getattr(self.forecast_encoder, "transformer", None),
+                "patch_alpha_logits",
+                None,
+            )
+            if patch_alpha is not None:
+                soft_patch = F.softmax(patch_alpha, dim=0)
+                weights["encoder_tokenizer"] = {
+                    name: weight.item()
+                    for name, weight in zip(
+                        getattr(
+                            getattr(self.forecast_encoder, "transformer", None),
+                            "patch_mode_names",
+                            ["direct", "patch_16"],
+                        ),
+                        soft_patch,
+                    )
+                }
+            enc_transformer = getattr(self.forecast_encoder, "transformer", None)
+            if enc_transformer is not None:
+                layers = getattr(enc_transformer, "layers", None)
+                if layers:
+                    first = layers[0]
+                    self_attn = None
+                    if isinstance(first, dict):
+                        self_attn = first.get("self_attn")
+                    elif hasattr(first, "get"):
+                        self_attn = first.get("self_attn")
+                    elif hasattr(first, "__contains__") and "self_attn" in first:
+                        self_attn = first["self_attn"]
+                    logits = getattr(self_attn, "attn_alphas", None) if self_attn is not None else None
+                    modes = getattr(self_attn, "MODES", ()) if self_attn is not None else ()
+                    if logits is not None and modes:
+                        probs = F.softmax(logits, dim=0)
+                        weights["encoder_self_attention"] = {
+                            str(name): float(weight.item())
+                            for name, weight in zip(modes, probs)
                         }
-                except Exception:
-                    continue
+                    pos_logits = (
+                        getattr(self_attn, "position_alphas", None)
+                        if self_attn is not None
+                        else None
+                    )
+                    pos_modes = (
+                        getattr(self_attn, "POSITION_MODES", ())
+                        if self_attn is not None
+                        else ()
+                    )
+                    if pos_logits is not None and pos_modes:
+                        probs = F.softmax(pos_logits, dim=0)
+                        weights["encoder_attention_position"] = {
+                            str(name): float(weight.item())
+                            for name, weight in zip(pos_modes, probs)
+                        }
+                    ffn = None
+                    if isinstance(first, dict):
+                        ffn = first.get("ffn")
+                    elif hasattr(first, "get"):
+                        ffn = first.get("ffn")
+                    elif hasattr(first, "__contains__") and "ffn" in first:
+                        ffn = first["ffn"]
+                    ffn_logits = getattr(ffn, "ffn_alphas", None) if ffn is not None else None
+                    ffn_modes = getattr(ffn, "MODE_NAMES", ()) if ffn is not None else ()
+                    if ffn_logits is not None and ffn_modes:
+                        probs = F.softmax(ffn_logits, dim=0)
+                        weights["encoder_ffn"] = {
+                            str(name): float(weight.item())
+                            for name, weight in zip(ffn_modes, probs)
+                        }
+                    elif ffn is not None:
+                        ffn_mode = getattr(ffn, "ffn_mode", None)
+                        if isinstance(ffn_mode, str) and ffn_mode in ffn_modes:
+                            weights["encoder_ffn"] = {
+                                str(name): float(name == ffn_mode) for name in ffn_modes
+                            }
+
+        if self.forecast_decoder is not None:
+            if hasattr(self.forecast_decoder, "decode_style_alphas"):
+                probs = F.softmax(self.forecast_decoder.decode_style_alphas, dim=0)
+                weights["decoder_style"] = {
+                    str(name): float(weight.item())
+                    for name, weight in zip(
+                        getattr(
+                            self.forecast_decoder,
+                            "decode_style_names",
+                            ("autoregressive", "informer"),
+                        ),
+                        probs,
+                    )
+                }
+            if hasattr(self, "decoder_query_alphas"):
+                probs = F.softmax(self.decoder_query_alphas, dim=0)
+                weights["decoder_query_generator"] = {
+                    str(name): float(weight.item())
+                    for name, weight in zip(self.decoder_query_mode_names, probs)
+                }
+            dec_transformer = getattr(self.forecast_decoder, "transformer", None)
+            if dec_transformer is not None:
+                layers = getattr(dec_transformer, "layers", None)
+                if layers:
+                    first = layers[0]
+                    self_attn = None
+                    cross_attn = None
+                    if isinstance(first, dict):
+                        self_attn = first.get("self_attn")
+                        cross_attn = first.get("cross_attn")
+                    elif hasattr(first, "get"):
+                        self_attn = first.get("self_attn")
+                        cross_attn = first.get("cross_attn")
+                    elif hasattr(first, "__contains__") and "self_attn" in first:
+                        self_attn = first["self_attn"]
+                        if "cross_attn" in first:
+                            cross_attn = first["cross_attn"]
+                    logits = getattr(self_attn, "attn_alphas", None) if self_attn is not None else None
+                    modes = getattr(self_attn, "MODES", ()) if self_attn is not None else ()
+                    if logits is not None and modes:
+                        probs = F.softmax(logits, dim=0)
+                        weights["decoder_self_attention"] = {
+                            str(name): float(weight.item())
+                            for name, weight in zip(modes, probs)
+                        }
+                    pos_logits = (
+                        getattr(self_attn, "position_alphas", None)
+                        if self_attn is not None
+                        else None
+                    )
+                    pos_modes = (
+                        getattr(self_attn, "POSITION_MODES", ())
+                        if self_attn is not None
+                        else ()
+                    )
+                    if pos_logits is not None and pos_modes:
+                        probs = F.softmax(pos_logits, dim=0)
+                        weights["decoder_attention_position"] = {
+                            str(name): float(weight.item())
+                            for name, weight in zip(pos_modes, probs)
+                        }
+                    cross_logits = (
+                        getattr(cross_attn, "attn_alphas", None)
+                        if cross_attn is not None
+                        else None
+                    )
+                    cross_modes = (
+                        getattr(cross_attn, "MODES", ())
+                        if cross_attn is not None
+                        else ()
+                    )
+                    if cross_logits is not None and cross_modes:
+                        probs = F.softmax(cross_logits, dim=0)
+                        weights["decoder_cross_attention"] = {
+                            str(name): float(weight.item())
+                            for name, weight in zip(cross_modes, probs)
+                        }
+                    cross_pos_logits = (
+                        getattr(cross_attn, "position_alphas", None)
+                        if cross_attn is not None
+                        else None
+                    )
+                    cross_pos_modes = (
+                        getattr(cross_attn, "POSITION_MODES", ())
+                        if cross_attn is not None
+                        else ()
+                    )
+                    if cross_pos_logits is not None and cross_pos_modes:
+                        probs = F.softmax(cross_pos_logits, dim=0)
+                        weights["decoder_cross_attention_position"] = {
+                            str(name): float(weight.item())
+                            for name, weight in zip(cross_pos_modes, probs)
+                        }
+                    ffn = None
+                    if isinstance(first, dict):
+                        ffn = first.get("ffn")
+                    elif hasattr(first, "get"):
+                        ffn = first.get("ffn")
+                    elif hasattr(first, "__contains__") and "ffn" in first:
+                        ffn = first["ffn"]
+                    ffn_logits = getattr(ffn, "ffn_alphas", None) if ffn is not None else None
+                    ffn_modes = getattr(ffn, "MODE_NAMES", ()) if ffn is not None else ()
+                    if ffn_logits is not None and ffn_modes:
+                        probs = F.softmax(ffn_logits, dim=0)
+                        weights["decoder_ffn"] = {
+                            str(name): float(weight.item())
+                            for name, weight in zip(ffn_modes, probs)
+                        }
+                    elif ffn is not None:
+                        ffn_mode = getattr(ffn, "ffn_mode", None)
+                        if isinstance(ffn_mode, str) and ffn_mode in ffn_modes:
+                            weights["decoder_ffn"] = {
+                                str(name): float(name == ffn_mode) for name in ffn_modes
+                            }
+            if hasattr(self.forecast_decoder, "memory_query_alphas"):
+                probs = F.softmax(self.forecast_decoder.memory_query_alphas, dim=0)
+                weights["decoder_memory_queries"] = {
+                    str(name): float(weight.item())
+                    for name, weight in zip(
+                        getattr(self.forecast_decoder, "memory_query_options", []), probs
+                    )
+                }
 
         return weights
+
+    def get_moe_balance_loss(self) -> torch.Tensor:
+        losses: List[torch.Tensor] = []
+        for module in self.modules():
+            if isinstance(module, DARTSFeedForward) and getattr(module, "supports_moe", False):
+                losses.append(module.get_balance_loss())
+        if not losses:
+            ref = next(self.parameters(), None)
+            if ref is None:
+                return torch.tensor(0.0)
+            return ref.new_zeros(())
+        return torch.stack(losses).mean()
 
     def set_temperature(self, temp: float):
         """Update temperature for all components"""

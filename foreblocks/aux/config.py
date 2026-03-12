@@ -66,6 +66,26 @@ class TrainingConfig:
     nas_discretize_threshold: float = 0.5  # Threshold for discretization
     nas_log_alphas: bool = True  # Log alpha values during training
 
+    # Conformal prediction
+    conformal_enabled: bool = False
+    conformal_method: str = "split"
+    conformal_quantile: float = 0.9
+    conformal_knn_k: int = 50
+    conformal_rolling_alpha: float = 0.05
+    conformal_aci_gamma: float = 0.01
+    conformal_agaci_gammas: Optional[list[float]] = None
+    conformal_enbpi_B: int = 20
+    conformal_enbpi_window: int = 500
+    conformal_cptc_window: int = 500
+    conformal_cptc_tau: float = 1.0
+    conformal_cptc_hard_state_filter: bool = False
+    conformal_afocp_feature_dim: int = 128
+    conformal_afocp_attn_hidden: int = 64
+    conformal_afocp_window: int = 500
+    conformal_afocp_tau: float = 1.0
+    conformal_afocp_online_lr: float = 0.0
+    conformal_afocp_online_steps: int = 1
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if hasattr(self, key):

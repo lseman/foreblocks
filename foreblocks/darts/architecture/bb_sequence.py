@@ -9,8 +9,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bb_transformers import PatchTSTEncoder
-
 __all__ = [
     "ArchitectureNormalizer",
     "SearchableDecomposition",
@@ -28,7 +26,6 @@ class ArchitectureNormalizer(nn.Module):
         self.latent_dim = latent_dim
         self.rnn_proj = nn.Linear(latent_dim, latent_dim)
         self.transformer_proj = nn.Linear(latent_dim, latent_dim)
-        self.patch_proj = nn.Linear(latent_dim, latent_dim)
         self.state_norm = nn.LayerNorm(latent_dim)
 
     def normalize_state(self, state, arch_type: str):
@@ -49,7 +46,7 @@ class ArchitectureNormalizer(nn.Module):
             c = torch.zeros_like(h)
             return self.state_norm(h), self.state_norm(c)
 
-        elif arch_type in ("transformer", "patch"):
+        elif arch_type == "transformer":
             if isinstance(state, tuple) and len(state) == 2:
                 h, c = state
                 return self.state_norm(h), self.state_norm(c)
@@ -65,8 +62,6 @@ class ArchitectureNormalizer(nn.Module):
             return self.rnn_proj(output)
         elif arch_type == "transformer":
             return self.transformer_proj(output)
-        elif arch_type == "patch":
-            return self.patch_proj(output)
         return output
 
 
@@ -450,9 +445,6 @@ class BaseFixedSequenceBlock(nn.Module):
             elif isinstance(self.rnn, nn.GRU):
                 self.rnn_type = "gru"
                 self.latent_dim = self.rnn.hidden_size
-            elif isinstance(self.rnn, PatchTSTEncoder):
-                self.rnn_type = "patch"
-                self.latent_dim = self.rnn.latent_dim
             elif hasattr(self.rnn, "latent_dim"):
                 self.rnn_type = "transformer"
                 self.latent_dim = self.rnn.latent_dim
@@ -465,8 +457,6 @@ class BaseFixedSequenceBlock(nn.Module):
             return torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)
         elif self.rnn_type == "gru":
             return torch.tensor([0.0, 1.0, 0.0, 0.0], device=device)
-        elif self.rnn_type == "patch":
-            return torch.tensor([0.0, 0.0, 0.0, 1.0], device=device)
         return torch.tensor([0.0, 0.0, 1.0, 0.0], device=device)
 
     def set_temperature(self, temp: float):

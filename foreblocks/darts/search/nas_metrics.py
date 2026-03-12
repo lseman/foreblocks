@@ -14,6 +14,8 @@ from torch.utils.data import DataLoader
 
 from .scoring import (
     normalize_metric_value as _normalize_metric_value_shared,
+)
+from .scoring import (
     score_from_metrics as _score_from_metrics_shared,
 )
 
@@ -168,6 +170,22 @@ class MetricsComputer:
     def __init__(self, config: Config):
         self.config = config
         self.helper = CompatibilityHelper()
+
+    @staticmethod
+    def _is_backend_double_backward_error(err: RuntimeError) -> bool:
+        """Detect backend limitations that break second-order gradients."""
+        msg = str(err).lower()
+        return (
+            "_cudnn_rnn_backward" in msg
+            or "double backwards is not supported for cudnn rnns" in msg
+            or "scaled_dot_product" in msg
+            or "flash_attention" in msg
+            or "efficient_attention" in msg
+            or "sdp" in msg
+            and "derivative" in msg
+            or "derivative for" in msg
+            and "not implemented" in msg
+        )
 
     @staticmethod
     def _unwrap_output(output: Any) -> torch.Tensor:
@@ -618,7 +636,9 @@ class MetricsComputer:
                 snip_mode = snip_mode_raw
             else:
                 snip_mode = (
-                    "init" if bool(getattr(self.config, "snip_at_init", True)) else "current"
+                    "init"
+                    if bool(getattr(self.config, "snip_at_init", True))
+                    else "current"
                 )
 
             # ----- GRASP -----
@@ -663,32 +683,28 @@ class MetricsComputer:
                             continue
                         if not torch.isfinite(hg).all() or not torch.isfinite(g).all():
                             continue
-                        scores.append((hg * g.detach()).sum().item())
+                        score_item = (hg * g.detach()).sum().item()
+                        if np.isfinite(score_item):
+                            scores.append(float(score_item))
 
                     if not scores:
                         return 0.0
 
                     # GRASP objective: - <H g, g>
-                    return -sum(scores) / max(len(scores), 1)
+                    value = -sum(scores) / max(len(scores), 1)
+                    if not np.isfinite(value):
+                        return 0.0
+                    return float(value)
 
-                try:
-                    return _grasp_from_loss(
-                        loss,
-                        weights,
-                        retain_graph=True,
-                    )
-                except RuntimeError as e:
-                    # CuDNN RNNs may fail on double-backward. Retry with a fresh
-                    # CuDNN-disabled graph instead of failing the metric entirely.
-                    if "_cudnn_rnn_backward" not in str(e):
-                        raise
-
+                def _retry_with_safe_mode() -> float:
                     model.zero_grad()
                     x_retry = x.detach().clone().requires_grad_(True)
                     y_retry = y.detach().clone()
                     with self.helper.safe_mode(model):
                         out_retry = model(x_retry)
-                    out_retry, y_retry_prep = self.helper.prepare_data(out_retry, y_retry)
+                    out_retry, y_retry_prep = self.helper.prepare_data(
+                        out_retry, y_retry
+                    )
                     loss_retry = loss_fn(out_retry, y_retry_prep)
 
                     if not torch.isfinite(loss_retry):
@@ -699,6 +715,33 @@ class MetricsComputer:
                         weights,
                         retain_graph=False,
                     )
+
+                try:
+                    value = _grasp_from_loss(
+                        loss,
+                        weights,
+                        retain_graph=True,
+                    )
+                    if np.isfinite(value):
+                        return float(value)
+                    return _retry_with_safe_mode()
+                except RuntimeError as e:
+                    # Some backends (CuDNN RNN and certain SDPA kernels) do not
+                    # implement required second-order derivatives. Retry with a
+                    # fresh graph in compatibility mode (manual attention +
+                    # CuDNN disabled) instead of failing the metric entirely.
+                    if not self._is_backend_double_backward_error(e):
+                        raise
+
+                    try:
+                        return _retry_with_safe_mode()
+                    except RuntimeError as retry_error:
+                        # If both paths hit backend limits, keep search running.
+                        if self._is_backend_double_backward_error(retry_error):
+                            return 0.0
+                        raise
+                    except Exception:
+                        return 0.0
 
             # ----- Fisher -----
             def _fisher():
@@ -1140,7 +1183,9 @@ class MetricsComputer:
                                     v = gram.matmul(v)
                                     v = v / (v.norm() + eps)
                                 lambda_max = float(
-                                    torch.clamp(torch.dot(v, gram.matmul(v)), min=eps).item()
+                                    torch.clamp(
+                                        torch.dot(v, gram.matmul(v)), min=eps
+                                    ).item()
                                 )
 
                                 # Shifted inverse iteration for smallest eigenvalue.
@@ -1162,7 +1207,9 @@ class MetricsComputer:
                                         u = torch.linalg.pinv(shifted).matmul(u)
                                     u = u / (u.norm() + eps)
                                 lambda_min = float(
-                                    torch.clamp(torch.dot(u, gram.matmul(u)), min=eps).item()
+                                    torch.clamp(
+                                        torch.dot(u, gram.matmul(u)), min=eps
+                                    ).item()
                                 )
 
                             s_max = math.sqrt(lambda_max)

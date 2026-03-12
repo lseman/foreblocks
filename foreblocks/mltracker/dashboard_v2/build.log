@@ -1,0 +1,14 @@
+
+> mltracker-dashboard-v2@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 33 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.41 kB │ gzip:  0.28 kB
+dist/assets/index-CyRq54Fy.css    7.14 kB │ gzip:  2.01 kB
+dist/assets/index-BZpDNKYe.js   167.29 kB │ gzip: 53.09 kB
+✓ built in 307ms
+BUILD_EXIT:0

@@ -132,82 +132,76 @@ class StreamlinedDARTSAnalyzer:
         self, model, component_attr: str, component_type: str, row: Dict
     ):
         """Generic method to extract encoder or decoder information"""
-        # try:
         component = getattr(model, component_attr, None)
-        if component is None or not hasattr(component, "alphas"):
+        if component is None:
             return
-
-        weights = F.softmax(component.alphas, dim=-1)
-
-        # Get component types
-        components_attr = (
-            f"{component_type}s"
-            if not component_type.endswith("r")
-            else f"{component_type}s"
-        )
-        components = getattr(component, components_attr, [])
-
-        # print(pato)
-        if components:
-            print(
-                f"Extracting {component_type} information for candidate {row['candidate_id']}"
-            )
-            component_types = [type(comp).__name__ for comp in components]
-            row[f"available_{component_type}s"] = ",".join(component_types)
-            row[f"num_{component_type}_types"] = len(component_types)
-
-            # Track weights and most likely choice
-            max_idx = weights.argmax().item()
-            for i, comp_type in enumerate(component_types):
-                clean_name = (
-                    comp_type.replace("Encoder", "")
-                    .replace("Decoder", "")
-                    .replace("RNN", "")
-                    .lower()
-                )
-                row[f"has_{clean_name}_{component_type}"] = 1
-                row[f"{clean_name}_{component_type}_weight"] = weights[i].item()
-
-            # Most likely choice
-            row[f"likely_{component_type}"] = component_types[max_idx]
-            row[f"likely_{component_type}_weight"] = weights[max_idx].item()
-
-            # Handle RNN names for decoders
-            if component_type == "decoder" and hasattr(component, "rnn_names"):
-                rnn_names = component.rnn_names
-                row["rnn_names"] = ",".join(rnn_names)
-
-                for i, rnn_name in enumerate(rnn_names):
-                    if i < len(weights):
-                        row[f"{rnn_name.lower()}_rnn_weight"] = weights[i].item()
-                        if i == max_idx:
-                            row["likely_rnn_type"] = rnn_name
-                            row["likely_rnn_weight"] = weights[i].item()
+        component_name = getattr(component, "rnn_type", type(component).__name__)
+        row[f"available_{component_type}s"] = str(component_name)
+        row[f"num_{component_type}_types"] = 1
+        row[f"likely_{component_type}"] = str(component_name)
+        row[f"likely_{component_type}_weight"] = 1.0
+        row[f"has_{str(component_name).lower()}_{component_type}"] = 1
+        row[f"{str(component_name).lower()}_{component_type}_weight"] = 1.0
+        if component_type == "decoder":
+            row["rnn_names"] = str(component_name)
+            row[f"{str(component_name).lower()}_rnn_weight"] = 1.0
+            row["likely_rnn_type"] = str(component_name)
+            row["likely_rnn_weight"] = 1.0
 
     def _extract_attention_info(self, model, row: Dict):
         """Extract attention mechanism information"""
         try:
             decoder = getattr(model, "forecast_decoder", None)
-            if decoder is None or not hasattr(decoder, "attention_alphas"):
+            transformer = getattr(decoder, "transformer", None) if decoder is not None else None
+            if transformer is None and decoder is not None:
+                transformer = getattr(decoder, "rnn", None)
+            layers = getattr(transformer, "layers", None) if transformer is not None else None
+            first_layer = layers[0] if layers else None
+            cross_attn = None
+            if isinstance(first_layer, dict):
+                cross_attn = first_layer.get("cross_attn")
+            elif hasattr(first_layer, "get"):
+                cross_attn = first_layer.get("cross_attn")
+            elif hasattr(first_layer, "__contains__") and "cross_attn" in first_layer:
+                cross_attn = first_layer["cross_attn"]
+            attention_alphas = getattr(cross_attn, "attn_alphas", None)
+            attention_mode = getattr(cross_attn, "attention_type", None)
+            if decoder is None or (attention_alphas is None and not isinstance(attention_mode, str)):
                 row["uses_attention"] = 0
                 return
 
-            attention_weights = F.softmax(decoder.attention_alphas, dim=-1)
+            attention_modes = tuple(getattr(cross_attn, "MODES", ()))
+            if attention_alphas is not None:
+                attention_weights = F.softmax(attention_alphas, dim=-1)
+                max_attention_idx = attention_weights.argmax().item()
+            else:
+                resolved = str(attention_mode).lower()
+                max_attention_idx = (
+                    attention_modes.index(resolved) if resolved in attention_modes else -1
+                )
+                attention_weights = torch.zeros(
+                    len(attention_modes), device=next(cross_attn.parameters()).device
+                )
+                if max_attention_idx >= 0:
+                    attention_weights[max_attention_idx] = 1.0
             row["has_attention_alphas"] = 1
             row["num_attention_options"] = len(attention_weights)
 
-            max_attention_idx = attention_weights.argmax().item()
-            if max_attention_idx == len(attention_weights) - 1:
+            selected_mode = (
+                str(attention_modes[max_attention_idx])
+                if 0 <= max_attention_idx < len(attention_modes)
+                else f"attention_layer_{max_attention_idx}"
+            )
+            if selected_mode == "none":
                 row["likely_attention"] = "no_attention"
                 row["uses_attention"] = 0
             else:
-                row["likely_attention"] = f"attention_layer_{max_attention_idx}"
+                row["likely_attention"] = selected_mode
                 row["uses_attention"] = 1
 
             row["attention_weight"] = attention_weights[max_attention_idx].item()
 
-            if hasattr(decoder, "attention_bridges"):
-                row["num_attention_bridges"] = len(decoder.attention_bridges)
+            row["num_attention_bridges"] = 1
 
         except Exception as e:
             row["attention_extraction_error"] = str(e)
@@ -274,50 +268,63 @@ class StreamlinedDARTSAnalyzer:
     ):
         """Extract final component choice from trained model"""
         component = getattr(model, component_attr, None)
-        if component is None or not hasattr(component, "alphas"):
+        if component is None:
             return
-
-        weights = F.softmax(component.alphas, dim=-1)
-        selected_idx = weights.argmax().item()
-
-        components_attr = f"{component_type}s"
-        components = getattr(component, components_attr, [])
-
-        if selected_idx < len(components):
-            selected_component = type(components[selected_idx]).__name__
-            row[f"final_{component_type}"] = selected_component
-            row[f"final_{component_type}_weight"] = weights[selected_idx].item()
-
-            clean_name = (
-                selected_component.replace("Encoder", "")
-                .replace("Decoder", "")
-                .replace("RNN", "")
-            )
-            row[f"final_{component_type}_clean"] = clean_name
-
-            # Handle RNN types for decoders
-            if component_type == "decoder" and hasattr(component, "rnn_names"):
-                rnn_names = component.rnn_names
-                if selected_idx < len(rnn_names):
-                    row["final_rnn_type"] = rnn_names[selected_idx]
+        selected_component = str(getattr(component, "rnn_type", type(component).__name__))
+        row[f"final_{component_type}"] = selected_component
+        row[f"final_{component_type}_weight"] = 1.0
+        row[f"final_{component_type}_clean"] = selected_component
+        if component_type == "decoder":
+            row["final_rnn_type"] = selected_component
 
     def _extract_final_attention_choice(self, model, row: Dict):
         """Extract final attention choice from trained model"""
         decoder = getattr(model, "forecast_decoder", None)
-        if decoder is None or not hasattr(decoder, "attention_alphas"):
+        transformer = getattr(decoder, "transformer", None) if decoder is not None else None
+        if transformer is None and decoder is not None:
+            transformer = getattr(decoder, "rnn", None)
+        layers = getattr(transformer, "layers", None) if transformer is not None else None
+        first_layer = layers[0] if layers else None
+        cross_attn = None
+        if isinstance(first_layer, dict):
+            cross_attn = first_layer.get("cross_attn")
+        elif hasattr(first_layer, "get"):
+            cross_attn = first_layer.get("cross_attn")
+        elif hasattr(first_layer, "__contains__") and "cross_attn" in first_layer:
+            cross_attn = first_layer["cross_attn"]
+        attention_alphas = getattr(cross_attn, "attn_alphas", None)
+        attention_mode = getattr(cross_attn, "attention_type", None)
+        if decoder is None or (attention_alphas is None and not isinstance(attention_mode, str)):
             return
 
-        attention_weights = F.softmax(decoder.attention_alphas, dim=-1)
-        selected_idx = attention_weights.argmax().item()
+        attention_modes = tuple(getattr(cross_attn, "MODES", ()))
+        if attention_alphas is not None:
+            attention_weights = F.softmax(attention_alphas, dim=-1)
+            selected_idx = attention_weights.argmax().item()
+        else:
+            resolved = str(attention_mode).lower()
+            selected_idx = attention_modes.index(resolved) if resolved in attention_modes else -1
+            attention_weights = torch.zeros(
+                len(attention_modes), device=next(cross_attn.parameters()).device
+            )
+            if selected_idx >= 0:
+                attention_weights[selected_idx] = 1.0
 
         row["final_attention_idx"] = selected_idx
-        row["final_attention_weight"] = attention_weights[selected_idx].item()
+        row["final_attention_weight"] = (
+            attention_weights[selected_idx].item() if selected_idx >= 0 else 0.0
+        )
 
-        if selected_idx == len(attention_weights) - 1:
+        selected_mode = (
+            str(attention_modes[selected_idx])
+            if 0 <= selected_idx < len(attention_modes)
+            else f"attention_layer_{selected_idx}"
+        )
+        if selected_mode == "none":
             row["final_attention_choice"] = "no_attention"
             row["final_uses_attention"] = 0
         else:
-            row["final_attention_choice"] = f"attention_layer_{selected_idx}"
+            row["final_attention_choice"] = selected_mode
             row["final_uses_attention"] = 1
 
     def _analyze_all_patterns(self) -> Dict[str, Any]:
@@ -1860,4 +1867,3 @@ def analyze_darts_search(
 
 
 analyze_enhanced_darts_search = analyze_darts_search
-

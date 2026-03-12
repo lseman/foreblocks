@@ -1,0 +1,268 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 480" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+
+  <defs>
+    <marker id="arr"   markerWidth="7" markerHeight="5" refX="6.5" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#64748B"/></marker>
+    <marker id="arr-g" markerWidth="7" markerHeight="5" refX="6.5" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#059669"/></marker>
+    <marker id="arr-a" markerWidth="7" markerHeight="5" refX="6.5" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#D97706"/></marker>
+    <filter id="card-shadow">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#00000018"/>
+    </filter>
+  </defs>
+
+  <!-- ░░ BACKGROUND ░░ -->
+  <rect width="1100" height="480" fill="#F8FAFC"/>
+  <!-- Subtle dot grid -->
+  <pattern id="dots" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="0.6" fill="#CBD5E1" opacity="0.5"/>
+  </pattern>
+  <rect width="1100" height="480" fill="url(#dots)"/>
+
+  <!-- ░░ TITLE ░░ -->
+  <text x="550" y="27" text-anchor="middle" font-size="11.5" font-weight="700"
+        fill="#0F172A" letter-spacing="2.5">AUTOMATIC FILTER SELECTION — DATA PRE-PROCESSING PIPELINE</text>
+  <line x1="100" y1="34" x2="1000" y2="34" stroke="#E2E8F0" stroke-width="1"/>
+
+  <!-- ░░ STAGE 1 — NOISY INPUT ░░ -->
+  <rect x="15" y="169" width="112" height="132" rx="6" fill="white"
+        stroke="#3B82F6" stroke-width="1.6" filter="url(#card-shadow)"/>
+  <!-- Noisy sparkline (y-center ≈ 213, amplitude ±18) -->
+  <polyline
+    points="24,213 30,198 37,206 43,191 50,209 57,205 64,224 71,230 78,241 85,236 92,245 99,229 106,220 113,215 120,220"
+    fill="none" stroke="#93C5FD" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Baseline -->
+  <line x1="24" y1="248" x2="120" y2="248" stroke="#DBEAFE" stroke-width="0.7" stroke-dasharray="3,3"/>
+  <text x="71" y="267" text-anchor="middle" font-size="10" fill="#1E40AF" font-weight="700">Noisy Input</text>
+  <text x="71" y="282" text-anchor="middle" font-size="9.5" fill="#3B82F6" font-style="italic">y &#x2208; &#x211D;<tspan baseline-shift="super" font-size="6.5">T</tspan></text>
+
+  <!-- Fan-out stem from input -->
+  <line x1="127" y1="235" x2="142" y2="235" stroke="#94A3B8" stroke-width="1.3"/>
+  <circle cx="142" cy="235" r="3.5" fill="#94A3B8"/>
+
+  <!-- ░░ FAN-OUT: INPUT → EACH FILTER ░░ -->
+  <!-- filter centers_y: 66,108,150,192,234,276,318,360,402 -->
+  <g fill="none" stroke="#BFDBFE" stroke-width="1.1">
+    <path d="M142,235 C151,235 151,66  160,66"/>
+    <path d="M142,235 C151,235 151,108 160,108"/>
+    <path d="M142,235 C151,235 151,150 160,150"/>
+    <path d="M142,235 C151,235 151,192 160,192"/>
+    <path d="M142,235 C151,235 151,234 160,234"/>
+    <path d="M142,235 C151,235 151,276 160,276"/>
+    <path d="M142,235 C151,235 151,318 160,318"/>
+    <path d="M142,235 C151,235 151,360 160,360"/>
+    <path d="M142,235 C151,235 151,402 160,402"/>
+  </g>
+
+  <!-- ░░ STAGE 2 — FILTER BANK ░░ -->
+  <!-- K=9 bracket -->
+  <line x1="154" y1="52"  x2="154" y2="418" stroke="#CBD5E1" stroke-width="0.8"/>
+  <line x1="154" y1="52"  x2="158" y2="52"  stroke="#CBD5E1" stroke-width="0.8"/>
+  <line x1="154" y1="418" x2="158" y2="418" stroke="#CBD5E1" stroke-width="0.8"/>
+  <text x="150" y="235" text-anchor="middle" font-size="7.5" fill="#94A3B8"
+        transform="rotate(-90,150,235)">K = 9 candidates</text>
+
+  <!-- Filter boxes: x=160, w=166, h=28, step=42 -->
+  <!-- (i) MA -->
+  <rect x="160" y="52"  width="166" height="28" rx="3" fill="white" stroke="#CBD5E1" stroke-width="1.1" filter="url(#card-shadow)"/>
+  <text x="169" y="70" font-size="9" fill="#374151"><tspan font-weight="600">(i)</tspan><tspan dx="5">Moving Average</tspan></text>
+  <text x="318" y="70" font-size="7.5" fill="#94A3B8" font-weight="700">MA</text>
+
+  <!-- (ii) SG -->
+  <rect x="160" y="94"  width="166" height="28" rx="3" fill="white" stroke="#CBD5E1" stroke-width="1.1" filter="url(#card-shadow)"/>
+  <text x="169" y="112" font-size="9" fill="#374151"><tspan font-weight="600">(ii)</tspan><tspan dx="4">Savitzky-Golay</tspan></text>
+  <text x="318" y="112" font-size="7.5" fill="#94A3B8" font-weight="700">SG</text>
+
+  <!-- (iii) BW -->
+  <rect x="160" y="136" width="166" height="28" rx="3" fill="white" stroke="#CBD5E1" stroke-width="1.1" filter="url(#card-shadow)"/>
+  <text x="169" y="154" font-size="9" fill="#374151"><tspan font-weight="600">(iii)</tspan><tspan dx="4">Butterworth LP</tspan></text>
+  <text x="318" y="154" font-size="7.5" fill="#94A3B8" font-weight="700">BW</text>
+
+  <!-- (iv) ES -->
+  <rect x="160" y="178" width="166" height="28" rx="3" fill="white" stroke="#CBD5E1" stroke-width="1.1" filter="url(#card-shadow)"/>
+  <text x="169" y="196" font-size="9" fill="#374151"><tspan font-weight="600">(iv)</tspan><tspan dx="4">Exp. Smoothing</tspan></text>
+  <text x="318" y="196" font-size="7.5" fill="#94A3B8" font-weight="700">ES</text>
+
+  <!-- (v) FFT -->
+  <rect x="160" y="220" width="166" height="28" rx="3" fill="white" stroke="#CBD5E1" stroke-width="1.1" filter="url(#card-shadow)"/>
+  <text x="169" y="238" font-size="9" fill="#374151"><tspan font-weight="600">(v)</tspan><tspan dx="4">FFT Denoising</tspan></text>
+  <text x="318" y="238" font-size="7.5" fill="#94A3B8" font-weight="700">FFT</text>
+
+  <!-- (vi) WV -->
+  <rect x="160" y="262" width="166" height="28" rx="3" fill="white" stroke="#CBD5E1" stroke-width="1.1" filter="url(#card-shadow)"/>
+  <text x="169" y="280" font-size="9" fill="#374151"><tspan font-weight="600">(vi)</tspan><tspan dx="4">Wavelet / BayesShrink</tspan></text>
+  <text x="318" y="280" font-size="7.5" fill="#94A3B8" font-weight="700">WV</text>
+
+  <!-- (vii) TV -->
+  <rect x="160" y="304" width="166" height="28" rx="3" fill="white" stroke="#CBD5E1" stroke-width="1.1" filter="url(#card-shadow)"/>
+  <text x="169" y="322" font-size="9" fill="#374151"><tspan font-weight="600">(vii)</tspan><tspan dx="4">Total Variation</tspan></text>
+  <text x="318" y="322" font-size="7.5" fill="#94A3B8" font-weight="700">TV</text>
+
+  <!-- (viii) EV -->
+  <rect x="160" y="346" width="166" height="28" rx="3" fill="white" stroke="#CBD5E1" stroke-width="1.1" filter="url(#card-shadow)"/>
+  <text x="169" y="364" font-size="9" fill="#374151"><tspan font-weight="600">(viii)</tspan><tspan dx="4">EMD + VMD</tspan></text>
+  <text x="318" y="364" font-size="7.5" fill="#94A3B8" font-weight="700">EV</text>
+
+  <!-- (ix) DAE — slow, highlighted amber -->
+  <rect x="160" y="388" width="166" height="28" rx="3" fill="#FFFBEB" stroke="#FCD34D" stroke-width="1.3" filter="url(#card-shadow)"/>
+  <text x="169" y="406" font-size="9" fill="#92400E"><tspan font-weight="600">(ix)</tspan><tspan dx="4">Denoising AE</tspan><tspan dx="6" font-size="8.5" fill="#B45309">&#9733;</tspan></text>
+  <text x="318" y="406" font-size="7.5" fill="#B45309" font-weight="700">DAE</text>
+
+  <!-- slow legend -->
+  <text x="160" y="432" font-size="7.5" fill="#B45309">&#9733; slow — skipped when fast=True</text>
+
+  <!-- ░░ FAN-IN: FILTERS → MERGE POINT ░░ -->
+  <!-- filter right edges at x=326, centers_y same; merge at (350,235) -->
+  <g fill="none" stroke="#CBD5E1" stroke-width="1.1">
+    <path d="M326,66  C336,66  340,235 350,235"/>
+    <path d="M326,108 C336,108 340,235 350,235"/>
+    <path d="M326,150 C336,150 340,235 350,235"/>
+    <path d="M326,192 C336,192 340,235 350,235"/>
+    <path d="M326,234 C336,234 340,235 350,235"/>
+    <path d="M326,276 C336,276 340,235 350,235"/>
+    <path d="M326,318 C336,318 340,235 350,235"/>
+    <path d="M326,360 C336,360 340,235 350,235"/>
+    <path d="M326,402 C336,402 340,235 350,235"/>
+  </g>
+  <circle cx="350" cy="235" r="3.5" fill="#94A3B8"/>
+
+  <!-- ░░ FAN-OUT: MERGE → METRIC BOXES ░░ -->
+  <!-- metric box tops=[86,178,270,362] h=28 → centers=[100,192,284,376]; metric left x=370 -->
+  <g fill="none" stroke="#6EE7B7" stroke-width="1.2">
+    <path d="M350,235 C359,235 360,100 370,100" marker-end="url(#arr-g)"/>
+    <path d="M350,235 C359,235 360,192 370,192" marker-end="url(#arr-g)"/>
+    <path d="M350,235 C359,235 360,284 370,284" marker-end="url(#arr-g)"/>
+    <path d="M350,235 C359,235 360,376 370,376" marker-end="url(#arr-g)"/>
+  </g>
+
+  <!-- ░░ STAGE 3 — QUALITY METRICS GROUP ░░ -->
+  <!-- bg: x=362, y=60, w=162, h=364 -->
+  <rect x="362" y="60" width="162" height="364" rx="6" fill="#F0FDF4"
+        stroke="#6EE7B7" stroke-width="1.4" filter="url(#card-shadow)"/>
+  <text x="443" y="78" text-anchor="middle" font-size="8.5" fill="#065F46"
+        font-weight="700" letter-spacing="1.2">QUALITY METRICS</text>
+
+  <!-- M_fid -->
+  <rect x="370" y="86"  width="146" height="28" rx="3" fill="white" stroke="#A7F3D0" stroke-width="1"/>
+  <text x="378" y="103" font-size="9" fill="#374151">
+    &#x2133;<tspan baseline-shift="sub" font-size="6.5">fid</tspan>
+    <tspan baseline-shift="baseline"> = MSE(&#375;, y)</tspan>
+  </text>
+  <text x="508" y="107" text-anchor="end" font-size="7" fill="#059669" font-weight="600">fidelity &#x2193;</text>
+
+  <!-- M_rough -->
+  <rect x="370" y="178" width="146" height="28" rx="3" fill="white" stroke="#A7F3D0" stroke-width="1"/>
+  <text x="378" y="195" font-size="9" fill="#374151">
+    &#x2133;<tspan baseline-shift="sub" font-size="6.5">rough</tspan>
+    <tspan baseline-shift="baseline"> = std(&#x394;&#375;)</tspan>
+  </text>
+  <text x="508" y="199" text-anchor="end" font-size="7" fill="#059669" font-weight="600">roughness &#x2193;</text>
+
+  <!-- M_ac -->
+  <rect x="370" y="270" width="146" height="28" rx="3" fill="white" stroke="#A7F3D0" stroke-width="1"/>
+  <text x="378" y="287" font-size="9" fill="#374151">
+    &#x2133;<tspan baseline-shift="sub" font-size="6.5">ac</tspan>
+    <tspan baseline-shift="baseline"> = &#x27E8;|&#x3C1;(r, &#x2113;)|&#x27E9;</tspan>
+  </text>
+  <text x="508" y="291" text-anchor="end" font-size="7" fill="#059669" font-weight="600">whiteness &#x2193;</text>
+
+  <!-- M_dcorr -->
+  <rect x="370" y="362" width="146" height="28" rx="3" fill="white" stroke="#A7F3D0" stroke-width="1"/>
+  <text x="378" y="379" font-size="9" fill="#374151">
+    &#x2133;<tspan baseline-shift="sub" font-size="6.5">dcorr</tspan>
+    <tspan baseline-shift="baseline"> = |corr(&#x394;&#375;, &#x394;y)|</tspan>
+  </text>
+  <text x="508" y="383" text-anchor="end" font-size="7" fill="#059669" font-weight="600">shape &#x2191;</text>
+
+  <!-- ░░ FAN-IN: METRICS → MERGE POINT ░░ -->
+  <!-- metric right x=516, centers y=[100,192,284,376] → merge at (540,235) -->
+  <g fill="none" stroke="#6EE7B7" stroke-width="1.2">
+    <path d="M516,100 C528,100 532,235 540,235"/>
+    <path d="M516,192 C528,192 532,235 540,235"/>
+    <path d="M516,284 C528,284 532,235 540,235"/>
+    <path d="M516,376 C528,376 532,235 540,235"/>
+  </g>
+  <circle cx="540" cy="235" r="3.5" fill="#059669"/>
+  <line x1="540" y1="235" x2="553" y2="235" stroke="#059669" stroke-width="1.4" marker-end="url(#arr-g)"/>
+
+  <!-- ░░ STAGE 4 — COMPOSITE SCORE ░░ -->
+  <!-- box: x=557, y=122, w=192, h=226 -->
+  <rect x="557" y="122" width="192" height="226" rx="6" fill="white"
+        stroke="#F59E0B" stroke-width="1.6" filter="url(#card-shadow)"/>
+
+  <!-- Header band -->
+  <rect x="557" y="122" width="192" height="30" rx="6" fill="#FEF3C7"/>
+  <rect x="557" y="138" width="192" height="14" fill="#FEF3C7"/>
+  <text x="653" y="141" text-anchor="middle" font-size="9" fill="#78350F"
+        font-weight="700" letter-spacing="1">RANK NORMALIZE</text>
+
+  <text x="653" y="161" text-anchor="middle" font-size="8.5" fill="#92400E" font-style="italic">
+    M&#x0303; = rank(&#x2133;) / (K&#x2212;1)
+  </text>
+  <line x1="567" y1="168" x2="739" y2="168" stroke="#FDE68A" stroke-width="1"/>
+
+  <!-- Score formula -->
+  <text x="653" y="184" text-anchor="middle" font-size="8.5" fill="#78350F"
+        font-weight="700" letter-spacing="1">COMPOSITE SCORE</text>
+
+  <text x="570" y="205" font-size="8.5" fill="#92400E" font-style="italic">
+    S&#x0303; = 0.45 &#x00B7; M&#x0303;<tspan baseline-shift="sub" font-size="6">fid</tspan>
+  </text>
+  <text x="570" y="222" font-size="8.5" fill="#92400E" font-style="italic">
+    <tspan dx="16">+ 0.20 &#x00B7; M&#x0303;</tspan><tspan baseline-shift="sub" font-size="6">rough</tspan>
+  </text>
+  <text x="570" y="239" font-size="8.5" fill="#92400E" font-style="italic">
+    <tspan dx="16">+ 0.20 &#x00B7; M&#x0303;</tspan><tspan baseline-shift="sub" font-size="6">ac</tspan>
+  </text>
+  <text x="570" y="256" font-size="8.5" fill="#92400E" font-style="italic">
+    <tspan dx="16">+ 0.15 &#x00B7; M&#x0303;</tspan><tspan baseline-shift="sub" font-size="6">dcorr</tspan>
+  </text>
+
+  <line x1="567" y1="263" x2="739" y2="263" stroke="#FDE68A" stroke-width="1"/>
+
+  <!-- Selection rule -->
+  <text x="653" y="279" text-anchor="middle" font-size="8.5" fill="#78350F"
+        font-weight="700" letter-spacing="1">FILTER SELECTION</text>
+  <text x="653" y="298" text-anchor="middle" font-size="9" fill="#92400E" font-style="italic">
+    f* = argmin S&#x0303;
+  </text>
+  <text x="653" y="316" text-anchor="middle" font-size="7.5" fill="#B45309">
+    (per-dataset, adaptive)
+  </text>
+
+  <!-- Arrow to output -->
+  <line x1="749" y1="235" x2="762" y2="235" stroke="#D97706" stroke-width="1.6" marker-end="url(#arr-a)"/>
+
+  <!-- ░░ STAGE 5 — DENOISED OUTPUT ░░ -->
+  <rect x="766" y="169" width="116" height="132" rx="6" fill="white"
+        stroke="#10B981" stroke-width="1.6" filter="url(#card-shadow)"/>
+
+  <!-- Clean sine sparkline -->
+  <path d="M776,215 C793,192 812,192 821,215 C830,238 849,238 858,215"
+        fill="none" stroke="#34D399" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- Baseline -->
+  <line x1="776" y1="248" x2="874" y2="248" stroke="#D1FAE5" stroke-width="0.7" stroke-dasharray="3,3"/>
+
+  <text x="824" y="268" text-anchor="middle" font-size="10" fill="#065F46" font-weight="700">Denoised</text>
+  <text x="824" y="283" text-anchor="middle" font-size="9.5" fill="#10B981" font-style="italic">&#375;* = f*(y)</text>
+
+  <!-- "best filter applied" badge -->
+  <rect x="779" y="289" width="88" height="16" rx="3" fill="#D1FAE5" stroke="#6EE7B7" stroke-width="0.8"/>
+  <text x="823" y="301" text-anchor="middle" font-size="7.5" fill="#065F46" font-weight="600">&#x2713; best filter applied</text>
+
+  <!-- ░░ BOTTOM STAGE LABELS ░░ -->
+  <g font-size="8" fill="#94A3B8" letter-spacing="0.8">
+    <text x="71"  y="453" text-anchor="middle">① INPUT</text>
+    <text x="246" y="453" text-anchor="middle">② FILTER BANK</text>
+    <text x="443" y="453" text-anchor="middle">③ QUALITY METRICS</text>
+    <text x="653" y="453" text-anchor="middle">④ COMPOSITE SCORE</text>
+    <text x="824" y="453" text-anchor="middle">⑤ OUTPUT</text>
+  </g>
+  <!-- Stage tick marks -->
+  <g stroke="#E2E8F0" stroke-width="1">
+    <line x1="71"  y1="438" x2="71"  y2="444"/>
+    <line x1="246" y1="438" x2="246" y2="444"/>
+    <line x1="443" y1="438" x2="443" y2="444"/>
+    <line x1="653" y1="438" x2="653" y2="444"/>
+    <line x1="824" y1="438" x2="824" y2="444"/>
+  </g>
+
+</svg>

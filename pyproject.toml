@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foreblocks"
-version = "0.1.9"
+version = "0.1.10"
 description = "Modular Time Series Forecasting Library"
 authors = [{ name = "Laio Seman", email = "laioseman@gmail.com" }]
 

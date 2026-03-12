@@ -1,0 +1,514 @@
+% =============================================================================
+% \section{Methodology}
+% NeurIPS style -- compile with pdflatex + amsmath + amssymb + algorithm2e
+% =============================================================================
+
+\section{Methodology}
+\label{sec:methodology}
+
+We propose \textbf{ForeBlocks-DARTS}, a differentiable neural architecture
+search framework for multivariate time series forecasting. Given a look-back
+window of length $L$ and input dimensionality $C$, the model predicts a
+forecast horizon of length $H$. The search space spans (i) the topology and
+operator mixture inside a DARTS cell, (ii) the backbone topology mode
+(encoder--decoder, encoder-only, decoder-only, or Mamba), (iii) the internal
+configuration of transformer encoder/decoder blocks, including tokenizer,
+attention kernel, positional bias, feed-forward variant, and decoding style,
+and (iv) the input normalization strategy. All search variables are optimized
+within a differentiable bi-level formulation.
+
+% ---------------------------------------------------------------------------
+\subsection{Problem Formulation}
+\label{sec:problem}
+
+Let $\mathbf{X} \in \mathbb{R}^{B \times L \times C}$ denote a batch of
+multivariate time series and let
+$\hat{\mathbf{Y}} \in \mathbb{R}^{B \times H \times C}$ denote the forecast.
+We seek a parametric map
+$f_{\boldsymbol{\alpha},\boldsymbol{w}} : \mathbb{R}^{L \times C}
+\rightarrow \mathbb{R}^{H \times C}$ that minimizes prediction error on
+held-out data. Following DARTS~\citep{liu2019darts}, the learnable variables
+are partitioned into architecture parameters $\boldsymbol{\alpha}$ and model
+weights $\boldsymbol{w}$. The bi-level objective is
+%
+\begin{align}
+    \min_{\boldsymbol{\alpha}} \quad
+    & \mathcal{L}_{\mathrm{val}}\!\left(
+        \boldsymbol{w}^*(\boldsymbol{\alpha}),\, \boldsymbol{\alpha}
+      \right)
+      + \lambda_{\mathrm{eff}}\,\Omega_{\mathrm{eff}}(\boldsymbol{\alpha})
+      + \lambda_{\beta}\,\lVert \boldsymbol{\alpha} \rVert_2^2
+      + \lambda_{\mathrm{moe}}\,\Omega_{\mathrm{moe}}(\boldsymbol{\alpha})
+      - \lambda_{\mathrm{exp}}\,\Omega_{\mathrm{exp}}(\boldsymbol{\alpha})
+    \label{eq:outer} \\
+    \text{s.t.} \quad
+    & \boldsymbol{w}^*(\boldsymbol{\alpha}) =
+      \arg\min_{\boldsymbol{w}}\;
+      \mathcal{L}_{\mathrm{train}}(\boldsymbol{w}, \boldsymbol{\alpha}),
+    \label{eq:inner}
+\end{align}
+%
+where $\mathcal{L}$ is a Huber loss, $\Omega_{\mathrm{eff}}$ is a
+FLOPs-normalized efficiency penalty, the $\ell_2$ term corresponds to the
+$\beta$-DARTS regularizer~\citep{ye2022betadarts},
+$\Omega_{\mathrm{moe}}$ is a lightweight expert-balance penalty for the MoE
+feed-forward branch, and $\Omega_{\mathrm{exp}}$ is an early-stage entropy
+bonus applied to transformer selection logits to reduce premature collapse to
+a single attention or feed-forward mode.
+
+% ---------------------------------------------------------------------------
+\subsection{Input Normalization Search}
+\label{sec:norm}
+
+Time series frequently exhibit non-stationarity and distribution shift. We
+therefore use a searchable normalization head that interpolates among
+Reversible Instance Normalization (RevIN)~\citep{kim2021reversible},
+InstanceNorm, and an identity mapping. Let
+$\boldsymbol{\alpha}^{\mathrm{norm}} \in \mathbb{R}^{3}$ denote the
+normalization logits. The transformed input is
+%
+\begin{equation}
+    \tilde{\mathbf{X}} =
+      w_1\,\mathrm{RevIN}(\mathbf{X}) +
+      w_2\,\mathrm{InstanceNorm}(\mathbf{X}) +
+      w_3\,\mathbf{X},
+    \qquad
+    \mathbf{w} = \mathrm{softmax}\!\left(
+      \tfrac{\boldsymbol{\alpha}^{\mathrm{norm}}}{\tau}\right).
+    \label{eq:norm}
+\end{equation}
+%
+At inference, the argmax-selected transform is applied as a hard choice. When
+RevIN is selected, the inverse transformation is applied to the forecast to
+restore the original scale.
+
+% ---------------------------------------------------------------------------
+\subsection{DARTS Cells and Cell-Level Operator Search}
+\label{sec:cell}
+
+\paragraph{Cell DAG.}
+Each cell is a directed acyclic graph with ordered nodes
+$\{\mathbf{h}_0, \ldots, \mathbf{h}_{N-1}\}$. Node $i$ aggregates all
+preceding nodes $j < i$ through edge-specific mixed operations
+$\bar{o}_{j,i}$. The update rule is
+%
+\begin{equation}
+    \mathbf{h}_i
+    = \sigma(r_i)
+      \Bigg(\sum_{j < i} \sigma(\gamma_{ji})\,
+        \bar{o}_{j,i}(\mathbf{h}_j)
+      \Bigg)
+      + \bigl(1 - \sigma(r_i)\bigr)\,\mathbf{h}_{i-1},
+    \label{eq:cell}
+\end{equation}
+%
+where $r_i$ is a residual gate and $\gamma_{ji}$ is an edge-importance logit.
+The output of the cell is the normalized representation of the final node.
+
+\paragraph{Mixed operation.}
+For a selected candidate operator pool $\mathcal{O}$, each edge computes a
+weighted mixture
+%
+\begin{equation}
+    \bar{o}(\mathbf{x}) = \sum_{k \in \mathcal{O}} p_k\,o_k(\mathbf{x}),
+    \qquad
+    p_k = \frac{\phi(z_k)}{\sum_{\ell}\phi(z_{\ell})},
+    \label{eq:mixedop}
+\end{equation}
+%
+where $z_k$ are learnable edge logits and $\phi(\cdot)$ denotes the
+competition-aware relaxation used during search. The implementation supports
+single-path routing, Fair DARTS gating~\citep{chu2021fair}, and the
+Dirichlet relaxation of DrNAS~\citep{chen2021drnas}.
+
+\paragraph{Hierarchical operator pool construction.}
+The differentiable edge mixture is applied over a candidate pool that is first
+constructed hierarchically in the outer multi-fidelity search. Candidate cell
+operators are sampled by family and then by operation within family. The
+families are convolutional, frequency-domain, attention-inspired, and
+MLP-style transformations, while the state-space family is represented by the
+separate Mamba topology rather than as a cell operator. Identity is retained
+as a residual-preserving operator. Table~\ref{tab:ops} lists the 16 available
+cell operators.
+
+\paragraph{Temperature annealing.}
+Architecture temperatures follow a cosine schedule,
+%
+\begin{equation}
+    \tau(e) = \tau_{\min} + \tfrac{1}{2}(\tau_0 - \tau_{\min})
+      \left(1 + \cos\!\left(\tfrac{e - e_w}{E - e_w}\pi\right)\right),
+    \label{eq:temp}
+\end{equation}
+%
+where $e$ is the current epoch, $E$ is the total number of epochs, and $e_w$
+is the warm-up period. Annealing drives the relaxed distributions from broad
+exploration toward near-discrete selections.
+
+\begin{table}[h]
+\centering
+\caption{Cell-level candidate operations ($|\mathcal{O}|=16$). All operators
+         map $\mathbb{R}^{L \times d_l}$ to $\mathbb{R}^{L \times d_l}$.}
+\label{tab:ops}
+\small
+\begin{tabular}{lll}
+\toprule
+Family & Operation & Inductive bias \\
+\midrule
+Residual
+  & Identity & residual shortcut \\
+\addlinespace
+Convolutional
+  & TimeConv & local temporal patterns \\
+  & TCN & dilated temporal convolution \\
+  & ConvMixer & depthwise-pointwise token mixing \\
+  & MultiScaleConv & multi-kernel aggregation \\
+  & PyramidConv & hierarchical temporal pyramid \\
+\addlinespace
+Frequency
+  & Wavelet & multi-resolution decomposition \\
+  & Fourier & global spectral mixing \\
+  & DLinear & trend-seasonality linear decomposition \\
+  & TimesNet & temporal-to-2D periodic modeling \\
+\addlinespace
+Attention-inspired
+  & PatchEmbed & patch tokenization \\
+  & InvertedAttention & channel-wise token mixing \\
+\addlinespace
+MLP-style
+  & GRN & gated residual transformation \\
+  & ResidualMLP & position-wise feed-forward mapping \\
+  & TimeMixer & multiscale mixing block \\
+  & NBeats & basis-expansion forecasting block \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+\subsection{Backbone and Feature Fusion}
+\label{sec:backbone}
+
+The normalized input is projected to hidden dimension $d_h$ by a linear
+embedding layer followed by LayerNorm and GELU. A stack of $K$ DARTS cells
+then produces intermediate feature maps
+%
+\begin{equation}
+    \mathbf{F}^{(k)} = \mathrm{Cell}^{(k)}\!\left(\mathbf{F}^{(k-1)}\right),
+    \qquad
+    \mathbf{F}^{(0)} = \mathrm{Embed}(\tilde{\mathbf{X}}).
+    \label{eq:cells}
+\end{equation}
+%
+Cell outputs are combined with learned cell importances and cell-combination
+weights,
+%
+\begin{equation}
+    \mathbf{F} = \sum_{k=1}^{K}
+      \frac{\sigma(\gamma_k)\,\bar{w}_k}
+           {\sum_j \sigma(\gamma_j)\,\bar{w}_j}
+      \mathbf{F}^{(k)},
+    \label{eq:cell_comb}
+\end{equation}
+%
+followed by gated residual fusion with the input embedding,
+%
+\begin{equation}
+    \mathbf{F}^* =
+      \mathbf{g} \odot \mathbf{F} +
+      (1 - \mathbf{g}) \odot \mathbf{F}^{(0)} +
+      \beta_s\,\mathbf{F}^{(0)},
+    \label{eq:gate}
+\end{equation}
+%
+where $\mathbf{g}$ is a learnable gate and $\beta_s$ is a global skip weight.
+The fused representation $\mathbf{F}^*$ is passed to the selected backbone
+mode.
+
+% ---------------------------------------------------------------------------
+\subsection{Topology Modes}
+\label{sec:topologies}
+
+The architecture operates in one of four topology modes,
+$m \in \{\texttt{encoder\_decoder},\texttt{encoder\_only},
+\texttt{decoder\_only},\texttt{mamba}\}$.
+
+\paragraph{(A) Encoder--Decoder.}
+The default sequence model is a transformer encoder--decoder. The encoder
+maps $\mathbf{F}^*$ to an encoded sequence
+$\mathbf{H}_{\mathrm{enc}} \in \mathbb{R}^{B \times L \times d_l}$, a
+context token $\mathbf{c}$, and a latent state summary. The decoder then
+produces the horizon either autoregressively or in a parallel Informer-style
+manner, both conditioned on $\mathbf{H}_{\mathrm{enc}}$.
+
+\paragraph{(B) Encoder-Only.}
+The decoder is removed. The transformer encoder output is pooled over time and
+blended with the last token, after which a direct projection head maps the
+representation to $\mathbb{R}^{H \times C}$.
+
+\paragraph{(C) Decoder-Only.}
+The encoder is removed. The cell backbone is projected into decoder memory,
+and the transformer decoder generates the forecast conditioned only on this
+compressed backbone context.
+
+\paragraph{(D) Mamba SSM.}
+Both encoder and decoder are replaced by a stack of selective state-space
+(Mamba) layers~\citep{gu2023mamba}. This branch operates directly on the
+backbone representation and produces a non-autoregressive forecast through a
+projection head.
+
+% ---------------------------------------------------------------------------
+\subsection{Searchable Transformer Components}
+\label{sec:transformers}
+
+The encoder and decoder are transformer-first modules. Rather than searching
+over recurrent cell types, ForeBlocks-DARTS searches the internal
+configuration of the transformer blocks.
+
+\paragraph{Encoder tokenizer.}
+The encoder owns a differentiable tokenizer choice among
+$\{\texttt{direct},\texttt{patch\_8},\texttt{patch\_16},
+\texttt{patch\_32},\texttt{multi\_scale\_patch},
+\texttt{variate\_tokens}\}$. Let
+$\boldsymbol{\alpha}^{\mathrm{tok}} \in \mathbb{R}^{6}$ denote the tokenizer
+logits. The token sequence is
+%
+\begin{equation}
+    \mathbf{T}_{\mathrm{enc}} = \sum_{s=1}^{6}
+      p^{\mathrm{tok}}_s\,\mathcal{T}_s(\mathbf{F}^*),
+    \qquad
+    \mathbf{p}^{\mathrm{tok}} =
+    \mathrm{softmax}\!\left(\tfrac{\boldsymbol{\alpha}^{\mathrm{tok}}}{\tau}\right).
+    \label{eq:tokenizer}
+\end{equation}
+%
+This formulation unifies direct tokenization, fixed patch lengths, a
+multi-scale patch encoder, and a variate-token pathway inspired by
+channel-first forecasting models.
+
+\paragraph{Self-attention kernel search.}
+Encoder and decoder self-attention layers each maintain architecture logits
+over the candidate kernels
+$\{\texttt{sdp},\texttt{linear},\texttt{probsparse},\texttt{cosine},
+\texttt{local}\}$. The relaxed self-attention operator is
+%
+\begin{equation}
+    \mathcal{A}_{\mathrm{self}}(\mathbf{Q},\mathbf{K},\mathbf{V})
+    = \sum_{m=1}^{5} p^{\mathrm{attn}}_m\,
+      \mathcal{A}_m(\mathbf{Q},\mathbf{K},\mathbf{V}),
+    \label{eq:selfattn_mix}
+\end{equation}
+%
+with $\mathbf{p}^{\mathrm{attn}} =
+\mathrm{softmax}(\boldsymbol{\alpha}^{\mathrm{attn}}/\tau)$. In the final
+architecture, the argmax-selected kernel is frozen as a discrete choice.
+
+\paragraph{Positional bias search.}
+Each self-attention and decoder cross-attention block additionally searches
+over the positional treatment
+$\{\texttt{rope},\texttt{alibi},\texttt{none},\texttt{seasonal}\}$. This
+allows the model to adapt between rotary phase encoding, additive linear bias,
+no explicit positional bias, and a seasonal relative-bias parameterization.
+
+\paragraph{Feed-forward search.}
+Each transformer layer chooses between a dense SwiGLU feed-forward network and
+a simplified sparse mixture-of-experts (MoE) block. With logits
+$\boldsymbol{\alpha}^{\mathrm{ffn}} \in \mathbb{R}^{2}$, the feed-forward
+output is
+%
+\begin{equation}
+    \mathrm{FFN}(\mathbf{x}) =
+      p^{\mathrm{ffn}}_{\mathrm{dense}}\,\mathrm{SwiGLU}(\mathbf{x}) +
+      p^{\mathrm{ffn}}_{\mathrm{moe}}\,\mathrm{MoE}(\mathbf{x}),
+    \label{eq:ffn_mix}
+\end{equation}
+%
+where the MoE branch uses a lightweight top-$k$ token router over routed
+experts and a balance penalty to discourage expert collapse.
+
+% ---------------------------------------------------------------------------
+\subsection{Decoder Cross-Attention and Query Generation}
+\label{sec:bridge}
+
+The decoder no longer uses a separate external bridge between encoder and
+decoder. Instead, searchable cross-attention resides directly inside the
+transformer decoder layers. The decoder cross-attention operator searches over
+$\{\texttt{none},\texttt{sdp},\texttt{linear},\texttt{probsparse},
+\texttt{cosine},\texttt{local}\}$ by the same relaxation as in
+Eq.~\eqref{eq:selfattn_mix}. Cross-attention positional bias is searched by
+an independent set of logits.
+
+\paragraph{Decoder style.}
+The decoder style is chosen differentiably between an autoregressive pathway
+and a non-autoregressive Informer-style pathway,
+%
+\begin{equation}
+    \hat{\mathbf{Y}} =
+      p^{\mathrm{style}}_{\mathrm{ar}}\,
+      \mathcal{D}_{\mathrm{ar}}(\mathbf{X}, \mathbf{H}_{\mathrm{enc}})
+      +
+      p^{\mathrm{style}}_{\mathrm{inf}}\,
+      \mathcal{D}_{\mathrm{inf}}(\mathbf{X}, \mathbf{H}_{\mathrm{enc}}),
+    \label{eq:decoder_style}
+\end{equation}
+%
+where $\mathcal{D}_{\mathrm{ar}}$ generates one step at a time and
+$\mathcal{D}_{\mathrm{inf}}$ predicts the full horizon in parallel.
+
+\paragraph{Parallel decoder query generator.}
+For the Informer-style decoder, the horizon query sequence is itself
+searchable. The model chooses among
+$\{\texttt{repeat\_last},\texttt{zeros},
+\texttt{learned\_horizon\_queries},\texttt{shifted\_target},
+\texttt{future\_covariate\_queries}\}$,
+%
+\begin{equation}
+    \mathbf{Q}_{\mathrm{dec}} = \sum_{g} p^{\mathrm{qry}}_g\,
+      \mathcal{Q}_g(\mathbf{X}, \mathbf{X}_{\mathrm{future}}),
+    \label{eq:query_mix}
+\end{equation}
+%
+where $\mathbf{X}_{\mathrm{future}}$ denotes optional future covariates or
+teacher-forcing targets during training.
+
+\paragraph{Memory compression.}
+Before decoder cross-attention, the memory sequence may be compressed by a
+learned pooling module with a searchable number of memory queries. This
+provides a lightweight mechanism for adapting the decoder memory budget
+without changing the encoder itself.
+
+% ---------------------------------------------------------------------------
+\subsection{Bi-Level Optimization}
+\label{sec:bilevel}
+
+The bi-level problem in Eqs.~\eqref{eq:outer}--\eqref{eq:inner} is solved with
+alternating optimization. Model weights are updated on the training split,
+whereas architecture parameters are updated on a validation split:
+%
+\begin{enumerate}[nosep]
+    \item \textbf{Weight update:}
+          $\boldsymbol{w} \leftarrow \boldsymbol{w} -
+          \eta_w\,\nabla_{\boldsymbol{w}}
+          \mathcal{L}_{\mathrm{train}}(\boldsymbol{w},\boldsymbol{\alpha})$.
+    \item \textbf{Architecture update:}
+          $\boldsymbol{\alpha} \leftarrow \boldsymbol{\alpha} -
+          \eta_{\alpha}\,\nabla_{\boldsymbol{\alpha}}
+          \mathcal{L}_{\mathrm{val}}(\boldsymbol{w},\boldsymbol{\alpha})$.
+\end{enumerate}
+%
+Both updates use AdamW. The implementation additionally supports architecture
+gradient EMA, progressive shrinking, hybrid pruning, edge diversity
+regularization, late-stage entropy sharpening, and the transformer-specific
+exploration bonus introduced in Eq.~\eqref{eq:outer}. The overall objective is
+%
+\begin{equation}
+    \mathcal{L}_{\mathrm{total}} =
+      \mathcal{L}_{\mathrm{Huber}}
+      + \lambda_{\mathrm{KL}}\,\Omega_{\mathrm{KL}}
+      + \lambda_{\mathrm{eff}}\,\Omega_{\mathrm{eff}}
+      + \lambda_{\beta}\,\lVert \boldsymbol{\alpha} \rVert_2^2
+      + \lambda_{\mathrm{moe}}\,\Omega_{\mathrm{moe}}
+      - \lambda_{\mathrm{exp}}\,\Omega_{\mathrm{exp}}.
+    \label{eq:total_loss}
+\end{equation}
+
+% ---------------------------------------------------------------------------
+\subsection{Multi-Fidelity Search Pipeline}
+\label{sec:multifidelity}
+
+In addition to inner-loop differentiable optimization, the system uses an
+outer multi-fidelity search pipeline to compare candidate search spaces and
+model scales. First, a candidate pool is generated over hidden dimension,
+cell count, node count, topology mode, and operator-family subset. Phase 1
+uses zero-cost and proxy metrics, followed by pool-relative rescoring rather
+than a fixed global hand-tuned proxy aggregation. Surviving candidates then
+undergo short DARTS training under an ASHA-style successive halving schedule:
+small budgets are allocated to all candidates, and only the top-performing
+subset at each rung is promoted to larger budgets. The final candidate is
+converted to a discrete architecture and retrained from scratch.
+
+% ---------------------------------------------------------------------------
+\subsection{Architecture Discretization}
+\label{sec:discretisation}
+
+After convergence, the relaxed architecture is discretized by selecting the
+argmax operator on each cell edge above threshold $\vartheta$,
+%
+\begin{equation}
+    o^*_{j,i} = \arg\max_k\; p_{j,i,k},
+    \qquad
+    \text{retain iff } p_{j,i,k} > \vartheta.
+    \label{eq:discretise}
+\end{equation}
+%
+The same argmax procedure is applied to normalization, encoder tokenizer,
+self-attention kernel, positional bias, feed-forward mode, decoder style,
+query generator, memory-query count, and decoder cross-attention choices. The
+resulting fixed architecture is then retrained on the full training set.
+
+% ---------------------------------------------------------------------------
+\subsection{Automatic Mixed Precision and Memory Efficiency}
+\label{sec:amp}
+
+All forward and backward passes are executed under PyTorch AMP, reducing
+memory consumption relative to full \texttt{float32} training. DARTS cells and
+transformer blocks also support gradient checkpointing, which trades
+recomputation for memory on deeper search configurations. Architecture
+parameters remain in \texttt{float32} to preserve gradient fidelity.
+
+% ---------------------------------------------------------------------------
+% References (add to your .bib file)
+% ---------------------------------------------------------------------------
+%
+% @inproceedings{liu2019darts,
+%   title={DARTS: Differentiable Architecture Search},
+%   author={Liu, H. and Simonyan, K. and Yang, Y.},
+%   booktitle={ICLR}, year={2019}}
+%
+% @inproceedings{ye2022betadarts,
+%   title={$\beta$-DARTS: Beta-Decay Regularization for Differentiable Architecture Search},
+%   author={Ye, P. and Li, B. and Li, Y. and Chen, T. and Fan, J.},
+%   booktitle={CVPR}, year={2022}}
+%
+% @inproceedings{chen2021drnas,
+%   title={DrNAS: Dirichlet Neural Architecture Search},
+%   author={Chen, X. and Wang, R. and Cheng, M. and Tang, X. and Heng, P.-A.},
+%   booktitle={ICLR}, year={2021}}
+%
+% @inproceedings{chu2021fair,
+%   title={Fair DARTS: Eliminating Unfair Advantages in Differentiable Architecture Search},
+%   author={Chu, X. and Zhou, T. and Zhang, B. and Li, J.},
+%   booktitle={ECCV}, year={2021}}
+%
+% @inproceedings{kim2021reversible,
+%   title={Reversible Instance Normalization for Accurate Time-Series Forecasting Against Distribution Shift},
+%   author={Kim, T. and Kim, J. and Tae, Y. and Park, C. and Choi, J.-H. and Choo, J.},
+%   booktitle={ICLR}, year={2022}}
+%
+% @inproceedings{gu2023mamba,
+%   title={Mamba: Linear-Time Sequence Modeling with Selective State Spaces},
+%   author={Gu, A. and Dao, T.},
+%   booktitle={ICLR}, year={2024}}
+%
+% @inproceedings{choromanski2020rethinking,
+%   title={Rethinking Attention with Performers},
+%   author={Choromanski, K. and others},
+%   booktitle={ICLR}, year={2021}}
+%
+% @inproceedings{zhou2021informer,
+%   title={Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting},
+%   author={Zhou, H. and others},
+%   booktitle={AAAI}, year={2021}}
+%
+% @inproceedings{qin2022cosformer,
+%   title={CosFormer: Rethinking Softmax in Attention},
+%   author={Qin, Z. and Sun, W. and Deng, H. and Li, D. and Wei, Y. and Lv, B. and Yan, J. and Kong, L. and Zhong, Y.},
+%   booktitle={ICLR}, year={2022}}
+%
+% @inproceedings{cai2020once,
+%   title={Once for All: Train One Network and Specialize it for Efficient Deployment},
+%   author={Cai, H. and Gan, C. and Wang, T. and Zhang, Z. and Han, S.},
+%   booktitle={ICLR}, year={2020}}
+%
+% @article{chen2016training,
+%   title={Training Deep Nets with Sublinear Memory Cost},
+%   author={Chen, T. and Xu, B. and Zhang, C. and Guestrin, C.},
+%   journal={arXiv:1604.06174}, year={2016}}

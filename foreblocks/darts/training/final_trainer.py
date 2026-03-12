@@ -18,7 +18,7 @@ from torch.amp import GradScaler
 
 from ..evaluation.metrics import compute_metrics
 from ..utils.io import print_final_results
-from ..utils.training import autocast_ctx, create_progress_bar
+from ..utils.training import autocast_ctx, create_progress_bar, unpack_forecasting_batch
 
 # ---------------------------------------------------------------------------
 # Public entry-point
@@ -116,13 +116,16 @@ def train_final_model(
             total=len(train_loader),
         )
 
-        for batch_idx, (batch_x, batch_y, *_) in enumerate(train_pbar):
-            batch_x = batch_x.to(device, non_blocking=True)
-            batch_y = batch_y.to(device, non_blocking=True)
+        for batch_idx, batch in enumerate(train_pbar):
+            batch_x, batch_y, model_kwargs = unpack_forecasting_batch(
+                batch,
+                device,
+                include_decoder_targets=True,
+            )
             optimizer.zero_grad()
 
             with autocast_ctx(device, enabled=_amp_enabled):
-                preds = model(batch_x)
+                preds = model(batch_x, **model_kwargs)
                 loss = loss_fn(preds, batch_y)
 
             scaler.scale(loss).backward()
@@ -259,10 +262,14 @@ def _finalize_swa(
         print(f"BN update failed ({exc}), using fallback...")
         swa_model.train()
         with torch.no_grad():
-            for batch_x, *_ in create_progress_bar(
-                train_loader, "Fallback BN", leave=False
-            ):
-                swa_model(batch_x.to(device))
+            for batch in create_progress_bar(train_loader, "Fallback BN", leave=False):
+                batch_x, _, model_kwargs = unpack_forecasting_batch(
+                    batch,
+                    device,
+                    include_decoder_targets=False,
+                    teacher_forcing_ratio=0.0,
+                )
+                swa_model(batch_x, **model_kwargs)
 
     swa_val_loss = trainer._evaluate_model(swa_model, val_loader, loss_type)
     print(f"SWA val loss: {swa_val_loss:.6f} vs best: {best_val_loss:.6f}")
@@ -292,11 +299,15 @@ def _evaluate_test_set(
 
     with torch.no_grad():
         test_pbar = create_progress_bar(test_loader, "Test Evaluation")
-        for batch_x, batch_y, *_ in test_pbar:
-            batch_x = batch_x.to(device, non_blocking=True)
-            batch_y = batch_y.to(device, non_blocking=True)
+        for batch in test_pbar:
+            batch_x, batch_y, model_kwargs = unpack_forecasting_batch(
+                batch,
+                device,
+                include_decoder_targets=False,
+                teacher_forcing_ratio=0.0,
+            )
             with autocast_ctx(device, enabled=amp_enabled):
-                preds = model(batch_x)
+                preds = model(batch_x, **model_kwargs)
                 batch_loss = loss_fn(preds, batch_y).item()
             test_loss += batch_loss
             all_preds.append(preds.cpu().numpy())

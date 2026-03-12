@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_blocks import ArchitectureConverter
+from .bb_transformers import LightweightTransformerDecoder, LightweightTransformerEncoder
 from .operation_blocks import FixedOp
 
 
@@ -45,10 +46,51 @@ def derive_final_architecture(
 
     new_model = copy.deepcopy(model)
     new_model.eval()
-    variant_attrs = {
-        "encoder": {0: "lstm", 1: "gru", 2: "transformer", 3: "patch_encoder"},
-        "decoder": {0: "lstm", 1: "gru", 2: "transformer"},
-    }
+
+    def _layer_component(layer, key: str):
+        if isinstance(layer, dict):
+            return layer.get(key)
+        if hasattr(layer, "get"):
+            try:
+                return layer.get(key)
+            except Exception:
+                pass
+        if hasattr(layer, "__contains__") and key in layer:
+            return layer[key]
+        return None
+
+    def _collect_layer_components(module_obj, key: str):
+        layers = getattr(module_obj, "layers", None)
+        if not layers:
+            return []
+        out = []
+        for layer in layers:
+            item = _layer_component(layer, key)
+            if item is not None:
+                out.append(item)
+        return out
+
+    def _mean_mode_probs(components, *, direct_attr: str, logits_attr: str, mode_names):
+        probs = []
+        mode_names = tuple(mode_names)
+        for component in components:
+            direct = getattr(component, direct_attr, None)
+            if isinstance(direct, str) and direct in mode_names and direct != "auto":
+                ref = next(component.parameters(), None)
+                p = (
+                    ref.new_zeros(len(mode_names))
+                    if ref is not None
+                    else torch.zeros(len(mode_names))
+                )
+                p[mode_names.index(direct)] = 1.0
+                probs.append(p)
+                continue
+            logits = getattr(component, logits_attr, None)
+            if isinstance(logits, torch.Tensor) and logits.numel() == len(mode_names):
+                probs.append(F.softmax(logits.detach(), dim=0))
+        if not probs:
+            return None
+        return torch.stack(probs, dim=0).mean(dim=0)
 
     def _edge_selection_weights(edge):
         if hasattr(edge, "_get_weights") and hasattr(edge, "ops"):
@@ -73,15 +115,204 @@ def derive_final_architecture(
 
         return None
 
-    def _pick_variant(module, top_idx: int, collection_attr: str, role: str):
-        if hasattr(module, collection_attr):
-            variants = getattr(module, collection_attr)
-            if top_idx < len(variants):
-                return variants[top_idx]
-        attr_name = variant_attrs[role].get(top_idx)
-        if attr_name and hasattr(module, attr_name):
-            return getattr(module, attr_name)
-        raise ValueError(f"Could not find {role} for index {top_idx}")
+    def _extract_self_attention_type(module_obj) -> str:
+        """Best-effort extraction of configured self-attention type."""
+        if module_obj is None:
+            return "unknown"
+
+        direct = getattr(module_obj, "self_attention_type", None)
+        if isinstance(direct, str) and direct and direct != "auto":
+            return direct
+
+        components = _collect_layer_components(module_obj, "self_attn")
+        if components:
+            modes = getattr(
+                components[0],
+                "MODES",
+                ("sdp", "linear", "probsparse", "cosine", "local"),
+            )
+            probs = _mean_mode_probs(
+                components,
+                direct_attr="attention_type",
+                logits_attr="attn_alphas",
+                mode_names=modes,
+            )
+            if probs is not None:
+                top_idx = int(torch.argmax(probs).item())
+                if 0 <= top_idx < len(modes):
+                    return str(modes[top_idx])
+
+        return "unknown"
+
+    def _extract_encoder_patch_mode(module_obj) -> str:
+        if module_obj is None:
+            return "unknown"
+
+        direct = getattr(module_obj, "patching_mode", None)
+        if isinstance(direct, str) and direct and direct != "auto":
+            return direct
+
+        logits = getattr(module_obj, "patch_alpha_logits", None)
+        mode_names = getattr(module_obj, "patch_mode_names", ("direct", "patch"))
+        if isinstance(logits, torch.Tensor) and logits.numel() == len(mode_names):
+            probs = F.softmax(logits.detach(), dim=0)
+            top_idx = int(torch.argmax(probs).item())
+            if 0 <= top_idx < len(mode_names):
+                return str(mode_names[top_idx])
+
+        resolver = getattr(module_obj, "resolve_patch_mode", None)
+        if callable(resolver):
+            try:
+                return str(resolver())
+            except Exception:
+                pass
+
+        return "unknown"
+
+    def _extract_self_attention_position(module_obj) -> str:
+        if module_obj is None:
+            return "unknown"
+        components = _collect_layer_components(module_obj, "self_attn")
+        if not components:
+            return "unknown"
+        modes = getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal"))
+        probs = _mean_mode_probs(
+            components,
+            direct_attr="position_mode",
+            logits_attr="position_alphas",
+            mode_names=modes,
+        )
+        if probs is not None:
+            return str(modes[int(torch.argmax(probs).item())])
+        return "unknown"
+
+    def _extract_ffn_mode(module_obj) -> str:
+        if module_obj is None:
+            return "unknown"
+        components = _collect_layer_components(module_obj, "ffn")
+        if not components:
+            return "unknown"
+        modes = getattr(components[0], "MODE_NAMES", ("swiglu", "moe"))
+        probs = _mean_mode_probs(
+            components,
+            direct_attr="ffn_mode",
+            logits_attr="ffn_alphas",
+            mode_names=modes,
+        )
+        if probs is not None:
+            return str(modes[int(torch.argmax(probs).item())])
+        return "unknown"
+
+    def _extract_decoder_style(module_obj) -> str:
+        if module_obj is None:
+            return "unknown"
+
+        direct = getattr(module_obj, "decode_style", None)
+        if isinstance(direct, str) and direct and direct != "auto":
+            return direct
+
+        logits = getattr(module_obj, "decode_style_alphas", None)
+        style_names = getattr(
+            module_obj, "decode_style_names", ("autoregressive", "informer")
+        )
+        if isinstance(logits, torch.Tensor) and logits.numel() == len(style_names):
+            probs = F.softmax(logits.detach(), dim=0)
+            top_idx = int(torch.argmax(probs).item())
+            if 0 <= top_idx < len(style_names):
+                return str(style_names[top_idx])
+
+        resolver = getattr(module_obj, "resolve_decode_style", None)
+        if callable(resolver):
+            try:
+                return str(resolver())
+            except Exception:
+                pass
+
+        return "unknown"
+
+    def _extract_cross_attention_type(module_obj) -> str:
+        if module_obj is None:
+            return "unknown"
+
+        submodule = getattr(module_obj, "transformer", None)
+        if submodule is None:
+            submodule = getattr(module_obj, "rnn", None)
+        if submodule is None:
+            return "unknown"
+
+        direct = getattr(submodule, "cross_attention_type", None)
+        if isinstance(direct, str) and direct and direct != "auto":
+            return direct
+
+        components = _collect_layer_components(submodule, "cross_attn")
+        if not components:
+            return "unknown"
+        modes = getattr(
+            components[0], "MODES", ("none", "sdp", "linear", "probsparse", "cosine", "local")
+        )
+        probs = _mean_mode_probs(
+            components,
+            direct_attr="attention_type",
+            logits_attr="attn_alphas",
+            mode_names=modes,
+        )
+        if probs is not None:
+            top_idx = int(torch.argmax(probs).item())
+            if 0 <= top_idx < len(modes):
+                return str(modes[top_idx])
+
+        return "unknown"
+
+    def _extract_cross_attention_position(module_obj) -> str:
+        if module_obj is None:
+            return "unknown"
+        submodule = getattr(module_obj, "transformer", None)
+        if submodule is None:
+            submodule = getattr(module_obj, "rnn", None)
+        if submodule is None:
+            return "unknown"
+        components = _collect_layer_components(submodule, "cross_attn")
+        if not components:
+            return "unknown"
+        modes = getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal"))
+        probs = _mean_mode_probs(
+            components,
+            direct_attr="position_mode",
+            logits_attr="position_alphas",
+            mode_names=modes,
+        )
+        if probs is not None:
+            return str(modes[int(torch.argmax(probs).item())])
+        return "unknown"
+
+    def _extract_decoder_query_mode(model_obj) -> str:
+        if model_obj is None:
+            return "unknown"
+        direct = getattr(model_obj, "decoder_query_mode", None)
+        if isinstance(direct, str) and direct and direct != "auto":
+            return direct
+        logits = getattr(model_obj, "decoder_query_alphas", None)
+        names = getattr(
+            model_obj,
+            "decoder_query_mode_names",
+            (
+                "repeat_last",
+                "zeros",
+                "learned_horizon_queries",
+                "shifted_target",
+                "future_covariate_queries",
+            ),
+        )
+        if isinstance(logits, torch.Tensor) and logits.numel() == len(names):
+            probs = F.softmax(logits.detach(), dim=0)
+            return str(names[int(torch.argmax(probs).item())])
+        resolver = getattr(model_obj, "resolve_decoder_query_mode", None)
+        if callable(resolver):
+            try:
+                return str(resolver())
+            except Exception:
+                pass
+        return "unknown"
 
     def _assign_cell_edges_with_diversity(
         cell: nn.Module,
@@ -375,116 +606,148 @@ def derive_final_architecture(
             cell.edges = new_edges
 
     device = next(new_model.parameters()).device
+    arch_mode = str(getattr(new_model, "arch_mode", "unknown"))
+    tie_enc_dec = bool(getattr(new_model, "tie_encoder_decoder_arch", False))
+    printed_encoder_fix = False
+    printed_decoder_fix = False
+    printed_attention_fix = False
 
-    if hasattr(new_model, "forecast_encoder") and hasattr(
-        new_model.forecast_encoder, "alphas"
-    ):
+    if hasattr(new_model, "forecast_encoder") and new_model.forecast_encoder is not None:
         try:
-            if hasattr(new_model.forecast_encoder, "get_alphas"):
-                encoder_weights = new_model.forecast_encoder.get_alphas()[:4]
-            else:
-                encoder_weights = F.softmax(new_model.forecast_encoder.alphas, dim=-1)
-            top_idx = encoder_weights.argmax().item()
-            top_encoder = _pick_variant(
-                new_model.forecast_encoder, top_idx, "encoders", "encoder"
-            )
+            top_encoder = getattr(new_model.forecast_encoder, "transformer", None)
+            if top_encoder is None:
+                top_encoder = getattr(new_model.forecast_encoder, "rnn", None)
+            if top_encoder is None:
+                raise ValueError("Could not locate forecast encoder transformer")
 
-            print(
-                f"   → Fixing Forecast Encoder: {type(top_encoder).__name__} "
-                f"(weight: {encoder_weights[top_idx]:.3f})"
-            )
+            print(f"   → Fixing Forecast Encoder: {type(top_encoder).__name__}")
+            if isinstance(top_encoder, LightweightTransformerEncoder):
+                print(
+                    "   → Encoder Self-Attention: "
+                    f"{_extract_self_attention_type(top_encoder)}"
+                )
+                print(
+                    "   → Encoder Attention Position: "
+                    f"{_extract_self_attention_position(top_encoder)}"
+                )
+                print(
+                    "   → Encoder Tokenizer: "
+                    f"{_extract_encoder_patch_mode(top_encoder)}"
+                )
+                print(
+                    "   → Encoder FFN: "
+                    f"{_extract_ffn_mode(top_encoder)}"
+                )
+            printed_encoder_fix = True
 
             new_model.forecast_encoder = ArchitectureConverter.create_fixed_encoder(
-                new_model.forecast_encoder
+                new_model.forecast_encoder,
             ).to(device)
 
         except Exception as e:
             print(f"Warning: Could not fix encoder architecture: {e}")
             print("Falling back to weight fixing...")
             ArchitectureConverter.fix_mixed_weights(new_model.forecast_encoder)
+            printed_encoder_fix = True
 
-    if hasattr(new_model, "forecast_decoder") and hasattr(
-        new_model.forecast_decoder, "alphas"
-    ):
+    if hasattr(new_model, "forecast_decoder") and new_model.forecast_decoder is not None:
         try:
-            if hasattr(new_model.forecast_decoder, "get_alphas"):
-                decoder_weights = new_model.forecast_decoder.get_alphas()[:3]
-            else:
-                decoder_weights = F.softmax(new_model.forecast_decoder.alphas, dim=-1)
-            top_idx = decoder_weights.argmax().item()
-            top_decoder = _pick_variant(
-                new_model.forecast_decoder, top_idx, "decoders", "decoder"
-            )
+            top_decoder = getattr(new_model.forecast_decoder, "transformer", None)
+            if top_decoder is None:
+                top_decoder = getattr(new_model.forecast_decoder, "rnn", None)
+            if top_decoder is None:
+                raise ValueError("Could not locate forecast decoder transformer")
 
+            print(f"   → Fixing Forecast Decoder: {type(top_decoder).__name__}")
+            decoder_is_transformer = isinstance(
+                top_decoder, LightweightTransformerDecoder
+            )
+            if isinstance(top_decoder, LightweightTransformerDecoder):
+                print(
+                    "   → Decoder Self-Attention: "
+                    f"{_extract_self_attention_type(top_decoder)}"
+                )
+                print(
+                    "   → Decoder Attention Position: "
+                    f"{_extract_self_attention_position(top_decoder)}"
+                )
+                print(
+                    "   → Decoder Cross-Attention: "
+                    f"{_extract_cross_attention_type(new_model.forecast_decoder)}"
+                )
+                print(
+                    "   → Decoder Cross Position: "
+                    f"{_extract_cross_attention_position(new_model.forecast_decoder)}"
+                )
+                print(
+                    "   → Decoder FFN: "
+                    f"{_extract_ffn_mode(top_decoder)}"
+                )
             print(
-                f"   → Fixing Forecast Decoder: {type(top_decoder).__name__} "
-                f"(weight: {decoder_weights[top_idx]:.3f})"
+                "   → Decoder Style: "
+                f"{_extract_decoder_style(new_model.forecast_decoder)}"
             )
+            print(
+                "   → Decoder Query Generator: "
+                f"{_extract_decoder_query_mode(new_model)}"
+            )
+            printed_decoder_fix = True
 
-            attention_choice = "no_attention"
-            attention_variant = "sdp"
-            selected_attention_bridge = None
-
-            use_attention = getattr(new_model, "use_attention_bridge", False)
-
-            if use_attention and hasattr(
-                new_model.forecast_decoder, "attention_alphas"
-            ):
-                try:
-                    attention_weights = F.softmax(
-                        new_model.forecast_decoder.attention_alphas, dim=0
-                    )
-                    max_idx = attention_weights.argmax().item()
-                    if attention_weights.numel() >= 3:
-                        # New mapping: [none, sdp_attention, linear_attention]
-                        if max_idx == 0:
-                            attention_choice = "no_attention"
-                        elif max_idx == 1:
-                            attention_choice = "sdp_attention"
-                            attention_variant = "sdp"
-                        else:
-                            attention_choice = "linear_attention"
-                            attention_variant = "linear"
-                    else:
-                        # Backward compatibility: [use_attention, no_attention]
-                        attention_choice = (
-                            "no_attention" if max_idx == 1 else "attention"
-                        )
-                        attention_variant = "sdp"
-
-                    print("   → Using Attention Bridge:", attention_choice)
-                except Exception as e:
-                    print(f"Warning: Could not determine attention choice: {e}")
-                    attention_choice = "attention" if use_attention else "no_attention"
-                    attention_variant = "sdp"
-
-            if use_attention and attention_choice != "no_attention":
-                if hasattr(new_model.forecast_decoder, "attention_bridge"):
-                    selected_attention_bridge = (
-                        new_model.forecast_decoder.attention_bridge
-                    )
-
-            use_attention_final = use_attention and attention_choice != "no_attention"
+            cross_attention_type = _extract_cross_attention_type(
+                new_model.forecast_decoder
+            )
+            print(
+                "   → Fixing Decoder Cross-Attention: "
+                f"{cross_attention_type}"
+            )
+            printed_attention_fix = True
 
             new_model.forecast_decoder = ArchitectureConverter.create_fixed_decoder(
                 new_model.forecast_decoder,
-                use_attention_bridge=use_attention_final,
-                attention_variant=attention_variant,
+                cross_attention_type=cross_attention_type,
             ).to(device)
-
-            if use_attention_final and selected_attention_bridge is not None:
-                try:
-                    if hasattr(new_model.forecast_decoder, "attention_bridge"):
-                        new_model.forecast_decoder.attention_bridge.load_state_dict(
-                            selected_attention_bridge.state_dict()
-                        )
-                except Exception as e:
-                    print(f"Warning: Could not assign attention bridges: {e}")
 
         except Exception as e:
             print(f"Warning: Could not fix decoder architecture: {e}")
             print("Falling back to weight fixing...")
             ArchitectureConverter.fix_mixed_weights(new_model.forecast_decoder)
+            printed_decoder_fix = True
+
+    # Always report block-fix status, even when topology omits modules.
+    if not printed_encoder_fix:
+        enc_obj = getattr(new_model, "forecast_encoder", None)
+        if enc_obj is None:
+            print(f"   → Fixing Forecast Encoder: not used in arch_mode={arch_mode}")
+        else:
+            print(
+                "   → Fixing Forecast Encoder: module present but no searchable logits"
+            )
+
+    if not printed_decoder_fix:
+        dec_obj = getattr(new_model, "forecast_decoder", None)
+        if dec_obj is None:
+            print(f"   → Fixing Forecast Decoder: not used in arch_mode={arch_mode}")
+        else:
+            print(
+                "   → Fixing Forecast Decoder: module present but no searchable logits"
+            )
+
+    if not printed_attention_fix:
+        dec_obj = getattr(new_model, "forecast_decoder", None)
+        if dec_obj is None:
+            print(
+                f"   → Fixing Decoder Cross-Attention: not used in arch_mode={arch_mode}"
+            )
+        else:
+            print(
+                "   → Fixing Decoder Cross-Attention: selection unavailable"
+            )
+
+    if hasattr(new_model, "freeze_decoder_query_mode"):
+        try:
+            new_model.freeze_decoder_query_mode(_extract_decoder_query_mode(new_model))
+        except Exception:
+            pass
 
     print("✓ Architecture derivation completed")
     return new_model

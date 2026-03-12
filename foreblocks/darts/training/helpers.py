@@ -470,6 +470,46 @@ class AlphaTracker:
     def component_alpha_sources(self, model):
         sources = []
 
+        def _stack_mean(tensors):
+            if not tensors:
+                return None
+            if len(tensors) == 1:
+                return tensors[0]
+            return torch.stack(tensors, dim=0).mean(dim=0)
+
+        def _layer_component(component, key):
+            if component is None:
+                return []
+            submodule = getattr(component, "transformer", None)
+            if submodule is None:
+                submodule = getattr(component, "rnn", None)
+            if submodule is None:
+                return []
+            layers = getattr(submodule, "layers", None)
+            if not layers:
+                return []
+            out = []
+            for layer in layers:
+                if isinstance(layer, dict):
+                    item = layer.get(key)
+                elif hasattr(layer, "get"):
+                    item = layer.get(key)
+                elif hasattr(layer, "__contains__") and key in layer:
+                    item = layer[key]
+                else:
+                    item = None
+                if item is not None:
+                    out.append(item)
+            return out
+
+        def _first_self_attn(component):
+            items = _layer_component(component, "self_attn")
+            return items[0] if items else None
+
+        def _first_cross_attn(component):
+            items = _layer_component(component, "cross_attn")
+            return items[0] if items else None
+
         norm_alpha = getattr(model, "norm_alpha", None)
         if norm_alpha is not None:
             sources.append(
@@ -482,53 +522,239 @@ class AlphaTracker:
             )
 
         forecast_encoder = getattr(model, "forecast_encoder", None)
-        encoder_alpha = getattr(forecast_encoder, "alphas", None)
-        if encoder_alpha is not None:
-            encoder_choices = list(
-                getattr(
-                    forecast_encoder, "encoder_names", ["lstm", "gru", "transformer"]
-                )
-            )
+        transformer = getattr(forecast_encoder, "transformer", None)
+        patch_alpha = getattr(transformer, "patch_alpha_logits", None)
+        if patch_alpha is not None:
             sources.append(
                 {
-                    "name": "encoder",
-                    "log_name": "forecast_encoder",
-                    "alpha": encoder_alpha,
-                    "choices": encoder_choices,
+                    "name": "encoder_tokenizer",
+                    "log_name": "encoder_tokenizer_decision",
+                    "alpha": patch_alpha,
+                    "choices": list(
+                        getattr(
+                            transformer,
+                            "patch_mode_names",
+                            ["direct", "patch_8", "patch_16", "patch_32", "multi_scale_patch", "variate_tokens"],
+                        )
+                    ),
+                }
+            )
+        enc_self_attn = _first_self_attn(forecast_encoder)
+        enc_attn_alpha = _stack_mean(
+            [
+                alpha
+                for alpha in (
+                    getattr(item, "attn_alphas", None)
+                    for item in _layer_component(forecast_encoder, "self_attn")
+                )
+                if isinstance(alpha, torch.Tensor)
+            ]
+        )
+        if enc_attn_alpha is not None:
+            sources.append(
+                {
+                    "name": "encoder_self_attention",
+                    "log_name": "forecast_encoder_self_attention",
+                    "alpha": enc_attn_alpha,
+                    "choices": list(getattr(enc_self_attn, "MODES", [])),
+                }
+            )
+        enc_pos_alpha = _stack_mean(
+            [
+                alpha
+                for alpha in (
+                    getattr(item, "position_alphas", None)
+                    for item in _layer_component(forecast_encoder, "self_attn")
+                )
+                if isinstance(alpha, torch.Tensor)
+            ]
+        )
+        if enc_pos_alpha is not None:
+            sources.append(
+                {
+                    "name": "encoder_attention_position",
+                    "log_name": "encoder_attention_position_decision",
+                    "alpha": enc_pos_alpha,
+                    "choices": list(getattr(enc_self_attn, "POSITION_MODES", [])),
+                }
+            )
+        enc_ffn = None
+        enc_ffn_items = _layer_component(forecast_encoder, "ffn")
+        if enc_ffn_items:
+            enc_ffn = enc_ffn_items[0]
+        enc_ffn_alpha = _stack_mean(
+            [
+                alpha
+                for alpha in (
+                    getattr(item, "ffn_alphas", None) for item in enc_ffn_items
+                )
+                if isinstance(alpha, torch.Tensor)
+            ]
+        )
+        if enc_ffn_alpha is not None:
+            sources.append(
+                {
+                    "name": "encoder_ffn",
+                    "log_name": "encoder_ffn_decision",
+                    "alpha": enc_ffn_alpha,
+                    "choices": list(getattr(enc_ffn, "MODE_NAMES", ("swiglu", "moe"))),
                 }
             )
 
         forecast_decoder = getattr(model, "forecast_decoder", None)
-        decoder_alpha = getattr(forecast_decoder, "alphas", None)
-        if decoder_alpha is not None:
-            decoder_choices = list(
-                getattr(
-                    forecast_decoder, "decoder_names", ["lstm", "gru", "transformer"]
-                )
-            )
+        decoder_style_alpha = getattr(forecast_decoder, "decode_style_alphas", None)
+        if decoder_style_alpha is not None:
             sources.append(
                 {
-                    "name": "decoder",
-                    "log_name": "forecast_decoder",
-                    "alpha": decoder_alpha,
-                    "choices": decoder_choices,
+                    "name": "decoder_style",
+                    "log_name": "informer_decision",
+                    "alpha": decoder_style_alpha,
+                    "choices": list(
+                        getattr(
+                            forecast_decoder,
+                            "decode_style_names",
+                            ("autoregressive", "informer"),
+                        )
+                    ),
+                }
+            )
+        decoder_query_alpha = getattr(model, "decoder_query_alphas", None)
+        if decoder_query_alpha is not None:
+            sources.append(
+                {
+                    "name": "decoder_query_generator",
+                    "log_name": "decoder_query_generator_decision",
+                    "alpha": decoder_query_alpha,
+                    "choices": list(
+                        getattr(
+                            model,
+                            "decoder_query_mode_names",
+                            (
+                                "repeat_last",
+                                "zeros",
+                                "learned_horizon_queries",
+                                "shifted_target",
+                                "future_covariate_queries",
+                            ),
+                        )
+                    ),
+                }
+            )
+        dec_self_attn = _first_self_attn(forecast_decoder)
+        dec_attn_alpha = _stack_mean(
+            [
+                alpha
+                for alpha in (
+                    getattr(item, "attn_alphas", None)
+                    for item in _layer_component(forecast_decoder, "self_attn")
+                )
+                if isinstance(alpha, torch.Tensor)
+            ]
+        )
+        if dec_attn_alpha is not None:
+            sources.append(
+                {
+                    "name": "decoder_self_attention",
+                    "log_name": "forecast_decoder_self_attention",
+                    "alpha": dec_attn_alpha,
+                    "choices": list(getattr(dec_self_attn, "MODES", [])),
+                }
+            )
+        dec_pos_alpha = _stack_mean(
+            [
+                alpha
+                for alpha in (
+                    getattr(item, "position_alphas", None)
+                    for item in _layer_component(forecast_decoder, "self_attn")
+                )
+                if isinstance(alpha, torch.Tensor)
+            ]
+        )
+        if dec_pos_alpha is not None:
+            sources.append(
+                {
+                    "name": "decoder_attention_position",
+                    "log_name": "decoder_attention_position_decision",
+                    "alpha": dec_pos_alpha,
+                    "choices": list(getattr(dec_self_attn, "POSITION_MODES", [])),
+                }
+            )
+        dec_ffn = None
+        dec_ffn_items = _layer_component(forecast_decoder, "ffn")
+        if dec_ffn_items:
+            dec_ffn = dec_ffn_items[0]
+        dec_ffn_alpha = _stack_mean(
+            [
+                alpha
+                for alpha in (
+                    getattr(item, "ffn_alphas", None) for item in dec_ffn_items
+                )
+                if isinstance(alpha, torch.Tensor)
+            ]
+        )
+        if dec_ffn_alpha is not None:
+            sources.append(
+                {
+                    "name": "decoder_ffn",
+                    "log_name": "decoder_ffn_decision",
+                    "alpha": dec_ffn_alpha,
+                    "choices": list(getattr(dec_ffn, "MODE_NAMES", ("swiglu", "moe"))),
                 }
             )
 
-        attention_alpha = getattr(forecast_decoder, "attention_alphas", None)
-        if attention_alpha is not None:
-            if attention_alpha.numel() == 2:
-                attention_choices = ["use_attention", "no_attention"]
-            else:
-                attention_choices = [
-                    f"choice_{i}" for i in range(int(attention_alpha.numel()))
-                ]
+        memory_alpha = getattr(forecast_decoder, "memory_query_alphas", None)
+        if memory_alpha is not None:
             sources.append(
                 {
-                    "name": "attention_bridge",
-                    "log_name": "attention_bridge",
+                    "name": "decoder_memory_queries",
+                    "log_name": "forecast_decoder_memory_queries",
+                    "alpha": memory_alpha,
+                    "choices": [
+                        str(q)
+                        for q in getattr(
+                            forecast_decoder, "memory_query_options", range(memory_alpha.numel())
+                        )
+                    ],
+                }
+            )
+
+        cross_attn = _first_cross_attn(forecast_decoder)
+        attention_alpha = _stack_mean(
+            [
+                alpha
+                for alpha in (
+                    getattr(item, "attn_alphas", None)
+                    for item in _layer_component(forecast_decoder, "cross_attn")
+                )
+                if isinstance(alpha, torch.Tensor)
+            ]
+        )
+        if attention_alpha is not None:
+            sources.append(
+                {
+                    "name": "decoder_cross_attention",
+                    "log_name": "decoder_cross_attention_decision",
                     "alpha": attention_alpha,
-                    "choices": attention_choices,
+                    "choices": list(getattr(cross_attn, "MODES", [])),
+                }
+            )
+        cross_pos_alpha = _stack_mean(
+            [
+                alpha
+                for alpha in (
+                    getattr(item, "position_alphas", None)
+                    for item in _layer_component(forecast_decoder, "cross_attn")
+                )
+                if isinstance(alpha, torch.Tensor)
+            ]
+        )
+        if cross_pos_alpha is not None:
+            sources.append(
+                {
+                    "name": "decoder_cross_attention_position",
+                    "log_name": "decoder_cross_attention_position_decision",
+                    "alpha": cross_pos_alpha,
+                    "choices": list(getattr(cross_attn, "POSITION_MODES", [])),
                 }
             )
 
@@ -585,6 +811,49 @@ class AlphaTracker:
                 f"   [Arch Update] {comp_name}: top={top_idx}, "
                 f"choice={choice_name}, weight={top_weight:.4f}, dL1={delta:.6f}"
             )
+            if comp_key == "decoder_style":
+                named_probs = {
+                    str(name): float(weight.item())
+                    for name, weight in zip(choice_names, probs)
+                }
+                print(
+                    "   [Arch Update] informer_probs: "
+                    f"autoregressive={named_probs.get('autoregressive', 0.0):.4f}, "
+                    f"informer={named_probs.get('informer', 0.0):.4f}, "
+                    f"selected={choice_name}"
+                )
+            if comp_key == "encoder_tokenizer":
+                named_probs = {
+                    str(name): float(weight.item())
+                    for name, weight in zip(choice_names, probs)
+                }
+                top_modes = sorted(
+                    named_probs.items(), key=lambda item: item[1], reverse=True
+                )[:3]
+                print(
+                    "   [Arch Update] encoder_tokenizer_probs: "
+                    + ", ".join(f"{name}={weight:.4f}" for name, weight in top_modes)
+                )
+            if comp_key == "decoder_query_generator":
+                named_probs = {
+                    str(name): float(weight.item())
+                    for name, weight in zip(choice_names, probs)
+                }
+                print(
+                    "   [Arch Update] decoder_query_probs: "
+                    + ", ".join(f"{name}={weight:.4f}" for name, weight in named_probs.items())
+                    + f", selected={choice_name}"
+                )
+            if comp_key in {"encoder_ffn", "decoder_ffn"}:
+                named_probs = {
+                    str(name): float(weight.item())
+                    for name, weight in zip(choice_names, probs)
+                }
+                print(
+                    f"   [Arch Update] {comp_key}_probs: "
+                    + ", ".join(f"{name}={weight:.4f}" for name, weight in named_probs.items())
+                    + f", selected={choice_name}"
+                )
             prev_component_probs[comp_key] = probs.clone()
 
     def summarize_edge_updates(self, model, prev_edge_probs: Dict[str, torch.Tensor]):

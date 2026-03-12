@@ -30,6 +30,7 @@ from ..utils.training import (
     create_progress_bar,
     restore_progressive_state,
     split_arch_and_model_params,
+    unpack_forecasting_batch,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,8 @@ def train_darts_model(
     edge_identity_cap_weight: float = 0.02,
     arch_grad_ema_beta: float = 0.0,
     beta_darts_weight: float = 0.0,
+    moe_balance_weight: float = 5e-3,
+    transformer_exploration_weight: float = 1e-2,
 ) -> Dict[str, Any]:
     """
     Run one DARTS bilevel training cycle.
@@ -214,6 +217,8 @@ def train_darts_model(
     prev_edge_probs: Dict = {}
     last_edge_entropy = float("nan")
     last_edge_sharpen_weight = 0.0
+    last_moe_balance_loss = float("nan")
+    last_transformer_exploration_bonus = float("nan")
 
     if verbose:
         print(f"Training DARTS for {epochs} epochs")
@@ -229,6 +234,13 @@ def train_darts_model(
             f"usage={edge_usage_balance_weight:.3f}, "
             f"id_cap={edge_identity_cap:.2f}@{edge_identity_cap_weight:.3f}"
         )
+        if moe_balance_weight > 0.0:
+            print(f"  MoE balance regularizer: {moe_balance_weight:.4f}")
+        if transformer_exploration_weight > 0.0:
+            print(
+                "  Transformer exploration regularizer: "
+                f"{transformer_exploration_weight:.4f}"
+            )
         print("-" * 60)
 
     epoch_pbar = (
@@ -272,12 +284,15 @@ def train_darts_model(
         if epoch >= warmup_epochs and epoch % _arch_freq == 0:
             for _ in range(_arch_iters):
                 arch_batch = bilevel_optimizer.next_arch_batch()
-                arch_x = arch_batch[0].to(device, non_blocking=True)
-                arch_y = arch_batch[1].to(device, non_blocking=True)
+                arch_x, arch_y, arch_model_kwargs = unpack_forecasting_batch(
+                    arch_batch,
+                    device,
+                    include_decoder_targets=True,
+                )
                 bilevel_optimizer.zero_arch_grads()
 
                 with autocast_ctx(device, enabled=use_amp):
-                    arch_preds = model(arch_x)
+                    arch_preds = model(arch_x, **arch_model_kwargs)
                     arch_loss = loss_fn(arch_preds, arch_y)
 
                     reg_losses = regularizer.compute_regularization(
@@ -318,16 +333,21 @@ def train_darts_model(
                         and model_params
                     ):
                         h_batch = bilevel_optimizer.next_hessian_batch()
-                        h_train_x = h_batch[0].to(device, non_blocking=True)
-                        h_train_y = h_batch[1].to(device, non_blocking=True)
+                        h_train_x, h_train_y, h_train_model_kwargs = unpack_forecasting_batch(
+                            h_batch,
+                            device,
+                            include_decoder_targets=True,
+                        )
                         hessian_penalty = finite_difference_hessian_penalty(
                             model=model,
                             loss_fn=loss_fn,
                             arch_loss=arch_loss,
                             arch_x=arch_x,
                             arch_y=arch_y,
+                            arch_model_kwargs=arch_model_kwargs,
                             train_x=h_train_x,
                             train_y=h_train_y,
+                            train_model_kwargs=h_train_model_kwargs,
                             model_params=model_params,
                             device=device,
                             eps=hessian_fd_eps,
@@ -346,6 +366,56 @@ def train_darts_model(
                         edge_identity_cap=edge_identity_cap,
                         edge_identity_cap_weight=edge_identity_cap_weight,
                         device=device,
+                    )
+
+                    moe_balance_loss = torch.tensor(0.0, device=device)
+                    if moe_balance_weight > 0.0 and hasattr(
+                        model, "get_moe_balance_loss"
+                    ):
+                        moe_balance_loss = model.get_moe_balance_loss()
+                        total_arch_loss = (
+                            total_arch_loss
+                            + float(moe_balance_weight) * moe_balance_loss
+                        )
+                    last_moe_balance_loss = float(moe_balance_loss.detach().item())
+
+                    transformer_exploration_bonus = torch.tensor(0.0, device=device)
+                    if transformer_exploration_weight > 0.0:
+                        entropy_terms: List[torch.Tensor] = []
+                        for source in trainer.alpha_tracker.component_alpha_sources(model):
+                            name = str(source.get("name", ""))
+                            if not (
+                                name.startswith("encoder_")
+                                or name.startswith("decoder_")
+                                or name in {"decoder_style", "decoder_memory_queries"}
+                            ):
+                                continue
+                            alpha = source.get("alpha")
+                            if not isinstance(alpha, torch.Tensor) or alpha.numel() <= 1:
+                                continue
+                            probs = F.softmax(alpha, dim=0)
+                            entropy_terms.append(
+                                -(probs * torch.log(probs.clamp_min(1e-8))).sum()
+                            )
+                        if entropy_terms:
+                            transformer_exploration_bonus = torch.stack(
+                                entropy_terms
+                            ).mean()
+                            if epochs > warmup_epochs:
+                                progress = float(
+                                    max(epoch - warmup_epochs, 0)
+                                ) / float(max(epochs - warmup_epochs, 1))
+                            else:
+                                progress = float(epoch) / float(max(epochs, 1))
+                            early_phase_scale = max(0.0, 1.0 - progress)
+                            total_arch_loss = (
+                                total_arch_loss
+                                - float(transformer_exploration_weight)
+                                * early_phase_scale
+                                * transformer_exploration_bonus
+                            )
+                    last_transformer_exploration_bonus = float(
+                        transformer_exploration_bonus.detach().item()
                     )
 
                     # Late-phase edge-entropy sharpening
@@ -665,8 +735,10 @@ def finite_difference_hessian_penalty(
     arch_loss: torch.Tensor,
     arch_x: torch.Tensor,
     arch_y: torch.Tensor,
+    arch_model_kwargs: Optional[Dict[str, Any]],
     train_x: torch.Tensor,
     train_y: torch.Tensor,
+    train_model_kwargs: Optional[Dict[str, Any]],
     model_params: List[torch.Tensor],
     device: str,
     eps: float = 1e-2,
@@ -679,8 +751,11 @@ def finite_difference_hessian_penalty(
     if eps <= 0 or not model_params:
         return torch.tensor(0.0, device=arch_x.device)
 
+    arch_model_kwargs = dict(arch_model_kwargs or {})
+    train_model_kwargs = dict(train_model_kwargs or {})
+
     with autocast_ctx(device, enabled=use_amp):
-        train_loss = loss_fn(model(train_x), train_y)
+        train_loss = loss_fn(model(train_x, **train_model_kwargs), train_y)
 
     grads = torch.autograd.grad(
         train_loss,
@@ -707,13 +782,13 @@ def finite_difference_hessian_penalty(
             for p, d in zip(model_params, direction):
                 p.add_(scale * d)
         with autocast_ctx(device, enabled=use_amp):
-            loss_plus = loss_fn(model(arch_x), arch_y)
+            loss_plus = loss_fn(model(arch_x, **arch_model_kwargs), arch_y)
 
         with torch.no_grad():
             for p, d in zip(model_params, direction):
                 p.add_(-2.0 * scale * d)
         with autocast_ctx(device, enabled=use_amp):
-            loss_minus = loss_fn(model(arch_x), arch_y)
+            loss_minus = loss_fn(model(arch_x, **arch_model_kwargs), arch_y)
     finally:
         with torch.no_grad():
             for p, orig in zip(model_params, originals):

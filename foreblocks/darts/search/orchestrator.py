@@ -37,7 +37,10 @@ def evaluate_search_candidate(
     print(
         f"Evaluating candidate {candidate_id} with config: {cfg['selected_ops']}, "
         f"hidden_dim={cfg['hidden_dim']}, num_cells={cfg['num_cells']}, "
-        f"num_nodes={cfg['num_nodes']}, arch_mode={cfg.get('arch_mode', 'encoder_decoder')}"
+        f"num_nodes={cfg['num_nodes']}, arch_mode={cfg.get('arch_mode', 'encoder_decoder')}, "
+        f"families={cfg.get('selected_families', [])}, "
+        f"attn={cfg.get('transformer_self_attention_type', 'auto')}, "
+        f"ffn={cfg.get('transformer_ffn_variant', 'swiglu')}"
     )
     metrics = trainer.evaluate_zero_cost_metrics(
         model, val_loader, max_samples=max_samples, num_batches=num_batches

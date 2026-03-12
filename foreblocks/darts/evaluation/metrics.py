@@ -13,6 +13,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from ..utils.training import unpack_forecasting_batch
+
 if TYPE_CHECKING:
     pass
 
@@ -85,9 +87,14 @@ def evaluate_on_loader(
 
     with torch.no_grad():
         for batch in dataloader:
-            x, y = batch[0].to(device), batch[1].to(device)
+            x, y, model_kwargs = unpack_forecasting_batch(
+                batch,
+                device,
+                include_decoder_targets=False,
+                teacher_forcing_ratio=0.0,
+            )
             with _ctx():
-                preds = model(x)
+                preds = model(x, **model_kwargs)
                 total_loss += loss_fn(preds, y).item()
 
     return total_loss / max(len(dataloader), 1)
@@ -121,10 +128,15 @@ def compute_final_metrics(
 
     with torch.no_grad():
         for batch in iterable:
-            x = batch[0].to(device).float()
-            y = batch[1].to(device)
+            x, y, model_kwargs = unpack_forecasting_batch(
+                batch,
+                device,
+                include_decoder_targets=False,
+                teacher_forcing_ratio=0.0,
+            )
+            x = x.float()
             with _ctx():
-                all_preds.append(model(x).cpu().numpy())
+                all_preds.append(model(x, **model_kwargs).cpu().numpy())
             all_targets.append(y.cpu().numpy())
 
     preds_flat = np.concatenate(all_preds).reshape(-1)

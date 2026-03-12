@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="700" viewBox="0 0 900 700">
+  <defs>
+    <style>
+      .title { font-family: 'Segoe UI', Arial, sans-serif; font-size: 28px; font-weight: bold; fill: #1a1a2e; }
+      .subtitle { font-family: 'Segoe UI', Arial, sans-serif; font-size: 16px; font-weight: 600; fill: #2d3748; }
+      .label { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; fill: #4a5568; }
+      .box { fill: #f7fafc; stroke: #cbd5e0; stroke-width: 2; rx: 8; }
+      .box-header { fill: #ebf8ff; stroke: #4299e1; stroke-width: 2; rx: 8; }
+      .arrow-line { stroke: #4299e1; stroke-width: 3; marker-end: url(#arrowhead); }
+      .op-box { fill: #fff5f5; stroke: #fc8181; stroke-width: 1; rx: 4; }
+      .op-name { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; font-weight: 500; fill: #c53030; }
+      .phase-number { font-family: 'Segoe UI', Arial, sans-serif; font-size: 18px; font-weight: bold; fill: #4299e1; }
+      .footer { font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; fill: #718096; }
+      .gradient { fill: url(#blueGradient); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4299e1"/>
+    </marker>
+    <linearGradient id="blueGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ebf8ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#bee3f8;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Title -->
+  <text x="450" y="40" text-anchor="middle" class="title">DARTS: Differentiable Architecture Search for Time Series Forecasting</text>
+
+  <!-- ONS Data Banner -->
+  <rect x="350" y="55" width="200" height="18" rx="9"/>
+  <text x="450" y="72" text-anchor="middle" class="label">Brazilian ONS Hydroelectric Data</text>
+
+  <!-- Phase 1: Search Space -->
+  <rect x="50" y="100" width="800" height="180" class="box-header"/>
+  <text x="450" y="135" text-anchor="middle" class="phase-number">Phase 1: Search Space Exploration</text>
+  
+  <text x="60" y="170" class="subtitle">Zero-Cost Metrics → Random Architecture Generation</text>
+  
+  <!-- Operations Grid -->
+  <text x="60" y="210" class="subtitle">14 Operations Available:</text>
+  <g font-family="'Segoe UI',Arial,sans-serif" font-size="11" fill="#4a5568">
+    <rect x="60" y="220" width="180" height="25" class="op-box"/>
+    <text x="70" y="238">Identity</text>
+    <rect x="255" y="220" width="180" height="25" class="op-box"/>
+    <text x="265" y="238">TimeConv</text>
+    <rect x="450" y="220" width="180" height="25" class="op-box"/>
+    <text x="460" y="238">GRN</text>
+    <rect x="645" y="220" width="180" height="25" class="op-box"/>
+    <text x="655" y="238">Wavelet</text>
+    <rect x="60" y="250" width="180" height="25" class="op-box"/>
+    <text x="70" y="268">Fourier</text>
+    <rect x="255" y="250" width="180" height="25" class="op-box"/>
+    <text x="265" y="268">TCN</text>
+    <rect x="450" y="250" width="180" height="25" class="op-box"/>
+    <text x="460" y="268">ResidualMLP</text>
+    <rect x="645" y="250" width="180" height="25" class="op-box"/>
+    <text x="655" y="268">ConvMixer</text>
+    <rect x="60" y="280" width="180" height="25" class="op-box"/>
+    <text x="70" y="298">MultiScaleConv</text>
+    <rect x="255" y="280" width="180" height="25" class="op-box"/>
+    <text x="265" y="298">PyramidConv</text>
+    <rect x="60" y="310" width="180" height="25" class="op-box"/>
+    <text x="70" y="328">PatchEmbed</text>
+    <rect x="255" y="310" width="180" height="25" class="op-box"/>
+    <text x="265" y="328">InvertedAttention</text>
+    <rect x="450" y="310" width="180" height="25" class="op-box"/>
+    <text x="460" y="328">NBeats</text>
+    <rect x="645" y="310" width="180" height="25" class="op-box"/>
+    <text x="655" y="328">TimesNet</text>
+  </g>
+
+  <!-- Phase 2: DARTS Training -->
+  <rect x="50" y="310" width="800" height="220" class="box-header"/>
+  <text x="450" y="345" text-anchor="middle" class="phase-number">Phase 2: Bilevel Training</text>
+  
+  <!-- Gradient flows -->
+  <rect x="60" y="365" width="780" height="45" class="box"/>
+  <text x="60" y="388" class="label">Architecture Parameters (α)</text>
+  <text x="570" y="388" class="label">Model Parameters (θ)</text>
+  <text x="450" y="408" text-anchor="middle" class="label" style="font-size:14px;font-weight:bold;fill:#2d3748">∇α = ∂Loss/∂α  ⇄  ∇θ = ∂Loss/∂θ</text>
+
+  <!-- Regularization box -->
+  <rect x="60" y="420" width="780" height="85" class="box-header"/>
+  <text x="60" y="440" class="label">Regularization Techniques:</text>
+  <g font-family="'Segoe UI',Arial,sans-serif" font-size="11" fill="#2d3748">
+    <rect x="60" y="450" width="190" height="20" rx="3" class="op-box"/>
+    <text x="70" y="462">KL-Divergence</text>
+    <rect x="260" y="450" width="190" height="20" rx="3" class="op-box"/>
+    <text x="270" y="462">Efficiency Penalty</text>
+    <rect x="460" y="450" width="190" height="20" rx="3" class="op-box"/>
+    <text x="470" y="462">Edge Sharpening</text>
+    <rect x="660" y="450" width="190" height="20" rx="3" class="op-box"/>
+    <text x="670" y="462">β-DARTS</text>
+  </g>
+  
+  <text x="60" y="495" class="label">Progressive Shrinking | Hybrid Pruning</text>
+
+  <!-- Phase 3: Final Training -->
+  <rect x="50" y="520" width="800" height="120" class="box-header"/>
+  <text x="450" y="555" text-anchor="middle" class="phase-number">Phase 3: Final Training</text>
+  
+  <text x="60" y="585" class="label">Fixed Architecture | OneCycleLR | SWA | Huber Loss</text>
+
+  <!-- Output Metrics -->
+  <rect x="50" y="650" width="800" height="40" class="box-header"/>
+  <text x="450" y="675" text-anchor="middle" class="label">Evaluation Metrics: MAE | RMSE | MAPE | MASE</text>
+
+  <!-- Arrow connections -->
+  <line x1="450" y1="280" x2="450" y2="305" class="arrow-line"/>
+  <line x1="450" y1="425" x2="450" y2="515" class="arrow-line"/>
+  <line x1="450" y1="565" x2="450" y2="645" class="arrow-line"/>
+
+</svg>

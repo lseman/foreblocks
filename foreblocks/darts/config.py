@@ -8,11 +8,18 @@ single object instead of long keyword-argument lists.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Architecture / Search-space
 # ---------------------------------------------------------------------------
+
+DEFAULT_ARCH_MODES: List[str] = [
+    "encoder_decoder",
+    "encoder_only",
+    "decoder_only",
+    "mamba",
+]
 
 DEFAULT_OPS: List[str] = [
     "Identity",
@@ -27,9 +34,44 @@ DEFAULT_OPS: List[str] = [
     "PyramidConv",
     "PatchEmbed",
     "InvertedAttention",
+    "DLinear",
+    "TimeMixer",
     "NBeats",
     "TimesNet",
 ]
+
+DEFAULT_OP_FAMILIES: Dict[str, List[str]] = {
+    "conv": [
+        "TimeConv",
+        "TCN",
+        "ConvMixer",
+        "MultiScaleConv",
+        "PyramidConv",
+    ],
+    "frequency": [
+        "Wavelet",
+        "Fourier",
+        "DLinear",
+        "TimesNet",
+    ],
+    "attention": [
+        "PatchEmbed",
+        "InvertedAttention",
+    ],
+    "mlp": [
+        "GRN",
+        "ResidualMLP",
+        "TimeMixer",
+        "NBeats",
+    ],
+    # SSM is represented by the model backbone choice (`arch_mode="mamba"`).
+    "ssm": [],
+}
+
+DEFAULT_ATTENTION_VARIANTS: List[str] = ["auto"]
+DEFAULT_FFN_VARIANTS: List[str] = ["auto"]
+DEFAULT_MAMBA_NUM_LAYER_CHOICES: List[int] = [2, 3, 4]
+DEFAULT_MAMBA_EXPAND_CHOICES: List[int] = [2, 4]
 
 
 @dataclass
@@ -37,14 +79,29 @@ class DARTSSearchSpaceConfig:
     """Defines the operation/cell/node search space."""
 
     all_ops: List[str] = field(default_factory=lambda: list(DEFAULT_OPS))
+    arch_modes: List[str] = field(default_factory=lambda: list(DEFAULT_ARCH_MODES))
+    op_families: Dict[str, List[str]] = field(
+        default_factory=lambda: {k: list(v) for k, v in DEFAULT_OP_FAMILIES.items()}
+    )
     hidden_dims: List[int] = field(default_factory=lambda: [32, 64, 128])
     cell_range: Tuple[int, int] = (1, 2)
     node_range: Tuple[int, int] = (2, 4)
+    family_range: Tuple[int, int] = (1, 3)
     min_ops: int = 2
     max_ops: Optional[int] = None
     require_identity: bool = True
     edge_to_op_target: float = 1.0
     edge_to_op_max_ratio: float = 1.8
+    attention_variants: List[str] = field(
+        default_factory=lambda: list(DEFAULT_ATTENTION_VARIANTS)
+    )
+    ffn_variants: List[str] = field(default_factory=lambda: list(DEFAULT_FFN_VARIANTS))
+    mamba_num_layer_choices: List[int] = field(
+        default_factory=lambda: list(DEFAULT_MAMBA_NUM_LAYER_CHOICES)
+    )
+    mamba_expand_choices: List[int] = field(
+        default_factory=lambda: list(DEFAULT_MAMBA_EXPAND_CHOICES)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +158,14 @@ class DARTSTrainConfig:
     # commitment / skip-connection dominance by penalising large logit magnitudes.
     # Values in [5e-4, 2e-3] are a good starting range; 0.0 disables.
     beta_darts_weight: float = 0.0
+    # Lightweight DARTS-local MoE routing balance regularizer. Encourages
+    # routed experts to be used more evenly without adding full MoE aux-loss
+    # machinery.
+    moe_balance_weight: float = 5e-3
+    # Early-phase entropy bonus on transformer choice logits (attention kernels,
+    # FFN dense/MoE, tokenizer/query choices). This counteracts premature
+    # collapse to easy defaults like SDP before weights stabilize.
+    transformer_exploration_weight: float = 1e-2
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +213,10 @@ class MultiFildelitySearchConfig:
     run_name: Optional[str] = None
     retrain_final_from_scratch: bool = True
     discrete_arch_threshold: float = 0.3
+    phase1_rescore_mode: str = "pool"
+    phase3_reduction_factor: int = 2
+    phase3_min_epoch_budget: int = 2
+    phase3_rung_epochs: Optional[List[int]] = None
 
 
 # ---------------------------------------------------------------------------

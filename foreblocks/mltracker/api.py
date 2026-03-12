@@ -39,7 +39,12 @@ from foreblocks.mltracker import MLTracker
 # App (use lifespan to silence on_event deprecation)
 # -----------------------------------------------------------------------------
 def _tracker_root() -> str:
-    return os.getenv("MLTRACKER_DIR", "./mltracker_data")
+    env_path = os.getenv("MLTRACKER_DIR")
+    if env_path:
+        return str(Path(env_path).expanduser().resolve())
+    # Default to the package-local tracker storage so dashboard_v2 always
+    # reads from foreblocks/mltracker/mltracker_data regardless of cwd.
+    return str((Path(__file__).resolve().parent / "mltracker_data").resolve())
 
 
 @asynccontextmanager

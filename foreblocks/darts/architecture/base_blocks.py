@@ -4,8 +4,9 @@ All classes live in dedicated sub-modules:
 
     bb_primitives   → RMSNorm, SwiGLUFFN
     bb_positional   → RotaryPositionalEncoding, PositionalEncoding
-    bb_attention    → LinearSelfAttention, AttentionBridge, LearnedPoolingBridge
-    bb_transformers → LightweightTransformerEncoder, PatchTSTEncoder,
+    bb_attention    → SelfAttention, AttentionBridge, LearnedPoolingBridge
+    bb_moe          → DARTSFeedForward
+    bb_transformers → LightweightTransformerEncoder,
                       LightweightTransformerDecoder
     bb_sequence     → ArchitectureNormalizer, SearchableDecomposition,
                       SequenceStateAdapter, BaseMixedSequenceBlock,
@@ -14,7 +15,12 @@ All classes live in dedicated sub-modules:
                       FixedEncoder, FixedDecoder
     bb_mamba        → MambaBranch
 """
-from .bb_attention import AttentionBridge, LearnedPoolingBridge, LinearSelfAttention
+
+from .bb_attention import (
+    AttentionBridge,
+    LearnedPoolingBridge,
+    SelfAttention,
+)
 from .bb_mamba import MambaBranch
 from .bb_mixed import (
     ArchitectureConverter,
@@ -23,6 +29,7 @@ from .bb_mixed import (
     MixedDecoder,
     MixedEncoder,
 )
+from .bb_moe import DARTSFeedForward
 from .bb_positional import PositionalEncoding, RotaryPositionalEncoding
 from .bb_primitives import RMSNorm, SwiGLUFFN
 from .bb_sequence import (
@@ -35,7 +42,6 @@ from .bb_sequence import (
 from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
-    PatchTSTEncoder,
 )
 
 __all__ = [
@@ -43,11 +49,11 @@ __all__ = [
     "SwiGLUFFN",
     "RotaryPositionalEncoding",
     "PositionalEncoding",
-    "LinearSelfAttention",
+    "SelfAttention",
     "AttentionBridge",
     "LearnedPoolingBridge",
+    "DARTSFeedForward",
     "LightweightTransformerEncoder",
-    "PatchTSTEncoder",
     "LightweightTransformerDecoder",
     "ArchitectureNormalizer",
     "SearchableDecomposition",

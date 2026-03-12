@@ -93,6 +93,71 @@ def create_progress_bar(iterable, desc: str, *, leave: bool = True, **kwargs):
     return tqdm(iterable, desc=desc, leave=leave, **kwargs)
 
 
+def unpack_forecasting_batch(
+    batch,
+    device: str,
+    *,
+    include_decoder_targets: bool = False,
+    teacher_forcing_ratio: Optional[float] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor | float]]:
+    """
+    Parse a forecasting batch into model inputs, targets, and model kwargs.
+
+    Supported batch layouts:
+    - ``(x, y)``
+    - ``(x, y, x_future)``
+    - ``(x, y, {"x_future": ..., ...})``
+
+    The second tensor ``y`` is treated as the supervised forecast target. When
+    ``include_decoder_targets`` is enabled and shapes are compatible, ``y`` is
+    also exposed to the model as ``decoder_targets`` for teacher forcing. Known
+    future covariates remain a separate optional input ``x_future`` to avoid
+    leaking labels into evaluation.
+    """
+    if not isinstance(batch, (list, tuple)) or len(batch) < 2:
+        raise ValueError("Expected forecasting batch to contain at least (x, y).")
+
+    x = batch[0].to(device, non_blocking=True)
+    y = batch[1].to(device, non_blocking=True)
+    model_kwargs: Dict[str, torch.Tensor | float] = {}
+
+    x_future = None
+    if len(batch) >= 3:
+        extra = batch[2]
+        if isinstance(extra, dict):
+            extra_value = extra.get("x_future", None)
+            if extra_value is None:
+                extra_value = extra.get("future_covariates", None)
+            if extra_value is None:
+                extra_value = extra.get("dec", None)
+            extra = extra_value
+        if isinstance(extra, torch.Tensor):
+            candidate = extra.to(device, non_blocking=True)
+            if (
+                candidate.dim() == 3
+                and candidate.size(0) == x.size(0)
+                and candidate.size(-1) == x.size(-1)
+                and (y.dim() != 3 or candidate.size(1) >= y.size(1))
+            ):
+                x_future = candidate
+
+    if x_future is not None:
+        model_kwargs["x_future"] = x_future
+
+    if (
+        include_decoder_targets
+        and isinstance(y, torch.Tensor)
+        and y.dim() == 3
+        and y.size(-1) == x.size(-1)
+    ):
+        model_kwargs["decoder_targets"] = y
+
+    if teacher_forcing_ratio is not None:
+        model_kwargs["teacher_forcing_ratio"] = float(teacher_forcing_ratio)
+
+    return x, y, model_kwargs
+
+
 # ---------------------------------------------------------------------------
 # Parameter group splitting
 # ---------------------------------------------------------------------------
@@ -139,6 +204,8 @@ def split_arch_and_model_params(
     if alpha_tracker is not None:
         for source in alpha_tracker.component_alpha_sources(model):
             tensor = source["alpha"]
+            if not isinstance(tensor, nn.Parameter):
+                continue
             if id(tensor) in arch_param_ids:
                 continue
             arch_params.append(tensor)

@@ -1,0 +1,67 @@
+# Documentation Workflow
+
+This repository uses in-repo, versioned documentation instead of a separate GitHub Wiki.
+
+## Why this approach
+
+- docs stay aligned with the code
+- documentation changes can be reviewed in pull requests
+- examples and notebooks can evolve alongside implementation
+- contributors do not need a separate editing surface
+
+## Structure
+
+The documentation system is organized as:
+
+- `wiki/index.md`: wiki home
+- `wiki/tutorials/`: runnable onboarding and practical workflows
+- `wiki/architecture/`: internal structure and design pages
+- `wiki/reference/`: API and repository reference
+- root-level guide pages in `wiki/`: subsystem-focused guides
+- `docs/index.html`: static landing page source for the site root
+- `mkdocs.yml`: navigation and site structure for the `/docs/` site
+
+## When to update docs
+
+Update documentation whenever you:
+
+- add or remove public exports
+- change constructor contracts or tensor-shape expectations
+- modify a training workflow
+- introduce a new major subsystem
+- add a new example notebook worth surfacing
+
+## Minimum documentation rule
+
+For any meaningful user-facing change, update:
+
+1. `README.md` if the landing page should change
+2. one relevant page under `wiki/`
+3. one runnable example or notebook when the change affects workflows
+
+## Authoring guidance
+
+- prefer accurate, minimal runnable examples
+- document the public API before internal details
+- avoid promising workflows that have not been validated in the repository
+- link across pages so documentation behaves like a wiki, not isolated files
+
+## Local preview
+
+This repository now includes `mkdocs.yml`, so the wiki can be served with MkDocs when installed locally:
+
+```bash
+mkdocs serve
+```
+
+Or build a static site:
+
+```bash
+mkdocs build
+```
+
+## Related pages
+
+- [Home](../index.md)
+- [Overview](../overview.md)
+- [Repository Map](../reference/repository-map.md)
