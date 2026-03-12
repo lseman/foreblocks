@@ -7,10 +7,17 @@ docs_dir: wiki
 site_dir: site/docs
 
 theme:
-  name: mkdocs
-
-extra_css:
-  - stylesheets/black.css
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+  palette:
+    - scheme: slate
+      primary: black
+      accent: teal
 
 nav:
   - Home: index.md

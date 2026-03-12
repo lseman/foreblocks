@@ -48,7 +48,13 @@ For any meaningful user-facing change, update:
 
 ## Local preview
 
-This repository now includes `mkdocs.yml`, so the wiki can be served with MkDocs when installed locally:
+This repository now uses `mkdocs-material`. Install it first:
+
+```bash
+pip install mkdocs-material
+```
+
+Then serve the wiki locally:
 
 ```bash
 mkdocs serve
