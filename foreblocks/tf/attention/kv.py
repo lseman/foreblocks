@@ -198,11 +198,11 @@ class PagedKVProvider(KVProvider):
         self.cache.append_step(k, v, batch_idx)
 
     def get_current_length(self, batch_idx: int) -> int:
-        return int(self.cache.seq_len[batch_idx].item())
+        return int(self.cache.logical_seq_len[batch_idx].item())
 
     def get_start_positions(
         self,
         batch_size: int,
         device: torch.device,
     ) -> torch.Tensor:
-        return self.cache.seq_len.to(device=device, dtype=torch.long).clone()
+        return self.cache.logical_seq_len.to(device=device, dtype=torch.long).clone()

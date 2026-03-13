@@ -12,10 +12,12 @@ def _dense_kv_block(
     b: int,
     blk: int,
     blen: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     k_blk = cache.storage_k[b, :, blk, :blen, :]
     v_blk = cache.storage_v[b, :, blk, :blen, :]
-    return k_blk, v_blk
+    pos_blk = cache.storage_pos[b, blk, :blen]
+    beta_blk = cache.storage_beta[b, :, blk, :blen]
+    return k_blk, v_blk, pos_blk, beta_blk
 
 
 def _latent_kv_block(
@@ -26,7 +28,7 @@ def _latent_kv_block(
     d_head: int,
     mla_k_up_proj: Optional[nn.Module],
     mla_v_up_proj: Optional[nn.Module],
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if mla_k_up_proj is None or mla_v_up_proj is None:
         raise RuntimeError(
             "MLA latent paged decode requires k_up/v_up projection modules."
@@ -44,7 +46,8 @@ def _latent_kv_block(
         .permute(1, 0, 2)
         .contiguous()
     )
-    return k_blk, v_blk
+    pos_blk = cache.storage_pos[b, blk, :blen]
+    return k_blk, v_blk, pos_blk
 
 
 def paged_stream_decode_standard(
@@ -99,10 +102,8 @@ def paged_stream_decode_standard(
             if blen == 0:
                 continue
 
-            k_start = bi * BS
-
             if getattr(cache, "use_latent_cache", False):
-                k_blk, v_blk = _latent_kv_block(
+                k_blk, v_blk, pos_blk = _latent_kv_block(
                     cache,
                     b,
                     blk,
@@ -111,28 +112,33 @@ def paged_stream_decode_standard(
                     mla_k_up_proj,
                     mla_v_up_proj,
                 )
+                beta_blk = None
             else:
-                k_blk, v_blk = _dense_kv_block(cache, b, blk, blen)
+                k_blk, v_blk, pos_blk, beta_blk = _dense_kv_block(cache, b, blk, blen)
 
             if kv_repeat > 1:
                 k_blk = k_blk.repeat_interleave(kv_repeat, dim=0)
                 v_blk = v_blk.repeat_interleave(kv_repeat, dim=0)
+                if beta_blk is not None:
+                    beta_blk = beta_blk.repeat_interleave(kv_repeat, dim=0)
 
             scores = torch.matmul(q_blk, k_blk.transpose(-2, -1)) * scale
+            if beta_blk is not None:
+                scores = scores + beta_blk.unsqueeze(1).to(dtype=scores.dtype)
 
             if is_causal:
-                k_pos = k_start + torch.arange(blen, device=q_bhtd.device).view(
+                k_pos = pos_blk.to(device=q_bhtd.device, dtype=torch.long).view(
                     1, 1, blen
                 )
                 q_pos = q_abs[b].view(1, Tq, 1)
                 scores = scores.masked_fill(k_pos > q_pos, float("-inf"))
 
             if key_padding_mask is not None:
-                kp_blk = key_padding_mask[b, k_start : k_start + blen]
+                kp_blk = key_padding_mask[b, pos_blk]
                 scores = scores.masked_fill(kp_blk.view(1, 1, blen), float("-inf"))
 
             if attn_mask is not None:
-                attn_blk = attn_mask[b, :, :, k_start : k_start + blen]
+                attn_blk = attn_mask[b, :, :, pos_blk]
                 scores = scores.masked_fill(attn_blk, float("-inf"))
 
             m_old = m_max[b]

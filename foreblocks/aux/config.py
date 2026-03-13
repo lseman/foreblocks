@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass
@@ -27,7 +27,7 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    """Type-safe training configuration with NAS support"""
+    """Type-safe training configuration with NAS + conformal support."""
 
     num_epochs: int = 100
     learning_rate: float = 0.001
@@ -48,6 +48,7 @@ class TrainingConfig:
     log_interval: int = 10
     save_best_model: bool = True
     save_model_path: Optional[str] = None
+    experiment_name: str = "default_experiment"
 
     # MoE logging toggles
     moe_logging: bool = False
@@ -71,11 +72,14 @@ class TrainingConfig:
     conformal_method: str = "split"
     conformal_quantile: float = 0.9
     conformal_knn_k: int = 50
-    conformal_rolling_alpha: float = 0.05
+    conformal_local_window: int = 5000
     conformal_aci_gamma: float = 0.01
-    conformal_agaci_gammas: Optional[list[float]] = None
+    conformal_rolling_alpha: float = 0.1
+    conformal_agaci_gammas: Optional[List[float]] = None
     conformal_enbpi_B: int = 20
     conformal_enbpi_window: int = 500
+    conformal_tsp_lambda: float = 0.01
+    conformal_tsp_window: int = 5000
     conformal_cptc_window: int = 500
     conformal_cptc_tau: float = 1.0
     conformal_cptc_hard_state_filter: bool = False
@@ -83,8 +87,15 @@ class TrainingConfig:
     conformal_afocp_attn_hidden: int = 64
     conformal_afocp_window: int = 500
     conformal_afocp_tau: float = 1.0
+    conformal_afocp_internal_feat_hidden: int = 256
+    conformal_afocp_internal_feat_depth: int = 3
+    conformal_afocp_internal_feat_dropout: float = 0.1
     conformal_afocp_online_lr: float = 0.0
     conformal_afocp_online_steps: int = 1
+
+    def __post_init__(self):
+        if self.conformal_agaci_gammas is None:
+            self.conformal_agaci_gammas = [0.001, 0.005, 0.01, 0.05, 0.1, 0.2]
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
@@ -92,3 +103,29 @@ class TrainingConfig:
                 setattr(self, key, value)
             else:
                 raise KeyError(f"Config key '{key}' not found")
+
+    def get_conformal_params(self) -> dict:
+        return {
+            "method": self.conformal_method,
+            "quantile": self.conformal_quantile,
+            "knn_k": self.conformal_knn_k,
+            "local_window": self.conformal_local_window,
+            "aci_gamma": self.conformal_aci_gamma,
+            "agaci_gammas": self.conformal_agaci_gammas,
+            "enbpi_B": self.conformal_enbpi_B,
+            "enbpi_window": self.conformal_enbpi_window,
+            "tsp_lambda": self.conformal_tsp_lambda,
+            "tsp_window": self.conformal_tsp_window,
+            "cptc_window": self.conformal_cptc_window,
+            "cptc_tau": self.conformal_cptc_tau,
+            "cptc_hard_state_filter": self.conformal_cptc_hard_state_filter,
+            "afocp_feature_dim": self.conformal_afocp_feature_dim,
+            "afocp_attn_hidden": self.conformal_afocp_attn_hidden,
+            "afocp_window": self.conformal_afocp_window,
+            "afocp_tau": self.conformal_afocp_tau,
+            "afocp_internal_feat_hidden": self.conformal_afocp_internal_feat_hidden,
+            "afocp_internal_feat_depth": self.conformal_afocp_internal_feat_depth,
+            "afocp_internal_feat_dropout": self.conformal_afocp_internal_feat_dropout,
+            "afocp_online_lr": self.conformal_afocp_online_lr,
+            "afocp_online_steps": self.conformal_afocp_online_steps,
+        }

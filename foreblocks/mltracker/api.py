@@ -70,12 +70,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dashboard
-dashboard_dir = Path(__file__).parent / "dashboard"
-if dashboard_dir.exists():
-    app.mount(
-        "/dashboard", StaticFiles(directory=dashboard_dir, html=True), name="dashboard"
-    )
+def _mount_dashboard_static() -> None:
+    base_dir = Path(__file__).parent
+    v2_dist_dir = base_dir / "dashboard_v2" / "dist"
+
+    if v2_dist_dir.exists():
+        app.mount(
+            "/dashboard", StaticFiles(directory=v2_dist_dir, html=True), name="dashboard"
+        )
+
+
+_mount_dashboard_static()
 
 
 @app.get("/")

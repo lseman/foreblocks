@@ -253,6 +253,9 @@ class MoEFeedForwardDMoE(nn.Module):
         mtp_num_heads: int = 0,
         mtp_loss_weight: float = 0.0,
         mtp_init_scale: float = 0.02,
+        moe_use_latent: bool = False,
+        moe_latent_dim: Optional[int] = None,
+        moe_latent_d_ff: Optional[int] = None,
     ):
         super().__init__()
         num_experts = int(num_experts)
@@ -314,6 +317,31 @@ class MoEFeedForwardDMoE(nn.Module):
             and int(expert_choice_tokens_per_expert) < 1
         ):
             raise ValueError("expert_choice_tokens_per_expert must be >= 1 when set")
+        latent_enabled = bool(moe_use_latent)
+        if latent_enabled:
+            latent_dim = (
+                int(moe_latent_dim)
+                if moe_latent_dim is not None
+                else max(1, int(d_model // 4))
+            )
+            if latent_dim < 1:
+                raise ValueError("moe_latent_dim must be >= 1 when latent MoE is enabled")
+            if latent_dim >= int(d_model):
+                raise ValueError(
+                    "moe_latent_dim must be < d_model when latent MoE is enabled"
+                )
+            latent_d_ff = (
+                int(moe_latent_d_ff)
+                if moe_latent_d_ff is not None
+                else max(1, int(round(float(d_ff) * float(latent_dim) / float(d_model))))
+            )
+            if latent_d_ff < 1:
+                raise ValueError(
+                    "moe_latent_d_ff must be >= 1 when latent MoE is enabled"
+                )
+        else:
+            latent_dim = int(d_model)
+            latent_d_ff = int(d_ff)
         ec_tokens_desc = (
             str(int(expert_choice_tokens_per_expert))
             if expert_choice_tokens_per_expert is not None
@@ -324,10 +352,16 @@ class MoEFeedForwardDMoE(nn.Module):
             f"K={top_k}, routing={routing_mode}, ec_tokens={ec_tokens_desc}, "
             f"swiglu={use_swiglu}, shared={shared_combine}, "
             f"cap={moe_capacity_factor}, router={router_type}, "
-            f"aux_lb=off, bias_lr={router_bias_update_rate}"
+            f"aux_lb=off, bias_lr={router_bias_update_rate}, "
+            f"latent={latent_enabled} latent_dim={latent_dim if latent_enabled else 'off'}"
         )
         self.d_model = d_model
         self.d_ff = d_ff
+        self.moe_use_latent = latent_enabled
+        self.moe_latent_dim = int(latent_dim)
+        self.moe_latent_d_ff = int(latent_d_ff)
+        self.routed_d_model = int(latent_dim)
+        self.routed_d_ff = int(latent_d_ff)
         self.num_experts = num_experts
         self.num_shared = num_shared
         self.num_routed_experts = num_routed
@@ -360,12 +394,20 @@ class MoEFeedForwardDMoE(nn.Module):
         self._grouped_kernel_prepacked = _supports_grouped_prepacked()
 
         self.input_norm = nn.LayerNorm(d_model)
+        if self.moe_use_latent:
+            self.latent_down_proj = nn.Linear(d_model, self.routed_d_model, bias=False)
+            self.latent_up_proj = nn.Linear(self.routed_d_model, d_model, bias=False)
+            nn.init.xavier_uniform_(self.latent_down_proj.weight)
+            nn.init.xavier_uniform_(self.latent_up_proj.weight)
+        else:
+            self.latent_down_proj = None
+            self.latent_up_proj = None
 
         # Router
         router: Router
         if router_type == "adaptive_noisy_topk":
             router = AdaptiveNoisyTopKRouter(
-                d_model=d_model,
+                d_model=self.routed_d_model,
                 num_experts=num_routed,
                 max_k=top_k,
                 k_head_dim=adaptive_k_head_dim,
@@ -377,7 +419,7 @@ class MoEFeedForwardDMoE(nn.Module):
             )
         elif router_type == "st_topk":
             router = StraightThroughTopKRouter(
-                d_model=d_model,
+                d_model=self.routed_d_model,
                 num_experts=num_routed,
                 top_k=top_k,
                 temperature=router_temperature,
@@ -399,7 +441,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 else max(router_perturb_noise, 1e-2)
             )
             router = ContinuousTopKRouter(
-                d_model=d_model,
+                d_model=self.routed_d_model,
                 num_experts=num_routed,
                 top_k=top_k,
                 temperature=router_temperature,
@@ -414,7 +456,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 1 if router_type == "hash_topk" else max(2, router_hash_num_hashes)
             )
             router = HashTopKRouter(
-                d_model=d_model,
+                d_model=self.routed_d_model,
                 num_experts=num_routed,
                 top_k=top_k,
                 num_hashes=num_hashes,
@@ -428,13 +470,13 @@ class MoEFeedForwardDMoE(nn.Module):
             )
         elif router_type == "linear":
             router = LinearRouter(
-                d_model=d_model,
+                d_model=self.routed_d_model,
                 num_experts=num_routed,
                 use_bias=use_bias,
             )
         elif router_type == "noisy_topk":
             router = NoisyTopKRouter(
-                d_model=d_model,
+                d_model=self.routed_d_model,
                 num_experts=num_routed,
                 input_dropout=input_dropout,
                 jitter=jitter,
@@ -448,7 +490,10 @@ class MoEFeedForwardDMoE(nn.Module):
         # Experts
         expert_cls = MoE_SwiGLUExpert if use_swiglu else MoE_FFNExpert
         expert_kwargs = dict(
-            d_model=d_model, d_ff=d_ff, dropout=dropout, expert_dropout=expert_dropout
+            d_model=self.routed_d_model,
+            d_ff=self.routed_d_ff,
+            dropout=dropout,
+            expert_dropout=expert_dropout,
         )
         if not use_swiglu:
             expert_kwargs["activation"] = activation
@@ -733,9 +778,13 @@ class MoEFeedForwardDMoE(nn.Module):
         # Pre-norm
         x_norm = self.input_norm(x)
         x_flat = x_norm.reshape(-1, self.d_model)
+        if self.moe_use_latent:
+            routed_x = self.latent_down_proj(x_flat)
+        else:
+            routed_x = x_flat
         Toks = x_flat.size(0)
 
-        device_type = x_flat.device.type
+        device_type = routed_x.device.type
         use_amp = _autocast_bf16_enabled(device_type)
 
         t0 = self._maybe_start_timer()
@@ -763,7 +812,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 shared_cat = None
 
             logits, per_token_k, _k_logits, _k_probs, _router_top_p, _router_top_i = (
-                self._compute_router_outputs(x_flat, tau=tau)
+                self._compute_router_outputs(routed_x, tau=tau)
             )  # [T, E]
             if self.routing_mode == "expert_choice":
                 self.last_per_token_k = None
@@ -775,7 +824,7 @@ class MoEFeedForwardDMoE(nn.Module):
                     sorted=False,
                 ).indices
                 packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
-                    self.expert_choice_dispatcher.pack(x_flat, logits)
+                    self.expert_choice_dispatcher.pack(routed_x, logits)
                 )
                 if self.training:
                     self._update_expert_usage_ema_from_assignments(experts_seq)
@@ -820,18 +869,21 @@ class MoEFeedForwardDMoE(nn.Module):
                 # Pack (vectorized capacity prune)
                 packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
                     self.dispatcher.pack(
-                        x_flat, top_p, top_i, capacity_factor=self.moe_capacity_factor
+                        routed_x,
+                        top_p,
+                        top_i,
+                        capacity_factor=self.moe_capacity_factor,
                     )
                 )
             self._last_num_assignments = int(experts_seq.numel())
 
             if packed_x.numel() == 0:
-                out = torch.zeros_like(x_flat)
+                out_flat = x_flat.new_zeros((Toks, self.d_model))
                 if self.shared_combine == "concat" and shared_cat is not None:
-                    out = self.shared_proj(torch.cat([out, shared_cat], dim=-1))
+                    out_flat = self.shared_proj(torch.cat([out_flat, shared_cat], dim=-1))
                 elif shared_out is not None:
-                    out = out + shared_out
-                out = out.reshape_as(x_norm)
+                    out_flat = out_flat + shared_out
+                out = out_flat.reshape_as(x_norm)
                 aux = x.new_zeros(())
                 self.aux_loss = aux.detach()
                 self.last_mtp_loss = aux.detach()
@@ -908,8 +960,12 @@ class MoEFeedForwardDMoE(nn.Module):
 
             # Weight by gate prob and scatter back
             packed_y.mul_(packed_w)
-            out_flat = torch.zeros_like(x_flat)
-            self.dispatcher.scatter_back(out_flat, packed_y, tokens_seq)
+            routed_out = routed_x.new_zeros((Toks, self.routed_d_model))
+            self.dispatcher.scatter_back(routed_out, packed_y, tokens_seq)
+            if self.moe_use_latent:
+                out_flat = self.latent_up_proj(routed_out)
+            else:
+                out_flat = routed_out
             if self.shared_combine == "concat" and shared_cat is not None:
                 out_flat = self.shared_proj(torch.cat([out_flat, shared_cat], dim=-1))
             elif shared_out is not None:

@@ -163,6 +163,9 @@ class FeedForwardBlock(nn.Module):
         mtp_num_heads: int = 0,
         mtp_loss_weight: float = 0.0,
         mtp_init_scale: float = 0.02,
+        moe_use_latent: bool = False,
+        moe_latent_dim: Optional[int] = None,
+        moe_latent_d_ff: Optional[int] = None,
     ):
         super().__init__()
         self.use_moe = bool(use_moe)
@@ -217,6 +220,9 @@ class FeedForwardBlock(nn.Module):
                 mtp_num_heads=mtp_num_heads,
                 mtp_loss_weight=mtp_loss_weight,
                 mtp_init_scale=mtp_init_scale,
+                moe_use_latent=moe_use_latent,
+                moe_latent_dim=moe_latent_dim,
+                moe_latent_d_ff=moe_latent_d_ff,
             )
             self._supports_aux = True
         else:

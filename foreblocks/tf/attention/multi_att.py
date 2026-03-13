@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..sype import AdaptiveWarp, SyPERotator
+from .compaction import AttentionMatchingCompactor, AttentionMatchingConfig
 from .decode_stream import paged_stream_decode_standard
 from .kernels import triton_apply_rope, triton_paged_decode
 from .kv import DenseKVProvider, KVProvider, PagedKVProvider
@@ -125,6 +126,13 @@ class MultiAttention(nn.Module):
         # NEW: Multi-head Latent Attention (MLA)
         use_mla: bool = True,
         kv_latent_dim: Optional[int] = None,
+        # NEW: Attention-matching KV compaction
+        use_attention_matching_compaction: bool = False,
+        attention_matching_keep_ratio: float = 0.25,
+        attention_matching_trigger_len: int = 512,
+        attention_matching_min_keep: int = 64,
+        attention_matching_query_budget: int = 64,
+        attention_matching_force_single_step: bool = False,
         # NEW: NSA-specific knobs
         nsa_block_size: Optional[int] = None,
         nsa_topk_ratio: Optional[float] = None,
@@ -148,6 +156,41 @@ class MultiAttention(nn.Module):
         default_latent = max(32, self.kv_dim // 4)
         self.kv_latent_dim = (
             int(kv_latent_dim) if kv_latent_dim is not None else int(default_latent)
+        )
+        self.use_attention_matching_compaction = bool(
+            use_attention_matching_compaction
+        )
+        if self.use_attention_matching_compaction and self.use_mla:
+            raise ValueError(
+                "attention-matching KV compaction currently requires use_mla=False"
+            )
+        self.attention_matching_keep_ratio = float(attention_matching_keep_ratio)
+        self.attention_matching_trigger_len = int(attention_matching_trigger_len)
+        self.attention_matching_min_keep = int(attention_matching_min_keep)
+        self.attention_matching_query_budget = int(attention_matching_query_budget)
+        self.attention_matching_force_single_step = bool(
+            attention_matching_force_single_step
+        )
+        if not (0.0 < self.attention_matching_keep_ratio <= 1.0):
+            raise ValueError(
+                "attention_matching_keep_ratio must be in (0, 1]"
+            )
+        if self.attention_matching_min_keep <= 0:
+            raise ValueError("attention_matching_min_keep must be > 0")
+        if self.attention_matching_query_budget <= 0:
+            raise ValueError("attention_matching_query_budget must be > 0")
+        self.attention_matching_compactor = (
+            AttentionMatchingCompactor(
+                AttentionMatchingConfig(
+                    keep_ratio=self.attention_matching_keep_ratio,
+                    trigger_len=self.attention_matching_trigger_len,
+                    min_keep=self.attention_matching_min_keep,
+                    query_budget=self.attention_matching_query_budget,
+                    force_single_step=self.attention_matching_force_single_step,
+                )
+            )
+            if self.use_attention_matching_compaction
+            else None
         )
 
         # Attention hyper-parameters
@@ -222,7 +265,8 @@ class MultiAttention(nn.Module):
                 f"[MultiAttention] {gqa_info}, type={attention_type}, "
                 f"backends={self.backends}, rotary={self.use_rotary}, "
                 f"paged_cache={self.use_paged_cache}, "
-                f"mla={self.use_mla}(latent={self.kv_latent_dim})"
+                f"mla={self.use_mla}(latent={self.kv_latent_dim}), "
+                f"attn_match_compact={self.use_attention_matching_compaction}"
             )
 
     def _apply_gated_attention(self, out_bhtd: torch.Tensor) -> torch.Tensor:
@@ -575,6 +619,51 @@ class MultiAttention(nn.Module):
             device=device,
             dtype=dtype,
             max_blocks=self.max_cache_blocks,
+        )
+
+    def _can_apply_attention_matching_compaction(
+        self,
+        *,
+        attn_mask: Optional[torch.Tensor],
+        key_padding_mask: Optional[torch.Tensor],
+        need_weights: bool,
+        cache: PagedKVCache,
+        t_new: int,
+    ) -> bool:
+        if not self.use_attention_matching_compaction:
+            return False
+        if self.attention_matching_compactor is None:
+            return False
+        if self.cross_attention or cache.use_latent_cache:
+            return False
+        if attn_mask is not None or key_padding_mask is not None or need_weights:
+            return False
+        if self.training or self.dropout_p != 0.0:
+            return False
+        for b in range(cache.B):
+            if self.attention_matching_compactor.should_compact(cache, b, t_new=t_new):
+                return True
+        return False
+
+    def _maybe_compact_paged_cache(
+        self,
+        *,
+        cache: PagedKVCache,
+        q: torch.Tensor,
+        q_start_pos: Optional[torch.Tensor],
+        t_new: int,
+    ) -> None:
+        if self.attention_matching_compactor is None:
+            return
+        if q_start_pos is None:
+            raise ValueError("q_start_pos is required for attention-matching compaction")
+        self.attention_matching_compactor.compact_batch(
+            cache=cache,
+            q_bhtd=q,
+            q_start_pos=q_start_pos,
+            kv_repeat=self.n_rep,
+            scale=self.scale,
+            t_new=t_new,
         )
 
     def _apply_rope(

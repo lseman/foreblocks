@@ -12,7 +12,7 @@ from .core.att import AttentionLayer
 from .evaluation import ModelEvaluator
 
 # from .pipeline import TimeSeriesSeq2Seq
-from .pre.preprocessing import TimeSeriesPreprocessor
+from .ts_handler.preprocessing import TimeSeriesHandler
 from .tf.transformer import TransformerDecoder, TransformerEncoder
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ __all__ = [
     "Trainer",
     "ModelEvaluator",
     # "TimeSeriesSeq2Seq",
-    "TimeSeriesPreprocessor",
+    "TimeSeriesHandler",
     "TimeSeriesDataset",
     "create_dataloaders",
     "ModelConfig",

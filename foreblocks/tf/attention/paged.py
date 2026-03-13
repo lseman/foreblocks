@@ -16,7 +16,8 @@ class PagedKVCache:
             Global block ids (indices into dim=2 of storage).
       - write_pos[b]: tuple[int, int]
             (idx_in_table, offset_in_block).
-      - seq_len[b]: total cached tokens for that sequence.
+      - seq_len[b]: physical cached tokens currently stored for that sequence.
+      - logical_seq_len[b]: logical prefix length represented by the cache.
     This class is intentionally dumb and local:
       - No cross-layer sharing; you typically call `PagedKVCache.ensure()`
         per layer_state dict.
@@ -57,6 +58,7 @@ class PagedKVCache:
         if self.use_latent_cache:
             self.storage_k = None
             self.storage_v = None
+            self.storage_beta = None
             self.storage_latent = torch.empty(
                 (self.B, self.max_blocks, self.block_size, self.latent_dim),
                 device=self.device,
@@ -66,13 +68,26 @@ class PagedKVCache:
             shape = (self.B, self.Hkv, self.max_blocks, self.block_size, self.D)
             self.storage_k = torch.empty(shape, device=self.device, dtype=self.dtype)
             self.storage_v = torch.empty(shape, device=self.device, dtype=self.dtype)
+            self.storage_beta = torch.zeros(
+                (self.B, self.Hkv, self.max_blocks, self.block_size),
+                device=self.device,
+                dtype=self.dtype,
+            )
             self.storage_latent = None
+        self.storage_pos = torch.empty(
+            (self.B, self.max_blocks, self.block_size),
+            device=self.device,
+            dtype=torch.long,
+        )
         # Per-sequence metadata
         self.block_table: List[List[int]] = [[] for _ in range(self.B)]
         self.write_pos: List[Tuple[int, int]] = [
             (0, 0) for _ in range(self.B)
         ]  # (idx_in_table, offset_in_block)
         self.seq_len: Tensor = torch.zeros(self.B, device=self.device, dtype=torch.long)
+        self.logical_seq_len: Tensor = torch.zeros(
+            self.B, device=self.device, dtype=torch.long
+        )
         # Free block pool
         self._free_blocks: List[int] = list(range(self.max_blocks))
 
@@ -150,6 +165,116 @@ class PagedKVCache:
         self.block_table[b].append(blk)
         self.write_pos[b] = (len(self.block_table[b]) - 1, 0)
 
+    def _append_dense_with_meta(
+        self,
+        k_htd: Tensor,
+        v_htd: Tensor,
+        b: int,
+        positions_t: Tensor,
+        beta_ht: Optional[Tensor] = None,
+    ) -> None:
+        if self.use_latent_cache:
+            raise RuntimeError("Dense append with metadata is unavailable in latent mode.")
+        self._check_batch_index(b)
+        if k_htd.ndim == 2:
+            k_htd = k_htd.unsqueeze(1)
+        if v_htd.ndim == 2:
+            v_htd = v_htd.unsqueeze(1)
+        if k_htd.ndim != 3 or v_htd.ndim != 3:
+            raise ValueError("k/v must be [Hkv,T,D] or [Hkv,D]")
+        if k_htd.shape != v_htd.shape:
+            raise ValueError(
+                f"k and v must have same shape, got {k_htd.shape} vs {v_htd.shape}"
+            )
+        if k_htd.shape[0] != self.Hkv or k_htd.shape[2] != self.D:
+            raise ValueError(
+                f"Expected [Hkv,T,D]=[{self.Hkv},T,{self.D}], got {tuple(k_htd.shape)}"
+            )
+        if positions_t.ndim != 1 or positions_t.numel() != k_htd.size(1):
+            raise ValueError(
+                f"positions must be [T], got {tuple(positions_t.shape)} for T={k_htd.size(1)}"
+            )
+        if beta_ht is None:
+            beta_ht = k_htd.new_zeros((self.Hkv, k_htd.size(1)))
+        elif beta_ht.ndim != 2 or beta_ht.shape != (self.Hkv, k_htd.size(1)):
+            raise ValueError(
+                f"beta must be [Hkv,T]=[{self.Hkv},{k_htd.size(1)}], got {tuple(beta_ht.shape)}"
+            )
+
+        if len(self.block_table[b]) == 0:
+            self._alloc_block_for_seq(b)
+        remaining, src_start = k_htd.size(1), 0
+        while remaining > 0:
+            blk_idx_in_table, offset = self.write_pos[b]
+            blk_global = self.block_table[b][blk_idx_in_table]
+            space = self.block_size - offset
+            if space <= 0:
+                self._alloc_block_for_seq(b)
+                blk_idx_in_table, offset = self.write_pos[b]
+                blk_global = self.block_table[b][blk_idx_in_table]
+                space = self.block_size - offset
+
+            take = min(space, remaining)
+            dst_slice = slice(offset, offset + take)
+            src_slice = slice(src_start, src_start + take)
+            self.storage_k[b, :, blk_global, dst_slice, :] = k_htd[:, src_slice, :]
+            self.storage_v[b, :, blk_global, dst_slice, :] = v_htd[:, src_slice, :]
+            self.storage_beta[b, :, blk_global, dst_slice] = beta_ht[:, src_slice]
+            self.storage_pos[b, blk_global, dst_slice] = positions_t[src_slice]
+
+            offset += take
+            src_start += take
+            remaining -= take
+            self.seq_len[b] += take
+            self.write_pos[b] = (blk_idx_in_table, offset)
+
+    def _append_latent_with_positions(
+        self,
+        latent_tl: Tensor,
+        positions_t: Tensor,
+        b: int,
+    ) -> None:
+        if not self.use_latent_cache:
+            raise RuntimeError("Latent append with positions requires latent cache mode.")
+        self._check_batch_index(b)
+        if latent_tl.ndim == 1:
+            latent_tl = latent_tl.unsqueeze(0)
+        if latent_tl.ndim != 2:
+            raise ValueError("latent must be [T,L] or [L]")
+        if latent_tl.shape[1] != self.latent_dim:
+            raise ValueError(
+                f"Expected latent_dim={self.latent_dim}, got {latent_tl.shape[1]}"
+            )
+        if positions_t.ndim != 1 or positions_t.numel() != latent_tl.size(0):
+            raise ValueError(
+                f"positions must be [T], got {tuple(positions_t.shape)} for T={latent_tl.size(0)}"
+            )
+
+        if len(self.block_table[b]) == 0:
+            self._alloc_block_for_seq(b)
+        remaining, src_start = latent_tl.size(0), 0
+        while remaining > 0:
+            blk_idx_in_table, offset = self.write_pos[b]
+            blk_global = self.block_table[b][blk_idx_in_table]
+            space = self.block_size - offset
+            if space <= 0:
+                self._alloc_block_for_seq(b)
+                blk_idx_in_table, offset = self.write_pos[b]
+                blk_global = self.block_table[b][blk_idx_in_table]
+                space = self.block_size - offset
+
+            take = min(space, remaining)
+            dst_slice = slice(offset, offset + take)
+            src_slice = slice(src_start, src_start + take)
+            self.storage_latent[b, blk_global, dst_slice, :] = latent_tl[src_slice, :]
+            self.storage_pos[b, blk_global, dst_slice] = positions_t[src_slice]
+
+            offset += take
+            src_start += take
+            remaining -= take
+            self.seq_len[b] += take
+            self.write_pos[b] = (blk_idx_in_table, offset)
+
     # ---------------------------------------------------------------------
     # Public API: writing
     # ---------------------------------------------------------------------
@@ -194,35 +319,15 @@ class PagedKVCache:
             return
 
         for b in range(self.B):
-            # Lazily allocate first block for this sequence
-            if len(self.block_table[b]) == 0:
-                self._alloc_block_for_seq(b)
-            remaining, src_start = T_new, 0
-            while remaining > 0:
-                blk_idx_in_table, offset = self.write_pos[b]
-                blk_global = self.block_table[b][blk_idx_in_table]
-                space = self.block_size - offset
-                if space <= 0:
-                    # No room in current block; allocate a new one.
-                    self._alloc_block_for_seq(b)
-                    blk_idx_in_table, offset = self.write_pos[b]
-                    blk_global = self.block_table[b][blk_idx_in_table]
-                    space = self.block_size - offset
-                take = min(space, remaining)
-                dst_slice = slice(offset, offset + take)
-                src_slice = slice(src_start, src_start + take)
-                # storage_*: [B, Hkv, max_blocks, block_size, D]
-                self.storage_k[b, :, blk_global, dst_slice, :] = k_bhdt[
-                    b, :, src_slice, :
-                ]
-                self.storage_v[b, :, blk_global, dst_slice, :] = v_bhdt[
-                    b, :, src_slice, :
-                ]
-                offset += take
-                src_start += take
-                remaining -= take
-                self.seq_len[b] += take
-                self.write_pos[b] = (blk_idx_in_table, offset)
+            start = int(self.logical_seq_len[b].item())
+            positions = torch.arange(
+                start,
+                start + T_new,
+                device=self.storage_pos.device,
+                dtype=torch.long,
+            )
+            self._append_dense_with_meta(k_bhdt[b], v_bhdt[b], b, positions)
+            self.logical_seq_len[b] += T_new
 
     def append_step(self, k_htd: Tensor, v_htd: Tensor, b: int) -> None:
         """Append one chunk for a single sequence b. k/v shapes: [Hkv,T,D] or [Hkv,D]."""
@@ -245,31 +350,15 @@ class PagedKVCache:
             raise ValueError(
                 f"Expected [Hkv,T,D]=[{self.Hkv},T,{self.D}], got {tuple(k_htd.shape)}"
             )
-
-        if len(self.block_table[b]) == 0:
-            self._alloc_block_for_seq(b)
-        remaining, src_start = k_htd.size(1), 0
-        while remaining > 0:
-            blk_idx_in_table, offset = self.write_pos[b]
-            blk_global = self.block_table[b][blk_idx_in_table]
-            space = self.block_size - offset
-            if space <= 0:
-                self._alloc_block_for_seq(b)
-                blk_idx_in_table, offset = self.write_pos[b]
-                blk_global = self.block_table[b][blk_idx_in_table]
-                space = self.block_size - offset
-
-            take = min(space, remaining)
-            dst_slice = slice(offset, offset + take)
-            src_slice = slice(src_start, src_start + take)
-            self.storage_k[b, :, blk_global, dst_slice, :] = k_htd[:, src_slice, :]
-            self.storage_v[b, :, blk_global, dst_slice, :] = v_htd[:, src_slice, :]
-
-            offset += take
-            src_start += take
-            remaining -= take
-            self.seq_len[b] += take
-            self.write_pos[b] = (blk_idx_in_table, offset)
+        start = int(self.logical_seq_len[b].item())
+        positions = torch.arange(
+            start,
+            start + k_htd.size(1),
+            device=self.storage_pos.device,
+            dtype=torch.long,
+        )
+        self._append_dense_with_meta(k_htd, v_htd, b, positions)
+        self.logical_seq_len[b] += k_htd.size(1)
 
     def append_latent(self, latent_btl: Tensor) -> None:
         """Append latent chunks for all sequences. Shape: [B,T,L]."""
@@ -305,29 +394,36 @@ class PagedKVCache:
                 f"Expected latent_dim={self.latent_dim}, got {latent_tl.shape[1]}"
             )
 
-        if len(self.block_table[b]) == 0:
-            self._alloc_block_for_seq(b)
-        remaining, src_start = latent_tl.size(0), 0
-        while remaining > 0:
-            blk_idx_in_table, offset = self.write_pos[b]
-            blk_global = self.block_table[b][blk_idx_in_table]
-            space = self.block_size - offset
-            if space <= 0:
-                self._alloc_block_for_seq(b)
-                blk_idx_in_table, offset = self.write_pos[b]
-                blk_global = self.block_table[b][blk_idx_in_table]
-                space = self.block_size - offset
+        start = int(self.logical_seq_len[b].item())
+        positions = torch.arange(
+            start,
+            start + latent_tl.size(0),
+            device=self.storage_pos.device,
+            dtype=torch.long,
+        )
+        self._append_latent_with_positions(latent_tl, positions, b)
+        self.logical_seq_len[b] += latent_tl.size(0)
 
-            take = min(space, remaining)
-            dst_slice = slice(offset, offset + take)
-            src_slice = slice(src_start, src_start + take)
-            self.storage_latent[b, blk_global, dst_slice, :] = latent_tl[src_slice, :]
-
-            offset += take
-            src_start += take
-            remaining -= take
-            self.seq_len[b] += take
-            self.write_pos[b] = (blk_idx_in_table, offset)
+    def rewrite_seq_dense(
+        self,
+        b: int,
+        k_htd: Tensor,
+        v_htd: Tensor,
+        positions_t: Tensor,
+        beta_ht: Optional[Tensor] = None,
+        logical_seq_len: Optional[int] = None,
+    ) -> None:
+        """
+        Replace sequence `b` with a compacted dense representation.
+        `positions_t` stores the original logical positions represented by each slot.
+        """
+        if self.use_latent_cache:
+            raise RuntimeError("Dense rewrite is unavailable in latent cache mode.")
+        if logical_seq_len is None:
+            logical_seq_len = int(self.logical_seq_len[b].item())
+        self.reset_seq(b, reset_logical=False)
+        self._append_dense_with_meta(k_htd, v_htd, b, positions_t, beta_ht=beta_ht)
+        self.logical_seq_len[b] = int(logical_seq_len)
 
     # ---------------------------------------------------------------------
     # Public API: reading (contiguous gather)
@@ -420,6 +516,52 @@ class PagedKVCache:
         v_flat = torch.cat(v_parts, dim=1)
         return k_flat, v_flat
 
+    def gather_positions_for_seq(self, b: int) -> Tensor:
+        """Gather absolute logical positions for one sequence into contiguous [T]."""
+        self._check_batch_index(b)
+        seq_len = int(self.seq_len[b].item())
+        if seq_len == 0 or not self.block_table[b]:
+            return self.storage_pos.new_zeros((0,))
+
+        parts = []
+        blocks = self.block_table[b]
+        last_blk_idx = len(blocks) - 1
+        for blk_idx, global_blk in enumerate(blocks):
+            if blk_idx == last_blk_idx:
+                offset = (
+                    self.write_pos[b][1]
+                    if blk_idx == self.write_pos[b][0]
+                    else self.block_size
+                )
+                parts.append(self.storage_pos[b, global_blk, :offset])
+            else:
+                parts.append(self.storage_pos[b, global_blk, :])
+        return torch.cat(parts, dim=0)
+
+    def gather_beta_for_seq(self, b: int) -> Tensor:
+        """Gather attention-matching bias terms for one sequence into [Hkv, T]."""
+        if self.use_latent_cache:
+            raise RuntimeError("Beta terms are only stored in dense KV mode.")
+        self._check_batch_index(b)
+        seq_len = int(self.seq_len[b].item())
+        if seq_len == 0 or not self.block_table[b]:
+            return self.storage_k.new_zeros((self.Hkv, 0))
+
+        parts = []
+        blocks = self.block_table[b]
+        last_blk_idx = len(blocks) - 1
+        for blk_idx, global_blk in enumerate(blocks):
+            if blk_idx == last_blk_idx:
+                offset = (
+                    self.write_pos[b][1]
+                    if blk_idx == self.write_pos[b][0]
+                    else self.block_size
+                )
+                parts.append(self.storage_beta[b, :, global_blk, :offset])
+            else:
+                parts.append(self.storage_beta[b, :, global_blk, :])
+        return torch.cat(parts, dim=1)
+
     def gather_latent_batched(self) -> Tensor:
         """Gather latent cache into contiguous [B, T_max, L] tensor."""
         if not self.use_latent_cache:
@@ -484,7 +626,7 @@ class PagedKVCache:
     # Reset / stats
     # ---------------------------------------------------------------------
 
-    def reset_seq(self, b: int) -> None:
+    def reset_seq(self, b: int, reset_logical: bool = True) -> None:
         """
         Reset a single sequence `b`, returning its blocks to the free pool.
         """
@@ -494,6 +636,8 @@ class PagedKVCache:
         self.block_table[b].clear()
         self.write_pos[b] = (0, 0)
         self.seq_len[b] = 0
+        if reset_logical:
+            self.logical_seq_len[b] = 0
 
     def reset_all(self) -> None:
         """
@@ -504,14 +648,22 @@ class PagedKVCache:
             self.block_table[b].clear()
             self.write_pos[b] = (0, 0)
             self.seq_len[b] = 0
+            self.logical_seq_len[b] = 0
 
     # Tiny helpers for debug / logging
     def get_seq_len(self, b: int) -> int:
         self._check_batch_index(b)
         return int(self.seq_len[b].item())
 
+    def get_logical_seq_len(self, b: int) -> int:
+        self._check_batch_index(b)
+        return int(self.logical_seq_len[b].item())
+
     def max_seq_len(self) -> int:
         return int(self.seq_len.max().item())
+
+    def max_logical_seq_len(self) -> int:
+        return int(self.logical_seq_len.max().item())
 
     def num_used_blocks(self) -> int:
         return self.max_blocks - len(self._free_blocks)

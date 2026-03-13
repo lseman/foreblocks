@@ -1,11 +1,5 @@
 """
-Enhanced Trainer with NAS support for HeadComposer
-
-Key additions:
-1. train_nas flag in TrainingConfig
-2. Separate optimizers for architecture (α) and weights
-3. Two-step optimization loop
-4. Alpha reporting and discretization utilities
+Trainer utility helpers shared across the training stack.
 """
 
 import logging
@@ -21,6 +15,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
+from foreblocks.aux.config import TrainingConfig
 from foreblocks.core.heads.head_helper import HeadComposer
 
 # Optional: import your MoE classes and HeadComposer
@@ -38,163 +33,6 @@ except Exception:
         raise RuntimeError("MoE logging not available")
 
 # Try to import HeadComposer for NAS detection
-
-
-# ============================================================================
-# Configuration Management
-# ============================================================================
-
-
-@dataclass
-class TrainingConfig:
-    """Type-safe training configuration with NAS + Conformal support."""
-
-    # -------------------------------------------------
-    # Core training
-    # -------------------------------------------------
-    num_epochs: int = 100
-    learning_rate: float = 0.001
-    weight_decay: float = 0.0
-    batch_size: int = 32
-    patience: int = 10
-    min_delta: float = 1e-4
-    use_amp: bool = True
-    gradient_clip_val: Optional[float] = None
-    gradient_accumulation_steps: int = 1
-    l1_regularization: float = 0.0
-    kl_weight: float = 1.0
-
-    # Scheduler
-    scheduler_type: Optional[str] = None
-    lr_step_size: int = 30
-    lr_gamma: float = 0.1
-    min_lr: float = 1e-6
-
-    # Logging / saving
-    verbose: bool = True
-    log_interval: int = 10
-    save_best_model: bool = True
-    save_model_path: Optional[str] = None
-    experiment_name: str = "default_experiment"  # New: for MLTracker
-
-    # -------------------------------------------------
-    # MoE logging toggles
-    # -------------------------------------------------
-    moe_logging: bool = False
-    moe_log_latency: bool = False
-    moe_condition_name: Optional[str] = None
-    moe_condition_cardinality: Optional[int] = None
-
-    # -------------------------------------------------
-    # NAS training toggles (HeadComposer alphas)
-    # -------------------------------------------------
-    train_nas: bool = False
-    nas_alpha_lr: float = 3e-4
-    nas_alpha_weight_decay: float = 1e-3
-    nas_warmup_epochs: int = 5
-    nas_alternate_steps: int = 1
-    nas_use_val_for_alpha: bool = True
-    nas_discretize_at_end: bool = True
-    nas_discretize_threshold: float = 0.5
-    nas_log_alphas: bool = True
-
-    # -------------------------------------------------
-    # Conformal Prediction Configuration
-    # -------------------------------------------------
-    # Master switch
-    conformal_enabled: bool = False
-
-    # Method selection
-    # Options: "split", "local", "jackknife", "quantile", "tsp",
-    #          "rolling", "agaci", "enbpi", "cptc", "afocp"
-    conformal_method: str = "split"
-
-    # Target coverage (e.g., 0.9 = 90% coverage)
-    conformal_quantile: float = 0.9
-
-    # --- Local Method ---
-    conformal_knn_k: int = 50
-    conformal_local_window: int = 5000
-
-    # --- Rolling / ACI ---
-    conformal_aci_gamma: float = 0.01
-    conformal_rolling_alpha: float = 0.1
-
-    # --- AgACI ---
-    conformal_agaci_gammas: Optional[List[float]] = (
-        None  # Default: [0.001, 0.005, 0.01, 0.05, 0.1, 0.2]
-    )
-
-    # --- EnbPI ---
-    conformal_enbpi_B: int = 20
-    conformal_enbpi_window: int = 500
-
-    # --- TSP (Time Series) ---
-    conformal_tsp_lambda: float = 0.01
-    conformal_tsp_window: int = 5000
-
-    # --- CPTC (State-Aware) ---
-    conformal_cptc_window: int = 500
-    conformal_cptc_tau: float = 1.0
-    conformal_cptc_hard_state_filter: bool = False
-
-    # --- AFOCP (Attention-Based) ---
-    conformal_afocp_feature_dim: int = 128
-    conformal_afocp_attn_hidden: int = 64
-    conformal_afocp_window: int = 500
-    conformal_afocp_tau: float = 1.0
-    conformal_afocp_internal_feat_hidden: int = 256
-    conformal_afocp_internal_feat_depth: int = 3
-    conformal_afocp_internal_feat_dropout: float = 0.1
-    conformal_afocp_online_lr: float = 0.0
-    conformal_afocp_online_steps: int = 1
-
-    def __post_init__(self):
-        """Set defaults for mutable fields."""
-        if self.conformal_agaci_gammas is None:
-            self.conformal_agaci_gammas = [0.001, 0.005, 0.01, 0.05, 0.1, 0.2]
-
-    def update(self, **kwargs):
-        """Safe update: only allow known keys."""
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                raise KeyError(f"Config key '{key}' not found in TrainingConfig")
-
-    def get_conformal_params(self) -> dict:
-        """Extract conformal parameters for engine initialization."""
-        return {
-            "method": self.conformal_method,
-            "quantile": self.conformal_quantile,
-            # Local
-            "knn_k": self.conformal_knn_k,
-            "local_window": self.conformal_local_window,
-            # Rolling/ACI
-            "aci_gamma": self.conformal_aci_gamma,
-            # AgACI
-            "agaci_gammas": self.conformal_agaci_gammas,
-            # EnbPI
-            "enbpi_B": self.conformal_enbpi_B,
-            "enbpi_window": self.conformal_enbpi_window,
-            # TSP
-            "tsp_lambda": self.conformal_tsp_lambda,
-            "tsp_window": self.conformal_tsp_window,
-            # CPTC
-            "cptc_window": self.conformal_cptc_window,
-            "cptc_tau": self.conformal_cptc_tau,
-            "cptc_hard_state_filter": self.conformal_cptc_hard_state_filter,
-            # AFOCP
-            "afocp_feature_dim": self.conformal_afocp_feature_dim,
-            "afocp_attn_hidden": self.conformal_afocp_attn_hidden,
-            "afocp_window": self.conformal_afocp_window,
-            "afocp_tau": self.conformal_afocp_tau,
-            "afocp_internal_feat_hidden": self.conformal_afocp_internal_feat_hidden,
-            "afocp_internal_feat_depth": self.conformal_afocp_internal_feat_depth,
-            "afocp_internal_feat_dropout": self.conformal_afocp_internal_feat_dropout,
-            "afocp_online_lr": self.conformal_afocp_online_lr,
-            "afocp_online_steps": self.conformal_afocp_online_steps,
-        }
 
 
 # ============================================================================

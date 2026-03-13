@@ -44,8 +44,15 @@ class StandardAttentionImpl:
             if not isinstance(provider, PagedKVProvider):
                 raise RuntimeError("Expected PagedKVProvider in paged decode mode.")
             cache = provider.cache
+            cache_is_compacted = bool(
+                torch.any(cache.seq_len != cache.logical_seq_len).item()
+            )
 
             if need_weights:
+                if self.parent.use_attention_matching_compaction or cache_is_compacted:
+                    raise RuntimeError(
+                        "attention-matching KV compaction does not support need_weights=True."
+                    )
                 k, v = provider.get_kv(k, v, kv_latent=kv_latent)
                 k = self.parent._repeat_kv(k)
                 v = self.parent._repeat_kv(v)
@@ -53,7 +60,7 @@ class StandardAttentionImpl:
                 cache_kpad = (
                     torch.arange(T_k_full, device=q.device)
                     .view(1, T_k_full)
-                    .ge(cache.seq_len.view(B, 1))
+                    .ge(cache.logical_seq_len.view(B, 1))
                 )
                 if key_padding_mask is not None:
                     key_padding_mask_full = key_padding_mask.bool()
@@ -97,8 +104,27 @@ class StandardAttentionImpl:
                         b,
                         kv_latent=(kv_latent[b] if kv_latent is not None else None),
                     )
+                if self.parent._can_apply_attention_matching_compaction(
+                    attn_mask=attn_mask,
+                    key_padding_mask=key_padding_mask,
+                    need_weights=need_weights,
+                    cache=cache,
+                    t_new=T_k,
+                ):
+                    self.parent._maybe_compact_paged_cache(
+                        cache=cache,
+                        q=q,
+                        q_start_pos=q_start_pos,
+                        t_new=T_k,
+                    )
 
             total_k = int(cache.seq_len.max().item())
+            if cache_is_compacted and (
+                attn_mask is not None or key_padding_mask is not None
+            ):
+                raise RuntimeError(
+                    "attention-matching KV compaction does not support external attention masks."
+                )
             attn_mask_norm = None
             if attn_mask is not None:
                 attn_mask_norm = self.parent._normalize_attn_mask(
@@ -130,6 +156,8 @@ class StandardAttentionImpl:
                 and key_padding_mask_norm is None
                 and (not self.parent.training)
                 and self.parent.dropout_p == 0.0
+                and (not cache_is_compacted)
+                and (not self.parent.use_attention_matching_compaction)
             ):
                 try:
                     out_bhqd = self.parent._triton_paged_decode(

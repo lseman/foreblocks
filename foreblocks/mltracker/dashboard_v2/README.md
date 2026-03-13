@@ -4,19 +4,32 @@ Modern Vite + React + TypeScript implementation for the MLTracker dashboard.
 
 ## Why this folder exists
 
-- Keeps legacy dashboard untouched at `foreblocks/mltracker/dashboard`
-- Provides a cleaner architecture for incremental migration
-- Offers a fast dev loop and typed API boundary
+- Serves MLTracker data through the FastAPI backend
+- Builds into a static bundle that the backend can mount at `/dashboard`
 
 ## Run
 
 ```bash
 cd foreblocks/mltracker/dashboard_v2
 npm install
+npm run build
+```
+
+Once built, start the MLTracker API as usual and open:
+
+```bash
+http://127.0.0.1:8000/dashboard
+```
+
+For frontend-only development:
+
+```bash
+npm install
 npm run dev
 ```
 
-By default, API calls use `VITE_API_BASE=/api`.
+By default, API calls use `/api`.
+The Vite dev server proxies `/api` to `http://127.0.0.1:8000`.
 
 To point to another backend URL:
 
@@ -27,6 +40,7 @@ VITE_API_BASE=http://127.0.0.1:8000/api npm run dev
 Important:
 - `VITE_API_BASE` must be an API URL, not a filesystem path.
 - The tracker data directory is configured on the backend via `MLTRACKER_DIR`.
+- The SQLite database is never read directly by the frontend; the dashboard reads through the backend API and therefore the same tracker instance.
 
 ## Migrated legacy functionality
 

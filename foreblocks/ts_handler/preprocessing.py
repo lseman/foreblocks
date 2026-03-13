@@ -1,6 +1,6 @@
 # time_series_preprocessor.py
 # =============================================================================
-# Modern / clean refactor of your TimeSeriesPreprocessor
+# Modern / clean refactor of the time-series handling pipeline
 #
 # What changed (cleanliness / less repetition):
 # - ONE canonical preprocessing runner: _run_pipeline(mode="fit"/"transform")
@@ -431,10 +431,10 @@ def _dispatch_filter(self_ref, data: np.ndarray, method: str, **kwargs) -> np.nd
 
 
 # =============================================================================
-# Preprocessor Class
+# Handler Class
 # =============================================================================
 @dataclass
-class TimeSeriesPreprocessor:
+class TimeSeriesHandler:
     # Core behavior
     normalize: bool = True
     differencing: bool = False

@@ -444,6 +444,15 @@ class BaseTransformerLayer(nn.Module):
         mhc_sinkhorn_iters: int = 20,
         mhc_temperature: float = 1.0,
         mhc_collapse: str = "first",
+        moe_use_latent: bool = False,
+        moe_latent_dim: Optional[int] = None,
+        moe_latent_d_ff: Optional[int] = None,
+        use_attention_matching_compaction: bool = False,
+        attention_matching_keep_ratio: float = 0.25,
+        attention_matching_trigger_len: int = 512,
+        attention_matching_min_keep: int = 64,
+        attention_matching_query_budget: int = 64,
+        attention_matching_force_single_step: bool = False,
     ):
         super().__init__()
         self.use_moe = use_moe
@@ -467,6 +476,9 @@ class BaseTransformerLayer(nn.Module):
             use_moe=use_moe,
             num_experts=num_experts,
             top_k=top_k,
+            moe_use_latent=moe_use_latent,
+            moe_latent_dim=moe_latent_dim,
+            moe_latent_d_ff=moe_latent_d_ff,
         )
 
         self.register_buffer("aux_loss", torch.tensor(0.0), persistent=False)
@@ -603,6 +615,15 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         mhc_sinkhorn_iters: int = 20,
         mhc_temperature: float = 1.0,
         mhc_collapse: str = "first",
+        moe_use_latent: bool = False,
+        moe_latent_dim: Optional[int] = None,
+        moe_latent_d_ff: Optional[int] = None,
+        use_attention_matching_compaction: bool = False,
+        attention_matching_keep_ratio: float = 0.25,
+        attention_matching_trigger_len: int = 512,
+        attention_matching_min_keep: int = 64,
+        attention_matching_query_budget: int = 64,
+        attention_matching_force_single_step: bool = False,
     ):
         super().__init__(
             d_model=d_model,
@@ -621,6 +642,9 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             mhc_sinkhorn_iters=mhc_sinkhorn_iters,
             mhc_temperature=mhc_temperature,
             mhc_collapse=mhc_collapse,
+            moe_use_latent=moe_use_latent,
+            moe_latent_dim=moe_latent_dim,
+            moe_latent_d_ff=moe_latent_d_ff,
         )
 
         # Keep 3 attention modules so shared-layer routing can work without rebuilding modules.
@@ -630,6 +654,13 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             dropout=dropout,
             attention_type=att_type,
             freq_modes=freq_modes,
+            use_mla=not use_attention_matching_compaction,
+            use_attention_matching_compaction=use_attention_matching_compaction,
+            attention_matching_keep_ratio=attention_matching_keep_ratio,
+            attention_matching_trigger_len=attention_matching_trigger_len,
+            attention_matching_min_keep=attention_matching_min_keep,
+            attention_matching_query_budget=attention_matching_query_budget,
+            attention_matching_force_single_step=attention_matching_force_single_step,
         )
         self.self_attn_lin = LinearAttention(
             d_model=d_model, n_heads=nhead, dropout=dropout
@@ -640,6 +671,13 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             dropout=dropout,
             attention_type="sype",
             freq_modes=freq_modes,
+            use_mla=not use_attention_matching_compaction,
+            use_attention_matching_compaction=use_attention_matching_compaction,
+            attention_matching_keep_ratio=attention_matching_keep_ratio,
+            attention_matching_trigger_len=attention_matching_trigger_len,
+            attention_matching_min_keep=attention_matching_min_keep,
+            attention_matching_query_budget=attention_matching_query_budget,
+            attention_matching_force_single_step=attention_matching_force_single_step,
         )
         self.self_attn_kimi = KimiAttention(
             d_model=d_model, n_heads=nhead, dropout=dropout
@@ -839,6 +877,15 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         mhc_sinkhorn_iters: int = 20,
         mhc_temperature: float = 1.0,
         mhc_collapse: str = "first",
+        moe_use_latent: bool = False,
+        moe_latent_dim: Optional[int] = None,
+        moe_latent_d_ff: Optional[int] = None,
+        use_attention_matching_compaction: bool = False,
+        attention_matching_keep_ratio: float = 0.25,
+        attention_matching_trigger_len: int = 512,
+        attention_matching_min_keep: int = 64,
+        attention_matching_query_budget: int = 64,
+        attention_matching_force_single_step: bool = False,
     ):
         super().__init__(
             d_model=d_model,
@@ -857,6 +904,9 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             mhc_sinkhorn_iters=mhc_sinkhorn_iters,
             mhc_temperature=mhc_temperature,
             mhc_collapse=mhc_collapse,
+            moe_use_latent=moe_use_latent,
+            moe_latent_dim=moe_latent_dim,
+            moe_latent_d_ff=moe_latent_d_ff,
         )
 
         # Self-attention variants kept simultaneously (for shared-layer routing).
@@ -867,6 +917,13 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_type=att_type,
             freq_modes=freq_modes,
             cross_attention=False,
+            use_mla=not use_attention_matching_compaction,
+            use_attention_matching_compaction=use_attention_matching_compaction,
+            attention_matching_keep_ratio=attention_matching_keep_ratio,
+            attention_matching_trigger_len=attention_matching_trigger_len,
+            attention_matching_min_keep=attention_matching_min_keep,
+            attention_matching_query_budget=attention_matching_query_budget,
+            attention_matching_force_single_step=attention_matching_force_single_step,
         )
         self.self_attn_lin = LinearAttention(
             d_model=d_model,
@@ -881,6 +938,13 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_type="sype",
             freq_modes=freq_modes,
             cross_attention=False,
+            use_mla=not use_attention_matching_compaction,
+            use_attention_matching_compaction=use_attention_matching_compaction,
+            attention_matching_keep_ratio=attention_matching_keep_ratio,
+            attention_matching_trigger_len=attention_matching_trigger_len,
+            attention_matching_min_keep=attention_matching_min_keep,
+            attention_matching_query_budget=attention_matching_query_budget,
+            attention_matching_force_single_step=attention_matching_force_single_step,
         )
         self.self_attn_kimi = KimiAttention(
             d_model=d_model,
