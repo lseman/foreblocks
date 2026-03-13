@@ -61,6 +61,6 @@ If you are new to the project, read these in order:
 
 - The documentation is intended to stay versioned with the codebase.
 - The top-level `README.md` remains the landing page for GitHub visitors.
-- The canonical docs source lives in `wiki/`, not in a separate GitHub Wiki repository.
+- The canonical docs source lives in `docs/`, not in a separate GitHub Wiki repository.
 - The published docs URL space is `/docs/`, while the custom landing page remains at site root.
 - `foretools` docs are versioned here as well, even when the code is not exposed through top-level `foreblocks` imports.

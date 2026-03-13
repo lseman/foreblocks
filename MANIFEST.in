@@ -4,22 +4,22 @@ include README.md
 include LICENSE
 recursive-include .github/workflows workflow.yml
 include .gitignore
-recursive-include docs custom_blocks.md
-recursive-include docs darts.md
-recursive-include docs/imgs darts_module.svg
-recursive-include docs/imgs darts_module_logo.svg
-recursive-include docs/imgs foreblocks_inkscape_compatible.svg
-recursive-include docs/imgs forecasting_model_diagram.svg
-recursive-include docs/imgs fourier_blocks_diagram.svg
-recursive-include docs/imgs moe_architecture_diagram.svg
-recursive-include docs/imgs multi_attention_diagram.svg
-recursive-include docs/imgs preprocessing_module.svg
-recursive-include docs/imgs time_series_forecasting_concept.svg
-recursive-include docs/imgs timeseriespreprocessor_logo.svg
-recursive-include docs/imgs transformer_diagram_fixed.svg
-recursive-include docs moe.md
-recursive-include docs preprocessor.md
-recursive-include docs transformer.md
+recursive-include web custom_blocks.md
+recursive-include web darts.md
+recursive-include web/imgs darts_module.svg
+recursive-include web/imgs darts_module_logo.svg
+recursive-include web/imgs foreblocks_inkscape_compatible.svg
+recursive-include web/imgs forecasting_model_diagram.svg
+recursive-include web/imgs fourier_blocks_diagram.svg
+recursive-include web/imgs moe_architecture_diagram.svg
+recursive-include web/imgs multi_attention_diagram.svg
+recursive-include web/imgs preprocessing_module.svg
+recursive-include web/imgs time_series_forecasting_concept.svg
+recursive-include web/imgs timeseriespreprocessor_logo.svg
+recursive-include web/imgs transformer_diagram_fixed.svg
+recursive-include web moe.md
+recursive-include web preprocessor.md
+recursive-include web transformer.md
 recursive-include examples explainability.ipynb
 recursive-include examples fourier_block.ipynb
 recursive-include examples nha_block.ipynb
@@ -72,6 +72,6 @@ recursive-include foreblocks/tuner foretuner_plot.py
 recursive-include foreblocks utils.py
 recursive-include foretools fenginner.py
 recursive-include foretools vmd.py
-include logo_dark.svg
-include logo_light.svg
+include web/logo_dark.svg
+include web/logo_light.svg
 include requirements.txt

@@ -3,16 +3,16 @@ name: Docs
 on:
   pull_request:
     paths:
-      - "wiki/**"
       - "docs/**"
+      - "web/**"
       - "mkdocs.yml"
       - ".github/workflows/docs.yml"
   push:
     branches:
       - main
     paths:
-      - "wiki/**"
       - "docs/**"
+      - "web/**"
       - "mkdocs.yml"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -48,15 +48,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install mkdocs-material
 
-      - name: Build wiki under /docs
+      - name: Build docs under /docs
         run: mkdocs build --strict
 
       - name: Assemble root landing page
         run: |
-          cp docs/index.html site/index.html
-          cp docs/logo.svg site/logo.svg
-          cp -R docs/imgs site/imgs
-          if [ -f docs/CNAME ]; then cp docs/CNAME site/CNAME; fi
+          cp web/index.html site/index.html
+          cp web/logo.svg site/logo.svg
+          cp -R web/imgs site/imgs
+          if [ -f web/CNAME ]; then cp web/CNAME site/CNAME; fi
           touch site/.nojekyll
 
       - name: Upload Pages artifact

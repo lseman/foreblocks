@@ -13,12 +13,12 @@ This repository uses in-repo, versioned documentation instead of a separate GitH
 
 The documentation system is organized as:
 
-- `wiki/index.md`: wiki home
-- `wiki/tutorials/`: runnable onboarding and practical workflows
-- `wiki/architecture/`: internal structure and design pages
-- `wiki/reference/`: API and repository reference
-- root-level guide pages in `wiki/`: subsystem-focused guides
-- `docs/index.html`: static landing page source for the site root
+- `docs/index.md`: docs home
+- `docs/tutorials/`: runnable onboarding and practical workflows
+- `docs/architecture/`: internal structure and design pages
+- `docs/reference/`: API and repository reference
+- root-level guide pages in `docs/`: subsystem-focused guides
+- `web/index.html`: static landing page source for the site root
 - `mkdocs.yml`: navigation and site structure for the `/docs/` site
 
 ## When to update docs
@@ -36,7 +36,7 @@ Update documentation whenever you:
 For any meaningful user-facing change, update:
 
 1. `README.md` if the landing page should change
-2. one relevant page under `wiki/`
+2. one relevant page under `docs/`
 3. one runnable example or notebook when the change affects workflows
 
 ## Authoring guidance

@@ -3,7 +3,7 @@ site_description: Modular time-series forecasting for PyTorch
 site_url: https://foreblocks.laioseman.com/docs/
 repo_url: https://github.com/lseman/foreblocks
 repo_name: lseman/foreblocks
-docs_dir: wiki
+docs_dir: docs
 site_dir: site/docs
 
 theme:

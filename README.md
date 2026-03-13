@@ -4,8 +4,8 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/foreblocks.svg)](https://pypi.org/project/foreblocks/)
 [![License](https://img.shields.io/github/license/lseman/foreblocks)](LICENSE)
 
-![ForeBlocks Logo](docs/logo.svg#gh-light-mode-only)
-![ForeBlocks Logo](logo_dark.svg#gh-dark-mode-only)
+![ForeBlocks Logo](web/logo.svg#gh-light-mode-only)
+![ForeBlocks Logo](web/logo_dark.svg#gh-dark-mode-only)
 
 **foreBlocks** is a modular PyTorch library for time-series forecasting. The repository combines:
 
@@ -145,32 +145,32 @@ These are the top-level imports currently exposed by `foreblocks`:
 | `foreblocks/darts` | neural architecture search pipeline and evaluation |
 | `foretools/tsgen` | synthetic time-series generator and notebooks |
 | `examples/` | notebooks and runnable usage examples |
-| `docs/` | static landing page assets for the published site root |
-| `wiki/` | MkDocs source for the versioned documentation site published under `/docs/` |
+| `web/` | static landing page assets for the published site root |
+| `docs/` | MkDocs source for the versioned documentation site published under `/docs/` |
 
 ## Documentation Map
 
 Start here if you are new to the repository:
 
-- [Documentation Overview](wiki/overview.md)
-- [Getting Started](wiki/getting-started.md)
-- [Wiki Home](wiki/index.md)
+- [Documentation Overview](docs/overview.md)
+- [Getting Started](docs/getting-started.md)
+- [Docs Home](docs/index.md)
 
 Topic guides:
 
-- [Preprocessor Guide](wiki/preprocessor.md)
-- [Custom Blocks Guide](wiki/custom_blocks.md)
-- [Transformer Guide](wiki/transformer.md)
-- [MoE Guide](wiki/moe.md)
-- [DARTS Guide](wiki/darts.md)
-- [Troubleshooting](wiki/troubleshooting.md)
+- [Preprocessor Guide](docs/preprocessor.md)
+- [Custom Blocks Guide](docs/custom_blocks.md)
+- [Transformer Guide](docs/transformer.md)
+- [MoE Guide](docs/moe.md)
+- [DARTS Guide](docs/darts.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
 Companion tooling:
 
-- [Foretools Overview](wiki/foretools/index.md)
-- [Time Series Generator](wiki/foretools/tsgen.md)
-- [BOHB Search](wiki/foretools/bohb.md)
-- [VMD Decomposition](wiki/foretools/vmd.md)
+- [Foretools Overview](docs/foretools/index.md)
+- [Time Series Generator](docs/foretools/tsgen.md)
+- [BOHB Search](docs/foretools/bohb.md)
+- [VMD Decomposition](docs/foretools/vmd.md)
 
 Useful notebooks and examples:
 
@@ -180,8 +180,8 @@ Useful notebooks and examples:
 
 There is also a repository-local docs navigation file at [`mkdocs.yml`](mkdocs.yml). The current publishing model is:
 
-- site root `/`: custom landing page from `docs/index.html`
-- site docs `/docs/`: MkDocs site built from `wiki/`
+- site root `/`: custom landing page from `web/index.html`
+- site docs `/docs/`: MkDocs site built from `docs/`
 
 ## Current Project Status
 
@@ -197,5 +197,5 @@ There is also a repository-local docs navigation file at [`mkdocs.yml`](mkdocs.y
 Documentation improvements are especially valuable here because the repository spans forecasting models, search, preprocessing, and auxiliary tooling. If you add or change a public API, update:
 
 1. this `README.md`
-2. the relevant guide under `wiki/`
+2. the relevant guide under `docs/`
 3. at least one runnable example or notebook

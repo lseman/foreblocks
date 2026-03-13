@@ -9,11 +9,11 @@ If you are entering the codebase for the first time, use this page to decide whe
 
 The documentation is now organized as a versioned wiki inside the repository:
 
-- `wiki/index.md`: wiki home
-- `wiki/tutorials/`: runnable workflows
-- `wiki/architecture/`: subsystem and pipeline explanations
-- `wiki/reference/`: stable API and repository reference
-- root-level guide pages in `wiki/`: major subsystem guides
+- `docs/index.md`: docs home
+- `docs/tutorials/`: runnable workflows
+- `docs/architecture/`: subsystem and pipeline explanations
+- `docs/reference/`: stable API and repository reference
+- root-level guide pages in `docs/`: major subsystem guides
 
 Published site layout:
 

@@ -7,8 +7,8 @@ This page gives a quick path through the repository for contributors and power u
 | Path | Purpose |
 | --- | --- |
 | `README.md` | GitHub landing page |
-| `docs/` | static landing page assets for the published site root |
-| `wiki/` | MkDocs source for the versioned documentation site |
+| `web/` | static landing page assets for the published site root |
+| `docs/` | MkDocs source for the versioned documentation site |
 | `examples/` | notebooks and runnable examples |
 | `foreblocks/` | main forecasting library |
 | `foretools/` | companion tooling |
@@ -38,7 +38,7 @@ This page gives a quick path through the repository for contributors and power u
 
 ## Recommended entry points by task
 
-- training a baseline model: `README.md`, `wiki/getting-started.md`
+- training a baseline model: `README.md`, `docs/getting-started.md`
 - understanding architecture composition: `foreblocks/core/model.py`
 - adding preprocessing logic: `foreblocks/ts_handler/preprocessing.py`
 - exploring transformer internals: `foreblocks/tf/transformer.py`
