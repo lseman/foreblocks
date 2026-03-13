@@ -31,8 +31,10 @@ Published site layout:
 | Work with transformer backbones | [Transformer Guide](transformer.md) |
 | Enable mixture-of-experts routing | [MoE Guide](moe.md) |
 | Run neural architecture search | [DARTS Guide](darts.md) |
+| Unblock a failed setup or shape mismatch | [Troubleshooting](troubleshooting.md) |
 | Generate synthetic time series | [Time Series Generator](foretools/tsgen.md) |
 | Run budgeted hyperparameter search | [BOHB Search](foretools/bohb.md) |
+| Decompose a signal into modes before modeling | [VMD Decomposition](foretools/vmd.md) |
 
 ## Stable Public Surface
 
@@ -43,7 +45,8 @@ from foreblocks import (
     ForecastingModel,
     Trainer,
     ModelEvaluator,
-    TimeSeriesPreprocessor,
+    TimeSeriesHandler,
+    TimeSeriesDataset,
     create_dataloaders,
     ModelConfig,
     TrainingConfig,
@@ -66,7 +69,7 @@ When documentation and internals diverge, prefer this exported surface first.
 | `foreblocks/core` | forecasting model assembly, heads, conformal prediction |
 | `foreblocks/training` | trainer, training loop, scheduler/optimizer integration |
 | `foreblocks/evaluation` | evaluator, plotting, metrics |
-| `foreblocks/pre` | preprocessing, imputation, filtering, feature generation |
+| `foreblocks/ts_handler` | preprocessing, imputation, filtering, feature generation |
 | `foreblocks/tf` | transformer stack, attention variants, norms, MoE |
 | `foreblocks/darts` | architecture search, search configs, search evaluation |
 | `foreblocks/mltracker` | experiment tracking UI and storage |
@@ -89,7 +92,8 @@ When documentation and internals diverge, prefer this exported surface first.
 
 - The project is broad, so not every internal module should be treated as stable API.
 - `ForecastingModel` plus `Trainer` is the main training path.
-- `TimeSeriesPreprocessor` is useful when you want the library to create windows and optional time features from a raw `[T, D]` array.
+- `TimeSeriesHandler` is useful when you want the library to create windows and optional time features from a raw `[T, D]` array.
+- `TimeSeriesDataset` and `create_dataloaders` are the simplest bridge from NumPy arrays into the trainer loop.
 - `foretools` is not just internal support code. It contains useful standalone utilities, especially the synthetic time-series generator.
 - The most mature `foretools` docs currently cover `tsgen` and `bohb`, which are the two main workflow-oriented tools in this repository.
 
@@ -98,4 +102,5 @@ When documentation and internals diverge, prefer this exported surface first.
 - If you want a runnable baseline, follow [Getting Started](getting-started.md).
 - If you want synthetic data for demos or notebooks, read [Time Series Generator](foretools/tsgen.md).
 - If you want to tune models or benchmark search behavior, read [BOHB Search](foretools/bohb.md).
+- If you want signal decomposition or mode extraction, read [VMD Decomposition](foretools/vmd.md).
 - If you are extending the library, read the topic guide closest to the subsystem you plan to modify.

@@ -33,10 +33,12 @@ nav:
       - Transformer: transformer.md
       - Mixture Of Experts: moe.md
       - DARTS: darts.md
+      - Troubleshooting: troubleshooting.md
   - Foretools:
       - Foretools Overview: foretools/index.md
       - Time Series Generator: foretools/tsgen.md
       - BOHB Search: foretools/bohb.md
+      - VMD Decomposition: foretools/vmd.md
   - Architecture:
       - System Overview: architecture/system-overview.md
       - Forecasting Pipeline: architecture/forecasting-pipeline.md
@@ -50,5 +52,8 @@ nav:
 markdown_extensions:
   - admonition
   - tables
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
   - toc:
       permalink: true

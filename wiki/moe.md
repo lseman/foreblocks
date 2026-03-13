@@ -92,6 +92,9 @@ Supported router families in the implementation include:
 - `expert_dropout`
 - `d_ff_shared`
 - `shared_combine`: `add` or `concat`
+- `moe_use_latent`
+- `moe_latent_dim`
+- `moe_latent_d_ff`
 
 ### Training and scaling
 
@@ -158,6 +161,54 @@ This is useful when you want:
 
 `shared_combine="add"` is simpler and cheaper. `shared_combine="concat"` is more expressive but increases projection cost.
 
+## Latent MoE
+
+The implementation also supports a latent-MoE path inspired by Nemotron-style designs.
+
+Instead of routing full-width token states directly into the experts, the MoE block can:
+
+- project tokens from `d_model` into a smaller latent width
+- run router scoring in that compressed space
+- execute routed experts in the latent space
+- project the routed result back to `d_model`
+
+Main controls:
+
+- `moe_use_latent=True`
+- `moe_latent_dim`
+- `moe_latent_d_ff`
+
+Why this is useful:
+
+- you can increase expert count without paying full-width expert cost
+- router and expert compute both become cheaper
+- the rest of the transformer can stay at the original `d_model`
+
+Current implementation behavior:
+
+- shared experts still run at full `d_model`
+- routed experts and the router use the latent width
+- if `moe_latent_d_ff` is omitted, the routed FFN width is scaled automatically from the original `d_ff`
+
+### Latent-MoE example
+
+```python
+encoder = TransformerEncoder(
+    input_size=8,
+    d_model=256,
+    nhead=8,
+    num_layers=4,
+    use_moe=True,
+    num_experts=16,
+    num_shared=1,
+    top_k=2,
+    router_type="noisy_topk",
+    moe_use_latent=True,
+    moe_latent_dim=64,
+    moe_latent_d_ff=256,
+)
+```
+
 ## Recommended presets
 
 ### Stable baseline
@@ -215,6 +266,25 @@ encoder = TransformerEncoder(
 )
 ```
 
+### Latent-MoE higher-expert setup
+
+```python
+encoder = TransformerEncoder(
+    input_size=8,
+    d_model=384,
+    nhead=8,
+    num_layers=6,
+    use_moe=True,
+    num_experts=32,
+    num_shared=1,
+    top_k=2,
+    routing_mode="token_choice",
+    router_type="noisy_topk",
+    moe_use_latent=True,
+    moe_latent_dim=96,
+)
+```
+
 ## Advanced features in the current implementation
 
 ### Adaptive top-k
@@ -264,6 +334,7 @@ model = ForecastingModel(
 3. Tune `z_loss_weight` if router logits become unstable.
 4. Adjust `moe_capacity_factor` if too many tokens are dropped by capacity pruning.
 5. Scale expert count only after the routing pattern is healthy.
+6. If you need more experts at similar cost, enable `moe_use_latent` and choose a smaller `moe_latent_dim`.
 
 ## Troubleshooting
 
@@ -272,3 +343,4 @@ model = ForecastingModel(
 - High memory usage: reduce `num_experts`, `d_model`, or enable gradient checkpointing.
 - Slow inference: prefer fewer experts, smaller `top_k`, and simpler routers while benchmarking.
 - `adaptive_noisy_topk` with expert choice errors: that combination is intentionally unsupported.
+- Latent MoE is not taking effect: make sure `moe_use_latent=True` and `moe_latent_dim < d_model`.

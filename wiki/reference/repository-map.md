@@ -21,7 +21,7 @@ This page gives a quick path through the repository for contributors and power u
 | `foreblocks/core/` | `ForecastingModel`, heads, conformal tools |
 | `foreblocks/training/` | trainer and training support |
 | `foreblocks/evaluation/` | evaluation and metrics |
-| `foreblocks/pre/` | preprocessing and sequence construction |
+| `foreblocks/ts_handler/` | preprocessing and sequence construction |
 | `foreblocks/tf/` | transformer stack and advanced attention |
 | `foreblocks/darts/` | neural architecture search |
 | `foreblocks/mltracker/` | experiment tracking |
@@ -40,7 +40,7 @@ This page gives a quick path through the repository for contributors and power u
 
 - training a baseline model: `README.md`, `wiki/getting-started.md`
 - understanding architecture composition: `foreblocks/core/model.py`
-- adding preprocessing logic: `foreblocks/pre/preprocessing.py`
+- adding preprocessing logic: `foreblocks/ts_handler/preprocessing.py`
 - exploring transformer internals: `foreblocks/tf/transformer.py`
 - working on search: `foreblocks/darts/`
 - generating synthetic data: `foretools/tsgen/`

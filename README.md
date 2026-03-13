@@ -20,9 +20,22 @@ The project is best approached as a research toolkit rather than a single monoli
 pip install foreblocks
 ```
 
-Install optional extras when you need the full stack:
+Install optional extras when you need specific subsystems:
+
+| Extra | Adds |
+| --- | --- |
+| `mltracker` | experiment tracking API and UI dependencies |
+| `vmd` | VMD decomposition and Optuna-based search support |
+| `wavelets` | optional wavelet backends |
+| `benchmark` | external forecasting baselines and spreadsheet readers |
+| `foreminer` | changepoint-detection support |
+| `all` | all runtime extras above |
+
+Examples:
 
 ```bash
+pip install "foreblocks[mltracker]"
+pip install "foreblocks[vmd,wavelets]"
 pip install "foreblocks[all]"
 ```
 
@@ -112,7 +125,8 @@ These are the top-level imports currently exposed by `foreblocks`:
 | `ForecastingModel` | Core forecasting wrapper for direct, autoregressive, and seq2seq-style models |
 | `Trainer` | Training loop with NAS hooks, MLTracker integration, and optional conformal support |
 | `ModelEvaluator` | Prediction helpers, metrics, cross-validation, and training-curve plots |
-| `TimeSeriesPreprocessor` | Preprocessing pipeline for windowing, scaling, filtering, imputation, and time features |
+| `TimeSeriesHandler` | Time-series handling pipeline for windowing, scaling, filtering, imputation, and time features |
+| `TimeSeriesDataset` | Dataset wrapper used by the dataloader helper |
 | `create_dataloaders` | Build train/validation PyTorch dataloaders from NumPy arrays |
 | `ModelConfig`, `TrainingConfig` | Lightweight configuration dataclasses |
 | `LSTMEncoder`, `LSTMDecoder`, `GRUEncoder`, `GRUDecoder` | Recurrent encoder/decoder blocks |
@@ -126,7 +140,7 @@ These are the top-level imports currently exposed by `foreblocks`:
 | `foreblocks/core` | `ForecastingModel`, heads, conformal utilities, sampling |
 | `foreblocks/training` | `Trainer`, training loop, quantization utilities |
 | `foreblocks/evaluation` | `ModelEvaluator`, benchmarking helpers |
-| `foreblocks/pre` | `TimeSeriesPreprocessor`, imputation, filtering, outlier handling |
+| `foreblocks/ts_handler` | `TimeSeriesHandler`, imputation, filtering, outlier handling |
 | `foreblocks/tf` | transformer stack, attention variants, MoE, norms, embeddings |
 | `foreblocks/darts` | neural architecture search pipeline and evaluation |
 | `foretools/tsgen` | synthetic time-series generator and notebooks |
@@ -149,12 +163,14 @@ Topic guides:
 - [Transformer Guide](wiki/transformer.md)
 - [MoE Guide](wiki/moe.md)
 - [DARTS Guide](wiki/darts.md)
+- [Troubleshooting](wiki/troubleshooting.md)
 
 Companion tooling:
 
 - [Foretools Overview](wiki/foretools/index.md)
 - [Time Series Generator](wiki/foretools/tsgen.md)
 - [BOHB Search](wiki/foretools/bohb.md)
+- [VMD Decomposition](wiki/foretools/vmd.md)
 
 Useful notebooks and examples:
 
@@ -172,7 +188,9 @@ There is also a repository-local docs navigation file at [`mkdocs.yml`](mkdocs.y
 - The repository is broad and still evolving. Some subsystems are more mature than others.
 - The top-level imports listed above are the safest place to start.
 - `Trainer` supports MLTracker and conformal prediction, but you can disable tracking during local smoke tests with `auto_track=False`.
+- `MultiAttention` now includes an experimental attention-matching KV compaction mode for dense paged causal decode. Enable it with `use_attention_matching_compaction=True` and `use_mla=False`.
 - For decoder-based seq2seq and transformer workflows, use the topic guides before wiring custom modules, because dimension contracts are stricter than the direct head path.
+- `TrainingConfig` now lives in a single canonical location and includes trainer, NAS, MLTracker, and conformal settings.
 
 ## Contributing
 

@@ -45,10 +45,12 @@ For any meaningful user-facing change, update:
 - document the public API before internal details
 - avoid promising workflows that have not been validated in the repository
 - link across pages so documentation behaves like a wiki, not isolated files
+- prefer fenced code blocks with an explicit language like `python` or `bash`
+- keep configuration docs aligned with `foreblocks/aux/config.py`
 
 ## Local preview
 
-This repository now uses `mkdocs-material`. Install it first:
+This repository now uses `mkdocs-material` with `pymdownx` Markdown extensions. Install it first:
 
 ```bash
 pip install mkdocs-material

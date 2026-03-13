@@ -33,12 +33,14 @@ If you are new to the project, read these in order:
 - [Transformer Guide](transformer.md)
 - [MoE Guide](moe.md)
 - [DARTS Guide](darts.md)
+- [Troubleshooting](troubleshooting.md)
 
 ## Foretools
 
 - [Foretools Overview](foretools/index.md)
 - [Time Series Generator](foretools/tsgen.md)
 - [BOHB Search](foretools/bohb.md)
+- [VMD Decomposition](foretools/vmd.md)
 
 ## Architecture
 

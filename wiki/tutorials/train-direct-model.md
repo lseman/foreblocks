@@ -91,7 +91,7 @@ In this example the head returns `[N, horizon]`, so `y_train` is also `[N, horiz
 ## What to change next
 
 - replace the MLP head with a larger direct projection
-- switch to `TimeSeriesPreprocessor` if your source data starts as raw `[T, D]`
+- switch to `TimeSeriesHandler` if your source data starts as raw `[T, D]`
 - move to encoder/decoder or transformer-based strategies after this baseline works
 
 ## Related pages

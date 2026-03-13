@@ -10,6 +10,7 @@ Use `foreblocks` when you are building and training forecasting models. Use `for
 | --- | --- | --- |
 | `foretools/tsgen` | create synthetic series with known structure and ground-truth components | [Time Series Generator](tsgen.md) |
 | `foretools/bohb` | run budgeted hyperparameter optimization with Hyperband + TPE | [BOHB Search](bohb.md) |
+| `foretools/vmd` | decompose signals into oscillatory modes with VMD, hierarchical VMD, and multivariate support | [VMD Decomposition](vmd.md) |
 
 ## Other foretools areas
 
@@ -30,10 +31,12 @@ Use `foreblocks` when you are building and training forecasting models. Use `for
 
 1. [Time Series Generator](tsgen.md) if you need synthetic datasets or decomposition examples.
 2. [BOHB Search](bohb.md) if you need hyperparameter optimization outside the `foreblocks.darts` neural architecture search stack.
-3. [Repository Map](../reference/repository-map.md) if you want the broader code layout.
+3. [VMD Decomposition](vmd.md) if you need decomposition, denoising, or mode extraction workflows.
+4. [Repository Map](../reference/repository-map.md) if you want the broader code layout.
 
 ## Related pages
 
 - [Generate Synthetic Series](../tutorials/generate-synthetic-series.md)
 - [Optimize With BOHB](../tutorials/optimize-with-bohb.md)
+- [VMD Decomposition](vmd.md)
 - [Overview](../overview.md)

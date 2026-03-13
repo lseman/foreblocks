@@ -9,7 +9,7 @@ from foreblocks import (
     ForecastingModel,
     Trainer,
     ModelEvaluator,
-    TimeSeriesPreprocessor,
+    TimeSeriesHandler,
     TimeSeriesDataset,
     create_dataloaders,
     ModelConfig,
@@ -49,6 +49,7 @@ The main training orchestrator. It handles:
 - training and validation loops
 - early stopping
 - scheduler stepping
+- gradient accumulation
 - optional MLTracker integration
 - optional NAS-aware training
 - optional conformal support
@@ -62,7 +63,7 @@ Post-training utility for:
 - rolling cross-validation
 - training-curve visualization
 
-### `TimeSeriesPreprocessor`
+### `TimeSeriesHandler`
 
 Preprocessing and windowing pipeline for raw multivariate series.
 
@@ -97,11 +98,19 @@ Dataset wrapper used by the dataloader helper.
 
 Dataclasses for model-level and training-level configuration.
 
+`TrainingConfig` is the canonical trainer configuration surface and now covers:
+
+- core optimization settings
+- MLTracker experiment naming
+- NAS settings
+- conformal prediction settings
+
 ## Guidance
 
 - Prefer top-level imports unless you are modifying internals.
 - Treat deep imports as implementation details unless a subsystem guide explicitly recommends them.
 - `foretools` does not currently expose an equally stable top-level import surface. For those utilities, prefer the documented deep imports in the dedicated `Foretools` pages.
+- If you are unsure which config fields matter for your run, start with [Configuration](configuration.md) and then move to [Troubleshooting](../troubleshooting.md) if the first training loop fails.
 
 ## Related pages
 

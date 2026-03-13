@@ -18,7 +18,7 @@ You can start from either:
 - pre-windowed tensors or NumPy arrays
 - a raw multivariate time series shaped `[T, D]`
 
-If you start from raw series data, `TimeSeriesPreprocessor` can create:
+If you start from raw series data, `TimeSeriesHandler` can create:
 
 - processed series
 - input windows

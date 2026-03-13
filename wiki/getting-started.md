@@ -10,6 +10,13 @@ If you want the broader documentation map first, start from [Docs Home](index.md
 pip install foreblocks
 ```
 
+Optional extras:
+
+```bash
+pip install "foreblocks[mltracker]"
+pip install "foreblocks[all]"
+```
+
 For development:
 
 ```bash
@@ -109,15 +116,15 @@ For encoder/decoder forecasting:
 
 ## Using The Preprocessor
 
-When your starting point is a raw multivariate series shaped `[T, D]`, `TimeSeriesPreprocessor` can handle transforms and window creation for you.
+When your starting point is a raw multivariate series shaped `[T, D]`, `TimeSeriesHandler` can handle transforms and window creation for you.
 
 ```python
 import numpy as np
-from foreblocks import TimeSeriesPreprocessor
+from foreblocks import TimeSeriesHandler
 
 raw = np.random.randn(240, 3)
 
-pre = TimeSeriesPreprocessor(
+pre = TimeSeriesHandler(
     window_size=24,
     horizon=6,
     normalize=True,
@@ -143,10 +150,12 @@ Use the preprocessor guide for the full transform/filter/imputation options:
 - For transformer backbones and patching: [Transformer Guide](transformer.md)
 - For mixture-of-experts routing: [MoE Guide](moe.md)
 - For architecture search: [DARTS Guide](darts.md)
+- For setup problems and shape mismatches: [Troubleshooting](troubleshooting.md)
 - For repository orientation: [Documentation Overview](overview.md)
 
 ## Notes On Current Behavior
 
 - `Trainer` can initialize MLTracker automatically; pass `auto_track=False` during local smoke tests if you only want the training loop.
 - `TrainingConfig` now includes conformal options, but you do not need them for the basic path above.
+- `TimeSeriesDataset` is also available if you want to build PyTorch dataloaders manually instead of using `create_dataloaders(...)`.
 - The direct strategy is the best first step. Move to seq2seq or transformer workflows once the basic loop is already running.

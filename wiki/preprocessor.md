@@ -1,6 +1,6 @@
-# TimeSeriesPreprocessor Guide
+# TimeSeriesHandler Guide
 
-`TimeSeriesPreprocessor` provides a configurable preprocessing pipeline for multivariate time series, including optional auto-configuration (`self_tune=True`).
+`TimeSeriesHandler` provides a configurable preprocessing pipeline for multivariate time series, including optional auto-configuration (`self_tune=True`).
 
 Related docs:
 - [Documentation Overview](overview.md)
@@ -13,7 +13,7 @@ Related docs:
 ## Import
 
 ```python
-from foreblocks import TimeSeriesPreprocessor
+from foreblocks import TimeSeriesHandler
 ```
 
 ---
@@ -23,12 +23,12 @@ from foreblocks import TimeSeriesPreprocessor
 ```python
 import numpy as np
 import pandas as pd
-from foreblocks import TimeSeriesPreprocessor
+from foreblocks import TimeSeriesHandler
 
 data = np.random.randn(1200, 4)  # [T, F]
 timestamps = pd.date_range("2025-01-01", periods=len(data), freq="h")
 
-pre = TimeSeriesPreprocessor(
+pre = TimeSeriesHandler(
     self_tune=True,
     window_size=96,
     horizon=24,
@@ -94,7 +94,7 @@ pred_real = pre.inverse_transform(pred_scaled)
 ## Manual configuration example
 
 ```python
-pre = TimeSeriesPreprocessor(
+pre = TimeSeriesHandler(
     normalize=True,
     scaling_method="robust",   # when heavy tails are expected
     remove_outliers=True,
