@@ -15,6 +15,7 @@ def node(
     inputs: Optional[List[str]] = None,
     outputs: Optional[List[str]] = None,
     config: Optional[Dict[str, Any]] = None,
+    config_sources: Optional[List[type]] = None,
     # Optional explicit codegen spec (if provided, we won't auto-infer it)
     py: Optional[Dict[str, Any]] = None,
     # Control whether we run auto-inference (default yes)
@@ -36,6 +37,7 @@ def node(
                 "inputs": inputs,
                 "outputs": outputs,
                 "config": config,
+                "config_sources": config_sources or [],
             },
             "py": py,     # <── NEW: optional explicit codegen metadata
             "infer": infer,

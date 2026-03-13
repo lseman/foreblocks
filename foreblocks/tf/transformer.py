@@ -1876,6 +1876,7 @@ class BaseTransformer(nn.Module, ABC):
     category="Encoder",
     outputs=["encoder"],
     color="bg-gradient-to-br from-green-700 to-green-800",
+    config_sources=[BaseTransformerLayer, TransformerEncoderLayer],
 )
 class TransformerEncoder(BaseTransformer):
     def __init__(
@@ -2109,6 +2110,7 @@ class TransformerEncoder(BaseTransformer):
     category="Decoder",
     outputs=["decoder"],
     color="bg-gradient-to-br from-purple-700 to-purple-800",
+    config_sources=[BaseTransformerLayer, TransformerDecoderLayer],
 )
 class TransformerDecoder(BaseTransformer):
     def __init__(

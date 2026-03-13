@@ -183,19 +183,12 @@ def _collect_config_from_pydantic(cfg_cls) -> Dict[str, Any]:
     inst = cfg_cls()
     return inst.model_dump()
 
-def _collect_config_from_init(cls) -> Dict[str, Any]:
-    """
-    Include ALL non-variadic parameters (except self):
-      - if default exists: use it
-      - else: synthesize a safe default from annotation (may be None)
-    """
+def _collect_config_from_signature(sig: inspect.Signature) -> Dict[str, Any]:
     cfg: Dict[str, Any] = {}
-    try:
-        sig = inspect.signature(cls.__init__)
-    except (TypeError, ValueError):
-        return cfg
     for name, p in sig.parameters.items():
         if name in ("self", "args", "kwargs", "*args", "**kwargs"):
+            continue
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             continue
         if p.default is not inspect._empty:
             cfg[name] = p.default
@@ -203,26 +196,74 @@ def _collect_config_from_init(cls) -> Dict[str, Any]:
             cfg[name] = _safe_default_for_param(p)
     return cfg
 
-def infer_config(cls) -> Dict[str, Any]:
+
+def _collect_config_from_init(cls) -> Dict[str, Any]:
+    """
+    Include ALL non-variadic __init__ parameters (except self), including
+    inherited constructor parameters from parent classes.
+
+    This matters for nodes like TransformerEncoder/TransformerDecoder that
+    expose most of their configurable surface through ``**kwargs`` forwarded
+    into a richer base class constructor.
+    """
+    cfg: Dict[str, Any] = {}
+    mro = [base for base in reversed(cls.mro()) if base not in (object,)]
+    for base in mro:
+        init = base.__dict__.get("__init__")
+        if init is None:
+            continue
+        try:
+            sig = inspect.signature(init)
+        except (TypeError, ValueError):
+            continue
+        cfg.update(_collect_config_from_signature(sig))
+    return cfg
+
+def infer_config(cls, extra_sources: Optional[List[type]] = None) -> Dict[str, Any]:
     """
     Order:
       - If inner class `Config` exists: try dataclass → try pydantic v2
       - Else fall back to __init__ signature (now includes safe defaults)
     """
+    merged: Dict[str, Any] = {}
+
+    def _infer_single(source_cls: type) -> Dict[str, Any]:
+        Config = getattr(source_cls, "Config", None)
+        if Config is not None:
+            try:
+                if is_dataclass(Config):
+                    return _collect_config_from_dataclass(Config)
+            except Exception:
+                pass
+            try:
+                from pydantic import BaseModel as _BM  # type: ignore
+                if isinstance(Config, type) and issubclass(Config, _BM):
+                    return _collect_config_from_pydantic(Config)
+            except Exception:
+                pass
+        return _collect_config_from_init(source_cls)
+
+    for source in extra_sources or []:
+        if isinstance(source, type):
+            merged.update(_infer_single(source))
+
     Config = getattr(cls, "Config", None)
     if Config is not None:
         try:
             if is_dataclass(Config):
-                return _collect_config_from_dataclass(Config)
+                merged.update(_collect_config_from_dataclass(Config))
+                return merged
         except Exception:
             pass
         try:
             from pydantic import BaseModel as _BM  # type: ignore
             if isinstance(Config, type) and issubclass(Config, _BM):
-                return _collect_config_from_pydantic(Config)
+                merged.update(_collect_config_from_pydantic(Config))
+                return merged
         except Exception:
             pass
-    return _collect_config_from_init(cls)
+    merged.update(_collect_config_from_init(cls))
+    return merged
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -441,13 +482,18 @@ def build_node_spec(cls: type, options: Dict[str, Any]) -> Dict[str, Any]:
     ov = options.get("overrides", {}) or {}
     do_infer = options.get("infer", True)
 
-    inferred_cfg = infer_config(cls) if do_infer else {}
+    extra_config_sources = [
+        source for source in (ov.get("config_sources") or []) if isinstance(source, type)
+    ]
+
+    inferred_cfg = infer_config(cls, extra_sources=extra_config_sources) if do_infer else {}
     inferred_in  = infer_inputs(cls) if do_infer else []
     inferred_out = infer_outputs(cls) if do_infer else []
 
     inputs  = ov.get("inputs")  or inferred_in
     outputs = ov.get("outputs") or inferred_out
-    config  = ov.get("config")  or inferred_cfg
+    override_cfg = ov.get("config") or {}
+    config = {**inferred_cfg, **override_cfg}
 
     # 2) Resolve 'py' spec
     explicit_py    = options.get("py")
