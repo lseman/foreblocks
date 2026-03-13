@@ -44,7 +44,6 @@ foreblocks/mltracker/mltracker_data/
 uni2ts/
 timesfm/
 examples/seq2seq.ipynb
-webui/
 .idea/
 uv.lock
 work2

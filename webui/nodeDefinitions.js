@@ -1,0 +1,53 @@
+const NODE_TYPES = {
+  // ===== DATA NODES =====
+  data_input: {
+    name: 'Data Input',
+    category: 'Data',
+    color: 'bg-gradient-to-br from-blue-600 to-blue-700',
+    outputs: ['X_train', 'Y_train'],
+    config: { 
+      seq_len: 50, 
+      target_len: 10,
+      total_len: 1000,
+      data_type: 'synthetic_sine'
+    },
+    py: {
+      imports: [''],
+      // ctor: 'None',
+      var_prefix: 'datainput',
+      bind: {
+        kwargs: {
+          seq_len: '@config:seq_len',
+          target_len: '@config:target_len',
+          total_len: '@config:total_len',
+          data_type: '@config:data_type'
+        }
+      }
+    }
+  },
+
+  output: {
+    name: 'Output',
+    category: 'Visualization',
+    color: 'bg-gradient-to-br from-green-600 to-green-700',
+    inputs: ['trained_model', 'X_val', 'Y_val'],
+    config: { 
+      plot: true,
+      metrics: true
+    },
+    py: {
+      imports: [''],
+      // ctor: 'None',
+      var_prefix: 'outputnode',
+      bind: {
+        kwargs: {
+          plot: '@config:plot',
+          metrics: '@config:metrics',
+          trained_model: '@input:trained_model',
+          X_val: '@input:X_val',
+          Y_val: '@input:Y_val'
+        }
+      }
+    }
+  },
+};
