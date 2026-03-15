@@ -18,6 +18,7 @@ from .diagnostics import (
 )
 from .layers import (
     CausalDepthwiseConv1d,
+    FeedForward,
     HybridMambaBlock,
     HybridMamba2Block,
     RMSNormWeightOnly,
@@ -60,6 +61,7 @@ __all__ = [
     "benchmark_causal_conv",
     "CAUSAL_CONV1D_TRITON_AVAILABLE",
     "CausalDepthwiseConv1d",
+    "FeedForward",
     "causal_depthwise_conv1d",
     "causal_depthwise_conv1d_reference",
     "causal_depthwise_conv1d_triton",

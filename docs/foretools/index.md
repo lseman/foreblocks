@@ -11,13 +11,13 @@ Use `foreblocks` when you are building and training forecasting models. Use `for
 | `foretools/tsgen` | create synthetic series with known structure and ground-truth components | [Time Series Generator](tsgen.md) |
 | `foretools/bohb` | run budgeted hyperparameter optimization with Hyperband + TPE | [BOHB Search](bohb.md) |
 | `foretools/vmd` | decompose signals into oscillatory modes with VMD, hierarchical VMD, and multivariate support | [VMD Decomposition](vmd.md) |
+| `foretools/fengineer` | automated feature engineering with transforms, interactions, MI selection, and RFECV | [Feature Engineering](feature-engineering.md) |
 
 ## Other foretools areas
 
 | Path | Purpose |
 | --- | --- |
 | `foretools/foreminer` | exploratory analysis and diagnostics |
-| `foretools/fengineer` | feature engineering utilities |
 | `foretools/vmd` | decomposition tools |
 | `foretools/foraug` | augmentation-oriented utilities |
 
@@ -32,11 +32,13 @@ Use `foreblocks` when you are building and training forecasting models. Use `for
 1. [Time Series Generator](tsgen.md) if you need synthetic datasets or decomposition examples.
 2. [BOHB Search](bohb.md) if you need hyperparameter optimization outside the `foreblocks.darts` neural architecture search stack.
 3. [VMD Decomposition](vmd.md) if you need decomposition, denoising, or mode extraction workflows.
-4. [Repository Map](../reference/repository-map.md) if you want the broader code layout.
+4. [Feature Engineering](feature-engineering.md) if you need automated feature construction, mutual information selection, or RFECV-based pruning.
+5. [Repository Map](../reference/repository-map.md) if you want the broader code layout.
 
 ## Related pages
 
 - [Generate Synthetic Series](../tutorials/generate-synthetic-series.md)
 - [Optimize With BOHB](../tutorials/optimize-with-bohb.md)
 - [VMD Decomposition](vmd.md)
+- [Feature Engineering](feature-engineering.md)
 - [Overview](../overview.md)

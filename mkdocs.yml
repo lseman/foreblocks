@@ -73,6 +73,7 @@ nav:
       - BOHB Search: foretools/bohb.md
       - VMD Decomposition: foretools/vmd.md
       - AutoDA Augmentation: foretools/tsaug.md
+      - Feature Engineering: foretools/feature-engineering.md
   - Architecture:
       - System Overview: architecture/system-overview.md
       - Forecasting Pipeline: architecture/forecasting-pipeline.md

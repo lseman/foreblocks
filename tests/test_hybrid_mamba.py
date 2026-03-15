@@ -9,6 +9,7 @@ from foreblocks.hybrid_mamba import (
     grouped_ssd_scan_reference,
 )
 from foreblocks.hybrid_mamba.layers import (
+    FeedForward,
     HybridMamba2Block,
     HybridMambaBlock,
     RotaryEmbedding,
@@ -250,6 +251,125 @@ def test_tiny_hybrid_mamba2_lm_with_gqa() -> None:
     input_ids = torch.randint(0, 64, (2, 6))
     logits = model(input_ids)
     assert logits.shape == (2, 6, 64)
+
+
+def test_feedforward_block_forward() -> None:
+    ff = FeedForward(d_model=32, expansion=8 / 3, dropout=0.0)
+    x = torch.randn(2, 10, 32)
+    y = ff(x)
+    assert y.shape == x.shape
+
+
+def test_hybrid_mamba_block_step_matches_parallel() -> None:
+    torch.manual_seed(0)
+    block = HybridMambaBlock(
+        d_model=32, d_inner=64, d_state=8, d_conv=4, dt_rank=4,
+        use_cuda_scan=False, use_pre_norm=False,
+    )
+    block.eval()
+    T = 6
+    x = torch.randn(1, T, 32)
+
+    with torch.no_grad():
+        y_par = block(x)  # (1, T, 32) parallel
+
+        state = block.make_state(1)
+        ys = []
+        for t in range(T):
+            ys.append(block.step(x[:, t], state))
+        y_step = torch.stack(ys, dim=1)
+
+    assert torch.allclose(y_par, y_step, atol=1e-4, rtol=1e-4), \
+        f"max diff: {(y_par - y_step).abs().max().item()}"
+
+
+def test_ssd_branch_step_matches_parallel() -> None:
+    torch.manual_seed(1)
+    branch = StructuredStateSpaceDualityBranch(
+        d_model=32, d_inner=64, d_state=8, d_conv=4, dt_rank=4, num_heads=4,
+    )
+    branch.eval()
+    T = 5
+    x = torch.randn(1, T, 32)
+
+    with torch.no_grad():
+        y_par = branch(x)
+
+        state = branch.make_state(1)
+        ys = [branch.step(x[:, t], state) for t in range(T)]
+        y_step = torch.stack(ys, dim=1)
+
+    assert torch.allclose(y_par, y_step, atol=1e-4, rtol=1e-4), \
+        f"max diff: {(y_par - y_step).abs().max().item()}"
+
+
+def test_hybrid_mamba2_block_step_runs() -> None:
+    block = HybridMamba2Block(
+        d_model=32, d_inner=64, d_state=8, d_conv=4, dt_rank=4,
+        num_heads=4, window_size=8, use_cuda_scan=False,
+    )
+    block.eval()
+    x = torch.randn(2, 32)
+    state = block.make_state(2)
+    with torch.no_grad():
+        y = block.step(x, state)
+    assert y.shape == (2, 32)
+
+
+def test_tiny_hybrid_mamba2_lm_generate() -> None:
+    model = TinyHybridMamba2LM(
+        vocab_size=64, d_model=32, n_layers=4, d_state=8, d_conv=4,
+        dt_rank=4, num_heads=4, window_size=8, attn_every_n=2,
+        tie_embeddings=True, use_cuda_scan=False,
+    )
+    model.eval()
+    input_ids = torch.randint(0, 64, (1, 5))
+    with torch.no_grad():
+        out = model.generate(input_ids, max_new_tokens=3, temperature=0.0)
+    assert out.shape == (1, 8)
+    assert (out[:, :5] == input_ids).all()
+
+
+def test_tiny_hybrid_mamba_lm_generate() -> None:
+    model = TinyHybridMambaLM(
+        vocab_size=64, d_model=32, n_layers=2, d_state=8, d_conv=4,
+        tie_embeddings=True,
+    )
+    model.eval()
+    input_ids = torch.randint(0, 64, (1, 4))
+    with torch.no_grad():
+        out = model.generate(input_ids, max_new_tokens=4, temperature=1.0)
+    assert out.shape == (1, 8)
+
+
+def test_feedforward_mlp_interleaving() -> None:
+    model = TinyHybridMamba2LM(
+        vocab_size=64, d_model=32, n_layers=4, d_state=8, d_conv=4,
+        dt_rank=4, num_heads=4, window_size=8, attn_every_n=2,
+        tie_embeddings=True, use_cuda_scan=False,
+        mlp_every_n=2,
+    )
+    ffn_count = sum(model._has_ffn)
+    assert ffn_count == 2  # layers 1 and 3 (0-indexed: after idx 1 and 3)
+    input_ids = torch.randint(0, 64, (2, 7))
+    logits = model(input_ids)
+    assert logits.shape == (2, 7, 64)
+
+
+def test_attention_sink_mask() -> None:
+    attn = SlidingWindowAttention(
+        d_model=16, num_heads=4, window_size=3, dropout=0.0, n_sink_tokens=1,
+    )
+    attn.eval()
+    # Position 5 (past the window from position 0) should still attend to sink (col 0)
+    # The mask for row 5, col 0 should be 0.0 (not -inf)
+    mask = attn._sliding_mask(8, torch.device("cpu"), torch.float32)
+    assert mask[5, 0].item() == 0.0    # sink: always visible
+    assert mask[5, 1].item() == float("-inf")  # outside window and not sink
+    assert mask[5, 4].item() == 0.0    # within window (rel=1)
+    x = torch.randn(2, 8, 16)
+    y = attn(x)
+    assert y.shape == x.shape
 
 
 def test_grouped_ssd_scan_triton_matches_reference_when_available() -> None:
