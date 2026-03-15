@@ -21,6 +21,7 @@ from .layers import (
     HybridMambaBlock,
     HybridMamba2Block,
     RMSNormWeightOnly,
+    RotaryEmbedding,
     SlidingWindowAttention,
     StructuredStateSpaceDualityBranch,
     TinyHybridMambaLM,
@@ -50,6 +51,7 @@ _HAS_TRITON = TRITON_AVAILABLE
 _load_selective_scan_ext = load_selective_scan_extension
 
 __all__ = [
+    "RotaryEmbedding",
     "EXTENSION_NAME",
     "TRITON_AVAILABLE",
     "_HAS_TRITON",

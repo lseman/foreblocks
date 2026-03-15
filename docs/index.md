@@ -29,27 +29,27 @@ If you are new to the project, this is the safest reading order:
 
 <div class="doc-grid">
   <div class="doc-card">
-    <h3><a href="getting-started.md">Train a baseline first</a></h3>
+    <h3><a href="getting-started/">Train a baseline first</a></h3>
     <p>Use the smallest reliable path through <code>ForecastingModel</code>, <code>Trainer</code>, and NumPy-backed dataloaders.</p>
   </div>
   <div class="doc-card">
-    <h3><a href="preprocessor.md">Start from raw series</a></h3>
+    <h3><a href="preprocessor/">Start from raw series</a></h3>
     <p>Use <code>TimeSeriesHandler</code> when you need scaling, filtering, imputation, and window generation from a <code>[T, D]</code> array.</p>
   </div>
   <div class="doc-card">
-    <h3><a href="transformer.md">Transformer and MoE</a></h3>
+    <h3><a href="transformer/">Transformer and MoE</a></h3>
     <p>Transformer, attention, patching, and MoE guides cover the more configurable internals.</p>
   </div>
   <div class="doc-card">
-    <h3><a href="hybrid-mamba.md">Hybrid Mamba (SSM)</a></h3>
+    <h3><a href="hybrid-mamba/">Hybrid Mamba (SSM)</a></h3>
     <p>Pure SSM and hybrid SSM+attention blocks with Triton/CUDA kernel backends.</p>
   </div>
   <div class="doc-card">
-    <h3><a href="darts.md">Search architectures</a></h3>
+    <h3><a href="darts/">Search architectures</a></h3>
     <p>DARTS staged NAS pipeline: zero-cost ranking, bilevel search, and result analysis.</p>
   </div>
   <div class="doc-card">
-    <h3><a href="uncertainty.md">Prediction intervals</a></h3>
+    <h3><a href="uncertainty/">Prediction intervals</a></h3>
     <p>Post-hoc conformal prediction — 10 methods from split conformal to online ACI variants.</p>
   </div>
 </div>
