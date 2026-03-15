@@ -10,7 +10,7 @@ theme:
   name: material
   font:
     text: Inter
-    code: JetBrains Mono
+    code: Fira Code
   icon:
     logo: material/chart-line
     repo: fontawesome/brands/github

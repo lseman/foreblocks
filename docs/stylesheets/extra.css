@@ -6,13 +6,29 @@
    Typography
    ---------------------------------------------------------- */
 :root {
-  --fb-teal:       #2dd4bf;
-  --fb-teal-dim:   rgba(45, 212, 191, 0.14);
-  --fb-teal-glow:  rgba(45, 212, 191, 0.08);
-  --fb-dark-card:  rgba(15, 23, 42, 0.55);
-  --fb-border:     rgba(148, 163, 184, 0.15);
-  --fb-radius:     14px;
-  --fb-radius-sm:  8px;
+  --fb-teal: #2dd4bf;
+  --fb-teal-dim: rgba(45, 212, 191, 0.14);
+  --fb-teal-glow: rgba(45, 212, 191, 0.08);
+  --fb-dark-card: rgba(15, 23, 42, 0.55);
+  --fb-border: rgba(148, 163, 184, 0.15);
+  --fb-radius: 14px;
+  --fb-radius-sm: 8px;
+
+  /* Base prose size */
+  --md-typeset-font-size: 0.75rem;
+}
+
+/* Content headings */
+.md-content h1 {
+  font-size: 1.3em;
+}
+
+.md-content h2 {
+  font-size: 1.1em;
+}
+
+.md-content h3 {
+  font-size: 1em;
 }
 
 /* Heading accent underline */
@@ -71,16 +87,34 @@
 /* ----------------------------------------------------------
    Code blocks
    ---------------------------------------------------------- */
+
+/* Fira Code ligatures + spacing for all code */
+.md-typeset code,
+.md-typeset pre,
+.md-typeset kbd {
+  font-family: "Fira Code", "Fira Mono", monospace;
+  font-feature-settings: "liga" 1, "calt" 1;
+  font-variant-ligatures: contextual;
+  letter-spacing: -0.01em;
+}
+
+/* Fenced code blocks */
+.md-typeset pre>code {
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
 [data-md-color-scheme="slate"] .highlight pre {
   border: 1px solid rgba(45, 212, 191, 0.12);
   border-radius: var(--fb-radius-sm);
 }
 
+/* Inline code */
 [data-md-color-scheme="slate"] .md-typeset code {
   background: rgba(45, 212, 191, 0.07);
   border-radius: 4px;
   padding: 0.1em 0.35em;
-  font-size: 0.87em;
+  font-size: 0.75em;
   color: #7dd3c7;
   border: 1px solid rgba(45, 212, 191, 0.12);
 }
@@ -90,6 +124,7 @@
   border: none;
   padding: 0;
   color: inherit;
+  font-size: inherit;
 }
 
 /* Copy button tweak */
@@ -97,6 +132,7 @@
   color: rgba(148, 163, 184, 0.5);
   transition: color 0.15s ease;
 }
+
 .md-clipboard:hover {
   color: var(--fb-teal);
 }
@@ -104,19 +140,19 @@
 /* ----------------------------------------------------------
    Content tabs (pymdownx.tabbed)
    ---------------------------------------------------------- */
-.md-typeset .tabbed-labels > label {
-  font-size: 0.82rem;
+.md-typeset .tabbed-labels>label {
+  font-size: 0.76rem;
   font-weight: 600;
   letter-spacing: 0.03em;
   color: var(--md-default-fg-color--light);
   transition: color 0.15s ease;
 }
 
-.md-typeset .tabbed-labels > label:hover {
+.md-typeset .tabbed-labels>label:hover {
   color: var(--fb-teal);
 }
 
-.md-typeset .tabbed-labels > label.tabbed-label--active {
+.md-typeset .tabbed-labels>label.tabbed-label--active {
   color: var(--fb-teal);
 }
 
@@ -132,7 +168,7 @@
 .md-typeset details {
   border-radius: var(--fb-radius-sm);
   border-width: 1px;
-  font-size: 0.9rem;
+  font-size: 0.76rem;
 }
 
 /* Note: teal */
@@ -141,8 +177,9 @@
   border-color: rgba(45, 212, 191, 0.35);
   background: rgba(45, 212, 191, 0.05);
 }
-.md-typeset .note > .admonition-title,
-.md-typeset .note > summary {
+
+.md-typeset .note>.admonition-title,
+.md-typeset .note>summary {
   background: rgba(45, 212, 191, 0.1);
 }
 
@@ -171,7 +208,7 @@
   border-radius: var(--fb-radius-sm);
   overflow: hidden;
   border: 1px solid var(--fb-border);
-  font-size: 0.88rem;
+  font-size: 0.72rem;
 }
 
 [data-md-color-scheme="slate"] .md-typeset table:not([class]) thead {
@@ -183,10 +220,8 @@
 }
 
 .md-typeset table:not([class]) th {
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  font-size: 0.78rem;
+  font-weight: 600;
+  font-size: 0.72rem;
   color: var(--fb-teal);
 }
 
@@ -200,34 +235,33 @@
 }
 
 .hero-copy h1 {
-  font-size: 2rem;
-  font-weight: 800;
-  line-height: 1.25;
-  letter-spacing: -0.02em;
-  background: linear-gradient(135deg, #f8fafc 30%, var(--fb-teal) 100%);
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  background: linear-gradient(135deg, #f1f5f9 40%, var(--fb-teal) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
 .hero-lead {
-  font-size: 1.05rem;
-  line-height: 1.7;
+  font-size: 0.78rem;
+  line-height: 1.65;
   color: var(--md-default-fg-color--light);
   max-width: 68ch;
 }
 
 .eyebrow {
   display: inline-block;
-  padding: 0.22rem 0.65rem;
+  padding: 0.2rem 0.6rem;
   border-radius: 999px;
   background: var(--fb-teal-dim);
   color: var(--fb-teal);
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  margin-bottom: 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.5rem;
 }
 
 /* ----------------------------------------------------------
@@ -256,15 +290,15 @@
 
 .metric-chip strong {
   display: block;
-  font-size: 1rem;
+  font-size: 0.8rem;
   font-weight: 700;
   color: #ccfbf1;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.2rem;
 }
 
 .metric-chip span {
   color: var(--md-default-fg-color--light);
-  font-size: 0.87rem;
+  font-size: 0.73rem;
   line-height: 1.5;
 }
 
@@ -294,8 +328,8 @@
 
 .doc-card h3 {
   margin-top: 0;
-  margin-bottom: 0.5rem;
-  font-size: 0.98rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.8rem;
   font-weight: 700;
 }
 
@@ -312,7 +346,7 @@
 .doc-card p {
   margin: 0;
   color: var(--md-default-fg-color--light);
-  font-size: 0.9rem;
+  font-size: 0.75rem;
   line-height: 1.55;
 }
 
@@ -321,11 +355,11 @@
    ---------------------------------------------------------- */
 .docs-callout {
   border-left: 3px solid var(--fb-teal);
-  padding: 0.85rem 1rem;
+  padding: 0.75rem 0.9rem;
   margin: 1rem 0 1.5rem;
   background: var(--fb-teal-glow);
   border-radius: 0 var(--fb-radius-sm) var(--fb-radius-sm) 0;
-  font-size: 0.92rem;
+  font-size: 0.76rem;
   color: var(--md-default-fg-color--light);
 }
 
@@ -335,7 +369,7 @@
 .section-intro {
   color: var(--md-default-fg-color--light);
   margin-bottom: 1rem;
-  font-size: 0.95rem;
+  font-size: 0.76rem;
 }
 
 /* ----------------------------------------------------------
@@ -357,8 +391,8 @@
    Light mode overrides
    ---------------------------------------------------------- */
 [data-md-color-scheme="default"] {
-  --fb-dark-card:  rgba(241, 245, 249, 0.9);
-  --fb-border:     rgba(100, 116, 139, 0.2);
+  --fb-dark-card: rgba(241, 245, 249, 0.9);
+  --fb-border: rgba(100, 116, 139, 0.2);
 }
 
 [data-md-color-scheme="default"] .metric-chip {

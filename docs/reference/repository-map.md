@@ -6,25 +6,26 @@ This page gives a quick path through the repository for contributors and power u
 
 | Path | Purpose |
 | --- | --- |
-| `README.md` | GitHub landing page |
-| `web/` | static landing page assets for the published site root |
+| [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md) | GitHub landing page |
+| [`mkdocs.yml`](https://github.com/lseman/foreblocks/blob/main/mkdocs.yml) | Navigation and site structure for the `/docs/` site |
+| `web/` | Static landing page assets for the published site root |
 | `docs/` | MkDocs source for the versioned documentation site |
-| `examples/` | notebooks and runnable examples |
-| `foreblocks/` | main forecasting library |
-| `foretools/` | companion tooling |
+| `examples/` | Notebooks and runnable examples |
+| `foreblocks/` | Main forecasting library |
+| `foretools/` | Companion tooling |
 
 ## `foreblocks/`
 
 | Path | Purpose |
 | --- | --- |
-| `foreblocks/__init__.py` | top-level public exports |
+| [`foreblocks/__init__.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/__init__.py) | Top-level public exports |
 | `foreblocks/core/` | `ForecastingModel`, heads, conformal tools |
-| `foreblocks/training/` | trainer and training support |
-| `foreblocks/evaluation/` | evaluation and metrics |
-| `foreblocks/ts_handler/` | preprocessing and sequence construction |
-| `foreblocks/tf/` | transformer stack and advanced attention |
-| `foreblocks/darts/` | neural architecture search |
-| `foreblocks/mltracker/` | experiment tracking |
+| `foreblocks/training/` | Trainer and training support |
+| `foreblocks/evaluation/` | Evaluation and metrics |
+| `foreblocks/ts_handler/` | Preprocessing and sequence construction |
+| `foreblocks/tf/` | Transformer stack and advanced attention |
+| `foreblocks/darts/` | Neural architecture search |
+| `foreblocks/mltracker/` | Experiment tracking |
 | `foreblocks/hybrid_mamba/` | Hybrid Mamba SSM blocks (HybridMambaBlock, HybridMamba2Block, SSD) |
 | `foreblocks/mamba/` | Original Mamba backbone with MoE, positional encoding, and eval tools |
 | `foreblocks/kan/` | Kolmogorov-Arnold Network backbone |
@@ -33,24 +34,26 @@ This page gives a quick path through the repository for contributors and power u
 
 | Path | Purpose |
 | --- | --- |
-| `foretools/tsgen/` | synthetic time-series generation |
+| `foretools/tsgen/` | Synthetic time-series generation |
 | `foretools/bohb/` | BOHB, TPE configuration, pruning, and optimization plots |
-| `foretools/foreminer/` | exploratory analysis and diagnostics |
-| `foretools/fengineer/` | feature engineering utilities |
-| `foretools/vmd/` | decomposition tools |
+| `foretools/foreminer/` | Exploratory analysis and diagnostics |
+| `foretools/fengineer/` | Feature engineering utilities |
+| `foretools/vmd/` | Decomposition tools |
 | `foretools/tsaug/` | AutoDA-Timeseries: automated data augmentation with adaptive policy |
 
 ## Recommended entry points by task
 
-- training a baseline model: `README.md`, `docs/getting-started.md`
-- understanding architecture composition: `foreblocks/core/model.py`
-- adding preprocessing logic: `foreblocks/ts_handler/preprocessing.py`
-- exploring transformer internals: `foreblocks/tf/transformer.py`
-- working on search: `foreblocks/darts/`
-- generating synthetic data: `foretools/tsgen/`
-- running black-box hyperparameter search: `foretools/bohb/`
-- using SSM / Mamba-style blocks: `foreblocks/hybrid_mamba/layers.py`
-- augmenting training data adaptively: `foretools/tsaug/`
+| Task | Entry point |
+| --- | --- |
+| Training a baseline model | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md), [Getting Started](../getting-started.md) |
+| Understanding architecture composition | [`foreblocks/core/model.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/core/model.py) |
+| Adding preprocessing logic | [`foreblocks/ts_handler/preprocessing.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/ts_handler/preprocessing.py) |
+| Exploring transformer internals | [`foreblocks/tf/transformer.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/tf/transformer.py) |
+| Working on architecture search | [`foreblocks/darts/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/darts) |
+| Using SSM / Mamba-style blocks | [`foreblocks/hybrid_mamba/layers.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/hybrid_mamba/layers.py) |
+| Generating synthetic data | [`foretools/tsgen/`](https://github.com/lseman/foreblocks/tree/main/foretools/tsgen) |
+| Running hyperparameter search | [`foretools/bohb/`](https://github.com/lseman/foreblocks/tree/main/foretools/bohb) |
+| Augmenting training data adaptively | [`foretools/tsaug/`](https://github.com/lseman/foreblocks/tree/main/foretools/tsaug) |
 
 ## Related pages
 
