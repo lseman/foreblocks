@@ -1,55 +1,67 @@
+# Python
 __pycache__/
-.venv/
-flash-attention/
-examples/test.ipynb
-examples/rodrigo.ipynb
-examples/df_demmand_without_category_2025_05_13.csv
-processed_data.csv
-X.pkl
-y.pkl
-.vscode/
-examples/rodrigo.py
-examples/time.pkl
-foreblocks/teste.ipynb
-.ipynb_checkpoints/
-
 *.egg-info/
+*.egg
+*.so
+
+# Virtual environments & tooling
+.venv/
+uv.lock
+typings/
+
+# Build artifacts
 build/
 dist/
-*.egg
-release.sh
-mamba/
-df_demmand_without_category_2025_05_13.csv
-*.pkl
-pygit
-teste.ipynb
-test.ipynb
-teste2.ipynb
-examples/rodrigo2.py
-examples/stefano.ipynb
+
+# Editors & IDEs
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data files
 *.csv
-*.png
-*.pth
-teste*
-test*
-*.xlsx
-*.pdf
-*backup*
-work/
-generate_manifest.sh
-*.so
-*.pt
+*.pkl
 *.npy
-foreblocks/mltracker/mltracker_data/
+*.dat
+*.xlsx
+*.pt
+*.pth
+*.png
+*.pdf
+
+# External libraries / submodules
+flash-attention/
+mamba/
 uni2ts/
 timesfm/
-examples/seq2seq.ipynb
-.idea/
-uv.lock
-work2
-ml-pararnn
-typings/
-*.dat
+ml-pararnn/
+
+# Project-specific data directories
+foreblocks/mltracker/mltracker_data/
+mltracker_data/
+
+# Dashboard
+foreblocks/mltracker/dashboard_v2/node_modules/
+
+# Working / temporary directories
+work/
+work2/
+working/
+old/
 foretree.old/
 agent/
-mltracker_data/
+
+# Scripts
+release.sh
+generate_manifest.sh
+pygit
+
+# Misc
+*backup*
+.superpowers/
+
+examples/rodrigo.py
+examples/rodrigo2.py

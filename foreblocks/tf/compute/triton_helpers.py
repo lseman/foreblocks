@@ -41,47 +41,80 @@ if HAS_TRITON:
         y = swish * g
         tl.store(pc, y, mask=offs < Dhidden)
 
+    @triton.jit
+    def _swiglu_gate_backward(
+        DA,
+        DB,
+        A,
+        B,
+        DY,
+        stride_b,
+        stride_t,
+        stride_d,
+        Dhidden: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        batch = tl.program_id(0)
+        time = tl.program_id(1)
+        offs = tl.arange(0, BLOCK)
+        base = batch * stride_b + time * stride_t
+        mask = offs < Dhidden
+
+        a = tl.load(A + base + offs * stride_d, mask=mask, other=0.0).to(tl.float32)
+        b = tl.load(B + base + offs * stride_d, mask=mask, other=0.0).to(tl.float32)
+        dy = tl.load(DY + base + offs * stride_d, mask=mask, other=0.0).to(tl.float32)
+
+        sig = 1.0 / (1.0 + tl.exp(-a))
+        swish = a * sig
+        da = dy * b * (sig + a * sig * (1.0 - sig))
+        db = dy * swish
+
+        tl.store(DA + base + offs * stride_d, da, mask=mask)
+        tl.store(DB + base + offs * stride_d, db, mask=mask)
+
     class TritonSwiGLUGate(torch.autograd.Function):
         @staticmethod
         def forward(ctx, a: torch.Tensor, b: torch.Tensor):
-            # a, b: [B, T, Dhid]
             assert a.is_cuda and b.is_cuda and a.shape == b.shape
+            a = a.contiguous()
+            b = b.contiguous()
             B, T, Dh = a.shape
             y = torch.empty_like(a)
             BLOCK = triton.next_power_of_2(Dh)
             _swiglu_gate_forward[(B, T)](
-                a,
-                b,
-                y,
-                None,
-                a.stride(0),
-                a.stride(1),
-                a.stride(2),
-                b.stride(0),
-                b.stride(1),
-                b.stride(2),
+                a, b, y, None,
+                a.stride(0), a.stride(1), a.stride(2),
+                b.stride(0), b.stride(1), b.stride(2),
                 y.stride(1),
-                Dh,
-                BLOCK=BLOCK,
+                Dh, BLOCK=BLOCK,
             )
-            ctx.save_for_backward(a, b, y)
+            ctx.save_for_backward(a, b)
             return y
 
         @staticmethod
         def backward(ctx, dy):
-            # For maximum speed, write a matching Triton backward. For simplicity (and still fast),
-            # compute grads in PyTorch using saved tensors.
-            a, b, y = ctx.saved_tensors
-            with torch.cuda.amp.autocast(enabled=False):
-                a32 = a.float()
-                b32 = b.float()
-                dy32 = dy.float()
-                sig = torch.sigmoid(a32)
-                swish = a32 * sig
-                # y = swish * b
-                da = dy32 * b32 * (sig + a32 * sig * (1 - sig))  # d(swish)/da
-                db = dy32 * swish
+            a, b = ctx.saved_tensors
+            if not (HAS_TRITON and a.is_cuda
+                    and a.dtype in (torch.float16, torch.bfloat16, torch.float32)
+                    and not torch.jit.is_scripting()):
+                with torch.amp.autocast("cuda", enabled=False):
+                    a32, b32, dy32 = a.float(), b.float(), dy.float()
+                    sig = torch.sigmoid(a32)
+                    swish = a32 * sig
+                    da = dy32 * b32 * (sig + a32 * sig * (1 - sig))
+                    db = dy32 * swish
                 return da.to(a.dtype), db.to(b.dtype)
+
+            B, T, Dh = a.shape
+            da = torch.empty_like(a)
+            db = torch.empty_like(b)
+            BLOCK = triton.next_power_of_2(Dh)
+            _swiglu_gate_backward[(B, T)](
+                da, db, a, b, dy.contiguous(),
+                a.stride(0), a.stride(1), a.stride(2),
+                Dh, BLOCK=BLOCK,
+            )
+            return da, db
 
 
 def swiglu_gate(a, b):

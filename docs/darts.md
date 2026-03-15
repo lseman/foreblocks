@@ -1,27 +1,54 @@
 # ForeBlocks DARTS Guide
 
-ForeBlocks includes a substantial neural architecture search subsystem for time-series forecasting.
+ForeBlocks includes a staged neural architecture search subsystem for time-series forecasting. The DARTS stack is built around `DARTSTrainer`, but it is not just a single differentiable loop. It combines:
 
-The current DARTS stack combines:
-
-- random candidate generation
-- zero-cost screening
+- search-space sampling
+- zero-cost candidate screening
 - bilevel DARTS training on promoted candidates
-- architecture derivation
-- final retraining of the best discrete model
+- conversion to a discrete fixed model
+- final retraining and optional result analysis
 
-Related docs:
+## Install
 
-- [Documentation Overview](overview.md)
-- [Getting Started](getting-started.md)
-- [Custom Blocks](custom_blocks.md)
-- [Transformer](transformer.md)
+For the search loop itself:
 
-## Import
+```bash
+pip install "foreblocks[darts]"
+```
+
+If you also want the analyzer and richer search-result visuals:
+
+```bash
+pip install "foreblocks[darts-analysis]"
+```
+
+## Public imports
 
 ```python
-from foreblocks.darts import DARTSTrainer
+from foreblocks.darts import (
+    DARTSTrainer,
+    DARTSConfig,
+    DARTSTrainConfig,
+    FinalTrainConfig,
+    MultiFildelitySearchConfig,
+    AblationSearchConfig,
+    RobustPoolSearchConfig,
+)
 ```
+
+## When to use DARTS here
+
+Use the DARTS subsystem when:
+
+- your operation pool is already fairly well defined, but you do not know which combinations work best
+- you want a cheaper staged NAS workflow instead of fully training every candidate
+- you want to inspect alpha evolution, promoted candidates, and final retrained metrics
+
+Do not start here if:
+
+- your base training loop is not working yet
+- you have not verified tensor shapes with a normal `ForecastingModel` run
+- you are still deciding between totally different problem formulations
 
 ## Quick start
 
@@ -43,6 +70,7 @@ results = trainer.multi_fidelity_search(
     num_candidates=20,
     search_epochs=20,
     final_epochs=80,
+    max_samples=32,
     top_k=5,
 )
 
@@ -50,36 +78,49 @@ best_model = results["final_model"]
 trainer.save_best_model("best_darts_model.pth")
 ```
 
+This is the highest-level API. It runs candidate generation, ranking, short DARTS training, discrete derivation, and final retraining in one call.
+
 ## Mental model
 
-The public entry point is `DARTSTrainer`, but the search pipeline is split internally into focused modules:
+The public entry point is `DARTSTrainer`, but the implementation is intentionally split into focused modules:
 
-- search-space configuration
-- zero-cost candidate scoring
-- bilevel training
-- finalization into a discrete architecture
-- final training and evaluation
+- `foreblocks/darts/search/zero_cost.py`: cheap candidate scoring
+- `foreblocks/darts/training/darts_loop.py`: bilevel search training
+- `foreblocks/darts/training/final_trainer.py`: fixed-model retraining
+- `foreblocks/darts/search/multi_fidelity.py`: staged orchestration
+- `foreblocks/darts/evaluation/analyzer.py`: post-search analysis
 
-You can use the trainer at two levels:
+That means you can use the trainer in two styles:
 
-- as a single end-to-end search pipeline via `multi_fidelity_search(...)`
-- as a lower-level orchestration layer if you want to inspect and tune each phase manually
+- as one end-to-end NAS pipeline via `multi_fidelity_search(...)`
+- as a lower-level orchestration layer where you call each phase manually
 
-## Search pipeline
+## Search phases
 
-The current multi-fidelity flow is:
+The multi-fidelity flow is:
 
-1. randomly generate `num_candidates` candidate architectures
-2. evaluate them with zero-cost metrics
+1. generate `num_candidates` random architectures from the configured search space
+2. score them with zero-cost metrics
 3. keep the top `top_k`
-4. run short DARTS bilevel training on promoted candidates
-5. derive a discrete architecture from each searched mixed model
+4. run short bilevel DARTS training on the promoted candidates
+5. derive a discrete architecture for each searched mixed model
 6. select the best candidate by validation behavior
-7. retrain the best final model
+7. retrain the best fixed model and report final metrics
 
-The multi-fidelity implementation is closer to a staged NAS pipeline than to a single bare DARTS loop.
+This is closer to a staged NAS pipeline than to a single bare DARTS loop.
 
-## Core public methods
+## Core APIs
+
+| Method | Use it when | Returns |
+| --- | --- | --- |
+| `evaluate_zero_cost_metrics(...)` | you want a cheap score before expensive training | weighted zero-cost metrics |
+| `evaluate_zero_cost_metrics_raw(...)` | you want the underlying raw zero-cost signals | raw metrics without weighting |
+| `train_darts_model(...)` | you want to search a single candidate with bilevel optimization | searched model, losses, alphas, metrics |
+| `derive_final_architecture(...)` | you want a discrete model from a mixed searched one | fixed model |
+| `train_final_model(...)` | you want to retrain a fixed model independently | final metrics and training info |
+| `multi_fidelity_search(...)` | you want the end-to-end staged workflow | full search result dictionary |
+| `ablation_weight_search(...)` | you want to study zero-cost weighting choices | ablation artifacts and rankings |
+| `robust_initial_pool_over_op_pools(...)` | you want to test sensitivity to op-pool composition | robustness report |
 
 ### `evaluate_zero_cost_metrics(...)`
 
@@ -103,8 +144,6 @@ Useful knobs:
 - `random_sigma`
 - `seed`
 
-Use this when you want to compare candidate architectures cheaply before any expensive training.
-
 ### `train_darts_model(...)`
 
 ```python
@@ -119,7 +158,7 @@ search_results = trainer.train_darts_model(
 )
 ```
 
-This runs the differentiable search phase on a single candidate and returns a dictionary containing the searched model, losses, alpha traces, and final metrics.
+This runs the differentiable search phase for a single candidate and returns a dictionary with the searched model, train/validation losses, alpha traces, and final metrics.
 
 ### `derive_final_architecture(...)`
 
@@ -127,7 +166,7 @@ This runs the differentiable search phase on a single candidate and returns a di
 fixed_model = trainer.derive_final_architecture(search_results["model"])
 ```
 
-This converts the mixed architecture into a discrete architecture suitable for final training.
+Use this after the mixed architecture has converged enough that you want a discrete artifact for final training or export.
 
 ### `train_final_model(...)`
 
@@ -141,15 +180,13 @@ final_results = trainer.train_final_model(
 )
 ```
 
-Use this when you want to retrain a fixed architecture independently of the full search pipeline.
-
 ### `multi_fidelity_search(...)`
 
 ```python
 results = trainer.multi_fidelity_search(
-    train_loader,
-    val_loader,
-    test_loader,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    test_loader=test_loader,
     num_candidates=10,
     search_epochs=10,
     final_epochs=100,
@@ -158,7 +195,9 @@ results = trainer.multi_fidelity_search(
 )
 ```
 
-This is the easiest end-to-end API. The returned dictionary includes:
+## Result structure
+
+The end-to-end search dictionary includes:
 
 - `final_model`
 - `candidates`
@@ -167,66 +206,38 @@ This is the easiest end-to-end API. The returned dictionary includes:
 - `best_candidate`
 - `final_results`
 - `search_config`
+- `stats` when `collect_stats=True`
 
-## Search-space controls
+In practice, the most useful objects to inspect are:
 
-The search subsystem exposes configuration dataclasses in `foreblocks.darts.config`.
+- `results["best_candidate"]`
+- `results["final_results"]["final_metrics"]`
+- `results["trained_candidates"]`
+- `results["candidates"]` if you are debugging promotion behavior
 
-Important groups:
+## Configuration surface
 
-### `DARTSSearchSpaceConfig`
+The config dataclasses in `foreblocks.darts.config` map cleanly onto the staged workflow:
 
-Controls:
+| Config | What it controls |
+| --- | --- |
+| `DARTSSearchSpaceConfig` | op pool, architecture modes, hidden dims, cells, nodes, family grouping |
+| `DARTSTrainConfig` | bilevel search phase, regularization, pruning, temperature schedule |
+| `FinalTrainConfig` | fixed-model retraining budget and optimizer behavior |
+| `MultiFildelitySearchConfig` | candidate count, promotion size, epoch budgets, worker/stats settings |
+| `AblationSearchConfig` | zero-cost weighting ablations |
+| `RobustPoolSearchConfig` | sensitivity to alternative op-pool definitions |
 
-- operation pool
-- architecture modes
-- hidden-dimension choices
-- number of cells and nodes
-- family-level operation grouping
+### Default search-space ingredients
 
-The current default architecture modes are:
+The default architecture modes are:
 
 - `encoder_decoder`
 - `encoder_only`
 - `decoder_only`
 - `mamba`
 
-### `DARTSTrainConfig`
-
-Controls the bilevel search phase:
-
-- search epochs
-- architecture and model learning rates
-- weight decay
-- warmup epochs
-- architecture update frequency
-- pruning / progressive shrinking
-- temperature schedule
-- extra regularization terms
-
-### `FinalTrainConfig`
-
-Controls retraining of the fixed final model:
-
-- epochs
-- learning rate
-- weight decay
-- patience
-- one-cycle scheduling
-
-### `MultiFildelitySearchConfig`
-
-Controls the staged NAS pipeline:
-
-- number of candidates
-- short-search epoch budget
-- final-training epoch budget
-- top-k promotion size
-- stats collection and worker settings
-
-## Default operation pool
-
-The current default operation pool includes:
+The default operation pool includes:
 
 - `Identity`
 - `TimeConv`
@@ -247,106 +258,41 @@ The current default operation pool includes:
 
 Important note:
 
-- `mamba` is represented as an architecture mode, not as a regular op in the default op list
+- `mamba` is represented as an architecture mode rather than as a normal operation in the default op list
 
-## Candidate generation
+## Recommended tuning order
 
-Candidate generation in the orchestrator selects:
+When the search behaves poorly, change things in this order:
 
-- operation subsets
-- hidden dimension
-- number of cells
-- number of nodes
-- architecture mode
-- transformer self-attention type
-- FFN variant
+1. shrink or clarify the search space
+2. verify zero-cost metrics are ranking plausible candidates
+3. reduce `top_k` and search budgets only after phase 2 looks sensible
+4. tune bilevel parameters like `arch_learning_rate`, `model_learning_rate`, and `architecture_update_freq`
+5. only then add more advanced regularization or pruning rules
 
-The search is therefore not limited to simple op-edge selection. It can alter higher-level modeling structure too.
+Useful early knobs:
 
-## Practical tuning advice
+- `hidden_dims`
+- `cell_range`
+- `node_range`
+- `min_ops`
+- `max_ops`
+- `num_candidates`
+- `top_k`
+- `search_epochs`
 
-### Fast iteration
+## Practical tips
 
-Use:
-
-- `num_candidates=8`
-- `search_epochs=8`
-- `top_k=3`
-- smaller `hidden_dims`
-
-This is useful for debugging the search loop itself.
-
-### Balanced search
-
-Use:
-
-- `num_candidates=20`
-- `search_epochs=20`
-- `top_k=5`
-
-This is the most reasonable starting point for a serious experiment.
-
-### When the search is unstable
-
-Try this order:
-
-1. lower `arch_learning_rate`
-2. increase `warmup_epochs`
-3. disable or delay progressive shrinking
-4. reduce regularization complexity
-5. reduce search-space breadth
-
-## Bilevel search details
-
-The current `train_darts_model(...)` surface includes several advanced controls:
-
-- `warmup_epochs`
-- `architecture_update_freq`
-- `use_bilevel_optimization`
-- `progressive_shrinking`
-- hybrid pruning controls
-- Hessian penalty controls
-- edge diversity and identity-cap regularization
-- edge sharpening schedule
-- `arch_grad_ema_beta`
-- `beta_darts_weight`
-- `moe_balance_weight`
-- `transformer_exploration_weight`
-
-This means the search loop is already tuned for more than plain textbook DARTS. It mixes bilevel search with several stabilizing regularizers and pruning heuristics.
-
-## Results and persistence
-
-Useful post-search utilities:
-
-- `trainer.save_best_model(...)`
-- `trainer.plot_search_summary(...)` style methods if you build around the returned artifacts
-- `StreamlinedDARTSAnalyzer` for inspecting search results
-
-The saved best-model checkpoint includes:
-
-- final model state
-- candidate config
-- final metrics
-
-## Recommended workflow
-
-1. Confirm your data loaders and forecasting task work without NAS.
-2. Run a small `multi_fidelity_search(...)`.
-3. Inspect top candidates and promoted candidates.
-4. Save the best final model.
-5. Only then expand the search space or final training budget.
-
-## Troubleshooting
-
-- Search is too slow: reduce `num_candidates`, `search_epochs`, and operation breadth first.
-- Zero-cost ranking looks noisy: increase `max_samples` slightly and reduce ablation randomness.
-- Promoted candidates all look similar: narrow the op pool less aggressively or revisit family diversity settings.
-- Bilevel optimization is unstable: lower architecture LR, add more warmup, and simplify pruning.
-- Final model underperforms search-time expectations: retrain from scratch and inspect whether the discrete architecture differs sharply from the mixed model.
+- Run a tiny end-to-end search first, even if the result quality is poor. That verifies your search loop, result structure, and save/load path.
+- Keep `num_candidates`, `top_k`, and `search_epochs` small while you are validating the search space.
+- Use `evaluate_zero_cost_metrics(...)` directly before trusting a longer search run.
+- Treat `collect_stats=True` as a benchmarking tool, not a default setting for every run.
+- Save the best discrete model with `trainer.save_best_model(...)` once you have a search worth keeping.
 
 ## Related pages
 
+- [Run A DARTS Search](tutorials/darts-multifidelity-search.md)
+- [DARTS Search Pipeline](architecture/darts-pipeline.md)
 - [Transformer Guide](transformer.md)
-- [Public API](reference/public-api.md)
-- [Repository Map](reference/repository-map.md)
+- [Custom Blocks Guide](custom_blocks.md)
+- [Troubleshooting](troubleshooting.md)

@@ -8,9 +8,21 @@ from __future__ import annotations
 import torch
 import contextlib
 from torch.amp import autocast
-import matplotlib.pyplot as plt
 from typing import Any, Dict, Optional, Tuple
 import numpy as np
+
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+
+
+def _require_matplotlib() -> None:
+    if plt is None:
+        raise RuntimeError(
+            "Matplotlib is required for ModelEvaluator plotting utilities. "
+            "Install with: pip install foreblocks[plotting]"
+        )
 
 class ModelEvaluator:
     def __init__(self, trainer: Trainer):
@@ -111,6 +123,7 @@ class ModelEvaluator:
         return self._compute_window_metrics(predictions, y)
 
     def plot_cv_results(self, cv_results: Dict[str, Any], figsize: Tuple[int, int] = (15, 8)):
+        _require_matplotlib()
         fig, axes = plt.subplots(2, 2, figsize=figsize)
 
         window_metrics = cv_results['window_metrics']
@@ -151,6 +164,7 @@ Per-Window Stats:
         return fig
 
     def plot_learning_curves(self, figsize: Tuple[int, int] = (15, 5)):
+        _require_matplotlib()
         history = self.trainer.history
         fig, axes = plt.subplots(1, 3, figsize=figsize)
 

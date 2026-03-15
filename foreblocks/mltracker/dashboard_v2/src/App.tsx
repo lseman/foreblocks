@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
-  artifactDownloadUrl,
   compareRuns,
   deleteRun,
   getArtifacts,
@@ -12,6 +11,22 @@ import {
   searchRuns,
 } from './api/client';
 import { KpiCard } from './components/KpiCard';
+import {
+  buildCompareChartOption,
+  buildImportanceChartOption,
+  buildParallelChartOption,
+  buildRunDetailChartOption,
+  buildSweepChartOption,
+  getChartTheme,
+} from './dashboard/chartOptions';
+import {
+  CompareSection,
+  ImportanceSection,
+  LeaderboardSection,
+  ParallelSection,
+  SweepSection,
+} from './dashboard/components/PanelSections';
+import { RunDetailDrawer } from './dashboard/components/RunDetailDrawer';
 import type {
   Artifact,
   CompareResponse,
@@ -20,502 +35,50 @@ import type {
   MetricHistoryResponse,
   Run,
 } from './types';
+import {
+  DEFAULT_MODULE_LAYOUT,
+  type DashboardModuleDefinition,
+  type DashboardModuleId,
+  type DashboardModuleLayoutItem,
+  type DashboardModuleSpan,
+  type GroupMode,
+  type PaletteAction,
+  type SavedView,
+  type SortMode,
+  type SweepAxisMode,
+  type ViewStateSnapshot,
+  STATUS_ORDER,
+} from './dashboard/types';
+import {
+  collectParallelDimensions,
+  defaultParallelDimensions,
+  extractNumericMetricKeys,
+  extractNumericParamKeys,
+  formatCompactDate,
+  formatDuration,
+  formatMetricValue,
+  getSweepValue,
+  groupRuns,
+  isDashboardModuleId,
+  loadModuleLayout,
+  loadSavedViews,
+  loadViewPrefs,
+  metricLowerIsBetter,
+  metricValueForRun,
+  normalizeModuleLayout,
+  parseTime,
+  parseUrlState,
+  pearsonCorrelation,
+  pickPrimaryMetricKey,
+  runMatchesTagFilter,
+  saveModuleLayout,
+  saveSavedViews,
+  saveViewPrefs,
+  snapshotToUrl,
+  sortRuns,
+} from './dashboard/utils';
 
 const STORAGE_THEME_KEY = 'mltracker_theme';
-const STORAGE_VIEW_PREFS_PREFIX = 'mltracker_view_prefs_';
-const STORAGE_SAVED_VIEWS_PREFIX = 'mltracker_saved_views_';
-const STORAGE_MODULE_LAYOUT_PREFIX = 'mltracker_module_layout_';
-const STATUS_ORDER = ['RUNNING', 'FINISHED', 'FAILED', 'CANCELED'];
-
-type SortMode = '-start_time' | 'start_time' | '-duration' | 'duration';
-type GroupMode = 'none' | 'status' | 'day';
-type SweepAxisMode = '' | `metric:${string}` | `param:${string}`;
-type DashboardModuleId = 'leaderboard' | 'sweep' | 'parallel' | 'importance' | 'compare';
-type DashboardModuleSpan = 1 | 2 | 3;
-
-type ViewStateSnapshot = {
-  runQuery: string;
-  sortMode: SortMode;
-  groupMode: GroupMode;
-  activeStatus: string;
-  tagFilter: string;
-  metricFilterKey: string;
-  metricMin: string;
-  metricMax: string;
-  onlySelected: boolean;
-  selectedRunIds: string[];
-};
-
-type SavedView = {
-  name: string;
-  createdAt: string;
-  state: ViewStateSnapshot;
-};
-
-type RunGroup = {
-  label: string | null;
-  runs: Run[];
-};
-
-type PaletteAction = {
-  title: string;
-  meta?: string;
-  run: () => void | Promise<void>;
-};
-
-type ParsedUrlState = {
-  experimentName: string;
-  state: Partial<ViewStateSnapshot>;
-};
-
-type DashboardModuleLayoutItem = {
-  id: DashboardModuleId;
-  span: DashboardModuleSpan;
-};
-
-type DashboardModuleDefinition = {
-  id: DashboardModuleId;
-  title: string;
-  controls?: JSX.Element | null;
-  body: JSX.Element;
-  visible: boolean;
-};
-
-type HoveredParallelRun = {
-  run: Run;
-  x: number;
-  y: number;
-  values: Array<{ dim: string; value: number }>;
-};
-
-type HoveredSweepPoint = {
-  run: Run;
-  x: number;
-  y: number;
-  plotX: number;
-  plotY: number;
-  valueX: number;
-  valueY: number;
-};
-
-const DEFAULT_MODULE_LAYOUT: DashboardModuleLayoutItem[] = [
-  { id: 'leaderboard', span: 1 },
-  { id: 'sweep', span: 2 },
-  { id: 'parallel', span: 3 },
-  { id: 'importance', span: 3 },
-  { id: 'compare', span: 3 },
-];
-
-function isDashboardModuleId(value: string): value is DashboardModuleId {
-  return ['leaderboard', 'sweep', 'parallel', 'importance', 'compare'].includes(value);
-}
-
-function normalizeModuleSpan(value: unknown): DashboardModuleSpan {
-  return value === 2 || value === 3 ? value : 1;
-}
-
-function normalizeModuleLayout(value: unknown): DashboardModuleLayoutItem[] {
-  const items = Array.isArray(value) ? value : [];
-  const next: DashboardModuleLayoutItem[] = [];
-  const seen = new Set<DashboardModuleId>();
-
-  for (const item of items) {
-    if (!item || typeof item !== 'object') continue;
-    const id = (item as { id?: unknown }).id;
-    if (typeof id !== 'string' || !isDashboardModuleId(id) || seen.has(id)) continue;
-    next.push({
-      id,
-      span: normalizeModuleSpan((item as { span?: unknown }).span),
-    });
-    seen.add(id);
-  }
-
-  for (const item of DEFAULT_MODULE_LAYOUT) {
-    if (seen.has(item.id)) continue;
-    next.push(item);
-  }
-
-  return next;
-}
-
-function parseTime(iso?: string): number {
-  if (!iso) return 0;
-  const t = new Date(iso).getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
-function formatDuration(seconds?: number): string {
-  if (!seconds || seconds <= 0) return '-';
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  if (mins < 60) return `${mins}m ${secs}s`;
-  const hrs = Math.floor(mins / 60);
-  return `${hrs}h ${mins % 60}m`;
-}
-
-function formatMetricValue(value: unknown): string {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    if (Math.abs(value) >= 1000 || Math.abs(value) < 0.001) {
-      return value.toExponential(2);
-    }
-    return value.toFixed(4);
-  }
-  return String(value ?? '-');
-}
-
-function normalizeText(value: unknown): string {
-  return String(value ?? '').trim().toLowerCase();
-}
-
-function runMatchesTagFilter(run: Run, tagFilter: string): boolean {
-  const query = normalizeText(tagFilter);
-  if (!query) return true;
-  const tags = run.tags ?? {};
-  const entries = Object.entries(tags);
-
-  if (query.includes(':')) {
-    const [rawKey, rawVal = ''] = query.split(':', 2);
-    const keyQuery = normalizeText(rawKey);
-    const valQuery = normalizeText(rawVal);
-    if (!keyQuery) return true;
-
-    for (const [k, v] of entries) {
-      const keyNorm = normalizeText(k);
-      if (!keyNorm.includes(keyQuery)) continue;
-      if (!valQuery || normalizeText(v).includes(valQuery)) return true;
-    }
-    return false;
-  }
-
-  return entries.some(([k, v]) => normalizeText(k).includes(query) || normalizeText(v).includes(query));
-}
-
-function sortRuns(runs: Run[], mode: SortMode): Run[] {
-  const data = [...runs];
-  const duration = (r: Run) => (Number.isFinite(r.duration) ? Number(r.duration) : -1);
-  switch (mode) {
-    case 'start_time':
-      return data.sort((a, b) => parseTime(a.start_time) - parseTime(b.start_time));
-    case '-duration':
-      return data.sort((a, b) => duration(b) - duration(a));
-    case 'duration':
-      return data.sort((a, b) => duration(a) - duration(b));
-    case '-start_time':
-    default:
-      return data.sort((a, b) => parseTime(b.start_time) - parseTime(a.start_time));
-  }
-}
-
-function groupRuns(runs: Run[], mode: GroupMode): RunGroup[] {
-  if (mode === 'none') return [{ label: null, runs }];
-  if (mode === 'status') {
-    const buckets = new Map<string, Run[]>();
-    for (const run of runs) {
-      const key = run.status ?? 'UNKNOWN';
-      if (!buckets.has(key)) buckets.set(key, []);
-      buckets.get(key)!.push(run);
-    }
-    const known = STATUS_ORDER.filter((x) => buckets.has(x));
-    const extra = [...buckets.keys()].filter((x) => !STATUS_ORDER.includes(x)).sort();
-    return [...known, ...extra].map((label) => ({ label, runs: buckets.get(label) ?? [] }));
-  }
-
-  const buckets = new Map<string, Run[]>();
-  for (const run of runs) {
-    const key = run.start_time ? String(run.start_time).slice(0, 10) : 'Unknown day';
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key)!.push(run);
-  }
-  return [...buckets.keys()]
-    .sort((a, b) => b.localeCompare(a))
-    .map((label) => ({ label, runs: buckets.get(label) ?? [] }));
-}
-
-function extractNumericMetricKeys(runs: Run[]): string[] {
-  const keys = new Set<string>();
-  for (const run of runs) {
-    for (const [key, value] of Object.entries(run.metrics ?? {})) {
-      if (typeof value === 'number' && Number.isFinite(value)) keys.add(key);
-    }
-  }
-  return [...keys].sort();
-}
-
-function extractNumericParamKeys(runs: Run[]): string[] {
-  const keys = new Set<string>();
-  for (const run of runs) {
-    for (const [key, value] of Object.entries(run.params ?? {})) {
-      const num = Number(value);
-      if (Number.isFinite(num)) keys.add(key);
-    }
-  }
-  return [...keys].sort();
-}
-
-function pickPrimaryMetricKey(runs: Run[]): string | null {
-  const counts = new Map<string, number>();
-  for (const run of runs) {
-    for (const [key, value] of Object.entries(run.metrics ?? {})) {
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        counts.set(key, (counts.get(key) ?? 0) + 1);
-      }
-    }
-  }
-
-  if (!counts.size) return null;
-
-  const preference = [
-    'val_loss',
-    'valid_loss',
-    'loss',
-    'val_rmse',
-    'rmse',
-    'val_mae',
-    'mae',
-    'mse',
-    'accuracy',
-    'acc',
-    'f1',
-    'auc',
-  ];
-
-  const rank = (key: string) => {
-    const idx = preference.indexOf(key.toLowerCase());
-    return idx === -1 ? 999 : idx;
-  };
-
-  return [...counts.entries()]
-    .sort((a, b) => {
-      if (b[1] !== a[1]) return b[1] - a[1];
-      return rank(a[0]) - rank(b[0]);
-    })[0][0];
-}
-
-function metricLowerIsBetter(metricKey: string): boolean {
-  return /(loss|error|rmse|mae|mse|mape|nll|perplexity|wer|cer)/i.test(metricKey);
-}
-
-function formatCompactDate(iso?: string): string {
-  if (!iso) return '-';
-  try {
-    return new Date(iso).toLocaleString([], {
-      month: 'short',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return iso;
-  }
-}
-
-function metricValueForRun(run: Run, metricKey: string): number | null {
-  if (!metricKey) return null;
-  const value = run.metrics?.[metricKey];
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function collectParallelDimensions(runs: Run[]): string[] {
-  const dims = extractNumericMetricKeys(runs);
-  const hasDuration = runs.some((run) => Number.isFinite(run.duration));
-  return hasDuration ? ['__duration__', ...dims] : dims;
-}
-
-function parallelDimensionValue(run: Run, key: string): number | null {
-  if (key === '__duration__') {
-    return Number.isFinite(run.duration) ? Number(run.duration) : null;
-  }
-  return metricValueForRun(run, key);
-}
-
-function dimensionLabel(key: string): string {
-  return key === '__duration__' ? 'duration' : key;
-}
-
-function defaultParallelDimensions(availableDims: string[], primaryMetric: string | null): string[] {
-  if (!availableDims.length) return [];
-  const chosen: string[] = [];
-  const push = (value: string | null | undefined) => {
-    if (!value || !availableDims.includes(value) || chosen.includes(value)) return;
-    chosen.push(value);
-  };
-
-  push('__duration__');
-  push(primaryMetric);
-  for (const dim of availableDims) {
-    if (chosen.length >= 4) break;
-    push(dim);
-  }
-  return chosen.slice(0, 4);
-}
-
-function pearsonCorrelation(xs: number[], ys: number[]): number {
-  if (xs.length < 2 || ys.length < 2 || xs.length !== ys.length) return 0;
-  const n = xs.length;
-  const meanX = xs.reduce((a, b) => a + b, 0) / n;
-  const meanY = ys.reduce((a, b) => a + b, 0) / n;
-  let num = 0;
-  let denX = 0;
-  let denY = 0;
-  for (let i = 0; i < n; i += 1) {
-    const dx = xs[i] - meanX;
-    const dy = ys[i] - meanY;
-    num += dx * dy;
-    denX += dx * dx;
-    denY += dy * dy;
-  }
-  if (denX <= 0 || denY <= 0) return 0;
-  return num / Math.sqrt(denX * denY);
-}
-
-function getSweepValue(run: Run, axis: SweepAxisMode): number | null {
-  if (!axis) return null;
-  if (axis.startsWith('metric:')) {
-    const key = axis.slice('metric:'.length);
-    const value = run.metrics?.[key];
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
-  }
-
-  const key = axis.slice('param:'.length);
-  const value = Number(run.params?.[key]);
-  return Number.isFinite(value) ? value : null;
-}
-
-function colorForIndex(index: number): string {
-  const palette = ['#3bc8ff', '#47d8a6', '#f7b541', '#ff8d5f', '#b7ff6a', '#ff79b4', '#8ea4ff'];
-  return palette[index % palette.length];
-}
-
-function sweepAxisLabel(axis: SweepAxisMode): string {
-  if (!axis) return '-';
-  if (axis.startsWith('metric:')) return axis.slice('metric:'.length);
-  if (axis.startsWith('param:')) return axis.slice('param:'.length);
-  return axis;
-}
-
-function snapshotToUrl(exp: string, state: ViewStateSnapshot): void {
-  const url = new URL(window.location.href);
-  url.hash = `#exp/${encodeURIComponent(exp)}`;
-  const p = url.searchParams;
-  const set = (k: string, v: string | boolean | undefined) => {
-    if (!v || v === 'ALL') p.delete(k);
-    else p.set(k, String(v));
-  };
-  set('exp', exp);
-  set('q', state.runQuery);
-  set('sort', state.sortMode);
-  set('group', state.groupMode);
-  set('status', state.activeStatus);
-  set('tag', state.tagFilter);
-  set('mkey', state.metricFilterKey);
-  set('mmin', state.metricMin);
-  set('mmax', state.metricMax);
-  set('only_selected', state.onlySelected ? '1' : '');
-  set('selected', state.selectedRunIds.slice(0, 80).join(','));
-  window.history.replaceState({}, '', `${url.pathname}${p.toString() ? `?${p.toString()}` : ''}${url.hash}`);
-}
-
-function viewPrefsKey(experimentName: string): string {
-  return `${STORAGE_VIEW_PREFS_PREFIX}${experimentName}`;
-}
-
-function savedViewsKey(experimentName: string): string {
-  return `${STORAGE_SAVED_VIEWS_PREFIX}${experimentName}`;
-}
-
-function moduleLayoutKey(experimentName: string): string {
-  return `${STORAGE_MODULE_LAYOUT_PREFIX}${experimentName}`;
-}
-
-function loadViewPrefs(experimentName: string): Partial<ViewStateSnapshot> {
-  try {
-    const raw = localStorage.getItem(viewPrefsKey(experimentName));
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveViewPrefs(experimentName: string, state: ViewStateSnapshot): void {
-  try {
-    localStorage.setItem(viewPrefsKey(experimentName), JSON.stringify(state));
-  } catch {
-    // no-op
-  }
-}
-
-function loadSavedViews(experimentName: string): SavedView[] {
-  try {
-    const raw = localStorage.getItem(savedViewsKey(experimentName));
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((x) => x && typeof x.name === 'string' && x.state).slice(0, 25);
-  } catch {
-    return [];
-  }
-}
-
-function saveSavedViews(experimentName: string, views: SavedView[]): void {
-  try {
-    localStorage.setItem(savedViewsKey(experimentName), JSON.stringify(views.slice(0, 25)));
-  } catch {
-    // no-op
-  }
-}
-
-function loadModuleLayout(experimentName: string): DashboardModuleLayoutItem[] {
-  try {
-    const raw = localStorage.getItem(moduleLayoutKey(experimentName));
-    if (!raw) return DEFAULT_MODULE_LAYOUT;
-    return normalizeModuleLayout(JSON.parse(raw));
-  } catch {
-    return DEFAULT_MODULE_LAYOUT;
-  }
-}
-
-function saveModuleLayout(experimentName: string, layout: DashboardModuleLayoutItem[]): void {
-  try {
-    localStorage.setItem(moduleLayoutKey(experimentName), JSON.stringify(normalizeModuleLayout(layout)));
-  } catch {
-    // no-op
-  }
-}
-
-function parseUrlState(): ParsedUrlState | null {
-  if (typeof window === 'undefined') return null;
-
-  const url = new URL(window.location.href);
-  const hashMatch = url.hash.match(/^#exp\/(.+)$/);
-  const experimentName =
-    url.searchParams.get('exp') || (hashMatch ? decodeURIComponent(hashMatch[1]) : '');
-  if (!experimentName) return null;
-
-  const selected = url.searchParams
-    .get('selected')
-    ?.split(',')
-    .map((x) => x.trim())
-    .filter(Boolean) ?? [];
-
-  return {
-    experimentName,
-    state: {
-      runQuery: url.searchParams.get('q') ?? '',
-      sortMode: (url.searchParams.get('sort') as SortMode) ?? '-start_time',
-      groupMode: (url.searchParams.get('group') as GroupMode) ?? 'none',
-      activeStatus: url.searchParams.get('status') ?? 'ALL',
-      tagFilter: url.searchParams.get('tag') ?? '',
-      metricFilterKey: url.searchParams.get('mkey') ?? '',
-      metricMin: url.searchParams.get('mmin') ?? '',
-      metricMax: url.searchParams.get('mmax') ?? '',
-      onlySelected: url.searchParams.get('only_selected') === '1',
-      selectedRunIds: selected.slice(0, 80),
-    },
-  };
-}
 
 export function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -556,8 +119,6 @@ export function App() {
   const [moduleLayout, setModuleLayout] = useState<DashboardModuleLayoutItem[]>(DEFAULT_MODULE_LAYOUT);
   const [draggedModuleId, setDraggedModuleId] = useState<DashboardModuleId | null>(null);
   const [dropTargetModuleId, setDropTargetModuleId] = useState<DashboardModuleId | null>(null);
-  const [hoveredParallelRun, setHoveredParallelRun] = useState<HoveredParallelRun | null>(null);
-  const [hoveredSweepPoint, setHoveredSweepPoint] = useState<HoveredSweepPoint | null>(null);
 
   const [runDetailOpen, setRunDetailOpen] = useState(false);
   const [runDetail, setRunDetail] = useState<Run | null>(null);
@@ -567,11 +128,14 @@ export function App() {
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState('');
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
 
   useEffect(() => {
     document.body.dataset.theme = theme;
     localStorage.setItem(STORAGE_THEME_KEY, theme);
   }, [theme]);
+
+  const chartTheme = useMemo(() => getChartTheme(theme), [theme]);
 
   useEffect(() => {
     void (async () => {
@@ -764,7 +328,7 @@ export function App() {
   }, [leaderboardMetric, primaryMetric]);
 
   const leaderboardRows = useMemo(() => {
-    if (!leaderboardMetric) return [] as Array<{ run: Run; value: number }>;
+    if (!leaderboardMetric) return [];
     const objective =
       leaderboardObjective === 'auto'
         ? metricLowerIsBetter(leaderboardMetric)
@@ -793,66 +357,6 @@ export function App() {
       setParallelDims(safe.slice(0, 6));
     }
   }, [parallelAvailableDims, parallelDims, primaryMetric]);
-
-  const parallelSeries = useMemo(() => {
-    const dims = parallelDims.filter((dim) => parallelAvailableDims.includes(dim)).slice(0, 6);
-    if (dims.length < 2) {
-      return {
-        dims,
-        ranges: [] as Array<{ dim: string; min: number; max: number }>,
-        rows: [] as Array<{ run: Run; values: number[]; points: string; pointEntries: Array<{ x: number; y: number; dim: string; value: number }> }>,
-      };
-    }
-
-    const ranges = dims.map((dim) => {
-      const values = filteredRuns
-        .map((run) => parallelDimensionValue(run, dim))
-        .filter((value): value is number => value !== null);
-      const min = values.length ? Math.min(...values) : 0;
-      const max = values.length ? Math.max(...values) : 1;
-      return {
-        dim,
-        min,
-        max: min === max ? max + 1 : max,
-      };
-    });
-
-    const rows = filteredRuns
-      .slice(0, 80)
-      .map((run) => {
-        const values = dims.map((dim) => parallelDimensionValue(run, dim));
-        if (values.some((value) => value === null)) return null;
-        const numericValues = values as number[];
-        const pointEntries = numericValues.map((value, idx) => {
-          const range = ranges[idx];
-          const x = 70 + (idx / Math.max(1, ranges.length - 1)) * 620;
-          const y = 252 - ((value - range.min) / (range.max - range.min)) * 216;
-          return {
-            x,
-            y,
-            dim: range.dim,
-            value,
-          };
-        });
-        return {
-          run,
-          values: numericValues,
-          pointEntries,
-          points: pointEntries.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' '),
-        };
-      })
-      .filter((entry): entry is { run: Run; values: number[]; points: string; pointEntries: Array<{ x: number; y: number; dim: string; value: number }> } => entry !== null);
-
-    return { dims, ranges, rows };
-  }, [filteredRuns, parallelDims, parallelAvailableDims]);
-
-  useEffect(() => {
-    if (!hoveredParallelRun) return;
-    const stillPresent = parallelSeries.rows.some((entry) => entry.run.run_id === hoveredParallelRun.run.run_id);
-    if (!stillPresent) {
-      setHoveredParallelRun(null);
-    }
-  }, [hoveredParallelRun, parallelSeries.rows]);
 
   useEffect(() => {
     if (!importanceTarget && primaryMetric) {
@@ -948,41 +452,14 @@ export function App() {
     })();
   }, [compareData, compareMetric]);
 
-  const compareHistoryStats = useMemo(() => {
-    const lines = (compareData?.runs ?? [])
+  const compareHistoryLines = useMemo(
+    () =>
+      (compareData?.runs ?? [])
       .slice(0, 8)
       .map((run) => ({ run, points: compareHistory[run.run_id] ?? [] }))
-      .filter((x) => x.points.length > 0);
-
-    if (!lines.length) {
-      return {
-        lines,
-        minStep: 0,
-        maxStep: 1,
-        minValue: 0,
-        maxValue: 1,
-      };
-    }
-
-    let minStep = Number.POSITIVE_INFINITY;
-    let maxStep = Number.NEGATIVE_INFINITY;
-    let minValue = Number.POSITIVE_INFINITY;
-    let maxValue = Number.NEGATIVE_INFINITY;
-
-    for (const entry of lines) {
-      for (const p of entry.points) {
-        minStep = Math.min(minStep, p.step);
-        maxStep = Math.max(maxStep, p.step);
-        minValue = Math.min(minValue, p.value);
-        maxValue = Math.max(maxValue, p.value);
-      }
-    }
-
-    if (minStep === maxStep) maxStep += 1;
-    if (minValue === maxValue) maxValue += Math.max(Math.abs(minValue) * 0.1, 1);
-
-    return { lines, minStep, maxStep, minValue, maxValue };
-  }, [compareData, compareHistory]);
+      .filter((x) => x.points.length > 0),
+    [compareData, compareHistory]
+  );
 
   const sweepPoints = useMemo(() => {
     if (!sweepXAxis || !sweepYAxis) return [] as Array<{ run: Run; x: number; y: number }>;
@@ -996,25 +473,6 @@ export function App() {
     return points;
   }, [filteredRuns, sweepXAxis, sweepYAxis]);
 
-  const sweepBounds = useMemo(() => {
-    if (!sweepPoints.length) {
-      return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
-    }
-    let minX = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    for (const p of sweepPoints) {
-      minX = Math.min(minX, p.x);
-      maxX = Math.max(maxX, p.x);
-      minY = Math.min(minY, p.y);
-      maxY = Math.max(maxY, p.y);
-    }
-    if (minX === maxX) maxX += 1;
-    if (minY === maxY) maxY += 1;
-    return { minX, maxX, minY, maxY };
-  }, [sweepPoints]);
-
   const sweepTopRuns = useMemo(() => {
     if (!sweepPoints.length) return [] as Array<{ run: Run; x: number; y: number }>;
     const objective =
@@ -1025,14 +483,6 @@ export function App() {
       .sort((a, b) => (objective === 'min' ? a.y - b.y : b.y - a.y))
       .slice(0, 5);
   }, [sweepPoints, sweepYAxis]);
-
-  useEffect(() => {
-    if (!hoveredSweepPoint) return;
-    const stillPresent = sweepPoints.some((entry) => entry.run.run_id === hoveredSweepPoint.run.run_id);
-    if (!stillPresent) {
-      setHoveredSweepPoint(null);
-    }
-  }, [hoveredSweepPoint, sweepPoints]);
 
   function updateModuleSpan(id: DashboardModuleId, span: DashboardModuleSpan): void {
     setModuleLayout((prev) =>
@@ -1081,36 +531,41 @@ export function App() {
     [runDetail]
   );
 
-  const runDetailChart = useMemo(() => {
+  const runDetailChartPoints = useMemo(() => {
     if (!runDetailMetricKey) return null;
     const points = runDetailMetrics?.metrics?.[runDetailMetricKey] ?? [];
-    if (!points.length) return null;
-
-    let minStep = Number.POSITIVE_INFINITY;
-    let maxStep = Number.NEGATIVE_INFINITY;
-    let minValue = Number.POSITIVE_INFINITY;
-    let maxValue = Number.NEGATIVE_INFINITY;
-
-    for (const point of points) {
-      minStep = Math.min(minStep, point.step);
-      maxStep = Math.max(maxStep, point.step);
-      minValue = Math.min(minValue, point.value);
-      maxValue = Math.max(maxValue, point.value);
-    }
-
-    if (minStep === maxStep) maxStep += 1;
-    if (minValue === maxValue) maxValue += Math.max(Math.abs(minValue) * 0.1, 1);
-
-    const path = points
-      .map((point, idx) => {
-        const x = 56 + ((point.step - minStep) / (maxStep - minStep)) * 688;
-        const y = 214 - ((point.value - minValue) / (maxValue - minValue)) * 172;
-        return `${idx === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
-      })
-      .join(' ');
-
-    return { points, minStep, maxStep, minValue, maxValue, path };
+    return points.length ? points : null;
   }, [runDetailMetricKey, runDetailMetrics]);
+
+  const sweepChartOption = useMemo(
+    () => buildSweepChartOption({ chartTheme, selectedSet, sweepPoints, sweepXAxis, sweepYAxis }),
+    [chartTheme, selectedSet, sweepPoints, sweepXAxis, sweepYAxis]
+  );
+
+  const parallelActiveDims = useMemo(
+    () => parallelDims.filter((dim) => parallelAvailableDims.includes(dim)).slice(0, 6),
+    [parallelDims, parallelAvailableDims]
+  );
+
+  const parallelChartOption = useMemo(
+    () => buildParallelChartOption({ chartTheme, filteredRuns, parallelActiveDims, selectedSet }),
+    [chartTheme, filteredRuns, parallelActiveDims, selectedSet]
+  );
+
+  const importanceChartOption = useMemo(
+    () => buildImportanceChartOption({ chartTheme, importanceRows }),
+    [chartTheme, importanceRows]
+  );
+
+  const compareChartOption = useMemo(
+    () => buildCompareChartOption({ chartTheme, compareHistoryLines, compareMetric }),
+    [chartTheme, compareHistoryLines, compareMetric]
+  );
+
+  const runDetailChartOption = useMemo(
+    () => buildRunDetailChartOption({ chartTheme, runDetailChartPoints, runDetailMetricKey }),
+    [chartTheme, runDetailChartPoints, runDetailMetricKey]
+  );
 
   async function openRun(runId: string): Promise<void> {
     try {
@@ -1134,6 +589,24 @@ export function App() {
     [activeExperiment, runQuery, sortMode, groupMode, activeStatus, tagFilter, metricFilterKey, metricMin, metricMax, onlySelected, selectedRunIds]
   );
 
+  const activeExperimentMeta = useMemo(
+    () => experiments.find((exp) => exp.name === activeExperiment) ?? null,
+    [activeExperiment, experiments]
+  );
+
+  function selectExperiment(name: string): void {
+    setActiveExperiment(name);
+    setProjectPickerOpen(false);
+    window.location.hash = `#exp/${encodeURIComponent(name)}`;
+  }
+
+  function setRunSelected(runId: string, selected: boolean): void {
+    setSelectedRunIds((prev) => {
+      if (selected) return [...new Set([...prev, runId])];
+      return prev.filter((x) => x !== runId);
+    });
+  }
+
   const paletteActions = useMemo<PaletteAction[]>(() => {
     const actions: PaletteAction[] = [
       {
@@ -1145,6 +618,11 @@ export function App() {
         title: 'Toggle Theme',
         meta: 'Switch dark/light mode',
         run: () => setTheme((t) => (t === 'dark' ? 'light' : 'dark')),
+      },
+      {
+        title: 'Browse Projects',
+        meta: 'Open the hidden project picker',
+        run: () => setProjectPickerOpen(true),
       },
     ];
 
@@ -1251,6 +729,7 @@ export function App() {
       if (e.key === 'Escape') {
         setPaletteOpen(false);
         setRunDetailOpen(false);
+        setProjectPickerOpen(false);
       }
     }
     document.addEventListener('keydown', onKeyDown);
@@ -1259,458 +738,97 @@ export function App() {
 
   const layoutById = new Map(moduleLayout.map((item) => [item.id, item] as const));
 
+  const leaderboardSection = LeaderboardSection({
+    leaderboardMetric,
+    leaderboardObjective,
+    leaderboardRows,
+    metricKeys,
+    onLeaderboardMetricChange: setLeaderboardMetric,
+    onLeaderboardObjectiveChange: setLeaderboardObjective,
+    onOpenRun: openRun,
+  });
+
+  const sweepSection = SweepSection({
+    sweepAxisOptions,
+    sweepChartOption,
+    sweepTopRuns,
+    sweepXAxis,
+    sweepYAxis,
+    onOpenRun: openRun,
+    onSweepXAxisChange: setSweepXAxis,
+    onSweepYAxisChange: setSweepYAxis,
+  });
+
+  const parallelSection = ParallelSection({
+    parallelAvailableDims,
+    parallelChartOption,
+    parallelDims,
+    onOpenRun: openRun,
+    onResetAxes: () => setParallelDims(defaultParallelDimensions(parallelAvailableDims, primaryMetric)),
+    onToggleDim: (dim) => {
+      setParallelDims((prev) => {
+        if (prev.includes(dim)) return prev.filter((x) => x !== dim);
+        return [...prev, dim].slice(0, 6);
+      });
+    },
+  });
+
+  const importanceSection = ImportanceSection({
+    importanceChartOption,
+    importanceRows,
+    importanceTarget,
+    metricKeys,
+    onImportanceTargetChange: setImportanceTarget,
+  });
+
+  const compareSection = compareData
+    ? CompareSection({
+        compareChartOption,
+        compareHistoryLines,
+        compareHistoryLoading,
+        compareMetric,
+        compareMetricKeys: compareData.metric_keys,
+        compareRuns: compareData.runs,
+        onClose: () => setCompareData(null),
+        onCompareMetricChange: setCompareMetric,
+      })
+    : null;
+
   const dashboardModules: DashboardModuleDefinition[] = [
     {
       id: 'leaderboard',
       title: 'Leaderboard',
       visible: true,
-      controls: (
-        <div className="leaderboard-controls">
-          <select className="sort-select" value={leaderboardMetric} onChange={(e) => setLeaderboardMetric(e.target.value)}>
-            {metricKeys.map((key) => (
-              <option key={`lb-${key}`} value={key}>{key}</option>
-            ))}
-          </select>
-          <select className="sort-select" value={leaderboardObjective} onChange={(e) => setLeaderboardObjective(e.target.value as 'auto' | 'min' | 'max')}>
-            <option value="auto">Objective: Auto</option>
-            <option value="min">Objective: Min</option>
-            <option value="max">Objective: Max</option>
-          </select>
-        </div>
-      ),
-      body: !leaderboardRows.length ? (
-        <div className="module-empty">Need numeric metrics to build a leaderboard.</div>
-      ) : (
-        <ol className="leaderboard-list">
-          {(() => {
-            const values = leaderboardRows.map((entry) => entry.value);
-            const minVal = Math.min(...values);
-            const maxVal = Math.max(...values);
-            const spread = Math.max(1e-12, maxVal - minVal);
-            const objective =
-              leaderboardObjective === 'auto'
-                ? metricLowerIsBetter(leaderboardMetric)
-                  ? 'min'
-                  : 'max'
-                : leaderboardObjective;
-
-            return leaderboardRows.map((entry, idx) => {
-              const ratio =
-                objective === 'min'
-                  ? (maxVal - entry.value) / spread
-                  : (entry.value - minVal) / spread;
-              const width = maxVal === minVal ? 92 : Math.max(18, Math.round(20 + ratio * 72));
-              return (
-                <li key={`leader-${entry.run.run_id}`} className="leaderboard-item">
-                  <div className="leaderboard-rank">#{idx + 1}</div>
-                  <button type="button" className="leaderboard-run-btn" onClick={() => void openRun(entry.run.run_id)}>
-                    <span>{entry.run.name ?? entry.run.run_id}</span>
-                    <small>{entry.run.run_id}</small>
-                  </button>
-                  <div className="leaderboard-bar-wrap">
-                    <div className="leaderboard-bar" style={{ width: `${width}%` }} />
-                  </div>
-                  <div className="leaderboard-value">{formatMetricValue(entry.value)}</div>
-                </li>
-              );
-            });
-          })()}
-        </ol>
-      ),
+      controls: leaderboardSection.controls,
+      body: leaderboardSection.body,
     },
     {
       id: 'sweep',
       title: 'Sweep Explorer',
       visible: true,
-      controls: (
-        <div className="sweep-controls">
-          <select className="sort-select" value={sweepXAxis} onChange={(e) => setSweepXAxis(e.target.value as SweepAxisMode)}>
-            <option value="">X Axis</option>
-            {sweepAxisOptions.map((axis) => (
-              <option key={`sx-${axis.value}`} value={axis.value}>{axis.label}</option>
-            ))}
-          </select>
-          <select className="sort-select" value={sweepYAxis} onChange={(e) => setSweepYAxis(e.target.value as SweepAxisMode)}>
-            <option value="">Y Axis</option>
-            {sweepAxisOptions.map((axis) => (
-              <option key={`sy-${axis.value}`} value={axis.value}>{axis.label}</option>
-            ))}
-          </select>
-        </div>
-      ),
-      body: (
-        <div className="module-grid">
-          <div className="chart-container compact">
-            <svg className="viz-svg" viewBox="0 0 760 240" role="img" aria-label="Sweep scatter chart">
-              <rect x="0" y="0" width="760" height="240" rx="8" fill="rgba(6,16,28,0.45)" />
-              <line x1="54" y1="18" x2="54" y2="205" className="viz-axis" />
-              <line x1="54" y1="205" x2="744" y2="205" className="viz-axis" />
-              {sweepPoints.map((p, idx) => {
-                const plotX = 54 + ((p.x - sweepBounds.minX) / (sweepBounds.maxX - sweepBounds.minX)) * 690;
-                const plotY = 205 - ((p.y - sweepBounds.minY) / (sweepBounds.maxY - sweepBounds.minY)) * 187;
-                const isHovered = hoveredSweepPoint?.run.run_id === p.run.run_id;
-                return (
-                  <g key={`sweep-${p.run.run_id}-${idx}`}>
-                    <circle
-                      cx={plotX}
-                      cy={plotY}
-                      r={isHovered ? '5.1' : '3.2'}
-                      fill={(p.run.status ?? '').toUpperCase() === 'FAILED' ? '#f87171' : '#4f8ef7'}
-                      opacity={isHovered ? '0.98' : '0.78'}
-                    />
-                    <circle
-                      cx={plotX}
-                      cy={plotY}
-                      r="10"
-                      fill="transparent"
-                      className="parallel-hit-line"
-                      onMouseEnter={(e) => {
-                        const svg = e.currentTarget.ownerSVGElement;
-                        if (!svg) return;
-                        const rect = svg.getBoundingClientRect();
-                        setHoveredSweepPoint({
-                          run: p.run,
-                          x: e.clientX - rect.left,
-                          y: e.clientY - rect.top,
-                          plotX,
-                          plotY,
-                          valueX: p.x,
-                          valueY: p.y,
-                        });
-                      }}
-                      onMouseMove={(e) => {
-                        const svg = e.currentTarget.ownerSVGElement;
-                        if (!svg) return;
-                        const rect = svg.getBoundingClientRect();
-                        setHoveredSweepPoint({
-                          run: p.run,
-                          x: e.clientX - rect.left,
-                          y: e.clientY - rect.top,
-                          plotX,
-                          plotY,
-                          valueX: p.x,
-                          valueY: p.y,
-                        });
-                      }}
-                      onMouseLeave={() => {
-                        setHoveredSweepPoint((current) =>
-                          current?.run.run_id === p.run.run_id ? null : current
-                        );
-                      }}
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-            {hoveredSweepPoint && (
-              <div
-                className="viz-tooltip"
-                style={{
-                  left: `${Math.min(610, Math.max(12, hoveredSweepPoint.x + 12))}px`,
-                  top: `${Math.min(208, Math.max(12, hoveredSweepPoint.y - 12))}px`,
-                }}
-              >
-                <div className="viz-tooltip-title">
-                  {hoveredSweepPoint.run.name ?? hoveredSweepPoint.run.run_id}
-                </div>
-                <div className="viz-tooltip-subtitle">{hoveredSweepPoint.run.run_id}</div>
-                <div className="viz-tooltip-status">
-                  status: {hoveredSweepPoint.run.status ?? 'UNKNOWN'}
-                </div>
-                <div className="viz-tooltip-values">
-                  <span>
-                    {sweepAxisLabel(sweepXAxis)} {formatMetricValue(hoveredSweepPoint.valueX)}
-                  </span>
-                  <span>
-                    {sweepAxisLabel(sweepYAxis)} {formatMetricValue(hoveredSweepPoint.valueY)}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-          <div>
-            <h4 className="module-subtitle">Top Runs</h4>
-            <ul className="compact-list">
-              {sweepTopRuns.map((entry) => (
-                <li key={`top-${entry.run.run_id}`}>
-                  <button type="button" className="link-btn" onClick={() => void openRun(entry.run.run_id)}>
-                    {entry.run.name ?? entry.run.run_id}
-                  </button>
-                  <span>{formatMetricValue(entry.y)}</span>
-                </li>
-              ))}
-              {!sweepTopRuns.length && <li>Select numeric axes to rank sweep points.</li>}
-            </ul>
-          </div>
-        </div>
-      ),
+      controls: sweepSection.controls,
+      body: sweepSection.body,
     },
     {
       id: 'parallel',
       title: 'Parallel Coordinates',
       visible: true,
-      controls: (
-        <div className="parallel-controls">
-          <button className="action-btn subtle" onClick={() => setParallelDims(defaultParallelDimensions(parallelAvailableDims, primaryMetric))}>
-            Reset Axes
-          </button>
-        </div>
-      ),
-      body: (
-        <>
-          <div className="chip-selector">
-            {parallelAvailableDims.map((dim) => (
-              <button
-                key={`dim-${dim}`}
-                type="button"
-                className={`axis-chip ${parallelDims.includes(dim) ? 'active' : ''}`}
-                onClick={() => {
-                  setParallelDims((prev) => {
-                    if (prev.includes(dim)) return prev.filter((x) => x !== dim);
-                    return [...prev, dim].slice(0, 6);
-                  });
-                }}
-              >
-                {dimensionLabel(dim)}
-              </button>
-            ))}
-          </div>
-          <div className="chart-container compact">
-            <svg className="viz-svg" viewBox="0 0 760 300" role="img" aria-label="Parallel coordinates chart">
-              <rect x="0" y="0" width="760" height="300" rx="8" fill="rgba(6,16,28,0.45)" />
-              {parallelSeries.ranges.map((range, idx) => {
-                const x = 70 + (idx / Math.max(1, parallelSeries.ranges.length - 1)) * 620;
-                return (
-                  <g key={`axis-${range.dim}`}>
-                    <line x1={x} y1="36" x2={x} y2="252" className="viz-axis" />
-                    <text x={x} y="274" textAnchor="middle" className="viz-label">{dimensionLabel(range.dim)}</text>
-                    <text x={x} y="30" textAnchor="middle" className="viz-subtle">{formatMetricValue(range.max)}</text>
-                    <text x={x} y="252" textAnchor="middle" className="viz-subtle">{formatMetricValue(range.min)}</text>
-                  </g>
-                );
-              })}
-              {parallelSeries.rows.map((entry, rowIdx) => {
-                const isHovered = hoveredParallelRun?.run.run_id === entry.run.run_id;
-                return (
-                  <g key={`parallel-${entry.run.run_id}`}>
-                    <polyline
-                      points={entry.points}
-                      fill="none"
-                      stroke={selectedSet.has(entry.run.run_id) ? '#f6a623' : colorForIndex(rowIdx)}
-                      strokeWidth={isHovered ? 2.8 : selectedSet.has(entry.run.run_id) ? 2.2 : 1.2}
-                      opacity={
-                        isHovered
-                          ? 0.96
-                          : selectedSet.size && !selectedSet.has(entry.run.run_id)
-                            ? 0.15
-                            : 0.45
-                      }
-                    />
-                    <polyline
-                      points={entry.points}
-                      fill="none"
-                      stroke="transparent"
-                      strokeWidth="12"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="parallel-hit-line"
-                      onMouseEnter={(e) => {
-                        const svg = e.currentTarget.ownerSVGElement;
-                        if (!svg) return;
-                        const rect = svg.getBoundingClientRect();
-                        setHoveredParallelRun({
-                          run: entry.run,
-                          x: e.clientX - rect.left,
-                          y: e.clientY - rect.top,
-                          values: entry.pointEntries.map((point) => ({ dim: point.dim, value: point.value })),
-                        });
-                      }}
-                      onMouseMove={(e) => {
-                        const svg = e.currentTarget.ownerSVGElement;
-                        if (!svg) return;
-                        const rect = svg.getBoundingClientRect();
-                        setHoveredParallelRun({
-                          run: entry.run,
-                          x: e.clientX - rect.left,
-                          y: e.clientY - rect.top,
-                          values: entry.pointEntries.map((point) => ({ dim: point.dim, value: point.value })),
-                        });
-                      }}
-                      onMouseLeave={() => {
-                        setHoveredParallelRun((current) =>
-                          current?.run.run_id === entry.run.run_id ? null : current
-                        );
-                      }}
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-            {hoveredParallelRun && (
-              <div
-                className="viz-tooltip"
-                style={{
-                  left: `${Math.min(610, Math.max(12, hoveredParallelRun.x + 12))}px`,
-                  top: `${Math.min(208, Math.max(12, hoveredParallelRun.y - 12))}px`,
-                }}
-              >
-                <div className="viz-tooltip-title">
-                  {hoveredParallelRun.run.name ?? hoveredParallelRun.run.run_id}
-                </div>
-                <div className="viz-tooltip-subtitle">{hoveredParallelRun.run.run_id}</div>
-                <div className="viz-tooltip-status">
-                  status: {hoveredParallelRun.run.status ?? 'UNKNOWN'}
-                </div>
-                <div className="viz-tooltip-values">
-                  {hoveredParallelRun.values.slice(0, 4).map((entry) => (
-                    <span key={`parallel-hover-${hoveredParallelRun.run.run_id}-${entry.dim}`}>
-                      {dimensionLabel(entry.dim)} {formatMetricValue(entry.value)}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </>
-      ),
+      controls: parallelSection.controls,
+      body: parallelSection.body,
     },
     {
       id: 'importance',
       title: 'Feature Importance (Proxy)',
       visible: true,
-      controls: (
-        <div className="importance-controls">
-          <select className="sort-select" value={importanceTarget} onChange={(e) => setImportanceTarget(e.target.value)}>
-            {metricKeys.map((key) => (
-              <option key={`importance-${key}`} value={key}>{key}</option>
-            ))}
-          </select>
-        </div>
-      ),
-      body: (
-        <div className="module-grid">
-          <div className="chart-container compact">
-            <svg className="viz-svg" viewBox="0 0 760 240" role="img" aria-label="Importance chart">
-              <rect x="0" y="0" width="760" height="240" rx="8" fill="rgba(6,16,28,0.45)" />
-              {importanceRows.map((entry, idx) => {
-                const x = 54;
-                const y = 28 + idx * 24;
-                const width = Math.max(10, entry.score * 620);
-                return (
-                  <g key={`importance-bar-${entry.key}`}>
-                    <text x="54" y={y - 6} className="viz-label">{entry.key}</text>
-                    <rect x={x} y={y} width="620" height="12" rx="6" fill="rgba(255,255,255,0.08)" />
-                    <rect x={x} y={y} width={width} height="12" rx="6" fill={entry.direction >= 0 ? '#34d399' : '#f87171'} />
-                  </g>
-                );
-              })}
-            </svg>
-          </div>
-          <div>
-            <h4 className="module-subtitle">Top Drivers</h4>
-            <ul className="importance-list">
-              {importanceRows.map((entry) => (
-                <li key={`importance-row-${entry.key}`} className="importance-item">
-                  <div className="importance-main">
-                    <span>{entry.key}</span>
-                    <small>{entry.samples} runs · {entry.direction >= 0 ? 'positive' : 'negative'} signal</small>
-                  </div>
-                  <div className="importance-score">{formatMetricValue(entry.score)}</div>
-                </li>
-              ))}
-              {!importanceRows.length && <li className="module-empty">Need numeric params and a numeric target metric.</li>}
-            </ul>
-          </div>
-        </div>
-      ),
+      controls: importanceSection.controls,
+      body: importanceSection.body,
     },
     {
       id: 'compare',
       title: 'Run Comparison',
       visible: Boolean(compareData),
-      controls: compareData ? (
-        <div className="compare-controls">
-          <select className="sort-select" value={compareMetric} onChange={(e) => setCompareMetric(e.target.value)}>
-            {compareData.metric_keys.map((k) => (
-              <option key={`compare-${k}`} value={k}>{k}</option>
-            ))}
-          </select>
-          <button className="action-btn subtle" onClick={() => setCompareData(null)}>Close</button>
-        </div>
-      ) : null,
-      body: compareData ? (
-        <div className="compare-grid">
-          <div className="chart-container compact">
-            <svg className="viz-svg" viewBox="0 0 760 240" role="img" aria-label="Compare metric history chart">
-              <rect x="0" y="0" width="760" height="240" rx="8" fill="rgba(6,16,28,0.45)" />
-              <line x1="54" y1="18" x2="54" y2="205" className="viz-axis" />
-              <line x1="54" y1="205" x2="744" y2="205" className="viz-axis" />
-              {compareHistoryStats.lines.map((entry, idx) => {
-                const points = entry.points
-                  .map((p) => {
-                    const x =
-                      54 +
-                      ((p.step - compareHistoryStats.minStep) /
-                        (compareHistoryStats.maxStep - compareHistoryStats.minStep)) *
-                        690;
-                    const y =
-                      205 -
-                      ((p.value - compareHistoryStats.minValue) /
-                        (compareHistoryStats.maxValue - compareHistoryStats.minValue)) *
-                        187;
-                    return `${x.toFixed(2)},${y.toFixed(2)}`;
-                  })
-                  .join(' ');
-                if (!points) return null;
-                return (
-                  <polyline
-                    key={`line-${entry.run.run_id}`}
-                    points={points}
-                    fill="none"
-                    stroke={colorForIndex(idx)}
-                    strokeWidth="2"
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                  />
-                );
-              })}
-            </svg>
-            <div className="viz-legend">
-              {compareHistoryLoading && <span className="module-empty">Loading metric history…</span>}
-              {compareHistoryStats.lines.map((entry, idx) => (
-                <span key={`legend-${entry.run.run_id}`} className="viz-tag">
-                  <i style={{ backgroundColor: colorForIndex(idx) }} />
-                  {entry.run.name ?? entry.run.run_id}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div className="table-container">
-            <table className="compare-table">
-              <thead>
-                <tr>
-                  <th>Run</th>
-                  <th>Status</th>
-                  <th>Duration</th>
-                  <th>{compareMetric || 'Value'}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {compareData.runs.map((run) => (
-                  <tr key={`cmp-${run.run_id}`}>
-                    <td>{run.name ?? run.run_id}</td>
-                    <td>{run.status ?? '-'}</td>
-                    <td>{formatDuration(run.duration)}</td>
-                    <td>{compareMetric ? formatMetricValue(run.metrics?.[compareMetric]) : '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : (
-        <div className="module-empty">Choose at least two runs to compare them here.</div>
-      ),
+      controls: compareSection?.controls ?? null,
+      body: compareSection?.body ?? <div className="module-empty">Choose at least two runs to compare them here.</div>,
     },
   ];
 
@@ -1809,60 +927,29 @@ export function App() {
 
   return (
     <div className="app-container">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="logo-icon" aria-hidden="true" />
-          <div>
-            <h1>MLTracker</h1>
-            <p>Experiment Control Center</p>
-          </div>
-        </div>
-
-        <div className="nav-section">
-          <div className="sidebar-search-wrap">
-            <input
-              className="search-input"
-              placeholder="Search experiments..."
-              value={experimentFilter}
-              onChange={(e) => setExperimentFilter(e.target.value)}
-            />
-          </div>
-          <h3>Experiments</h3>
-          <ul className="nav-list">
-            {visibleExperiments.map((exp) => (
-              <li key={exp.name}>
-                <button
-                  type="button"
-                  className={`nav-item ${activeExperiment === exp.name ? 'active' : ''}`}
-                  onClick={() => {
-                    setActiveExperiment(exp.name);
-                    window.location.hash = `#exp/${encodeURIComponent(exp.name)}`;
-                  }}
-                >
-                  <span className="exp-name-text">{exp.name}</span>
-                  <span className="exp-run-count">{exp.run_count ?? '-'}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="sidebar-footer">v2 workspace</div>
-      </aside>
-
       <main className="main-content">
         <header className="top-bar">
-          <div>
-            <div className="breadcrumbs">
-              <span className="crumb root">Dashboard</span>
-              {activeExperiment && (
-                <>
-                  <span className="sep">/</span>
-                  <span className="crumb active">{activeExperiment}</span>
-                </>
-              )}
+          <div className="topbar-primary">
+            <div className="topbar-brand">
+              <div className="logo-icon" aria-hidden="true" />
+              <div>
+                <h1>MLTracker</h1>
+                <p>Runs-first workspace</p>
+              </div>
             </div>
-            <div className="topbar-meta">Experiment Intelligence</div>
+            <button
+              type="button"
+              className="workspace-switcher"
+              onClick={() => setProjectPickerOpen(true)}
+            >
+              <span className="workspace-switcher-label">Project</span>
+              <strong>{activeExperiment || 'Select a project'}</strong>
+              <small>
+                {activeExperimentMeta
+                  ? `${activeExperimentMeta.run_count ?? filteredRuns.length} tracked runs`
+                  : `${experiments.length} projects available`}
+              </small>
+            </button>
           </div>
           <div className="actions">
             <span className={`connection-pill ${health === 'healthy' ? 'online' : health === 'offline' ? 'offline' : 'pending'}`}>
@@ -1876,45 +963,81 @@ export function App() {
           </div>
         </header>
 
-        <div className={`content-shell ${activeExperiment ? 'with-run-sidebar' : ''}`}>
-          <aside className={`run-sidebar ${activeExperiment ? '' : 'hidden'}`}>
+        <div className="content-shell">
+          <aside className="run-sidebar">
             <div className="run-sidebar-header">
               <div>
-                <h3>Runs</h3>
-                <p>{filteredRuns.length} runs · {selectedRunIds.length} selected</p>
+                <div className="sidebar-kicker">Runs</div>
+                <h3>{activeExperiment || 'No project selected'}</h3>
+                <p>
+                  {activeExperiment
+                    ? `${filteredRuns.length} visible · ${selectedRunIds.length} selected`
+                    : 'Open a project to load its runs.'}
+                </p>
               </div>
-              <button className="icon-btn" onClick={() => setSelectedRunIds([])}>✕</button>
+              <div className="run-sidebar-tools">
+                <button
+                  type="button"
+                  className="action-btn subtle sidebar-project-toggle"
+                  onClick={() => setProjectPickerOpen(true)}
+                >
+                  Projects
+                </button>
+                <button className="icon-btn" onClick={() => setSelectedRunIds([])}>✕</button>
+              </div>
             </div>
             <div className="run-sidebar-list">
-              {filteredRuns.slice(0, 120).map((run) => (
-                <article
-                  key={`rail-${run.run_id}`}
-                  className={`run-rail-item ${selectedSet.has(run.run_id) ? 'is-selected' : ''}`}
-                  onClick={() => void openRun(run.run_id)}
-                >
-                  <input
-                    className="run-rail-check"
-                    type="checkbox"
-                    checked={selectedSet.has(run.run_id)}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedRunIds((prev) => [...new Set([...prev, run.run_id])]);
-                      } else {
-                        setSelectedRunIds((prev) => prev.filter((x) => x !== run.run_id));
-                      }
-                    }}
-                  />
-                  <div className="run-rail-main">
-                    <div className="run-rail-head">
-                      <span className="run-rail-name">{run.name ?? run.run_id}</span>
-                      <span className="run-rail-status">{run.status ?? 'UNKNOWN'}</span>
+              {!activeExperiment && (
+                <div className="run-rail-empty">
+                  <p>Projects are tucked away until you need them.</p>
+                  <button
+                    type="button"
+                    className="action-btn subtle"
+                    onClick={() => setProjectPickerOpen(true)}
+                  >
+                    Open Projects
+                  </button>
+                </div>
+              )}
+              {activeExperiment && filteredRuns.slice(0, 120).map((run) => {
+                const runStatus = (run.status ?? 'UNKNOWN').toUpperCase();
+                const primaryValue =
+                  primaryMetric ? metricValueForRun(run, primaryMetric) : null;
+
+                return (
+                  <article
+                    key={`rail-${run.run_id}`}
+                    className={`run-rail-item ${selectedSet.has(run.run_id) ? 'is-selected' : ''}`}
+                    onClick={() => void openRun(run.run_id)}
+                  >
+                    <input
+                      className="run-rail-check"
+                      type="checkbox"
+                      checked={selectedSet.has(run.run_id)}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setRunSelected(run.run_id, e.target.checked)}
+                    />
+                    <div className="run-rail-main">
+                      <div className="run-rail-head">
+                        <span className="run-rail-name">{run.name ?? run.run_id}</span>
+                        <span className={`run-rail-status rail-status-${runStatus}`}>
+                          {run.status ?? 'UNKNOWN'}
+                        </span>
+                      </div>
+                      <div className="run-rail-meta">{run.run_id}</div>
+                      <div className="run-rail-foot">
+                        <span>{formatDuration(run.duration)}</span>
+                        <span>
+                          {primaryMetric && primaryValue !== null
+                            ? `${primaryMetric}: ${formatMetricValue(primaryValue)}`
+                            : 'No primary metric'}
+                        </span>
+                      </div>
                     </div>
-                    <div className="run-rail-meta">{run.run_id} · {formatDuration(run.duration)}</div>
-                  </div>
-                </article>
-              ))}
-              {!filteredRuns.length && !loadingRuns && (
+                  </article>
+                );
+              })}
+              {!filteredRuns.length && !loadingRuns && activeExperiment && (
                 <div className="run-rail-empty">No runs match current filters.</div>
               )}
             </div>
@@ -1925,7 +1048,14 @@ export function App() {
             {!activeExperiment ? (
               <div className="empty-state">
                 <h2>Select a project</h2>
-                <p>Pick an experiment from the sidebar to explore runs, metrics, charts, and artifacts.</p>
+                <p>Open the project picker to explore runs, metrics, charts, and artifacts.</p>
+                <button
+                  type="button"
+                  className="action-btn"
+                  onClick={() => setProjectPickerOpen(true)}
+                >
+                  Browse Projects
+                </button>
               </div>
             ) : (
               <>
@@ -2086,13 +1216,7 @@ export function App() {
                                   className="run-picker"
                                   type="checkbox"
                                   checked={selectedSet.has(run.run_id)}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setSelectedRunIds((prev) => [...new Set([...prev, run.run_id])]);
-                                    } else {
-                                      setSelectedRunIds((prev) => prev.filter((x) => x !== run.run_id));
-                                    }
-                                  }}
+                                  onChange={(e) => setRunSelected(run.run_id, e.target.checked)}
                                 />
                               </td>
                               <td>
@@ -2147,180 +1271,18 @@ export function App() {
           </section>
         </div>
 
-        {runDetailOpen && runDetail && (
-          <div className="drawer-overlay" onClick={() => setRunDetailOpen(false)}>
-            <aside className="drawer" onClick={(e) => e.stopPropagation()}>
-              <div className="drawer-head">
-                <h3>{runDetail.name ?? runDetail.run_id}</h3>
-                <button className="icon-btn" onClick={() => setRunDetailOpen(false)}>✕</button>
-              </div>
-
-              <section className="run-hero">
-                {runDetailHeroMetrics.length ? (
-                  runDetailHeroMetrics.map(([key, value]) => (
-                    <div key={`hero-${key}`} className="hero-metric-item">
-                      <span className="hero-metric-label">{key}</span>
-                      <span className="hero-metric-value">{formatMetricValue(value)}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="module-empty">No latest metrics logged for this run yet.</div>
-                )}
-              </section>
-
-              <div className="drawer-section">
-                <div className="module-header">
-                  <h4>Metric History</h4>
-                  {runDetailMetricKeys.length > 0 && (
-                    <select
-                      className="sort-select"
-                      value={runDetailMetricKey}
-                      onChange={(e) => setRunDetailMetricKey(e.target.value)}
-                    >
-                      {runDetailMetricKeys.map((key) => (
-                        <option key={`detail-metric-${key}`} value={key}>
-                          {key}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-                {runDetailChart ? (
-                  <>
-                    <div className="chart-container compact">
-                      <svg className="viz-svg" viewBox="0 0 800 260" role="img" aria-label="Run metric history chart">
-                        <rect x="0" y="0" width="800" height="260" rx="8" fill="rgba(6,16,28,0.45)" />
-                        <line x1="56" y1="24" x2="56" y2="214" className="viz-axis" />
-                        <line x1="56" y1="214" x2="744" y2="214" className="viz-axis" />
-                        <path
-                          d={runDetailChart.path}
-                          fill="none"
-                          stroke="#f6a623"
-                          strokeWidth="2.4"
-                          strokeLinejoin="round"
-                          strokeLinecap="round"
-                        />
-                        {runDetailChart.points.map((point, idx) => {
-                          const x =
-                            56 +
-                            ((point.step - runDetailChart.minStep) /
-                              (runDetailChart.maxStep - runDetailChart.minStep)) *
-                              688;
-                          const y =
-                            214 -
-                            ((point.value - runDetailChart.minValue) /
-                              (runDetailChart.maxValue - runDetailChart.minValue)) *
-                              172;
-                          return (
-                            <circle
-                              key={`detail-point-${idx}`}
-                              cx={x}
-                              cy={y}
-                              r="2.8"
-                              fill="#4f8ef7"
-                              opacity="0.9"
-                            />
-                          );
-                        })}
-                        <text x="56" y="18" className="viz-subtle">
-                          {formatMetricValue(runDetailChart.maxValue)}
-                        </text>
-                        <text x="56" y="232" className="viz-subtle">
-                          {formatMetricValue(runDetailChart.minValue)}
-                        </text>
-                        <text x="56" y="248" className="viz-subtle">
-                          step {runDetailChart.minStep}
-                        </text>
-                        <text x="690" y="248" className="viz-subtle">
-                          step {runDetailChart.maxStep}
-                        </text>
-                      </svg>
-                    </div>
-                    <div className="viz-legend">
-                      <span className="viz-tag">
-                        <i style={{ backgroundColor: '#f6a623' }} />
-                        {runDetailMetricKey}
-                      </span>
-                      <span className="viz-tag">{runDetailChart.points.length} points</span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="module-empty">
-                    No metric history is available for this run yet.
-                  </div>
-                )}
-              </div>
-
-              <div className="drawer-section">
-                <h4>Run Info</h4>
-                <div className="kv-grid">
-                  <span className="kv-k">run_id</span>
-                  <span className="kv-v">{runDetail.run_id}</span>
-                  <span className="kv-k">status</span>
-                  <span className="kv-v">{runDetail.status ?? '-'}</span>
-                  <span className="kv-k">duration</span>
-                  <span className="kv-v">{formatDuration(runDetail.duration)}</span>
-                  <span className="kv-k">started</span>
-                  <span className="kv-v">{runDetail.start_time ? new Date(runDetail.start_time).toLocaleString() : '-'}</span>
-                </div>
-              </div>
-
-              <div className="drawer-section">
-                <h4>Params</h4>
-                <div className="kv-grid">
-                  {Object.entries(runDetail.params ?? {}).map(([k, v]) => (
-                    <Fragment key={`pk-${k}`}>
-                      <span className="kv-k">{k}</span>
-                      <span className="kv-v">{String(v)}</span>
-                    </Fragment>
-                  ))}
-                </div>
-              </div>
-
-              <div className="drawer-section">
-                <h4>Tags</h4>
-                <div className="tags-cloud">
-                  {Object.entries(runDetail.tags ?? {}).map(([k, v]) => (
-                    <span key={`tag-${k}`} className="tag-chip">{k}:{String(v)}</span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="drawer-section">
-                <h4>Metrics (Latest)</h4>
-                <div className="kv-grid">
-                  {Object.entries(runDetail.metrics ?? {}).map(([k, v]) => (
-                    <Fragment key={`mk-${k}`}>
-                      <span className="kv-k">{k}</span>
-                      <span className="kv-v">{formatMetricValue(v)}</span>
-                    </Fragment>
-                  ))}
-                </div>
-              </div>
-
-              <div className="drawer-section">
-                <h4>Artifacts</h4>
-                <ul className="artifact-list">
-                  {runDetailArtifacts.map((a) => (
-                    <li key={a.path}>
-                      <span>{a.path}</span>
-                      <a className="artifact-link" href={artifactDownloadUrl(runDetail.run_id, a.path)} target="_blank" rel="noreferrer">
-                        Download
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="drawer-section">
-                <h4>Metric History Keys</h4>
-                <p className="mono-copy">
-                  {runDetailMetricKeys.join(', ') || 'No history'}
-                </p>
-              </div>
-            </aside>
-          </div>
-        )}
+        <RunDetailDrawer
+          artifacts={runDetailArtifacts}
+          heroMetrics={runDetailHeroMetrics}
+          isOpen={runDetailOpen}
+          metricKey={runDetailMetricKey}
+          metricKeys={runDetailMetricKeys}
+          onClose={() => setRunDetailOpen(false)}
+          onMetricKeyChange={setRunDetailMetricKey}
+          run={runDetail}
+          runDetailChartOption={runDetailChartOption}
+          runDetailChartPointCount={runDetailChartPoints?.length ?? 0}
+        />
 
         {paletteOpen && (
           <div className="drawer-overlay" onClick={() => setPaletteOpen(false)}>
@@ -2353,6 +1315,55 @@ export function App() {
                 {!paletteActions.length && <p className="empty-note">No commands match your search.</p>}
               </div>
             </section>
+          </div>
+        )}
+
+        {projectPickerOpen && (
+          <div
+            className="drawer-overlay project-panel-overlay"
+            onClick={() => setProjectPickerOpen(false)}
+          >
+            <aside className="project-panel" onClick={(e) => e.stopPropagation()}>
+              <div className="project-panel-head">
+                <div>
+                  <div className="sidebar-kicker">Projects</div>
+                  <h3>Switch workspace</h3>
+                  <p>{experiments.length} total projects</p>
+                </div>
+                <button className="icon-btn" onClick={() => setProjectPickerOpen(false)}>✕</button>
+              </div>
+              <div className="project-panel-search">
+                <input
+                  autoFocus
+                  className="search-input"
+                  placeholder="Search projects..."
+                  value={experimentFilter}
+                  onChange={(e) => setExperimentFilter(e.target.value)}
+                />
+              </div>
+              <ul className="nav-list project-list">
+                {visibleExperiments.map((exp) => (
+                  <li key={exp.name}>
+                    <button
+                      type="button"
+                      className={`nav-item project-item ${activeExperiment === exp.name ? 'active' : ''}`}
+                      onClick={() => selectExperiment(exp.name)}
+                    >
+                      <span className="project-item-main">
+                        <span className="exp-name-text">{exp.name}</span>
+                        <span className="project-item-meta">
+                          {exp.run_count ?? 0} runs tracked
+                        </span>
+                      </span>
+                      <span className="exp-run-count">{exp.run_count ?? '-'}</span>
+                    </button>
+                  </li>
+                ))}
+                {!visibleExperiments.length && (
+                  <li className="run-rail-empty">No projects match your search.</li>
+                )}
+              </ul>
+            </aside>
           </div>
         )}
       </main>

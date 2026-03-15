@@ -1,12 +1,14 @@
-torch==2.7.0
-numpy==1.26.4
-pandas==2.2.3
-matplotlib==3.10.3
-seaborn==0.13.2
-scikit-learn==1.6.1
-scipy==1.15.3
-statsmodels==0.14.4
-tqdm==4.67.1
-requests==2.32.3
-lightgbm==4.6.0
-catboost==1.2.8
+# Minimal local bootstrap.
+#
+# Runtime dependencies live in pyproject.toml.
+# Install additional feature areas with extras, for example:
+#   pip install -r requirements.txt
+#   pip install -e ".[dev]"
+#   pip install -e ".[preprocessing]"
+#   pip install -e ".[darts-analysis]"
+#   pip install -e ".[mltracker]"
+#   pip install -e ".[vmd,wavelets]"
+#   pip install -e ".[all]"
+#
+# Keeping this file tiny avoids a second, drifting dependency list.
+-e .

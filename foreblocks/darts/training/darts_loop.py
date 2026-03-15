@@ -8,7 +8,7 @@ The public entry-point is :func:`train_darts_model`.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -83,6 +83,10 @@ def train_darts_model(
     beta_darts_weight: float = 0.0,
     moe_balance_weight: float = 5e-3,
     transformer_exploration_weight: float = 1e-2,
+    use_darts_pt: bool = False,
+    darts_pt_xi: float = 0.01,
+    initial_drnas_concentration: float = 10.0,
+    final_drnas_concentration: float = 2.0,
 ) -> Dict[str, Any]:
     """
     Run one DARTS bilevel training cycle.
@@ -197,6 +201,8 @@ def train_darts_model(
         final_temp=0.1,
         schedule_type=temperature_schedule,
         warmup_epochs=warmup_epochs,
+        initial_drnas_concentration=initial_drnas_concentration,
+        final_drnas_concentration=final_drnas_concentration,
     )
 
     # ── SWA setup ─────────────────────────────────────────────────────────
@@ -270,6 +276,14 @@ def train_darts_model(
         ):
             model.set_temperature(current_temperature)
 
+        # DrNAS concentration annealing: high → exploration (samples near mean),
+        # low → exploitation (samples near simplex vertices).
+        current_drnas_concentration = temp_scheduler.get_drnas_concentration(
+            epoch, epochs
+        )
+        if hasattr(model, "set_drnas_concentration"):
+            model.set_drnas_concentration(current_drnas_concentration)
+
         if progressive_shrinking and hasattr(model, "schedule_progressive_stage"):
             model.schedule_progressive_stage(epoch=epoch, total_epochs=epochs)
 
@@ -290,6 +304,68 @@ def train_darts_model(
                     include_decoder_targets=True,
                 )
                 bilevel_optimizer.zero_arch_grads()
+
+                # -- Implicit arch gradient correction (second-order DARTS) ----
+                # Replaces the finite-difference curvature *penalty* with a
+                # direct correction applied to arch param gradients after
+                # backward.  Correction = -xi/(2ε) * (∇_α L_val(w+) - ∇_α L_val(w-))
+                # where w± are model weights perturbed along ∇_w L_train.
+                implicit_corrections: Optional[List[Optional[torch.Tensor]]] = None
+                hessian_penalty = torch.tensor(0.0, device=device)
+                if (
+                    hessian_penalty_weight > 0.0
+                    and hessian_fd_eps > 0.0
+                    and hessian_update_freq > 0
+                    and (epoch - warmup_epochs) % hessian_update_freq == 0
+                    and model_params
+                    and arch_params
+                ):
+                    h_batch = bilevel_optimizer.next_hessian_batch()
+                    h_train_x, h_train_y, h_train_model_kwargs = (
+                        unpack_forecasting_batch(
+                            h_batch, device, include_decoder_targets=True
+                        )
+                    )
+                    implicit_corrections = compute_implicit_arch_gradient_correction(
+                        model=model,
+                        loss_fn=loss_fn,
+                        arch_x=arch_x,
+                        arch_y=arch_y,
+                        arch_model_kwargs=arch_model_kwargs,
+                        train_x=h_train_x,
+                        train_y=h_train_y,
+                        train_model_kwargs=h_train_model_kwargs,
+                        model_params=model_params,
+                        arch_params=arch_params,
+                        xi=hessian_penalty_weight,
+                        eps=hessian_fd_eps,
+                        device=device,
+                        use_amp=use_amp,
+                    )
+
+                # -- DARTS-PT: perturb model weights toward training minimum ----
+                # w' = w - xi * unit(∇_w L_train).  The arch gradient is then
+                # computed at w' instead of w, reducing bias from shared weights
+                # being positioned sub-optimally relative to the arch optimum.
+                darts_pt_originals: Optional[List[torch.Tensor]] = None
+                if use_darts_pt and model_params:
+                    pt_batch = bilevel_optimizer.next_hessian_batch()
+                    pt_train_x, pt_train_y, pt_train_model_kwargs = (
+                        unpack_forecasting_batch(
+                            pt_batch, device, include_decoder_targets=True
+                        )
+                    )
+                    darts_pt_originals = _apply_darts_pt_perturbation(
+                        model=model,
+                        model_params=model_params,
+                        train_x=pt_train_x,
+                        train_y=pt_train_y,
+                        train_model_kwargs=pt_train_model_kwargs,
+                        loss_fn=loss_fn,
+                        xi=darts_pt_xi,
+                        device=device,
+                        use_amp=use_amp,
+                    )
 
                 with autocast_ctx(device, enabled=use_amp):
                     arch_preds = model(arch_x, **arch_model_kwargs)
@@ -322,40 +398,6 @@ def train_darts_model(
                             p.pow(2).mean() for p in arch_params
                         )
                         total_arch_loss = total_arch_loss + beta_reg
-
-                    # Hessian penalty
-                    hessian_penalty = torch.tensor(0.0, device=device)
-                    if (
-                        hessian_penalty_weight > 0.0
-                        and hessian_fd_eps > 0.0
-                        and hessian_update_freq > 0
-                        and (epoch - warmup_epochs) % hessian_update_freq == 0
-                        and model_params
-                    ):
-                        h_batch = bilevel_optimizer.next_hessian_batch()
-                        h_train_x, h_train_y, h_train_model_kwargs = unpack_forecasting_batch(
-                            h_batch,
-                            device,
-                            include_decoder_targets=True,
-                        )
-                        hessian_penalty = finite_difference_hessian_penalty(
-                            model=model,
-                            loss_fn=loss_fn,
-                            arch_loss=arch_loss,
-                            arch_x=arch_x,
-                            arch_y=arch_y,
-                            arch_model_kwargs=arch_model_kwargs,
-                            train_x=h_train_x,
-                            train_y=h_train_y,
-                            train_model_kwargs=h_train_model_kwargs,
-                            model_params=model_params,
-                            device=device,
-                            eps=hessian_fd_eps,
-                            use_amp=use_amp,
-                        )
-                        total_arch_loss = (
-                            total_arch_loss + hessian_penalty_weight * hessian_penalty
-                        )
 
                     # Edge diversity regularization
                     total_arch_loss, edge_diversity_pairs = _add_edge_diversity_reg(
@@ -435,8 +477,17 @@ def train_darts_model(
                     last_edge_entropy = float(edge_entropy.detach().item())
                     last_edge_sharpen_weight = float(edge_sharpen_weight)
 
+                # Restore DARTS-PT perturbation before optimizer step.
+                # Gradients are already computed; restoring weights now ensures
+                # the model_optimizer step later uses the original weights.
+                if darts_pt_originals is not None:
+                    _restore_model_params(model_params, darts_pt_originals)
+
                 bilevel_optimizer.step_architecture(
-                    total_arch_loss, scaler, already_backward=False
+                    total_arch_loss,
+                    scaler,
+                    already_backward=False,
+                    implicit_corrections=implicit_corrections,
                 )
                 scaler.update()
 
@@ -522,6 +573,7 @@ def train_darts_model(
                     "val": f"{avg_val_loss:.4f}",
                     "best": f"{best_val_loss:.4f}",
                     "patience": f"{patience_counter}/{patience}",
+                    "conc": f"{current_drnas_concentration:.1f}",
                 }
             )
 
@@ -726,6 +778,175 @@ def _run_validation_epoch(
             val_pbar.close()
 
     return val_loss / max(len(val_loader), 1)
+
+
+def _apply_darts_pt_perturbation(
+    *,
+    model: nn.Module,
+    model_params: List[torch.Tensor],
+    train_x: torch.Tensor,
+    train_y: torch.Tensor,
+    train_model_kwargs: Optional[Dict[str, Any]],
+    loss_fn,
+    xi: float,
+    device: str,
+    use_amp: bool,
+) -> List[torch.Tensor]:
+    """Perturb model weights by ``-xi * unit(∇_w L_train)`` (DARTS-PT step).
+
+    Returns the list of original parameter tensors so the caller can restore
+    them via :func:`_restore_model_params` after the architecture backward pass.
+
+    Moving weights toward the training loss minimum before evaluating the
+    validation loss reduces the coupling bias that arises when shared weights
+    are sub-optimally positioned for the current architecture distribution.
+    """
+    train_model_kwargs = dict(train_model_kwargs or {})
+
+    with torch.no_grad():
+        originals = [p.detach().clone() for p in model_params]
+
+    with autocast_ctx(device, enabled=use_amp):
+        train_loss = loss_fn(model(train_x, **train_model_kwargs), train_y)
+
+    grads = torch.autograd.grad(
+        train_loss,
+        model_params,
+        retain_graph=False,
+        create_graph=False,
+        allow_unused=True,
+    )
+
+    norm_sq = torch.tensor(0.0, device=device)
+    for g in grads:
+        if g is not None:
+            norm_sq = norm_sq + g.pow(2).sum()
+    norm = norm_sq.sqrt().clamp_min(1e-12)
+
+    with torch.no_grad():
+        for p, g in zip(model_params, grads):
+            if g is not None:
+                p.add_(g.detach() / norm, alpha=-float(xi))
+
+    return originals
+
+
+def _restore_model_params(
+    model_params: List[torch.Tensor],
+    originals: List[torch.Tensor],
+) -> None:
+    """Restore model parameters to their pre-perturbation values."""
+    with torch.no_grad():
+        for p, orig in zip(model_params, originals):
+            p.copy_(orig)
+
+
+def compute_implicit_arch_gradient_correction(
+    *,
+    model: nn.Module,
+    loss_fn,
+    arch_x: torch.Tensor,
+    arch_y: torch.Tensor,
+    arch_model_kwargs: Optional[Dict[str, Any]],
+    train_x: torch.Tensor,
+    train_y: torch.Tensor,
+    train_model_kwargs: Optional[Dict[str, Any]],
+    model_params: List[torch.Tensor],
+    arch_params: List[torch.Tensor],
+    xi: float,
+    eps: float,
+    device: str,
+    use_amp: bool,
+) -> List[Optional[torch.Tensor]]:
+    """Compute second-order implicit arch gradient correction.
+
+    Implements the DARTS second-order approximation via finite differences in
+    model-weight space.  Instead of adding a scalar curvature *penalty* to the
+    arch loss, this function returns per-parameter gradient *corrections* that
+    are applied directly to ``p.grad`` after the main backward pass
+    (see ``BilevelOptimizer.step_architecture``).
+
+    Correction:
+        Δ∇_α = -xi / (2ε) * (∇_α L_val(w⁺) − ∇_α L_val(w⁻))
+
+    where ``w± = w ± ε · unit(∇_w L_train)``.
+
+    This removes the need for a tuned penalty weight (beyond ``xi``, which is
+    already the model learning-rate scale) and avoids the instability of
+    relu-clipped curvature scalars in noisy training regimes.
+    """
+    if not model_params or not arch_params or eps <= 0:
+        return [None] * len(arch_params)
+
+    arch_model_kwargs = dict(arch_model_kwargs or {})
+    train_model_kwargs = dict(train_model_kwargs or {})
+
+    # --- Training gradient direction ---
+    with autocast_ctx(device, enabled=use_amp):
+        train_loss = loss_fn(model(train_x, **train_model_kwargs), train_y)
+
+    grads_w = torch.autograd.grad(
+        train_loss,
+        model_params,
+        retain_graph=False,
+        create_graph=False,
+        allow_unused=True,
+    )
+    direction = [
+        torch.zeros_like(p) if g is None else g.detach()
+        for p, g in zip(model_params, grads_w)
+    ]
+    norm = torch.sqrt(sum(d.pow(2).sum() for d in direction)).clamp_min(1e-12)
+    # step size in the unit-gradient direction
+    scale = float(eps) / float(norm)
+
+    with torch.no_grad():
+        originals = [p.detach().clone() for p in model_params]
+
+    corrections: List[Optional[torch.Tensor]] = [None] * len(arch_params)
+    try:
+        # ∇_α L_val(w⁺)
+        with torch.no_grad():
+            for p, d in zip(model_params, direction):
+                p.add_(d, alpha=scale)
+        with autocast_ctx(device, enabled=use_amp):
+            loss_plus = loss_fn(model(arch_x, **arch_model_kwargs), arch_y)
+        grads_plus = torch.autograd.grad(
+            loss_plus,
+            arch_params,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        # ∇_α L_val(w⁻)
+        with torch.no_grad():
+            for p, d in zip(model_params, direction):
+                p.add_(d, alpha=-2.0 * scale)
+        with autocast_ctx(device, enabled=use_amp):
+            loss_minus = loss_fn(model(arch_x, **arch_model_kwargs), arch_y)
+        grads_minus = torch.autograd.grad(
+            loss_minus,
+            arch_params,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        # Δ∇_α = -xi / (2ε) * (∇_α(w⁺) − ∇_α(w⁻))
+        # The 2ε denominator corresponds to the actual step size (eps in unit-grad space).
+        factor = -float(xi) / (2.0 * float(eps))
+        for i, (gp, gm) in enumerate(zip(grads_plus, grads_minus)):
+            if gp is not None and gm is not None:
+                corrections[i] = (factor * (gp - gm)).detach()
+            elif gp is not None:
+                corrections[i] = (factor * gp).detach()
+    finally:
+        with torch.no_grad():
+            for p, orig in zip(model_params, originals):
+                p.copy_(orig)
+
+    return corrections
 
 
 def finite_difference_hessian_penalty(

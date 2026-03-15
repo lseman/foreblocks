@@ -1,0 +1,85 @@
+.hero-copy h1,
+.hero-copy h2,
+.hero-copy h3 {
+  margin-top: 0;
+}
+
+.hero-lead {
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: var(--md-default-fg-color--light);
+}
+
+.eyebrow {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(45, 212, 191, 0.14);
+  color: #7dd3c7;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.doc-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: 1.25rem 0 2rem;
+}
+
+.doc-card {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  padding: 1rem 1rem 0.9rem;
+  background: rgba(15, 23, 42, 0.22);
+}
+
+.doc-card h3 {
+  margin-top: 0;
+  margin-bottom: 0.45rem;
+  font-size: 1rem;
+}
+
+.doc-card p {
+  margin: 0;
+  color: var(--md-default-fg-color--light);
+}
+
+.metric-strip {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin: 1rem 0 1.8rem;
+}
+
+.metric-chip {
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.78));
+  border: 1px solid rgba(45, 212, 191, 0.14);
+}
+
+.metric-chip strong {
+  display: block;
+  font-size: 1.1rem;
+  color: #ccfbf1;
+}
+
+.metric-chip span {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.9rem;
+}
+
+.section-intro {
+  color: var(--md-default-fg-color--light);
+  margin-bottom: 1rem;
+}
+
+.docs-callout {
+  border-left: 4px solid #2dd4bf;
+  padding: 0.9rem 1rem;
+  margin: 1rem 0 1.5rem;
+  background: rgba(45, 212, 191, 0.08);
+}

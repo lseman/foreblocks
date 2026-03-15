@@ -8,6 +8,10 @@ Some subsystems require optional extras that are not part of the base install.
 
 | Symptom | Likely fix |
 | --- | --- |
+| Plotting helpers complain about `matplotlib` | `pip install "foreblocks[plotting]"` |
+| `TimeSeriesHandler` or preprocessing utilities fail to import scientific packages | `pip install "foreblocks[preprocessing]"` |
+| DARTS trainer/search helpers fail to import | `pip install "foreblocks[darts]"` |
+| DARTS analyzer or seaborn/pandas-based search visuals fail to import | `pip install "foreblocks[darts-analysis]"` |
 | MLTracker API or UI modules fail to import | `pip install "foreblocks[mltracker]"` |
 | VMD utilities or Optuna search features fail to import | `pip install "foreblocks[vmd]"` |
 | Wavelet-related blocks are unavailable | `pip install "foreblocks[wavelets]"` |

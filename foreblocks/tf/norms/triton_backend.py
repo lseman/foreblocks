@@ -184,6 +184,39 @@ if TRITON_AVAILABLE:
         tl.store(Rms + row_idx, rms)
 
     @triton.jit
+    def fused_add_rmsnorm_fwd_kernel(
+        Residual,
+        Update,
+        Y,
+        W,
+        Rms,
+        stride_row,
+        stride_y_row,
+        n_cols,
+        eps,
+        HAS_WEIGHT: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        row_idx = tl.program_id(0)
+        col = tl.arange(0, BLOCK_SIZE)
+        mask = col < n_cols
+
+        r = tl.load(Residual + row_idx * stride_row + col, mask=mask, other=0.0).to(tl.float32)
+        u = tl.load(Update + row_idx * stride_row + col, mask=mask, other=0.0).to(tl.float32)
+        x = r + u
+
+        ms = tl.sum(x * x, axis=0) / n_cols
+        rms = tl.math.rsqrt(ms + eps)
+        y = x * rms
+
+        if HAS_WEIGHT:
+            w = tl.load(W + col, mask=mask, other=1.0).to(tl.float32)
+            y = y * w
+
+        tl.store(Y + row_idx * stride_y_row + col, y, mask=mask)
+        tl.store(Rms + row_idx, rms)
+
+    @triton.jit
     def rmsnorm_bwd_kernel(
         DY,
         X,
@@ -471,6 +504,101 @@ class RMSNormTritonFunction(torch.autograd.Function):
         return grad_input.view(orig_shape), grad_weight, None
 
 
+class FusedAddRMSNormFunction(torch.autograd.Function):
+    """
+    Single-kernel fused (residual + update) + RMSNorm.
+
+    Saves one [*, D] intermediate tensor vs. the two-kernel sequence.
+    Only valid for D <= 2048, CUDA, dtype in {float16, bfloat16, float32}.
+    """
+
+    @staticmethod
+    def forward(ctx, residual, update, weight, eps):
+        if not TRITON_AVAILABLE:
+            raise RuntimeError("FusedAddRMSNormFunction requires Triton.")
+        if residual.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            raise RuntimeError(
+                f"FusedAddRMSNormFunction only supports float16/bfloat16/float32, got {residual.dtype}"
+            )
+
+        orig_shape = residual.shape
+        residual_2d = residual.view(-1, orig_shape[-1]).contiguous()
+        update_2d = update.view(-1, orig_shape[-1]).contiguous()
+        M, N = residual_2d.shape
+
+        y = torch.empty_like(residual_2d)
+        rms = torch.empty((M,), dtype=torch.float32, device=residual.device)
+
+        BLOCK_SIZE = min(triton.next_power_of_2(N), 2048)
+
+        fused_add_rmsnorm_fwd_kernel[(M,)](
+            residual_2d,
+            update_2d,
+            y,
+            weight,
+            rms,
+            residual_2d.stride(0),
+            y.stride(0),
+            N,
+            eps,
+            weight is not None,
+            BLOCK_SIZE,
+        )
+
+        # Save pre-norm sum once for backward (not residual/update separately).
+        out_2d = residual_2d + update_2d
+        ctx.save_for_backward(out_2d, weight, rms)
+        ctx.orig_shape = orig_shape
+        ctx.N = N
+        ctx.eps = eps
+        return y.view(orig_shape)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        out_2d, weight, rms = ctx.saved_tensors
+        orig_shape = ctx.orig_shape
+        N = ctx.N
+        eps = ctx.eps
+
+        grad_output_2d = grad_output.view(-1, grad_output.shape[-1]).contiguous()
+        M = grad_output_2d.shape[0]
+
+        grad_input = torch.empty_like(out_2d)
+        grad_weight = torch.zeros_like(weight) if weight is not None else None
+
+        BLOCK_SIZE = min(triton.next_power_of_2(N), 2048)
+
+        rmsnorm_bwd_kernel[(M,)](
+            grad_output_2d,
+            out_2d,
+            weight,
+            rms,
+            grad_input,
+            grad_weight if grad_weight is not None else weight,
+            grad_output_2d.stride(0),
+            out_2d.stride(0),
+            grad_input.stride(0),
+            N,
+            eps,
+            weight is not None,
+            grad_weight is not None,
+            BLOCK_SIZE,
+        )
+
+        dx = grad_input.view(orig_shape)
+        return dx, dx, grad_weight, None
+
+
+def fused_add_rmsnorm(
+    residual: torch.Tensor,
+    update: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    """Single-kernel fused (residual + update) + RMSNorm. Only for D <= 2048 and CUDA."""
+    return FusedAddRMSNormFunction.apply(residual, update, weight, eps)
+
+
 def triton_scale_bias(
     x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor | None
 ) -> torch.Tensor:
@@ -538,6 +666,9 @@ __all__ = [
     "TRITON_AVAILABLE",
     "LayerNormTritonFunction",
     "RMSNormTritonFunction",
+    "FusedAddRMSNormFunction",
+    "fused_add_rmsnorm",
+    "fused_add_rmsnorm_fwd_kernel",
     "_should_use_triton",
     "triton_scale_bias",
     "triton_fused_rmsnorm_scale_bias",

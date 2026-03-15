@@ -2,20 +2,27 @@
 Enhanced Trainer with NAS support for HeadComposer
 """
 
+from __future__ import annotations
+
 import contextlib
 import copy
 import datetime
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from matplotlib.colors import ListedColormap
 from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
+
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+except ImportError:
+    plt = None
+    ListedColormap = None
 
 from foreblocks.ui.node_spec import node
 
@@ -43,6 +50,14 @@ from foreblocks.aux.utils import (
     TrainingHistory,
 )
 from foreblocks.evaluation.model_evaluator import ModelEvaluator
+
+
+def _require_matplotlib() -> None:
+    if plt is None or ListedColormap is None:
+        raise RuntimeError(
+            "Matplotlib is required for Trainer plotting utilities. "
+            "Install with: pip install foreblocks[plotting]"
+        )
 
 # ============================================================
 # Conformal helpers (Trainer-side only)
@@ -1196,6 +1211,7 @@ class Trainer:
         series_color: str = "blue",
         save_path: Optional[str] = None,
     ) -> plt.Figure:
+        _require_matplotlib()
         evaluator = ModelEvaluator(self)
         predictions = evaluator.predict(X_val)
         N, H = predictions.shape[0], predictions.shape[1]
@@ -1388,6 +1404,7 @@ class Trainer:
         show_width_plot: bool = True,
         min_count: int = 1,  # NEW: minimum overlapping windows to include a point
     ) -> plt.Figure:
+        _require_matplotlib()
         """
         Plot predictions with conformal intervals.
 
@@ -1744,6 +1761,7 @@ class Trainer:
         show: bool = True,
         sequential: Optional[bool] = None,
     ) -> plt.Figure:
+        _require_matplotlib()
         """
         Heatmap of conformal misses (outside interval) for streaming/rolling evaluation.
 

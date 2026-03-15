@@ -1,3 +1,4 @@
+from importlib import import_module
 from typing import TYPE_CHECKING
 
 from .aux import ModelConfig, TimeSeriesDataset, TrainingConfig, create_dataloaders
@@ -9,14 +10,14 @@ from .blocks.enc_dec import (
 )
 from .core import ForecastingModel
 from .core.att import AttentionLayer
-from .evaluation import ModelEvaluator
 
 # from .pipeline import TimeSeriesSeq2Seq
-from .ts_handler.preprocessing import TimeSeriesHandler
 from .tf.transformer import TransformerDecoder, TransformerEncoder
 
 if TYPE_CHECKING:
+    from .evaluation import ModelEvaluator
     from .training import Trainer
+    from .ts_handler import TimeSeriesHandler
 
 # Stable top-level public API
 __all__ = [
@@ -41,8 +42,13 @@ __all__ = [
 
 
 def __getattr__(name):
-    if name == "Trainer":
-        from .training import Trainer as _Trainer
-
-        return _Trainer
+    lazy_exports = {
+        "ModelEvaluator": (".evaluation", "ModelEvaluator"),
+        "TimeSeriesHandler": (".ts_handler", "TimeSeriesHandler"),
+        "Trainer": (".training", "Trainer"),
+    }
+    if name in lazy_exports:
+        module_name, attr_name = lazy_exports[name]
+        module = import_module(module_name, __name__)
+        return getattr(module, attr_name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

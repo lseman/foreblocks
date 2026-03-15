@@ -772,6 +772,10 @@ class MixedOp(nn.Module):
             temp * self.group_temperature_mult, self.min_group_temperature
         )
 
+    def set_drnas_concentration(self, concentration: float) -> None:
+        """Update the DrNAS Dirichlet concentration parameter."""
+        self.drnas_concentration = max(float(concentration), 1e-3)
+
     def get_operation_statistics(self) -> Dict[str, Any]:
         """Get statistics about operation usage and performance"""
         stats = {}
@@ -1224,6 +1228,12 @@ class DARTSCell(nn.Module):
         self.temperature = temp
         for edge in self.edges:
             edge.set_temperature(temp)
+
+    def set_drnas_concentration(self, concentration: float) -> None:
+        """Propagate DrNAS concentration update to all edges."""
+        for edge in self.edges:
+            if hasattr(edge, "set_drnas_concentration"):
+                edge.set_drnas_concentration(concentration)
 
     def get_edge_statistics(self) -> Dict[str, Any]:
         """Get detailed statistics about edge usage"""
@@ -2562,6 +2572,13 @@ class TimeSeriesDARTS(nn.Module):
             self.forecast_encoder.set_temperature(temp)
         if self.forecast_decoder is not None:
             self.forecast_decoder.set_temperature(temp)
+
+    def set_drnas_concentration(self, concentration: float) -> None:
+        """Propagate DrNAS Dirichlet concentration to all cells."""
+        self.drnas_concentration = float(concentration)
+        for cell in self.cells:
+            if hasattr(cell, "set_drnas_concentration"):
+                cell.set_drnas_concentration(concentration)
 
     def get_orthogonal_regularization(self) -> torch.Tensor:
         """Aggregate recurrent state-mixing orthogonal regularization."""

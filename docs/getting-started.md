@@ -1,10 +1,12 @@
 # Getting Started
 
-This guide gives you the shortest reliable path to a working `foreblocks` training loop, then points you to the subsystem-specific guides.
+This guide gives you the shortest reliable path to a working `foreblocks` training loop, then points you to the right extra packages and guides when you want preprocessing, search, or richer tooling.
 
-If you want the broader documentation map first, start from [Docs Home](index.md).
+If you want the broader map first, start from [Docs Home](index.md) or [Overview](overview.md).
 
 ## Install
+
+Base install:
 
 ```bash
 pip install foreblocks
@@ -12,10 +14,14 @@ pip install foreblocks
 
 Optional extras:
 
-```bash
-pip install "foreblocks[mltracker]"
-pip install "foreblocks[all]"
-```
+| Workflow | Install |
+| --- | --- |
+| plotting helpers only | `pip install "foreblocks[plotting]"` |
+| preprocessing / scientific stack | `pip install "foreblocks[preprocessing]"` |
+| DARTS training + search flow | `pip install "foreblocks[darts]"` |
+| DARTS analyzer with pandas/seaborn | `pip install "foreblocks[darts-analysis]"` |
+| MLTracker API + TUI | `pip install "foreblocks[mltracker]"` |
+| all runtime extras | `pip install "foreblocks[all]"` |
 
 For development:
 
@@ -25,9 +31,9 @@ cd foreblocks
 pip install -e ".[dev]"
 ```
 
-## Minimal Training Example
+## Minimal training example
 
-The direct forecasting strategy is the simplest way to verify your environment and understand the library flow.
+The direct forecasting strategy is still the best way to verify your environment and learn the library flow.
 
 ```python
 import numpy as np
@@ -101,9 +107,9 @@ What this establishes:
 - the trainer loop runs
 - evaluation works on held-out data
 
-## Shape Expectations
+## Shape expectations
 
-For the minimal direct path above:
+For the direct path above:
 
 - `X`: `[N, T, F]`
 - `y`: any shape that matches the output of your direct head
@@ -114,9 +120,9 @@ For encoder/decoder forecasting:
 - targets are typically `[N, H, D]`
 - decoder-based models have stricter dimension contracts, so use the topic guides before customizing them heavily
 
-## Using The Preprocessor
+## Starting from raw multivariate data
 
-When your starting point is a raw multivariate series shaped `[T, D]`, `TimeSeriesHandler` can handle transforms and window creation for you.
+When your starting point is a raw series shaped `[T, D]`, use `TimeSeriesHandler` instead of building windows manually.
 
 ```python
 import numpy as np
@@ -139,23 +145,44 @@ print(X.shape, y.shape, processed.shape, time_feat)
 print(X_next.shape)
 ```
 
-Use the preprocessor guide for the full transform/filter/imputation options:
+Install the needed scientific stack first if you plan to use preprocessing features:
 
-- [Preprocessor Guide](preprocessor.md)
+```bash
+pip install "foreblocks[preprocessing]"
+```
 
-## Where To Go Next
+## Moving into DARTS search
 
-- For the full documentation map: [Docs Home](index.md)
+If the core training path works and you want to search over architectures instead of hand-picking them:
+
+```bash
+pip install "foreblocks[darts]"
+```
+
+Then start from:
+
+- [DARTS Guide](darts.md)
+- [Run A DARTS Search](tutorials/darts-multifidelity-search.md)
+- [DARTS Search Pipeline](architecture/darts-pipeline.md)
+
+If you also want the result analyzer and richer plots:
+
+```bash
+pip install "foreblocks[darts-analysis]"
+```
+
+## Where to go next
+
+- For preprocessing and window creation: [Preprocessor Guide](preprocessor.md)
 - For model composition and injection points: [Custom Blocks Guide](custom_blocks.md)
 - For transformer backbones and patching: [Transformer Guide](transformer.md)
-- For mixture-of-experts routing: [MoE Guide](moe.md)
-- For architecture search: [DARTS Guide](darts.md)
-- For setup problems and shape mismatches: [Troubleshooting](troubleshooting.md)
-- For repository orientation: [Documentation Overview](overview.md)
+- For expert routing: [MoE Guide](moe.md)
+- For neural architecture search: [DARTS Guide](darts.md)
+- For setup problems and import mismatches: [Troubleshooting](troubleshooting.md)
 
-## Notes On Current Behavior
+## Notes on current behavior
 
-- `Trainer` can initialize MLTracker automatically; pass `auto_track=False` during local smoke tests if you only want the training loop.
-- `TrainingConfig` now includes conformal options, but you do not need them for the basic path above.
+- `Trainer` can initialize MLTracker automatically. Pass `auto_track=False` during local smoke tests if you only want the training loop.
+- `TrainingConfig` includes conformal options, but you do not need them for the basic path above.
 - `TimeSeriesDataset` is also available if you want to build PyTorch dataloaders manually instead of using `create_dataloaders(...)`.
-- The direct strategy is the best first step. Move to seq2seq or transformer workflows once the basic loop is already running.
+- The direct strategy is still the best first step. Move to seq2seq, transformer, or DARTS workflows once the baseline loop is already running.

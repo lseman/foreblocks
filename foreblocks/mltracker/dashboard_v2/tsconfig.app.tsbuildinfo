@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/api/client.ts","./src/components/KpiCard.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/api/client.ts","./src/components/EChart.tsx","./src/components/KpiCard.tsx","./src/dashboard/chartOptions.ts","./src/dashboard/types.ts","./src/dashboard/utils.ts","./src/dashboard/components/PanelSections.tsx","./src/dashboard/components/RunDetailDrawer.tsx"],"version":"5.9.3"}

@@ -57,6 +57,7 @@ try:
         TRITON_AVAILABLE as _NORM_TRITON_AVAILABLE,
     )
     from .norms.triton_backend import (  # type: ignore
+        FusedAddRMSNormFunction,
         LayerNormTritonFunction,
         RMSNormTritonFunction,
         triton_fused_rmsnorm_scale_bias,
@@ -74,6 +75,7 @@ except Exception:  # pragma: no cover
     AdaptiveRMSNorm = None  # type: ignore[assignment]
     LayerNormTritonFunction = None  # type: ignore[assignment]
     RMSNormTritonFunction = None  # type: ignore[assignment]
+    FusedAddRMSNormFunction = None  # type: ignore[assignment]
     _NORM_TRITON_AVAILABLE = False
     _HAS_TRITON_NORM_BACKEND = False
 
@@ -192,6 +194,35 @@ def _apply_norm_triton_if_possible(
     return _apply_norm(norm_layer, x)
 
 
+def _can_fused_add_rmsnorm(
+    residual: torch.Tensor,
+    update: torch.Tensor,
+    norm_layer: Optional[nn.Module],
+) -> bool:
+    if not (_HAS_TRITON_NORM_BACKEND and _NORM_TRITON_AVAILABLE):
+        return False
+    if not (residual.is_cuda and update.is_cuda):
+        return False
+    if residual.shape != update.shape or residual.dtype != update.dtype:
+        return False
+    if residual.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return False
+    if torch.jit.is_scripting():
+        return False
+    if residual.shape[-1] > 2048:
+        return False
+    mod = _resolve_norm_module(norm_layer)
+    if mod is None:
+        return False
+    if RMSNorm is None or not isinstance(mod, RMSNorm):
+        return False
+    if not getattr(mod, "elementwise_affine", False):
+        return False
+    if getattr(mod, "weight", None) is None:
+        return False
+    return True
+
+
 def _can_use_triton_add(
     residual: torch.Tensor,
     update: torch.Tensor,
@@ -291,7 +322,12 @@ def fused_dropout_add_norm(
         o = dropout(o); src = src + o; src = norm(src)
 
     Works with NormWrapper or plain norm modules.
+    Fast path: single-kernel fused add+RMSNorm when p==0, CUDA, D<=2048.
     """
+    if (p == 0.0 or not training) and _can_fused_add_rmsnorm(residual, update, norm_layer):
+        mod = _resolve_norm_module(norm_layer)
+        return FusedAddRMSNormFunction.apply(residual, update, mod.weight, mod.eps)
+
     out = fused_dropout_add(residual, update, p=p, training=training)
     out = _apply_norm_triton_if_possible(norm_layer, out)
     return out

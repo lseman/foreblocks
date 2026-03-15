@@ -1,44 +1,30 @@
 # Documentation Overview
 
-This repository has two related layers:
+This repository has two layers that work well together but serve different purposes:
 
 - `foreblocks`: the main forecasting library
-- `foretools`: companion tooling for generation, analysis, and experimentation
+- `foretools`: companion utilities for generation, search, decomposition, and analysis
 
-If you are entering the codebase for the first time, use this page to decide where to start.
+The docs are organized to make that split explicit, while still showing how the pieces connect in a single workflow.
 
-The documentation is now organized as a versioned wiki inside the repository:
+## Best entry point by goal
 
-- `docs/index.md`: docs home
-- `docs/tutorials/`: runnable workflows
-- `docs/architecture/`: subsystem and pipeline explanations
-- `docs/reference/`: stable API and repository reference
-- root-level guide pages in `docs/`: major subsystem guides
-
-Published site layout:
-
-- `/`: custom landing page
-- `/docs/`: versioned documentation site
-
-## Start Here
-
-| Goal | Best entry point |
+| Goal | Best starting page |
 | --- | --- |
-| Browse the docs like a wiki | [Docs Home](index.md) |
-| Train a small model end to end | [Getting Started](getting-started.md) |
-| Understand preprocessing and window creation | [Preprocessor Guide](preprocessor.md) |
-| Inject custom modules into the forecasting stack | [Custom Blocks Guide](custom_blocks.md) |
+| Run a first end-to-end training loop | [Getting Started](getting-started.md) |
+| Start from raw multivariate series | [Preprocessor Guide](preprocessor.md) |
+| Understand stable top-level imports | [Public API](reference/public-api.md) |
+| Customize model blocks or training internals | [Custom Blocks Guide](custom_blocks.md) |
 | Work with transformer backbones | [Transformer Guide](transformer.md) |
-| Enable mixture-of-experts routing | [MoE Guide](moe.md) |
+| Enable expert routing | [MoE Guide](moe.md) |
 | Run neural architecture search | [DARTS Guide](darts.md) |
-| Unblock a failed setup or shape mismatch | [Troubleshooting](troubleshooting.md) |
 | Generate synthetic time series | [Time Series Generator](foretools/tsgen.md) |
 | Run budgeted hyperparameter search | [BOHB Search](foretools/bohb.md) |
-| Decompose a signal into modes before modeling | [VMD Decomposition](foretools/vmd.md) |
+| Diagnose import/setup issues | [Troubleshooting](troubleshooting.md) |
 
-## Stable Public Surface
+## What is stable today
 
-The most reliable top-level imports today are:
+The most reliable public surface is still the top-level `foreblocks` import path:
 
 ```python
 from foreblocks import (
@@ -50,57 +36,76 @@ from foreblocks import (
     create_dataloaders,
     ModelConfig,
     TrainingConfig,
-    LSTMEncoder,
-    LSTMDecoder,
-    GRUEncoder,
-    GRUDecoder,
-    TransformerEncoder,
-    TransformerDecoder,
-    AttentionLayer,
 )
 ```
 
-When documentation and internals diverge, prefer this exported surface first.
+The DARTS stack has its own public namespace:
 
-## How The Repo Is Organized
+```python
+from foreblocks.darts import DARTSTrainer
+```
+
+Treat deeper imports as subsystem-level APIs, not general entry points, unless a topic guide tells you to use them directly.
+
+## How the docs are layered
+
+### Tutorials
+
+Runnable paths first. These are the pages to use when you want to verify the environment, shape expectations, and basic success criteria.
+
+### Guides
+
+Subsystem pages that explain capabilities, important configuration knobs, and how the modules are intended to be composed.
+
+### Architecture notes
+
+Pages that explain how code is divided internally. These are most useful when you are extending or debugging the implementation.
+
+### Reference
+
+Stable surfaces, configuration maps, and repository orientation.
+
+## Install map
+
+The packaging now reflects the actual feature boundaries more closely:
+
+| Need | Suggested install |
+| --- | --- |
+| minimal forecasting core | `pip install foreblocks` |
+| preprocessing, filtering, statistics | `pip install "foreblocks[preprocessing]"` |
+| DARTS training/search helpers | `pip install "foreblocks[darts]"` |
+| DARTS analyzer and richer search visuals | `pip install "foreblocks[darts-analysis]"` |
+| MLTracker UI and API clients | `pip install "foreblocks[mltracker]"` |
+| VMD utilities | `pip install "foreblocks[vmd]"` |
+| all runtime extras | `pip install "foreblocks[all]"` |
+
+## Repository landmarks
 
 | Area | Purpose |
 | --- | --- |
-| `foreblocks/core` | forecasting model assembly, heads, conformal prediction |
-| `foreblocks/training` | trainer, training loop, scheduler/optimizer integration |
-| `foreblocks/evaluation` | evaluator, plotting, metrics |
-| `foreblocks/ts_handler` | preprocessing, imputation, filtering, feature generation |
-| `foreblocks/tf` | transformer stack, attention variants, norms, MoE |
-| `foreblocks/darts` | architecture search, search configs, search evaluation |
-| `foreblocks/mltracker` | experiment tracking UI and storage |
-| `foretools/tsgen` | synthetic series generation and pedagogical notebooks |
-| `foretools/bohb` | budgeted hyperparameter optimization with TPE-backed BOHB |
-| `examples/` | notebooks demonstrating specific subsystems |
+| `foreblocks/core` | model assembly, heads, conformal utilities |
+| `foreblocks/training` | trainer loop, optimizer/scheduler integration |
+| `foreblocks/evaluation` | evaluator, metrics, benchmark helpers |
+| `foreblocks/ts_handler` | preprocessing, filtering, imputation, window creation |
+| `foreblocks/tf` | transformer stack, attention, MoE, norms, embeddings |
+| `foreblocks/darts` | architecture search configs, search loops, analysis |
+| `foreblocks/mltracker` | experiment tracking and local dashboards |
+| `foretools` | synthetic data, BOHB, VMD, exploratory tooling |
 
-## Recommended Reading Order
+## Recommended reading order
 
 1. [Docs Home](index.md)
 2. [Getting Started](getting-started.md)
 3. [Public API](reference/public-api.md)
 4. [Preprocessor Guide](preprocessor.md)
-5. [Custom Blocks Guide](custom_blocks.md)
-6. [Transformer Guide](transformer.md)
-7. [MoE Guide](moe.md) or [DARTS Guide](darts.md), depending on your use case
-8. [Foretools Overview](foretools/index.md) if you also need synthetic data or search tooling
+5. [Transformer Guide](transformer.md)
+6. [MoE Guide](moe.md) or [DARTS Guide](darts.md), depending on your workflow
+7. [Foretools Overview](foretools/index.md) if you also need tooling outside the core training loop
 
-## Practical Notes
+## Practical notes
 
-- The project is broad, so not every internal module should be treated as stable API.
-- `ForecastingModel` plus `Trainer` is the main training path.
-- `TimeSeriesHandler` is useful when you want the library to create windows and optional time features from a raw `[T, D]` array.
-- `TimeSeriesDataset` and `create_dataloaders` are the simplest bridge from NumPy arrays into the trainer loop.
-- `foretools` is not just internal support code. It contains useful standalone utilities, especially the synthetic time-series generator.
-- The most mature `foretools` docs currently cover `tsgen` and `bohb`, which are the two main workflow-oriented tools in this repository.
-
-## Suggested Next Steps
-
-- If you want a runnable baseline, follow [Getting Started](getting-started.md).
-- If you want synthetic data for demos or notebooks, read [Time Series Generator](foretools/tsgen.md).
-- If you want to tune models or benchmark search behavior, read [BOHB Search](foretools/bohb.md).
-- If you want signal decomposition or mode extraction, read [VMD Decomposition](foretools/vmd.md).
-- If you are extending the library, read the topic guide closest to the subsystem you plan to modify.
+- The project is broad. Not every internal module is meant to be treated as stable public API.
+- `ForecastingModel` plus `Trainer` remains the shortest and safest path for a new user.
+- `TimeSeriesHandler` is the best bridge from raw arrays into the trainer loop.
+- DARTS is not just a single training function. It is a staged NAS workflow with zero-cost screening, differentiable search, discrete derivation, and final retraining.
+- `foretools` is worth browsing even if you only use `foreblocks`, especially for data generation and search tooling.

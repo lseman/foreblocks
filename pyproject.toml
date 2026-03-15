@@ -33,61 +33,80 @@ classifiers = [
 ]
 
 # ── Core runtime dependencies ─────────────────────────────────────────────
-# All of these are unconditionally imported somewhere in foreblocks/ or foretools/.
+# Keep the default install focused on the modeling stack.
+# Heavier scientific, preprocessing, tracking, and analysis features live in extras.
 dependencies = [
-    # Deep learning
     "torch>=2.0", # SDPBackend, autocast, compile — 2.x API used throughout
-
-    # Numerics
     "numpy>=1.24",
-    "scipy>=1.10", # signal processing, statistics, interpolation
-    "numba>=0.57", # pre/outlier.py: @njit kernels
-
-    # Data handling
-    "pandas>=1.5", # CSV loader, DARTS evaluator, benchmark
-
-    # ML utilities
-    "scikit-learn>=1.2", # preprocessing, imputation, metrics
-
-    # Sequence/tensor utilities
     "einops>=0.6", # tf/embeddings/rotary.py, third_party/flash_softpick_attn
     "tqdm>=4.64",  # training loops, preprocessing progress bars
-    "joblib>=1.3", # parallel preprocessing (filters, EWT, preprocessing)
-
-    # Statistical modelling
-    "statsmodels>=0.14", # preprocessing: acf/pacf/adfuller, filters: lowess
-
-    # Reporting
-    "tabulate>=0.9", # preprocessing summary tables
-
-    # Visualisation
-    "matplotlib>=3.6", # evaluation plots
 ]
 
 [project.optional-dependencies]
-# ── mltracker REST API ────────────────────────────────────────────────────
-mltracker = ["fastapi>=0.100", "uvicorn>=0.22", "pydantic>=2.0"]
+# ── Shared feature bundles ────────────────────────────────────────────────
+plotting = ["matplotlib>=3.6"]
+
+scientific = [
+    "pandas>=1.5",        # CSV loader, foretools, DARTS analyzer
+    "scipy>=1.10",        # signal processing, interpolation, statistical routines
+    "numba>=0.57",        # ts_handler/outlier.py and foretools accelerators
+    "scikit-learn>=1.2",  # preprocessing, feature engineering, metrics
+    "joblib>=1.3",        # parallel preprocessing and foretools helpers
+    "statsmodels>=0.14",  # preprocessing diagnostics and filters
+    "tabulate>=0.9",      # preprocessing summary tables
+]
+
+# ── Time-series preprocessing / handlers ─────────────────────────────────
+preprocessing = ["foreblocks[scientific,plotting]"]
+
+# ── DARTS search / training helpers ──────────────────────────────────────
+darts = ["foreblocks[plotting]"]
+darts-analysis = [
+    "foreblocks[darts,scientific]",
+    "seaborn>=0.13", # foreblocks/darts/evaluation/analyzer.py
+]
+
+# ── mltracker local + API clients / TUI ──────────────────────────────────
+mltracker = [
+    "requests>=2.31",
+    "fastapi>=0.100",
+    "uvicorn>=0.22",
+    "pydantic>=2.0",
+    "textual>=0.70",
+]
 
 # ── foretools extras ──────────────────────────────────────────────────────
 vmd = [
+    "foreblocks[scientific]",
     "pyfftw>=0.13", # VMD decomposition (foretools/vmd/common.py)
     "optuna>=3.0",  # VMD hyperparameter search
 ]
 
-# ── Wavelet backends (optional — gracefully absent) ───────────────────────
+# ── Wavelet / symbolic backends ──────────────────────────────────────────
 wavelets = [
+    "scipy>=1.10",
+    "sympy>=1.12",
     "PyWavelets>=1.4",       # tf/attention/dwt_att.py (try/except guarded)
     "pytorch_wavelets>=1.3", # blocks/wavelets.py
 ]
 
 # ── Benchmarking against external baselines ──────────────────────────────
-benchmark = ["neuralforecast>=2.0", "openpyxl>=3.1"]
+benchmark = [
+    "foreblocks[scientific,plotting]",
+    "neuralforecast>=2.0",
+    "openpyxl>=3.1",
+]
 
-# ── Changepoint detection (foreminer, try/except guarded) ─────────────────
-foreminer = ["ruptures>=1.1"]
+# ── Dataset mining / reporting ────────────────────────────────────────────
+foreminer = [
+    "foreblocks[scientific,plotting]",
+    "ruptures>=1.1",
+    "networkx>=3.0",
+    "seaborn>=0.13",
+]
 
 # ── Full install ──────────────────────────────────────────────────────────
-all = ["foreblocks[mltracker,vmd,wavelets,benchmark,foreminer]"]
+all = ["foreblocks[preprocessing,darts,darts-analysis,mltracker,vmd,wavelets,benchmark,foreminer]"]
 
 # ── Development tools (not packaged) ─────────────────────────────────────
 dev = ["pytest>=7.0", "ipykernel>=6.0", "ruff", "basedpyright"]

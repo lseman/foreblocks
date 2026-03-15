@@ -25,6 +25,7 @@ nav:
   - Tutorials:
       - Getting Started: getting-started.md
       - Train A Direct Model: tutorials/train-direct-model.md
+      - Run A DARTS Search: tutorials/darts-multifidelity-search.md
       - Generate Synthetic Series: tutorials/generate-synthetic-series.md
       - Optimize With BOHB: tutorials/optimize-with-bohb.md
   - Guides:
@@ -42,6 +43,7 @@ nav:
   - Architecture:
       - System Overview: architecture/system-overview.md
       - Forecasting Pipeline: architecture/forecasting-pipeline.md
+      - DARTS Search Pipeline: architecture/darts-pipeline.md
   - Reference:
       - Public API: reference/public-api.md
       - Configuration: reference/configuration.md
@@ -57,3 +59,6 @@ markdown_extensions:
   - pymdownx.superfences
   - toc:
       permalink: true
+
+extra_css:
+  - stylesheets/extra.css
