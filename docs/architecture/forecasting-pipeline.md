@@ -2,69 +2,95 @@
 
 This page describes the main execution flow for a typical `foreblocks` forecasting workload.
 
+## End-to-end flow
+
+```mermaid
+flowchart TD
+    A([Raw series\nT × D]) -->|fit_transform| B[TimeSeriesHandler]
+    B --> C[X: N×T×F\ny: N×H×D]
+    C -->|create_dataloaders| D[(DataLoader\ntrain / val / test)]
+
+    D --> E[ForecastingModel\nhead + backbone]
+    E --> F[Trainer]
+    F -->|train loop| G{converged?}
+    G -->|no| F
+    G -->|yes| H[ModelEvaluator]
+
+    H --> I[metrics\nMAE · RMSE · MAPE]
+    H --> J[CV windows\nrolling evaluation]
+    H --> K[learning curve\nplots]
+
+    E -.->|optional| L[ConformalPredictionEngine\ncalibrate → predict intervals]
+    E -.->|optional| M[DARTSSearcher\narchitecture search]
+```
+
 ## Pipeline stages
 
-1. data preparation
-2. dataloader construction
-3. model assembly
-4. training
-5. evaluation
-6. optional calibration, search, or synthetic-data loops
+1. **Data preparation** — raw series or pre-windowed arrays
+2. **Dataloader construction** — `create_dataloaders` or manual `TimeSeriesDataset`
+3. **Model assembly** — `ForecastingModel` with head + optional backbone
+4. **Training** — `Trainer` with early stopping, scheduler, and optional MLTracker
+5. **Evaluation** — `ModelEvaluator` for metrics, CV, and plots
+6. **Optional branches** — conformal intervals, DARTS search, synthetic data
 
 ## Data preparation
 
 You can start from either:
 
-- pre-windowed tensors or NumPy arrays
+- pre-windowed tensors or NumPy arrays (`[N, T, F]` + `[N, H, D]`)
 - a raw multivariate time series shaped `[T, D]`
 
-If you start from raw series data, `TimeSeriesHandler` can create:
+If you start from raw series data, `TimeSeriesHandler` handles:
 
-- processed series
-- input windows
-- forecast targets
+- windowing and horizon slicing
+- scaling (StandardScaler / RobustScaler)
+- outlier handling and imputation
 - optional time features
 
 ## Model assembly
 
-The central abstraction is `ForecastingModel`.
+The central abstraction is `ForecastingModel`. Common paths:
 
-Common paths:
+=== "Direct"
+    A single `head` module maps from flattened input to the forecast horizon. Simplest path.
 
-- direct forecasting with a custom `head`
-- recurrent seq2seq with encoder/decoder blocks
-- transformer seq2seq with transformer backbones
+=== "Seq2Seq (recurrent)"
+    LSTM or GRU encoder produces a context vector; a separate decoder generates horizon steps.
 
-The direct path is the simplest. Decoder-based paths require tighter agreement between encoder outputs, decoder inputs, and target/output dimensions.
+=== "Transformer"
+    `TransformerEncoder` + `TransformerDecoder` with patching, attention-type selection, MoE feedforward, and skip connections.
+
+=== "Hybrid Mamba"
+    `HybridMambaBlock` or `HybridMamba2Block` as backbone — SSM dynamics with optional sliding-window attention.
 
 ## Training
 
-`Trainer` is the orchestration layer for:
+`Trainer` orchestrates:
 
-- optimization
-- validation
-- early stopping
-- scheduler stepping
-- optional MLTracker integration
-- optional NAS handling
-- optional conformal machinery
+- optimiser and scheduler stepping
+- validation loop and early stopping
+- optional MLTracker integration (`auto_track=True` by default)
+- optional NAS hooks for DARTS
+- optional conformal machinery during training
 
-For local smoke tests, pass `auto_track=False`.
+!!! tip
+    Pass `auto_track=False` for local smoke tests to skip MLTracker initialisation.
 
 ## Evaluation
 
-`ModelEvaluator` provides:
-
-- prediction batching
-- metrics computation
-- rolling-window cross-validation helpers
-- learning-curve plots
+`ModelEvaluator` provides batched prediction, rolling cross-validation, and plots.
+See [Evaluation & Metrics](../evaluation.md) for the full API.
 
 ## Optional branches
 
-- use `foretools/tsgen` to create synthetic datasets
-- use `foreblocks/darts` to search over architectures
-- use conformal support in `Trainer` if you need intervals
+??? note "Conformal prediction intervals"
+    After training, use `ConformalPredictionEngine` to attach coverage-guaranteed prediction bands to any model, using only a held-out calibration set. See [Uncertainty Quantification](../uncertainty.md).
+
+??? note "Neural architecture search"
+    Replace the manual model-assembly step with `DARTSSearcher`. The searcher handles zero-cost screening, bilevel search, and final retraining. See [DARTS Guide](../darts.md).
+
+??? note "Synthetic datasets"
+    Use `foretools.tsgen` to generate controlled AR, seasonal, trend, and noise series for benchmarking or ablation studies. See [Time Series Generator](../foretools/tsgen.md).
 
 ## Related pages
 

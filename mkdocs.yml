@@ -8,16 +8,44 @@ site_dir: site/docs
 
 theme:
   name: material
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    logo: material/chart-line
+    repo: fontawesome/brands/github
   features:
-    - navigation.sections
-    - navigation.expand
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.indexes
     - navigation.top
+    - navigation.sections
+    - toc.follow
+    - search.suggest
     - search.highlight
+    - search.share
     - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - header.autohide
   palette:
-    - scheme: slate
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
       primary: black
       accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
 
 nav:
   - Home: index.md
@@ -33,13 +61,18 @@ nav:
       - Custom Blocks: custom_blocks.md
       - Transformer: transformer.md
       - Mixture Of Experts: moe.md
+      - Hybrid Mamba: hybrid-mamba.md
       - DARTS: darts.md
+      - Evaluation & Metrics: evaluation.md
+      - Uncertainty Quantification: uncertainty.md
+      - Web UI: webui.md
       - Troubleshooting: troubleshooting.md
   - Foretools:
       - Foretools Overview: foretools/index.md
       - Time Series Generator: foretools/tsgen.md
       - BOHB Search: foretools/bohb.md
       - VMD Decomposition: foretools/vmd.md
+      - AutoDA Augmentation: foretools/tsaug.md
   - Architecture:
       - System Overview: architecture/system-overview.md
       - Forecasting Pipeline: architecture/forecasting-pipeline.md
@@ -54,11 +87,40 @@ nav:
 markdown_extensions:
   - admonition
   - tables
+  - attr_list
+  - md_in_html
+  - def_list
+  - footnotes
   - pymdownx.highlight:
       anchor_linenums: true
-  - pymdownx.superfences
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.mark
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - toc:
       permalink: true
+      title: On this page
+
+plugins:
+  - search:
+      lang: en
 
 extra_css:
   - stylesheets/extra.css
+
+extra_javascript:
+  - https://unpkg.com/mermaid@11/dist/mermaid.min.js
