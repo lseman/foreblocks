@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 from foreblocks.tf.norms import RevIN
 
-from .base_blocks import MambaBranch, MixedDecoder, MixedEncoder
+from .base_blocks import MixedDecoder, MixedEncoder
 from .bb_moe import DARTSFeedForward
 from .operation_blocks import (
     ConvMixerOp,
@@ -78,7 +78,7 @@ class SearchableNorm(nn.Module):
 
 
 @dataclass
-class DARTSConfig:
+class DARTSModelConfig:
     """Configuration class for DARTS model"""
 
     input_dim: int = 3
@@ -122,6 +122,9 @@ class DARTSConfig:
     use_drnas: bool = True
     drnas_concentration: float = 8.0
     use_fair_darts_hierarchical: bool = True
+    # GDAS: sample a single op per edge via Gumbel-Softmax with a straight-through
+    # gradient estimator.  Takes precedence over use_drnas when both are True.
+    use_gdas: bool = False
 
     # β-DARTS: L2 regularization weight on arch logits to prevent premature
     # commitment (skip-connection collapse).  Set to e.g. 1e-3 to enable.
@@ -131,7 +134,6 @@ class DARTSConfig:
     #   "encoder_decoder" — MixedEncoder + autoregressive MixedDecoder
     #   "encoder_only"    — MixedEncoder + direct projection head
     #   "decoder_only"    — DARTS cells + autoregressive MixedDecoder
-    #   "mamba"           — stacked Mamba SSM branch + direct projection head
     arch_mode: str = "encoder_decoder"
     transformer_self_attention_type: str = "auto"
     transformer_ffn_variant: str = "auto"
@@ -139,7 +141,7 @@ class DARTSConfig:
     @classmethod
     def with_search_profile(
         cls, profile: str = "conservative", **overrides
-    ) -> "DARTSConfig":
+    ) -> "DARTSModelConfig":
         """Create config using a named MixedOp search profile."""
         profiles = {
             "conservative": {
@@ -220,6 +222,7 @@ class MixedOp(nn.Module):
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
+        use_gdas: bool = False,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -235,6 +238,7 @@ class MixedOp(nn.Module):
         )
         self.op_temperature = max(temperature, self.min_op_temperature)
         self.use_gumbel = use_gumbel
+        self.use_gdas = bool(use_gdas)
         self.use_drnas = use_drnas
         self.drnas_concentration = max(drnas_concentration, 1e-3)
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
@@ -260,7 +264,6 @@ class MixedOp(nn.Module):
             "PyramidConv": lambda: PyramidConvOp(input_dim, latent_dim),
             "PatchEmbed": lambda: PatchEmbedOp(input_dim, latent_dim, patch_size=16),
             "InvertedAttention": lambda: InvertedAttentionOp(input_dim, latent_dim),
-            "iTransformerBlock": lambda: InvertedAttentionOp(input_dim, latent_dim),
             "TimeMixer": lambda: MLPMixerOp(input_dim, latent_dim, seq_length),
             "DLinear": lambda: DLinearOp(input_dim, latent_dim),
             "NBeats": lambda: NBeatsOp(input_dim, latent_dim),
@@ -287,7 +290,6 @@ class MixedOp(nn.Module):
             "attention": [
                 "PatchEmbed",
                 "InvertedAttention",
-                "iTransformerBlock",
             ],
         }
 
@@ -336,8 +338,13 @@ class MixedOp(nn.Module):
             else 0
         )
 
-        # Output projection for dimension mismatch
-        self.output_proj = nn.Identity()  # Will be replaced if needed
+        # Output projection for dimension mismatch — pre-allocated so it is
+        # registered as a proper parameter group and trained by the optimizer.
+        self.output_proj: nn.Module = (
+            nn.Linear(self.input_dim, self.latent_dim, bias=False)
+            if self.input_dim != self.latent_dim
+            else nn.Identity()
+        )
         self._flops_profiled = False
         self._dynamic_efficiency_profiled = False
         self._profile_flops()
@@ -608,15 +615,77 @@ class MixedOp(nn.Module):
         return probs
 
     def _ensure_output_dim(self, x: torch.Tensor) -> torch.Tensor:
-        """Ensure output has correct dimensions"""
+        """Project to latent_dim if needed."""
         if x.shape[-1] != self.latent_dim:
-            if isinstance(self.output_proj, nn.Identity):
-                self.output_proj = nn.Linear(x.shape[-1], self.latent_dim).to(x.device)
             x = self.output_proj(x)
         return x
 
+    def _gdas_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """GDAS single-path forward with straight-through gradient estimator.
+
+        Samples exactly one operation per forward pass using Gumbel-Softmax.
+        The selected op runs in full; gradients flow back through the soft
+        probabilities (straight-through), so alpha logits are still updated.
+        """
+        if self.use_hierarchical and hasattr(self, "group_names"):
+            # Flatten to a joint logit vector: group_logit[g] + op_logit[g][k].
+            # This approximates sampling from the joint product distribution.
+            all_logits: list[torch.Tensor] = []
+            all_global_indices: list[int] = []
+            for g_idx, group_name in enumerate(self.group_names):
+                g_logit = self.group_alphas[g_idx]
+                op_logits = self.op_alphas[group_name]
+                for k, global_idx in enumerate(self.group_op_indices[group_name]):
+                    all_logits.append(g_logit + op_logits[k])
+                    all_global_indices.append(global_idx)
+            logits = torch.stack(all_logits)
+        else:
+            logits = self._alphas
+            all_global_indices = list(range(len(self.available_ops)))
+
+        tau = max(self.op_temperature, 1e-3)
+        # Sample Gumbel noise and compute soft probabilities.
+        gumbels = -torch.log(
+            -torch.log(torch.rand_like(logits).clamp_(1e-10, 1 - 1e-10))
+        )
+        soft = F.softmax((logits + gumbels) / tau, dim=0)
+
+        # Hard argmax index — no gradient through this selection.
+        with torch.no_grad():
+            sampled_pos = int(soft.argmax().item())
+
+        op_global_idx = all_global_indices[sampled_pos]
+        out = self.ops[op_global_idx](x)
+        out = self._ensure_output_dim(out)
+
+        # Update performance tracker for the sampled op only.
+        if self.adaptive_sampling and self.training:
+            with torch.no_grad():
+                finite_ok = torch.isfinite(out).all()
+                if finite_ok:
+                    out_det = out.detach()
+                    grad_norm = 2.0 * out_det.norm(p=2) / max(float(out_det.numel()), 1.0)
+                    score = 1.0 / (float(grad_norm.item()) + 1e-6)
+                    self.performance_tracker[op_global_idx].mul_(
+                        self.performance_ema_decay
+                    ).add_((1 - self.performance_ema_decay) * score)
+                else:
+                    self.performance_tracker[op_global_idx].mul_(
+                        self.performance_ema_decay
+                    ).add_(-(1 - self.performance_ema_decay))
+                self.usage_counter[op_global_idx] += 1
+
+        # Straight-through scale: 1.0 in the forward pass, but the expression
+        # carries a gradient w.r.t. soft[sampled_pos] (and thus the logits)
+        # in the backward pass.
+        scale = soft[sampled_pos] / soft[sampled_pos].detach()
+        return out * scale
+
     def forward(self, x: torch.Tensor, top_k: Optional[int] = None) -> torch.Tensor:
         """Enhanced forward with better operation selection"""
+        if self.use_gdas and self.training:
+            return self._gdas_forward(x)
+
         op_weights = self._get_weights(top_k)
 
         if not op_weights:
@@ -842,6 +911,7 @@ class DARTSCell(nn.Module):
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
+        use_gdas: bool = False,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -867,6 +937,7 @@ class DARTSCell(nn.Module):
         self.use_drnas = use_drnas
         self.drnas_concentration = drnas_concentration
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
+        self.use_gdas = bool(use_gdas)
 
         # Progressive operation selection
         self.stage_operations = {
@@ -1024,6 +1095,7 @@ class DARTSCell(nn.Module):
                     use_drnas=self.use_drnas,
                     drnas_concentration=self.drnas_concentration,
                     use_fair_darts_hierarchical=self.use_fair_darts_hierarchical,
+                    use_gdas=self.use_gdas,
                 )
                 for _ in range(self.num_edges)
             ]
@@ -1292,12 +1364,11 @@ class TimeSeriesDARTS(nn.Module):
         tie_encoder_decoder_arch: bool = True,
         transformer_self_attention_type: str = "auto",
         transformer_ffn_variant: str = "auto",
-        mamba_num_layers: int = 3,
-        mamba_expand: int = 2,
+        use_gdas: bool = False,
     ):
         super().__init__()
 
-        _VALID_ARCH_MODES = {"encoder_decoder", "encoder_only", "decoder_only", "mamba"}
+        _VALID_ARCH_MODES = {"encoder_decoder", "encoder_only", "decoder_only"}
         if arch_mode not in _VALID_ARCH_MODES:
             raise ValueError(
                 f"arch_mode must be one of {sorted(_VALID_ARCH_MODES)}, got '{arch_mode}'"
@@ -1343,8 +1414,7 @@ class TimeSeriesDARTS(nn.Module):
             "tie_encoder_decoder_arch": tie_encoder_decoder_arch,
             "transformer_self_attention_type": resolved_self_attention_type,
             "transformer_ffn_variant": resolved_transformer_ffn_variant,
-            "mamba_num_layers": mamba_num_layers,
-            "mamba_expand": mamba_expand,
+            "use_gdas": use_gdas,
         }
 
         # Store configuration
@@ -1388,8 +1458,7 @@ class TimeSeriesDARTS(nn.Module):
         self.transformer_self_attention_type = resolved_self_attention_type
         self.transformer_ffn_variant = resolved_transformer_ffn_variant
         self.transformer_use_moe = resolved_transformer_ffn_variant == "moe"
-        self.mamba_num_layers = int(mamba_num_layers)
-        self.mamba_expand = int(mamba_expand)
+        self.use_gdas = bool(use_gdas)
 
         # Searchable normalization
         self.norm_strategy = SearchableNorm(self.input_dim)
@@ -1413,7 +1482,7 @@ class TimeSeriesDARTS(nn.Module):
         cls, profile: str = "conservative", **overrides
     ) -> "TimeSeriesDARTS":
         """Build model using a named MixedOp search profile."""
-        cfg = DARTSConfig.with_search_profile(profile=profile)
+        cfg = DARTSModelConfig.with_search_profile(profile=profile)
         params = {
             "input_dim": cfg.input_dim,
             "hidden_dim": cfg.hidden_dim,
@@ -1494,6 +1563,7 @@ class TimeSeriesDARTS(nn.Module):
                     use_drnas=self.use_drnas,
                     drnas_concentration=self.drnas_concentration,
                     use_fair_darts_hierarchical=self.use_fair_darts_hierarchical,
+                    use_gdas=self.use_gdas,
                 )
             )
 
@@ -1581,18 +1651,6 @@ class TimeSeriesDARTS(nn.Module):
                 nn.LayerNorm(self.latent_dim),
                 nn.GELU(),
                 nn.Dropout(self.dropout),
-            )
-
-        # Mamba branch: stacked SSM layers + direct forecast head
-        if self.arch_mode == "mamba":
-            self.mamba_branch = MambaBranch(
-                hidden_dim=self.hidden_dim,
-                latent_dim=self.latent_dim,
-                forecast_horizon=self.forecast_horizon,
-                input_dim=self.input_dim,
-                num_layers=self.mamba_num_layers,
-                expand=self.mamba_expand,
-                dropout=self.dropout,
             )
 
         # Feature fusion
@@ -1723,9 +1781,6 @@ class TimeSeriesDARTS(nn.Module):
 
         # ── Branch on architecture topology ──────────────────────────────
         selected_norm = getattr(self, "selected_norm", None)
-
-        if self.arch_mode == "mamba":
-            return self._forward_mamba(final_features, x_seq, selected_norm)
 
         if self.arch_mode == "encoder_only":
             return self._forward_encoder_only(final_features, x_seq, selected_norm)
@@ -2079,25 +2134,6 @@ class TimeSeriesDARTS(nn.Module):
             decoder_hidden,
         )
         return style_weights[0] * ar_out + style_weights[1] * informer_out
-
-    def _forward_mamba(
-        self,
-        final_features: torch.Tensor,
-        x_seq: torch.Tensor,
-        selected_norm: Optional[str],
-    ) -> torch.Tensor:
-        """Mamba SSM path: stacked SSM layers → pooling → direct projection.
-
-        The DARTS cells serve as the feature extraction backbone;
-        ``MambaBranch`` then reads the full sequence and projects directly
-        to the forecast horizon without autoregressive decoding.
-        """
-        final_features = self._ensure_dtype(final_features)
-        out = self.mamba_branch(final_features)  # [B, forecast_horizon, input_dim]
-        out = self.norm_strategy.apply_output_denorm(
-            out, self.norm_alpha, selected_norm=selected_norm
-        )
-        return out
 
     # Analysis methods
     def get_all_alphas(self) -> Dict[str, torch.Tensor]:
@@ -3032,7 +3068,7 @@ class TimeSeriesDARTS(nn.Module):
 
 
 __all__ = [
-    "DARTSConfig",
+    "DARTSModelConfig",
     "MixedOp",
     "DARTSCell",
     "TimeSeriesDARTS",

@@ -50,12 +50,21 @@ class ResidualGate(nn.Module):
         return h_gated, g, gbar
 
 @torch.no_grad()
-def _quantile_threshold(gbar: torch.Tensor, keep) -> torch.Tensor:
+def _masked_quantile_threshold(
+    gbar: torch.Tensor,
+    keep,
+    active_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
     """
-    Compute skip mask using a per-row threshold so that ~keep*T tokens are kept.
+    Compute a per-row skip mask using the paper's exact linear-interpolated quantile,
+    optionally restricting the budget to valid positions only.
+
     Args:
         gbar: (B, T) token-level gate scores
         keep: float in [0,1] or 0D tensor; fraction of tokens to KEEP
+        active_mask: optional (B, T) bool mask where True marks positions that
+            participate in the budgeted quantile. Positions marked False are
+            copied through and do not consume budget.
     Returns:
         skip_mask: (B, T) bool (True = skip/copy-through)
     """
@@ -68,30 +77,43 @@ def _quantile_threshold(gbar: torch.Tensor, keep) -> torch.Tensor:
     else:
         keep = float(keep)
 
+    if active_mask is None:
+        active_mask = torch.ones(B, T, dtype=torch.bool, device=device)
+    else:
+        active_mask = active_mask.to(device=device, dtype=torch.bool)
+        if active_mask.shape != gbar.shape:
+            raise ValueError(
+                f"active_mask shape {tuple(active_mask.shape)} must match gate scores "
+                f"{tuple(gbar.shape)}"
+            )
+
+    skip_mask = ~active_mask
     if keep >= 1.0:
-        return torch.zeros(B, T, dtype=torch.bool, device=device)
+        return skip_mask
     if keep <= 0.0:
         return torch.ones(B, T, dtype=torch.bool, device=device)
 
-    # How many to keep/skip per row
-    k_keep = int(round(keep * T))
-    k_keep = max(0, min(T, k_keep))
-    skip_quota = T - k_keep
+    for b in range(B):
+        active = active_mask[b]
+        scores = gbar[b, active]
+        n = int(scores.numel())
+        if n == 0:
+            continue
 
-    if skip_quota <= 0:
-        return torch.zeros(B, T, dtype=torch.bool, device=device)
-    if skip_quota >= T:
-        return torch.ones(B, T, dtype=torch.bool, device=device)
+        if n == 1 or torch.all(scores == scores[0]):
+            tau = scores[0]
+        else:
+            s = torch.sort(scores).values
+            pos = (1.0 - keep) * (n - 1)
+            i = int(pos)
+            alpha = float(pos - i)
+            if i >= n - 1:
+                tau = s[-1]
+            else:
+                tau = (1.0 - alpha) * s[i] + alpha * s[i + 1]
 
-    # Find the threshold τ as the max among the smallest `skip_quota` elements per row.
-    # Use topk on -gbar to select `skip_quota` smallest values efficiently.
-    # topk returns values sorted in descending order; take the LAST to get the largest
-    # among the selected smallest => τ.
-    vals, _ = torch.topk(-gbar, k=skip_quota, dim=1, largest=True, sorted=True)  # shape (B, skip_quota)
-    tau = -vals[:, -1]  # (B,)
-
-    # Skip if gbar <= τ
-    skip_mask = gbar <= tau.unsqueeze(1)
+        active_skip = scores <= tau
+        skip_mask[b, active] = active_skip
     return skip_mask
 
 def gateskip_apply(
@@ -102,6 +124,7 @@ def gateskip_apply(
     budget: Optional[float],
     aux_l2_terms: List[torch.Tensor],
     lambda_s: float,
+    active_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Returns (h_out, skip_mask or None).
@@ -118,12 +141,19 @@ def gateskip_apply(
         # defer scaling to the outer loss to keep this pure
         aux_l2_terms.append((g * g).mean())
 
+    if active_mask is not None:
+        active_mask = active_mask.to(device=h_prev.device, dtype=torch.bool)
+
     if budget is None or budget >= 1.0:
-        return h_gated, None
+        if active_mask is None:
+            return h_gated, None
+        h_out = torch.where(active_mask.unsqueeze(-1), h_gated, h_prev)
+        skip_mask = ~active_mask
+        return h_out, skip_mask
     if budget <= 0.0:
         return h_prev, torch.ones_like(gbar, dtype=torch.bool)
 
-    skip_mask = _quantile_threshold(gbar, float(budget))
+    skip_mask = _masked_quantile_threshold(gbar, float(budget), active_mask=active_mask)
     h_out = torch.where(skip_mask.unsqueeze(-1), h_prev, h_gated)
     return h_out, skip_mask
 

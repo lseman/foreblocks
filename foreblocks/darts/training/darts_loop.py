@@ -87,6 +87,7 @@ def train_darts_model(
     darts_pt_xi: float = 0.01,
     initial_drnas_concentration: float = 10.0,
     final_drnas_concentration: float = 2.0,
+    use_gdas: bool = False,
 ) -> Dict[str, Any]:
     """
     Run one DARTS bilevel training cycle.
@@ -108,6 +109,13 @@ def train_darts_model(
     loss_fn = trainer._get_loss_function(loss_type)
     model = model.to(device)
     start_time = time.time()
+
+    # Propagate use_gdas to all MixedOp edges so callers can override the
+    # model-level default without reconstructing the model.
+    if use_gdas:
+        for m in model.modules():
+            if hasattr(m, "use_gdas"):
+                m.use_gdas = True
 
     # ── Parameter groups ──────────────────────────────────────────────────
     (
@@ -131,13 +139,16 @@ def train_darts_model(
 
     # ── Optimizers ────────────────────────────────────────────────────────
     try:
+        # Architecture params: Adam (betas=(0.5, 0.999) per DARTS paper).
+        # Model params: AdamW — decoupled weight decay is strictly better for
+        # over-parameterised models and consistent with the fallback path.
         arch_optimizer = torch.optim.Adam(
             arch_param_groups,
             betas=(0.5, 0.999),
             weight_decay=arch_weight_decay,
             fused=True,
         )
-        model_optimizer = torch.optim.Adam(
+        model_optimizer = torch.optim.AdamW(
             model_params,
             lr=model_learning_rate,
             weight_decay=model_weight_decay,

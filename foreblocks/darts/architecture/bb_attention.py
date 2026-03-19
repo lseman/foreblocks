@@ -266,6 +266,10 @@ class SelfAttention(nn.Module):
 
             if mode == "linear":
                 if self.causal:
+                    # Causal linear (ELU+1 Performer) requires a recurrent
+                    # cumsum formulation for correctness; we fall back to
+                    # FlashAttention-backed SDP which is still efficient and
+                    # numerically exact.
                     return F.scaled_dot_product_attention(
                         q,
                         k,

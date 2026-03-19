@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bb_primitives import SwiGLUFFN
+from .bb_primitives import GeGLUFFN, ReluFFN, SwiGLUFFN
 
 __all__ = ["DARTSFeedForward", "DARTSMoEFeedForward"]
 
@@ -99,14 +99,18 @@ class DARTSMoEFeedForward(nn.Module):
         x_flat = x.reshape(-1, orig_shape[-1])
         top_idx, top_weights = self._route(x_flat)
 
-        routed_outputs = []
-        for expert in self.routed_experts:
-            routed_outputs.append(expert(x_flat))
-        routed_stack = torch.stack(routed_outputs, dim=1)
-
-        gather_idx = top_idx.unsqueeze(-1).expand(-1, -1, self.d_model)
-        selected = torch.gather(routed_stack, dim=1, index=gather_idx)
-        mixed = (selected * top_weights.unsqueeze(-1)).sum(dim=1)
+        # Only run the selected top-k experts per token — O(top_k) not O(num_experts).
+        N = x_flat.size(0)
+        mixed = x_flat.new_zeros(N, self.d_model)
+        for k in range(self.top_k):
+            expert_ids = top_idx[:, k]  # [N]
+            weight_k = top_weights[:, k]  # [N]
+            for eid in range(self.num_routed):
+                mask = expert_ids == eid
+                if not mask.any():
+                    continue
+                out_e = self.routed_experts[eid](x_flat[mask])
+                mixed[mask] = mixed[mask] + weight_k[mask].unsqueeze(-1) * out_e
 
         if self.shared_experts:
             shared = torch.stack([expert(x_flat) for expert in self.shared_experts], dim=0)
@@ -140,9 +144,13 @@ class DARTSMoEFeedForward(nn.Module):
 
 
 class DARTSFeedForward(nn.Module):
-    """DARTS-specific FFN wrapper with searchable dense/MoE mode."""
+    """DARTS-specific FFN wrapper with searchable dense/MoE mode.
 
-    MODE_NAMES = ("swiglu", "moe")
+    Searchable modes: ``swiglu`` (SwiGLU), ``geglu`` (GeGLU),
+    ``relu`` (ReLU²), ``moe`` (SwiGLU mixture-of-experts).
+    """
+
+    MODE_NAMES = ("swiglu", "geglu", "relu", "moe")
 
     def __init__(
         self,
@@ -175,6 +183,8 @@ class DARTSFeedForward(nn.Module):
         self.use_moe = self.ffn_mode == "moe"
 
         self.swiglu_block = SwiGLUFFN(self.d_model, expand=self.expand)
+        self.geglu_block = GeGLUFFN(self.d_model, expand=self.expand)
+        self.relu_block = ReluFFN(self.d_model, expand=self.expand)
         self.moe_block = DARTSMoEFeedForward(
             d_model=self.d_model,
             expand=self.expand,
@@ -196,8 +206,8 @@ class DARTSFeedForward(nn.Module):
         if not self.searchable:
             ref = next(self.parameters())
             weights = ref.new_zeros(len(self.MODE_NAMES))
-            idx = self.MODE_NAMES.index("moe" if self.ffn_mode == "moe" else "swiglu")
-            weights[idx] = 1.0
+            mode = self.ffn_mode if self.ffn_mode in self.MODE_NAMES else "swiglu"
+            weights[self.MODE_NAMES.index(mode)] = 1.0
             return weights
 
         tau = max(float(self.temperature), 1e-3)
@@ -234,13 +244,22 @@ class DARTSFeedForward(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         weights = self._get_mode_weights()
-        swiglu_out = self.swiglu_block(x)
-        if self.ffn_mode == "swiglu" and not self.searchable:
-            return swiglu_out
-        moe_out = self.moe_block(x)
-        if self.ffn_mode == "moe" and not self.searchable:
-            return moe_out
-        return weights[0] * swiglu_out + weights[1] * moe_out
+        # Fast paths for fixed (non-searchable) modes.
+        if not self.searchable:
+            if self.ffn_mode == "swiglu":
+                return self.swiglu_block(x)
+            if self.ffn_mode == "geglu":
+                return self.geglu_block(x)
+            if self.ffn_mode == "relu":
+                return self.relu_block(x)
+            return self.moe_block(x)
+        # Weighted mix — MODE_NAMES = ("swiglu", "geglu", "relu", "moe")
+        return (
+            weights[0] * self.swiglu_block(x)
+            + weights[1] * self.geglu_block(x)
+            + weights[2] * self.relu_block(x)
+            + weights[3] * self.moe_block(x)
+        )
 
     def get_balance_loss(self) -> torch.Tensor:
         if self.ffn_mode == "moe":

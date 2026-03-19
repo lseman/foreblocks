@@ -18,7 +18,6 @@ DEFAULT_ARCH_MODES: List[str] = [
     "encoder_decoder",
     "encoder_only",
     "decoder_only",
-    "mamba",
 ]
 
 DEFAULT_OPS: List[str] = [
@@ -64,14 +63,10 @@ DEFAULT_OP_FAMILIES: Dict[str, List[str]] = {
         "TimeMixer",
         "NBeats",
     ],
-    # SSM is represented by the model backbone choice (`arch_mode="mamba"`).
-    "ssm": [],
 }
 
 DEFAULT_ATTENTION_VARIANTS: List[str] = ["auto"]
 DEFAULT_FFN_VARIANTS: List[str] = ["auto"]
-DEFAULT_MAMBA_NUM_LAYER_CHOICES: List[int] = [2, 3, 4]
-DEFAULT_MAMBA_EXPAND_CHOICES: List[int] = [2, 4]
 
 
 @dataclass
@@ -96,12 +91,6 @@ class DARTSSearchSpaceConfig:
         default_factory=lambda: list(DEFAULT_ATTENTION_VARIANTS)
     )
     ffn_variants: List[str] = field(default_factory=lambda: list(DEFAULT_FFN_VARIANTS))
-    mamba_num_layer_choices: List[int] = field(
-        default_factory=lambda: list(DEFAULT_MAMBA_NUM_LAYER_CHOICES)
-    )
-    mamba_expand_choices: List[int] = field(
-        default_factory=lambda: list(DEFAULT_MAMBA_EXPAND_CHOICES)
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +147,12 @@ class DARTSTrainConfig:
     # commitment / skip-connection dominance by penalising large logit magnitudes.
     # Values in [5e-4, 2e-3] are a good starting range; 0.0 disables.
     beta_darts_weight: float = 0.0
+    # GDAS: when True, each MixedOp forward samples exactly one operation via
+    # Gumbel-Softmax (hard=True) with a straight-through gradient estimator.
+    # This reduces peak memory (only one op runs per edge) and shrinks the
+    # discretization gap between the mixed and the final fixed architecture.
+    # Mutually exclusive with use_drnas — GDAS takes precedence when both are set.
+    use_gdas: bool = False
     # Lightweight DARTS-local MoE routing balance regularizer. Encourages
     # routed experts to be used more evenly without adding full MoE aux-loss
     # machinery.
@@ -185,6 +180,7 @@ class FinalTrainConfig:
     use_onecycle: bool = True
     swa_start_ratio: float = 0.33
     grad_clip_norm: float = 1.0
+    use_amp: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -313,3 +309,7 @@ class DARTSConfig:
 
             return "cuda" if torch.cuda.is_available() else "cpu"
         return self.device
+
+
+# Corrected spelling alias (original had a typo: "Fidelity" was "Fidelity")
+MultiFidelitySearchConfig = MultiFildelitySearchConfig

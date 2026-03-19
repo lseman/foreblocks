@@ -1,5 +1,9 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # mHC utilities
 # ──────────────────────────────────────────────────────────────────────────────
@@ -11,88 +15,152 @@ def sinkhorn_doubly_stochastic(
     """
     Differentiable Sinkhorn-Knopp projection to (approx) doubly-stochastic matrices.
 
-    logits: [N, N] unconstrained
-    returns: [N, N] approx doubly stochastic (rows/cols sum to 1, nonnegative)
+    logits: [..., N, N] unconstrained
+    returns: [..., N, N] approx doubly stochastic (rows/cols sum to 1, nonnegative)
     """
-    if logits.dim() != 2 or logits.shape[0] != logits.shape[1]:
-        raise ValueError(f"Expected square [N,N] logits, got {logits.shape}")
+    if logits.dim() < 2 or logits.shape[-1] != logits.shape[-2]:
+        raise ValueError(f"Expected [...,N,N] logits, got {tuple(logits.shape)}")
 
-    # Stabilize exponentiation
-    x = logits - logits.max(dim=-1, keepdim=True).values
+    x = logits - logits.amax(dim=-1, keepdim=True)
     p = torch.exp(x) + eps
 
     for _ in range(iters):
-        p = p / (p.sum(dim=-1, keepdim=True) + eps)  # row normalize
-        p = p / (p.sum(dim=-2, keepdim=True) + eps)  # col normalize
+        p = p / (p.sum(dim=-1, keepdim=True) + eps)
+        p = p / (p.sum(dim=-2, keepdim=True) + eps)
 
     return p
 
 
-class MHCResidualMixer(nn.Module):
+def _rms_norm_last_dim(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    rms = x.pow(2).mean(dim=-1, keepdim=True).add(eps).sqrt()
+    return x / rms
+
+
+class MHCHyperConnection(nn.Module):
     """
-    mHC residual stream mixer.
-      streams: [B, N, T, D]
-      streams <- H @ streams  (mix across N)
-    where H is constrained to the Birkhoff polytope via Sinkhorn.
+    Token-wise manifold-constrained Hyper-Connection.
+
+    streams: [B, N, T, D]
+    H_pre:   [B, T, N]
+    H_post:  [B, T, N]
+    H_res:   [B, T, N, N]
     """
 
     def __init__(
         self,
+        d_model: int,
         n_streams: int,
         sinkhorn_iters: int = 20,
-        init: str = "identity",  # "identity" or "uniform"
-        temperature: float = 1.0,
+        alpha_init: float = 0.01,
         eps: float = 1e-8,
     ):
         super().__init__()
+        self.d_model = int(d_model)
         self.n = int(n_streams)
         self.sinkhorn_iters = int(sinkhorn_iters)
-        self.temperature = float(temperature)
         self.eps = float(eps)
 
-        self.logits = nn.Parameter(torch.zeros(self.n, self.n))
+        flat_dim = self.n * self.d_model
+        self.pre_proj = nn.Linear(flat_dim, self.n, bias=False)
+        self.post_proj = nn.Linear(flat_dim, self.n, bias=False)
+        self.res_proj = nn.Linear(flat_dim, self.n * self.n, bias=False)
 
-        if init == "identity":
-            with torch.no_grad():
-                self.logits.fill_(-4.0)
-                self.logits.diagonal().fill_(4.0)
-        elif init == "uniform":
-            with torch.no_grad():
-                self.logits.zero_()
-        else:
-            raise ValueError(f"Unknown init: {init}")
+        self.alpha_pre = nn.Parameter(torch.tensor(float(alpha_init)))
+        self.alpha_post = nn.Parameter(torch.tensor(float(alpha_init)))
+        self.alpha_res = nn.Parameter(torch.tensor(float(alpha_init)))
 
-    def get_H(self) -> torch.Tensor:
-        temp = max(self.temperature, 1e-6)
-        H = sinkhorn_doubly_stochastic(
-            self.logits / temp,
+        self.pre_bias = nn.Parameter(self._init_pre_bias())
+        self.post_bias = nn.Parameter(self._init_post_bias())
+        self.res_bias = nn.Parameter(self._init_res_bias())
+
+        self._reset_parameters()
+
+    def _init_pre_bias(self) -> torch.Tensor:
+        # Select the first stream at initialization.
+        bias = torch.full((self.n,), -6.0)
+        bias[0] = 6.0
+        return bias
+
+    def _init_post_bias(self) -> torch.Tensor:
+        # Write the block update primarily into the first stream.
+        bias = torch.full((self.n,), -6.0)
+        bias[0] = 0.0
+        return bias
+
+    def _init_res_bias(self) -> torch.Tensor:
+        bias = torch.full((self.n, self.n), -6.0)
+        bias.diagonal().fill_(6.0)
+        return bias
+
+    def _reset_parameters(self) -> None:
+        for proj in (self.pre_proj, self.post_proj, self.res_proj):
+            nn.init.zeros_(proj.weight)
+
+    def _flatten_streams(self, streams: torch.Tensor) -> torch.Tensor:
+        if streams.dim() != 4:
+            raise ValueError(f"Expected [B,N,T,D], got {tuple(streams.shape)}")
+        if streams.size(1) != self.n or streams.size(-1) != self.d_model:
+            raise ValueError(
+                f"streams shape {tuple(streams.shape)} incompatible with "
+                f"(n_streams={self.n}, d_model={self.d_model})"
+            )
+        x = streams.permute(0, 2, 1, 3).contiguous()  # [B,T,N,D]
+        return x.view(x.size(0), x.size(1), self.n * self.d_model)
+
+    def compute_maps(self, streams: torch.Tensor) -> dict:
+        flat = self._flatten_streams(streams)
+        flat_norm = _rms_norm_last_dim(flat, eps=self.eps)
+
+        pre_logits = self.alpha_pre * self.pre_proj(flat_norm) + self.pre_bias
+        post_logits = self.alpha_post * self.post_proj(flat_norm) + self.post_bias
+        res_logits = self.alpha_res * self.res_proj(flat_norm)
+        res_logits = res_logits.view(flat.size(0), flat.size(1), self.n, self.n)
+        res_logits = res_logits + self.res_bias
+
+        h_pre = torch.sigmoid(pre_logits)
+        h_post = 2.0 * torch.sigmoid(post_logits)
+        h_res = sinkhorn_doubly_stochastic(
+            res_logits,
             iters=self.sinkhorn_iters,
             eps=self.eps,
         )
-        return H  # [N, N]
+        return {"pre": h_pre, "post": h_post, "res": h_res}
 
-    def forward(self, streams: torch.Tensor) -> torch.Tensor:
-        """
-        streams: [B, N, T, D]
-        """
-        if streams.dim() != 4:
-            raise ValueError(f"Expected [B,N,T,D], got {streams.shape}")
-        B, N, T, D = streams.shape
-        if N != self.n:
-            raise ValueError(f"streams N={N} != mixer n={self.n}")
-        H = self.get_H().to(dtype=streams.dtype, device=streams.device)
-        # out[b,i,t,d] = sum_j H[i,j] * streams[b,j,t,d]
-        return torch.einsum("ij,bjtd->bitd", H, streams)
+    def pre_aggregate(
+        self,
+        streams: torch.Tensor,
+        maps: Optional[dict] = None,
+    ) -> tuple[torch.Tensor, dict]:
+        maps = self.compute_maps(streams) if maps is None else maps
+        streams_btnd = streams.permute(0, 2, 1, 3).contiguous()
+        x_in = torch.einsum("btn,btnd->btd", maps["pre"], streams_btnd)
+        return x_in, maps
+
+    def combine(
+        self,
+        streams: torch.Tensor,
+        update: torch.Tensor,
+        maps: Optional[dict] = None,
+    ) -> torch.Tensor:
+        maps = self.compute_maps(streams) if maps is None else maps
+        streams_btnd = streams.permute(0, 2, 1, 3).contiguous()
+        mixed = torch.einsum("btij,btjd->btid", maps["res"], streams_btnd)
+        written = maps["post"].unsqueeze(-1) * update.unsqueeze(2)
+        out = mixed + written
+        return out.permute(0, 2, 1, 3).contiguous()
 
 
 def mhc_init_streams(x: torch.Tensor, n_streams: int) -> torch.Tensor:
     """
-    x: [B,T,D] -> streams: [B,N,T,D] (replicate)
+    x: [B,T,D] -> streams: [B,N,T,D]
+    Paper-style initialization places the input in the first stream and zeros the rest.
     """
     if x.dim() != 3:
-        raise ValueError(f"Expected [B,T,D], got {x.shape}")
+        raise ValueError(f"Expected [B,T,D], got {tuple(x.shape)}")
     B, T, D = x.shape
-    return x.unsqueeze(1).expand(B, int(n_streams), T, D).contiguous()
+    streams = x.new_zeros(B, int(n_streams), T, D)
+    streams[:, 0] = x
+    return streams
 
 
 def mhc_collapse_streams(streams: torch.Tensor, mode: str = "first") -> torch.Tensor:
@@ -100,7 +168,7 @@ def mhc_collapse_streams(streams: torch.Tensor, mode: str = "first") -> torch.Te
     streams: [B,N,T,D] -> [B,T,D]
     """
     if streams.dim() != 4:
-        raise ValueError(f"Expected [B,N,T,D], got {streams.shape}")
+        raise ValueError(f"Expected [B,N,T,D], got {tuple(streams.shape)}")
     if mode == "first":
         return streams[:, 0]
     if mode == "mean":
@@ -111,54 +179,8 @@ def mhc_collapse_streams(streams: torch.Tensor, mode: str = "first") -> torch.Te
 def mhc_apply_norm_streamwise(norm: nn.Module, streams: torch.Tensor) -> torch.Tensor:
     """
     Apply a norm layer (expecting [B,T,D]) to each stream.
-    streams: [B,N,T,D] -> [B,N,T,D]
     """
     B, N, T, D = streams.shape
     flat = streams.reshape(B * N, T, D)
     out = norm(flat)
     return out.reshape(B, N, T, D)
-
-
-def mhc_run_sublayer_streamwise(
-    fn_flat: callable,
-    streams: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Apply a function that maps [B*T,D] shaped as [B',T,D] (flattened streams)
-    across each stream by reshaping.
-
-    fn_flat: takes [B*N, T, D] -> [B*N, T, D]
-    streams: [B,N,T,D] -> [B,N,T,D]
-    """
-    B, N, T, D = streams.shape
-    flat = streams.reshape(B * N, T, D)
-    out = fn_flat(flat)
-    return out.reshape(B, N, T, D)
-
-def mhc_repeat_kpm(kpm: torch.Tensor | None, n_streams: int) -> torch.Tensor | None:
-    """
-    key_padding_mask: [B, T] -> [B*n_streams, T]
-    """
-    if kpm is None:
-        return None
-    if kpm.dim() != 2:
-        raise ValueError(f"Expected key_padding_mask [B,T], got {tuple(kpm.shape)}")
-    return kpm.repeat_interleave(n_streams, dim=0)
-
-def mhc_repeat_attn_mask(attn_mask: torch.Tensor | None, n_streams: int) -> torch.Tensor | None:
-    """
-    If attn_mask is batched, repeat batch dim. If it's [T,T], keep it.
-    Supports common shapes:
-      - [T, T] (shared)  -> unchanged
-      - [B, T, T]        -> [B*n, T, T]
-      - [B, 1, T, T]     -> [B*n, 1, T, T]
-    """
-    if attn_mask is None:
-        return None
-    if attn_mask.dim() == 2:
-        return attn_mask
-    if attn_mask.dim() == 3:
-        return attn_mask.repeat_interleave(n_streams, dim=0)
-    if attn_mask.dim() == 4:
-        return attn_mask.repeat_interleave(n_streams, dim=0)
-    raise ValueError(f"Unsupported attn_mask shape: {tuple(attn_mask.shape)}")

@@ -344,6 +344,7 @@ def fused_dropout_gateskip_norm(
     norm_layer: Optional[nn.Module],
     p: float,
     training: bool,
+    active_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Fuse: Dropout(update) → GateSkip(residual, update) → Norm
@@ -367,7 +368,14 @@ def fused_dropout_gateskip_norm(
             )
         aux = aux_l2_terms if aux_l2_terms is not None else []
         out, skip_mask = gateskip_apply(
-            use_gateskip, residual, update, gate, gate_budget, aux, gate_lambda
+            use_gateskip,
+            residual,
+            update,
+            gate,
+            gate_budget,
+            aux,
+            gate_lambda,
+            active_mask=active_mask,
         )
     else:
         if _can_use_triton_add(residual, update, p=p, training=training):

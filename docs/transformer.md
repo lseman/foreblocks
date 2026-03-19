@@ -237,10 +237,16 @@ The decoder consumes:
 - `memory`: encoder output sequence
 
 `label_len` controls how much prompt is treated as observed context in informer-like decoding.
+Set `label_len` explicitly for true Informer-style prompt masking. When `label_len <= 0`, the implementation now skips the automatic Informer padding mask instead of masking the whole decoder input.
 
 ### Incremental decoding
 
 `forward_one_step(...)` is intended for autoregressive decoding with KV caching.
+
+Recommended usage:
+
+- first call: pass the available prompt prefix
+- later calls with `incremental_state`: pass either the growing prefix or just the newest token; once cache exists, the implementation consumes only the last step
 
 Current constraints:
 

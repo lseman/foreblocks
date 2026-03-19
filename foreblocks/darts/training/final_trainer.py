@@ -40,7 +40,7 @@ def train_final_model(
     use_onecycle: bool = True,
     swa_start_ratio: float = 0.33,
     grad_clip_norm: float = 1.0,
-    use_amp: bool = False,
+    use_amp: bool = True,
 ) -> Dict[str, Any]:
     """
     Train the *fixed-operation* model resulting from architecture derivation.
@@ -83,7 +83,10 @@ def train_final_model(
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     # ── SWA ───────────────────────────────────────────────────────────────
-    swa_model = torch.optim.swa_utils.AveragedModel(model).to(device)
+    # Lazily instantiated at swa_start to avoid holding a second full copy
+    # of the model in VRAM for the entire run (especially costly when early
+    # stopping triggers well before swa_start).
+    swa_model = None
     _amp_enabled = use_amp and device.startswith("cuda")
     scaler = GradScaler(enabled=_amp_enabled)
     swa_start = int(epochs * swa_start_ratio)
@@ -157,9 +160,12 @@ def train_final_model(
         avg_val_loss = trainer._evaluate_model(model, val_loader, loss_type)
         val_losses.append(avg_val_loss)
 
-        # SWA update
+        # SWA update — instantiate lazily to avoid holding a full GPU copy
+        # for the entire run when early stopping fires before swa_start.
         swa_updated = epoch >= swa_start
         if swa_updated:
+            if swa_model is None:
+                swa_model = torch.optim.swa_utils.AveragedModel(model).to(device)
             swa_model.update_parameters(model)
 
         postfix = {
@@ -175,9 +181,9 @@ def train_final_model(
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            # Keep best weights on the same device to avoid blocking GPU→CPU copies
-            # on every improvement step; moved to CPU only at load time.
-            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            # Move directly to CPU: saves a full-param VRAM copy competing
+            # with the training batch for the rest of the run.
+            best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
         else:
             patience_counter += 1
             if patience_counter >= patience:

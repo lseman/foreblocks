@@ -13,7 +13,6 @@ All classes live in dedicated sub-modules:
                       BaseFixedSequenceBlock
     bb_mixed        → MixedEncoder, MixedDecoder, ArchitectureConverter,
                       FixedEncoder, FixedDecoder
-    bb_mamba        → MambaBranch
 """
 
 from .bb_attention import (
@@ -21,7 +20,6 @@ from .bb_attention import (
     LearnedPoolingBridge,
     SelfAttention,
 )
-from .bb_mamba import MambaBranch
 from .bb_mixed import (
     ArchitectureConverter,
     FixedDecoder,
@@ -65,5 +63,4 @@ __all__ = [
     "ArchitectureConverter",
     "FixedEncoder",
     "FixedDecoder",
-    "MambaBranch",
 ]

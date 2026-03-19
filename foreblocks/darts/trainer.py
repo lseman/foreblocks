@@ -35,8 +35,6 @@ from .config import (
     DEFAULT_ARCH_MODES,
     DEFAULT_ATTENTION_VARIANTS,
     DEFAULT_FFN_VARIANTS,
-    DEFAULT_MAMBA_EXPAND_CHOICES,
-    DEFAULT_MAMBA_NUM_LAYER_CHOICES,
     DEFAULT_OP_FAMILIES,
     DEFAULT_OPS as SEARCH_DEFAULT_OPS,
 )
@@ -95,8 +93,6 @@ class DARTSTrainer:
         family_range: Tuple[int, int] = (1, 3),
         attention_variants: Optional[List[str]] = None,
         ffn_variants: Optional[List[str]] = None,
-        mamba_num_layer_choices: Optional[List[int]] = None,
-        mamba_expand_choices: Optional[List[int]] = None,
     ):
         if hidden_dims is None:
             hidden_dims = [32, 64, 128]
@@ -147,24 +143,6 @@ class DARTSTrainer:
             for v in raw_ffn_variants
             if str(v).lower() in {"auto", "swiglu", "moe"}
         ] or list(DEFAULT_FFN_VARIANTS)
-        self.mamba_num_layer_choices = [
-            int(v)
-            for v in (
-                list(mamba_num_layer_choices)
-                if mamba_num_layer_choices is not None
-                else list(DEFAULT_MAMBA_NUM_LAYER_CHOICES)
-            )
-            if int(v) > 0
-        ] or list(DEFAULT_MAMBA_NUM_LAYER_CHOICES)
-        self.mamba_expand_choices = [
-            int(v)
-            for v in (
-                list(mamba_expand_choices)
-                if mamba_expand_choices is not None
-                else list(DEFAULT_MAMBA_EXPAND_CHOICES)
-            )
-            if int(v) > 0
-        ] or list(DEFAULT_MAMBA_EXPAND_CHOICES)
 
         # Runtime accumulation
         self.search_history: List[Dict[str, Any]] = []
@@ -176,6 +154,8 @@ class DARTSTrainer:
         print(f"  operations available: {len(self.all_ops)}")
         print(f"  op families: {list(self.op_families.keys())}")
         print(f"  arch_modes: {self.arch_modes}")
+        print(f"  attention_variants: {self.attention_variants}")
+        print(f"  ffn_variants: {self.ffn_variants}")
 
     # ─────────────────────────────────────────────────────────────────────
     # Internal utilities (kept inline — tightly coupled to instance state)
@@ -420,9 +400,7 @@ class DARTSTrainer:
         family_space: Dict[str, List[str]] = {}
         for family_name, ops in self.op_families.items():
             filtered = [op for op in ops if op in allowed_set]
-            if filtered or (
-                family_name == "ssm" and "mamba" in getattr(self, "arch_modes", [])
-            ):
+            if filtered:
                 family_space[family_name] = filtered
 
         family_names = list(family_space.keys())
@@ -559,11 +537,10 @@ class DARTSTrainer:
         except Exception:
             num_nodes = rng.choice(feasible)
 
-        if "ssm" in selected_families and "mamba" in getattr(self, "arch_modes", []):
-            arch_mode = "mamba"
+        if not self.arch_modes:
+            arch_mode = "encoder_decoder"
         else:
-            non_mamba_modes = [m for m in self.arch_modes if m != "mamba"]
-            arch_mode = rng.choice(non_mamba_modes or self.arch_modes or ["encoder_decoder"])
+            arch_mode = rng.choice(self.arch_modes)
 
         transformer_self_attention_type = (
             rng.choice(self.attention_variants) if self.attention_variants else "auto"
@@ -575,8 +552,6 @@ class DARTSTrainer:
         if "attention" in selected_families:
             family_choices["attention_variant"] = [transformer_self_attention_type]
             family_choices["attention_ffn"] = [transformer_ffn_variant]
-        if arch_mode == "mamba":
-            family_choices["ssm_variant"] = ["mamba"]
 
         return {
             "selected_ops": selected_ops,
@@ -589,12 +564,6 @@ class DARTSTrainer:
             "transformer_self_attention_type": transformer_self_attention_type,
             "transformer_ffn_variant": transformer_ffn_variant,
             "transformer_use_moe": transformer_ffn_variant == "moe",
-            "mamba_num_layers": (
-                rng.choice(self.mamba_num_layer_choices) if arch_mode == "mamba" else 3
-            ),
-            "mamba_expand": (
-                rng.choice(self.mamba_expand_choices) if arch_mode == "mamba" else 2
-            ),
         }
 
     def _build_candidate_model(self, cfg: Dict[str, Any]) -> nn.Module:
@@ -612,8 +581,6 @@ class DARTSTrainer:
                 "transformer_self_attention_type", "auto"
             ),
             transformer_ffn_variant=cfg.get("transformer_ffn_variant", "swiglu"),
-            mamba_num_layers=cfg.get("mamba_num_layers", 3),
-            mamba_expand=cfg.get("mamba_expand", 2),
         ).to(self.device)
 
     def _create_bilevel_loaders(self, train_loader, seed: int = 42):
@@ -835,6 +802,7 @@ class DARTSTrainer:
         temperature: float = 1.0,  # noqa: superseded by temperature_schedule
         pruning_hard_epoch: Optional[int] = None,  # noqa: not used in new loop
         log_arch_gradients: bool = False,  # noqa: controlled via verbose
+        use_gdas: bool = False,
     ) -> Dict[str, Any]:
         """
         Run DARTS bilevel architecture search training.
@@ -924,6 +892,7 @@ class DARTSTrainer:
             beta_darts_weight=beta_darts_weight,
             moe_balance_weight=moe_balance_weight,
             transformer_exploration_weight=transformer_exploration_weight,
+            use_gdas=use_gdas,
         )
 
     # ── Final model training ──────────────────────────────────────────────
@@ -945,7 +914,7 @@ class DARTSTrainer:
         grad_clip_norm: float = 1.0,
         # legacy-only kwargs silently absorbed
         verbose: bool = True,
-        use_amp: bool = False,
+        use_amp: bool = True,
         gradient_accumulation_steps: int = 1,
         use_swa: bool = False,
         swa_start: int = 75,
@@ -996,7 +965,7 @@ class DARTSTrainer:
         run_name: Optional[str] = None,
         retrain_final_from_scratch: bool = True,
         discrete_arch_threshold: float = 0.3,
-        use_amp: bool = False,
+        use_amp: bool = True,
         **kwargs,
     ) -> Dict[str, Any]:
         """Run the complete multi-fidelity DARTS search pipeline."""

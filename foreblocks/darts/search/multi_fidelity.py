@@ -134,6 +134,25 @@ def run_multi_fidelity_search(
     phase3_rung_epochs = kwargs.pop("phase3_rung_epochs", None)
     phase3_verbose = bool(kwargs.pop("phase3_verbose", True))
 
+    # Training-config kwargs forwarded to every train_darts_model call in phase 3.
+    train_kwargs: Dict[str, Any] = {
+        k: kwargs.pop(k)
+        for k in (
+            "use_gdas",
+            "moe_balance_weight",
+            "transformer_exploration_weight",
+            "beta_darts_weight",
+            "arch_grad_ema_beta",
+            "hessian_penalty_weight",
+            "state_mix_ortho_reg_weight",
+            "edge_diversity_weight",
+            "edge_usage_balance_weight",
+            "edge_identity_cap",
+            "edge_identity_cap_weight",
+        )
+        if k in kwargs
+    }
+
     phase_summary: Dict[str, Any] = {}
     per_candidate_rows: List[List] = []
     whatif_rows: List[List] = []
@@ -342,6 +361,7 @@ def run_multi_fidelity_search(
                 use_swa=False,
                 use_amp=use_amp,
                 verbose=phase3_verbose,
+                **train_kwargs,
             )
             t_search = time.perf_counter() - t_s0
             t_total = time.perf_counter() - t_c0
