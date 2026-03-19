@@ -1,16 +1,17 @@
 # Transformer Guide
 
-ForeBlocks ships a broad transformer stack centered on `TransformerEncoder` and `TransformerDecoder`.
+ForeBlocks ships a flexible encoder-decoder transformer stack centered on `TransformerEncoder` and `TransformerDecoder`.
 
-The implementation supports:
+The current implementation supports:
 
-- multiple self-attention kernels
-- per-layer attention routing
-- encoder/decoder patching
+- multiple attention backends and per-layer attention routing
+- encoder and decoder patching
 - CT-PatchTST-style encoder tokenization
-- MoE feedforward layers
-- dynamic layer skipping
+- paper-style Attention Residuals
+- GateSkip
+- Mixture-of-Depths (MoD)
 - mHC residual stream mixing
+- MoE feedforward blocks
 - gradient checkpointing and shared-layer reuse
 
 Related docs:
@@ -29,19 +30,21 @@ from foreblocks import TransformerEncoder, TransformerDecoder
 
 ## Mental model
 
-The current stack has three levels of control:
+The safest path is:
 
-1. backbone dimensions and normalization
-2. tokenization and attention-routing behavior
-3. optional advanced modules such as MoE, mHC, and layer skipping
+1. start with a dense encoder-decoder transformer
+2. patch the encoder if the source sequence is long
+3. keep the decoder timestep-level
+4. verify full-sequence and autoregressive inference
+5. only then add MoE, GateSkip, MoD, or mHC
 
-The safest baseline is:
+For most time-series setups, the best default is:
 
-- patch the encoder
-- keep the decoder timestep-level
-- use `pre_norm`
-- start with standard attention
-- leave MoE, mHC, and dynamic skipping off until the basic path works
+- `patch_encoder=True`
+- `patch_decoder=False`
+- `attention_mode="standard"`
+- `norm_strategy="pre_norm"`
+- `custom_norm="rms"`
 
 ## Baseline encoder
 
@@ -53,7 +56,6 @@ encoder = TransformerEncoder(
     num_layers=4,
     dim_feedforward=1024,
     dropout=0.1,
-    att_type="standard",
     attention_mode="standard",
     norm_strategy="pre_norm",
     custom_norm="rms",
@@ -72,15 +74,14 @@ decoder = TransformerDecoder(
     d_model=256,
     nhead=8,
     num_layers=4,
-    label_len=12,
-    informer_like=False,
     patch_decoder=False,
+    informer_like=False,
 )
 ```
 
-## Core constructor groups
+## Constructor groups
 
-### Dimensions and depth
+### Backbone
 
 - `d_model`
 - `nhead`
@@ -89,7 +90,7 @@ decoder = TransformerDecoder(
 - `dropout`
 - `max_seq_len`
 
-### Normalization and residual behavior
+### Normalization and FFN
 
 - `norm_strategy`: `pre_norm`, `post_norm`, or `sandwich_norm`
 - `custom_norm`: `rms`, `layer`, and other norm-factory variants
@@ -98,10 +99,11 @@ decoder = TransformerDecoder(
 
 ### Attention selection
 
-- `att_type`: the base attention family for standard layers
-- `attention_mode`: how attention types are assigned across layers
+- `att_type`
+- `attention_mode`
+- `freq_modes`
 
-Supported routed modes in the current implementation include:
+Supported `attention_mode` values currently include:
 
 - `standard`
 - `linear`
@@ -116,9 +118,9 @@ Supported routed modes in the current implementation include:
 
 Important behavior:
 
-- if `attention_mode="standard"` but `att_type` is a routed type such as `linear`, `sype`, `kimi`, or `gated_delta`, the model promotes `attention_mode` automatically so the requested path is actually used
+- if `attention_mode="standard"` but `att_type` is a routed type such as `linear`, `sype`, `kimi`, or `gated_delta`, the model promotes `attention_mode` automatically
 
-### Patching and tokenization
+### Patching
 
 - `patch_encoder`
 - `patch_decoder`
@@ -126,43 +128,27 @@ Important behavior:
 - `patch_stride`
 - `patch_pad_end`
 
-Encoder patching is the recommended default. The encoder returns patch-memory tokens without unpatching, and the decoder cross-attends to that patch memory.
-
-### Efficiency and parameter sharing
+### Efficiency
 
 - `use_gradient_checkpointing`
 - `share_layers`
 
 ### Advanced modules
 
-- `use_moe`, `num_experts`, `top_k`, `moe_aux_lambda`
-- `use_layer_skipping`, `layer_skip_mode`, `layer_skip_temperature`, `layer_skip_lambda`
-- `use_mhc`, `mhc_n_streams`, `mhc_sinkhorn_iters`, `mhc_temperature`, `mhc_collapse`
+- Attention Residuals:
+  `use_attention_residual`, `attn_residual_type`, `attention_residual_block_size`
+- GateSkip:
+  `use_gateskip`, `gate_budget`, `gate_lambda`
+- MoD:
+  `use_mod`, `mod_mode`, `mod_lambda`, `mod_budget_scheduler`
+- mHC:
+  `use_mhc`, `mhc_n_streams`, `mhc_sinkhorn_iters`, `mhc_collapse`
+- MoE:
+  `use_moe`, `num_experts`, `top_k`, `moe_aux_lambda`
 
-## Attention routing patterns
+## Recommended patching strategy
 
-`attention_mode` controls how attention kernels are assigned across the layer stack.
-
-Common choices:
-
-- `standard`: all layers use standard attention
-- `linear`: all layers use linear attention
-- `hybrid`: early layers use linear attention, final layer uses standard attention
-- `hybrid_kimi`: early layers use Kimi attention, final layer uses standard attention
-- `kimi_3to1`: three Kimi layers followed by one standard layer in repeating groups
-- `hybrid_gdn`: early layers use Gated DeltaNet, final layer uses standard attention
-
-Use these routed modes when:
-
-- sequence length is large
-- you want cheaper early layers with a stronger final layer
-- you are experimenting with linear or state-space-like attention variants
-
-## Patching strategy
-
-The current implementation is explicit about patching behavior.
-
-### Recommended pattern
+The recommended pattern for forecasting is:
 
 - `patch_encoder=True`
 - `patch_decoder=False`
@@ -170,16 +156,12 @@ The current implementation is explicit about patching behavior.
 Why:
 
 - the encoder benefits from shorter token sequences
-- the decoder remains easier to reason about
-- autoregressive decoding remains compatible with `forward_one_step(...)`
+- the decoder stays easier to reason about
+- autoregressive decoding stays compatible with `forward_one_step(...)`
 
-### Decoder patching caveat
+`patch_decoder=True` is supported for full-sequence decoding, but it is not compatible with KV-cached incremental decoding.
 
-`patch_decoder=True` is supported for non-incremental decoding, but it is not compatible with KV-cached incremental decoding.
-
-### Memory mask alignment
-
-When the encoder is patched, the memory sequence length changes from timestep length to patch-token length. The implementation validates that `memory_key_padding_mask` matches the actual memory length, so patched and unpatched masks cannot be mixed accidentally.
+When the encoder is patched, the memory sequence length becomes patch-token length. The decoder validates that `memory_key_padding_mask` matches the actual memory length, so patched and unpatched masks cannot be mixed silently.
 
 ## CT-PatchTST encoder mode
 
@@ -200,20 +182,35 @@ encoder = TransformerEncoder(
 This path:
 
 - patchifies across time per channel
-- embeds each channel-patch
+- embeds each channel patch
 - fuses channels into transformer tokens
 
-Use it when long input sequences make timestep-level tokenization too expensive.
+Use it when timestep-level tokenization is too expensive for long multivariate histories.
 
-## Informer-like mode
+## Inference modes
 
-`model_type="informer-like"` changes defaults in the current implementation:
+### Full-sequence encoder-decoder
+
+This is the default path for standard sequence-to-sequence forecasting:
+
+```python
+memory = encoder(src, src_key_padding_mask=src_kpm)
+out = decoder(
+    tgt,
+    memory,
+    memory_key_padding_mask=src_kpm_or_patchified_memory_kpm,
+)
+```
+
+### Informer-like decoding
+
+`model_type="informer-like"` changes defaults so that:
 
 - encoder time encoding is enabled
 - decoder informer-like behavior is enabled
-- decoder prompt masking behavior follows `label_len`
+- decoder prompt masking follows `label_len`
 
-Typical decoder setup:
+Typical setup:
 
 ```python
 decoder = TransformerDecoder(
@@ -227,76 +224,171 @@ decoder = TransformerDecoder(
 )
 ```
 
-## Decoder behavior and constraints
+`label_len` controls how much of the decoder input is treated as observed prompt.
 
-### Prompting
+Important behavior:
 
-The decoder consumes:
+- set `label_len` explicitly for true Informer-style masking
+- when `label_len <= 0`, the implementation now skips the automatic Informer padding mask instead of masking the whole decoder input
 
-- `tgt`: decoder prompt sequence
-- `memory`: encoder output sequence
+### Autoregressive decoding
 
-`label_len` controls how much prompt is treated as observed context in informer-like decoding.
-Set `label_len` explicitly for true Informer-style prompt masking. When `label_len <= 0`, the implementation now skips the automatic Informer padding mask instead of masking the whole decoder input.
+`forward_one_step(...)` is intended for KV-cached autoregressive decoding.
 
-### Incremental decoding
-
-`forward_one_step(...)` is intended for autoregressive decoding with KV caching.
+```python
+step_out, state = decoder.forward_one_step(tgt_prefix, memory)
+step_out, state = decoder.forward_one_step(
+    next_token,
+    memory,
+    incremental_state=state,
+    memory_key_padding_mask=memory_kpm,
+)
+```
 
 Recommended usage:
 
-- first call: pass the available prompt prefix
-- later calls with `incremental_state`: pass either the growing prefix or just the newest token; once cache exists, the implementation consumes only the last step
+- first call: pass the available prefix
+- later calls: pass either the growing prefix or only the newest token
+- once cache exists, the implementation consumes only the newest step
 
 Current constraints:
 
 - requires `patch_decoder=False`
-- does not support dynamic layer skipping
-- mHC is not supported with incremental decoder state
+- does not support `use_mod=True`
+- does not support `use_mhc=True`
 
-### MTP targets
+## Active-position masks for time series
 
-The decoder supports optional multi-token prediction targets for MoE FFNs in decoder layers. That is an advanced path and should only be enabled when you intentionally want auxiliary decoder-horizon supervision inside the FFN block.
+Both GateSkip and MoD operate over active positions. The public runtime input is:
 
-## Dynamic layer skipping
+- encoder: `gateskip_active_mask`
+- decoder: `gateskip_active_mask`
 
-The transformer base supports MoD-style layer skipping.
+For time series, the intended meaning is:
 
-Key controls:
+- `True`: this timestep or token participates in budgeting or routing
+- `False`: inactive position such as padding or masked-out region
 
-- `use_layer_skipping`
-- `layer_skip_mode`: `seq` or `token`
-- `layer_skip_temperature`
-- `layer_skip_hard`
-- `layer_skip_lambda`
+Default behavior:
 
-Current behavior:
+- encoder: active positions are derived from `src_key_padding_mask` when available
+- decoder: active positions are derived from the user-provided target padding mask
+- the auto-generated Informer forecast mask is intentionally not treated as inactivity for GateSkip or MoD
 
-- `seq` mode can skip whole layers and save compute
-- `token` mode is behavioral mixing, not a true compute-saving token-pruning path
+With patching enabled, the active mask is patchified too, so routing stays aligned with patch tokens.
+
+## Attention Residuals
+
+The transformer now implements paper-style Attention Residuals rather than the older local residual trick.
+
+Controls:
+
+- `use_attention_residual`
+- `attn_residual_type`: `full` or `block`
+- `attention_residual_block_size`
+
+Behavior:
+
+- `full`: aggregates over the running layer history
+- `block`: aggregates over block summaries
+
+Notes:
+
+- this is enabled by default
+- it replaces the normal residual path for the affected blocks
+
+Current compatibility rules:
+
+- not compatible with `use_gateskip=True`
+- not compatible with `use_mhc=True`
+- not compatible with `use_mod=True`
+
+If you want GateSkip, MoD, or mHC, disable Attention Residuals explicitly:
+
+```python
+use_attention_residual=False
+```
+
+## GateSkip
+
+GateSkip applies residual gating at the sublayer level.
+
+Controls:
+
+- `use_gateskip`
+- `gate_budget`
+- `gate_lambda`
+
+For time series, GateSkip budgets over valid positions rather than LM-style EOS handling.
 
 Recommendation:
 
-- leave this off until you have a stable baseline
-- prefer `seq` mode first if you want actual compute savings
+- keep it off until the dense baseline is stable
+- when using it, pass an explicit `gateskip_active_mask` if you want forecast-only gating rather than all valid positions
+
+Current compatibility rules:
+
+- not wired together with Attention Residuals
+- not wired together with MoD
+
+## Mixture-of-Depths
+
+The transformer supports paper-style MoD token routing.
+
+Controls:
+
+- `use_mod`
+- `mod_mode`
+- `mod_lambda`
+- `mod_budget_scheduler`
+
+Current behavior:
+
+- only `mod_mode="token"` is supported
+- routing is top-k over active positions
+- packed routed tokens are processed and scattered back
+
+For time series:
+
+- routing is timestep or patch-token routing
+- default active positions are all valid positions
+- if you want forecast-only routing, provide an explicit `gateskip_active_mask`
+
+Current compatibility rules:
+
+- not compatible with Attention Residuals
+- not compatible with GateSkip
+- not compatible with mHC
+- not supported in `forward_one_step(...)`
 
 ## mHC residual streams
 
-mHC adds multiple residual streams internally and mixes them with a Sinkhorn-constrained residual mixer.
+mHC adds multiple residual streams and dynamic hyper-connections between them.
 
-Key controls:
+Controls:
 
 - `use_mhc`
 - `mhc_n_streams`
 - `mhc_sinkhorn_iters`
-- `mhc_temperature`
 - `mhc_collapse`: `first` or `mean`
 
-Use it for research exploration, not as a first-line production default. It changes the residual dynamics substantially and has more runtime constraints than the plain transformer path.
+Current behavior:
+
+- paper-style stream init is `(x, 0, ..., 0)`
+- stream read/write and residual mixing are token-wise and input-dependent
+- `mhc_collapse="first"` is the safest default
+
+Current compatibility rules:
+
+- not compatible with Attention Residuals
+- not compatible with MoD
+- not supported in decoder KV-cached autoregressive decoding
+
+Use it as a research feature rather than a first production default.
 
 ## MoE in transformer layers
 
-MoE is enabled at the feedforward block level through the transformer constructors:
+MoE is enabled at the feedforward block level:
 
 ```python
 encoder = TransformerEncoder(
@@ -311,7 +403,7 @@ encoder = TransformerEncoder(
 )
 ```
 
-See the dedicated guide for the routing and auxiliary-loss details:
+See the dedicated guide for routing and auxiliary-loss details:
 
 - [MoE Guide](moe.md)
 
@@ -337,6 +429,7 @@ decoder = TransformerDecoder(
     nhead=4,
     num_layers=3,
     patch_decoder=False,
+    informer_like=False,
 )
 
 model = ForecastingModel(
@@ -352,15 +445,18 @@ model = ForecastingModel(
 ## Recommended tuning order
 
 1. Get a plain encoder-decoder transformer running with `standard` attention.
-2. Enable encoder patching if sequence length is large.
-3. Explore `attention_mode` variants.
-4. Add MoE only after the dense baseline is stable.
-5. Add layer skipping or mHC only for targeted experiments.
+2. Enable encoder patching if source sequence length is large.
+3. Verify full-sequence and autoregressive inference.
+4. Explore `attention_mode` variants.
+5. Add MoE only after the dense baseline is stable.
+6. Add GateSkip, MoD, or mHC only for targeted experiments.
 
 ## Troubleshooting
 
 - `Sequence length exceeds max_seq_len`: increase `max_seq_len` or enable patching.
-- Decoder/memory mask mismatch: this often means the encoder is patched but the memory padding mask was not patchified consistently.
+- Decoder/memory mask mismatch: the encoder may be patched while the memory padding mask was not patchified consistently.
 - `patch_decoder=True` with KV caching: unsupported; keep decoder patching off for autoregressive decoding.
-- `forward_one_step(...)` errors with layer skipping or mHC: those features are intentionally disabled in the incremental path.
+- `forward_one_step(...)` errors with MoD or mHC: those features are intentionally disabled in the incremental path.
+- Attention Residuals with GateSkip, MoD, or mHC: unsupported in the current implementation.
+- Informer-like mode behaving like plain decoding: set `label_len` explicitly.
 - OOM: reduce `d_model`, `num_layers`, `dim_feedforward`, or enable gradient checkpointing.
