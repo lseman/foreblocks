@@ -10,16 +10,10 @@ ForeBlocks includes a staged neural architecture search subsystem for time-serie
 
 ## Install
 
-For the search loop itself:
+For the DARTS workflow itself, including the analyzer and richer search-result visuals:
 
 ```bash
 pip install "foreblocks[darts]"
-```
-
-If you also want the analyzer and richer search-result visuals:
-
-```bash
-pip install "foreblocks[darts-analysis]"
 ```
 
 ## Public imports

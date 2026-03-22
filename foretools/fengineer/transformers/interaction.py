@@ -277,6 +277,10 @@ class InteractionTransformer(BaseFeatureTransformer):
         cols = X.select_dtypes(include=[np.number]).columns.tolist()
         if not cols:
             return []
+        if getattr(self.config, "interaction_exclude_generated_sources", True):
+            cols = [c for c in cols if not self._looks_generated(c)]
+            if not cols:
+                return []
         # cheap variance-based prescreen
         scores: Dict[str, float] = {}
         for c in cols:
@@ -299,6 +303,23 @@ class InteractionTransformer(BaseFeatureTransformer):
                 :topk
             ]
         ]
+
+    @staticmethod
+    def _looks_generated(col: str) -> bool:
+        generated_prefixes = (
+            "row_",
+            "rff_",
+            "kmeans_",
+            "gmm_",
+            "umap_",
+            "hdbscan_",
+        )
+        generated_suffixes = ("_bin",)
+        return (
+            "__" in col
+            or col.startswith(generated_prefixes)
+            or col.endswith(generated_suffixes)
+        )
 
     # --------- candidate generation (fit-only, with subsample) ---------
 
@@ -559,7 +580,7 @@ class InteractionTransformer(BaseFeatureTransformer):
 
         y_arr = None
         if y is not None:
-            y_arr = pd.Series(y).iloc[idx].to_numpy(dtype=float)
+            y_arr = pd.Series(y).iloc[idx].to_numpy(dtype=float, copy=True)
             y_arr[~np.isfinite(y_arr)] = np.nan  # AMI handles mask
 
         # prescreen columns (on full X; cheap) and then pair-rank on subsample cache
@@ -705,4 +726,3 @@ class InteractionTransformer(BaseFeatureTransformer):
             if feats
             else pd.DataFrame(index=X.index)
         )
-

@@ -13,7 +13,10 @@ from foretools.fengineer.selectors import FeatureSelector
 from foretools.fengineer.transformers import (
     BinningTransformer,
     CategoricalTransformer,
+    ClusteringTransformer,
+    DateTimeTransformer,
     FeatureConfig,
+    FourierTransformer,
     InteractionTransformer,
     MathematicalTransformer,
     RandomFourierFeaturesTransformer,
@@ -48,31 +51,80 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         # Track feature creation statistics
         self.feature_stats_ = {}
 
+    def _resolve_backend(self) -> str:
+        backend = str(getattr(self.config, "backend", "auto")).lower()
+        allowed = {"auto", "linear", "tree", "gbdt", "neural"}
+        return backend if backend in allowed else "auto"
+
+    def _is_transformer_enabled(self, name: str, flag: str) -> bool:
+        if not getattr(self.config, flag, False):
+            return False
+
+        backend = self._resolve_backend()
+        if backend in {"tree", "gbdt"} and name in {
+            "interactions",
+            "rff",
+            "fourier",
+            "clustering",
+        }:
+            return False
+        if backend == "neural" and name == "binning":
+            return False
+        return True
+
+    def _should_use_quantile_transform(self) -> bool:
+        if not getattr(self.config, "use_quantile_transform", True):
+            return False
+        return self._resolve_backend() not in {"tree", "gbdt"}
+
     def _build_transformers(self) -> Dict[str, Any]:
         """Build ordered transformer registry from config flags."""
         registry = {
-            "mathematical": (
-                getattr(self.config, "create_math_features", True),
-                MathematicalTransformer(self.config),
-            ),
-            "interactions": (
-                getattr(self.config, "create_interactions", True),
-                InteractionTransformer(self.config),
+            "datetime": (
+                self._is_transformer_enabled("datetime", "create_datetime"),
+                DateTimeTransformer(
+                    self.config,
+                    include_cyclical=getattr(
+                        self.config, "datetime_include_cyclical", True
+                    ),
+                    include_flags=getattr(self.config, "datetime_include_flags", True),
+                    include_elapsed=getattr(
+                        self.config, "datetime_include_elapsed", True
+                    ),
+                    group_key=getattr(self.config, "datetime_group_key", None),
+                    country_holidays=getattr(
+                        self.config, "datetime_country_holidays", None
+                    ),
+                ),
             ),
             "categorical": (
-                getattr(self.config, "create_categorical", True),
+                self._is_transformer_enabled("categorical", "create_categorical"),
                 CategoricalTransformer(self.config),
             ),
+            "fourier": (
+                self._is_transformer_enabled("fourier", "create_fourier"),
+                FourierTransformer(self.config),
+            ),
+            "mathematical": (
+                self._is_transformer_enabled(
+                    "mathematical", "create_math_features"
+                ),
+                MathematicalTransformer(self.config),
+            ),
             "binning": (
-                getattr(self.config, "create_binning", True),
+                self._is_transformer_enabled("binning", "create_binning"),
                 BinningTransformer(self.config),
             ),
             "statistical": (
-                getattr(self.config, "create_statistical", True),
+                self._is_transformer_enabled("statistical", "create_statistical"),
                 StatisticalTransformer(self.config),
             ),
+            "interactions": (
+                self._is_transformer_enabled("interactions", "create_interactions"),
+                InteractionTransformer(self.config),
+            ),
             "rff": (
-                getattr(self.config, "create_rff", False),
+                self._is_transformer_enabled("rff", "create_rff"),
                 RandomFourierFeaturesTransformer(
                     self.config,
                     n_components=getattr(self.config, "rff_n_components", 50),
@@ -83,6 +135,10 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                         self.config, "rff_handle_missing_features", "impute"
                     ),
                 ),
+            ),
+            "clustering": (
+                self._is_transformer_enabled("clustering", "create_clustering"),
+                ClusteringTransformer(self.config),
             ),
         }
         return {name: tf for name, (enabled, tf) in registry.items() if enabled}
@@ -111,6 +167,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         print(
             f"🚀 Fitting SOTA Feature Engineer on {X.shape[0]} rows, {X.shape[1]} columns"
         )
+        self.feature_stats_ = {}
 
         # Initialize enabled transformers in a deterministic order
         self.transformers_ = self._build_transformers()
@@ -132,8 +189,18 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
         # Apply correlation filtering
         print("🔍 Applying correlation filtering...")
-        self.correlation_filter_ = CorrelationFilter(self.config.corr_threshold)
-        self.correlation_filter_.fit(current_X)
+        self.correlation_filter_ = CorrelationFilter(
+            threshold=self.config.corr_threshold,
+            method=getattr(self.config, "corr_filter_method", "variance"),
+            dependence_metric=getattr(
+                self.config, "corr_dependence_metric", "pearson"
+            ),
+            random_state=getattr(self.config, "random_state", 42),
+            mi_subsample=min(getattr(self.config, "max_rows_score", 2000), 2000),
+            mi_min_overlap=getattr(self.config, "mi_min_overlap", 50),
+            mi_bins=getattr(self.config, "mi_bins", 16),
+        )
+        self.correlation_filter_.fit(current_X, y=y)
         current_X = self.correlation_filter_.transform(current_X)
 
         # Feature selection
@@ -147,7 +214,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 current_X = current_X[selected_features]
 
                 # Fit final scaler
-                if self.config.use_quantile_transform:
+                if self._should_use_quantile_transform():
                     print("📊 Fitting final quantile transformer...")
                     self.final_scaler_ = QuantileTransformer(
                         n_quantiles=min(1000, max(10, len(current_X) // 2)),
@@ -301,6 +368,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         report = {
             "feature_stats": self.feature_stats_.copy(),
             "config": self.config.__dict__.copy(),
+            "backend": self._resolve_backend(),
             "correlation_dropped": (
                 len(self.correlation_filter_.features_to_drop_)
                 if self.correlation_filter_

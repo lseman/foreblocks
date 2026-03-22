@@ -4,16 +4,10 @@ This tutorial shows the intended end-to-end DARTS workflow in ForeBlocks: config
 
 ## Install
 
-Core DARTS workflow:
+Core DARTS workflow, including the analyzer:
 
 ```bash
 pip install "foreblocks[darts]"
-```
-
-Optional analyzer:
-
-```bash
-pip install "foreblocks[darts-analysis]"
 ```
 
 ## Step 1: create the trainer
@@ -127,7 +121,7 @@ final_run = trainer.train_final_model(
 
 ## Optional: analyze the final search result
 
-If `darts-analysis` is installed:
+With `foreblocks[darts]` installed:
 
 ```python
 from foreblocks.darts import StreamlinedDARTSAnalyzer

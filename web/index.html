@@ -1,30 +1,29 @@
 <!DOCTYPE html>
 <html lang="en" class="scroll-smooth">
+
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ForeBlocks - Modular Time-Series Forecasting For PyTorch</title>
-  <meta
-    name="description"
-    content="ForeBlocks is a modular PyTorch toolkit for time-series forecasting, preprocessing, architecture search, uncertainty estimation, and experiment tooling."
-  />
-  <meta property="og:title" content="ForeBlocks - Modular Time-Series Forecasting For PyTorch"/>
-  <meta
-    property="og:description"
-    content="Start with a lean forecasting core, then layer in preprocessing, DARTS search, uncertainty, MLTracker, and companion tooling when you need them."
-  />
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <meta name="description"
+    content="ForeBlocks is a modular PyTorch toolkit for time-series forecasting, preprocessing, architecture search, uncertainty estimation, and experiment tooling." />
+  <meta property="og:title" content="ForeBlocks - Modular Time-Series Forecasting For PyTorch" />
+  <meta property="og:description"
+    content="Start with a lean forecasting core, then layer in preprocessing, DARTS search, uncertainty, MLTracker, and companion tooling when you need them." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
     href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
-    rel="stylesheet"
-  />
+    rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet"/>
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet"/>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css"
+    rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js" defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"
+    defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js"
+    defer></script>
 
   <style>
     :root {
@@ -50,11 +49,13 @@
       font-family: "Space Grotesk", system-ui, sans-serif;
     }
 
-    code, pre {
+    code,
+    pre {
       font-family: "IBM Plex Mono", "Fira Code", monospace !important;
     }
 
-    html, body {
+    html,
+    body {
       min-height: 100vh;
       background:
         radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 32%),
@@ -127,6 +128,11 @@
       border-radius: 28px;
       position: relative;
       overflow: hidden;
+    }
+
+    .hero-shell {
+      max-width: 32rem;
+      margin-left: auto;
     }
 
     .shell::after {
@@ -328,6 +334,60 @@
       border-radius: 999px;
     }
 
+    .hero-shell-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 0.9rem;
+    }
+
+    .hero-shell-note {
+      margin-top: 0.9rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.65;
+    }
+
+    .hero-quick-links {
+      display: grid;
+      gap: 0.7rem;
+      margin-top: 1rem;
+    }
+
+    .hero-quick-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.9rem 1rem;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text);
+      text-decoration: none;
+      transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
+    }
+
+    .hero-quick-link:hover {
+      transform: translateX(4px);
+      border-color: rgba(94, 234, 212, 0.24);
+      background: rgba(94, 234, 212, 0.06);
+    }
+
+    .hero-quick-link strong {
+      display: block;
+      color: var(--text);
+      font-size: 0.95rem;
+      margin-bottom: 0.15rem;
+    }
+
+    .hero-quick-link small {
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+
     .copy-btn {
       position: absolute;
       top: 0.9rem;
@@ -360,7 +420,7 @@
       line-height: 1.75 !important;
     }
 
-    :not(pre) > code {
+    :not(pre)>code {
       background: rgba(94, 234, 212, 0.08);
       border: 1px solid rgba(94, 234, 212, 0.12);
       color: #c7fff6;
@@ -373,7 +433,7 @@
       border-right-color: rgba(148, 163, 184, 0.12) !important;
     }
 
-    .line-numbers-rows > span::before {
+    .line-numbers-rows>span::before {
       color: rgba(148, 163, 184, 0.32) !important;
     }
 
@@ -508,7 +568,8 @@
       border-collapse: collapse;
     }
 
-    th, td {
+    th,
+    td {
       padding: 1rem;
       text-align: left;
       vertical-align: top;
@@ -595,153 +656,158 @@
         padding: 1.05rem;
       }
 
-      th, td {
+      th,
+      td {
         padding: 0.85rem;
       }
     }
   </style>
 </head>
+
 <body>
 
-<nav class="navbar fixed inset-x-0 top-0 z-50">
-  <div class="max-w-7xl mx-auto px-5 h-16 flex items-center justify-between gap-4">
-    <a href="#" class="flex items-center gap-3 shrink-0">
-      <img src="logo.svg" alt="ForeBlocks" class="h-8 w-auto"/>
-      <span class="text-white font-bold tracking-tight text-lg">ForeBlocks</span>
-    </a>
-    <div class="hidden md:flex items-center gap-2">
-      <a href="#paths" class="nav-link px-3 py-2">Paths</a>
-      <a href="#install" class="nav-link px-3 py-2">Install</a>
-      <a href="#workflow" class="nav-link px-3 py-2">Workflow</a>
-      <a href="#features" class="nav-link px-3 py-2">Features</a>
-      <a href="#api" class="nav-link px-3 py-2">API</a>
-      <a href="#examples" class="nav-link px-3 py-2">Examples</a>
-    </div>
-    <div class="flex items-center gap-2">
-      <a href="docs/" class="hidden sm:inline-flex mini-pill px-4 py-2 rounded-full text-sm font-semibold">Docs</a>
-      <a
-        target="_blank"
-        rel="noopener"
-        href="https://github.com/lseman/foreblocks"
-        class="cta-primary inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold"
-      >
-        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-        GitHub
+  <nav class="navbar fixed inset-x-0 top-0 z-50">
+    <div class="max-w-7xl mx-auto px-5 h-16 flex items-center justify-between gap-4">
+      <a href="#" class="flex items-center gap-3 shrink-0">
+        <img src="logo.svg" alt="ForeBlocks" class="h-8 w-auto" />
+        <span class="text-white font-bold tracking-tight text-lg">ForeBlocks</span>
       </a>
-    </div>
-  </div>
-</nav>
-
-<header class="relative overflow-hidden pt-28 pb-14">
-  <div class="grain" aria-hidden="true"></div>
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="grid xl:grid-cols-[1.15fr_.85fr] gap-8 items-center">
-      <div class="reveal">
-        <span class="eyebrow mb-5">
-          <span class="w-2 h-2 rounded-full bg-emerald-300"></span>
-          v0.1.15 | Python 3.10+
-        </span>
-        <h1 class="hero-title text-white">
-          Forecasting systems,
-          <span class="gradient">not just forecasting models.</span>
-        </h1>
-        <p class="hero-copy mt-6">
-          ForeBlocks gives you a lean PyTorch forecasting core first, then lets you opt
-          into preprocessing, uncertainty intervals, differentiable architecture search,
-          experiment tracking, and companion tooling when your workflow grows.
-        </p>
-        <div class="flex flex-wrap gap-3 mt-8">
-          <a href="docs/getting-started/" class="cta-primary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
-            Start with Getting Started
-            <span aria-hidden="true">-&gt;</span>
-          </a>
-          <a href="#paths" class="cta-secondary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
-            Choose your path
-          </a>
-          <a href="docs/reference/public-api/" class="cta-secondary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
-            Public API
-          </a>
-        </div>
-        <div class="flex flex-wrap gap-2 mt-8">
-          <span class="badge">
-            <svg class="w-4 h-4 text-teal-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            PyTorch core
-          </span>
-          <span class="badge">
-            <svg class="w-4 h-4 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16"/></svg>
-            Optional extras
-          </span>
-          <span class="badge">
-            <svg class="w-4 h-4 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-1 0v14m-7-7h14"/></svg>
-            Research workflows
-          </span>
-          <span class="badge">
-            <svg class="w-4 h-4 text-rose-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3M5.121 19.071A9 9 0 1118.88 4.93"/></svg>
-            Faster onboarding
-          </span>
-        </div>
+      <div class="hidden md:flex items-center gap-2">
+        <a href="#paths" class="nav-link px-3 py-2">Paths</a>
+        <a href="#install" class="nav-link px-3 py-2">Install</a>
+        <a href="#workflow" class="nav-link px-3 py-2">Workflow</a>
+        <a href="#features" class="nav-link px-3 py-2">Features</a>
+        <a href="#api" class="nav-link px-3 py-2">API</a>
+        <a href="#examples" class="nav-link px-3 py-2">Examples</a>
       </div>
+      <div class="flex items-center gap-2">
+        <a href="docs/" class="hidden sm:inline-flex mini-pill px-4 py-2 rounded-full text-sm font-semibold">Docs</a>
+        <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
+          class="cta-primary inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
+          </svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </nav>
 
-      <div class="shell p-5 lg:p-6 reveal">
-        <div class="absolute inset-0 bg-gradient-to-br from-teal-300/10 via-transparent to-sky-300/10 pointer-events-none"></div>
-        <div class="relative">
-          <div class="terminal">
-            <div class="term-bar">
-              <span class="dot bg-rose-400"></span>
-              <span class="dot bg-amber-300"></span>
-              <span class="dot bg-emerald-400"></span>
-              <span class="ml-3 text-xs text-slate-400" style="font-family:'IBM Plex Mono', monospace">quick-install.sh</span>
+  <header class="relative overflow-hidden pt-28 pb-14">
+    <div class="grain" aria-hidden="true"></div>
+    <div class="max-w-7xl mx-auto px-6">
+      <div class="grid xl:grid-cols-[1.18fr_.82fr] gap-8 items-center">
+        <div class="reveal">
+          <span class="eyebrow mb-5">
+            <span class="w-2 h-2 rounded-full bg-emerald-300"></span>
+            v0.1.15 | Python 3.10+
+          </span>
+          <h1 class="hero-title text-white">
+            Forecasting systems,
+            <span class="gradient">not just forecasting models.</span>
+          </h1>
+          <p class="hero-copy mt-6">
+            ForeBlocks gives you a lean PyTorch forecasting core first, then lets you opt
+            into preprocessing, uncertainty intervals, differentiable architecture search,
+            experiment tracking, and companion tooling when your workflow grows.
+          </p>
+          <div class="flex flex-wrap gap-3 mt-8">
+            <a href="docs/getting-started/"
+              class="cta-primary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
+              Start with Getting Started
+              <span aria-hidden="true">-&gt;</span>
+            </a>
+            <a href="#paths" class="cta-secondary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
+              Choose your path
+            </a>
+            <a href="docs/reference/public-api/"
+              class="cta-secondary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
+              Public API
+            </a>
+          </div>
+          <div class="flex flex-wrap gap-2 mt-8">
+            <span class="badge">
+              <svg class="w-4 h-4 text-teal-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              PyTorch core
+            </span>
+            <span class="badge">
+              <svg class="w-4 h-4 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+              Optional extras
+            </span>
+            <span class="badge">
+              <svg class="w-4 h-4 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-1 0v14m-7-7h14" />
+              </svg>
+              Research workflows
+            </span>
+            <span class="badge">
+              <svg class="w-4 h-4 text-rose-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 8v4l3 3M5.121 19.071A9 9 0 1118.88 4.93" />
+              </svg>
+              Faster onboarding
+            </span>
+          </div>
+        </div>
+
+        <div class="shell hero-shell p-4 lg:p-5 reveal">
+          <div
+            class="absolute inset-0 bg-gradient-to-br from-teal-300/10 via-transparent to-sky-300/10 pointer-events-none">
+          </div>
+          <div class="relative">
+            <div class="hero-shell-top">
+              <div>
+                <div class="label">Quick Start</div>
+                <p class="soft mt-2 text-sm">Core install first. Extras only when you need them.</p>
+              </div>
+              <a href="docs/" class="ghost-link text-sm font-semibold shrink-0">Docs -&gt;</a>
             </div>
-            <div class="p-5 relative">
-              <button class="copy-btn">Copy</button>
-              <pre><code class="language-bash">pip install foreblocks
+
+            <div class="terminal">
+              <div class="term-bar">
+                <span class="dot bg-rose-400"></span>
+                <span class="dot bg-amber-300"></span>
+                <span class="dot bg-emerald-400"></span>
+                <span class="ml-3 text-xs text-slate-400"
+                  style="font-family:'IBM Plex Mono', monospace">quick-install.sh</span>
+              </div>
+              <div class="p-5 relative">
+                <button class="copy-btn">Copy</button>
+                <pre><code class="language-bash">pip install foreblocks
 pip install "foreblocks[preprocessing]"
 pip install "foreblocks[darts]"</code></pre>
-            </div>
-          </div>
-
-          <div class="grid sm:grid-cols-3 gap-3 mt-4">
-            <div class="stat-card">
-              <strong>Stable path</strong>
-              <span><code>ForecastingModel</code> + <code>Trainer</code> + <code>ModelEvaluator</code>.</span>
-            </div>
-            <div class="stat-card">
-              <strong>Raw series</strong>
-              <span><code>TimeSeriesHandler</code> covers windowing, scaling, and filtering.</span>
-            </div>
-            <div class="stat-card">
-              <strong>Search</strong>
-              <span>DARTS, BOHB, and analysis guides are already mapped in the docs.</span>
-            </div>
-          </div>
-
-          <div class="panel mt-4">
-            <div class="flex items-center justify-between gap-3 mb-4">
-              <div>
-                <div class="label">Fastest reading routes</div>
-                <p class="soft mt-2 text-sm">Pick the entry point that matches the job you need to do today.</p>
               </div>
-              <a href="docs/" class="ghost-link text-sm font-semibold shrink-0">Open docs -&gt;</a>
             </div>
-            <div class="route-list grid gap-3">
-              <a href="docs/getting-started/">
+
+            <p class="hero-shell-note">
+              Start with one small baseline run, then branch into preprocessing or search once the public API path is
+              already working.
+            </p>
+
+            <div class="hero-quick-links">
+              <a class="hero-quick-link" href="docs/getting-started/">
                 <div>
-                  <strong class="block text-white">Run a first training loop</strong>
-                  <small>Smallest reliable path through the public API.</small>
+                  <strong>First training loop</strong>
+                  <small>Validated baseline path.</small>
                 </div>
                 <span aria-hidden="true">-&gt;</span>
               </a>
-              <a href="docs/preprocessor/">
+              <a class="hero-quick-link" href="docs/preprocessor/">
                 <div>
-                  <strong class="block text-white">Start from raw multivariate series</strong>
-                  <small>Use preprocessing, filtering, and window generation helpers.</small>
+                  <strong>Raw series</strong>
+                  <small>Preprocess from <code>[T, D]</code> arrays.</small>
                 </div>
                 <span aria-hidden="true">-&gt;</span>
               </a>
-              <a href="docs/darts/">
+              <a class="hero-quick-link" href="docs/darts/">
                 <div>
-                  <strong class="block text-white">Search architectures instead of hand-picking them</strong>
-                  <small>Differentiable NAS plus retraining and analysis.</small>
+                  <strong>DARTS search</strong>
+                  <small>Search, rank, retrain.</small>
                 </div>
                 <span aria-hidden="true">-&gt;</span>
               </a>
@@ -749,362 +815,406 @@ pip install "foreblocks[darts]"</code></pre>
           </div>
         </div>
       </div>
-    </div>
 
-    <div class="grid md:grid-cols-4 gap-4 mt-10 reveal">
-      <div class="mini-card">
-        <strong>Minimal install</strong>
-        <span>Default dependencies stay focused on the modeling stack.</span>
+      <div class="grid md:grid-cols-4 gap-4 mt-10 reveal">
+        <div class="mini-card">
+          <strong>Minimal install</strong>
+          <span>Default dependencies stay focused on the modeling stack.</span>
+        </div>
+        <div class="mini-card">
+          <strong>Modular stack</strong>
+          <span>Preprocessing, search, tracking, and analysis stay opt-in.</span>
+        </div>
+        <div class="mini-card">
+          <strong>One docs hub</strong>
+          <span>Tutorials, architecture notes, guides, and reference live together.</span>
+        </div>
+        <div class="mini-card">
+          <strong>Companion tooling</strong>
+          <span><code>foretools</code> extends the repo with generators, BOHB, VMD, and more.</span>
+        </div>
       </div>
-      <div class="mini-card">
-        <strong>Modular stack</strong>
-        <span>Preprocessing, search, tracking, and analysis stay opt-in.</span>
-      </div>
-      <div class="mini-card">
-        <strong>One docs hub</strong>
-        <span>Tutorials, architecture notes, guides, and reference live together.</span>
-      </div>
-      <div class="mini-card">
-        <strong>Companion tooling</strong>
-        <span><code>foretools</code> extends the repo with generators, BOHB, VMD, and more.</span>
-      </div>
     </div>
-  </div>
-</header>
+  </header>
 
-<div class="accent-line"></div>
+  <div class="accent-line"></div>
 
-<section id="paths" class="py-24">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="reveal">
-      <div class="section-kicker">Choose A Route</div>
-      <h2 class="section-title mt-3">Three clear ways into the repository</h2>
-      <p class="section-copy mt-4">
-        The project is broad, so the site now emphasizes workflow-first entry points instead
-        of expecting everyone to read the repo top to bottom. These are the most practical
-        places to begin.
-      </p>
-    </div>
-
-    <div class="grid lg:grid-cols-3 gap-5 mt-10">
-      <article class="path-card reveal">
-        <div class="icon-wrap mb-5">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-6 4h10M7 13h10M7 17h6"/></svg>
-        </div>
-        <div class="label">Path 01</div>
-        <h3 class="text-2xl font-bold mt-3">Train a baseline first</h3>
-        <p class="soft mt-4">
-          Use the safest path through the public API: build a head or encoder/decoder pair,
-          create dataloaders, train with <code>Trainer</code>, and evaluate before you add
-          more moving parts.
-        </p>
-        <div class="mt-6 flex flex-wrap gap-2">
-          <a href="docs/getting-started/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Getting Started</a>
-          <a href="docs/tutorials/train-direct-model/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Direct Model Tutorial</a>
-        </div>
-      </article>
-
-      <article class="path-card reveal">
-        <div class="icon-wrap mb-5" style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M7 12h10M10 17h4"/></svg>
-        </div>
-        <div class="label">Path 02</div>
-        <h3 class="text-2xl font-bold mt-3">Start from raw series</h3>
-        <p class="soft mt-4">
-          When your input is a raw <code>[T, D]</code> array instead of ready-made training
-          windows, reach for the preprocessing stack first so scaling, filtering, and slicing
-          stay consistent.
-        </p>
-        <div class="mt-6 flex flex-wrap gap-2">
-          <a href="docs/preprocessor/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Preprocessor Guide</a>
-          <a href="docs/foretools/feature-engineering/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Feature Engineering</a>
-        </div>
-      </article>
-
-      <article class="path-card reveal">
-        <div class="icon-wrap mb-5" style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.18);color:var(--accent-3)">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-6m3 6V7m3 10v-3m5 5H4"/></svg>
-        </div>
-        <div class="label">Path 03</div>
-        <h3 class="text-2xl font-bold mt-3">Search and compare architectures</h3>
-        <p class="soft mt-4">
-          Once the baseline loop is working, move into staged DARTS search, multi-fidelity
-          ranking, BOHB optimization, and retraining workflows with dedicated docs and tutorials.
-        </p>
-        <div class="mt-6 flex flex-wrap gap-2">
-          <a href="docs/darts/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">DARTS Guide</a>
-          <a href="docs/tutorials/darts-multifidelity-search/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Search Tutorial</a>
-        </div>
-      </article>
-    </div>
-  </div>
-</section>
-
-<div class="accent-line"></div>
-
-<section id="install" class="py-24">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 items-start">
+  <section id="paths" class="py-24">
+    <div class="max-w-7xl mx-auto px-6">
       <div class="reveal">
-        <div class="section-kicker">Install</div>
-        <h2 class="section-title mt-3">A lean default install, with extras that map to real workflows</h2>
+        <div class="section-kicker">Choose A Route</div>
+        <h2 class="section-title mt-3">Three clear ways into the repository</h2>
         <p class="section-copy mt-4">
-          ForeBlocks is easier to approach when the install story matches the feature boundaries.
-          The default package gets you the core modeling stack. Extras add heavier scientific,
-          search, tracking, or analysis dependencies only when you need them.
+          The project is broad, so the site now emphasizes workflow-first entry points instead
+          of expecting everyone to read the repo top to bottom. These are the most practical
+          places to begin.
         </p>
-
-        <div class="grid sm:grid-cols-2 gap-4 mt-8">
-          <div class="resource-card">
-            <div class="label">Recommended</div>
-            <h3 class="text-xl font-bold mt-3">Start small</h3>
-            <p class="soft mt-3">Use the minimal install, validate one training loop, then add extras for preprocessing or search.</p>
-          </div>
-          <div class="resource-card">
-            <div class="label">Source</div>
-            <h3 class="text-xl font-bold mt-3">Hack locally</h3>
-            <p class="soft mt-3">Editable installs remain the best path when you are modifying blocks, docs, or training internals.</p>
-          </div>
-        </div>
       </div>
 
-      <div class="grid gap-5 reveal">
-        <div class="panel">
-          <div class="flex items-center justify-between gap-4 mb-4">
-            <div>
-              <div class="label">Core + Extras</div>
-              <p class="soft mt-2 text-sm">Common install paths pulled directly from the current package layout.</p>
+      <div class="grid lg:grid-cols-3 gap-5 mt-10">
+        <article class="path-card reveal">
+          <div class="icon-wrap mb-5">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M11 5h2m-6 4h10M7 13h10M7 17h6" />
+            </svg>
+          </div>
+          <div class="label">Path 01</div>
+          <h3 class="text-2xl font-bold mt-3">Train a baseline first</h3>
+          <p class="soft mt-4">
+            Use the safest path through the public API: build a head or encoder/decoder pair,
+            create dataloaders, train with <code>Trainer</code>, and evaluate before you add
+            more moving parts.
+          </p>
+          <div class="mt-6 flex flex-wrap gap-2">
+            <a href="docs/getting-started/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Getting
+              Started</a>
+            <a href="docs/tutorials/train-direct-model/"
+              class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Direct Model Tutorial</a>
+          </div>
+        </article>
+
+        <article class="path-card reveal">
+          <div class="icon-wrap mb-5"
+            style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M7 12h10M10 17h4" />
+            </svg>
+          </div>
+          <div class="label">Path 02</div>
+          <h3 class="text-2xl font-bold mt-3">Start from raw series</h3>
+          <p class="soft mt-4">
+            When your input is a raw <code>[T, D]</code> array instead of ready-made training
+            windows, reach for the preprocessing stack first so scaling, filtering, and slicing
+            stay consistent.
+          </p>
+          <div class="mt-6 flex flex-wrap gap-2">
+            <a href="docs/preprocessor/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Preprocessor
+              Guide</a>
+            <a href="docs/foretools/feature-engineering/"
+              class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Feature Engineering</a>
+          </div>
+        </article>
+
+        <article class="path-card reveal">
+          <div class="icon-wrap mb-5"
+            style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.18);color:var(--accent-3)">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-6m3 6V7m3 10v-3m5 5H4" />
+            </svg>
+          </div>
+          <div class="label">Path 03</div>
+          <h3 class="text-2xl font-bold mt-3">Search and compare architectures</h3>
+          <p class="soft mt-4">
+            Once the baseline loop is working, move into staged DARTS search, multi-fidelity
+            ranking, BOHB optimization, and retraining workflows with dedicated docs and tutorials.
+          </p>
+          <div class="mt-6 flex flex-wrap gap-2">
+            <a href="docs/darts/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">DARTS Guide</a>
+            <a href="docs/tutorials/darts-multifidelity-search/"
+              class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Search Tutorial</a>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <div class="accent-line"></div>
+
+  <section id="install" class="py-24">
+    <div class="max-w-7xl mx-auto px-6">
+      <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 items-start">
+        <div class="reveal">
+          <div class="section-kicker">Install</div>
+          <h2 class="section-title mt-3">A lean default install, with extras that map to real workflows</h2>
+          <p class="section-copy mt-4">
+            ForeBlocks is easier to approach when the install story matches the feature boundaries.
+            The default package gets you the core modeling stack. Extras add heavier scientific,
+            search, tracking, or analysis dependencies only when you need them.
+          </p>
+
+          <div class="grid sm:grid-cols-2 gap-4 mt-8">
+            <div class="resource-card">
+              <div class="label">Recommended</div>
+              <h3 class="text-xl font-bold mt-3">Start small</h3>
+              <p class="soft mt-3">Use the minimal install, validate one training loop, then add extras for
+                preprocessing or search.</p>
+            </div>
+            <div class="resource-card">
+              <div class="label">Source</div>
+              <h3 class="text-xl font-bold mt-3">Hack locally</h3>
+              <p class="soft mt-3">Editable installs remain the best path when you are modifying blocks, docs, or
+                training internals.</p>
             </div>
           </div>
-          <div class="grid gap-3">
-            <div class="relative">
-              <button class="copy-btn">Copy</button>
-              <pre><code class="language-bash">pip install foreblocks</code></pre>
+        </div>
+
+        <div class="grid gap-5 reveal">
+          <div class="panel">
+            <div class="flex items-center justify-between gap-4 mb-4">
+              <div>
+                <div class="label">Core + Extras</div>
+                <p class="soft mt-2 text-sm">Common install paths pulled directly from the current package layout.</p>
+              </div>
             </div>
-            <div class="relative">
-              <button class="copy-btn">Copy</button>
-              <pre><code class="language-bash">pip install "foreblocks[preprocessing]"
+            <div class="grid gap-3">
+              <div class="relative">
+                <button class="copy-btn">Copy</button>
+                <pre><code class="language-bash">pip install foreblocks</code></pre>
+              </div>
+              <div class="relative">
+                <button class="copy-btn">Copy</button>
+                <pre><code class="language-bash">pip install "foreblocks[preprocessing]"
 pip install "foreblocks[darts]"
-pip install "foreblocks[darts-analysis]"
 pip install "foreblocks[mltracker]"
 pip install "foreblocks[all]"</code></pre>
-            </div>
-            <div class="relative">
-              <button class="copy-btn">Copy</button>
-              <pre><code class="language-bash">git clone https://github.com/lseman/foreblocks.git
+              </div>
+              <div class="relative">
+                <button class="copy-btn">Copy</button>
+                <pre><code class="language-bash">git clone https://github.com/lseman/foreblocks.git
 cd foreblocks
 pip install -e ".[dev]"</code></pre>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Need</th>
-                <th>Install</th>
-                <th>Docs route</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Core forecasting only</td>
-                <td><code>foreblocks</code></td>
-                <td><a href="docs/getting-started/" class="ghost-link">Getting Started</a></td>
-              </tr>
-              <tr>
-                <td>Raw-series preprocessing</td>
-                <td><code>foreblocks[preprocessing]</code></td>
-                <td><a href="docs/preprocessor/" class="ghost-link">Preprocessor</a></td>
-              </tr>
-              <tr>
-                <td>DARTS search loops</td>
-                <td><code>foreblocks[darts]</code></td>
-                <td><a href="docs/darts/" class="ghost-link">DARTS Guide</a></td>
-              </tr>
-              <tr>
-                <td>Search analysis and richer plots</td>
-                <td><code>foreblocks[darts-analysis]</code></td>
-                <td><a href="docs/tutorials/optimize-with-bohb/" class="ghost-link">BOHB Tutorial</a></td>
-              </tr>
-              <tr>
-                <td>Tracking UI and API clients</td>
-                <td><code>foreblocks[mltracker]</code></td>
-                <td><a href="docs/webui/" class="ghost-link">Web UI</a></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="accent-line"></div>
-
-<section id="workflow" class="py-24">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="reveal">
-      <div class="section-kicker">Workflow</div>
-      <h2 class="section-title mt-3">The site now explains the stack in layers</h2>
-      <p class="section-copy mt-4">
-        A big repo gets easier to navigate when people can see what belongs to the stable
-        public surface, what sits behind optional extras, and what is better treated as an
-        advanced subsystem. The layout below mirrors the packaging and the docs.
-      </p>
-    </div>
-
-    <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 mt-10 items-start">
-      <div class="grid gap-4 reveal">
-        <div class="step-card">
-          <div class="label">Step 01</div>
-          <h3 class="text-xl font-bold mt-3">Build a baseline</h3>
-          <p class="soft mt-3">Use the public API and verify your shapes, loss loop, and evaluation path before adding architectural complexity.</p>
-        </div>
-        <div class="step-card">
-          <div class="label">Step 02</div>
-          <h3 class="text-xl font-bold mt-3">Add preprocessing or custom blocks</h3>
-          <p class="soft mt-3">Bring in <code>TimeSeriesHandler</code>, transformer blocks, or composable heads when your data or architecture needs them.</p>
-        </div>
-        <div class="step-card">
-          <div class="label">Step 03</div>
-          <h3 class="text-xl font-bold mt-3">Search, compare, and retrain</h3>
-          <p class="soft mt-3">Move into DARTS, BOHB, uncertainty intervals, and analysis only after the baseline path is already healthy.</p>
-        </div>
-      </div>
-
-      <div class="panel reveal">
-        <div class="label mb-4">What lives where</div>
-        <div class="stack-diagram">
-          <div class="stack-row">
-            <div><span class="stack-tag">foreblocks</span></div>
-            <div>
-              <strong>Core forecasting library</strong>
-              <span>Public entry points such as <code>ForecastingModel</code>, <code>Trainer</code>, dataloaders, configs, transformer blocks, evaluation, and the preprocessing bridge.</span>
-            </div>
-          </div>
-          <div class="stack-row">
-            <div><span class="stack-tag">Extras</span></div>
-            <div>
-              <strong>Workflow-specific dependency bundles</strong>
-              <span>Preprocessing, DARTS, analysis, MLTracker, VMD, wavelets, benchmarking, and mining stay optional so installation does not become a tax.</span>
-            </div>
-          </div>
-          <div class="stack-row">
-            <div><span class="stack-tag">foretools</span></div>
-            <div>
-              <strong>Companion utilities</strong>
-              <span>Generators, BOHB search, VMD decomposition, and feature engineering live alongside the main model stack and are documented in the same hub.</span>
-            </div>
-          </div>
-          <div class="stack-row">
-            <div><span class="stack-tag">Docs</span></div>
-            <div>
-              <strong>Tutorials, guides, reference, and architecture notes</strong>
-              <span>The docs are now framed as reading tracks: baseline training, raw-series preprocessing, advanced architectures, and search-heavy workflows.</span>
-            </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Need</th>
+                  <th>Install</th>
+                  <th>Docs route</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Core forecasting only</td>
+                  <td><code>foreblocks</code></td>
+                  <td><a href="docs/getting-started/" class="ghost-link">Getting Started</a></td>
+                </tr>
+                <tr>
+                  <td>Raw-series preprocessing</td>
+                  <td><code>foreblocks[preprocessing]</code></td>
+                  <td><a href="docs/preprocessor/" class="ghost-link">Preprocessor</a></td>
+                </tr>
+                <tr>
+                  <td>DARTS search loops</td>
+                  <td><code>foreblocks[darts]</code></td>
+                  <td><a href="docs/darts/" class="ghost-link">DARTS Guide</a></td>
+                </tr>
+                <tr>
+                  <td>Tracking UI and API clients</td>
+                  <td><code>foreblocks[mltracker]</code></td>
+                  <td><a href="docs/webui/" class="ghost-link">Web UI</a></td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<div class="accent-line"></div>
+  <div class="accent-line"></div>
 
-<section id="features" class="py-24">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="reveal">
-      <div class="section-kicker">Capabilities</div>
-      <h2 class="section-title mt-3">What the library can do once you are past the first baseline</h2>
-      <p class="section-copy mt-4">
-        The homepage now makes the progression clearer: stable forecasting first, then model
-        composition, preprocessing, search, and evaluation layers that you can adopt one by one.
-      </p>
-    </div>
-
-    <div class="grid sm:grid-cols-2 xl:grid-cols-3 gap-5 mt-10">
-      <article class="feature-card reveal">
-        <div class="icon-wrap mb-5">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h7"/></svg>
-        </div>
-        <h3 class="text-xl font-bold">Forecasting core</h3>
-        <p class="soft mt-3">Direct heads, encoder/decoder models, seq2seq strategies, and a unified training loop anchored around the public <code>foreblocks</code> imports.</p>
-      </article>
-
-      <article class="feature-card reveal">
-        <div class="icon-wrap mb-5" style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8l4-4 4 4m8 8l-4 4-4-4M8 4v16m8-16v16"/></svg>
-        </div>
-        <h3 class="text-xl font-bold">Preprocessing bridge</h3>
-        <p class="soft mt-3">Window generation, scaling, filtering, imputation, and time-feature helpers help you move from raw arrays into a consistent training pipeline.</p>
-      </article>
-
-      <article class="feature-card reveal">
-        <div class="icon-wrap mb-5" style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.18);color:var(--accent-3)">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
-        </div>
-        <h3 class="text-xl font-bold">Composable architecture blocks</h3>
-        <p class="soft mt-3">Attach heads, attention, transformer components, MoE routing, SSM blocks, and specialty modules without rewriting the entire training stack.</p>
-      </article>
-
-      <article class="feature-card reveal">
-        <div class="icon-wrap mb-5" style="background:rgba(251,113,133,0.1);border-color:rgba(251,113,133,0.18);color:var(--accent-4)">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-6m3 6v-4m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-        </div>
-        <h3 class="text-xl font-bold">Experiment workflow</h3>
-        <p class="soft mt-3">AMP, schedulers, evaluation helpers, plots, cross-validation, tracking, and local dashboards stay close to the trainer instead of scattered across scripts.</p>
-      </article>
-
-      <article class="feature-card reveal">
-        <div class="icon-wrap mb-5">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h6m-6 4h10M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>
-        </div>
-        <h3 class="text-xl font-bold">Uncertainty and evaluation</h3>
-        <p class="soft mt-3">Conformal workflows and evaluation guides help you move from point predictions to interval-aware reporting and more careful comparisons.</p>
-      </article>
-
-      <article class="feature-card reveal">
-        <div class="icon-wrap mb-5" style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h12"/></svg>
-        </div>
-        <h3 class="text-xl font-bold">Search and analysis</h3>
-        <p class="soft mt-3">DARTS, BOHB, synthetic data utilities, decomposition helpers, and analysis pages give the repo a fuller research-toolbox feel.</p>
-      </article>
-    </div>
-  </div>
-</section>
-
-<div class="accent-line"></div>
-
-<section id="api" class="py-24">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 items-start">
+  <section id="workflow" class="py-24">
+    <div class="max-w-7xl mx-auto px-6">
       <div class="reveal">
-        <div class="section-kicker">Public Surface</div>
-        <h2 class="section-title mt-3">The docs now highlight the stable imports first</h2>
+        <div class="section-kicker">Workflow</div>
+        <h2 class="section-title mt-3">The site now explains the stack in layers</h2>
         <p class="section-copy mt-4">
-          Instead of throwing people directly into deep internal modules, the landing page and
-          docs now point first to the public objects you are most likely to use in a first real run.
+          A big repo gets easier to navigate when people can see what belongs to the stable
+          public surface, what sits behind optional extras, and what is better treated as an
+          advanced subsystem. The layout below mirrors the packaging and the docs.
         </p>
+      </div>
 
-        <div class="grid gap-4 mt-8">
-          <div class="resource-card">
-            <div class="label">Core imports</div>
-            <p class="soft mt-3"><code>ForecastingModel</code>, <code>Trainer</code>, <code>ModelEvaluator</code>, <code>TimeSeriesHandler</code>, dataloaders, and configs are the safest place to start.</p>
+      <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 mt-10 items-start">
+        <div class="grid gap-4 reveal">
+          <div class="step-card">
+            <div class="label">Step 01</div>
+            <h3 class="text-xl font-bold mt-3">Build a baseline</h3>
+            <p class="soft mt-3">Use the public API and verify your shapes, loss loop, and evaluation path before adding
+              architectural complexity.</p>
           </div>
-          <div class="resource-card">
-            <div class="label">Specialist namespaces</div>
-            <p class="soft mt-3"><code>foreblocks.darts</code>, transformer internals, and Hybrid Mamba stay documented, but they are now framed as opt-in workflows rather than default entry points.</p>
+          <div class="step-card">
+            <div class="label">Step 02</div>
+            <h3 class="text-xl font-bold mt-3">Add preprocessing or custom blocks</h3>
+            <p class="soft mt-3">Bring in <code>TimeSeriesHandler</code>, transformer blocks, or composable heads when
+              your data or architecture needs them.</p>
+          </div>
+          <div class="step-card">
+            <div class="label">Step 03</div>
+            <h3 class="text-xl font-bold mt-3">Search, compare, and retrain</h3>
+            <p class="soft mt-3">Move into DARTS, BOHB, uncertainty intervals, and analysis only after the baseline path
+              is already healthy.</p>
+          </div>
+        </div>
+
+        <div class="panel reveal">
+          <div class="label mb-4">What lives where</div>
+          <div class="stack-diagram">
+            <div class="stack-row">
+              <div><span class="stack-tag">foreblocks</span></div>
+              <div>
+                <strong>Core forecasting library</strong>
+                <span>Public entry points such as <code>ForecastingModel</code>, <code>Trainer</code>, dataloaders,
+                  configs, transformer blocks, evaluation, and the preprocessing bridge.</span>
+              </div>
+            </div>
+            <div class="stack-row">
+              <div><span class="stack-tag">Extras</span></div>
+              <div>
+                <strong>Workflow-specific dependency bundles</strong>
+                <span>Preprocessing, DARTS, analysis, MLTracker, VMD, wavelets, benchmarking, and mining stay optional
+                  so installation does not become a tax.</span>
+              </div>
+            </div>
+            <div class="stack-row">
+              <div><span class="stack-tag">foretools</span></div>
+              <div>
+                <strong>Companion utilities</strong>
+                <span>Generators, BOHB search, VMD decomposition, and feature engineering live alongside the main model
+                  stack and are documented in the same hub.</span>
+              </div>
+            </div>
+            <div class="stack-row">
+              <div><span class="stack-tag">Docs</span></div>
+              <div>
+                <strong>Tutorials, guides, reference, and architecture notes</strong>
+                <span>The docs are now framed as reading tracks: baseline training, raw-series preprocessing, advanced
+                  architectures, and search-heavy workflows.</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+    </div>
+  </section>
 
-      <div class="panel reveal">
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre><code class="language-python">from foreblocks import (
+  <div class="accent-line"></div>
+
+  <section id="features" class="py-24">
+    <div class="max-w-7xl mx-auto px-6">
+      <div class="reveal">
+        <div class="section-kicker">Capabilities</div>
+        <h2 class="section-title mt-3">What the library can do once you are past the first baseline</h2>
+        <p class="section-copy mt-4">
+          The homepage now makes the progression clearer: stable forecasting first, then model
+          composition, preprocessing, search, and evaluation layers that you can adopt one by one.
+        </p>
+      </div>
+
+      <div class="grid sm:grid-cols-2 xl:grid-cols-3 gap-5 mt-10">
+        <article class="feature-card reveal">
+          <div class="icon-wrap mb-5">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h7" />
+            </svg>
+          </div>
+          <h3 class="text-xl font-bold">Forecasting core</h3>
+          <p class="soft mt-3">Direct heads, encoder/decoder models, seq2seq strategies, and a unified training loop
+            anchored around the public <code>foreblocks</code> imports.</p>
+        </article>
+
+        <article class="feature-card reveal">
+          <div class="icon-wrap mb-5"
+            style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 8l4-4 4 4m8 8l-4 4-4-4M8 4v16m8-16v16" />
+            </svg>
+          </div>
+          <h3 class="text-xl font-bold">Preprocessing bridge</h3>
+          <p class="soft mt-3">Window generation, scaling, filtering, imputation, and time-feature helpers help you move
+            from raw arrays into a consistent training pipeline.</p>
+        </article>
+
+        <article class="feature-card reveal">
+          <div class="icon-wrap mb-5"
+            style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.18);color:var(--accent-3)">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+            </svg>
+          </div>
+          <h3 class="text-xl font-bold">Composable architecture blocks</h3>
+          <p class="soft mt-3">Attach heads, attention, transformer components, MoE routing, SSM blocks, and specialty
+            modules without rewriting the entire training stack.</p>
+        </article>
+
+        <article class="feature-card reveal">
+          <div class="icon-wrap mb-5"
+            style="background:rgba(251,113,133,0.1);border-color:rgba(251,113,133,0.18);color:var(--accent-4)">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 17v-2m3 2v-6m3 6v-4m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <h3 class="text-xl font-bold">Experiment workflow</h3>
+          <p class="soft mt-3">AMP, schedulers, evaluation helpers, plots, cross-validation, tracking, and local
+            dashboards stay close to the trainer instead of scattered across scripts.</p>
+        </article>
+
+        <article class="feature-card reveal">
+          <div class="icon-wrap mb-5">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M7 8h10M7 12h6m-6 4h10M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" />
+            </svg>
+          </div>
+          <h3 class="text-xl font-bold">Uncertainty and evaluation</h3>
+          <p class="soft mt-3">Conformal workflows and evaluation guides help you move from point predictions to
+            interval-aware reporting and more careful comparisons.</p>
+        </article>
+
+        <article class="feature-card reveal">
+          <div class="icon-wrap mb-5"
+            style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h12" />
+            </svg>
+          </div>
+          <h3 class="text-xl font-bold">Search and analysis</h3>
+          <p class="soft mt-3">DARTS, BOHB, synthetic data utilities, decomposition helpers, and analysis pages give the
+            repo a fuller research-toolbox feel.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <div class="accent-line"></div>
+
+  <section id="api" class="py-24">
+    <div class="max-w-7xl mx-auto px-6">
+      <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 items-start">
+        <div class="reveal">
+          <div class="section-kicker">Public Surface</div>
+          <h2 class="section-title mt-3">The docs now highlight the stable imports first</h2>
+          <p class="section-copy mt-4">
+            Instead of throwing people directly into deep internal modules, the landing page and
+            docs now point first to the public objects you are most likely to use in a first real run.
+          </p>
+
+          <div class="grid gap-4 mt-8">
+            <div class="resource-card">
+              <div class="label">Core imports</div>
+              <p class="soft mt-3"><code>ForecastingModel</code>, <code>Trainer</code>, <code>ModelEvaluator</code>,
+                <code>TimeSeriesHandler</code>, dataloaders, and configs are the safest place to start.</p>
+            </div>
+            <div class="resource-card">
+              <div class="label">Specialist namespaces</div>
+              <p class="soft mt-3"><code>foreblocks.darts</code>, transformer internals, and Hybrid Mamba stay
+                documented, but they are now framed as opt-in workflows rather than default entry points.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel reveal">
+          <div class="relative">
+            <button class="copy-btn">Copy</button>
+            <pre><code class="language-python">from foreblocks import (
     ForecastingModel,
     Trainer,
     ModelEvaluator,
@@ -1122,42 +1232,43 @@ from foreblocks.darts import (
     FinalTrainConfig,
     MultiFildelitySearchConfig,
 )</code></pre>
-        </div>
-        <div class="grid sm:grid-cols-2 gap-4 mt-5">
-          <a href="docs/reference/public-api/" class="resource-card no-underline">
-            <div class="label">Reference</div>
-            <h3 class="text-lg font-bold mt-3">Public API</h3>
-            <p class="soft mt-3">Stable entry points, import guidance, and the main objects exposed at the package top level.</p>
-          </a>
-          <a href="docs/reference/configuration/" class="resource-card no-underline">
-            <div class="label">Configs</div>
-            <h3 class="text-lg font-bold mt-3">Configuration Map</h3>
-            <p class="soft mt-3">Training, model, search, and system settings explained in one place.</p>
-          </a>
+          </div>
+          <div class="grid sm:grid-cols-2 gap-4 mt-5">
+            <a href="docs/reference/public-api/" class="resource-card no-underline">
+              <div class="label">Reference</div>
+              <h3 class="text-lg font-bold mt-3">Public API</h3>
+              <p class="soft mt-3">Stable entry points, import guidance, and the main objects exposed at the package top
+                level.</p>
+            </a>
+            <a href="docs/reference/configuration/" class="resource-card no-underline">
+              <div class="label">Configs</div>
+              <h3 class="text-lg font-bold mt-3">Configuration Map</h3>
+              <p class="soft mt-3">Training, model, search, and system settings explained in one place.</p>
+            </a>
+          </div>
         </div>
       </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<div class="accent-line"></div>
+  <div class="accent-line"></div>
 
-<section id="examples" class="py-24">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="reveal">
-      <div class="section-kicker">Quick Example</div>
-      <h2 class="section-title mt-3">A first successful run should feel small and obvious</h2>
-      <p class="section-copy mt-4">
-        The homepage now centers the validated baseline flow so new users can confirm their
-        environment before moving into advanced blocks, search loops, or tracking-heavy runs.
-      </p>
-    </div>
+  <section id="examples" class="py-24">
+    <div class="max-w-7xl mx-auto px-6">
+      <div class="reveal">
+        <div class="section-kicker">Quick Example</div>
+        <h2 class="section-title mt-3">A first successful run should feel small and obvious</h2>
+        <p class="section-copy mt-4">
+          The homepage now centers the validated baseline flow so new users can confirm their
+          environment before moving into advanced blocks, search loops, or tracking-heavy runs.
+        </p>
+      </div>
 
-    <div class="grid xl:grid-cols-[1.08fr_.92fr] gap-8 mt-10 items-start">
-      <div class="panel reveal">
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre><code class="language-python">import numpy as np
+      <div class="grid xl:grid-cols-[1.08fr_.92fr] gap-8 mt-10 items-start">
+        <div class="panel reveal">
+          <div class="relative">
+            <button class="copy-btn">Copy</button>
+            <pre><code class="language-python">import numpy as np
 import torch
 import torch.nn as nn
 
@@ -1209,177 +1320,181 @@ metrics = ModelEvaluator(trainer).compute_metrics(
 )
 
 print(history.train_losses[-1], metrics)</code></pre>
+          </div>
         </div>
-      </div>
 
-      <div class="grid gap-4 reveal">
-        <div class="resource-card">
-          <div class="label">What this proves</div>
-          <ul class="soft mt-3 space-y-2">
-            <li>- Your installation is healthy.</li>
-            <li>- Dataloader shapes line up with the trainer.</li>
-            <li>- The model can train and evaluate without extra subsystems.</li>
-            <li>- You can add preprocessing or search from a known-good baseline.</li>
-          </ul>
-        </div>
-        <div class="resource-card">
-          <div class="label">Next docs to open</div>
-          <div class="route-list grid gap-3 mt-3">
-            <a href="docs/getting-started/">
-              <div>
-                <strong class="block text-white">Getting Started</strong>
-                <small>Validated first-run path and shape guidance.</small>
-              </div>
-              <span aria-hidden="true">-&gt;</span>
-            </a>
-            <a href="docs/overview/">
-              <div>
-                <strong class="block text-white">Overview</strong>
-                <small>Reading tracks and the repository mental model.</small>
-              </div>
-              <span aria-hidden="true">-&gt;</span>
-            </a>
-            <a href="docs/troubleshooting/">
-              <div>
-                <strong class="block text-white">Troubleshooting</strong>
-                <small>Install, import, and shape mismatches.</small>
-              </div>
-              <span aria-hidden="true">-&gt;</span>
-            </a>
+        <div class="grid gap-4 reveal">
+          <div class="resource-card">
+            <div class="label">What this proves</div>
+            <ul class="soft mt-3 space-y-2">
+              <li>- Your installation is healthy.</li>
+              <li>- Dataloader shapes line up with the trainer.</li>
+              <li>- The model can train and evaluate without extra subsystems.</li>
+              <li>- You can add preprocessing or search from a known-good baseline.</li>
+            </ul>
+          </div>
+          <div class="resource-card">
+            <div class="label">Next docs to open</div>
+            <div class="route-list grid gap-3 mt-3">
+              <a href="docs/getting-started/">
+                <div>
+                  <strong class="block text-white">Getting Started</strong>
+                  <small>Validated first-run path and shape guidance.</small>
+                </div>
+                <span aria-hidden="true">-&gt;</span>
+              </a>
+              <a href="docs/overview/">
+                <div>
+                  <strong class="block text-white">Overview</strong>
+                  <small>Reading tracks and the repository mental model.</small>
+                </div>
+                <span aria-hidden="true">-&gt;</span>
+              </a>
+              <a href="docs/troubleshooting/">
+                <div>
+                  <strong class="block text-white">Troubleshooting</strong>
+                  <small>Install, import, and shape mismatches.</small>
+                </div>
+                <span aria-hidden="true">-&gt;</span>
+              </a>
+            </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<footer class="py-12">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="grid lg:grid-cols-[1fr_auto] gap-8 items-center">
-      <div>
-        <div class="flex items-center gap-3">
-          <img src="logo.svg" alt="ForeBlocks" class="h-9 w-auto opacity-90"/>
-          <div>
-            <div class="font-bold text-lg text-white">ForeBlocks</div>
-            <div class="foot-note text-sm">Modular forecasting, preprocessing, search, and tooling for PyTorch.</div>
+  <footer class="py-12">
+    <div class="max-w-7xl mx-auto px-6">
+      <div class="grid lg:grid-cols-[1fr_auto] gap-8 items-center">
+        <div>
+          <div class="flex items-center gap-3">
+            <img src="logo.svg" alt="ForeBlocks" class="h-9 w-auto opacity-90" />
+            <div>
+              <div class="font-bold text-lg text-white">ForeBlocks</div>
+              <div class="foot-note text-sm">Modular forecasting, preprocessing, search, and tooling for PyTorch.</div>
+            </div>
           </div>
+          <p class="foot-note mt-4 max-w-2xl text-sm leading-7">
+            The site root is now focused on helping people find the right path quickly.
+            The deeper details live in the docs, where tutorials, guides, architecture notes,
+            and reference pages mirror the package layout more closely.
+          </p>
         </div>
-        <p class="foot-note mt-4 max-w-2xl text-sm leading-7">
-          The site root is now focused on helping people find the right path quickly.
-          The deeper details live in the docs, where tutorials, guides, architecture notes,
-          and reference pages mirror the package layout more closely.
-        </p>
+        <div class="flex flex-wrap gap-3">
+          <a href="docs/" class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Docs</a>
+          <a href="docs/getting-started/"
+            class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Getting Started</a>
+          <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/"
+            class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">PyPI</a>
+        </div>
       </div>
-      <div class="flex flex-wrap gap-3">
-        <a href="docs/" class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Docs</a>
-        <a href="docs/getting-started/" class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Getting Started</a>
-        <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">PyPI</a>
+      <div
+        class="mt-8 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm foot-note border-t border-white/5">
+        <span>Copyright <span id="year"></span> ForeBlocks | MIT License</span>
+        <span>Stable baseline first | optional extras later | docs organized by workflow</span>
       </div>
     </div>
-    <div class="mt-8 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm foot-note border-t border-white/5">
-      <span>Copyright <span id="year"></span> ForeBlocks | MIT License</span>
-      <span>Stable baseline first | optional extras later | docs organized by workflow</span>
-    </div>
-  </div>
-</footer>
+  </footer>
 
-<script>
-document.addEventListener("DOMContentLoaded", () => {
-  const year = document.getElementById("year");
-  if (year) year.textContent = new Date().getFullYear();
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const year = document.getElementById("year");
+      if (year) year.textContent = new Date().getFullYear();
 
-  document.querySelectorAll("pre").forEach((pre) => pre.classList.add("line-numbers"));
+      document.querySelectorAll("pre").forEach((pre) => pre.classList.add("line-numbers"));
 
-  document.querySelectorAll(".copy-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const pre = btn.parentElement.querySelector("pre");
-      const code = pre && pre.querySelector("code");
-      if (!code) return;
-      try {
-        await navigator.clipboard.writeText(code.innerText);
-        const original = btn.textContent;
-        btn.textContent = "Copied";
-        btn.style.color = "#5eead4";
-        setTimeout(() => {
-          btn.textContent = original;
-          btn.style.color = "";
-        }, 1400);
-      } catch (error) {
-        btn.textContent = "Failed";
-        setTimeout(() => {
-          btn.textContent = "Copy";
-        }, 1400);
-      }
-    });
-  });
-
-  document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
-    anchor.addEventListener("click", (event) => {
-      const href = anchor.getAttribute("href");
-      if (!href || href === "#") return;
-      const target = document.querySelector(href);
-      if (!target) return;
-      event.preventDefault();
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  });
-
-  const navLinks = Array.from(document.querySelectorAll('.nav-link[href^="#"]'));
-  const sections = Array.from(document.querySelectorAll("section[id]"));
-  const linkMap = new Map(navLinks.map((link) => [link.hash.slice(1), link]));
-  const visibility = new Map();
-
-  const updateActive = () => {
-    let bestId = null;
-    let bestRatio = 0;
-    sections.forEach((section) => {
-      const ratio = visibility.get(section.id) || 0;
-      if (ratio >= bestRatio) {
-        bestRatio = ratio;
-        bestId = section.id;
-      }
-    });
-    navLinks.forEach((link) => link.classList.remove("active"));
-    if (bestId && linkMap.has(bestId)) {
-      linkMap.get(bestId).classList.add("active");
-    }
-  };
-
-  const sectionObserver = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      visibility.set(entry.target.id, entry.intersectionRatio);
-    });
-    updateActive();
-  }, {
-    rootMargin: "-72px 0px -50% 0px",
-    threshold: Array.from({ length: 11 }, (_, index) => index / 10),
-  });
-
-  sections.forEach((section) => sectionObserver.observe(section));
-
-  const revealObserver = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (entry.isIntersecting) {
-        entry.target.classList.add("visible");
-        revealObserver.unobserve(entry.target);
-      }
-    });
-  }, {
-    threshold: 0.16,
-  });
-
-  document.querySelectorAll(".reveal").forEach((node) => revealObserver.observe(node));
-
-  if (location.hash) {
-    const target = document.querySelector(location.hash);
-    if (target) {
-      requestAnimationFrame(() => {
-        target.scrollIntoView({ behavior: "auto", block: "start" });
+      document.querySelectorAll(".copy-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const pre = btn.parentElement.querySelector("pre");
+          const code = pre && pre.querySelector("code");
+          if (!code) return;
+          try {
+            await navigator.clipboard.writeText(code.innerText);
+            const original = btn.textContent;
+            btn.textContent = "Copied";
+            btn.style.color = "#5eead4";
+            setTimeout(() => {
+              btn.textContent = original;
+              btn.style.color = "";
+            }, 1400);
+          } catch (error) {
+            btn.textContent = "Failed";
+            setTimeout(() => {
+              btn.textContent = "Copy";
+            }, 1400);
+          }
+        });
       });
-    }
-  }
-});
-</script>
+
+      document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+        anchor.addEventListener("click", (event) => {
+          const href = anchor.getAttribute("href");
+          if (!href || href === "#") return;
+          const target = document.querySelector(href);
+          if (!target) return;
+          event.preventDefault();
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
+
+      const navLinks = Array.from(document.querySelectorAll('.nav-link[href^="#"]'));
+      const sections = Array.from(document.querySelectorAll("section[id]"));
+      const linkMap = new Map(navLinks.map((link) => [link.hash.slice(1), link]));
+      const visibility = new Map();
+
+      const updateActive = () => {
+        let bestId = null;
+        let bestRatio = 0;
+        sections.forEach((section) => {
+          const ratio = visibility.get(section.id) || 0;
+          if (ratio >= bestRatio) {
+            bestRatio = ratio;
+            bestId = section.id;
+          }
+        });
+        navLinks.forEach((link) => link.classList.remove("active"));
+        if (bestId && linkMap.has(bestId)) {
+          linkMap.get(bestId).classList.add("active");
+        }
+      };
+
+      const sectionObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          visibility.set(entry.target.id, entry.intersectionRatio);
+        });
+        updateActive();
+      }, {
+        rootMargin: "-72px 0px -50% 0px",
+        threshold: Array.from({ length: 11 }, (_, index) => index / 10),
+      });
+
+      sections.forEach((section) => sectionObserver.observe(section));
+
+      const revealObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("visible");
+            revealObserver.unobserve(entry.target);
+          }
+        });
+      }, {
+        threshold: 0.16,
+      });
+
+      document.querySelectorAll(".reveal").forEach((node) => revealObserver.observe(node));
+
+      if (location.hash) {
+        const target = document.querySelector(location.hash);
+        if (target) {
+          requestAnimationFrame(() => {
+            target.scrollIntoView({ behavior: "auto", block: "start" });
+          });
+        }
+      }
+    });
+  </script>
 
 </body>
+
 </html>

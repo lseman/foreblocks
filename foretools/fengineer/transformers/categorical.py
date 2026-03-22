@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction import FeatureHasher
 from sklearn.feature_selection import chi2, f_regression
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.model_selection import GroupKFold, KFold, StratifiedKFold, TimeSeriesSplit
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 
 from .base import BaseFeatureTransformer
@@ -54,6 +54,9 @@ class CategoricalTransformer(BaseFeatureTransformer):
             getattr(config, "cat_use_stratified_kfold", True)
         )
         self.target_noise_std = float(getattr(config, "cat_target_noise_std", 0.0))
+        self.fold_strategy = str(getattr(config, "cat_fold_strategy", "auto")).lower()
+        self.group_key = getattr(config, "cat_group_key", None)
+        self.time_col = getattr(config, "cat_time_col", None)
 
         self.categorical_cols_: List[str] = []
         self.col_info_: Dict[str, Dict[str, Any]] = {}  # per-col strategy+artifacts
@@ -109,6 +112,22 @@ class CategoricalTransformer(BaseFeatureTransformer):
         k = s.nunique(dropna=False)
         n = len(s)
         te_threshold = int(getattr(self.config, "target_encode_threshold", 10))
+        backend = str(getattr(self.config, "backend", "auto")).lower()
+        tree_onehot_max = int(
+            getattr(self.config, "cat_tree_onehot_max_categories", 8)
+        )
+        tree_ordinal_max = int(
+            getattr(self.config, "cat_tree_ordinal_max_categories", 255)
+        )
+
+        if backend in {"tree", "gbdt"}:
+            if k <= tree_onehot_max:
+                return "onehot"
+            if k <= tree_ordinal_max:
+                return "ordinal"
+            if k <= 5000:
+                return "freq"
+            return "hashing"
 
         # If target is available and enough samples + medium/high cardinality,
         # consider target encoding.
@@ -148,6 +167,101 @@ class CategoricalTransformer(BaseFeatureTransformer):
             return "freq"
         # Very high → hashing
         return "hashing"
+
+    def _resolve_fold_strategy(self, X: pd.DataFrame) -> str:
+        strategy = self.fold_strategy
+        if strategy not in {"auto", "kfold", "group", "time"}:
+            strategy = "auto"
+
+        if strategy == "auto":
+            if self.time_col and self.time_col in X.columns:
+                return "time"
+            if self.group_key and self.group_key in X.columns:
+                return "group"
+            return "kfold"
+
+        if strategy == "group" and not (self.group_key and self.group_key in X.columns):
+            return "kfold"
+        if strategy == "time" and not (self.time_col and self.time_col in X.columns):
+            return "kfold"
+        return strategy
+
+    def _iter_target_folds(
+        self,
+        X: pd.DataFrame,
+        s_valid: pd.Series,
+        y_valid: pd.Series,
+        is_cls: bool,
+    ):
+        n_valid = int(len(s_valid))
+        n_splits = min(self.n_splits, max(2, int(n_valid // 2)))
+        strategy = self._resolve_fold_strategy(X.loc[s_valid.index])
+
+        if strategy == "time":
+            time_values = pd.to_datetime(
+                X.loc[s_valid.index, self.time_col], errors="coerce", utc=True
+            )
+            valid_mask = time_values.notna()
+            if int(valid_mask.sum()) < 3:
+                return []
+
+            order = np.argsort(time_values[valid_mask].astype("int64").to_numpy())
+            ordered_index = time_values[valid_mask].index[order]
+            ordered_pos = np.arange(len(ordered_index))
+            split_n = min(n_splits, max(2, len(ordered_index) - 1))
+            splitter = TimeSeriesSplit(n_splits=split_n)
+            return [
+                (
+                    ordered_index.take(tr_pos).to_numpy(),
+                    ordered_index.take(te_pos).to_numpy(),
+                )
+                for tr_pos, te_pos in splitter.split(ordered_pos)
+            ]
+
+        if strategy == "group":
+            groups = pd.Series(X.loc[s_valid.index, self.group_key]).astype(str)
+            unique_groups = groups.nunique(dropna=False)
+            if unique_groups < 2:
+                return []
+            split_n = min(n_splits, int(unique_groups))
+            splitter = GroupKFold(n_splits=split_n)
+            return [
+                (
+                    s_valid.index.take(tr_idx).to_numpy(),
+                    s_valid.index.take(te_idx).to_numpy(),
+                )
+                for tr_idx, te_idx in splitter.split(s_valid, y_valid, groups=groups)
+            ]
+
+        if self.use_stratified_kfold and is_cls:
+            cls_counts = y_valid.value_counts()
+            max_splits = int(cls_counts.min()) if not cls_counts.empty else 2
+            n_splits = min(n_splits, max(2, max_splits))
+            splitter = StratifiedKFold(
+                n_splits=n_splits,
+                shuffle=True,
+                random_state=self.random_state,
+            )
+            return [
+                (
+                    s_valid.index.take(tr_idx).to_numpy(),
+                    s_valid.index.take(te_idx).to_numpy(),
+                )
+                for tr_idx, te_idx in splitter.split(s_valid, y_valid)
+            ]
+
+        splitter = KFold(
+            n_splits=n_splits,
+            shuffle=True,
+            random_state=self.random_state,
+        )
+        return [
+            (
+                s_valid.index.take(tr_idx).to_numpy(),
+                s_valid.index.take(te_idx).to_numpy(),
+            )
+            for tr_idx, te_idx in splitter.split(s_valid)
+        ]
 
     # -------------------------- fit --------------------------
 
@@ -248,6 +362,7 @@ class CategoricalTransformer(BaseFeatureTransformer):
 
     def _target_kfold_transform(
         self,
+        X: pd.DataFrame,
         s: pd.Series,
         y: Optional[pd.Series],
         info: Dict[str, Any],
@@ -268,31 +383,16 @@ class CategoricalTransformer(BaseFeatureTransformer):
 
             s_valid = s.loc[valid]
             y_valid = y_series.loc[valid]
-            n_splits = min(self.n_splits, max(2, int(valid.sum() // 2)))
             is_cls = bool(info.get("is_classification_target", False))
 
-            if self.use_stratified_kfold and is_cls:
-                cls_counts = y_valid.value_counts()
-                max_splits = int(cls_counts.min()) if not cls_counts.empty else 2
-                n_splits = min(n_splits, max(2, max_splits))
-                splitter = StratifiedKFold(
-                    n_splits=n_splits,
-                    shuffle=True,
-                    random_state=self.random_state,
-                )
-                split_iter = splitter.split(s_valid, y_valid)
-            else:
-                splitter = KFold(
-                    n_splits=n_splits,
-                    shuffle=True,
-                    random_state=self.random_state,
-                )
-                split_iter = splitter.split(s_valid)
+            fold_pairs = self._iter_target_folds(X, s_valid, y_valid, is_cls)
+            if not fold_pairs:
+                return pd.DataFrame({name: out.values}, index=index)
 
-            out = pd.Series(index=index, dtype=float)
-            for tr_idx, te_idx in split_iter:
-                tr_c = s_valid.iloc[tr_idx]
-                tr_y = y_valid.iloc[tr_idx]
+            out = pd.Series(prior, index=index, dtype=float)
+            for tr_keys, te_keys in fold_pairs:
+                tr_c = s_valid.loc[tr_keys]
+                tr_y = y_valid.loc[tr_keys]
                 stats = (
                     pd.DataFrame({"cat": tr_c, "y": tr_y})
                     .groupby("cat")["y"]
@@ -303,10 +403,8 @@ class CategoricalTransformer(BaseFeatureTransformer):
                     stats["count"] + alpha
                 )
                 enc_map = smoothed.to_dict()
-                te_index = s_valid.index[te_idx]
-                out.loc[te_index] = (
-                    s_valid.iloc[te_idx].map(enc_map).fillna(prior).values
-                )
+                te_index = pd.Index(te_keys)
+                out.loc[te_index] = s_valid.loc[te_index].map(enc_map).fillna(prior).values
             if self.target_noise_std > 0:
                 rng = np.random.RandomState(self.random_state)
                 noise = rng.normal(0.0, self.target_noise_std, size=len(out))
@@ -452,7 +550,7 @@ class CategoricalTransformer(BaseFeatureTransformer):
                 outputs.append(df)
 
             elif strategy == "target_kfold":
-                df = self._target_kfold_transform(s, y, info, X.index)
+                df = self._target_kfold_transform(X, s, y, info, X.index)
                 outputs.append(df.astype(float))
 
             elif strategy == "loo":

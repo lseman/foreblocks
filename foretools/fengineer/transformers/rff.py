@@ -3,9 +3,15 @@ from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+from scipy import fft
 from scipy.spatial.distance import pdist
-from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
+from sklearn.cluster import KMeans
+from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import StandardScaler
+
+from foretools.aux.adaptive_mi import AdaptiveMI
 
 from .base import BaseFeatureTransformer
 
@@ -66,6 +72,14 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
         self.selected_features_ = None
         self.feature_medians_ = None
         self._random_state = None
+        self.ami_scorer = AdaptiveMI(
+            subsample=min(getattr(config, "max_rows_score", 2000), 2000),
+            spearman_gate=getattr(config, "mi_spearman_gate", 0.05),
+            min_overlap=getattr(config, "mi_min_overlap", 50),
+            ks=(3, 5, 10),
+            n_bins=getattr(config, "mi_bins", 16),
+            random_state=getattr(config, "random_state", 42),
+        )
 
     def _get_random_state(self) -> np.random.RandomState:
         """Get local random state to avoid polluting global numpy random state."""
@@ -126,7 +140,19 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
 
         # Prepare data
         X_clean = X[numerical_cols].fillna(X[numerical_cols].median())
-        y_clean = y.fillna(y.median()) if y.dtype in ["float64", "int64"] else y
+        if pd.api.types.is_numeric_dtype(y):
+            y_clean = pd.to_numeric(y, errors="coerce")
+            if y_clean.isna().any():
+                fill_value = y_clean.median()
+                y_clean = y_clean.fillna(fill_value)
+        else:
+            y_str = y.astype("string").fillna("MISSING")
+            encoder = LabelEncoder()
+            y_clean = pd.Series(
+                encoder.fit_transform(y_str),
+                index=y.index,
+                dtype="int32",
+            )
 
         # Align indices
         common_idx = X_clean.index.intersection(y_clean.index)
@@ -139,16 +165,21 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
         try:
             if method == "f_score":
                 selector = SelectKBest(score_func=f_regression, k=self.max_features)
-            else:  # mutual_info
-                selector = SelectKBest(
-                    score_func=mutual_info_regression, k=self.max_features
-                )
-
-            selector.fit(X_clean, y_clean)
-            selected_mask = selector.get_support()
-            return [
-                col for col, selected in zip(numerical_cols, selected_mask) if selected
-            ]
+                selector.fit(X_clean, y_clean)
+                selected_mask = selector.get_support()
+                return [
+                    col
+                    for col, selected in zip(numerical_cols, selected_mask)
+                    if selected
+                ]
+            scores = self.ami_scorer.score_pairwise(X_clean.values, y_clean.values)
+            score_series = (
+                pd.Series(scores, index=numerical_cols)
+                .fillna(0.0)
+                .clip(lower=0.0)
+                .sort_values(ascending=False)
+            )
+            return score_series.head(self.max_features).index.tolist()
 
         except Exception as e:
             warnings.warn(
@@ -330,10 +361,71 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
 class FourierTransformer(BaseFeatureTransformer):
     """Creates Fourier features for periodic patterns."""
 
+    _TEMPORAL_TOKENS = (
+        "time",
+        "date",
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year",
+        "hour",
+        "minute",
+        "second",
+        "season",
+        "elapsed",
+    )
+
+    @classmethod
+    def _looks_generated(cls, col: str) -> bool:
+        generated_prefixes = (
+            "row_",
+            "rff_",
+            "kmeans_",
+            "gmm_",
+            "umap_",
+            "hdbscan_",
+        )
+        generated_suffixes = ("_bin", "_te")
+        return (
+            "__" in col
+            or col.startswith(generated_prefixes)
+            or col.endswith(generated_suffixes)
+        )
+
+    @classmethod
+    def _temporal_priority(cls, col: str) -> int:
+        lowered = col.lower()
+        return int(any(token in lowered for token in cls._TEMPORAL_TOKENS))
+
+    def _select_source_columns(self, X: pd.DataFrame) -> List[str]:
+        cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        if not cols:
+            return []
+
+        if getattr(self.config, "fourier_exclude_generated_sources", True):
+            cols = [c for c in cols if not self._looks_generated(c)]
+            if not cols:
+                return []
+
+        max_cols = int(getattr(self.config, "fourier_max_source_features", 12))
+        ranking = []
+        for col in cols:
+            vals = pd.to_numeric(X[col], errors="coerce")
+            ranking.append(
+                (
+                    self._temporal_priority(col),
+                    float(vals.var(skipna=True)),
+                    col,
+                )
+            )
+        ranking.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [col for _, _, col in ranking[: max(1, min(max_cols, len(ranking)))]]
+
     def fit(
         self, X: pd.DataFrame, y: Optional[pd.Series] = None
     ) -> "FourierTransformer":
-        self.numerical_cols_ = X.select_dtypes(include=[np.number]).columns.tolist()
+        self.numerical_cols_ = self._select_source_columns(X)
         self.fourier_configs_ = {}
 
         if not self.config.create_fourier:
@@ -368,7 +460,9 @@ class FourierTransformer(BaseFeatureTransformer):
 
                 if valid_frequencies:
                     self.fourier_configs_[col] = {
-                        "frequencies": valid_frequencies,
+                        "frequencies": valid_frequencies[
+                            : max(1, int(getattr(self.config, "n_fourier_terms", 3)))
+                        ],
                         "mean": data.mean(),
                         "std": data.std(),
                     }
@@ -403,14 +497,24 @@ class FourierTransformer(BaseFeatureTransformer):
 class ClusteringTransformer(BaseFeatureTransformer):
     """Modern clustering/embedding-based feature generator."""
 
-    def __init__(self, config, strategies=("kmeans", "gmm", "hdbscan", "umap")):
+    def __init__(self, config, strategies: Optional[Tuple[str, ...]] = None):
         super().__init__(config)
-        self.strategies = strategies
+        config_strategies = getattr(config, "clustering_strategies", None)
+        if strategies is not None:
+            self.strategies = tuple(strategies)
+        elif config_strategies:
+            self.strategies = tuple(config_strategies)
+        else:
+            # Keep the default robust and dependency-light.
+            self.strategies = ("kmeans", "gmm")
         self.scaler_ = None
         self.models_ = {}
         self.cluster_features_ = []
+        self.fill_values_ = pd.Series(dtype="float64")
 
-    def fit(self, X, y=None):
+    def fit(
+        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+    ) -> "ClusteringTransformer":
         if not self.config.create_clustering:
             self.is_fitted = True
             return self
@@ -420,56 +524,87 @@ class ClusteringTransformer(BaseFeatureTransformer):
             self.is_fitted = True
             return self
 
-        Xnum = X[num_cols].fillna(X[num_cols].median())
+        Xnum = X[num_cols].copy()
+        self.fill_values_ = Xnum.median(numeric_only=True)
+        Xnum = Xnum.fillna(self.fill_values_)
         self.cluster_features_ = (
-            Xnum.var().nlargest(min(20, len(num_cols))).index.tolist()
+            Xnum.var()
+            .nlargest(min(getattr(self.config, "clustering_max_features", 20), len(num_cols)))
+            .index.tolist()
         )
+        if len(self.cluster_features_) < 2:
+            self.is_fitted = True
+            return self
 
         self.scaler_ = StandardScaler()
         X_scaled = self.scaler_.fit_transform(Xnum[self.cluster_features_])
 
         n_clusters = max(2, min(self.config.n_clusters, len(X_scaled) // 10))
+        n_clusters = min(n_clusters, len(X_scaled))
+        if n_clusters < 2:
+            self.is_fitted = True
+            return self
 
         # --- Fit models ---
         if "kmeans" in self.strategies:
-            km = KMeans(
-                n_clusters=n_clusters, n_init=10, random_state=self.config.random_state
-            )
-            km.fit(X_scaled)
-            self.models_["kmeans"] = km
+            try:
+                km = KMeans(
+                    n_clusters=n_clusters,
+                    n_init=10,
+                    random_state=self.config.random_state,
+                )
+                km.fit(X_scaled)
+                self.models_["kmeans"] = km
+            except Exception as e:
+                warnings.warn(f"KMeans clustering failed: {e}")
 
         if "gmm" in self.strategies:
-            gmm = GaussianMixture(
-                n_components=n_clusters, random_state=self.config.random_state
-            )
-            gmm.fit(X_scaled)
-            self.models_["gmm"] = gmm
+            try:
+                gmm = GaussianMixture(
+                    n_components=n_clusters, random_state=self.config.random_state
+                )
+                gmm.fit(X_scaled)
+                self.models_["gmm"] = gmm
+            except Exception as e:
+                warnings.warn(f"GMM clustering failed: {e}")
 
         if "hdbscan" in self.strategies:
-            hdb = hdbscan.HDBSCAN(min_cluster_size=15)
-            hdb.fit(X_scaled)
-            self.models_["hdbscan"] = hdb
+            try:
+                import hdbscan
+
+                hdb = hdbscan.HDBSCAN(min_cluster_size=15)
+                hdb.fit(X_scaled)
+                self.models_["hdbscan"] = hdb
+            except Exception as e:
+                warnings.warn(f"HDBSCAN clustering failed: {e}")
 
         if "umap" in self.strategies:
-            import umap
+            try:
+                import umap
 
-            reducer = umap.UMAP(n_components=3, random_state=self.config.random_state)
-            reducer.fit(X_scaled)
-            self.models_["umap"] = reducer
+                reducer = umap.UMAP(
+                    n_components=3, random_state=self.config.random_state
+                )
+                reducer.fit(X_scaled)
+                self.models_["umap"] = reducer
+            except Exception as e:
+                warnings.warn(f"UMAP embedding failed: {e}")
 
         self.is_fitted = True
         return self
 
-    def transform(self, X):
-        if not self.models_:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        if not self.models_ or not self.cluster_features_:
             return pd.DataFrame(index=X.index)
 
-        available = [c for c in self.cluster_features_ if c in X.columns]
-        if not available:
-            return pd.DataFrame(index=X.index)
-
-        Xnum = X[available].fillna(X[available].median())
-        X_scaled = self.scaler_.transform(Xnum)
+        Xnum = pd.DataFrame(index=X.index)
+        for col in self.cluster_features_:
+            if col in X.columns:
+                Xnum[col] = pd.to_numeric(X[col], errors="coerce")
+            else:
+                Xnum[col] = self.fill_values_.get(col, 0.0)
+        Xnum = Xnum.fillna(self.fill_values_.reindex(self.cluster_features_).fillna(0.0))
+        X_scaled = self.scaler_.transform(Xnum[self.cluster_features_])
 
         feats = {}
 
@@ -487,8 +622,14 @@ class ClusteringTransformer(BaseFeatureTransformer):
                     feats[f"gmm_prob_{i}"] = probs[:, i]
 
             elif strat == "hdbscan":
-                feats["hdbscan_id"] = model.labels_
-                feats["hdbscan_outlier"] = model.outlier_scores_
+                try:
+                    import hdbscan
+
+                    labels, strengths = hdbscan.approximate_predict(model, X_scaled)
+                    feats["hdbscan_id"] = labels
+                    feats["hdbscan_strength"] = strengths
+                except Exception:
+                    continue
 
             elif strat == "umap":
                 embedding = model.transform(X_scaled)

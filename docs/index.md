@@ -85,8 +85,7 @@
 | --- | --- | --- |
 | Core forecasting only | `pip install foreblocks` | [Getting Started](getting-started.md) |
 | Raw-series preprocessing | `pip install "foreblocks[preprocessing]"` | [Preprocessor Guide](preprocessor.md) |
-| DARTS training and search | `pip install "foreblocks[darts]"` | [DARTS Guide](darts.md) |
-| Richer DARTS analysis | `pip install "foreblocks[darts-analysis]"` | [Optimize With BOHB](tutorials/optimize-with-bohb.md) |
+| DARTS training, search, and analysis | `pip install "foreblocks[darts]"` | [DARTS Guide](darts.md) |
 | Tracking UI and API clients | `pip install "foreblocks[mltracker]"` | [Web UI](webui.md) |
 | Everything | `pip install "foreblocks[all]"` | [Overview](overview.md) |
 

@@ -24,6 +24,7 @@ Install optional extras when you need specific subsystems:
 
 | Extra | Adds |
 | --- | --- |
+| `darts` | DARTS search plus analysis dependencies |
 | `mltracker` | experiment tracking API and UI dependencies |
 | `vmd` | VMD decomposition and Optuna-based search support |
 | `wavelets` | optional wavelet backends |
@@ -34,6 +35,7 @@ Install optional extras when you need specific subsystems:
 Examples:
 
 ```bash
+pip install "foreblocks[darts]"
 pip install "foreblocks[mltracker]"
 pip install "foreblocks[vmd,wavelets]"
 pip install "foreblocks[all]"
@@ -176,6 +178,7 @@ Useful notebooks and examples:
 
 - [Synthetic Series Notebook](foretools/tsgen/ts_gen_complete_series.ipynb)
 - [TS Generator Documentation Notebook](foretools/tsgen/ts_gen_doc.ipynb)
+- [AdaptiveMRMR Demo](examples/adaptive_mrmr_demo.py)
 - [Example notebooks](examples/)
 
 There is also a repository-local docs navigation file at [`mkdocs.yml`](mkdocs.yml). The current publishing model is:

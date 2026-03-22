@@ -1,12 +1,13 @@
 from importlib import import_module
 
-__all__ = ["FeatureEngineer", "AdaptiveMI", "DistanceCorrelation", "HSIC"]
+__all__ = ["FeatureEngineer", "AdaptiveMI", "AdaptiveMRMR", "DistanceCorrelation", "HSIC"]
 
 
 def __getattr__(name):
     lazy_exports = {
         "FeatureEngineer": (".fengineer.fengineer", "FeatureEngineer"),
         "AdaptiveMI": (".aux.adaptive_mi", "AdaptiveMI"),
+        "AdaptiveMRMR": (".aux.adaptive_mrmr", "AdaptiveMRMR"),
         "DistanceCorrelation": (".aux.distance_correlation", "DistanceCorrelation"),
         "HSIC": (".aux.hsic", "HSIC"),
     }

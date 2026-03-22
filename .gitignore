@@ -20,6 +20,7 @@ dist/
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+!examples/bayesian_blocks_validation.ipynb
 
 # Data files
 *.csv

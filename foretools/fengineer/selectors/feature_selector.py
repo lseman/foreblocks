@@ -7,6 +7,7 @@ from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 
 from foretools.aux.adaptive_mi import AdaptiveMI
+from foretools.aux.adaptive_mrmr import AdaptiveMRMR
 from .rfecv import AdvancedRFECV, RFECVConfig
 
 
@@ -14,6 +15,7 @@ class FeatureSelector:
     def __init__(self, config: Any):
         self.config = config
         self.mi_scores_: Optional[pd.Series] = None
+        self.mrmr_scores_: Optional[pd.Series] = None
         self.shap_scores_: Optional[pd.Series] = None
         self.selected_features_: List[str] = []
 
@@ -21,6 +23,7 @@ class FeatureSelector:
         self.selector_method = str(getattr(config, "selector_method", "mi")).lower()
         self.use_rfecv = getattr(config, 'use_rfecv', True)
         self.rfecv_selector_ = None
+        self.mrmr_selector_ = None
         self.selection_method_ = "mi"  # Default to MI
         
         # RFECV parameters from config
@@ -45,7 +48,6 @@ class FeatureSelector:
             random_state=getattr(config, "random_state", 42),
         )
 
-        self._feature_cache: Dict[str, float] = {}
         self.use_stable_mi = bool(getattr(config, "selector_stable_mi", True))
         self.selector_cv = int(getattr(config, "selector_cv", 5))
         self.selector_min_freq = float(getattr(config, "selector_min_freq", 0.5))
@@ -58,10 +60,21 @@ class FeatureSelector:
         self.selector_redundancy_pool = int(
             getattr(config, "selector_redundancy_pool", 200)
         )
+        self.mrmr_candidate_pool = int(
+            getattr(config, "mrmr_candidate_pool", self.selector_redundancy_pool)
+        )
+        self.mrmr_redundancy_weight = float(
+            getattr(config, "mrmr_redundancy_weight", 1.0)
+        )
+        self.mrmr_criterion = str(getattr(config, "mrmr_criterion", "mid")).lower()
+        self.mrmr_use_raw_mi = bool(getattr(config, "mrmr_use_raw_mi", False))
+        self.mrmr_redundancy_eps = float(
+            getattr(config, "mrmr_redundancy_eps", 1e-8)
+        )
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "FeatureSelector":
         """Fit feature selector with configurable method selection."""
-        method = self._resolve_selector_method()
+        method = self._resolve_selector_method(n_features=X.shape[1])
 
         if method == "boruta":
             print("🌲 Running Boruta feature selection...")
@@ -70,6 +83,11 @@ class FeatureSelector:
                 self.selection_method_ = "boruta"
                 return self
             print("   ⚠️  Boruta failed, falling back to MI selection")
+
+        elif method == "mrmr":
+            print("🧠 Using AdaptiveMI mRMR feature selection...")
+            self.selection_method_ = "mrmr"
+            return self._fit_mrmr(X, y)
 
         elif method == "rfecv":
             print("🔄 Using RFECV feature selection...")
@@ -84,9 +102,9 @@ class FeatureSelector:
         self.selection_method_ = "mi"
         return self._fit_mi(X, y)
 
-    def _resolve_selector_method(self) -> str:
+    def _resolve_selector_method(self, n_features: Optional[int] = None) -> str:
         """Resolve selector strategy with backward compatibility."""
-        allowed = {"auto", "mi", "rfecv", "boruta"}
+        allowed = {"auto", "mi", "mrmr", "rfecv", "boruta"}
         method = self.selector_method
         if method not in allowed:
             warnings.warn(
@@ -94,13 +112,59 @@ class FeatureSelector:
             )
             method = "auto"
 
-        # Preserve historical behavior when using auto:
-        # boruta (if enabled) -> rfecv (if enabled) -> mi
+        # Explicitly requested Boruta still wins for any backend.
         if method == "auto":
             if getattr(self.config, "use_boruta", False):
                 return "boruta"
-            if self.use_rfecv:
-                return "rfecv"
+
+            backend = str(getattr(self.config, "backend", "auto")).lower()
+            auto_rfecv_cap = int(
+                getattr(self.config, "selector_auto_rfecv_max_features", 80)
+            )
+
+            if backend in {"linear"}:
+                resolved = str(
+                    getattr(self.config, "selector_auto_linear_method", "mrmr")
+                ).lower()
+                if resolved == "rfecv":
+                    if (
+                        self.use_rfecv
+                        and n_features is not None
+                        and n_features <= max(2, auto_rfecv_cap)
+                    ):
+                        return "rfecv"
+                    return "mrmr"
+                return resolved
+
+            if backend in {"neural"}:
+                resolved = str(
+                    getattr(self.config, "selector_auto_neural_method", "mrmr")
+                ).lower()
+                if resolved == "rfecv":
+                    if (
+                        self.use_rfecv
+                        and n_features is not None
+                        and n_features <= max(2, auto_rfecv_cap)
+                    ):
+                        return "rfecv"
+                    return "mrmr"
+                return resolved
+
+            if backend in {"tree", "gbdt"}:
+                resolved = str(
+                    getattr(self.config, "selector_auto_tree_method", "mi")
+                ).lower()
+                if resolved == "rfecv":
+                    if (
+                        self.use_rfecv
+                        and n_features is not None
+                        and n_features <= max(2, auto_rfecv_cap)
+                    ):
+                        return "rfecv"
+                    return "mi"
+                return resolved
+
+            # For backend="auto", prefer the lightest default path.
             return "mi"
 
         # Explicit method overrides legacy booleans.
@@ -268,6 +332,34 @@ class FeatureSelector:
 
         return self
 
+    def _fit_mrmr(self, X: pd.DataFrame, y: pd.Series) -> "FeatureSelector":
+        """Fit AdaptiveMI-based minimum-redundancy maximum-relevance selector."""
+        self.mrmr_selector_ = AdaptiveMRMR(
+            scorer=self.ami_scorer,
+            criterion=self.mrmr_criterion,
+            candidate_pool=self.mrmr_candidate_pool,
+            redundancy_weight=self.mrmr_redundancy_weight,
+            redundancy_eps=self.mrmr_redundancy_eps,
+            use_raw_mi=self.mrmr_use_raw_mi,
+            stable_relevance=self.use_stable_mi,
+            cv=self.selector_cv,
+            min_freq=self.selector_min_freq,
+            task=getattr(self.config, "task", "regression"),
+            random_state=getattr(self.config, "random_state", 42),
+        )
+        self.mrmr_selector_.fit(
+            X,
+            y,
+            min_features=getattr(self.config, "min_features", 1),
+            max_features=getattr(self.config, "max_features", X.shape[1]),
+            mi_threshold=getattr(self.config, "mi_threshold", 0.01),
+            min_samples=getattr(self.config, "min_samples", 10),
+        )
+        self.mi_scores_ = self.mrmr_selector_.relevance_scores_
+        self.selected_features_ = self.mrmr_selector_.selected_features_.copy()
+        self.mrmr_scores_ = self.mrmr_selector_.selection_scores_
+        return self
+
     def _prepare_data_fast(
         self, X: pd.DataFrame, y: pd.Series
     ) -> Tuple[pd.DataFrame, pd.Series]:
@@ -365,6 +457,13 @@ class FeatureSelector:
         mi_scores = pd.Series(agg, index=names).fillna(0.0).clip(lower=0.0)
         return mi_scores.sort_values(ascending=False)
 
+    def _resolve_target_feature_count(self, scores: pd.Series) -> int:
+        above_threshold = int((scores > getattr(self.config, "mi_threshold", 0.01)).sum())
+        min_features = max(1, int(getattr(self.config, "min_features", 1)))
+        max_features = max(min_features, int(getattr(self.config, "max_features", len(scores))))
+        target = above_threshold if above_threshold > 0 else min_features
+        return int(np.clip(target, min_features, min(max_features, len(scores))))
+
     def _prune_redundant_features(
         self, X: pd.DataFrame, ranked_features: List[str]
     ) -> List[str]:
@@ -407,6 +506,9 @@ class FeatureSelector:
                         index=numerical_cols
                     )
                     return scores.sort_values(ascending=False)
+
+        if self.selection_method_ == "mrmr" and self.mrmr_scores_ is not None:
+            return self.mrmr_scores_
         
         # Fallback to MI scores
         if hasattr(self, 'mi_scores_') and self.mi_scores_ is not None:

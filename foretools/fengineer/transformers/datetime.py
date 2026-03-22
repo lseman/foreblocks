@@ -1,3 +1,4 @@
+import re
 from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
@@ -36,25 +37,58 @@ class DateTimeTransformer(BaseFeatureTransformer):
 
     def _coerce_dt(self, s: pd.Series) -> pd.Series:
         if not pd.api.types.is_datetime64_any_dtype(s):
-            s = pd.to_datetime(s, errors="coerce", utc=True)
+            s = self._parse_datetime(s)
         # normalize to UTC, keep as tz-aware to avoid DST misalignment; downstream uses .dt components
         if s.dt.tz is None:
             s = s.dt.tz_localize("UTC")
         return s
 
+    @staticmethod
+    def _parse_datetime(s: pd.Series) -> pd.Series:
+        kwargs = {"errors": "coerce", "utc": True}
+        if pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
+            try:
+                return pd.to_datetime(s, format="mixed", **kwargs)
+            except TypeError:
+                pass
+            except ValueError:
+                pass
+        return pd.to_datetime(s, **kwargs)
+
+    def _looks_datetime_like(self, s: pd.Series) -> bool:
+        if pd.api.types.is_datetime64_any_dtype(s):
+            return True
+        if not (
+            pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)
+        ):
+            return False
+
+        sample = s.dropna()
+        if sample.empty:
+            return False
+
+        sample = sample.astype("string").str.strip()
+        sample = sample[sample.ne("")]
+        if sample.empty:
+            return False
+
+        sample = sample.head(64)
+        token_ratio = sample.str.contains(self._DATE_TOKEN_RE, na=False).mean()
+        if token_ratio < 0.5:
+            return False
+
+        parsed = self._parse_datetime(sample)
+        success_count = int(parsed.notna().sum())
+        success_ratio = float(parsed.notna().mean())
+        return success_count >= min(3, len(sample)) and success_ratio >= 0.6
+
     def fit(
         self, X: pd.DataFrame, y: Optional[pd.Series] = None
     ) -> "DateTimeTransformer":
         # detect datetime columns, including tz-aware
-        self.datetime_cols_ = [
-            c
-            for c in X.columns
-            if pd.api.types.is_datetime64_any_dtype(X[c])
-            or (
-                pd.api.types.is_object_dtype(X[c])
-                and pd.to_datetime(X[c], errors="ignore") is not X[c]
-            )
-        ]
+        self.datetime_cols_ = [c for c in X.columns if self._looks_datetime_like(X[c])]
+        self._anchors_global_.clear()
+        self._anchors_group_.clear()
         # Coerce and store anchors (global, and optionally per-group)
         if not self.datetime_cols_:
             self.is_fitted = True
@@ -188,4 +222,12 @@ class DateTimeTransformer(BaseFeatureTransformer):
 
         return pd.DataFrame(out, index=X.index)
 
+    _DATE_TOKEN_RE = re.compile(
+        r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2})"
+        r"|(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4})"
+        r"|(?:\d{1,2}:\d{2}(?::\d{2})?)"
+        r"|(?:[A-Za-z]{3,9}\s+\d{1,2}(?:,\s*\d{4})?)"
+        r"|(?:\d{8})"
+        r"|(?:T\d{2}:\d{2})"
+    )
 

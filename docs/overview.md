@@ -90,8 +90,7 @@ The packaging reflects real feature boundaries:
 | --- | --- |
 | Minimal forecasting core | `pip install foreblocks` |
 | Preprocessing, filtering, statistics | `pip install "foreblocks[preprocessing]"` |
-| DARTS training and search | `pip install "foreblocks[darts]"` |
-| DARTS analysis and richer visuals | `pip install "foreblocks[darts-analysis]"` |
+| DARTS training, search, and analysis | `pip install "foreblocks[darts]"` |
 | MLTracker UI and API clients | `pip install "foreblocks[mltracker]"` |
 | VMD utilities | `pip install "foreblocks[vmd]"` |
 | All runtime extras | `pip install "foreblocks[all]"` |

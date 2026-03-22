@@ -70,7 +70,9 @@ class MathematicalTransformer(BaseFeatureTransformer):
             return None
         ys = pd.Series(y)
         if pd.api.types.is_numeric_dtype(ys):
-            arr = pd.to_numeric(ys, errors="coerce").to_numpy(dtype=np.float64)
+            arr = pd.to_numeric(ys, errors="coerce").to_numpy(
+                dtype=np.float64, copy=True
+            )
             arr[~np.isfinite(arr)] = np.nan
             return arr
         # classification-style fallback: category codes
@@ -108,7 +110,7 @@ class MathematicalTransformer(BaseFeatureTransformer):
         return a
 
     def _safe_arr(self, s: pd.Series) -> np.ndarray:
-        a = pd.to_numeric(s, errors="coerce").to_numpy(dtype=np.float64)
+        a = pd.to_numeric(s, errors="coerce").to_numpy(dtype=np.float64, copy=True)
         a[~np.isfinite(a)] = np.nan
         return a
 
@@ -126,11 +128,17 @@ class MathematicalTransformer(BaseFeatureTransformer):
     # Basic transforms (element-wise, monotone)
     def _t_logp(self, a: np.ndarray) -> np.ndarray:
         # log1p for non-negative part; negatives -> NaN
-        x = np.where(a > 0, np.log1p(a), np.nan)
+        x = np.full_like(a, np.nan, dtype=np.float64)
+        mask = np.isfinite(a) & (a > 0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            np.log1p(a, out=x, where=mask)
         return x
 
     def _t_sqrtp(self, a: np.ndarray) -> np.ndarray:
-        x = np.where(a >= 0, np.sqrt(a), np.nan)
+        x = np.full_like(a, np.nan, dtype=np.float64)
+        mask = np.isfinite(a) & (a >= 0)
+        with np.errstate(invalid="ignore"):
+            np.sqrt(a, out=x, where=mask)
         return x
 
     def _t_recip(self, a: np.ndarray) -> np.ndarray:

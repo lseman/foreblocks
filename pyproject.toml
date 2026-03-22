@@ -59,10 +59,9 @@ scientific = [
 # ── Time-series preprocessing / handlers ─────────────────────────────────
 preprocessing = ["foreblocks[scientific,plotting]"]
 
-# ── DARTS search / training helpers ──────────────────────────────────────
-darts = ["foreblocks[plotting]"]
-darts-analysis = [
-    "foreblocks[darts,scientific]",
+# ── DARTS search / training / analysis helpers ──────────────────────────
+darts = [
+    "foreblocks[plotting,scientific]",
     "seaborn>=0.13", # foreblocks/darts/evaluation/analyzer.py
 ]
 
@@ -106,7 +105,7 @@ foreminer = [
 ]
 
 # ── Full install ──────────────────────────────────────────────────────────
-all = ["foreblocks[preprocessing,darts,darts-analysis,mltracker,vmd,wavelets,benchmark,foreminer]"]
+all = ["foreblocks[preprocessing,darts,mltracker,vmd,wavelets,benchmark,foreminer]"]
 
 # ── Development tools (not packaged) ─────────────────────────────────────
 dev = ["pytest>=7.0", "ipykernel>=6.0", "ruff", "basedpyright"]

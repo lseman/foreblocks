@@ -4,7 +4,6 @@ from typing import Optional, Union
 
 import numpy as np
 
-warnings.filterwarnings("ignore")
 ArrayLike = Union[np.ndarray, Iterable[float]]
 
 
@@ -169,9 +168,23 @@ class RegularEvents(FitnessFunc):
 
     def fitness(self, T_k: np.ndarray, N_k: np.ndarray) -> np.ndarray:
         M_k = T_k / self.dt
-        eps = np.finfo(float).tiny
-        q = np.clip(N_k / (M_k + eps), eps, 1 - eps)
-        return N_k * np.log(q) + (M_k - N_k) * np.log(1 - q)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rate = np.divide(N_k, M_k, out=np.zeros_like(N_k, dtype=float), where=M_k > 0)
+
+        eps = 1e-8
+        if np.any(rate > 1 + eps):
+            warnings.warn(
+                "regular events: N/M > 1. Is the time step correct?",
+                RuntimeWarning,
+            )
+
+        one_minus_rate = 1.0 - rate
+        rate = rate.copy()
+        one_minus_rate = one_minus_rate.copy()
+        rate[rate <= 0] = 1.0
+        one_minus_rate[one_minus_rate <= 0] = 1.0
+
+        return N_k * np.log(rate) + (M_k - N_k) * np.log(one_minus_rate)
 
 
 class PointMeasures(FitnessFunc):
@@ -231,6 +244,33 @@ class BayesianBlocks:
             self._make_fitfunc()
         return self.fitfunc.fit(t, x, sigma)
 
+    @staticmethod
+    def _fallback_bins(t: ArrayLike, fallback: str = "sturges") -> int:
+        values = np.asarray(t, dtype=float)
+        values = values[np.isfinite(values)]
+        n = len(values)
+        if n <= 1:
+            return 1
+
+        method = str(fallback).lower()
+        if method == "sturges":
+            return int(np.ceil(np.log2(n) + 1))
+        if method == "sqrt":
+            return int(np.ceil(np.sqrt(n)))
+        if method == "fd":
+            q75, q25 = np.percentile(values, [75, 25])
+            iqr = q75 - q25
+            data_range = float(values.max() - values.min())
+            if not np.isfinite(iqr) or iqr <= 0 or data_range <= 0:
+                return int(np.ceil(np.log2(n) + 1))
+            width = 2.0 * iqr * (n ** (-1.0 / 3.0))
+            if width <= 0:
+                return int(np.ceil(np.log2(n) + 1))
+            return max(1, int(np.ceil(data_range / width)))
+        raise ValueError(
+            f"Unknown fallback={fallback!r}. Expected 'sturges', 'sqrt', or 'fd'."
+        )
+
     def fit_bins(
         self,
         t: ArrayLike,
@@ -247,5 +287,4 @@ class BayesianBlocks:
         except Exception as e:
             if self.verbose:
                 print(f"Warning: Bayesian Blocks failed with {self.fitness}: {e}")
-            # Fallback: classic Sturges
-            return int(np.ceil(np.log2(len(t)) + 1))
+            return self._fallback_bins(t, fallback=fallback)

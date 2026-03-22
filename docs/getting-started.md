@@ -41,8 +41,7 @@ If you want the broader mental model first, start from [Overview](overview.md).
     | --- | --- |
     | Plotting helpers | `pip install "foreblocks[plotting]"` |
     | Raw-series preprocessing and scientific utilities | `pip install "foreblocks[preprocessing]"` |
-    | DARTS training and search | `pip install "foreblocks[darts]"` |
-    | DARTS analysis and richer plots | `pip install "foreblocks[darts-analysis]"` |
+    | DARTS training, search, and analysis | `pip install "foreblocks[darts]"` |
     | MLTracker API and TUI | `pip install "foreblocks[mltracker]"` |
     | Everything | `pip install "foreblocks[all]"` |
 
@@ -173,12 +172,6 @@ If the basic training loop works and you want architecture search instead of han
 
 ```bash
 pip install "foreblocks[darts]"
-```
-
-If you also want richer analysis:
-
-```bash
-pip install "foreblocks[darts-analysis]"
 ```
 
 Then continue with:

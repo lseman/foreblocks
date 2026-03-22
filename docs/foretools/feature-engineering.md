@@ -330,11 +330,9 @@ from foretools.fengineer import FeatureEngineer
 from foretools.fengineer.transformers.config import FeatureConfig
 
 cfg = FeatureConfig(
-    selector_method="rfecv",   # "mi" | "rfecv" | "boruta" | "auto"
-    rfecv_cv=5,
-    rfecv_step=0.1,
-    rfecv_use_ensemble=True,
-    rfecv_stability_selection=True,
+    selector_method="mrmr",   # "mi" | "mrmr" | "rfecv" | "boruta" | "auto"
+    mrmr_criterion="mid",     # or "miq"
+    mrmr_candidate_pool=128,
     corr_threshold=0.95,
     create_rff=False,
     use_quantile_transform=True,
@@ -355,6 +353,12 @@ print(report["feature_reduction_ratio"])
 print(report["top_features"])
 ```
 
+To compare `MID` vs `MIQ` behavior directly, run:
+
+```bash
+python examples/adaptive_mrmr_demo.py
+```
+
 ---
 
 ## 6. Selection method comparison
@@ -363,6 +367,7 @@ print(report["top_features"])
 |---|---|---|---|---|
 | **MI** | $I(X_j;\,Y)$ marginal | No (pruned post-hoc) | Low | Large data, fast iteration |
 | **Stable MI** | Median $I(X_j;\,Y)$ over folds | No | Medium | Noisy targets, moderate $n$ |
+| **mRMR (MID / MIQ)** | Relevance minus or divided by mean redundancy | Yes, greedily | Medium | Want compact non-duplicate sets without full RFECV cost |
 | **RFECV** | Downstream $\text{CV}(S)$ | Yes (via model) | High | Small to medium data, need minimal set |
 | **Boruta** | $I(X_j;\,Y \mid X_{-j})$ (approx.) | Yes | High | Rigorous all-relevant selection |
 

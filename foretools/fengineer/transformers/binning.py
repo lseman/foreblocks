@@ -57,6 +57,69 @@ class BinningTransformer(BaseFeatureTransformer):
         self.fill_values_: Dict[str, float] = {}
         self.is_fitted = False
 
+    @staticmethod
+    def _make_kbins(n_bins: int, strategy: str, subsample: int) -> KBinsDiscretizer:
+        params = {
+            "n_bins": n_bins,
+            "encode": "ordinal",
+            "strategy": strategy,
+            "subsample": subsample,
+        }
+        try:
+            return KBinsDiscretizer(
+                **params, quantile_method="averaged_inverted_cdf"
+            )
+        except TypeError:
+            return KBinsDiscretizer(**params)
+
+    def _fit_kbins_with_backoff(
+        self,
+        x: np.ndarray,
+        strategy: str,
+        initial_bins: int,
+        min_count: int,
+        subsample: int,
+    ) -> Tuple[Optional[KBinsDiscretizer], int]:
+        x_2d = x.reshape(-1, 1)
+        k = int(np.clip(initial_bins, 2, max(2, np.unique(x).size)))
+        last_disc: Optional[KBinsDiscretizer] = None
+        last_actual_bins = 0
+
+        while k >= 2:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", UserWarning)
+                disc = self._make_kbins(
+                    n_bins=k,
+                    strategy=strategy,
+                    subsample=subsample,
+                )
+                disc.fit(x_2d)
+
+            binned = disc.transform(x_2d).astype(int).ravel()
+            actual_bins = int(np.unique(binned).size)
+            counts = np.bincount(binned, minlength=max(actual_bins, 1))
+            has_small_width_warning = any(
+                "Bins whose width are too small" in str(w.message) for w in caught
+            )
+
+            last_disc = disc
+            last_actual_bins = actual_bins
+
+            if (
+                actual_bins >= 2
+                and counts.size > 0
+                and counts.min() >= min_count
+                and not has_small_width_warning
+            ):
+                return disc, actual_bins
+
+            next_k = min(k - 1, max(1, actual_bins))
+            if next_k < 2:
+                break
+            k = next_k
+
+        return last_disc, max(last_actual_bins, 0)
+
     # ---------- helpers: bin-count rules -> edges ----------
 
     @staticmethod
@@ -374,7 +437,9 @@ class BinningTransformer(BaseFeatureTransformer):
 
             # dynamic cap for candidate bins based on sample size
             n_cap = max(1, n // max(self.min_samples_per_bin, 1))
-            dynamic_max_bins = int(np.clip(min(self.max_bins, n_cap), 2, self.max_bins))
+            dynamic_max_bins = int(
+                np.clip(min(self.max_bins, n_cap, n_unique), 2, self.max_bins)
+            )
             min_count = max(self.min_samples_per_bin, int(np.ceil(n * self.min_bin_fraction)))
 
             self.binning_transformers_.setdefault(col, {})
@@ -393,30 +458,18 @@ class BinningTransformer(BaseFeatureTransformer):
                                 getattr(self.config, "n_bins", 10), 2, dynamic_max_bins
                             )
                         )
-                        disc = KBinsDiscretizer(
-                            n_bins=k,
-                            encode="ordinal",
+                        disc, actual_bins = self._fit_kbins_with_backoff(
+                            col_values,
                             strategy="quantile",
+                            initial_bins=k,
+                            min_count=min_count,
                             subsample=min(20000, n),
                         )
-                        disc.fit(col_values.reshape(-1, 1))
-                        # enforce minimum support by adapting k down if needed
-                        while k > 2:
-                            b = disc.transform(col_values.reshape(-1, 1)).flatten().astype(int)
-                            counts = np.bincount(b, minlength=k)
-                            if counts.min() >= min_count:
-                                break
-                            k = max(2, k - 1)
-                            disc = KBinsDiscretizer(
-                                n_bins=k,
-                                encode="ordinal",
-                                strategy="quantile",
-                                subsample=min(20000, n),
-                            )
-                            disc.fit(col_values.reshape(-1, 1))
+                        if disc is None or actual_bins < 2:
+                            continue
                         self.binning_transformers_[col][strategy] = {
                             "transformer": disc,
-                            "n_bins": k,
+                            "n_bins": actual_bins,
                         }
 
                     elif strategy == "uniform":
@@ -425,29 +478,18 @@ class BinningTransformer(BaseFeatureTransformer):
                                 getattr(self.config, "n_bins", 10), 2, dynamic_max_bins
                             )
                         )
-                        disc = KBinsDiscretizer(
-                            n_bins=k,
-                            encode="ordinal",
+                        disc, actual_bins = self._fit_kbins_with_backoff(
+                            col_values,
                             strategy="uniform",
+                            initial_bins=k,
+                            min_count=min_count,
                             subsample=min(20000, n),
                         )
-                        disc.fit(col_values.reshape(-1, 1))
-                        while k > 2:
-                            b = disc.transform(col_values.reshape(-1, 1)).flatten().astype(int)
-                            counts = np.bincount(b, minlength=k)
-                            if counts.min() >= min_count:
-                                break
-                            k = max(2, k - 1)
-                            disc = KBinsDiscretizer(
-                                n_bins=k,
-                                encode="ordinal",
-                                strategy="uniform",
-                                subsample=min(20000, n),
-                            )
-                            disc.fit(col_values.reshape(-1, 1))
+                        if disc is None or actual_bins < 2:
+                            continue
                         self.binning_transformers_[col][strategy] = {
                             "transformer": disc,
-                            "n_bins": k,
+                            "n_bins": actual_bins,
                         }
 
                     elif strategy == "fd":
