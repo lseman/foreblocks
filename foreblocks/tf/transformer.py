@@ -45,7 +45,11 @@ from .attention.residuals import (
     BlockAttentionResidual,
     normalize_attention_residual_mode,
 )
-from .embeddings import InformerTimeEmbedding, PositionalEncoding
+from .embeddings import (
+    InformerTimeEmbedding,
+    LearnablePositionalEncoding,
+    PositionalEncoding,
+)
 from .ff import FeedForwardBlock
 from .fusions import (
     fused_dropout_add,  # fused helpers
@@ -1788,9 +1792,21 @@ class BaseTransformer(nn.Module, ABC):
         )
 
         self.input_adapter = nn.Linear(input_size, self.d_model)
-        self.pos_encoder = pos_encoder or PositionalEncoding(
-            self.d_model, max_len=max_seq_len, scale=pos_encoding_scale
-        )
+        if pos_encoder is not None:
+            self.pos_encoder = pos_encoder
+        elif self.attention_mode == "sype" or self.att_type == "sype":
+            self.pos_encoder = LearnablePositionalEncoding(
+                self.d_model,
+                max_len=max_seq_len,
+                dropout=dropout,
+                scale_strategy="fixed",
+                scale_value=pos_encoding_scale,
+                use_layer_norm=False,
+            )
+        else:
+            self.pos_encoder = PositionalEncoding(
+                self.d_model, max_len=max_seq_len, scale=pos_encoding_scale
+            )
 
         self.register_buffer("_causal_mask", torch.empty(0, 0), persistent=False)
 

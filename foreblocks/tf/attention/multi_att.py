@@ -458,11 +458,24 @@ class MultiAttention(nn.Module):
             return q, k
         query = context.get("query")
         key = context.get("key")
+        layer_state = context.get("layer_state")
         if query is None or key is None:
             return q, k
         if query.shape[1] != key.shape[1]:
             return q, k
         tau = self.sype_warp(query)
+        if layer_state is not None:
+            prev_tau = layer_state.get("sype_tau")
+            if prev_tau is not None:
+                prev_tau = prev_tau.to(device=tau.device, dtype=tau.dtype)
+                if prev_tau.dim() == 0:
+                    prev_tau = prev_tau.view(1)
+                if prev_tau.dim() != 1 or prev_tau.shape[0] != tau.shape[0]:
+                    raise ValueError(
+                        f"sype_tau state must be [B], got {tuple(prev_tau.shape)} for batch {tau.shape[0]}"
+                    )
+                tau = tau + prev_tau.unsqueeze(1)
+            layer_state["sype_tau"] = tau[:, -1].detach()
         return self.sype_rotator.rotate_qk(q, k, tau)
 
     # --------------------------------------------------------------------- #
@@ -949,6 +962,7 @@ class MultiAttention(nn.Module):
             k,
             query=query,
             key=key,
+            layer_state=layer_state,
             seqlen_offset=(q_start_pos if q_start_pos is not None else 0),
         )
 

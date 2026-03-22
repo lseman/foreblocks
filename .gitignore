@@ -63,6 +63,8 @@ pygit
 *backup*
 .superpowers/
 
-examples/rodrigo.py
-examples/rodrigo2.py
 site/
+
+# ignore all node_modules
+node_modules/
+*/node_modules/

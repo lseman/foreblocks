@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from numba import njit, prange
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
-from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler, RobustScaler, StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
@@ -172,13 +172,13 @@ def _remove_outliers(
                 raise ValueError("ECOD fallback does not support multivariate input.")
 
     elif method == "tranad":
-        from sklearn.preprocessing import StandardScaler
-
         seq_len = kwargs.get("seq_len", 24)
         epochs = kwargs.get("epochs", 10)
         device = kwargs.get("device", "cuda" if torch.cuda.is_available() else "cpu")
         adaptive = kwargs.get("adaptive", True)
-        min_z = kwargs.get("z_threshold", 3.0)
+        min_z = kwargs.get(
+            "z_threshold", float(threshold) if float(threshold) > 1.0 else 3.0
+        )
 
         # Ensure 2D format
         if data_col.ndim == 1:
@@ -189,30 +189,36 @@ def _remove_outliers(
         if T < seq_len + 5:
             return x if D > 1 else x.flatten()
 
-        # === Normalize each feature independently ===
-        scaler = StandardScaler()
-        x_scaled = scaler.fit_transform(x)
+        detector = TranADDetector(
+            seq_len=seq_len,
+            epochs=epochs,
+            device=device,
+            scaler_type=kwargs.get("scaler_type", "minmax"),
+        )
+        scores = detector.fit_predict(x)  # shape (T - seq_len + 1, D)
+        if scores.ndim == 1:
+            scores = scores[:, None]
 
-        # === Run TranAD ===
-        detector = TranADDetector(seq_len=seq_len, epochs=epochs, device=device)
-        scores = detector.fit_predict(x_scaled)  # shape (T - seq_len,)
-
-        # === Adaptive thresholding ===
+        anomaly_mask = np.full(T, False)
         if adaptive:
-            score_z = (scores - np.mean(scores)) / (np.std(scores) + 1e-8)
-            anomaly_mask = np.full(T, False)
-            # Map scores to the end of each sequence window
-            anomaly_mask[seq_len-1:seq_len-1+len(score_z)] = score_z > min_z
+            score_mean = np.mean(scores, axis=0, keepdims=True)
+            score_std = np.std(scores, axis=0, keepdims=True) + 1e-8
+            score_z = (scores - score_mean) / score_std
+            anomaly_mask[seq_len - 1 : seq_len - 1 + len(score_z)] = np.any(
+                score_z > float(min_z), axis=1
+            )
         else:
             if threshold > 1.0:
-                percentile = min(max(threshold, 0), 100)
+                cutoff = np.mean(scores, axis=0, keepdims=True) + float(threshold) * (
+                    np.std(scores, axis=0, keepdims=True) + 1e-8
+                )
             else:
-                percentile = threshold * 100
-            score_thresh = np.nanpercentile(scores, percentile)
-            anomaly_mask = np.full(T, False)
-            # Map scores to the end of each sequence window
-            anomaly_mask[seq_len-1:seq_len-1+len(scores)] = scores > score_thresh
-        # === Mask out anomalies ===
+                percentile = float(np.clip(threshold * 100.0, 0.0, 100.0))
+                cutoff = np.nanpercentile(scores, percentile, axis=0, keepdims=True)
+            anomaly_mask[seq_len - 1 : seq_len - 1 + len(scores)] = np.any(
+                scores > cutoff, axis=1
+            )
+
         x_cleaned = x.copy()
         x_cleaned[anomaly_mask] = np.nan
 
@@ -237,76 +243,112 @@ def _remove_outliers_wrapper(args):
 
 
 class TranAD(nn.Module):
-    def __init__(self, feats, window_size=24, d_model=None, n_heads=None, n_layers=2, dropout=0.1):
+    def __init__(
+        self,
+        feats,
+        window_size=24,
+        d_model=None,
+        n_heads=None,
+        n_layers=1,
+        dropout=0.1,
+    ):
         super().__init__()
-        d_model = d_model or max(64, feats * 8)
-        n_heads = n_heads or max(1, d_model // 64)
-        d_model = (d_model // n_heads) * n_heads
+        self.n_feats = int(feats)
+        self.n_window = int(window_size)
+        self.d_model = int(d_model or max(2 * self.n_feats, 32))
 
-        self.encoder = TransformerEncoder(
-            input_size=feats,
-            d_model=d_model,
-            nhead=n_heads,
-            num_layers=n_layers,
-            dropout=dropout,
-            # use_adaptive_ln="layer",
-            norm_strategy="pre_norm",
+        if n_heads is None:
+            n_heads = min(max(1, self.n_feats), self.d_model)
+            while self.d_model % n_heads != 0 and n_heads > 1:
+                n_heads -= 1
+        self.n_heads = int(max(1, n_heads))
+
+        self.input_projection = nn.Linear(2 * self.n_feats, self.d_model)
+        self.pos_encoder = _TranADPositionalEncoding(
+            self.d_model, dropout=dropout, max_len=max(512, self.n_window + 2)
         )
 
-        self.decoder1 = TransformerDecoder(
-            input_size=feats,
-            output_size=feats,
-            d_model=d_model,
-            nhead=n_heads,
-            num_layers=n_layers,
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=self.n_heads,
+            dim_feedforward=max(16, self.d_model),
             dropout=dropout,
-            informer_like=False,
-            # use_adaptive_ln="layer",
+            batch_first=True,
+            activation="gelu",
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=n_layers
         )
 
-        self.decoder2 = TransformerDecoder(
-            input_size=feats,
-            output_size=feats,
-            d_model=d_model,
-            nhead=n_heads,
-            num_layers=n_layers,
+        decoder_layer1 = nn.TransformerDecoderLayer(
+            d_model=self.d_model,
+            nhead=self.n_heads,
+            dim_feedforward=max(16, self.d_model),
             dropout=dropout,
-            informer_like=False,
+            batch_first=True,
+            activation="gelu",
         )
-        
-        # Pre-allocate context tensors to avoid repeated allocations
-        self.register_buffer('_context_cache', torch.empty(1, 1, feats))
+        decoder_layer2 = nn.TransformerDecoderLayer(
+            d_model=self.d_model,
+            nhead=self.n_heads,
+            dim_feedforward=max(16, self.d_model),
+            dropout=dropout,
+            batch_first=True,
+            activation="gelu",
+        )
+        self.transformer_decoder1 = nn.TransformerDecoder(
+            decoder_layer1, num_layers=n_layers
+        )
+        self.transformer_decoder2 = nn.TransformerDecoder(
+            decoder_layer2, num_layers=n_layers
+        )
+        self.output_projection = nn.Sequential(
+            nn.Linear(self.d_model, self.n_feats),
+            nn.Sigmoid(),
+        )
 
-    def encode(self, x, context):
-        # Fused operation to reduce memory allocations
-        return self.encoder(x + context)
+    def encode(self, src, context, tgt):
+        enc_in = torch.cat((src, context), dim=-1)
+        enc_in = self.input_projection(enc_in)
+        enc_in = self.pos_encoder(enc_in)
+        memory = self.transformer_encoder(enc_in)
+
+        dec_in = torch.cat((tgt, tgt), dim=-1)
+        dec_in = self.input_projection(dec_in)
+        dec_in = self.pos_encoder(dec_in)
+        return dec_in, memory
 
     def forward(self, src, tgt=None):
-        """
-        Forward pass for TranAD using dual-pass reconstruction.
-        Optimized version with reduced memory allocations.
-        """
-        batch_size, seq_len, feats = src.shape
-        
-        # Reuse buffer for zero context if possible
-        if (self._context_cache.shape[0] != batch_size or 
-            self._context_cache.shape[1] != seq_len or 
-            self._context_cache.shape[2] != feats):
-            self._context_cache = torch.zeros_like(src)
-        else:
-            self._context_cache.zero_()
-        
-        # First pass: zero context
-        enc1 = self.encode(src, self._context_cache)
-        out1 = self.decoder1(src, enc1)
+        if tgt is None:
+            tgt = src[:, -1:, :]
 
-        # Second pass: reconstruction error as context (in-place to save memory)
-        context2 = out1 - src
-        context2.square_()  # In-place operation
-        enc2 = self.encode(src, context2)
-        out2 = self.decoder2(src, enc2)
+        zero_context = torch.zeros_like(src)
+        dec1_in, memory1 = self.encode(src, zero_context, tgt)
+        out1 = self.output_projection(self.transformer_decoder1(dec1_in, memory1))
 
+        focus = (out1 - src).pow(2)
+        dec2_in, memory2 = self.encode(src, focus, tgt)
+        out2 = self.output_projection(self.transformer_decoder2(dec2_in, memory2))
         return out1, out2
+
+
+class _TranADPositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, dtype=torch.float32)
+            * (-np.log(10000.0) / max(1, d_model))
+        )
+        pe = torch.zeros(max_len, d_model, dtype=torch.float32)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term[: pe[:, 1::2].shape[1]])
+        self.register_buffer("pe", pe.unsqueeze(0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.dropout(x + self.pe[:, : x.size(1)])
 
 
 class TranADDataset(TensorDataset):
@@ -344,7 +386,7 @@ class TranADDetector:
         seq_len: int = 24,
         d_model: Optional[int] = None,
         n_heads: Optional[int] = None,
-        n_layers: int = 2,
+        n_layers: int = 1,
         epochs: int = 50,
         batch_size: int = 256,
         learning_rate: float = 1e-3,
@@ -352,7 +394,7 @@ class TranADDetector:
         dropout: float = 0.1,
         patience: int = 10,
         device: Optional[str] = None,
-        scaler_type: str = "standard",
+        scaler_type: str = "minmax",
         use_mixed_precision: bool = True,
         compile_model: bool = False,  # New: PyTorch 2.0 compilation
         memory_efficient: bool = True,  # New: Use memory-efficient sequences
@@ -372,7 +414,12 @@ class TranADDetector:
         self.compile_model = compile_model
         self.memory_efficient = memory_efficient
 
-        self.scaler = RobustScaler() if scaler_type == "robust" else StandardScaler()
+        if scaler_type == "robust":
+            self.scaler = RobustScaler()
+        elif scaler_type == "standard":
+            self.scaler = StandardScaler()
+        else:
+            self.scaler = MinMaxScaler()
         self.model = None
         self.amp_scaler = torch.cuda.amp.GradScaler() if self.use_mixed_precision else None
 
@@ -380,25 +427,19 @@ class TranADDetector:
         """Optimized sequence creation"""
         return create_sequences_vectorized(data, self.seq_len)
 
-    def _adaptive_loss(self, x1, x2, target, epoch):
-        """Optimized loss computation with pre-computed alpha"""
-        alpha = min(0.8, epoch / self.epochs)
-        # Compute both losses in one pass when possible
-        if alpha == 0:
-            return F.mse_loss(x1, target)
-        elif alpha == 0.8:
-            return F.mse_loss(x2, target)
-        else:
-            return (1 - alpha) * F.mse_loss(x1, target) + alpha * F.mse_loss(x2, target)
+    @staticmethod
+    def _repo_loss(x1, x2, target, epoch_num: int):
+        weight_first = 1.0 / max(1, int(epoch_num))
+        weight_second = 1.0 - weight_first
+        return weight_first * F.mse_loss(x1, target) + weight_second * F.mse_loss(
+            x2, target
+        )
 
-    def _compute_anomaly_scores(self, x2, target):
-        """Optimized anomaly score computation"""
-        # Compute both MSE and MAE in one pass
-        diff = x2 - target
-        mse = (diff * diff).mean(dim=(1, 2))
-        mae = diff.abs().mean(dim=(1, 2))
-        # Fused weighted combination
-        return (0.7 * mse + 0.3 * mae).detach().cpu().numpy()
+    @staticmethod
+    def _compute_anomaly_scores(x1, x2, target):
+        diff1 = (x1 - target).pow(2).squeeze(1)
+        diff2 = (x2 - target).pow(2).squeeze(1)
+        return (0.5 * diff1 + 0.5 * diff2).detach().cpu().numpy()
 
     def fit_predict(self, series: Union[np.ndarray, torch.Tensor], validation_split: float = 0.2) -> np.ndarray:
         if isinstance(series, torch.Tensor):
@@ -424,27 +465,27 @@ class TranADDetector:
             train_ds = TensorDataset(sequences[:n_train])
             val_ds = TensorDataset(sequences[n_train:]) if validation_split > 0 else None
 
-        # Optimized DataLoader settings
         num_workers = min(4, torch.get_num_threads())
+        loader_kwargs = {
+            "batch_size": self.batch_size,
+            "num_workers": num_workers,
+            "pin_memory": True,
+            "persistent_workers": bool(num_workers > 0),
+        }
+        if num_workers > 0:
+            loader_kwargs["prefetch_factor"] = 2
+
         train_loader = DataLoader(
-            train_ds, 
-            batch_size=self.batch_size, 
+            train_ds,
             shuffle=True,
-            num_workers=num_workers, 
-            pin_memory=True, 
-            persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2,
-            drop_last=False  # Helps with performance consistency
+            drop_last=False,
+            **loader_kwargs,
         )
-        
+
         val_loader = DataLoader(
-            val_ds, 
-            batch_size=self.batch_size, 
+            val_ds,
             shuffle=False,
-            num_workers=num_workers, 
-            pin_memory=True, 
-            persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2
+            **loader_kwargs,
         ) if val_ds else None
 
         input_size = series.shape[1]
@@ -457,34 +498,27 @@ class TranADDetector:
             dropout=self.dropout,
         ).to(self.device)
 
-        # PyTorch 2.0 compilation for faster execution
         if self.compile_model and hasattr(torch, 'compile'):
             self.model = torch.compile(self.model, mode='max-autotune')
 
-        # Optimized optimizer settings
         opt = torch.optim.AdamW(
             self.model.parameters(), 
             lr=self.lr, 
             weight_decay=self.weight_decay,
-            fused=True if self.device == 'cuda' else False  # Fused optimizer for CUDA
+            fused=True if self.device == 'cuda' else False
         )
-        
-        # Cosine annealing with warm restarts for better convergence
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            opt, T_0=self.epochs // 4, T_mult=2, eta_min=self.lr * 0.01
-        )
+        scheduler = torch.optim.lr_scheduler.StepLR(opt, 5, 0.9)
 
         best_val_loss = float("inf")
         patience_counter = 0
-
-        # Pre-compute epoch-dependent alpha values for adaptive loss
-        alphas = [min(0.8, epoch / self.epochs) for epoch in range(self.epochs)]
+        best_state = None
 
         with tqdm(range(self.epochs), desc="Training", unit="epoch") as pbar:
             for epoch in pbar:
                 self.model.train()
                 total_loss = 0.0
                 n_batches = 0
+                epoch_num = epoch + 1
                 
                 for batch_data in train_loader:
                     if isinstance(batch_data, tuple):
@@ -493,20 +527,13 @@ class TranADDetector:
                         batch = batch_data
                     
                     batch = batch.to(self.device, non_blocking=True)
+                    target = batch[:, -1:, :]
                     
                     with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
-                        x1, x2 = self.model(batch)
-                        
-                        # Use pre-computed alpha
-                        alpha = alphas[epoch]
-                        if alpha == 0:
-                            loss = F.mse_loss(x1, batch)
-                        elif alpha >= 0.8:
-                            loss = F.mse_loss(x2, batch)
-                        else:
-                            loss = (1 - alpha) * F.mse_loss(x1, batch) + alpha * F.mse_loss(x2, batch)
+                        x1, x2 = self.model(batch, target)
+                        loss = self._repo_loss(x1, x2, target, epoch_num)
 
-                    opt.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+                    opt.zero_grad(set_to_none=True)
                     
                     if self.use_mixed_precision:
                         self.amp_scaler.scale(loss).backward()
@@ -520,7 +547,6 @@ class TranADDetector:
                     n_batches += 1
 
                 avg_train_loss = total_loss / n_batches
-                scheduler.step()
 
                 val_loss = None
                 if val_loader:
@@ -536,16 +562,13 @@ class TranADDetector:
                                 batch = batch_data
                             
                             batch = batch.to(self.device, non_blocking=True)
+                            target = batch[:, -1:, :]
                             
                             with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
-                                x1, x2 = self.model(batch)
-                                alpha = alphas[epoch]
-                                if alpha == 0:
-                                    batch_loss = F.mse_loss(x1, batch)
-                                elif alpha >= 0.8:
-                                    batch_loss = F.mse_loss(x2, batch)
-                                else:
-                                    batch_loss = (1 - alpha) * F.mse_loss(x1, batch) + alpha * F.mse_loss(x2, batch)
+                                x1, x2 = self.model(batch, target)
+                                batch_loss = self._repo_loss(
+                                    x1, x2, target, epoch_num
+                                )
                                 
                             val_total += batch_loss.item()
                             val_batches += 1
@@ -555,57 +578,61 @@ class TranADDetector:
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
                         patience_counter = 0
-                        # Use more efficient checkpoint saving
-                        checkpoint = {
-                            'model_state_dict': self.model.state_dict(),
-                            'optimizer_state_dict': opt.state_dict(),
-                            'epoch': epoch,
-                            'val_loss': val_loss
+                        best_state = {
+                            key: value.detach().cpu().clone()
+                            for key, value in self.model.state_dict().items()
                         }
-                        torch.save(checkpoint, "best_model.pth", _use_new_zipfile_serialization=False)
                     else:
                         patience_counter += 1
                         if patience_counter >= self.patience:
                             print(f"\nEarly stopping at epoch {epoch+1}")
-                            checkpoint = torch.load("best_model.pth", map_location=self.device)
-                            self.model.load_state_dict(checkpoint['model_state_dict'])
+                            if best_state is not None:
+                                self.model.load_state_dict(best_state)
                             break
+                else:
+                    best_state = {
+                        key: value.detach().cpu().clone()
+                        for key, value in self.model.state_dict().items()
+                    }
 
+                scheduler.step()
                 pbar.set_postfix(train_loss=f"{avg_train_loss:.6f}", val_loss=f"{val_loss:.6f}" if val_loss else "N/A")
 
-        # Create sequences for inference
-        if self.memory_efficient:
-            sequences = self._create_sequences(series_scaled)
-        else:
-            sequences = self._create_sequences(series_scaled)
-            
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+
+        sequences = self._create_sequences(series_scaled)
         return self._infer(sequences)
 
     def _infer(self, sequences: torch.Tensor) -> np.ndarray:
-        """Optimized inference with larger batch sizes"""
         self.model.eval()
         scores = []
         
-        # Use larger batch size for inference
         infer_batch_size = min(self.batch_size * 4, 1024)
+        num_workers = min(2, torch.get_num_threads())
+        loader_kwargs = {
+            "batch_size": infer_batch_size,
+            "shuffle": False,
+            "num_workers": num_workers,
+            "pin_memory": True,
+        }
+        if num_workers > 0:
+            loader_kwargs["prefetch_factor"] = 2
         loader = DataLoader(
             TensorDataset(sequences),
-            batch_size=infer_batch_size,
-            shuffle=False,
-            num_workers=min(2, torch.get_num_threads()),
-            pin_memory=True,
-            prefetch_factor=2
+            **loader_kwargs,
         )
 
         with torch.no_grad():
             for (batch,) in loader:
                 batch = batch.to(self.device, non_blocking=True)
+                target = batch[:, -1:, :]
                 with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
-                    _, x2 = self.model(batch)
-                    batch_scores = self._compute_anomaly_scores(x2, batch)
-                    scores.extend(batch_scores)
+                    x1, x2 = self.model(batch, target)
+                    batch_scores = self._compute_anomaly_scores(x1, x2, target)
+                    scores.append(batch_scores)
         
-        return np.array(scores)
+        return np.concatenate(scores, axis=0) if scores else np.empty((0, 0))
 
     def predict(self, series: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
         """Optimized prediction method"""
