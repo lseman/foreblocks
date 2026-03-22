@@ -1,5 +1,5 @@
-site_name: foreBlocks
-site_description: Modular time-series forecasting for PyTorch
+site_name: ForeBlocks
+site_description: Modular time-series forecasting, preprocessing, and architecture search for PyTorch
 site_url: https://foreblocks.laioseman.com/docs/
 repo_url: https://github.com/lseman/foreblocks
 repo_name: lseman/foreblocks
@@ -9,8 +9,8 @@ site_dir: site/docs
 theme:
   name: material
   font:
-    text: Inter
-    code: Fira Code
+    text: Space Grotesk
+    code: JetBrains Mono
   icon:
     logo: material/chart-line
     repo: fontawesome/brands/github

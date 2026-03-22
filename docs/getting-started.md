@@ -1,10 +1,25 @@
 # Getting Started
 
-This guide gives you the shortest reliable path to a working `foreblocks` training loop, then points you to the right extras and guides when you want preprocessing, search, or richer tooling.
+This guide gives you the shortest reliable path to a working `foreblocks` training loop, then shows where to branch when you need preprocessing, search, or richer tooling.
 
-If you want the broader map first, start from [Overview](overview.md).
+If you want the broader mental model first, start from [Overview](overview.md).
 
-## Install
+<div class="callout-grid">
+  <div class="glass-card">
+    <strong>Goal</strong>
+    <span>Run one small training job end to end with the stable public API.</span>
+  </div>
+  <div class="glass-card">
+    <strong>Good first success</strong>
+    <span>You can import the package, train a baseline model, and compute metrics on held-out data.</span>
+  </div>
+  <div class="glass-card">
+    <strong>Only then</strong>
+    <span>Add preprocessing extras, custom transformer internals, DARTS, or tracking-heavy workflows.</span>
+  </div>
+</div>
+
+## 1. Install
 
 === "PyPI (stable)"
 
@@ -22,27 +37,33 @@ If you want the broader map first, start from [Overview](overview.md).
 
 === "With extras"
 
-    | Workflow | Extra |
-    |---|---|
+    | Workflow | Install |
+    | --- | --- |
     | Plotting helpers | `pip install "foreblocks[plotting]"` |
-    | Preprocessing / scientific | `pip install "foreblocks[preprocessing]"` |
-    | DARTS training + search | `pip install "foreblocks[darts]"` |
-    | DARTS analyzer (pandas/seaborn) | `pip install "foreblocks[darts-analysis]"` |
-    | MLTracker API + TUI | `pip install "foreblocks[mltracker]"` |
+    | Raw-series preprocessing and scientific utilities | `pip install "foreblocks[preprocessing]"` |
+    | DARTS training and search | `pip install "foreblocks[darts]"` |
+    | DARTS analysis and richer plots | `pip install "foreblocks[darts-analysis]"` |
+    | MLTracker API and TUI | `pip install "foreblocks[mltracker]"` |
     | Everything | `pip install "foreblocks[all]"` |
 
-## Training pipeline at a glance
+## 2. Keep the first run intentionally small
 
 ```mermaid
 flowchart LR
-    A[Raw data\narray] --> B[create_dataloaders]
+    A[NumPy arrays] --> B[create_dataloaders]
     B --> C[ForecastingModel]
     C --> D[Trainer.train]
     D --> E[ModelEvaluator]
-    E --> F[metrics / plots]
+    E --> F[metrics]
 ```
 
-## Minimal training example
+!!! note "What this first run should validate"
+    - Your `foreblocks` import path is correct.
+    - Dataloader shapes line up with the trainer.
+    - The model trains without needing optional subsystems.
+    - Evaluation works on held-out data.
+
+## 3. Minimal training example
 
 ```python
 import numpy as np
@@ -88,7 +109,7 @@ model = ForecastingModel(
 trainer = Trainer(
     model,
     config=TrainingConfig(num_epochs=5, batch_size=16, patience=3, use_amp=False),
-    auto_track=False,  # (1)
+    auto_track=False,  # disable MLTracker during smoke tests
 )
 
 history = trainer.train(train_loader, val_loader)
@@ -100,41 +121,33 @@ print("final_train_loss:", history.train_losses[-1])
 print("metrics:", metrics)
 ```
 
-1. Disable MLTracker during smoke tests. Remove this line to enable experiment tracking.
-
-!!! note "What this validates"
-    - Your `foreblocks` import path is correct
-    - Dataloaders are shaped correctly
-    - The trainer loop runs without error
-    - Evaluation works on held-out data
-
-## Shape expectations
+## 4. Shape expectations
 
 === "Direct forecasting"
 
     | Tensor | Shape |
-    |---|---|
-    | `X` | `[N, T, F]` — samples × input timesteps × features |
+    | --- | --- |
+    | `X` | `[N, T, F]` - samples x input timesteps x features |
     | `y` | any shape matching your head's output |
 
 === "Encoder / decoder"
 
     | Tensor | Shape |
-    |---|---|
+    | --- | --- |
     | `X` | `[N, T, F]` |
-    | `y` | `[N, H, D]` — samples × horizon × output channels |
+    | `y` | `[N, H, D]` - samples x horizon x output channels |
 
-    Decoder-based models have stricter dimension contracts — read the [Custom Blocks](custom_blocks.md) guide before customising.
+    Decoder-based models have stricter dimension contracts. Read the [Custom Blocks](custom_blocks.md) guide before wiring custom modules.
 
-## Starting from raw series
+## 5. Starting from raw series instead of windows
 
-When your starting point is a `[T, D]` array, use `TimeSeriesHandler` instead of building windows manually:
+When your starting point is a single `[T, D]` array, use `TimeSeriesHandler` instead of building windows manually:
 
 ```python
 import numpy as np
 from foreblocks import TimeSeriesHandler
 
-raw = np.random.randn(240, 3)  # 240 timesteps, 3 channels
+raw = np.random.randn(240, 3)
 
 pre = TimeSeriesHandler(
     window_size=24,
@@ -152,18 +165,21 @@ X, y, processed, time_feat = pre.fit_transform(raw)
     pip install "foreblocks[preprocessing]"
     ```
 
-## DARTS architecture search
+Continue with [Preprocessor Guide](preprocessor.md) once the baseline path itself is working.
 
-If the baseline path works and you want to search architectures instead of hand-picking them:
+## 6. When to add DARTS
+
+If the basic training loop works and you want architecture search instead of hand-selecting blocks:
 
 ```bash
 pip install "foreblocks[darts]"
 ```
 
-??? note "Also want richer result plots?"
-    ```bash
-    pip install "foreblocks[darts-analysis]"
-    ```
+If you also want richer analysis:
+
+```bash
+pip install "foreblocks[darts-analysis]"
+```
 
 Then continue with:
 
@@ -171,20 +187,44 @@ Then continue with:
 - [Run A DARTS Search](tutorials/darts-multifidelity-search.md)
 - [DARTS Search Pipeline](architecture/darts-pipeline.md)
 
-## Where to go next
+## 7. Where to go next
 
-- Raw series preprocessing → [Preprocessor Guide](preprocessor.md)
-- Model composition and injection points → [Custom Blocks Guide](custom_blocks.md)
-- Transformer backbones → [Transformer Guide](transformer.md)
-- Expert routing → [MoE Guide](moe.md)
-- SSM / Mamba-style blocks → [Hybrid Mamba Guide](hybrid-mamba.md)
-- Post-hoc prediction intervals → [Uncertainty Quantification](uncertainty.md)
-- Evaluation and cross-validation → [Evaluation & Metrics](evaluation.md)
-- Import errors or shape mismatches → [Troubleshooting](troubleshooting.md)
+<div class="path-grid">
+  <div class="path-card">
+    <p class="route-kicker">Next</p>
+    <h3><a href="preprocessor/">Raw series preprocessing</a></h3>
+    <p>Scaling, filtering, window generation, and feature engineering from multivariate arrays.</p>
+  </div>
+  <div class="path-card">
+    <p class="route-kicker">Next</p>
+    <h3><a href="custom_blocks/">Model composition</a></h3>
+    <p>Injection points, block composition, and dimension contracts for custom architectures.</p>
+  </div>
+  <div class="path-card">
+    <p class="route-kicker">Next</p>
+    <h3><a href="transformer/">Transformer backbones</a></h3>
+    <p>Attention, patching, norms, and the configurable transformer stack.</p>
+  </div>
+  <div class="path-card">
+    <p class="route-kicker">Next</p>
+    <h3><a href="evaluation/">Evaluation and metrics</a></h3>
+    <p>Metrics, plots, cross-validation, and evaluation helpers after training.</p>
+  </div>
+  <div class="path-card">
+    <p class="route-kicker">Next</p>
+    <h3><a href="uncertainty/">Uncertainty quantification</a></h3>
+    <p>Conformal intervals and post-hoc uncertainty methods once point forecasting is in place.</p>
+  </div>
+  <div class="path-card">
+    <p class="route-kicker">Safety net</p>
+    <h3><a href="troubleshooting/">Troubleshooting</a></h3>
+    <p>Import issues, install problems, and the shape mismatches most likely to show up in a first run.</p>
+  </div>
+</div>
 
 ## Notes
 
-- `Trainer` initialises MLTracker automatically. Pass `auto_track=False` during local smoke tests.
-- `TrainingConfig` includes conformal options, but you do not need them for the basic path above.
-- `TimeSeriesDataset` is also available if you want to build PyTorch dataloaders manually.
-- The direct strategy is the best first step. Move to seq2seq, transformer, or DARTS workflows once the baseline loop is already running.
+- `Trainer` initializes MLTracker automatically. Pass `auto_track=False` during local smoke tests.
+- `TrainingConfig` includes conformal options, but you do not need them for the baseline path above.
+- `TimeSeriesDataset` is available if you want to build PyTorch dataloaders manually.
+- The direct strategy is still the best first step. Move to seq2seq, transformers, or DARTS after the small baseline loop already succeeds.

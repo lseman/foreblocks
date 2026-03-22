@@ -3,13 +3,22 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>ForeBlocks &#8212; Modular Time-Series Forecasting</title>
-  <meta name="description" content="ForeBlocks is a modular PyTorch library for time-series forecasting with a lean core, optional preprocessing extras, and a staged DARTS search stack."/>
-  <meta property="og:title" content="ForeBlocks &#8212; Modular Time-Series Forecasting"/>
-  <meta property="og:description" content="Lean forecasting core plus optional preprocessing, DARTS search, tracking, and research tooling."/>
+  <title>ForeBlocks - Modular Time-Series Forecasting For PyTorch</title>
+  <meta
+    name="description"
+    content="ForeBlocks is a modular PyTorch toolkit for time-series forecasting, preprocessing, architecture search, uncertainty estimation, and experiment tooling."
+  />
+  <meta property="og:title" content="ForeBlocks - Modular Time-Series Forecasting For PyTorch"/>
+  <meta
+    property="og:description"
+    content="Start with a lean forecasting core, then layer in preprocessing, DARTS search, uncertainty, MLTracker, and companion tooling when you need them."
+  />
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700;800&amp;display=swap" rel="stylesheet"/>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet"/>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet"/>
@@ -19,837 +28,1355 @@
 
   <style>
     :root {
-      --bg-base:  #06060f;
-      --border:   rgba(255,255,255,0.07);
-      --border-h: rgba(99,102,241,0.45);
-      --accent:   #6366f1;
-      --text:     #e8e8ff;
-      --muted:    #7878a0;
-    }
-    * { font-family: 'Inter', system-ui, sans-serif; }
-    code, pre { font-family: 'JetBrains Mono', 'Fira Code', monospace !important; }
-    html, body { background: var(--bg-base); color: var(--text); min-height: 100vh; }
-
-    .hero-blob { position:absolute; border-radius:50%; filter:blur(90px); pointer-events:none; animation:float 10s ease-in-out infinite; }
-    .blob-1 { width:640px; height:640px; background:radial-gradient(circle,rgba(99,102,241,.28),transparent 70%); top:-220px; left:-120px; animation-delay:0s; }
-    .blob-2 { width:520px; height:520px; background:radial-gradient(circle,rgba(34,211,238,.18),transparent 70%); top:-80px; right:-160px; animation-delay:-5s; }
-    .blob-3 { width:440px; height:440px; background:radial-gradient(circle,rgba(139,92,246,.16),transparent 70%); bottom:60px; left:50%; animation-delay:-2.5s; }
-    @keyframes float { 0%,100%{transform:translateY(0) scale(1);} 50%{transform:translateY(-28px) scale(1.04);} }
-
-    .hero-grid {
-      position:absolute; inset:0; pointer-events:none;
-      background-image: linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px), linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);
-      background-size:56px 56px;
-      mask-image:radial-gradient(ellipse 80% 60% at 50% 50%,black,transparent);
+      --bg: #071019;
+      --bg-soft: #0d1722;
+      --panel: rgba(14, 25, 37, 0.8);
+      --panel-strong: rgba(10, 19, 30, 0.92);
+      --border: rgba(148, 163, 184, 0.16);
+      --border-strong: rgba(94, 234, 212, 0.28);
+      --text: #eff6ff;
+      --muted: #97a7bb;
+      --accent: #5eead4;
+      --accent-2: #38bdf8;
+      --accent-3: #f59e0b;
+      --accent-4: #fb7185;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+      --radius: 24px;
+      --radius-sm: 16px;
     }
 
-    .grad { background:linear-gradient(135deg,#a5b4fc 0%,#6366f1 45%,#22d3ee 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
-
-    .navbar { background:rgba(6,6,15,.88); border-bottom:1px solid rgba(255,255,255,.06); backdrop-filter:blur(20px); }
-    .nav-link { color:var(--muted); font-size:.875rem; font-weight:500; transition:color .15s; position:relative; }
-    .nav-link:hover { color:var(--text); }
-    .nav-link.active { color:#a5b4fc; }
-    .nav-link.active::after { content:''; position:absolute; bottom:-4px; left:0; right:0; height:2px; border-radius:1px; background:linear-gradient(90deg,#6366f1,#22d3ee); }
-
-    .card { background:rgba(17,17,40,.8); border:1px solid var(--border); backdrop-filter:blur(10px); transition:border-color .2s,box-shadow .2s,transform .2s; }
-    .card:hover { border-color:var(--border-h); box-shadow:0 0 24px rgba(99,102,241,.1),0 8px 32px rgba(0,0,0,.4); transform:translateY(-2px); }
-
-    pre[class*="language-"] { background:#0b0b1e !important; border:none !important; border-radius:10px !important; margin:0 !important; }
-    code[class*="language-"] { font-size:.81rem !important; }
-    .line-numbers .line-numbers-rows { border-right-color:rgba(255,255,255,.07) !important; }
-    .line-numbers-rows > span::before { color:rgba(255,255,255,.18) !important; }
-
-    :not(pre) > code { font-size:.82em; padding:2px 6px; border-radius:4px; background:rgba(99,102,241,.14); color:#a5b4fc; border:1px solid rgba(99,102,241,.22); }
-
-    .copy-btn { position:absolute; top:10px; right:10px; z-index:10; font-family:'Inter',sans-serif; font-size:.7rem; font-weight:600; padding:4px 10px; border-radius:6px; cursor:pointer; transition:all .15s; background:rgba(255,255,255,.07); color:rgba(255,255,255,.55); border:1px solid rgba(255,255,255,.1); }
-    .copy-btn:hover { background:rgba(255,255,255,.13); color:#fff; }
-
-    .terminal { background:#0a0a18; border:1px solid rgba(255,255,255,.07); border-radius:12px; overflow:hidden; }
-    .term-bar  { background:#111126; padding:10px 16px; display:flex; align-items:center; gap:6px; border-bottom:1px solid rgba(255,255,255,.05); }
-    .tdot { width:12px; height:12px; border-radius:50%; }
-
-    .stag { font-size:.68rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#6366f1; margin-bottom:8px; }
-    .ibox  { width:44px; height:44px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0; background:rgba(99,102,241,.11); border:1px solid rgba(99,102,241,.2); }
-    .ibox2 { background:rgba(34,211,238,.09); border-color:rgba(34,211,238,.2); }
-    .snum  { width:32px; height:32px; border-radius:8px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:.875rem; font-weight:700; background:linear-gradient(135deg,#6366f1,#22d3ee); color:#fff; }
-    .div   { height:1px; background:linear-gradient(90deg,transparent,rgba(99,102,241,.28),rgba(34,211,238,.2),transparent); }
-    .badge { display:inline-flex; align-items:center; gap:4px; padding:2px 10px; border-radius:999px; font-size:.73rem; font-weight:600; border:1px solid; }
-    .bi    { background:rgba(99,102,241,.11); border-color:rgba(99,102,241,.3); color:#a5b4fc; }
-    .bc    { background:rgba(34,211,238,.09); border-color:rgba(34,211,238,.28); color:#67e8f9; }
-    .tab-btn {
-      border:1px solid rgba(255,255,255,.1);
-      background:rgba(255,255,255,.03);
-      color:#9090c0;
-      font-size:.82rem;
-      font-weight:600;
-      border-radius:.8rem;
-      padding:.55rem .9rem;
-      transition:all .15s;
+    * {
+      box-sizing: border-box;
+      font-family: "Space Grotesk", system-ui, sans-serif;
     }
-    .tab-btn:hover { border-color:rgba(99,102,241,.35); color:#d8d8ff; }
-    .tab-btn.active {
-      color:#d8e0ff;
-      border-color:rgba(99,102,241,.6);
-      background:linear-gradient(135deg, rgba(99,102,241,.22), rgba(34,211,238,.12));
-      box-shadow:0 0 0 1px rgba(99,102,241,.25) inset;
+
+    code, pre {
+      font-family: "IBM Plex Mono", "Fira Code", monospace !important;
     }
-    .tab-panel { display:none; }
-    .tab-panel.active { display:block; }
-    .fu    { animation:fu .7s ease both; }
-    .fu1   { animation-delay:.1s; }
-    .fu2   { animation-delay:.2s; }
-    .fu3   { animation-delay:.3s; }
-    @keyframes fu { from{opacity:0;transform:translateY(26px)} to{opacity:1;transform:translateY(0)} }
-    ::-webkit-scrollbar { width:6px; height:6px; }
-    ::-webkit-scrollbar-track  { background:var(--bg-base); }
-    ::-webkit-scrollbar-thumb  { background:rgba(99,102,241,.3); border-radius:3px; }
-    ::-webkit-scrollbar-thumb:hover { background:rgba(99,102,241,.5); }
+
+    html, body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 32%),
+        radial-gradient(circle at 85% 10%, rgba(245, 158, 11, 0.12), transparent 22%),
+        radial-gradient(circle at 50% 100%, rgba(94, 234, 212, 0.12), transparent 30%),
+        linear-gradient(180deg, #050b12 0%, #08121d 42%, #050b12 100%);
+      color: var(--text);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: radial-gradient(circle at 50% 30%, black 35%, transparent 78%);
+      opacity: 0.45;
+    }
+
+    .grain {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.08;
+      background-image:
+        radial-gradient(circle at 25% 25%, rgba(255, 255, 255, 0.16) 0, transparent 20%),
+        radial-gradient(circle at 75% 40%, rgba(255, 255, 255, 0.12) 0, transparent 18%),
+        radial-gradient(circle at 40% 75%, rgba(255, 255, 255, 0.12) 0, transparent 18%);
+      background-size: 260px 260px;
+    }
+
+    .navbar {
+      background: rgba(5, 11, 18, 0.78);
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+      backdrop-filter: blur(18px);
+    }
+
+    .nav-link {
+      color: var(--muted);
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.18s ease, background-color 0.18s ease;
+      border-radius: 999px;
+    }
+
+    .nav-link:hover,
+    .nav-link.active {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .shell,
+    .panel,
+    .feature-card,
+    .path-card,
+    .mini-card,
+    .resource-card,
+    .step-card,
+    .stat-card {
+      background: linear-gradient(180deg, rgba(16, 27, 40, 0.92), rgba(8, 16, 26, 0.82));
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+
+    .shell {
+      border-radius: 28px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .shell::after {
+      content: "";
+      position: absolute;
+      inset: 1px;
+      border-radius: 27px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      border-radius: 999px;
+      border: 1px solid rgba(94, 234, 212, 0.25);
+      background: rgba(94, 234, 212, 0.1);
+      color: #c7fff6;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .hero-title {
+      font-size: clamp(3rem, 6vw, 5.8rem);
+      line-height: 0.97;
+      letter-spacing: -0.05em;
+      font-weight: 700;
+    }
+
+    .hero-title .gradient {
+      background: linear-gradient(120deg, var(--accent) 0%, var(--accent-2) 48%, #f5f5f4 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-copy {
+      color: var(--muted);
+      font-size: 1.05rem;
+      line-height: 1.75;
+      max-width: 46rem;
+    }
+
+    .cta-primary,
+    .cta-secondary,
+    .ghost-link,
+    .mini-pill {
+      transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
+    }
+
+    .cta-primary {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+      color: #03222c;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 14px 36px rgba(56, 189, 248, 0.2);
+    }
+
+    .cta-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text);
+    }
+
+    .cta-primary:hover,
+    .cta-secondary:hover,
+    .ghost-link:hover,
+    .mini-pill:hover {
+      transform: translateY(-2px);
+    }
+
+    .mini-pill {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(255, 255, 255, 0.04);
+      color: #d9e6f5;
+    }
+
+    .stat-card,
+    .mini-card {
+      border-radius: 18px;
+      padding: 1rem 1.05rem;
+    }
+
+    .stat-card strong,
+    .mini-card strong {
+      display: block;
+      font-size: 1.1rem;
+      color: var(--text);
+      margin-bottom: 0.25rem;
+    }
+
+    .stat-card span,
+    .mini-card span {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.55;
+    }
+
+    .panel {
+      border-radius: var(--radius);
+      padding: 1.25rem;
+    }
+
+    .label {
+      font-size: 0.78rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #7dd3fc;
+      font-weight: 700;
+    }
+
+    .value {
+      color: var(--text);
+      font-size: 0.98rem;
+      line-height: 1.6;
+    }
+
+    .feature-card,
+    .path-card,
+    .resource-card,
+    .step-card {
+      border-radius: var(--radius-sm);
+      padding: 1.35rem;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .resource-card {
+      display: block;
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .feature-card:hover,
+    .path-card:hover,
+    .resource-card:hover,
+    .step-card:hover {
+      transform: translateY(-4px);
+      border-color: var(--border-strong);
+      box-shadow: 0 18px 48px rgba(3, 12, 18, 0.5);
+    }
+
+    .feature-card::before,
+    .path-card::before,
+    .resource-card::before,
+    .step-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(94, 234, 212, 0.45), transparent 65%);
+    }
+
+    .icon-wrap {
+      width: 2.9rem;
+      height: 2.9rem;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(94, 234, 212, 0.18);
+      background: rgba(94, 234, 212, 0.08);
+      color: var(--accent);
+    }
+
+    .soft {
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .accent-line {
+      height: 1px;
+      background: linear-gradient(90deg, transparent 0%, rgba(94, 234, 212, 0.3) 20%, rgba(56, 189, 248, 0.2) 50%, transparent 100%);
+    }
+
+    .terminal {
+      background: #07111c;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-radius: 18px;
+      overflow: hidden;
+    }
+
+    .term-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.95rem 1rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .dot {
+      width: 0.72rem;
+      height: 0.72rem;
+      border-radius: 999px;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 0.9rem;
+      right: 0.9rem;
+      z-index: 20;
+      padding: 0.35rem 0.7rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(255, 255, 255, 0.06);
+      color: #d7e4f0;
+      font-size: 0.72rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      border-color: rgba(94, 234, 212, 0.28);
+    }
+
+    pre[class*="language-"] {
+      margin: 0 !important;
+      background: #07111c !important;
+      border-radius: 18px !important;
+      border: 1px solid rgba(148, 163, 184, 0.1) !important;
+    }
+
+    code[class*="language-"] {
+      font-size: 0.82rem !important;
+      line-height: 1.75 !important;
+    }
+
+    :not(pre) > code {
+      background: rgba(94, 234, 212, 0.08);
+      border: 1px solid rgba(94, 234, 212, 0.12);
+      color: #c7fff6;
+      padding: 0.15rem 0.45rem;
+      border-radius: 0.4rem;
+      font-size: 0.88em;
+    }
+
+    .line-numbers .line-numbers-rows {
+      border-right-color: rgba(148, 163, 184, 0.12) !important;
+    }
+
+    .line-numbers-rows > span::before {
+      color: rgba(148, 163, 184, 0.32) !important;
+    }
+
+    .ghost-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      color: #dff9f5;
+      border-bottom: 1px solid transparent;
+    }
+
+    .ghost-link:hover {
+      color: var(--accent);
+      border-bottom-color: rgba(94, 234, 212, 0.3);
+    }
+
+    .route-list a {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      border-radius: 14px;
+      padding: 0.9rem 1rem;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text);
+      transition: border-color 0.18s ease, transform 0.18s ease, background-color 0.18s ease;
+    }
+
+    .route-list a:hover {
+      transform: translateX(4px);
+      border-color: rgba(94, 234, 212, 0.24);
+      background: rgba(94, 234, 212, 0.06);
+    }
+
+    .route-list small,
+    .foot-note {
+      color: var(--muted);
+    }
+
+    .section-kicker {
+      color: #8fead8;
+      font-size: 0.84rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .section-title {
+      font-size: clamp(2rem, 3.6vw, 3.3rem);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+    }
+
+    .section-copy {
+      max-width: 42rem;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.8;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.4rem 0.7rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      background: rgba(255, 255, 255, 0.04);
+      color: #dce8f6;
+      font-size: 0.8rem;
+      font-weight: 500;
+    }
+
+    .badge svg {
+      flex-shrink: 0;
+    }
+
+    .stack-diagram {
+      display: grid;
+      gap: 0.9rem;
+    }
+
+    .stack-row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 0.95rem;
+      align-items: start;
+      padding: 1rem;
+      border-radius: 16px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .stack-row strong {
+      color: var(--text);
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+
+    .stack-row span {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+
+    .stack-tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.45rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border: 1px solid rgba(94, 234, 212, 0.2);
+      color: #c7fff6;
+      background: rgba(94, 234, 212, 0.08);
+    }
+
+    .table-wrap {
+      border-radius: 20px;
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(7, 17, 28, 0.78);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      padding: 1rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+    }
+
+    th {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #8fead8;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    td {
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.55s ease, transform 0.55s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    footer {
+      background: rgba(4, 9, 15, 0.9);
+      border-top: 1px solid rgba(148, 163, 184, 0.1);
+    }
+
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #071019;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(94, 234, 212, 0.25);
+      border-radius: 999px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(94, 234, 212, 0.42);
+    }
+
+    @media (max-width: 1024px) {
+      .stack-row {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 820px) {
+      .hero-copy {
+        font-size: 0.98rem;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .hero-title {
+        font-size: 2.8rem;
+      }
+
+      .section-title {
+        font-size: 2rem;
+      }
+
+      .panel,
+      .feature-card,
+      .path-card,
+      .resource-card,
+      .step-card {
+        padding: 1.05rem;
+      }
+
+      th, td {
+        padding: 0.85rem;
+      }
+    }
   </style>
 </head>
 <body>
 
-<!-- NAVBAR -->
-<nav id="topnav" class="navbar fixed top-0 inset-x-0 z-50">
-  <div class="max-w-7xl mx-auto px-5 flex items-center justify-between h-14">
-    <a href="#" class="flex items-center gap-2.5 shrink-0">
-      <img src="logo.svg" alt="ForeBlocks" class="h-7 w-auto"/>
-      <span class="font-bold text-[15px] text-white hidden sm:block tracking-tight">ForeBlocks</span>
+<nav class="navbar fixed inset-x-0 top-0 z-50">
+  <div class="max-w-7xl mx-auto px-5 h-16 flex items-center justify-between gap-4">
+    <a href="#" class="flex items-center gap-3 shrink-0">
+      <img src="logo.svg" alt="ForeBlocks" class="h-8 w-auto"/>
+      <span class="text-white font-bold tracking-tight text-lg">ForeBlocks</span>
     </a>
-    <div class="flex items-center gap-0.5">
-      <a href="docs/"     class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Docs</a>
-      <a href="#get"      class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Install</a>
-      <a href="#features" class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Features</a>
-      <a href="#models"   class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Models</a>
-      <a href="#impl"     class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Implementation</a>
-      <a href="#usage"    class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Usage</a>
-      <a href="#api"      class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">API</a>
-      <a href="#examples" class="nav-link px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">Examples</a>
-      <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
-         class="ml-3 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold text-white bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 transition-all">
-        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+    <div class="hidden md:flex items-center gap-2">
+      <a href="#paths" class="nav-link px-3 py-2">Paths</a>
+      <a href="#install" class="nav-link px-3 py-2">Install</a>
+      <a href="#workflow" class="nav-link px-3 py-2">Workflow</a>
+      <a href="#features" class="nav-link px-3 py-2">Features</a>
+      <a href="#api" class="nav-link px-3 py-2">API</a>
+      <a href="#examples" class="nav-link px-3 py-2">Examples</a>
+    </div>
+    <div class="flex items-center gap-2">
+      <a href="docs/" class="hidden sm:inline-flex mini-pill px-4 py-2 rounded-full text-sm font-semibold">Docs</a>
+      <a
+        target="_blank"
+        rel="noopener"
+        href="https://github.com/lseman/foreblocks"
+        class="cta-primary inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold"
+      >
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
         GitHub
       </a>
     </div>
   </div>
 </nav>
 
-<!-- HERO -->
-<header class="relative min-h-screen flex items-center pt-14 overflow-hidden">
-  <div class="absolute inset-0 pointer-events-none" aria-hidden="true">
-    <div class="hero-blob blob-1"></div>
-    <div class="hero-blob blob-2"></div>
-    <div class="hero-blob blob-3"></div>
-    <div class="hero-grid"></div>
-  </div>
+<header class="relative overflow-hidden pt-28 pb-14">
+  <div class="grain" aria-hidden="true"></div>
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="grid xl:grid-cols-[1.15fr_.85fr] gap-8 items-center">
+      <div class="reveal">
+        <span class="eyebrow mb-5">
+          <span class="w-2 h-2 rounded-full bg-emerald-300"></span>
+          v0.1.15 | Python 3.10+
+        </span>
+        <h1 class="hero-title text-white">
+          Forecasting systems,
+          <span class="gradient">not just forecasting models.</span>
+        </h1>
+        <p class="hero-copy mt-6">
+          ForeBlocks gives you a lean PyTorch forecasting core first, then lets you opt
+          into preprocessing, uncertainty intervals, differentiable architecture search,
+          experiment tracking, and companion tooling when your workflow grows.
+        </p>
+        <div class="flex flex-wrap gap-3 mt-8">
+          <a href="docs/getting-started/" class="cta-primary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
+            Start with Getting Started
+            <span aria-hidden="true">-&gt;</span>
+          </a>
+          <a href="#paths" class="cta-secondary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
+            Choose your path
+          </a>
+          <a href="docs/reference/public-api/" class="cta-secondary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
+            Public API
+          </a>
+        </div>
+        <div class="flex flex-wrap gap-2 mt-8">
+          <span class="badge">
+            <svg class="w-4 h-4 text-teal-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            PyTorch core
+          </span>
+          <span class="badge">
+            <svg class="w-4 h-4 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16"/></svg>
+            Optional extras
+          </span>
+          <span class="badge">
+            <svg class="w-4 h-4 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-1 0v14m-7-7h14"/></svg>
+            Research workflows
+          </span>
+          <span class="badge">
+            <svg class="w-4 h-4 text-rose-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3M5.121 19.071A9 9 0 1118.88 4.93"/></svg>
+            Faster onboarding
+          </span>
+        </div>
+      </div>
 
-  <div class="relative max-w-7xl mx-auto px-6 py-24 w-full text-center">
-    <div class="flex flex-wrap items-center justify-center gap-2 mb-10 fu">
-      <span class="badge bi"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> PyTorch</span>
-      <span class="badge bc">Research-grade</span>
-      <span class="badge bi">Open Source</span>
-      <span class="badge bc">MIT License</span>
+      <div class="shell p-5 lg:p-6 reveal">
+        <div class="absolute inset-0 bg-gradient-to-br from-teal-300/10 via-transparent to-sky-300/10 pointer-events-none"></div>
+        <div class="relative">
+          <div class="terminal">
+            <div class="term-bar">
+              <span class="dot bg-rose-400"></span>
+              <span class="dot bg-amber-300"></span>
+              <span class="dot bg-emerald-400"></span>
+              <span class="ml-3 text-xs text-slate-400" style="font-family:'IBM Plex Mono', monospace">quick-install.sh</span>
+            </div>
+            <div class="p-5 relative">
+              <button class="copy-btn">Copy</button>
+              <pre><code class="language-bash">pip install foreblocks
+pip install "foreblocks[preprocessing]"
+pip install "foreblocks[darts]"</code></pre>
+            </div>
+          </div>
+
+          <div class="grid sm:grid-cols-3 gap-3 mt-4">
+            <div class="stat-card">
+              <strong>Stable path</strong>
+              <span><code>ForecastingModel</code> + <code>Trainer</code> + <code>ModelEvaluator</code>.</span>
+            </div>
+            <div class="stat-card">
+              <strong>Raw series</strong>
+              <span><code>TimeSeriesHandler</code> covers windowing, scaling, and filtering.</span>
+            </div>
+            <div class="stat-card">
+              <strong>Search</strong>
+              <span>DARTS, BOHB, and analysis guides are already mapped in the docs.</span>
+            </div>
+          </div>
+
+          <div class="panel mt-4">
+            <div class="flex items-center justify-between gap-3 mb-4">
+              <div>
+                <div class="label">Fastest reading routes</div>
+                <p class="soft mt-2 text-sm">Pick the entry point that matches the job you need to do today.</p>
+              </div>
+              <a href="docs/" class="ghost-link text-sm font-semibold shrink-0">Open docs -&gt;</a>
+            </div>
+            <div class="route-list grid gap-3">
+              <a href="docs/getting-started/">
+                <div>
+                  <strong class="block text-white">Run a first training loop</strong>
+                  <small>Smallest reliable path through the public API.</small>
+                </div>
+                <span aria-hidden="true">-&gt;</span>
+              </a>
+              <a href="docs/preprocessor/">
+                <div>
+                  <strong class="block text-white">Start from raw multivariate series</strong>
+                  <small>Use preprocessing, filtering, and window generation helpers.</small>
+                </div>
+                <span aria-hidden="true">-&gt;</span>
+              </a>
+              <a href="docs/darts/">
+                <div>
+                  <strong class="block text-white">Search architectures instead of hand-picking them</strong>
+                  <small>Differentiable NAS plus retraining and analysis.</small>
+                </div>
+                <span aria-hidden="true">-&gt;</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div class="fu fu1">
-      <img src="logo.svg" alt="ForeBlocks logo" class="mx-auto mb-8 w-28 sm:w-36 md:w-44 h-auto"/>
-      <h1 class="text-5xl sm:text-6xl md:text-7xl font-extrabold tracking-tight leading-[1.05] text-white">
-        Fore<span class="grad">Blocks</span>
-      </h1>
-      <p class="mt-4 text-xl sm:text-2xl font-medium" style="color:#9090b8">Modular Time-Series Forecasting for PyTorch</p>
-      <p class="mt-3 text-base max-w-2xl mx-auto" style="color:#5a5a80">
-        Build forecasting pipelines with a minimal PyTorch core, then opt into preprocessing, DARTS architecture search, MLTracker, and companion tooling only when you need them.
+    <div class="grid md:grid-cols-4 gap-4 mt-10 reveal">
+      <div class="mini-card">
+        <strong>Minimal install</strong>
+        <span>Default dependencies stay focused on the modeling stack.</span>
+      </div>
+      <div class="mini-card">
+        <strong>Modular stack</strong>
+        <span>Preprocessing, search, tracking, and analysis stay opt-in.</span>
+      </div>
+      <div class="mini-card">
+        <strong>One docs hub</strong>
+        <span>Tutorials, architecture notes, guides, and reference live together.</span>
+      </div>
+      <div class="mini-card">
+        <strong>Companion tooling</strong>
+        <span><code>foretools</code> extends the repo with generators, BOHB, VMD, and more.</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="accent-line"></div>
+
+<section id="paths" class="py-24">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="reveal">
+      <div class="section-kicker">Choose A Route</div>
+      <h2 class="section-title mt-3">Three clear ways into the repository</h2>
+      <p class="section-copy mt-4">
+        The project is broad, so the site now emphasizes workflow-first entry points instead
+        of expecting everyone to read the repo top to bottom. These are the most practical
+        places to begin.
       </p>
     </div>
 
-    <div class="mt-8 flex flex-wrap items-center justify-center gap-3 fu fu2">
-      <a href="docs/" class="px-6 py-3 rounded-xl font-semibold text-white text-sm bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 shadow-lg shadow-indigo-950/60 transition-all hover:scale-105">Read Docs</a>
-      <a href="docs/darts/" class="px-6 py-3 rounded-xl font-semibold text-sm transition-all border border-cyan-400/25 hover:border-cyan-300/60 hover:text-white bg-cyan-400/10 hover:bg-cyan-400/15 backdrop-blur-sm" style="color:#b6f4ff">DARTS Search Guide</a>
-      <a href="#features" class="px-6 py-3 rounded-xl font-semibold text-sm transition-all border border-white/10 hover:border-indigo-500/40 hover:text-white bg-white/5 hover:bg-white/10 backdrop-blur-sm" style="color:#9090c0">Explore Features</a>
-      <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
-         class="px-6 py-3 rounded-xl font-semibold text-sm flex items-center gap-2 transition-all border border-white/10 hover:border-white/20 hover:text-white bg-white/5 hover:bg-white/10" style="color:#9090c0">
-        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-        Star on GitHub
-      </a>
-    </div>
-
-    <div class="max-w-sm mx-auto mt-10 fu fu3">
-      <div class="terminal">
-        <div class="term-bar">
-          <div class="tdot" style="background:#ff5f56"></div>
-          <div class="tdot" style="background:#ffbd2e"></div>
-          <div class="tdot" style="background:#27c93f"></div>
-          <span class="ml-3 text-xs" style="color:#44446a;font-family:'JetBrains Mono',monospace">terminal</span>
+    <div class="grid lg:grid-cols-3 gap-5 mt-10">
+      <article class="path-card reveal">
+        <div class="icon-wrap mb-5">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-6 4h10M7 13h10M7 17h6"/></svg>
         </div>
-        <div class="p-4 text-left">
-          <div class="flex items-center gap-2 text-sm" style="font-family:'JetBrains Mono',monospace">
-            <span style="color:#6366f1">$</span>
-            <span style="color:#e2e2f0">pip install <span style="color:#22d3ee">foreblocks</span></span>
+        <div class="label">Path 01</div>
+        <h3 class="text-2xl font-bold mt-3">Train a baseline first</h3>
+        <p class="soft mt-4">
+          Use the safest path through the public API: build a head or encoder/decoder pair,
+          create dataloaders, train with <code>Trainer</code>, and evaluate before you add
+          more moving parts.
+        </p>
+        <div class="mt-6 flex flex-wrap gap-2">
+          <a href="docs/getting-started/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Getting Started</a>
+          <a href="docs/tutorials/train-direct-model/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Direct Model Tutorial</a>
+        </div>
+      </article>
+
+      <article class="path-card reveal">
+        <div class="icon-wrap mb-5" style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M7 12h10M10 17h4"/></svg>
+        </div>
+        <div class="label">Path 02</div>
+        <h3 class="text-2xl font-bold mt-3">Start from raw series</h3>
+        <p class="soft mt-4">
+          When your input is a raw <code>[T, D]</code> array instead of ready-made training
+          windows, reach for the preprocessing stack first so scaling, filtering, and slicing
+          stay consistent.
+        </p>
+        <div class="mt-6 flex flex-wrap gap-2">
+          <a href="docs/preprocessor/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Preprocessor Guide</a>
+          <a href="docs/foretools/feature-engineering/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Feature Engineering</a>
+        </div>
+      </article>
+
+      <article class="path-card reveal">
+        <div class="icon-wrap mb-5" style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.18);color:var(--accent-3)">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-6m3 6V7m3 10v-3m5 5H4"/></svg>
+        </div>
+        <div class="label">Path 03</div>
+        <h3 class="text-2xl font-bold mt-3">Search and compare architectures</h3>
+        <p class="soft mt-4">
+          Once the baseline loop is working, move into staged DARTS search, multi-fidelity
+          ranking, BOHB optimization, and retraining workflows with dedicated docs and tutorials.
+        </p>
+        <div class="mt-6 flex flex-wrap gap-2">
+          <a href="docs/darts/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">DARTS Guide</a>
+          <a href="docs/tutorials/darts-multifidelity-search/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Search Tutorial</a>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<div class="accent-line"></div>
+
+<section id="install" class="py-24">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 items-start">
+      <div class="reveal">
+        <div class="section-kicker">Install</div>
+        <h2 class="section-title mt-3">A lean default install, with extras that map to real workflows</h2>
+        <p class="section-copy mt-4">
+          ForeBlocks is easier to approach when the install story matches the feature boundaries.
+          The default package gets you the core modeling stack. Extras add heavier scientific,
+          search, tracking, or analysis dependencies only when you need them.
+        </p>
+
+        <div class="grid sm:grid-cols-2 gap-4 mt-8">
+          <div class="resource-card">
+            <div class="label">Recommended</div>
+            <h3 class="text-xl font-bold mt-3">Start small</h3>
+            <p class="soft mt-3">Use the minimal install, validate one training loop, then add extras for preprocessing or search.</p>
+          </div>
+          <div class="resource-card">
+            <div class="label">Source</div>
+            <h3 class="text-xl font-bold mt-3">Hack locally</h3>
+            <p class="soft mt-3">Editable installs remain the best path when you are modifying blocks, docs, or training internals.</p>
           </div>
         </div>
       </div>
-    </div>
-  </div>
 
-  <a href="#get" aria-label="Scroll down" class="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 transition-colors" style="color:#363660">
-    <span class="text-xs tracking-widest font-medium">SCROLL</span>
-    <svg class="w-4 h-4 animate-bounce" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-  </a>
-</header>
-
-<div class="div"></div>
-
-<!-- GET -->
-<section id="get" class="py-20">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <div class="stag">Installation</div>
-      <h2 class="text-3xl sm:text-4xl font-bold text-white">Get ForeBlocks</h2>
-      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Up and running in seconds. Install from PyPI or clone from GitHub.</p>
-    </div>
-    <div class="grid md:grid-cols-2 gap-5 max-w-4xl mx-auto">
-      <div class="card rounded-2xl p-6">
-        <div class="flex items-center gap-3 mb-4">
-          <div class="ibox"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg></div>
-          <div><h3 class="font-semibold text-white">Quick Install (PyPI)</h3><p class="text-xs" style="color:#5a5a7a">Recommended</p></div>
-        </div>
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-bash">pip install foreblocks</code></pre>
-        </div>
-        <p class="text-xs mt-3" style="color:#4a4a68">Requires Python &ge; 3.10. Add extras for preprocessing, DARTS, tracking, or benchmarking when needed.</p>
-      </div>
-      <div class="card rounded-2xl p-6">
-        <div class="flex items-center gap-3 mb-4">
-          <div class="ibox"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg></div>
-          <div><h3 class="font-semibold text-white">Install from Source</h3><p class="text-xs" style="color:#5a5a7a">Latest dev version</p></div>
-        </div>
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-bash">git clone https://github.com/lseman/foreblocks
+      <div class="grid gap-5 reveal">
+        <div class="panel">
+          <div class="flex items-center justify-between gap-4 mb-4">
+            <div>
+              <div class="label">Core + Extras</div>
+              <p class="soft mt-2 text-sm">Common install paths pulled directly from the current package layout.</p>
+            </div>
+          </div>
+          <div class="grid gap-3">
+            <div class="relative">
+              <button class="copy-btn">Copy</button>
+              <pre><code class="language-bash">pip install foreblocks</code></pre>
+            </div>
+            <div class="relative">
+              <button class="copy-btn">Copy</button>
+              <pre><code class="language-bash">pip install "foreblocks[preprocessing]"
+pip install "foreblocks[darts]"
+pip install "foreblocks[darts-analysis]"
+pip install "foreblocks[mltracker]"
+pip install "foreblocks[all]"</code></pre>
+            </div>
+            <div class="relative">
+              <button class="copy-btn">Copy</button>
+              <pre><code class="language-bash">git clone https://github.com/lseman/foreblocks.git
 cd foreblocks
-pip install -e .</code></pre>
-        </div>
-      </div>
-    </div>
-    <div class="card rounded-2xl p-4 md:p-5 mt-5 max-w-4xl mx-auto overflow-hidden">
-      <div class="grid md:grid-cols-1 gap-5 items-center">
-        <div>
-          <div class="stag mb-3">Docs + Search</div>
-          <h3 class="text-xl font-semibold text-white">The docs now mirror the package layout</h3>
-          <p class="text-sm mt-2" style="color:#6a6a90">
-            Start with the stable <code>ForecastingModel</code> + <code>Trainer</code> path, then branch into
-            preprocessing, transformer internals, or the staged DARTS workflow through dedicated guides and tutorials.
-          </p>
-          <div class="flex flex-wrap gap-3 mt-4">
-            <a href="docs/getting-started/" class="px-4 py-2 rounded-lg text-sm font-semibold bg-white/5 border border-white/10 hover:border-indigo-400/40 hover:bg-white/10" style="color:#c9ccff">Getting Started</a>
-            <a href="docs/darts/" class="px-4 py-2 rounded-lg text-sm font-semibold bg-cyan-400/10 border border-cyan-400/20 hover:border-cyan-300/50 hover:bg-cyan-400/15" style="color:#b6f4ff">DARTS Guide</a>
-            <a href="docs/architecture/darts-pipeline/" class="px-4 py-2 rounded-lg text-sm font-semibold bg-white/5 border border-white/10 hover:border-indigo-400/40 hover:bg-white/10" style="color:#c9ccff">Search Pipeline</a>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="flex flex-wrap justify-center gap-3 mt-7">
-      <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
-         class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
-         style="color:#c0c0e0;background:#161b22;border:1px solid rgba(255,255,255,.1)">
-        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-        GitHub: lseman/foreblocks
-      </a>
-      <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/"
-         class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
-         style="color:#a5b4fc;background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.28)">
-        PyPI: foreblocks
-      </a>
-    </div>
-  </div>
-</section>
-
-<div class="div"></div>
-
-<!-- FEATURES -->
-<section id="features" class="py-20" style="background:rgba(255,255,255,.015)">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <div class="stag">Capabilities</div>
-      <h2 class="text-3xl sm:text-4xl font-bold text-white">Key Features</h2>
-      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Everything you need for research-grade time-series work in one composable library.</p>
-    </div>
-    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-      <div class="card rounded-2xl p-6">
-        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">ForecastingModel Core</h3>
-        <p class="text-sm" style="color:#6a6a90">One <code>nn.Module</code> class powers all strategies &#8212; <code>seq2seq</code>, <code>autoregressive</code>, <code>direct</code>, <code>transformer_seq2seq</code> &#8212; via a unified forward pass.</p>
-      </div>
-      <div class="card rounded-2xl p-6">
-        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Composable Blocks</h3>
-        <p class="text-sm" style="color:#6a6a90">Mix and match <code>LSTMEncoder</code>, <code>TransformerEncoder</code>, Fourier, Wavelet, TCN, xLSTM, and Graph blocks as encoders or preprocessing heads.</p>
-      </div>
-      <div class="card rounded-2xl p-6">
-        <div class="ibox mb-4"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Processing Heads</h3>
-        <p class="text-sm" style="color:#6a6a90"><code>RevinHead</code>, <code>DAINHead</code>, <code>DecompositionHead</code>, <code>PatchEmbedHead</code>, <code>Time2VecHead</code>, <code>FFTTopKHead</code> &#8212; attach at <code>input</code>, <code>output</code>, or <code>input_norm</code>.</p>
-      </div>
-      <div class="card rounded-2xl p-6">
-        <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Conformal Prediction</h3>
-        <p class="text-sm" style="color:#6a6a90">Built-in uncertainty intervals via <code>Trainer</code>: Split, EnbPI, Rolling ACI, AgACI, CPTC, AFOCP &#8212; enabled with one config flag.</p>
-      </div>
-      <div class="card rounded-2xl p-6">
-        <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">NAS &amp; HeadComposer</h3>
-        <p class="text-sm" style="color:#6a6a90"><code>HeadComposer</code> learns differentiable weights over head candidates. Enable with <code>train_nas=True</code> in <code>TrainingConfig</code> for automatic architecture search.</p>
-      </div>
-      <div class="card rounded-2xl p-6">
-        <div class="ibox ibox2 mb-4"><svg class="w-5 h-5" style="color:#22d3ee" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div>
-        <h3 class="font-semibold text-white mb-1.5">Trainer &amp; MLTracker</h3>
-        <p class="text-sm" style="color:#6a6a90">AMP, gradient clipping, LR schedulers, early stopping, <code>ModelEvaluator</code>, and automatic SQLite experiment tracking via <code>MLTracker</code>.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="div"></div>
-
-<!-- MODELS -->
-<section id="models" class="py-20">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <div class="stag">Recipes</div>
-      <h2 class="text-3xl sm:text-4xl font-bold text-white">Model Configurations</h2>
-      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Compose encoders, decoders, and heads into a <code>ForecastingModel</code> in just a few lines.</p>
-    </div>
-    <div class="grid md:grid-cols-2 gap-5 mb-5">
-      <div class="card rounded-2xl p-6">
-        <div class="flex items-center gap-3 mb-4"><div class="snum">1</div><div><h3 class="font-semibold text-white">Seq2Seq LSTM</h3><p class="text-xs" style="color:#5a5a7a">Compose encoder + decoder + train with Trainer</p></div></div>
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">from foreblocks import ForecastingModel, Trainer, TrainingConfig
-from foreblocks.blocks.enc_dec import LSTMEncoder, LSTMDecoder
-from foreblocks.aux import create_dataloaders
-
-enc = LSTMEncoder(input_size=3, hidden_size=64, num_layers=2)
-dec = LSTMDecoder(input_size=1, hidden_size=64, output_size=1, num_layers=2)
-
-model = ForecastingModel(
-    encoder=enc, decoder=dec,
-    forecasting_strategy="seq2seq", model_type="lstm",
-    target_len=24, output_size=1,
-)
-
-train_loader, val_loader = create_dataloaders(X_train, y_train, batch_size=32)
-trainer = Trainer(model, config=TrainingConfig(num_epochs=50, patience=10))
-history = trainer.train(train_loader, val_loader)</code></pre>
-        </div>
-      </div>
-      <div class="card rounded-2xl p-6">
-        <div class="flex items-center gap-3 mb-4"><div class="snum">2</div><div><h3 class="font-semibold text-white">Transformer Seq2Seq</h3><p class="text-xs" style="color:#5a5a7a">Multi-head self-attention for long-range context</p></div></div>
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">from foreblocks import ForecastingModel, Trainer, TrainingConfig
-from foreblocks.tf.transformer import TransformerEncoder, TransformerDecoder
-
-enc = TransformerEncoder(input_size=4, hidden_size=128,
-                         nheads=8, num_layers=3, dim_feedforward=512)
-dec = TransformerDecoder(input_size=4, hidden_size=128, output_size=4,
-                         nheads=8, num_layers=3, dim_feedforward=512)
-
-model = ForecastingModel(
-    encoder=enc, decoder=dec,
-    forecasting_strategy="transformer_seq2seq", model_type="transformer",
-    target_len=96, output_size=4,
-)
-cfg = TrainingConfig(num_epochs=100, learning_rate=1e-4, use_amp=True)
-trainer = Trainer(model, config=cfg)</code></pre>
-        </div>
-      </div>
-    </div>
-    <div class="card rounded-2xl p-6">
-      <div class="flex items-center gap-3 mb-4"><div class="snum">3</div><div><h3 class="font-semibold text-white">Heads, Attention &amp; Conformal Intervals</h3><p class="text-xs" style="color:#5a5a7a">Post-hoc composition and uncertainty quantification</p></div></div>
-      <div class="grid md:grid-cols-2 gap-4">
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python"># Attach preprocessing heads post-hoc
-from foreblocks.core.heads.revin_head import RevinHead
-from foreblocks.core.att import AttentionLayer
-
-model.add_head(RevinHead(input_size=3), position="input_norm")
-model.add_head(
-    AttentionLayer(method="dot",
-                   encoder_hidden_size=64,
-                   decoder_hidden_size=64),
-    position="attention"
-)
-print(model.list_heads())</code></pre>
-        </div>
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python"># Conformal prediction intervals
-from foreblocks import TrainingConfig, Trainer
-
-cfg = TrainingConfig(
-    conformal_enabled=True,
-    conformal_method="enbpi",   # split | rolling | agaci | cptc ...
-    conformal_quantile=0.9,
-)
-trainer = Trainer(model, config=cfg)
-trainer.calibrate_conformal(cal_loader)
-lower, upper = trainer.predict_with_intervals(X_test)</code></pre>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="div"></div>
-
-<!-- IMPLEMENTATION DETAILS -->
-<section id="impl" class="py-20" style="background:rgba(255,255,255,.015)">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <div class="stag">Engineering Notes</div>
-      <h2 class="text-3xl sm:text-4xl font-bold text-white">Custom Transformer &amp; MoE</h2>
-      <p class="mt-3 max-w-2xl mx-auto text-sm" style="color:#6a6a90">Focused view of the implementation choices behind ForeBlocks' transformer stack and MoE path.</p>
-    </div>
-
-    <div class="card rounded-2xl p-6" data-tab-group="impl-tabs">
-      <div class="flex flex-wrap gap-2 mb-5" role="tablist" aria-label="Implementation tabs">
-        <button class="tab-btn active" type="button" data-tab-target="transformer" aria-selected="true">Transformer Implementation</button>
-        <button class="tab-btn" type="button" data-tab-target="moe" aria-selected="false">MoE Implementation</button>
-      </div>
-
-      <div class="tab-panel active" data-tab-panel="transformer">
-        <div class="grid lg:grid-cols-2 gap-5">
-          <div>
-            <h3 class="font-semibold text-white mb-3">What is custom in our transformer</h3>
-            <ul class="space-y-2 text-sm" style="color:#7878a0">
-              <li>&#8226; Unified encoder/decoder base with <code>att_type</code> + <code>attention_mode</code> routing.</li>
-              <li>&#8226; Patch pathways (<code>patch_encoder</code>, <code>patch_decoder</code>) and CT-PatchTST mode for long context.</li>
-              <li>&#8226; Configurable norms (<code>norm_strategy</code>, <code>custom_norm</code>) and SwiGLU feedforward.</li>
-              <li>&#8226; Optional dynamic depth controls with layer skipping budgets.</li>
-              <li>&#8226; Incremental decoding support in decoder for efficient autoregressive inference.</li>
-            </ul>
-          </div>
-          <div class="relative">
-            <button class="copy-btn">Copy</button>
-            <pre class="line-numbers"><code class="language-python">from foreblocks import TransformerEncoder
-
-enc = TransformerEncoder(
-    input_size=8,
-    d_model=256,
-    nhead=8,
-    num_layers=4,
-    att_type="standard",
-    attention_mode="hybrid",
-    norm_strategy="pre_norm",
-    custom_norm="rms",
-    patch_encoder=True,
-    patch_len=16,
-    patch_stride=8,
-    use_layer_skipping=True,
-)
-</code></pre>
-          </div>
-        </div>
-      </div>
-
-      <div class="tab-panel" data-tab-panel="moe">
-        <div class="grid lg:grid-cols-2 gap-5">
-          <div>
-            <h3 class="font-semibold text-white mb-3">What is custom in our MoE</h3>
-            <ul class="space-y-2 text-sm" style="color:#7878a0">
-              <li>&#8226; dMoE-style FFN path activated with <code>use_moe=True</code>.</li>
-              <li>&#8226; Routing controls: <code>routing_mode</code>, <code>router_type</code>, <code>top_k</code>, temperature/noise.</li>
-              <li>&#8226; Auxiliary balancing via <code>load_balance_weight</code>, <code>z_loss_weight</code>, and <code>moe_aux_lambda</code>.</li>
-              <li>&#8226; Shared expert support (<code>num_shared</code>, <code>shared_combine</code>) for stable capacity scaling.</li>
-              <li>&#8226; Performance knobs for grouped kernels and optional Triton-backed paths.</li>
-            </ul>
-          </div>
-          <div class="relative">
-            <button class="copy-btn">Copy</button>
-            <pre class="line-numbers"><code class="language-python">from foreblocks import TransformerEncoder
-
-enc = TransformerEncoder(
-    input_size=8,
-    d_model=256,
-    nhead=8,
-    num_layers=4,
-    use_moe=True,
-    num_experts=8,
-    top_k=2,
-    routing_mode="token_choice",
-    router_type="noisy_topk",
-    load_balance_weight=1e-2,
-    z_loss_weight=1e-3,
-    moe_aux_lambda=1.0,
-)
-</code></pre>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="div"></div>
-
-<!-- USAGE -->
-<section id="usage" class="py-20" style="background:rgba(255,255,255,.015)">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <div class="stag">Quick Start</div>
-      <h2 class="text-3xl sm:text-4xl font-bold text-white">From Data to Forecast in Minutes</h2>
-      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Load data, configure, train, predict &#8212; that's the entire workflow.</p>
-    </div>
-    <div class="card rounded-2xl p-6 mb-8 max-w-4xl mx-auto">
-      <div class="flex items-center gap-3 mb-4">
-        <div class="ibox"><svg class="w-5 h-5" style="color:#818cf8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div>
-        <h3 class="font-semibold text-white">Minimal End-to-End Example</h3>
-      </div>
-      <div class="relative">
-        <button class="copy-btn">Copy</button>
-        <pre class="line-numbers"><code class="language-python">import numpy as np
-from foreblocks import ForecastingModel, Trainer, TrainingConfig
-from foreblocks.blocks.enc_dec import LSTMEncoder, LSTMDecoder
-from foreblocks.aux import create_dataloaders
-
-# 1. Build encoder / decoder
-enc = LSTMEncoder(input_size=4, hidden_size=64, num_layers=2)
-dec = LSTMDecoder(input_size=1, hidden_size=64, output_size=1, num_layers=2)
-
-# 2. Assemble ForecastingModel
-model = ForecastingModel(
-    encoder=enc, decoder=dec,
-    forecasting_strategy="seq2seq",
-    model_type="lstm",
-    target_len=24, output_size=1,
-)
-
-# 3. Prepare data
-X = np.random.randn(1000, 30, 4).astype("float32")  # [samples, seq_len, features]
-y = np.random.randn(1000, 24, 1).astype("float32")  # [samples, target_len, outputs]
-train_loader, val_loader = create_dataloaders(X, y, batch_size=32, val_split=0.2)
-
-# 4. Train
-cfg = TrainingConfig(num_epochs=50, learning_rate=1e-3, patience=10, use_amp=True)
-trainer = Trainer(model, config=cfg)
-history = trainer.train(train_loader, val_loader)
-
-# 5. Evaluate
-metrics = trainer.metrics(val_loader)  # returns dict of MAE, RMSE, MAPE ...</code></pre>
-      </div>
-    </div>
-    <div class="grid sm:grid-cols-3 gap-4 max-w-4xl mx-auto">
-      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#6366f1">STEP 01</div><h4 class="font-semibold text-white mb-1">Compose Your Model</h4><p class="text-sm" style="color:#6a6a90">Pick encoder/decoder blocks and attach preprocessing <code>heads</code> at any position in <code>ForecastingModel</code>.</p></div>
-      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#22d3ee">STEP 02</div><h4 class="font-semibold text-white mb-1">Configure Trainer</h4><p class="text-sm" style="color:#6a6a90"><code>TrainingConfig</code> covers AMP, gradient clipping, LR scheduler, NAS alphas, and conformal settings.</p></div>
-      <div class="card rounded-xl p-5"><div class="text-xs font-bold tracking-widest mb-2" style="color:#6366f1">STEP 03</div><h4 class="font-semibold text-white mb-1">Train, Evaluate &amp; Track</h4><p class="text-sm" style="color:#6a6a90"><code>trainer.train()</code>, <code>trainer.metrics()</code>, <code>trainer.plot_prediction()</code>, and auto-logged to MLTracker.</p></div>
-    </div>
-  </div>
-</section>
-
-<div class="div"></div>
-
-<!-- API -->
-<section id="api" class="py-20">
-  <div class="max-w-7xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <div class="stag">Reference</div>
-      <h2 class="text-3xl sm:text-4xl font-bold text-white">API Cheatsheet</h2>
-      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Core classes and common configuration knobs at a glance.</p>
-    </div>
-
-    <!-- Row 1: 2-col -->
-    <div class="grid md:grid-cols-2 gap-5 max-w-5xl mx-auto mb-5">
-
-      <!-- Core Classes -->
-      <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-4 flex items-center gap-2">
-          <span class="w-1.5 h-5 rounded-full inline-block shrink-0" style="background:#6366f1"></span> Core Classes
-        </h3>
-        <ul class="space-y-2 text-sm" style="color:#7878a0">
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>ForecastingModel</code> <span style="color:#4a4a68">— main <code>nn.Module</code></span></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>Trainer</code> <span style="color:#4a4a68">— training loop, conformal &amp; NAS</span></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>TrainingConfig</code>, <code>ModelConfig</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>ModelEvaluator</code>, <code>TimeSeriesDataset</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>AttentionLayer</code>, <code>HeadComposer</code>, <code>HeadSpec</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>create_dataloaders(X, y, batch_size, val_split)</code></div></li>
-        </ul>
-      </div>
-
-      <!-- ForecastingModel Constructor -->
-      <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-4 flex items-center gap-2">
-          <span class="w-1.5 h-5 rounded-full inline-block shrink-0" style="background:#22d3ee"></span> ForecastingModel Constructor
-        </h3>
-        <ul class="space-y-2 text-sm" style="color:#7878a0">
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>encoder</code>, <code>decoder</code>, <code>head</code> <span style="color:#4a4a68">— any <code>nn.Module</code></span></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span>
-            <div><code>forecasting_strategy</code>
-              <div class="flex flex-wrap gap-1 mt-1">
-                <span class="badge bi" style="font-size:.65rem">seq2seq</span>
-                <span class="badge bi" style="font-size:.65rem">autoregressive</span>
-                <span class="badge bi" style="font-size:.65rem">direct</span>
-                <span class="badge bi" style="font-size:.65rem">transformer_seq2seq</span>
-              </div>
+pip install -e ".[dev]"</code></pre>
             </div>
-          </li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>input_preprocessor</code>, <code>input_normalization</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>output_postprocessor</code>, <code>output_normalization</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>attention_module</code>, <code>head_composer</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>teacher_forcing_ratio</code>, <code>target_len</code>, <code>label_len</code></div></li>
-        </ul>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Need</th>
+                <th>Install</th>
+                <th>Docs route</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Core forecasting only</td>
+                <td><code>foreblocks</code></td>
+                <td><a href="docs/getting-started/" class="ghost-link">Getting Started</a></td>
+              </tr>
+              <tr>
+                <td>Raw-series preprocessing</td>
+                <td><code>foreblocks[preprocessing]</code></td>
+                <td><a href="docs/preprocessor/" class="ghost-link">Preprocessor</a></td>
+              </tr>
+              <tr>
+                <td>DARTS search loops</td>
+                <td><code>foreblocks[darts]</code></td>
+                <td><a href="docs/darts/" class="ghost-link">DARTS Guide</a></td>
+              </tr>
+              <tr>
+                <td>Search analysis and richer plots</td>
+                <td><code>foreblocks[darts-analysis]</code></td>
+                <td><a href="docs/tutorials/optimize-with-bohb/" class="ghost-link">BOHB Tutorial</a></td>
+              </tr>
+              <tr>
+                <td>Tracking UI and API clients</td>
+                <td><code>foreblocks[mltracker]</code></td>
+                <td><a href="docs/webui/" class="ghost-link">Web UI</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
+  </div>
+</section>
 
-    <!-- Row 2: 2-col -->
-    <div class="grid md:grid-cols-2 gap-5 max-w-5xl mx-auto">
+<div class="accent-line"></div>
 
-      <!-- ForecastingModel Methods -->
-      <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-4 flex items-center gap-2">
-          <span class="w-1.5 h-5 rounded-full inline-block shrink-0" style="background:#6366f1"></span> ForecastingModel Methods
-        </h3>
-        <ul class="space-y-2 text-sm" style="color:#7878a0">
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span>
-            <div><code>add_head(module, position)</code>
-              <div class="flex flex-wrap gap-1 mt-1">
-                <span class="badge bc" style="font-size:.65rem">encoder</span>
-                <span class="badge bc" style="font-size:.65rem">decoder</span>
-                <span class="badge bc" style="font-size:.65rem">attention</span>
-                <span class="badge bc" style="font-size:.65rem">input</span>
-                <span class="badge bc" style="font-size:.65rem">output</span>
-                <span class="badge bc" style="font-size:.65rem">input_norm</span>
-                <span class="badge bc" style="font-size:.65rem">output_norm</span>
-                <span class="badge bc" style="font-size:.65rem">head</span>
-              </div>
+<section id="workflow" class="py-24">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="reveal">
+      <div class="section-kicker">Workflow</div>
+      <h2 class="section-title mt-3">The site now explains the stack in layers</h2>
+      <p class="section-copy mt-4">
+        A big repo gets easier to navigate when people can see what belongs to the stable
+        public surface, what sits behind optional extras, and what is better treated as an
+        advanced subsystem. The layout below mirrors the packaging and the docs.
+      </p>
+    </div>
+
+    <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 mt-10 items-start">
+      <div class="grid gap-4 reveal">
+        <div class="step-card">
+          <div class="label">Step 01</div>
+          <h3 class="text-xl font-bold mt-3">Build a baseline</h3>
+          <p class="soft mt-3">Use the public API and verify your shapes, loss loop, and evaluation path before adding architectural complexity.</p>
+        </div>
+        <div class="step-card">
+          <div class="label">Step 02</div>
+          <h3 class="text-xl font-bold mt-3">Add preprocessing or custom blocks</h3>
+          <p class="soft mt-3">Bring in <code>TimeSeriesHandler</code>, transformer blocks, or composable heads when your data or architecture needs them.</p>
+        </div>
+        <div class="step-card">
+          <div class="label">Step 03</div>
+          <h3 class="text-xl font-bold mt-3">Search, compare, and retrain</h3>
+          <p class="soft mt-3">Move into DARTS, BOHB, uncertainty intervals, and analysis only after the baseline path is already healthy.</p>
+        </div>
+      </div>
+
+      <div class="panel reveal">
+        <div class="label mb-4">What lives where</div>
+        <div class="stack-diagram">
+          <div class="stack-row">
+            <div><span class="stack-tag">foreblocks</span></div>
+            <div>
+              <strong>Core forecasting library</strong>
+              <span>Public entry points such as <code>ForecastingModel</code>, <code>Trainer</code>, dataloaders, configs, transformer blocks, evaluation, and the preprocessing bridge.</span>
             </div>
-          </li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>remove_head(position)</code>, <code>list_heads()</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>add_graph_block(block, where)</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>get_model_size()</code>, <code>benchmark_inference()</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>set_head_composer(composer)</code>, <code>clear_head_composer()</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#818cf8">&#8250;</span><div><code>get_aux_loss()</code>, <code>get_kl()</code></div></li>
-        </ul>
-      </div>
-
-      <!-- Trainer Methods -->
-      <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-4 flex items-center gap-2">
-          <span class="w-1.5 h-5 rounded-full inline-block shrink-0" style="background:#22d3ee"></span> Trainer Methods
-        </h3>
-        <ul class="space-y-2 text-sm" style="color:#7878a0">
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>train(train_loader, val_loader)</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>evaluate(loader)</code>, <code>metrics(loader)</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>calibrate_conformal(cal_loader)</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>predict_with_intervals(X)</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>compute_coverage(y, lower, upper)</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>plot_prediction()</code>, <code>plot_intervals()</code>, <code>cv()</code></div></li>
-          <li class="flex items-start gap-2"><span style="color:#22d3ee">&#8250;</span><div><code>save(path)</code>, <code>load(path)</code></div></li>
-        </ul>
-        <div class="mt-4 pt-4 flex gap-2" style="border-top:1px solid rgba(255,255,255,.06)">
-          <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="flex-1 flex items-center justify-between px-3 py-2 rounded-lg text-xs" style="color:#a0a0c0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)"><span>GitHub</span><span style="color:#5a5a7a">&#8599;</span></a>
-          <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="flex-1 flex items-center justify-between px-3 py-2 rounded-lg text-xs" style="color:#a0a0c0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)"><span>PyPI</span><span style="color:#5a5a7a">&#8599;</span></a>
+          </div>
+          <div class="stack-row">
+            <div><span class="stack-tag">Extras</span></div>
+            <div>
+              <strong>Workflow-specific dependency bundles</strong>
+              <span>Preprocessing, DARTS, analysis, MLTracker, VMD, wavelets, benchmarking, and mining stay optional so installation does not become a tax.</span>
+            </div>
+          </div>
+          <div class="stack-row">
+            <div><span class="stack-tag">foretools</span></div>
+            <div>
+              <strong>Companion utilities</strong>
+              <span>Generators, BOHB search, VMD decomposition, and feature engineering live alongside the main model stack and are documented in the same hub.</span>
+            </div>
+          </div>
+          <div class="stack-row">
+            <div><span class="stack-tag">Docs</span></div>
+            <div>
+              <strong>Tutorials, guides, reference, and architecture notes</strong>
+              <span>The docs are now framed as reading tracks: baseline training, raw-series preprocessing, advanced architectures, and search-heavy workflows.</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-
   </div>
 </section>
 
-<div class="div"></div>
+<div class="accent-line"></div>
 
-<!-- EXAMPLES -->
-<section id="examples" class="py-20" style="background:rgba(255,255,255,.015)">
+<section id="features" class="py-24">
   <div class="max-w-7xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <div class="stag">Examples</div>
-      <h2 class="text-3xl sm:text-4xl font-bold text-white">Worked Examples</h2>
-      <p class="mt-3 max-w-md mx-auto text-sm" style="color:#6a6a90">Practical snippets for the most common use cases.</p>
+    <div class="reveal">
+      <div class="section-kicker">Capabilities</div>
+      <h2 class="section-title mt-3">What the library can do once you are past the first baseline</h2>
+      <p class="section-copy mt-4">
+        The homepage now makes the progression clearer: stable forecasting first, then model
+        composition, preprocessing, search, and evaluation layers that you can adopt one by one.
+      </p>
     </div>
-    <div class="grid gap-6 max-w-4xl mx-auto">
-      <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-1">LSTM Seq2Seq with ReVIN + Dot-Product Attention</h3>
-        <p class="text-sm mb-4" style="color:#6a6a90">Compose encoder/decoder, attach a normalisation head and attention, then train.</p>
+
+    <div class="grid sm:grid-cols-2 xl:grid-cols-3 gap-5 mt-10">
+      <article class="feature-card reveal">
+        <div class="icon-wrap mb-5">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h7"/></svg>
+        </div>
+        <h3 class="text-xl font-bold">Forecasting core</h3>
+        <p class="soft mt-3">Direct heads, encoder/decoder models, seq2seq strategies, and a unified training loop anchored around the public <code>foreblocks</code> imports.</p>
+      </article>
+
+      <article class="feature-card reveal">
+        <div class="icon-wrap mb-5" style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8l4-4 4 4m8 8l-4 4-4-4M8 4v16m8-16v16"/></svg>
+        </div>
+        <h3 class="text-xl font-bold">Preprocessing bridge</h3>
+        <p class="soft mt-3">Window generation, scaling, filtering, imputation, and time-feature helpers help you move from raw arrays into a consistent training pipeline.</p>
+      </article>
+
+      <article class="feature-card reveal">
+        <div class="icon-wrap mb-5" style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.18);color:var(--accent-3)">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+        </div>
+        <h3 class="text-xl font-bold">Composable architecture blocks</h3>
+        <p class="soft mt-3">Attach heads, attention, transformer components, MoE routing, SSM blocks, and specialty modules without rewriting the entire training stack.</p>
+      </article>
+
+      <article class="feature-card reveal">
+        <div class="icon-wrap mb-5" style="background:rgba(251,113,133,0.1);border-color:rgba(251,113,133,0.18);color:var(--accent-4)">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-6m3 6v-4m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        </div>
+        <h3 class="text-xl font-bold">Experiment workflow</h3>
+        <p class="soft mt-3">AMP, schedulers, evaluation helpers, plots, cross-validation, tracking, and local dashboards stay close to the trainer instead of scattered across scripts.</p>
+      </article>
+
+      <article class="feature-card reveal">
+        <div class="icon-wrap mb-5">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h6m-6 4h10M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>
+        </div>
+        <h3 class="text-xl font-bold">Uncertainty and evaluation</h3>
+        <p class="soft mt-3">Conformal workflows and evaluation guides help you move from point predictions to interval-aware reporting and more careful comparisons.</p>
+      </article>
+
+      <article class="feature-card reveal">
+        <div class="icon-wrap mb-5" style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h12"/></svg>
+        </div>
+        <h3 class="text-xl font-bold">Search and analysis</h3>
+        <p class="soft mt-3">DARTS, BOHB, synthetic data utilities, decomposition helpers, and analysis pages give the repo a fuller research-toolbox feel.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<div class="accent-line"></div>
+
+<section id="api" class="py-24">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 items-start">
+      <div class="reveal">
+        <div class="section-kicker">Public Surface</div>
+        <h2 class="section-title mt-3">The docs now highlight the stable imports first</h2>
+        <p class="section-copy mt-4">
+          Instead of throwing people directly into deep internal modules, the landing page and
+          docs now point first to the public objects you are most likely to use in a first real run.
+        </p>
+
+        <div class="grid gap-4 mt-8">
+          <div class="resource-card">
+            <div class="label">Core imports</div>
+            <p class="soft mt-3"><code>ForecastingModel</code>, <code>Trainer</code>, <code>ModelEvaluator</code>, <code>TimeSeriesHandler</code>, dataloaders, and configs are the safest place to start.</p>
+          </div>
+          <div class="resource-card">
+            <div class="label">Specialist namespaces</div>
+            <p class="soft mt-3"><code>foreblocks.darts</code>, transformer internals, and Hybrid Mamba stay documented, but they are now framed as opt-in workflows rather than default entry points.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel reveal">
         <div class="relative">
           <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">from foreblocks import ForecastingModel, Trainer, TrainingConfig
-from foreblocks.blocks.enc_dec import LSTMEncoder, LSTMDecoder
-from foreblocks.core.att import AttentionLayer
-from foreblocks.core.heads.revin_head import RevinHead
-from foreblocks.aux import create_dataloaders
+          <pre><code class="language-python">from foreblocks import (
+    ForecastingModel,
+    Trainer,
+    ModelEvaluator,
+    TimeSeriesHandler,
+    TimeSeriesDataset,
+    create_dataloaders,
+    ModelConfig,
+    TrainingConfig,
+)
 
-enc = LSTMEncoder(input_size=3, hidden_size=64, num_layers=2)
-dec = LSTMDecoder(input_size=1, hidden_size=64, output_size=1, num_layers=2)
-attn = AttentionLayer(method="dot", encoder_hidden_size=64, decoder_hidden_size=64)
+from foreblocks.darts import (
+    DARTSTrainer,
+    DARTSConfig,
+    DARTSTrainConfig,
+    FinalTrainConfig,
+    MultiFildelitySearchConfig,
+)</code></pre>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-4 mt-5">
+          <a href="docs/reference/public-api/" class="resource-card no-underline">
+            <div class="label">Reference</div>
+            <h3 class="text-lg font-bold mt-3">Public API</h3>
+            <p class="soft mt-3">Stable entry points, import guidance, and the main objects exposed at the package top level.</p>
+          </a>
+          <a href="docs/reference/configuration/" class="resource-card no-underline">
+            <div class="label">Configs</div>
+            <h3 class="text-lg font-bold mt-3">Configuration Map</h3>
+            <p class="soft mt-3">Training, model, search, and system settings explained in one place.</p>
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="accent-line"></div>
+
+<section id="examples" class="py-24">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="reveal">
+      <div class="section-kicker">Quick Example</div>
+      <h2 class="section-title mt-3">A first successful run should feel small and obvious</h2>
+      <p class="section-copy mt-4">
+        The homepage now centers the validated baseline flow so new users can confirm their
+        environment before moving into advanced blocks, search loops, or tracking-heavy runs.
+      </p>
+    </div>
+
+    <div class="grid xl:grid-cols-[1.08fr_.92fr] gap-8 mt-10 items-start">
+      <div class="panel reveal">
+        <div class="relative">
+          <button class="copy-btn">Copy</button>
+          <pre><code class="language-python">import numpy as np
+import torch
+import torch.nn as nn
+
+from foreblocks import (
+    ForecastingModel,
+    ModelEvaluator,
+    Trainer,
+    TrainingConfig,
+    create_dataloaders,
+)
+
+seq_len = 24
+horizon = 6
+n_features = 4
+
+rng = np.random.default_rng(0)
+X_train = rng.normal(size=(64, seq_len, n_features)).astype("float32")
+y_train = rng.normal(size=(64, horizon)).astype("float32")
+X_val = rng.normal(size=(16, seq_len, n_features)).astype("float32")
+y_val = rng.normal(size=(16, horizon)).astype("float32")
+
+train_loader, val_loader = create_dataloaders(
+    X_train, y_train, X_val, y_val, batch_size=16
+)
+
+head = nn.Sequential(
+    nn.Flatten(),
+    nn.Linear(seq_len * n_features, 64),
+    nn.GELU(),
+    nn.Linear(64, horizon),
+)
 
 model = ForecastingModel(
-    encoder=enc, decoder=dec,
-    forecasting_strategy="seq2seq", model_type="lstm",
-    target_len=24, output_size=1,
-    attention_module=attn,
+    head=head,
+    forecasting_strategy="direct",
+    model_type="head_only",
+    target_len=horizon,
 )
-model.add_head(RevinHead(input_size=3), position="input_norm")
 
-train_loader, val_loader = create_dataloaders(X_train, y_train)
-trainer = Trainer(model, config=TrainingConfig(num_epochs=80, patience=12))
+trainer = Trainer(
+    model,
+    config=TrainingConfig(num_epochs=5, batch_size=16, patience=3, use_amp=False),
+    auto_track=False,
+)
+
 history = trainer.train(train_loader, val_loader)
-trainer.plot_prediction(val_loader)</code></pre>
-        </div>
-      </div>
-      <div class="card rounded-2xl p-6">
-        <h3 class="font-semibold text-white mb-1">NAS with HeadComposer</h3>
-        <p class="text-sm mb-4" style="color:#6a6a90">Let the <code>Trainer</code> learn which preprocessing heads work best via differentiable architecture search.</p>
-        <div class="relative">
-          <button class="copy-btn">Copy</button>
-          <pre class="line-numbers"><code class="language-python">from foreblocks import ForecastingModel, Trainer, TrainingConfig
-from foreblocks.blocks.enc_dec import LSTMEncoder, LSTMDecoder
-from foreblocks.core.heads.head_helper import HeadComposer, HeadSpec
-from foreblocks.core.heads.revin_head import RevinHead
-from foreblocks.core.heads.fft_topk_head import FFTTopKHead
-from foreblocks.core.heads.differencing_head import DifferencingHead
-
-composer = HeadComposer([
-    HeadSpec("revin",       RevinHead(input_size=4)),
-    HeadSpec("fft_topk",   FFTTopKHead(top_k=16)),
-    HeadSpec("diff",       DifferencingHead()),
-])
-
-enc = LSTMEncoder(input_size=4, hidden_size=128, num_layers=2)
-dec = LSTMDecoder(input_size=1, hidden_size=128, output_size=1, num_layers=2)
-model = ForecastingModel(
-    encoder=enc, decoder=dec,
-    forecasting_strategy="seq2seq", model_type="lstm",
-    target_len=48, output_size=1,
-    head_composer=composer,
+metrics = ModelEvaluator(trainer).compute_metrics(
+    torch.tensor(X_val), torch.tensor(y_val)
 )
 
-cfg = TrainingConfig(
-    num_epochs=100, learning_rate=1e-3,
-    train_nas=True, nas_warmup_epochs=10,
-)
-trainer = Trainer(model, config=cfg)
-trainer.train(train_loader, val_loader)</code></pre>
+print(history.train_losses[-1], metrics)</code></pre>
         </div>
       </div>
-    </div>
-    <div class="text-center mt-8">
-      <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
-         class="inline-flex items-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 shadow-lg shadow-indigo-950/60 transition-all hover:scale-105">
-        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-        Browse More Examples on GitHub
-      </a>
+
+      <div class="grid gap-4 reveal">
+        <div class="resource-card">
+          <div class="label">What this proves</div>
+          <ul class="soft mt-3 space-y-2">
+            <li>- Your installation is healthy.</li>
+            <li>- Dataloader shapes line up with the trainer.</li>
+            <li>- The model can train and evaluate without extra subsystems.</li>
+            <li>- You can add preprocessing or search from a known-good baseline.</li>
+          </ul>
+        </div>
+        <div class="resource-card">
+          <div class="label">Next docs to open</div>
+          <div class="route-list grid gap-3 mt-3">
+            <a href="docs/getting-started/">
+              <div>
+                <strong class="block text-white">Getting Started</strong>
+                <small>Validated first-run path and shape guidance.</small>
+              </div>
+              <span aria-hidden="true">-&gt;</span>
+            </a>
+            <a href="docs/overview/">
+              <div>
+                <strong class="block text-white">Overview</strong>
+                <small>Reading tracks and the repository mental model.</small>
+              </div>
+              <span aria-hidden="true">-&gt;</span>
+            </a>
+            <a href="docs/troubleshooting/">
+              <div>
+                <strong class="block text-white">Troubleshooting</strong>
+                <small>Install, import, and shape mismatches.</small>
+              </div>
+              <span aria-hidden="true">-&gt;</span>
+            </a>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- FOOTER -->
-<footer style="background:#040409;border-top:1px solid rgba(255,255,255,.055)" class="py-12">
+<footer class="py-12">
   <div class="max-w-7xl mx-auto px-6">
-    <div class="flex flex-col md:flex-row items-center justify-between gap-6">
-      <div class="flex items-center gap-3">
-        <img src="logo.svg" alt="ForeBlocks" class="h-8 w-auto opacity-75"/>
-        <div><div class="font-bold text-white text-sm">ForeBlocks</div><div class="text-xs" style="color:#44446a">Modular Time-Series Forecasting</div></div>
+    <div class="grid lg:grid-cols-[1fr_auto] gap-8 items-center">
+      <div>
+        <div class="flex items-center gap-3">
+          <img src="logo.svg" alt="ForeBlocks" class="h-9 w-auto opacity-90"/>
+          <div>
+            <div class="font-bold text-lg text-white">ForeBlocks</div>
+            <div class="foot-note text-sm">Modular forecasting, preprocessing, search, and tooling for PyTorch.</div>
+          </div>
+        </div>
+        <p class="foot-note mt-4 max-w-2xl text-sm leading-7">
+          The site root is now focused on helping people find the right path quickly.
+          The deeper details live in the docs, where tutorials, guides, architecture notes,
+          and reference pages mirror the package layout more closely.
+        </p>
       </div>
-      <div class="flex flex-wrap justify-center gap-x-5 gap-y-1 text-xs" style="color:#44446a">
-        <span>Seq2Seq</span><span>Transformer</span><span>Fourier</span><span>Wavelet</span><span>Attention</span><span>Adaptive Preprocessing</span>
-      </div>
-      <div class="flex items-center gap-2">
-        <a href="docs/" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style="color:#8080a8;border:1px solid rgba(255,255,255,.09)">Docs</a>
-        <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style="color:#8080a8;border:1px solid rgba(255,255,255,.09)">
-          <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-          GitHub
-        </a>
-        <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style="color:#8080a8;border:1px solid rgba(255,255,255,.09)">PyPI</a>
+      <div class="flex flex-wrap gap-3">
+        <a href="docs/" class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Docs</a>
+        <a href="docs/getting-started/" class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Getting Started</a>
+        <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/" class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">PyPI</a>
       </div>
     </div>
-    <div class="mt-8 pt-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs" style="color:#30304a;border-top:1px solid rgba(255,255,255,.04)">
-      <span>&#169; <span id="year"></span> ForeBlocks &#8212; Open Source MIT License</span>
-      <span>Research-friendly API &#183; Clean modular design &#183; Trainer with callbacks &amp; metrics</span>
+    <div class="mt-8 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm foot-note border-t border-white/5">
+      <span>Copyright <span id="year"></span> ForeBlocks | MIT License</span>
+      <span>Stable baseline first | optional extras later | docs organized by workflow</span>
     </div>
   </div>
 </footer>
 
 <script>
 document.addEventListener("DOMContentLoaded", () => {
-  const y = document.getElementById('year');
-  if (y) y.textContent = new Date().getFullYear();
+  const year = document.getElementById("year");
+  if (year) year.textContent = new Date().getFullYear();
 
-  document.querySelectorAll('.copy-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const pre = btn.nextElementSibling;
-      const code = pre && pre.querySelector('code');
+  document.querySelectorAll("pre").forEach((pre) => pre.classList.add("line-numbers"));
+
+  document.querySelectorAll(".copy-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const pre = btn.parentElement.querySelector("pre");
+      const code = pre && pre.querySelector("code");
       if (!code) return;
-      navigator.clipboard.writeText(code.innerText).then(() => {
-        const orig = btn.textContent;
-        btn.textContent = 'Copied!';
-        btn.style.color = '#22d3ee';
-        setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 1500);
-      });
+      try {
+        await navigator.clipboard.writeText(code.innerText);
+        const original = btn.textContent;
+        btn.textContent = "Copied";
+        btn.style.color = "#5eead4";
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.style.color = "";
+        }, 1400);
+      } catch (error) {
+        btn.textContent = "Failed";
+        setTimeout(() => {
+          btn.textContent = "Copy";
+        }, 1400);
+      }
     });
   });
 
-  document.querySelectorAll('pre').forEach(p => p.classList.add('line-numbers'));
-
-  document.querySelectorAll('a[href^="#"]').forEach(a => {
-    a.addEventListener('click', e => {
-      const t = document.querySelector(a.getAttribute('href') || '');
-      if (t) { e.preventDefault(); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+    anchor.addEventListener("click", (event) => {
+      const href = anchor.getAttribute("href");
+      if (!href || href === "#") return;
+      const target = document.querySelector(href);
+      if (!target) return;
+      event.preventDefault();
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
 
-  const links    = Array.from(document.querySelectorAll('.nav-link[href^="#"]'));
-  const sections = Array.from(document.querySelectorAll('section[id]'));
-  const linkMap  = new Map(links.filter(a => a.hash).map(a => [a.hash.slice(1), a]));
-  const vis      = new Map();
+  const navLinks = Array.from(document.querySelectorAll('.nav-link[href^="#"]'));
+  const sections = Array.from(document.querySelectorAll("section[id]"));
+  const linkMap = new Map(navLinks.map((link) => [link.hash.slice(1), link]));
+  const visibility = new Map();
 
-  document.querySelectorAll('[data-tab-group]').forEach(group => {
-    const buttons = Array.from(group.querySelectorAll('[data-tab-target]'));
-    const panels = Array.from(group.querySelectorAll('[data-tab-panel]'));
-    if (!buttons.length || !panels.length) return;
-
-    const activate = (name) => {
-      buttons.forEach(btn => {
-        const isActive = btn.getAttribute('data-tab-target') === name;
-        btn.classList.toggle('active', isActive);
-        btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
-      });
-      panels.forEach(panel => {
-        panel.classList.toggle('active', panel.getAttribute('data-tab-panel') === name);
-      });
-    };
-
-    buttons.forEach(btn => {
-      btn.addEventListener('click', () => activate(btn.getAttribute('data-tab-target')));
+  const updateActive = () => {
+    let bestId = null;
+    let bestRatio = 0;
+    sections.forEach((section) => {
+      const ratio = visibility.get(section.id) || 0;
+      if (ratio >= bestRatio) {
+        bestRatio = ratio;
+        bestId = section.id;
+      }
     });
-
-    const defaultTab = buttons.find(b => b.classList.contains('active')) || buttons[0];
-    activate(defaultTab.getAttribute('data-tab-target'));
-  });
-
-  const setActive = id => {
-    links.forEach(a => a.classList.remove('active'));
-    const el = linkMap.get(id);
-    if (el) el.classList.add('active');
+    navLinks.forEach((link) => link.classList.remove("active"));
+    if (bestId && linkMap.has(bestId)) {
+      linkMap.get(bestId).classList.add("active");
+    }
   };
 
-  const pickActive = () => {
-    let bestId = null, best = -1;
-    sections.forEach(s => { const r = vis.get(s.id) || 0; if (r > best) { best = r; bestId = s.id; } });
-    if (bestId) setActive(bestId);
-  };
+  const sectionObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      visibility.set(entry.target.id, entry.intersectionRatio);
+    });
+    updateActive();
+  }, {
+    rootMargin: "-72px 0px -50% 0px",
+    threshold: Array.from({ length: 11 }, (_, index) => index / 10),
+  });
 
-  const obs = new IntersectionObserver(entries => {
-    entries.forEach(e => vis.set(e.target.id, e.intersectionRatio));
-    pickActive();
-  }, { rootMargin: '-56px 0px -55% 0px', threshold: Array.from({length:11},(_,i)=>i/10) });
+  sections.forEach((section) => sectionObserver.observe(section));
 
-  sections.forEach(s => obs.observe(s));
+  const revealObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add("visible");
+        revealObserver.unobserve(entry.target);
+      }
+    });
+  }, {
+    threshold: 0.16,
+  });
+
+  document.querySelectorAll(".reveal").forEach((node) => revealObserver.observe(node));
 
   if (location.hash) {
-    const id = location.hash.slice(1);
-    setActive(id);
-    const t = document.getElementById(id);
-    if (t) requestAnimationFrame(() => t.scrollIntoView({ behavior: 'instant' }));
+    const target = document.querySelector(location.hash);
+    if (target) {
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ behavior: "auto", block: "start" });
+      });
+    }
   }
 });
 </script>
