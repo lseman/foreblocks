@@ -26,6 +26,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: true
@@ -51,16 +54,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install mkdocs-material
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "20"
-
-      - name: Build foreBlocks Studio frontend
-        run: |
-          chmod +x ./build_studio_web.sh
-          ./build_studio_web.sh
 
       - name: Build docs under /docs
         run: mkdocs build --strict
