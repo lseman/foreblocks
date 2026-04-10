@@ -293,6 +293,7 @@ class Trainer:
             quantile=getattr(self.config, "conformal_quantile", 0.9),
             # Local method
             knn_k=getattr(self.config, "conformal_knn_k", 50),
+            local_window=getattr(self.config, "conformal_local_window", 5000),
             # Rolling/ACI
             rolling_alpha=getattr(self.config, "conformal_rolling_alpha", 0.05),
             aci_gamma=getattr(self.config, "conformal_aci_gamma", 0.01),
@@ -301,6 +302,9 @@ class Trainer:
             # EnbPI
             enbpi_B=getattr(self.config, "conformal_enbpi_B", 20),
             enbpi_window=getattr(self.config, "conformal_enbpi_window", 500),
+            # TSP
+            tsp_lambda=getattr(self.config, "conformal_tsp_lambda", 0.01),
+            tsp_window=getattr(self.config, "conformal_tsp_window", 5000),
             # CPTC
             cptc_window=getattr(self.config, "conformal_cptc_window", 500),
             cptc_tau=getattr(self.config, "conformal_cptc_tau", 1.0),
@@ -312,6 +316,15 @@ class Trainer:
             afocp_attn_hidden=getattr(self.config, "conformal_afocp_attn_hidden", 64),
             afocp_window=getattr(self.config, "conformal_afocp_window", 500),
             afocp_tau=getattr(self.config, "conformal_afocp_tau", 1.0),
+            afocp_internal_feat_hidden=getattr(
+                self.config, "conformal_afocp_internal_feat_hidden", 256
+            ),
+            afocp_internal_feat_depth=getattr(
+                self.config, "conformal_afocp_internal_feat_depth", 3
+            ),
+            afocp_internal_feat_dropout=getattr(
+                self.config, "conformal_afocp_internal_feat_dropout", 0.1
+            ),
             afocp_online_lr=getattr(self.config, "conformal_afocp_online_lr", 0.0),
             afocp_online_steps=getattr(self.config, "conformal_afocp_online_steps", 1),
         )
@@ -1116,7 +1129,11 @@ class Trainer:
         y: torch.Tensor,
     ) -> Dict[str, float]:
         """
-        Empirical coverage and basic interval stats. Shape-safe.
+        Empirical coverage and basic interval stats.
+
+        `coverage` is elementwise over all [N, H, D] entries. For multi-horizon
+        or multi-target forecasts we also expose `joint_coverage`, which counts
+        a sample as covered only if every horizon/target is inside its interval.
         """
         preds, lower, upper = self.predict_with_intervals(X, return_tensors=False)
 
@@ -1124,12 +1141,17 @@ class Trainer:
         y_np = _ensure_y_shape_like_intervals(y_np, lower)
 
         covered = (y_np >= lower) & (y_np <= upper)
+        joint_covered = covered.all(axis=(1, 2))
         widths = upper - lower
 
         return {
             "coverage": float(covered.mean()),
+            "joint_coverage": float(joint_covered.mean()),
             "target_coverage": float(self.conformal_engine.q),
             "coverage_gap": float(covered.mean() - self.conformal_engine.q),
+            "joint_coverage_gap": float(
+                joint_covered.mean() - self.conformal_engine.q
+            ),
             "mean_interval_width": float(widths.mean()),
             "std_interval_width": float(widths.std()),
             "min_interval_width": float(widths.min()),
@@ -1392,6 +1414,7 @@ class Trainer:
         X_val: torch.Tensor,
         y_val: torch.Tensor,
         full_series: Optional[torch.Tensor] = None,
+        time_index: Optional[Sequence[Any]] = None,
         offset: int = 0,
         stride: int = 1,
         figsize: Tuple[int, int] = (14, 5),
@@ -1403,12 +1426,16 @@ class Trainer:
         aggregation: str = "envelope",
         show_width_plot: bool = True,
         min_count: int = 1,  # NEW: minimum overlapping windows to include a point
+        do_update: bool = False,
     ) -> plt.Figure:
         _require_matplotlib()
         """
         Plot predictions with conformal intervals.
 
         Args:
+            time_index: Optional x-axis values aligned with `full_series`. Length must
+                cover the plotted region so custom integer, float, or datetime-like
+                indexes can be used instead of raw time steps.
             aggregation: How to aggregate overlapping intervals
                 - "envelope": Use min(lower), max(upper) - most conservative
                 - "mean": Average all overlapping intervals
@@ -1417,6 +1444,14 @@ class Trainer:
             show_width_plot: If True, add subplot showing interval widths over time
             min_count: Minimum number of overlapping windows required to plot a point.
                        Set higher (e.g., H//2) to remove edge effects at forecast boundaries.
+            do_update: If True, update adaptive conformal state while iterating over
+                       `X_val, y_val`. Defaults to False so plotting does not mutate
+                       the calibrated engine.
+
+        Notes:
+            This plot is a visualization of aggregated overlapping forecast windows.
+            For quantitative conformal diagnostics, prefer `compute_coverage()` or
+            `compute_coverage_streaming()`.
         """
         if self.conformal_engine is None or self.conformal_engine.radii is None:
             raise RuntimeError(
@@ -1428,7 +1463,8 @@ class Trainer:
         )
         # Get predictions with intervals
         preds, lower, upper, y_stream = self.predict_with_intervals_streaming(
-            val_loader
+            val_loader,
+            do_update=do_update,
         )
 
         N, H, D = preds.shape
@@ -1453,6 +1489,27 @@ class Trainer:
         # Rolling alignment
         starts = offset + seq_len + np.arange(N) * stride
         coverage_end = min(int(starts[-1] + H), T)
+        if time_index is None:
+            xs = np.arange(coverage_end)
+            first_forecast_x = offset + seq_len
+            xlabel = "Time Step"
+        else:
+            xs_full = np.asarray(time_index)
+            if xs_full.ndim != 1:
+                raise ValueError("time_index must be 1-dimensional.")
+            if len(xs_full) < coverage_end:
+                raise ValueError(
+                    "time_index must have at least coverage_end elements "
+                    f"({coverage_end}), got {len(xs_full)}."
+                )
+            if offset + seq_len >= len(xs_full):
+                raise ValueError(
+                    "time_index must include the first forecast boundary at "
+                    f"position {offset + seq_len}."
+                )
+            xs = xs_full[:coverage_end]
+            first_forecast_x = xs_full[offset + seq_len]
+            xlabel = "Time"
 
         # Track count for all aggregation methods (needed for min_count filter)
         count = np.zeros((T,))
@@ -1586,8 +1643,6 @@ class Trainer:
         )
         axes = np.atleast_1d(axes)
 
-        xs = np.arange(coverage_end)
-
         # Plot each feature
         for j in range(D_plot):
             ax = axes[j]
@@ -1628,7 +1683,7 @@ class Trainer:
                 )
 
             ax.axvline(
-                offset + seq_len,
+                first_forecast_x,
                 color="gray",
                 linestyle="--",
                 alpha=0.5,
@@ -1655,7 +1710,7 @@ class Trainer:
                 )
 
             ax_width.axvline(
-                offset + seq_len,
+                first_forecast_x,
                 color="gray",
                 linestyle="--",
                 alpha=0.5,
@@ -1666,22 +1721,7 @@ class Trainer:
             ax_width.legend(loc="upper left", fontsize=8)
             ax_width.grid(True, alpha=0.3)
 
-            # Add statistics annotation (only for valid points)
-            valid_widths = interval_widths[have]
-            if valid_widths.size > 0:
-                stats_text = f"Width: μ={valid_widths.mean():.2f}, σ={valid_widths.std():.2f}, CV={valid_widths.std() / valid_widths.mean():.2f}"
-                ax_width.text(
-                    0.98,
-                    0.95,
-                    stats_text,
-                    transform=ax_width.transAxes,
-                    ha="right",
-                    va="top",
-                    fontsize=9,
-                    bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
-                )
-
-        axes[-1].set_xlabel("Time Step")
+        axes[-1].set_xlabel(xlabel)
         plt.tight_layout()
 
         if show:
@@ -1752,6 +1792,50 @@ class Trainer:
                 torch.from_numpy(y_true),
             )
 
+    def compute_coverage_streaming(
+        self,
+        dataloader: DataLoader,
+        do_update: bool = True,
+        sequential: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        Coverage diagnostics for streaming/rolling evaluation.
+
+        `coverage` is elementwise over all [N, H, D] entries. `joint_coverage`
+        marks a window covered only when every horizon/target is inside the
+        interval.
+        """
+        preds, lower, upper, y_true = self.predict_with_intervals_streaming(
+            dataloader=dataloader,
+            do_update=do_update,
+            return_numpy=True,
+            sequential=sequential,
+        )
+
+        covered = (y_true >= lower) & (y_true <= upper)
+        joint_covered = covered.all(axis=(1, 2))
+        per_feature_joint_coverage = covered.all(axis=1).mean(axis=0)
+        per_horizon_all_feature_coverage = covered.all(axis=2).mean(axis=0)
+        widths = upper - lower
+
+        return {
+            "coverage": float(covered.mean()),
+            "joint_coverage": float(joint_covered.mean()),
+            "target_coverage": float(self.conformal_engine.q),
+            "coverage_gap": float(covered.mean() - self.conformal_engine.q),
+            "joint_coverage_gap": float(
+                joint_covered.mean() - self.conformal_engine.q
+            ),
+            "per_horizon_coverage": covered.mean(axis=(0, 2)),
+            "per_feature_coverage": covered.mean(axis=(0, 1)),
+            "per_feature_joint_coverage": per_feature_joint_coverage,
+            "per_horizon_all_feature_coverage": per_horizon_all_feature_coverage,
+            "mean_interval_width": float(widths.mean()),
+            "std_interval_width": float(widths.std()),
+            "min_interval_width": float(widths.min()),
+            "max_interval_width": float(widths.max()),
+        }
+
     def plot_violation_heatmap_streaming(
         self,
         dataloader: DataLoader,
@@ -1773,6 +1857,7 @@ class Trainer:
         - dataloader must have shuffle=False
         - do_update=True makes it a true rolling (online) conformal evaluation
         - sequential=None auto-enables for ACI methods
+        - for quantitative coverage summaries, prefer `compute_coverage_streaming()`
         """
 
         if self.conformal_engine is None or self.conformal_engine.radii is None:
@@ -1792,11 +1877,8 @@ class Trainer:
         if j < 0 or j >= D:
             raise ValueError(f"feature index out of range: {j} (D={D})")
 
-        miss = (y_true[:, :, j] < L[:, :, j]) | (y_true[:, :, j] > U[:, :, j])
-
-        # Compute coverage statistics
-        overall_coverage = 1.0 - miss.mean()
-        per_horizon_coverage = 1.0 - miss.mean(axis=0)
+        covered = (y_true >= L) & (y_true <= U)
+        miss = ~covered[:, :, j]
 
         fig, ax = plt.subplots(figsize=figsize)
 
@@ -1815,8 +1897,7 @@ class Trainer:
         ax.set_xlabel("Horizon")
         ax.set_ylabel("Window index (stream order)")
 
-        target = self.conformal_engine.q
-        ax.set_title(f"Conformal Misses — feature={j}, (target={target:.0%})")
+        ax.set_title(f"Conformal Misses — feature={j}")
 
         ax.set_xticks(np.arange(H))
         ax.set_xticklabels([str(h + 1) for h in range(H)])
@@ -1826,18 +1907,7 @@ class Trainer:
         cbar.set_ticks([0.25, 0.75])  # Center of each color band
         cbar.set_ticklabels(["Covered", "Miss"])
 
-        # Add per-horizon coverage annotation at bottom
-        # coverage_text = "  ".join([f"h{h+1}:{c:.0%}" for h, c in enumerate(per_horizon_coverage)])
-        # fig.text(
-        #     0.5, 0.02,
-        #     f"Per-horizon coverage: {coverage_text}",
-        #     ha='center',
-        #     fontsize=9,
-        #     style='italic',
-        # )
-
         plt.tight_layout()
-        plt.subplots_adjust(bottom=0.12)  # Make room for coverage text
 
         if show:
             plt.show()

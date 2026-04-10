@@ -117,6 +117,31 @@ def optimized_topk_routing(logits: torch.Tensor, k: int):
         return top_p, top_i
 
 
+def eager_topk_routing(logits: torch.Tensor, k: int):
+    """
+    Non-scripted fallback for environments where the TorchScript/fused routing
+    path fails at runtime (for example missing NVRTC builtins on CUDA).
+    """
+    if k == 1:
+        top_v, top_i = torch.max(logits, dim=-1, keepdim=True)
+        top_p = torch.ones_like(top_v)
+        return top_p, top_i
+    top_v, top_i = torch.topk(logits, k, dim=-1, sorted=False)
+    m = top_v.max(dim=-1, keepdim=True).values
+    expv = torch.exp(top_v - m)
+    top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
+    return top_p, top_i
+
+
+def _should_fallback_router_topk(exc: RuntimeError) -> bool:
+    msg = str(exc).lower()
+    return (
+        "nvrtc" in msg
+        or "libnvrtc-builtins" in msg
+        or "torchscript interpreter" in msg
+    )
+
+
 # -----------------------------------------------------------------------------
 # Experts
 # -----------------------------------------------------------------------------
@@ -389,6 +414,7 @@ class MoEFeedForwardDMoE(nn.Module):
         self.log_latency = bool(log_latency)
         self.use_grouped_kernel = bool(use_grouped_kernel)
         self.use_fused_router_topk = bool(use_fused_router_topk)
+        self._force_eager_router_topk = False
         self.triton_use_fp16_acc = bool(triton_use_fp16_acc)
         self.triton_use_shared_b = bool(triton_use_shared_b)
         self._grouped_kernel_prepacked = _supports_grouped_prepacked()
@@ -838,14 +864,31 @@ class MoEFeedForwardDMoE(nn.Module):
                     can_use_fused_topk = (
                         (fused_router_topk is not None)
                         and self.use_fused_router_topk
+                        and (not self._force_eager_router_topk)
                         and (not self.training)
                         and logits.is_cuda
                         and (self.top_k in (1, 2))
                     )
                     if can_use_fused_topk:
-                        top_p, top_i = fused_router_topk(logits, self.top_k)
+                        try:
+                            top_p, top_i = fused_router_topk(logits, self.top_k)
+                        except RuntimeError as exc:
+                            if not _should_fallback_router_topk(exc):
+                                raise
+                            self._force_eager_router_topk = True
+                            self.use_fused_router_topk = False
+                            top_p, top_i = eager_topk_routing(logits, self.top_k)
+                    elif self._force_eager_router_topk:
+                        top_p, top_i = eager_topk_routing(logits, self.top_k)
                     else:
-                        top_p, top_i = optimized_topk_routing(logits, self.top_k)
+                        try:
+                            top_p, top_i = optimized_topk_routing(logits, self.top_k)
+                        except RuntimeError as exc:
+                            if not _should_fallback_router_topk(exc):
+                                raise
+                            self._force_eager_router_topk = True
+                            self.use_fused_router_topk = False
+                            top_p, top_i = eager_topk_routing(logits, self.top_k)
                     self.last_per_token_k = None
                     self.last_log_prob_k = None
                 else:

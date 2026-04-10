@@ -66,6 +66,7 @@ recursive-include foreblocks/tf transformer_aux.py
 recursive-include foreblocks/tf transformer_moe.py
 recursive-include foreblocks/third_party flash_softpick_attn.py
 recursive-include foreblocks/third_party vsgd.py
+recursive-include foreblocks/studio/dist *
 recursive-include foreblocks/tuner foretuner.py
 recursive-include foreblocks/tuner foretuner_aux.py
 recursive-include foreblocks/tuner foretuner_plot.py

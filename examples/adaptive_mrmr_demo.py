@@ -36,7 +36,9 @@ class ToyAdaptiveMI:
 
     def score_pairwise(self, X_values, y_values, return_raw_mi=False):
         self.bind_columns(X_values)
-        return np.array([self._relevance[name] for name in self.feature_names], dtype=float)
+        return np.array(
+            [self._relevance[name] for name in self.feature_names], dtype=float
+        )
 
     def score(self, xa, xb, return_raw_mi=False):
         a = self._values_to_name[tuple(np.asarray(xa, dtype=float).tolist())]
@@ -118,7 +120,9 @@ def demo_real_usage() -> None:
             mi_threshold=0.0,
         )
         print(f"{criterion.upper()} selected: {selector.selected_features_}")
-        print("note: on this synthetic dataset both criteria agree on the kept features")
+        print(
+            "note: on this synthetic dataset both criteria agree on the kept features"
+        )
         print("relevance:")
         print(selector.relevance_scores_)
         print("selection scores:")

@@ -8,35 +8,75 @@ export const ResultsModal: React.FC<{
   onClose: () => void;
 }> = ({ modal, onClose }) => {
   if (!modal) return null;
+
+  const rawJson = JSON.stringify(modal.result.data, null, 2);
+  const downloadHref =
+    modal.result.type === "plot" || modal.result.type === "image"
+      ? `data:image/png;base64,${modal.result.data}`
+      : undefined;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(rawJson);
+    } catch {
+      // ignore clipboard failures
+    }
+  };
+
+  const renderMetricsContent = (data: Record<string, any>) => {
+    const entries = Object.entries(data || {});
+    const numericValues = entries
+      .map(([, value]) => (typeof value === "number" ? Math.abs(value) : 0))
+      .filter((value) => value > 0);
+    const maxValue = Math.max(...numericValues, 1);
+
+    return (
+      <div className="space-y-4">
+        {entries.map(([key, value]) => (
+          <div key={key} className="rounded-3xl bg-slate-950/70 p-4 border border-slate-800/70">
+            <div className="flex items-center justify-between gap-3 text-sm text-slate-400">
+              <span className="font-medium text-slate-200">{key.replace(/_/g, " ")}</span>
+              <span className="font-semibold text-white">
+                {typeof value === "number" ? value.toFixed(6) : String(value)}
+              </span>
+            </div>
+            {typeof value === "number" && (
+              <div className="mt-3 h-3 overflow-hidden rounded-full bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-emerald-400 transition-all"
+                  style={{ width: `${Math.min(100, (Math.abs(value) / maxValue) * 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderResult = (res: ExecutionResult) => {
     if (!res) return <div className="text-slate-400">No data available</div>;
     switch (res.type) {
       case "plot":
       case "image":
         return (
-          <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-800/50">
-            <img src={`data:image/png;base64,${res.data}`} alt="Visualization" className="w-full h-auto rounded-lg" />
+          <div className="overflow-hidden rounded-3xl border border-slate-700/60 bg-slate-950/70 shadow-xl shadow-slate-950/20">
+            <img src={`data:image/png;base64,${res.data}`} alt="Visualization" className="w-full h-auto rounded-3xl" />
           </div>
         );
       case "metrics":
         return (
-          <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-800/50">
-            <h3 className="text-lg font-semibold mb-4 text-white">Performance Metrics</h3>
-            <div className="grid grid-cols-2 gap-4">
-              {Object.entries(res.data || {}).map(([k, v]) => (
-                <div key={k} className="bg-slate-800/50 p-4 rounded-lg border border-slate-700/50">
-                  <div className="text-sm text-slate-400 uppercase tracking-wider mb-1">{k.replace(/_/g, " ")}</div>
-                  <div className="text-2xl font-bold text-white">
-                    {typeof v === "number" ? v.toFixed(6) : String(v)}
-                  </div>
-                </div>
-              ))}
+          <div className="space-y-5">
+            <div className="rounded-3xl bg-slate-950/70 p-6 border border-slate-800/60 shadow-inner shadow-slate-950/20">
+              <div className="text-lg font-semibold text-white">Performance Metrics</div>
+              <div className="mt-2 text-sm text-slate-400">A preview of the most important model evaluation numbers.</div>
             </div>
+            {renderMetricsContent(res.data || {})}
           </div>
         );
       case "table":
         return (
-          <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-800/50 overflow-x-auto">
+          <div className="overflow-x-auto rounded-3xl border border-slate-700/60 bg-slate-950/70 p-4 shadow-xl shadow-slate-950/10">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-700">
@@ -59,31 +99,29 @@ export const ResultsModal: React.FC<{
         );
       case "json":
         return (
-          <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-800/50">
-            <pre className="text-sm text-green-400 font-mono overflow-x-auto">
-              {JSON.stringify(res.data, null, 2)}
-            </pre>
+          <div className="overflow-x-auto rounded-3xl border border-slate-700/60 bg-slate-950/70 p-6 shadow-xl shadow-slate-950/10">
+            <pre className="text-sm text-green-400 font-mono">{rawJson}</pre>
           </div>
         );
       case "array":
         return (
-          <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-800/50">
-            <h3 className="text-lg font-semibold mb-4 text-white">Array Data</h3>
-            <div className="space-y-2">
+          <div className="space-y-4">
+            <div className="rounded-3xl bg-slate-950/70 p-6 border border-slate-800/60 shadow-inner shadow-slate-950/20">
+              <h3 className="text-lg font-semibold text-white">Array Data</h3>
+              <p className="mt-2 text-sm text-slate-400">Showing the first 100 elements.</p>
+            </div>
+            <div className="grid gap-2">
               {Array.isArray(res.data) ? (
-                <div className="grid grid-cols-1 gap-2">
-                  {res.data.slice(0, 100).map((item: any, i: number) => (
-                    <div key={i} className="bg-slate-800/50 p-2 rounded text-sm">
-                      <span className="text-slate-400 mr-2">[{i}]</span>
-                      <span className="text-white">{JSON.stringify(item)}</span>
-                    </div>
-                  ))}
-                  {res.data.length > 100 && (
-                    <div className="text-slate-400 text-sm">... and {res.data.length - 100} more items</div>
-                  )}
-                </div>
+                res.data.slice(0, 100).map((item: any, i: number) => (
+                  <div key={i} className="rounded-2xl bg-slate-900/80 p-3 text-sm text-slate-200">
+                    <span className="text-slate-500">[{i}]</span> {JSON.stringify(item)}
+                  </div>
+                ))
               ) : (
                 <div className="text-slate-400">Invalid array data</div>
+              )}
+              {Array.isArray(res.data) && res.data.length > 100 && (
+                <div className="text-slate-500 text-sm">... and {res.data.length - 100} more items</div>
               )}
             </div>
           </div>
@@ -91,7 +129,7 @@ export const ResultsModal: React.FC<{
       case "text":
       default:
         return (
-          <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-800/50">
+          <div className="overflow-x-auto rounded-3xl border border-slate-700/60 bg-slate-950/70 p-6 shadow-xl shadow-slate-950/10">
             <pre className="text-sm text-green-400 font-mono whitespace-pre-wrap">{String(res.data)}</pre>
           </div>
         );
@@ -100,15 +138,36 @@ export const ResultsModal: React.FC<{
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-slate-900/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col border border-slate-700/50">
-        <div className="flex items-center justify-between p-6 border-b border-slate-700/50">
+        <div className="flex flex-col gap-4 p-6 border-b border-slate-700/50 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-2xl font-bold bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">
               Execution Results
             </h2>
+            <p className="mt-2 text-sm text-slate-400">
+              Node: <span className="font-semibold text-white">{modal.nodeId}</span> • Type: <span className="font-semibold text-cyan-300">{modal.result.type}</span>
+            </p>
           </div>
-          <button onClick={onClose} className="hover:bg-slate-700/50 p-2 rounded-lg transition">
-            <X size={24} />
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="rounded-2xl bg-white/5 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/[0.08]"
+            >
+              Copy data
+            </button>
+            {downloadHref && (
+              <a
+                href={downloadHref}
+                download={`${modal.nodeId}-${modal.result.type}.png`}
+                className="rounded-2xl bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/15"
+              >
+                Download image
+              </a>
+            )}
+            <button onClick={onClose} className="rounded-2xl bg-white/5 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/[0.08]">
+              Close
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-auto p-6">
           {renderResult(modal.result)}

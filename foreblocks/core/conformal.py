@@ -107,6 +107,22 @@ def _exact_quantile_higher(values: torch.Tensor, q: float, dim: int = 0) -> torc
     return out
 
 
+def _exact_quantile_higher_np(values: np.ndarray, q: float, axis: int = 0) -> np.ndarray:
+    """
+    NumPy version of `_exact_quantile_higher` using the empirical CDF definition.
+    """
+    if not (0.0 <= q <= 1.0):
+        raise ValueError("q must be in [0,1]")
+    v = np.asarray(values)
+    if axis != 0:
+        v = np.moveaxis(v, axis, 0)
+    n = v.shape[0]
+    idx = int(np.ceil(q * n) - 1)
+    idx = max(0, min(n - 1, idx))
+    v_sorted = np.sort(v, axis=0)
+    return v_sorted[idx]
+
+
 def weighted_quantile(values: torch.Tensor, q: float, weights: Optional[torch.Tensor], dim: int = 0) -> torch.Tensor:
     """
     Weighted quantile along `dim` (non-differentiable; suitable for conformal).
@@ -114,7 +130,7 @@ def weighted_quantile(values: torch.Tensor, q: float, weights: Optional[torch.Te
     If weights provided -> weighted CDF with mid-point correction.
     """
     if weights is None:
-        return torch.quantile(values, q, dim=dim)
+        return _exact_quantile_higher(values, q, dim=dim)
 
     v = values.transpose(0, dim)
     w = weights.transpose(0, dim)
@@ -301,6 +317,8 @@ class ConformalPredictionEngine:
 
         self.rolling_alpha = float(rolling_alpha)
         self.aci_gamma = float(aci_gamma)
+        if self.method in ("rolling", "agaci"):
+            self.alpha = self.rolling_alpha
 
         self.enbpi_B = int(enbpi_B)
         self.enbpi_window = int(enbpi_window)
@@ -429,7 +447,7 @@ class ConformalPredictionEngine:
             scores = torch.maximum(lower_pred - y2.cpu(), y2.cpu() - upper_pred)
             N = scores.shape[0]
             q_level = _conformal_quantile_level(N, self.alpha)
-            self.cqr_correction = torch.quantile(scores, q_level, dim=0).cpu().numpy()
+            self.cqr_correction = _exact_quantile_higher(scores, q_level, dim=0).cpu().numpy()
             self.radii = self.cqr_correction
             print(f"Calibration complete. Radii shape: {self.radii.shape}")
             return
@@ -444,7 +462,7 @@ class ConformalPredictionEngine:
 
         # ---------------- split
         if self.method == "split":
-            self.radii = torch.quantile(residuals, q_level, dim=0).numpy()
+            self.radii = _exact_quantile_higher(residuals, q_level, dim=0).numpy()
 
         # ---------------- local
         elif self.method == "local":
@@ -456,9 +474,9 @@ class ConformalPredictionEngine:
                 local_res = local_res[-self.local_window:]
                 N2 = local_res.shape[0]
                 q_level2 = _conformal_quantile_level(N2, self.alpha)
-                self.radii = np.quantile(local_res, q_level2, axis=0)
+                self.radii = _exact_quantile_higher_np(local_res, q_level2, axis=0)
             else:
-                self.radii = torch.quantile(residuals, q_level, dim=0).numpy()
+                self.radii = _exact_quantile_higher(residuals, q_level, dim=0).numpy()
 
             self.cal_X_feat = cal_X_feat
             self.local_residuals = local_res
@@ -470,7 +488,7 @@ class ConformalPredictionEngine:
                     "Jackknife+ (CV+) requires `jackknife_cv_models` and `jackknife_cv_indices`. "
                     "Falling back to split conformal."
                 )
-                self.radii = torch.quantile(residuals, q_level, dim=0).numpy()
+                self.radii = _exact_quantile_higher(residuals, q_level, dim=0).numpy()
                 self.jackknife_residuals = residuals.clone()
             else:
                 K = len(jackknife_cv_models)
@@ -500,7 +518,7 @@ class ConformalPredictionEngine:
                 self._jackknife_cv_models = list(jackknife_cv_models)
                 self._jackknife_cv_indices = list(jackknife_cv_indices)
 
-                self.radii = torch.quantile(loo_residuals, q_level, dim=0).numpy()
+                self.radii = _exact_quantile_higher(loo_residuals, q_level, dim=0).numpy()
 
         # ---------------- tsp
         elif self.method == "tsp":
@@ -522,7 +540,7 @@ class ConformalPredictionEngine:
         # ---------------- rolling/agaci
         elif self.method in ["rolling", "agaci"]:
             self.residuals_buffer = residuals.clone()
-            self.radii = torch.quantile(residuals, q_level, dim=0).numpy()
+            self.radii = _exact_quantile_higher(residuals, q_level, dim=0).numpy()
             if self.method == "agaci":
                 self.agaci_experts = [
                     {"gamma": g, "alpha": self.alpha, "buffer": residuals.clone()}
@@ -543,7 +561,7 @@ class ConformalPredictionEngine:
                     boot_res.append((preds - boot_pred).abs())
                 flat = torch.stack(boot_res, dim=0).reshape(self.enbpi_B * N, H, D)
                 q_level2 = _conformal_quantile_level(flat.shape[0], self.alpha)
-                self.radii = torch.quantile(flat, q_level2, dim=0).numpy()
+                self.radii = _exact_quantile_higher(flat, q_level2, dim=0).numpy()
                 self.enbpi_oob_residuals = residuals[-min(self.enbpi_window, N):].clone()
             else:
                 if enbpi_boot_indices is None:
@@ -572,7 +590,9 @@ class ConformalPredictionEngine:
                 self.enbpi_oob_residuals = oob_res[-min(self.enbpi_window, N):].clone()
 
                 q_level2 = _conformal_quantile_level(self.enbpi_oob_residuals.shape[0], self.alpha)
-                self.radii = torch.quantile(self.enbpi_oob_residuals, q_level2, dim=0).numpy()
+                self.radii = _exact_quantile_higher(
+                    self.enbpi_oob_residuals, q_level2, dim=0
+                ).numpy()
 
         # ---------------- cptc
         elif self.method == "cptc":
@@ -590,7 +610,9 @@ class ConformalPredictionEngine:
             self.cptc_states_buffer = z[-take:].clone()
             self.cptc_residuals_buffer = residuals[-take:].clone()
             q_level2 = _conformal_quantile_level(take, self.alpha)
-            self.radii = torch.quantile(self.cptc_residuals_buffer, q_level2, dim=0).numpy()
+            self.radii = _exact_quantile_higher(
+                self.cptc_residuals_buffer, q_level2, dim=0
+            ).numpy()
 
         # ---------------- afocp
         elif self.method == "afocp":
@@ -632,7 +654,9 @@ class ConformalPredictionEngine:
             self.afocp_feats_buffer = z[-take:].clone()
             self.afocp_residuals_buffer = residuals[-take:].clone()
             q_level2 = _conformal_quantile_level(take, self.alpha)
-            self.radii = torch.quantile(self.afocp_residuals_buffer, q_level2, dim=0).numpy()
+            self.radii = _exact_quantile_higher(
+                self.afocp_residuals_buffer, q_level2, dim=0
+            ).numpy()
 
             if self.afocp_online_lr > 0.0:
                 params = list(self.afocp_attn.parameters())
@@ -953,7 +977,9 @@ class ConformalPredictionEngine:
             
             # Recompute radii with updated alpha
             q_level = _conformal_quantile_level(self.residuals_buffer.shape[0], self.alpha)
-            self.radii = torch.quantile(self.residuals_buffer, q_level, dim=0).numpy()
+            self.radii = _exact_quantile_higher(
+                self.residuals_buffer, q_level, dim=0
+            ).numpy()
             
         elif self.method == "agaci":
             if self.agaci_experts is None:
@@ -973,7 +999,9 @@ class ConformalPredictionEngine:
             expert_radii = []
             for e in self.agaci_experts:
                 q_level_e = _conformal_quantile_level(e["buffer"].shape[0], e["alpha"])
-                expert_radii.append(torch.quantile(e["buffer"], q_level_e, dim=0).numpy())
+                expert_radii.append(
+                    _exact_quantile_higher(e["buffer"], q_level_e, dim=0).numpy()
+                )
             self.radii = np.mean(expert_radii, axis=0)
 
     def _update_batch(
@@ -997,7 +1025,8 @@ class ConformalPredictionEngine:
         if self.method in ("rolling", "agaci"):
             _, current_lower, current_upper = self.predict(model, X_t.cpu().numpy(), device=device, batch_size=batch_size)
             y_np = y3.numpy()
-            miscoverage_rate = float(np.mean((y_np < current_lower) | (y_np > current_upper)))
+            miss_mask = (y_np < current_lower) | (y_np > current_upper)
+            miscoverage_rate = float(np.mean(np.any(miss_mask, axis=(1, 2))))
             # Use FIXED target miscoverage, not the adaptive alpha
             target_miscoverage = 1.0 - self.q
 
@@ -1013,7 +1042,9 @@ class ConformalPredictionEngine:
                 self.local_residuals = self.local_residuals[-self.local_window:]
 
             q_level = _conformal_quantile_level(len(self.local_residuals), self.alpha)
-            self.radii = np.quantile(self.local_residuals, q_level, axis=0)
+            self.radii = _exact_quantile_higher_np(
+                self.local_residuals, q_level, axis=0
+            )
 
         elif self.method == "tsp":
             if self.tsp_residuals is None:
@@ -1048,7 +1079,9 @@ class ConformalPredictionEngine:
             self.residuals_buffer = _rolling_clip(self.residuals_buffer, maxlen=5000)
 
             q_level = _conformal_quantile_level(self.residuals_buffer.shape[0], self.alpha)
-            self.radii = torch.quantile(self.residuals_buffer, q_level, dim=0).numpy()
+            self.radii = _exact_quantile_higher(
+                self.residuals_buffer, q_level, dim=0
+            ).numpy()
 
         elif self.method == "agaci":
             # Batch AgACI (approximate)
@@ -1064,7 +1097,9 @@ class ConformalPredictionEngine:
             expert_radii = []
             for e in self.agaci_experts:
                 q_level_e = _conformal_quantile_level(e["buffer"].shape[0], e["alpha"])
-                expert_radii.append(torch.quantile(e["buffer"], q_level_e, dim=0).numpy())
+                expert_radii.append(
+                    _exact_quantile_higher(e["buffer"], q_level_e, dim=0).numpy()
+                )
             self.radii = np.mean(expert_radii, axis=0)
 
         elif self.method == "enbpi":
@@ -1091,7 +1126,9 @@ class ConformalPredictionEngine:
             self.enbpi_oob_residuals = _rolling_clip(self.enbpi_oob_residuals, self.enbpi_window)
 
             q_level = _conformal_quantile_level(self.enbpi_oob_residuals.shape[0], self.alpha)
-            self.radii = torch.quantile(self.enbpi_oob_residuals, q_level, dim=0).numpy()
+            self.radii = _exact_quantile_higher(
+                self.enbpi_oob_residuals, q_level, dim=0
+            ).numpy()
 
         elif self.method == "cptc":
             sm = state_model or self.cptc_state_model
@@ -1113,7 +1150,9 @@ class ConformalPredictionEngine:
             self.cptc_residuals_buffer = _rolling_clip(self.cptc_residuals_buffer, self.cptc_window)
 
             q_level = _conformal_quantile_level(self.cptc_residuals_buffer.shape[0], self.alpha)
-            self.radii = torch.quantile(self.cptc_residuals_buffer, q_level, dim=0).numpy()
+            self.radii = _exact_quantile_higher(
+                self.cptc_residuals_buffer, q_level, dim=0
+            ).numpy()
 
         elif self.method == "afocp":
             fe = feature_extractor or self.afocp_feature_extractor
@@ -1134,7 +1173,9 @@ class ConformalPredictionEngine:
             self.afocp_residuals_buffer = _rolling_clip(self.afocp_residuals_buffer, self.afocp_window)
 
             q_level = _conformal_quantile_level(self.afocp_residuals_buffer.shape[0], self.alpha)
-            self.radii = torch.quantile(self.afocp_residuals_buffer, q_level, dim=0).numpy()
+            self.radii = _exact_quantile_higher(
+                self.afocp_residuals_buffer, q_level, dim=0
+            ).numpy()
 
             if self._afocp_opt is not None and self.afocp_online_steps > 0:
                 self._afocp_online_train_step(X_t, y3, new_residuals, device)
@@ -1198,12 +1239,15 @@ class ConformalPredictionEngine:
         y_np = y3.numpy()
 
         covered = (y_np >= lower) & (y_np <= upper)
+        joint_covered = covered.all(axis=(1, 2))
         widths = upper - lower
 
         return {
             "coverage": float(covered.mean()),
+            "joint_coverage": float(joint_covered.mean()),
             "target_coverage": float(self.q),
             "coverage_gap": float(covered.mean() - self.q),
+            "joint_coverage_gap": float(joint_covered.mean() - self.q),
             "mean_width": float(widths.mean()),
             "std_width": float(widths.std()),
             "min_width": float(widths.min()),
@@ -1236,6 +1280,7 @@ class ConformalPredictionEngine:
             "method": self.method,
             "q": self.q,
             "alpha": self.alpha,
+            "rolling_alpha": self.rolling_alpha,
             "knn_k": self.knn_k,
             "local_window": self.local_window,
             "aci_gamma": self.aci_gamma,
@@ -1279,6 +1324,7 @@ class ConformalPredictionEngine:
         self.method = state["method"]
         self.q = state["q"]
         self.alpha = state["alpha"]
+        self.rolling_alpha = state.get("rolling_alpha", self.rolling_alpha)
         self.knn_k = state.get("knn_k", self.knn_k)
         self.local_window = state.get("local_window", self.local_window)
         self.aci_gamma = state.get("aci_gamma", self.aci_gamma)
@@ -1346,4 +1392,4 @@ class ConformalPredictionEngine:
         self.tsp_residuals = None
         self.tsp_weights = None
         # Reset alpha to original value
-        self.alpha = 1.0 - self.q
+        self.alpha = self.rolling_alpha if self.method in ("rolling", "agaci") else (1.0 - self.q)

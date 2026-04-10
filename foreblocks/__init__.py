@@ -10,9 +10,10 @@ from .blocks.enc_dec import (
 )
 from .core import ForecastingModel
 from .core.att import AttentionLayer
+from .tf.transformer import TransformerDecoder, TransformerEncoder
 
 # from .pipeline import TimeSeriesSeq2Seq
-from .tf.transformer import TransformerDecoder, TransformerEncoder
+from .tf.transformer_tuner import ModernTransformerTuner, TransformerTuner
 
 if TYPE_CHECKING:
     from .evaluation import ModelEvaluator
@@ -37,6 +38,8 @@ __all__ = [
     "GRUDecoder",
     "TransformerEncoder",
     "TransformerDecoder",
+    "ModernTransformerTuner",
+    "TransformerTuner",
     "AttentionLayer",
 ]
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foreblocks"
-version = "0.1.15"
+version = "0.1.16"
 description = "Modular Time Series Forecasting Library"
 authors = [{ name = "Laio Seman", email = "laioseman@gmail.com" }]
 
@@ -74,6 +74,8 @@ mltracker = [
     "textual>=0.70",
 ]
 
+studio = []
+
 # ── foretools extras ──────────────────────────────────────────────────────
 vmd = [
     "foreblocks[scientific]",
@@ -105,7 +107,7 @@ foreminer = [
 ]
 
 # ── Full install ──────────────────────────────────────────────────────────
-all = ["foreblocks[preprocessing,darts,mltracker,vmd,wavelets,benchmark,foreminer]"]
+all = ["foreblocks[preprocessing,darts,mltracker,studio,vmd,wavelets,benchmark,foreminer]"]
 
 # ── Development tools (not packaged) ─────────────────────────────────────
 dev = ["pytest>=7.0", "ipykernel>=6.0", "ruff", "basedpyright"]
@@ -116,9 +118,13 @@ Repository = "https://github.com/lseman/foreblocks"
 
 [project.scripts]
 mltracker-tui = "foreblocks.mltracker.mltracker_tui:main"
+foreblocks-studio = "foreblocks.studio_server:main"
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.package-data]
+foreblocks = ["studio/dist/*", "studio/dist/assets/*"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -9,9 +9,12 @@ __pycache__/
 uv.lock
 typings/
 
-# Build artifacts
-build/
-dist/
+# Python packaging artifacts
+/build/
+/dist/
+
+# Generated Studio frontend bundle
+/foreblocks/studio/dist/
 
 # Editors & IDEs
 .vscode/

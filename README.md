@@ -26,6 +26,7 @@ Install optional extras when you need specific subsystems:
 | --- | --- |
 | `darts` | DARTS search plus analysis dependencies |
 | `mltracker` | experiment tracking API and UI dependencies |
+| `studio` | bundled Studio frontend launcher command |
 | `vmd` | VMD decomposition and Optuna-based search support |
 | `wavelets` | optional wavelet backends |
 | `benchmark` | external forecasting baselines and spreadsheet readers |
@@ -37,8 +38,25 @@ Examples:
 ```bash
 pip install "foreblocks[darts]"
 pip install "foreblocks[mltracker]"
+pip install "foreblocks[studio]"
 pip install "foreblocks[vmd,wavelets]"
 pip install "foreblocks[all]"
+```
+
+Launch the bundled Studio frontend:
+
+```bash
+foreblocks-studio
+```
+
+By default, this auto-opens a browser when serving on `127.0.0.1` or `localhost`.
+
+Optional flags:
+
+```bash
+foreblocks-studio --open
+foreblocks-studio --no-open
+foreblocks-studio --host 0.0.0.0 --port 8080
 ```
 
 Local development install:

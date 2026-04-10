@@ -163,12 +163,51 @@ class _ChannelMixer(nn.Module):
         return (x + y) if self.residual else y
 
 
+class _ResidualRefinementBlock(nn.Module):
+    """
+    NHITS-like residual refinement on top of an interpolated coarse base.
+
+    The coarse path is treated as the current top-down estimate, and the block
+    predicts a correction from the tuple (fine, coarse, fine - coarse).
+    """
+
+    def __init__(
+        self,
+        feature_dim: int,
+        hidden_mult: float = 2.0,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.feature_dim = int(feature_dim)
+        hidden_dim = max(4, int(round(self.feature_dim * float(hidden_mult))))
+        p = float(dropout)
+
+        self.net = nn.Sequential(
+            nn.Conv1d(self.feature_dim * 3, hidden_dim, kernel_size=1, bias=True),
+            nn.GELU(),
+            nn.Dropout(p) if p > 0 else nn.Identity(),
+            nn.Conv1d(hidden_dim, self.feature_dim, kernel_size=1, bias=True),
+        )
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, fine: torch.Tensor, coarse: torch.Tensor) -> torch.Tensor:
+        if fine.shape != coarse.shape:
+            raise ValueError(
+                f"fine and coarse tensors must share shape, got {tuple(fine.shape)} and {tuple(coarse.shape)}"
+            )
+        residual = fine - coarse
+        features = torch.cat([fine, coarse, residual], dim=-1).transpose(1, 2)
+        delta = self.net(features).transpose(1, 2)
+        return coarse + delta
+
+
 class MultiScalePyramid(nn.Module):
     """
     MSFMoE-like multiscale pyramid head (preprocessing):
       - Recursive AvgPool downsampling to build scales
       - (Optional) per-scale FFT filtering
       - Coarse-to-fine hierarchical fusion with residuals
+    - (Optional) NHITS-like coarse interpolation + residual refinement
       - (Optional) Parallel channel mixer branch summed at the end
 
     Input:  x  [B, T, F]
@@ -195,6 +234,10 @@ class MultiScalePyramid(nn.Module):
         channel_mixer_hidden_mult: float = 2.0,  # only for mlp
         channel_mixer_dropout: float = 0.0,
         channel_mixer_residual: bool = True,
+        use_nhits_style_refinement: bool = False,
+        interpolation_mode: str = "linear",
+        refinement_hidden_mult: float = 2.0,
+        refinement_dropout: float = 0.0,
     ):
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -202,6 +245,10 @@ class MultiScalePyramid(nn.Module):
         self.pool_factor = int(pool_factor)
         self.use_fft_filter = bool(use_fft_filter)
         self.keep_input_residual = bool(keep_input_residual)
+        self.use_nhits_style_refinement = bool(use_nhits_style_refinement)
+        self.interpolation_mode = str(interpolation_mode)
+        self.refinement_hidden_mult = float(refinement_hidden_mult)
+        self.refinement_dropout = float(refinement_dropout)
 
         self.use_channel_mixer = bool(use_channel_mixer)
         self._chan_mixer: nn.Module = (
@@ -220,11 +267,16 @@ class MultiScalePyramid(nn.Module):
             raise ValueError("num_scales must be >= 1")
         if self.pool_factor < 2:
             raise ValueError("pool_factor must be >= 2 (e.g., 2)")
+        if self.interpolation_mode not in {"linear", "nearest"}:
+            raise ValueError(
+                f"interpolation_mode must be 'linear' or 'nearest', got {self.interpolation_mode!r}"
+            )
 
         # Will be lazily built on first forward because sequence length T is only known then.
         self._built_for_T: Optional[int] = None
         self._filters: nn.ModuleList = nn.ModuleList()
         self._fuse_proj: nn.ModuleList = nn.ModuleList()
+        self._refine_blocks: nn.ModuleList = nn.ModuleList()
 
         self._fft_init = fft_init
         self._fuse_dropout = float(fuse_dropout)
@@ -232,6 +284,7 @@ class MultiScalePyramid(nn.Module):
     def _build(self, T: int, *, device: torch.device):
         self._filters = nn.ModuleList()
         self._fuse_proj = nn.ModuleList()
+        self._refine_blocks = nn.ModuleList()
 
         # Determine per-scale lengths (must stay >= 2 to make sense)
         lengths: List[int] = []
@@ -256,10 +309,18 @@ class MultiScalePyramid(nn.Module):
             self._fuse_proj.append(
                 _ChannelwiseProj(self.feature_dim, dropout=self._fuse_dropout)
             )
+            self._refine_blocks.append(
+                _ResidualRefinementBlock(
+                    self.feature_dim,
+                    hidden_mult=self.refinement_hidden_mult,
+                    dropout=self.refinement_dropout,
+                )
+            )
 
         # Runtime-built modules must follow the current execution device.
         self._filters.to(device=device)
         self._fuse_proj.to(device=device)
+        self._refine_blocks.to(device=device)
 
         self._built_for_T = int(T)
 
@@ -275,6 +336,19 @@ class MultiScalePyramid(nn.Module):
         # y: [B,T,F] -> [B,target_T,F]
         yt = y.transpose(1, 2)  # [B,F,T]
         yt = F.interpolate(yt, size=int(target_T), mode="linear", align_corners=False)
+        return yt.transpose(1, 2)
+
+    def _upsample_time_mode(self, y: torch.Tensor, target_T: int) -> torch.Tensor:
+        yt = y.transpose(1, 2)  # [B,F,T]
+        if self.interpolation_mode == "nearest":
+            yt = F.interpolate(yt, size=int(target_T), mode="nearest")
+        else:
+            yt = F.interpolate(
+                yt,
+                size=int(target_T),
+                mode="linear",
+                align_corners=False,
+            )
         return yt.transpose(1, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -315,18 +389,22 @@ class MultiScalePyramid(nn.Module):
         Ys: List[torch.Tensor] = [f(Xi) for f, Xi in zip(self._filters, Xs)]
 
         # 3) Coarse-to-fine hierarchical fusion:
-        #    for i from coarse-1 down to 0:
-        #      Y_i = Y_i + Proj( Upsample(Y_{i+1} -> len(Y_i)) )
+        #    legacy mode: Y_i = Y_i + Proj(Upsample(Y_{i+1}))
+        #    NHITS-like mode: coarse base = Proj(Upsample(Y_{i+1})), then refine
+        #    the fine scale residual against that top-down estimate.
         for i in reversed(range(self.num_scales - 1)):
             target_T = Ys[i].shape[1]
-            up = self._upsample_time(Ys[i + 1], target_T)  # [B,target_T,F]
+            up = self._upsample_time_mode(Ys[i + 1], target_T)  # [B,target_T,F]
 
             # project channel-wise in [B,F,T] space
             up_t = up.transpose(1, 2)  # [B,F,T]
             up_t = self._fuse_proj[i](up_t)  # [B,F,T]
-            up = up_t.transpose(1, 2)  # [B,T,F]
+            coarse_base = up_t.transpose(1, 2)  # [B,T,F]
 
-            Ys[i] = Ys[i] + up
+            if self.use_nhits_style_refinement:
+                Ys[i] = self._refine_blocks[i](Ys[i], coarse_base)
+            else:
+                Ys[i] = Ys[i] + coarse_base
 
         ym = Ys[0]
 
@@ -364,6 +442,10 @@ class MultiScalePyramidHead(BaseHead):
         channel_mixer_hidden_mult: float = 2.0,
         channel_mixer_dropout: float = 0.0,
         channel_mixer_residual: bool = True,
+        use_nhits_style_refinement: bool = False,
+        interpolation_mode: str = "linear",
+        refinement_hidden_mult: float = 2.0,
+        refinement_dropout: float = 0.0,
     ):
         super().__init__(
             module=MultiScalePyramid(
@@ -379,6 +461,10 @@ class MultiScalePyramidHead(BaseHead):
                 channel_mixer_hidden_mult=channel_mixer_hidden_mult,
                 channel_mixer_dropout=channel_mixer_dropout,
                 channel_mixer_residual=channel_mixer_residual,
+                use_nhits_style_refinement=use_nhits_style_refinement,
+                interpolation_mode=interpolation_mode,
+                refinement_hidden_mult=refinement_hidden_mult,
+                refinement_dropout=refinement_dropout,
             ),
             name="multiscale_pyramid",
         )
