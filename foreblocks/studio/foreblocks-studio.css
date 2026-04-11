@@ -45,8 +45,8 @@ textarea {
     inset: 0;
     pointer-events: none;
     background-image:
-        linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+        linear-gradient(rgba(245, 195, 50, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(91, 168, 212, 0.03) 1px, transparent 1px);
     background-size: 48px 48px;
     mask-image: radial-gradient(circle at center, black, transparent 78%);
     opacity: var(--overlay-opacity);
@@ -102,6 +102,7 @@ textarea {
     font-size: 21px;
     letter-spacing: -0.04em;
     font-weight: 700;
+    color: var(--text);
 }
 
 .brand-copy p {
@@ -2114,13 +2115,16 @@ select:focus-visible {
 [data-color-scheme="dark"] .toggle-row,
 [data-color-scheme="dark"] .summary-card,
 [data-color-scheme="dark"] .callout,
-[data-color-scheme="dark"] .architecture-banner {
-    background: rgba(255, 255, 255, 0.04);
+[data-color-scheme="dark"] .architecture-banner,
+[data-color-scheme="dark"] .guidance-item,
+[data-color-scheme="dark"] .automation-subgroup-row {
+    background: rgba(15, 20, 32, 0.88);
+    border-color: rgba(245, 195, 50, 0.10);
 }
 
 [data-color-scheme="dark"] .outlier-table-shell,
 [data-color-scheme="dark"] .outlier-table th {
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(15, 20, 32, 0.88);
 }
 
 [data-color-scheme="dark"] .outlier-table tbody tr:nth-child(even) td {

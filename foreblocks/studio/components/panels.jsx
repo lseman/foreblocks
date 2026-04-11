@@ -3,6 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { NumberField, Panel, PipelineNode, SelectField, SkeletonBlock, StatPill, ToggleField } from "./base.jsx";
+import { buildOutlierPreview } from "../lib/outlier-algorithms.js";
+import { buildFilterPreview } from "../lib/filter-algorithms.js";
+import { buildDecomposition, buildEmdOverviewData, buildEmdComponentSeries, shiftValues, buildRollingHistory } from "../lib/signal-algorithms.js";
 
 function uniqueSuggestions(items) {
     return Array.from(new Map(items.map((item) => [item.window, item])).values());
@@ -75,405 +78,6 @@ const EXPLORE_GROUP_BY_TAB = EXPLORE_TAB_GROUPS.reduce((lookup, group) => {
     return lookup;
 }, {});
 
-function quantile(values, ratio) {
-    if (values.length === 0) {
-        return 0;
-    }
-
-    const position = (values.length - 1) * ratio;
-    const lowerIndex = Math.floor(position);
-    const upperIndex = Math.ceil(position);
-    if (lowerIndex === upperIndex) {
-        return values[lowerIndex];
-    }
-
-    const weight = position - lowerIndex;
-    return values[lowerIndex] * (1 - weight) + values[upperIndex] * weight;
-}
-
-function buildOutlierPreview(data, method) {
-    const points = (data ?? [])
-        .filter((point) => Number.isFinite(point?.value))
-        .map((point, index) => ({
-            index: point.t ?? index,
-            timestamp: point.timestamp ?? `T${index + 1}`,
-            label: point.month ?? point.timestamp ?? `T${index + 1}`,
-            value: point.value,
-            outlierValue: null,
-        }));
-
-    const basePreview = {
-        method,
-        total: points.length,
-        flaggedCount: 0,
-        retainedCount: points.length,
-        flaggedRate: 0,
-        thresholdLabel: "Detection disabled.",
-        chartData: points,
-        rows: [],
-    };
-
-    if (points.length === 0 || method === "none") {
-        return basePreview;
-    }
-
-    if (method === "zscore") {
-        const mean = average(points.map((point) => point.value));
-        const std = standardDeviation(points.map((point) => point.value), mean);
-
-        if (!Number.isFinite(std) || std === 0) {
-            return {
-                ...basePreview,
-                thresholdLabel: "Z-score needs non-constant data.",
-            };
-        }
-
-        const rows = points
-            .map((point) => {
-                const zScore = (point.value - mean) / std;
-                return {
-                    ...point,
-                    score: Math.abs(zScore),
-                    reason: `|z| = ${formatMetric(Math.abs(zScore), 2)}`,
-                };
-            })
-            .filter((point) => point.score >= 3)
-            .sort((left, right) => right.score - left.score);
-
-        const flaggedIndices = new Set(rows.map((row) => row.index));
-        return {
-            ...basePreview,
-            flaggedCount: rows.length,
-            retainedCount: points.length - rows.length,
-            flaggedRate: points.length > 0 ? rows.length / points.length : 0,
-            thresholdLabel: "Flagging values with |z| >= 3.00.",
-            chartData: points.map((point) => ({
-                ...point,
-                outlierValue: flaggedIndices.has(point.index) ? point.value : null,
-            })),
-            rows: rows.slice(0, 12),
-        };
-    }
-
-    const sortedValues = points.map((point) => point.value).sort((left, right) => left - right);
-    const q1 = quantile(sortedValues, 0.25);
-    const q3 = quantile(sortedValues, 0.75);
-    const iqr = q3 - q1;
-    const lowerFence = q1 - 1.5 * iqr;
-    const upperFence = q3 + 1.5 * iqr;
-    const rows = points
-        .map((point) => {
-            if (point.value < lowerFence) {
-                return {
-                    ...point,
-                    score: lowerFence - point.value,
-                    reason: `< lower fence (${formatMetric(lowerFence, 2)})`,
-                };
-            }
-
-            if (point.value > upperFence) {
-                return {
-                    ...point,
-                    score: point.value - upperFence,
-                    reason: `> upper fence (${formatMetric(upperFence, 2)})`,
-                };
-            }
-
-            return null;
-        })
-        .filter(Boolean)
-        .sort((left, right) => right.score - left.score);
-
-    const flaggedIndices = new Set(rows.map((row) => row.index));
-    return {
-        ...basePreview,
-        flaggedCount: rows.length,
-        retainedCount: points.length - rows.length,
-        flaggedRate: points.length > 0 ? rows.length / points.length : 0,
-        thresholdLabel: `IQR fences: [${formatMetric(lowerFence, 2)}, ${formatMetric(upperFence, 2)}].`,
-        chartData: points.map((point) => ({
-            ...point,
-            outlierValue: flaggedIndices.has(point.index) ? point.value : null,
-        })),
-        rows: rows.slice(0, 12),
-    };
-}
-
-function ensureOddWindow(value, minimum = 3) {
-    const normalized = Math.max(minimum, Math.round(Number.isFinite(value) ? value : minimum));
-    return normalized % 2 === 1 ? normalized : normalized + 1;
-}
-
-function solveLinearSystem(matrix, vector) {
-    const size = matrix.length;
-    const augmented = matrix.map((row, rowIndex) => [...row, vector[rowIndex]]);
-
-    for (let pivot = 0; pivot < size; pivot += 1) {
-        let pivotRow = pivot;
-        for (let row = pivot + 1; row < size; row += 1) {
-            if (Math.abs(augmented[row][pivot]) > Math.abs(augmented[pivotRow][pivot])) {
-                pivotRow = row;
-            }
-        }
-
-        if (Math.abs(augmented[pivotRow][pivot]) < 1e-10) {
-            return null;
-        }
-
-        if (pivotRow !== pivot) {
-            [augmented[pivot], augmented[pivotRow]] = [augmented[pivotRow], augmented[pivot]];
-        }
-
-        const pivotValue = augmented[pivot][pivot];
-        for (let column = pivot; column <= size; column += 1) {
-            augmented[pivot][column] /= pivotValue;
-        }
-
-        for (let row = 0; row < size; row += 1) {
-            if (row === pivot) {
-                continue;
-            }
-            const factor = augmented[row][pivot];
-            for (let column = pivot; column <= size; column += 1) {
-                augmented[row][column] -= factor * augmented[pivot][column];
-            }
-        }
-    }
-
-    return augmented.map((row) => row[size]);
-}
-
-function fitPolynomial(xs, ys, order) {
-    if (xs.length === 0 || ys.length === 0) {
-        return null;
-    }
-
-    const degree = clamp(order, 0, Math.max(0, xs.length - 1));
-    const size = degree + 1;
-    const system = Array.from({ length: size }, () => Array.from({ length: size }, () => 0));
-    const rhs = Array.from({ length: size }, () => 0);
-
-    for (let row = 0; row < size; row += 1) {
-        for (let column = 0; column < size; column += 1) {
-            system[row][column] = xs.reduce((total, value) => total + value ** (row + column), 0);
-        }
-        rhs[row] = xs.reduce((total, value, index) => total + ys[index] * (value ** row), 0);
-    }
-
-    return solveLinearSystem(system, rhs);
-}
-
-function evaluatePolynomial(coefficients, x) {
-    if (!coefficients) {
-        return 0;
-    }
-
-    return coefficients.reduce((total, coefficient, power) => total + coefficient * (x ** power), 0);
-}
-
-function buildPolynomialTrend(values, order) {
-    const xs = values.map((_value, index) => (values.length <= 1 ? 0 : (index / (values.length - 1)) * 2 - 1));
-    const finite = values
-        .map((value, index) => ({ value, x: xs[index] }))
-        .filter((item) => Number.isFinite(item.value));
-
-    if (finite.length < order + 1) {
-        return values.map(() => 0);
-    }
-
-    const coefficients = fitPolynomial(
-        finite.map((item) => item.x),
-        finite.map((item) => item.value),
-        order,
-    );
-
-    return xs.map((x) => evaluatePolynomial(coefficients, x));
-}
-
-function applyMovingAverage(values, windowSize) {
-    const radius = Math.floor(ensureOddWindow(windowSize) / 2);
-    return values.map((_value, index) => {
-        const window = [];
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidate = values[index + offset];
-            if (Number.isFinite(candidate)) {
-                window.push(candidate);
-            }
-        }
-        return window.length > 0 ? average(window) : values[index];
-    });
-}
-
-function applyMedianFilter(values, windowSize) {
-    const radius = Math.floor(ensureOddWindow(windowSize) / 2);
-    return values.map((value, index) => {
-        const window = [];
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidate = values[index + offset];
-            if (Number.isFinite(candidate)) {
-                window.push(candidate);
-            }
-        }
-        if (window.length === 0) {
-            return value;
-        }
-        const sorted = [...window].sort((left, right) => left - right);
-        const middle = Math.floor(sorted.length / 2);
-        return sorted.length % 2 === 0
-            ? (sorted[middle - 1] + sorted[middle]) / 2
-            : sorted[middle];
-    });
-}
-
-function applyWienerLikeFilter(values, windowSize) {
-    const radius = Math.floor(ensureOddWindow(windowSize) / 2);
-    const localStats = values.map((_value, index) => {
-        const window = [];
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidate = values[index + offset];
-            if (Number.isFinite(candidate)) {
-                window.push(candidate);
-            }
-        }
-        const mean = window.length > 0 ? average(window) : values[index];
-        const variance = window.length > 1
-            ? average(window.map((candidate) => (candidate - mean) ** 2))
-            : 0;
-        return { mean, variance };
-    });
-    const noiseFloor = median(localStats.map((item) => item.variance));
-
-    return values.map((value, index) => {
-        const { mean, variance } = localStats[index];
-        if (!Number.isFinite(value) || variance < 1e-10) {
-            return mean;
-        }
-        const gain = Math.max(0, variance - noiseFloor) / Math.max(variance, 1e-8);
-        return mean + gain * (value - mean);
-    });
-}
-
-function tricubeWeight(distance) {
-    if (distance >= 1) {
-        return 0;
-    }
-    const value = 1 - distance ** 3;
-    return value ** 3;
-}
-
-function applyLowessApproximation(values, fraction) {
-    const count = values.length;
-    const span = clamp(Math.round(count * fraction), 5, Math.max(5, count - (count + 1) % 2));
-    const radius = Math.max(2, Math.floor(span / 2));
-
-    return values.map((value, index) => {
-        const xs = [];
-        const ys = [];
-        const weights = [];
-
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidateIndex = index + offset;
-            const candidateValue = values[candidateIndex];
-            if (!Number.isFinite(candidateValue)) {
-                continue;
-            }
-            xs.push(offset);
-            ys.push(candidateValue);
-            weights.push(tricubeWeight(Math.abs(offset) / Math.max(radius, 1)));
-        }
-
-        if (xs.length < 3) {
-            return value;
-        }
-
-        const sumWeights = weights.reduce((total, weight) => total + weight, 0);
-        const xMean = xs.reduce((total, x, idx) => total + x * weights[idx], 0) / Math.max(sumWeights, 1e-8);
-        const yMean = ys.reduce((total, y, idx) => total + y * weights[idx], 0) / Math.max(sumWeights, 1e-8);
-        const numerator = xs.reduce((total, x, idx) => total + weights[idx] * (x - xMean) * (ys[idx] - yMean), 0);
-        const denominator = xs.reduce((total, x, idx) => total + weights[idx] * (x - xMean) ** 2, 0);
-        const slope = denominator > 1e-10 ? numerator / denominator : 0;
-        return yMean - slope * xMean;
-    });
-}
-
-function applySavGol(values, windowSize, polyorder) {
-    const effectiveWindow = ensureOddWindow(windowSize, 5);
-    const radius = Math.floor(effectiveWindow / 2);
-    return values.map((value, index) => {
-        const xs = [];
-        const ys = [];
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const sample = values[index + offset];
-            if (Number.isFinite(sample)) {
-                xs.push(offset);
-                ys.push(sample);
-            }
-        }
-
-        if (xs.length <= 2) {
-            return value;
-        }
-
-        const fitted = fitPolynomial(xs, ys, Math.min(polyorder, xs.length - 1));
-        return fitted ? evaluatePolynomial(fitted, 0) : value;
-    });
-}
-
-function buildFilterPreview(data, settings) {
-    const points = (data ?? []).filter((point) => Number.isFinite(point?.value));
-    if (points.length === 0) {
-        return {
-            available: false,
-            chartData: [],
-            rawStd: 0,
-            outputStd: 0,
-            filterWindow: ensureOddWindow(settings.filterWindow ?? 9),
-            filterPolyorder: Math.min(settings.filterPolyorder ?? 2, Math.max(1, ensureOddWindow(settings.filterWindow ?? 9) - 2)),
-        };
-    }
-
-    const values = points.map((point) => point.value);
-    const filterWindow = ensureOddWindow(settings.filterWindow ?? 9, 3);
-    const filterPolyorder = clamp(settings.filterPolyorder ?? 2, 1, Math.max(1, filterWindow - 2));
-    const lowessFraction = clamp(settings.lowessFraction ?? 0.12, 0.04, 0.45);
-    const filterEnabled = settings.filterMethod !== "none";
-    const detrendEnabled = settings.detrenderMethod === "polynomial";
-    const filtered = !filterEnabled
-        ? values
-        : settings.filterMethod === "moving_average"
-            ? applyMovingAverage(values, filterWindow)
-            : settings.filterMethod === "median"
-                ? applyMedianFilter(values, filterWindow)
-                : settings.filterMethod === "wiener"
-                    ? applyWienerLikeFilter(values, filterWindow)
-                    : settings.filterMethod === "lowess"
-                        ? applyLowessApproximation(values, lowessFraction)
-                        : applySavGol(values, filterWindow, filterPolyorder);
-    const trend = detrendEnabled
-        ? buildPolynomialTrend(filtered, clamp(settings.detrenderOrder ?? 2, 1, 6))
-        : filtered.map(() => 0);
-    const output = filtered.map((value, index) => value - trend[index]);
-    const rawStd = standardDeviation(values, average(values));
-    const outputStd = standardDeviation(output, average(output));
-
-    return {
-        available: true,
-        rawStd,
-        outputStd,
-        filterWindow,
-        filterPolyorder,
-        lowessFraction,
-        chartData: points.map((point, index) => ({
-            label: point.month ?? point.timestamp ?? `T${index + 1}`,
-            timestamp: point.timestamp ?? `T${index + 1}`,
-            raw: Number(values[index].toFixed(4)),
-            filtered: Number(filtered[index].toFixed(4)),
-            trend: detrendEnabled ? Number(trend[index].toFixed(4)) : null,
-            output: Number(output[index].toFixed(4)),
-        })),
-    };
-}
-
 function buildExploreStats(data, datasetSummary) {
     if (data.length === 0) {
         return [];
@@ -495,76 +99,7 @@ function buildExploreStats(data, datasetSummary) {
     ];
 }
 
-function buildDecomposition(data, analysis) {
-    if (data.length === 0) {
-        return {
-            periods: [],
-            strength: 0,
-            components: [],
-            data: [],
-            residualStd: 0,
-        };
-    }
 
-    const values = data.map((point) => point.value);
-    const period = clamp(Math.max(analysis.dominantAcfLag || 12, analysis.dominantPacfLag || 6), 4, 24);
-    const radius = Math.max(2, Math.floor(period / 2));
-    const trend = values.map((_value, index) => {
-        const start = Math.max(0, index - radius);
-        const end = Math.min(values.length, index + radius + 1);
-        return average(values.slice(start, end));
-    });
-
-    const seasonalBuckets = Array.from({ length: period }, () => ({ sum: 0, count: 0 }));
-    values.forEach((value, index) => {
-        const detrended = value - trend[index];
-        const bucket = seasonalBuckets[index % period];
-        bucket.sum += detrended;
-        bucket.count += 1;
-    });
-
-    const seasonalMeans = seasonalBuckets.map((bucket) => bucket.count > 0 ? bucket.sum / bucket.count : 0);
-    const seasonalMean = average(seasonalMeans);
-    const centeredSeasonal = seasonalMeans.map((value) => value - seasonalMean);
-    const decompositionData = data.map((point, index) => {
-        const seasonal = centeredSeasonal[index % period];
-        const residual = point.value - trend[index] - seasonal;
-
-        return {
-            ...point,
-            trend: Number(trend[index].toFixed(3)),
-            seasonal: Number(seasonal.toFixed(3)),
-            residual: Number(residual.toFixed(3)),
-        };
-    });
-
-    return {
-        periods: [period],
-        strength: 0,
-        components: [{ period, strength: 0 }],
-        data: decompositionData.map((point) => ({
-            ...point,
-            observed: point.value,
-        })),
-        residualStd: standardDeviation(decompositionData.map((point) => point.residual), 0),
-    };
-}
-
-function shiftValues(values, lag) {
-    return values.map((_value, index) => {
-        const sourceIndex = index - lag;
-        return sourceIndex >= 0 && Number.isFinite(values[sourceIndex]) ? values[sourceIndex] : null;
-    });
-}
-
-function buildRollingHistory(values, windowSize, reducer) {
-    const effectiveWindow = Math.max(2, Math.round(windowSize));
-    return values.map((_value, index) => {
-        const start = Math.max(0, index - effectiveWindow);
-        const window = values.slice(start, index).filter((item) => Number.isFinite(item));
-        return window.length >= Math.max(2, Math.min(4, effectiveWindow - 1)) ? reducer(window) : null;
-    });
-}
 
 function correlation(valuesA, valuesB) {
     const pairs = valuesA
@@ -1052,27 +587,7 @@ function buildCalendarProfiles(calendarDiagnostics) {
     ].filter((item) => item.profile?.available && item.profile?.data?.length);
 }
 
-function buildEmdOverviewData(seriesData, emdDiagnostics) {
-    if (!emdDiagnostics?.available) {
-        return [];
-    }
 
-    const components = emdDiagnostics.components ?? [];
-    const residual = emdDiagnostics.residual?.values ?? [];
-    return seriesData.map((point, index) => ({
-        ...point,
-        observed: point.value,
-        reconstruction: residual[index] + components.reduce((total, component) => total + (component.values[index] ?? 0), 0),
-        residual: residual[index] ?? 0,
-    }));
-}
-
-function buildEmdComponentSeries(seriesData, component) {
-    return seriesData.map((point, index) => ({
-        ...point,
-        value: component.values[index] ?? 0,
-    }));
-}
 
 const KEYWORDS = new Set([
     "and",
@@ -1099,6 +614,9 @@ const BENCHMARK_COLORS = {
     naive: "var(--warm)",
     seasonal_naive: "var(--accent)",
     moving_average: "var(--secondary)",
+    mean: "#f59e0b",
+    median: "#10b981",
+    exponential_smoothing: "#8b5cf6",
     drift: "var(--cool)",
     linear_trend: "#1f6feb",
 };
@@ -1904,6 +1422,9 @@ export function OutlierPanel({
                         options={[
                             { value: "iqr", label: "IQR fences" },
                             { value: "zscore", label: "Z-score" },
+                            { value: "mad", label: "MAD" },
+                            { value: "isolation_forest", label: "Isolation Forest" },
+                            { value: "lof", label: "Local Outlier Factor" },
                             { value: "none", label: "No detection" },
                         ]}
                         hint="This selector only affects the diagnostics preview, not the preprocessing pipeline."
@@ -1970,8 +1491,8 @@ export function OutlierPanel({
                                 stroke="transparent"
                                 connectNulls={false}
                                 name="outlierValue"
-                                dot={{ r: 4, fill: "var(--panel-solid)", stroke: "var(--accent)", strokeWidth: 2 }}
-                                activeDot={{ r: 5, fill: "var(--panel-solid)", stroke: "var(--accent-strong)", strokeWidth: 2 }}
+                                dot={{ r: 5, fill: "var(--accent)", stroke: "var(--warm)", strokeWidth: 2 }}
+                                activeDot={{ r: 6, fill: "var(--accent-strong)", stroke: "var(--warm)", strokeWidth: 2 }}
                             />
                         </LineChart>
                     </ResponsiveContainer>
@@ -2067,6 +1588,8 @@ export function FilterPanel({ status, errorMessage, data, settings, onSettingsCh
                                 { value: "moving_average", label: "Rolling average" },
                                 { value: "median", label: "Median filter" },
                                 { value: "wiener", label: "Wiener-like" },
+                                { value: "gaussian", label: "Gaussian" },
+                                { value: "ema", label: "Exponential moving average" },
                                 { value: "lowess", label: "LOWESS" },
                             ]}
                             hint="Preview-only smoothing. Extra controls appear only for the selected filter."

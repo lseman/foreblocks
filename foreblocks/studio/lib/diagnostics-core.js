@@ -14,6 +14,14 @@ function standardDeviation(values, mean = average(values)) {
   return Math.sqrt(variance(values, mean));
 }
 
+function isConstant(values, tolerance = 1e-8) {
+  const finite = values.filter((value) => Number.isFinite(value));
+  if (finite.length < 2) {
+    return true;
+  }
+  return Math.abs(Math.max(...finite) - Math.min(...finite)) <= tolerance;
+}
+
 function median(values) {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
@@ -1357,6 +1365,37 @@ function forecastMovingAverage(train, horizon, windowSize) {
   return Array.from({ length: horizon }, () => mean);
 }
 
+function forecastMean(train, horizon) {
+  if (train.length === 0) {
+    return null;
+  }
+  const meanValue = average(train);
+  return Array.from({ length: horizon }, () => meanValue);
+}
+
+function forecastMedian(train, horizon) {
+  if (train.length === 0) {
+    return null;
+  }
+  const sorted = [...train].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+  return Array.from({ length: horizon }, () => median);
+}
+
+function forecastSimpleExponentialSmoothing(train, horizon, alpha = 0.2) {
+  if (train.length === 0) {
+    return null;
+  }
+  let level = train[0];
+  for (let index = 1; index < train.length; index += 1) {
+    level = alpha * train[index] + (1 - alpha) * level;
+  }
+  return Array.from({ length: horizon }, () => level);
+}
+
 function forecastDrift(train, horizon) {
   if (train.length < 2) {
     return forecastNaive(train, horizon);
@@ -1395,6 +1434,9 @@ function rollingOriginBacktest(values, period, horizon) {
     { name: "naive", label: "Naive", forecast: (train) => forecastNaive(train, horizon) },
     { name: "seasonal_naive", label: "Seasonal Naive", forecast: (train) => forecastSeasonalNaive(train, horizon, period) },
     { name: "moving_average", label: "Moving Average", forecast: (train) => forecastMovingAverage(train, horizon, period) },
+    { name: "mean", label: "Mean", forecast: (train) => forecastMean(train, horizon) },
+    { name: "median", label: "Median", forecast: (train) => forecastMedian(train, horizon) },
+    { name: "exponential_smoothing", label: "Exp. Smoothing", forecast: (train) => forecastSimpleExponentialSmoothing(train, horizon) },
     { name: "drift", label: "Drift", forecast: (train) => forecastDrift(train, horizon) },
     { name: "linear_trend", label: "Linear Trend", forecast: (train) => forecastLinearTrend(train, horizon) },
   ];
@@ -1780,7 +1822,7 @@ function alignSeriesPair(target, predictor) {
 }
 
 function needsDifferencingForGranger(values) {
-  if (values.length < 32) {
+  if (values.length < 32 || isConstant(values)) {
     return false;
   }
 
@@ -1792,6 +1834,11 @@ function needsDifferencingForGranger(values) {
     : 0;
   const adf = runAdfTest(values);
   const kpss = runKpssTest(values);
+
+  if (!adf.available || !kpss.available) {
+    return false;
+  }
+
   return classifyStationarity(adf, kpss, slope).needsDiff;
 }
 
@@ -1819,6 +1866,10 @@ function buildGrangerLagDesign(target, predictor, lag) {
 }
 
 function runGrangerTestForLag(target, predictor, lag) {
+  if (isConstant(target) || isConstant(predictor)) {
+    return null;
+  }
+
   const { restricted, unrestricted, response } = buildGrangerLagDesign(target, predictor, lag);
   const rowCount = response.length;
   const unrestrictedColumns = unrestricted[0]?.length ?? 0;

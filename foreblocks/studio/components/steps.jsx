@@ -229,6 +229,9 @@ export function PreprocessStep({ config, setConfig }) {
                     options={[
                         { value: "iqr", label: "IQR fences" },
                         { value: "zscore", label: "Z-score" },
+                        { value: "mad", label: "MAD" },
+                        { value: "isolation_forest", label: "Isolation Forest" },
+                        { value: "lof", label: "Local Outlier Factor" },
                         { value: "none", label: "No detection" },
                     ]}
                     hint="Used for both Studio preview and emitted TimeSeriesHandler code."

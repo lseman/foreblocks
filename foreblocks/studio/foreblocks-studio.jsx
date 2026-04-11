@@ -278,7 +278,7 @@ export default function ForeblocksStudio() {
     const [activePrepLabSubgroup, setActivePrepLabSubgroup] = useState("outliers");
     const [activeRegimeSubgroup, setActiveRegimeSubgroup] = useState("signal");
     const [uploadedDataset, setUploadedDataset] = useState(null);
-    const [isDarkMode, setIsDarkMode] = useState(false);
+    const [isDarkMode, setIsDarkMode] = useState(true);
     const [changePointMethod, setChangePointMethod] = useState("segmentation");
     const [outlierPreviewMethod, setOutlierPreviewMethod] = useState(INITIAL_CONFIG.prep.outlierMethod);
     const [filterPreviewSettings, setFilterPreviewSettings] = useState({

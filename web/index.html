@@ -4,718 +4,1432 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ForeBlocks - Modular Time-Series Forecasting For PyTorch</title>
+  <title>foreBlocks — Modular Time-Series Forecasting for PyTorch</title>
   <meta name="description"
-    content="ForeBlocks is a modular PyTorch toolkit for time-series forecasting, preprocessing, architecture search, uncertainty estimation, and experiment tooling." />
-  <meta property="og:title" content="ForeBlocks - Modular Time-Series Forecasting For PyTorch" />
-  <meta property="og:description"
-    content="Start with a lean forecasting core, then layer in preprocessing, DARTS search, uncertainty, MLTracker, and companion tooling when you need them." />
+    content="foreBlocks is a modular PyTorch toolkit for time-series forecasting, preprocessing, architecture search, uncertainty estimation, and experiment tooling." />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fraunces:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap"
     rel="stylesheet" />
-  <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css"
-    rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"
     defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js"
-    defer></script>
 
   <style>
+    /* ═══════════════════════════════════════════
+       TOKENS
+    ═══════════════════════════════════════════ */
     :root {
-      --bg: #071019;
-      --bg-soft: #0d1722;
-      --panel: rgba(14, 25, 37, 0.8);
-      --panel-strong: rgba(10, 19, 30, 0.92);
-      --border: rgba(148, 163, 184, 0.16);
-      --border-strong: rgba(94, 234, 212, 0.28);
-      --text: #eff6ff;
-      --muted: #97a7bb;
-      --accent: #5eead4;
-      --accent-2: #38bdf8;
-      --accent-3: #f59e0b;
-      --accent-4: #fb7185;
-      --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
-      --radius: 24px;
-      --radius-sm: 16px;
+      --ink: #07090d;
+      --ink-soft: #0e1219;
+      --ink-mid: #151c26;
+      --border: rgba(255, 255, 255, 0.07);
+      --border-hi: rgba(245, 195, 50, 0.38);
+      --text: #f0ede6;
+      --muted: #7c8a9a;
+      --muted-2: #4e5c6e;
+      --gold: #f5c332;
+      --gold-dim: #c99c1a;
+      --gold-pale: rgba(245, 195, 50, 0.08);
+      --sky: #5ba8d4;
+      --r: 20px;
+      --r-sm: 12px;
     }
 
-    * {
+    *,
+    *::before,
+    *::after {
       box-sizing: border-box;
-      font-family: "Space Grotesk", system-ui, sans-serif;
+      margin: 0;
+      padding: 0;
     }
 
-    code,
-    pre {
-      font-family: "IBM Plex Mono", "Fira Code", monospace !important;
+    html {
+      font-size: 16px;
     }
 
-    html,
     body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background-color: var(--ink);
+      color: var(--text);
       min-height: 100vh;
-      background:
-        radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 32%),
-        radial-gradient(circle at 85% 10%, rgba(245, 158, 11, 0.12), transparent 22%),
-        radial-gradient(circle at 50% 100%, rgba(94, 234, 212, 0.12), transparent 30%),
-        linear-gradient(180deg, #050b12 0%, #08121d 42%, #050b12 100%);
-      color: var(--text);
-    }
-
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      background-image:
-        linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-      background-size: 42px 42px;
-      mask-image: radial-gradient(circle at 50% 30%, black 35%, transparent 78%);
-      opacity: 0.45;
-    }
-
-    .grain {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      opacity: 0.08;
-      background-image:
-        radial-gradient(circle at 25% 25%, rgba(255, 255, 255, 0.16) 0, transparent 20%),
-        radial-gradient(circle at 75% 40%, rgba(255, 255, 255, 0.12) 0, transparent 18%),
-        radial-gradient(circle at 40% 75%, rgba(255, 255, 255, 0.12) 0, transparent 18%);
-      background-size: 260px 260px;
-    }
-
-    .navbar {
-      background: rgba(5, 11, 18, 0.78);
-      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
-      backdrop-filter: blur(18px);
-    }
-
-    .nav-link {
-      color: var(--muted);
-      font-size: 0.9rem;
-      font-weight: 500;
-      transition: color 0.18s ease, background-color 0.18s ease;
-      border-radius: 999px;
-    }
-
-    .nav-link:hover,
-    .nav-link.active {
-      color: var(--text);
-      background: rgba(255, 255, 255, 0.05);
-    }
-
-    .shell,
-    .panel,
-    .feature-card,
-    .path-card,
-    .mini-card,
-    .resource-card,
-    .step-card,
-    .stat-card {
-      background: linear-gradient(180deg, rgba(16, 27, 40, 0.92), rgba(8, 16, 26, 0.82));
-      border: 1px solid var(--border);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(14px);
-    }
-
-    .shell {
-      border-radius: 28px;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .hero-shell {
-      max-width: 32rem;
-      margin-left: auto;
-    }
-
-    .shell::after {
-      content: "";
-      position: absolute;
-      inset: 1px;
-      border-radius: 27px;
-      border: 1px solid rgba(255, 255, 255, 0.04);
-      pointer-events: none;
-    }
-
-    .eyebrow {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.45rem 0.8rem;
-      border-radius: 999px;
-      border: 1px solid rgba(94, 234, 212, 0.25);
-      background: rgba(94, 234, 212, 0.1);
-      color: #c7fff6;
-      font-size: 0.78rem;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-    }
-
-    .hero-title {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: 1rem;
-      flex-wrap: wrap;
-      font-size: clamp(3rem, 6vw, 5.8rem);
-      line-height: 0.97;
-      letter-spacing: -0.05em;
-      font-weight: 700;
-      text-align: center;
-    }
-
-    .hero-title .gradient {
-      background: linear-gradient(120deg, var(--accent) 0%, var(--accent-2) 48%, #f5f5f4 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-
-    .hero-logo-wrap {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-
-    .hero-logo-text {
-      font-size: clamp(1.6rem, 2.6vw, 3rem);
-      font-weight: 700;
-      letter-spacing: -0.03em;
-      text-transform: lowercase;
-      line-height: 1.05;
-      background: linear-gradient(120deg, var(--accent) 0%, var(--accent-2) 48%, #f5f5f4 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-
-    .hero-badges {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 0.75rem;
-      margin-top: 1.5rem;
-    }
-
-    .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0.6rem 0.95rem;
-      border-radius: 999px;
-      border: 1px solid rgba(94, 234, 212, 0.18);
-      background: rgba(94, 234, 212, 0.08);
-      color: #d2f7ef;
-      font-size: 0.82rem;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .hero-copy {
-      color: var(--muted);
-      font-size: 1.05rem;
-      line-height: 1.75;
-      max-width: 46rem;
-      margin-left: auto;
-      margin-right: auto;
-      text-align: center;
-    }
-
-    header > .max-w-7xl {
-      position: relative;
-      z-index: 10;
-    }
-
-    .cta-primary,
-    .cta-secondary,
-    .ghost-link,
-    .mini-pill {
-      transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
-    }
-
-    .cta-primary {
-      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
-      color: #03222c;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      box-shadow: 0 14px 36px rgba(56, 189, 248, 0.2);
-    }
-
-    .cta-secondary {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      color: var(--text);
-    }
-
-    .cta-primary:hover,
-    .cta-secondary:hover,
-    .ghost-link:hover,
-    .mini-pill:hover {
-      transform: translateY(-2px);
-    }
-
-    .mini-pill {
-      border: 1px solid rgba(148, 163, 184, 0.16);
-      background: rgba(255, 255, 255, 0.04);
-      color: #d9e6f5;
-    }
-
-    .stat-card,
-    .mini-card {
-      border-radius: 18px;
-      padding: 1rem 1.05rem;
-    }
-
-    .stat-card strong,
-    .mini-card strong {
-      display: block;
-      font-size: 1.1rem;
-      color: var(--text);
-      margin-bottom: 0.25rem;
-    }
-
-    .stat-card span,
-    .mini-card span {
-      color: var(--muted);
-      font-size: 0.86rem;
-      line-height: 1.55;
-    }
-
-    .panel {
-      border-radius: var(--radius);
-      padding: 1.25rem;
-    }
-
-    .label {
-      font-size: 0.78rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #7dd3fc;
-      font-weight: 700;
-    }
-
-    .value {
-      color: var(--text);
-      font-size: 0.98rem;
+      overflow-x: hidden;
       line-height: 1.6;
     }
 
-    .feature-card,
-    .path-card,
-    .resource-card,
-    .step-card {
-      border-radius: var(--radius-sm);
-      padding: 1.35rem;
-      position: relative;
-      overflow: hidden;
-      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    code,
+    pre,
+    kbd {
+      font-family: 'JetBrains Mono', monospace !important;
     }
 
-    .resource-card {
-      display: block;
-      color: inherit;
+    ::selection {
+      background: rgba(245, 195, 50, 0.25);
+      color: var(--text);
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--ink);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(245, 195, 50, 0.2);
+      border-radius: 99px;
+    }
+
+    /* ═══════════════════════════════════════════
+       BACKGROUND TEXTURE
+    ═══════════════════════════════════════════ */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+      background-size: 56px 56px;
+      mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 30%, transparent 80%);
+    }
+
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse 50% 40% at 8% 12%, rgba(245, 195, 50, 0.07), transparent),
+        radial-gradient(ellipse 40% 30% at 92% 8%, rgba(91, 168, 212, 0.06), transparent),
+        radial-gradient(ellipse 60% 50% at 50% 100%, rgba(245, 195, 50, 0.05), transparent);
+    }
+
+    /* ═══════════════════════════════════════════
+       CHART DECORATION — CANVAS
+    ═══════════════════════════════════════════ */
+    #hero-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      /* fade left (behind text) and top/bottom edges */
+      -webkit-mask-image:
+        radial-gradient(ellipse 75% 90% at 80% 52%, black 20%, transparent 75%),
+        linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+      -webkit-mask-composite: destination-in;
+      mask-image:
+        radial-gradient(ellipse 75% 90% at 80% 52%, black 20%, transparent 75%),
+        linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+      mask-composite: intersect;
+    }
+
+    /* ═══════════════════════════════════════════
+       NAV
+    ═══════════════════════════════════════════ */
+    nav {
+      position: fixed;
+      inset-inline: 0;
+      top: 0;
+      z-index: 100;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      background: rgba(7, 9, 13, 0.82);
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-inner {
+      width: 100%;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
       text-decoration: none;
     }
 
-    .feature-card:hover,
-    .path-card:hover,
-    .resource-card:hover,
-    .step-card:hover {
-      transform: translateY(-4px);
-      border-color: var(--border-strong);
-      box-shadow: 0 18px 48px rgba(3, 12, 18, 0.5);
-    }
-
-    .feature-card::before,
-    .path-card::before,
-    .resource-card::before,
-    .step-card::before {
-      content: "";
-      position: absolute;
-      inset: 0 auto auto 0;
-      width: 100%;
-      height: 1px;
-      background: linear-gradient(90deg, rgba(94, 234, 212, 0.45), transparent 65%);
-    }
-
-    .icon-wrap {
-      width: 2.9rem;
-      height: 2.9rem;
-      border-radius: 14px;
-      display: inline-flex;
+    .nav-logo-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--gold);
+      display: flex;
       align-items: center;
       justify-content: center;
-      border: 1px solid rgba(94, 234, 212, 0.18);
-      background: rgba(94, 234, 212, 0.08);
-      color: var(--accent);
     }
 
-    .soft {
+    .nav-logo-mark svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .nav-logo-name {
+      font-family: 'Fraunces', serif;
+      font-weight: 600;
+      font-size: 1.15rem;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 0.15rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-size: 0.83rem;
+      font-weight: 500;
       color: var(--muted);
-      line-height: 1.7;
+      text-decoration: none;
+      padding: 0.4rem 0.85rem;
+      border-radius: 99px;
+      transition: color 0.15s, background 0.15s;
     }
 
-    .accent-line {
+    .nav-links a:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .nav-links a.active {
+      color: var(--text);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .btn-ghost {
+      font-size: 0.83rem;
+      font-weight: 500;
+      padding: 0.4rem 1rem;
+      border-radius: 99px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      text-decoration: none;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .btn-ghost:hover {
+      border-color: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.07);
+    }
+
+    .btn-gold {
+      font-size: 0.83rem;
+      font-weight: 600;
+      padding: 0.45rem 1.1rem;
+      border-radius: 99px;
+      background: var(--gold);
+      color: #0a0700;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: background 0.15s, transform 0.15s;
+    }
+
+    .btn-gold:hover {
+      background: #ffd24d;
+      transform: translateY(-1px);
+    }
+
+    /* ═══════════════════════════════════════════
+       HERO
+    ═══════════════════════════════════════════ */
+    .hero {
+      position: relative;
+      min-height: 100svh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 120px 2rem 80px;
+      overflow: hidden;
+    }
+
+    .hero-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4rem;
+      align-items: center;
+      position: relative;
+      z-index: 2;
+    }
+
+    .hero-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.73rem;
+      font-weight: 600;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-kicker::before {
+      content: '';
+      width: 18px;
       height: 1px;
-      background: linear-gradient(90deg, transparent 0%, rgba(94, 234, 212, 0.3) 20%, rgba(56, 189, 248, 0.2) 50%, transparent 100%);
+      background: var(--gold);
     }
 
-    .terminal {
-      background: #07111c;
-      border: 1px solid rgba(148, 163, 184, 0.12);
+    .hero-title {
+      font-family: 'Fraunces', serif;
+      font-size: clamp(3.2rem, 5.5vw, 5.4rem);
+      font-weight: 700;
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+      color: var(--text);
+      margin-bottom: 1.6rem;
+    }
+
+    .hero-title em {
+      font-style: italic;
+      font-weight: 300;
+      color: var(--gold);
+    }
+
+    .hero-desc {
+      font-size: 1.05rem;
+      color: var(--muted);
+      line-height: 1.8;
+      max-width: 38rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .hero-ctas {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 3rem;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.6rem;
+      border-radius: 99px;
+      font-weight: 600;
+      font-size: 0.92rem;
+      background: var(--gold);
+      color: #0a0700;
+      text-decoration: none;
+      transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
+      box-shadow: 0 8px 28px rgba(245, 195, 50, 0.22);
+    }
+
+    .btn-primary:hover {
+      background: #ffd24d;
+      transform: translateY(-2px);
+      box-shadow: 0 14px 36px rgba(245, 195, 50, 0.3);
+    }
+
+    .btn-outline {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.6rem;
+      border-radius: 99px;
+      font-weight: 500;
+      font-size: 0.92rem;
+      border: 1px solid var(--border);
+      color: var(--text);
+      text-decoration: none;
+      background: rgba(255, 255, 255, 0.03);
+      transition: border-color 0.15s, background 0.15s, transform 0.15s;
+    }
+
+    .btn-outline:hover {
+      border-color: rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.06);
+      transform: translateY(-2px);
+    }
+
+    .hero-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      padding: 0.32rem 0.75rem;
+      border-radius: 99px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .pill svg {
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+    }
+
+    /* ── Hero right panel ── */
+    .hero-panel {
+      position: relative;
+    }
+
+    .terminal-card {
+      background: var(--ink-soft);
+      border: 1px solid var(--border);
       border-radius: 18px;
       overflow: hidden;
+      box-shadow: 0 40px 80px rgba(0, 0, 0, 0.5);
     }
 
     .term-bar {
       display: flex;
       align-items: center;
       gap: 0.45rem;
-      padding: 0.95rem 1rem;
-      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      padding: 0.9rem 1.1rem;
+      border-bottom: 1px solid var(--border);
       background: rgba(255, 255, 255, 0.02);
     }
 
     .dot {
-      width: 0.72rem;
-      height: 0.72rem;
-      border-radius: 999px;
-    }
-
-    .hero-shell-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      margin-bottom: 0.9rem;
-    }
-
-    .hero-shell-note {
-      margin-top: 0.9rem;
-      color: var(--muted);
-      font-size: 0.88rem;
-      line-height: 1.65;
-    }
-
-    .hero-quick-links {
-      display: grid;
-      gap: 0.7rem;
-      margin-top: 1rem;
-    }
-
-    .hero-quick-link {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      padding: 0.9rem 1rem;
-      border-radius: 14px;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(255, 255, 255, 0.03);
-      color: var(--text);
-      text-decoration: none;
-      transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
-    }
-
-    .hero-quick-link:hover {
-      transform: translateX(4px);
-      border-color: rgba(94, 234, 212, 0.24);
-      background: rgba(94, 234, 212, 0.06);
-    }
-
-    .hero-quick-link strong {
-      display: block;
-      color: var(--text);
-      font-size: 0.95rem;
-      margin-bottom: 0.15rem;
-    }
-
-    .hero-quick-link small {
-      color: var(--muted);
-      font-size: 0.8rem;
-      line-height: 1.5;
-    }
-
-    .copy-btn {
-      position: absolute;
-      top: 0.9rem;
-      right: 0.9rem;
-      z-index: 20;
-      padding: 0.35rem 0.7rem;
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.16);
-      background: rgba(255, 255, 255, 0.06);
-      color: #d7e4f0;
-      font-size: 0.72rem;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .copy-btn:hover {
-      background: rgba(255, 255, 255, 0.12);
-      border-color: rgba(94, 234, 212, 0.28);
-    }
-
-    pre[class*="language-"] {
-      margin: 0 !important;
-      background: #07111c !important;
-      border-radius: 18px !important;
-      border: 1px solid rgba(148, 163, 184, 0.1) !important;
-    }
-
-    code[class*="language-"] {
-      font-size: 0.82rem !important;
-      line-height: 1.75 !important;
-    }
-
-    :not(pre)>code {
-      background: rgba(94, 234, 212, 0.08);
-      border: 1px solid rgba(94, 234, 212, 0.12);
-      color: #c7fff6;
-      padding: 0.15rem 0.45rem;
-      border-radius: 0.4rem;
-      font-size: 0.88em;
-    }
-
-    .line-numbers .line-numbers-rows {
-      border-right-color: rgba(148, 163, 184, 0.12) !important;
-    }
-
-    .line-numbers-rows>span::before {
-      color: rgba(148, 163, 184, 0.32) !important;
-    }
-
-    .ghost-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.55rem;
-      color: #dff9f5;
-      border-bottom: 1px solid transparent;
-    }
-
-    .ghost-link:hover {
-      color: var(--accent);
-      border-bottom-color: rgba(94, 234, 212, 0.3);
-    }
-
-    .route-list a {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      border-radius: 14px;
-      padding: 0.9rem 1rem;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(255, 255, 255, 0.03);
-      color: var(--text);
-      transition: border-color 0.18s ease, transform 0.18s ease, background-color 0.18s ease;
-    }
-
-    .route-list a:hover {
-      transform: translateX(4px);
-      border-color: rgba(94, 234, 212, 0.24);
-      background: rgba(94, 234, 212, 0.06);
-    }
-
-    .route-list small,
-    .foot-note {
-      color: var(--muted);
-    }
-
-    .section-kicker {
-      color: #8fead8;
-      font-size: 0.84rem;
-      letter-spacing: 0.15em;
-      text-transform: uppercase;
-      font-weight: 700;
-    }
-
-    .section-title {
-      font-size: clamp(2rem, 3.6vw, 3.3rem);
-      line-height: 1.05;
-      letter-spacing: -0.04em;
-      font-weight: 700;
-    }
-
-    .section-copy {
-      max-width: 42rem;
-      color: var(--muted);
-      font-size: 1rem;
-      line-height: 1.8;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      padding: 0.4rem 0.7rem;
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.15);
-      background: rgba(255, 255, 255, 0.04);
-      color: #dce8f6;
-      font-size: 0.8rem;
-      font-weight: 500;
-    }
-
-    .badge svg {
+      width: 10px;
+      height: 10px;
+      border-radius: 99px;
       flex-shrink: 0;
     }
 
-    .stack-diagram {
+    .term-title {
+      margin-left: 0.5rem;
+      font-size: 0.72rem;
+      color: var(--muted-2);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .term-body {
+      padding: 1.2rem 1.4rem;
+    }
+
+    .term-body pre {
+      margin: 0 !important;
+      background: transparent !important;
+      border: none !important;
+      padding: 0 !important;
+    }
+
+    .term-body code {
+      font-size: 0.8rem !important;
+      line-height: 1.8 !important;
+    }
+
+    .quick-nav {
       display: grid;
-      gap: 0.9rem;
+      gap: 0.5rem;
+      margin-top: 0.8rem;
+    }
+
+    .quick-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.02);
+      text-decoration: none;
+      color: var(--text);
+      transition: border-color 0.15s, background 0.15s, transform 0.15s;
+    }
+
+    .quick-link:hover {
+      border-color: var(--border-hi);
+      background: var(--gold-pale);
+      transform: translateX(3px);
+    }
+
+    .quick-link strong {
+      display: block;
+      font-size: 0.88rem;
+      font-weight: 600;
+      margin-bottom: 0.1rem;
+    }
+
+    .quick-link small {
+      display: block;
+      font-size: 0.74rem;
+      color: var(--muted);
+    }
+
+    .quick-link .arr {
+      font-size: 0.8rem;
+      color: var(--muted-2);
+      flex-shrink: 0;
+      transition: color 0.15s;
+    }
+
+    .quick-link:hover .arr {
+      color: var(--gold);
+    }
+
+    /* floating version badge */
+    .ver-badge {
+      position: absolute;
+      top: -1rem;
+      right: -1rem;
+      background: var(--gold);
+      color: #0a0700;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 0.3rem 0.7rem;
+      border-radius: 99px;
+      letter-spacing: 0.04em;
+      box-shadow: 0 4px 14px rgba(245, 195, 50, 0.4);
+    }
+
+    /* ── Stat strip ── */
+    .stat-strip {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+    }
+
+    .stat-item {
+      position: relative;
+      padding: 2rem 1.8rem 1.8rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      border-right: 1px solid var(--border);
+      transition: background 0.2s;
+    }
+
+    .stat-item:last-child {
+      border-right: none;
+    }
+
+    .stat-item::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--gold), transparent 70%);
+      opacity: 0;
+      transition: opacity 0.25s;
+    }
+
+    .stat-item:hover::before {
+      opacity: 1;
+    }
+
+    .stat-item:hover {
+      background: rgba(245, 195, 50, 0.03);
+    }
+
+    .stat-spark {
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      height: 20px;
+      margin-bottom: 0.2rem;
+    }
+
+    .stat-spark span {
+      display: block;
+      width: 3px;
+      border-radius: 2px;
+      background: var(--gold);
+      opacity: 0.35;
+      transition: opacity 0.2s;
+    }
+
+    .stat-item:hover .stat-spark span {
+      opacity: 0.6;
+    }
+
+    .stat-val {
+      font-family: 'Fraunces', serif;
+      font-size: 2.4rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+
+    .stat-val em {
+      font-style: normal;
+      color: var(--gold);
+      font-size: 0.7em;
+      font-weight: 400;
+    }
+
+    .stat-label {
+      font-size: 0.78rem;
+      color: var(--muted);
+      font-weight: 400;
+      line-height: 1.5;
+      max-width: 14rem;
+    }
+
+    .stat-sub {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.66rem;
+      color: var(--muted-2);
+      letter-spacing: 0.06em;
+      margin-top: 0.1rem;
+    }
+
+    /* ═══════════════════════════════════════════
+       SECTION SCAFFOLD
+    ═══════════════════════════════════════════ */
+    .section {
+      position: relative;
+      z-index: 2;
+      padding: 7rem 2rem;
+    }
+
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .section-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      letter-spacing: 0.14em;
+      color: var(--gold);
+      text-transform: uppercase;
+      margin-bottom: 0.6rem;
+    }
+
+    .section-title {
+      font-family: 'Fraunces', serif;
+      font-size: clamp(2.2rem, 3.5vw, 3.4rem);
+      font-weight: 700;
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+      color: var(--text);
+      margin-bottom: 1rem;
+    }
+
+    .section-title em {
+      font-style: italic;
+      font-weight: 300;
+      color: var(--gold);
+    }
+
+    .section-copy {
+      font-size: 1rem;
+      color: var(--muted);
+      line-height: 1.8;
+      max-width: 40rem;
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--border);
+      position: relative;
+      z-index: 2;
+    }
+
+    /* ═══════════════════════════════════════════
+       PATHS
+    ═══════════════════════════════════════════ */
+    .paths-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.5rem;
+      margin-top: 3rem;
+    }
+
+    .path-card {
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 2rem;
+      background: var(--ink-soft);
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+    }
+
+    .path-card:hover {
+      border-color: var(--border-hi);
+      transform: translateY(-4px);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+    }
+
+    .path-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, var(--gold) 0%, transparent 60%);
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+
+    .path-card:hover::before {
+      opacity: 1;
+    }
+
+    .path-num {
+      font-family: 'Fraunces', serif;
+      font-size: 4rem;
+      font-weight: 700;
+      color: rgba(255, 255, 255, 0.05);
+      line-height: 1;
+      position: absolute;
+      top: 1rem;
+      right: 1.5rem;
+      letter-spacing: -0.06em;
+    }
+
+    .path-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: var(--gold-pale);
+      border: 1px solid rgba(245, 195, 50, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+      color: var(--gold);
+    }
+
+    .path-icon svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .path-tag {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 0.75rem;
+    }
+
+    .path-title {
+      font-size: 1.35rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.02em;
+    }
+
+    .path-desc {
+      font-size: 0.88rem;
+      color: var(--muted);
+      line-height: 1.75;
+      margin-bottom: 1.5rem;
+    }
+
+    .path-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .chip {
+      font-size: 0.75rem;
+      font-weight: 500;
+      padding: 0.3rem 0.75rem;
+      border-radius: 99px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      text-decoration: none;
+      background: rgba(255, 255, 255, 0.03);
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+
+    .chip:hover {
+      border-color: var(--border-hi);
+      color: var(--gold);
+      background: var(--gold-pale);
+    }
+
+    /* ═══════════════════════════════════════════
+       INSTALL
+    ═══════════════════════════════════════════ */
+    .install-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.1fr;
+      gap: 4rem;
+      align-items: start;
+      margin-top: 3rem;
+    }
+
+    .install-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+
+    .install-card {
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      padding: 1.25rem;
+      background: var(--ink-soft);
+      transition: border-color 0.2s;
+    }
+
+    .install-card:hover {
+      border-color: rgba(245, 195, 50, 0.2);
+    }
+
+    .install-card-tag {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 0.5rem;
+    }
+
+    .install-card-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+    }
+
+    .install-card-desc {
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    .code-panel {
+      background: var(--ink-soft);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+    }
+
+    .code-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.85rem 1.2rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .code-panel-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .copy-btn {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 0.28rem 0.65rem;
+      border-radius: 99px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .copy-btn:hover {
+      border-color: rgba(245, 195, 50, 0.3);
+      color: var(--gold);
+    }
+
+    .code-block {
+      padding: 1.2rem 1.4rem;
+    }
+
+    .code-block pre {
+      margin: 0 !important;
+      background: transparent !important;
+      border: none !important;
+      padding: 0 !important;
+    }
+
+    .code-block code {
+      font-size: 0.78rem !important;
+      line-height: 1.85 !important;
+    }
+
+    .install-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+
+    .install-table th,
+    .install-table td {
+      padding: 0.85rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    .install-table th {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gold);
+      background: rgba(245, 195, 50, 0.04);
+    }
+
+    .install-table td {
+      font-size: 0.84rem;
+      color: var(--muted);
+    }
+
+    .install-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .install-table a {
+      color: var(--sky);
+      text-decoration: none;
+    }
+
+    .install-table a:hover {
+      color: var(--gold);
+    }
+
+    code.inline {
+      background: rgba(245, 195, 50, 0.08);
+      border: 1px solid rgba(245, 195, 50, 0.12);
+      color: #e8d27a;
+      padding: 0.12rem 0.4rem;
+      border-radius: 5px;
+      font-size: 0.83em;
+    }
+
+    /* ═══════════════════════════════════════════
+       WORKFLOW
+    ═══════════════════════════════════════════ */
+    .workflow-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 4rem;
+      align-items: start;
+      margin-top: 3rem;
+    }
+
+    .steps {
+      display: grid;
+      gap: 1px;
+      background: var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 1rem;
+      align-items: start;
+      padding: 1.5rem 1.5rem;
+      background: var(--ink-soft);
+      transition: background 0.15s;
+    }
+
+    .step:hover {
+      background: var(--ink-mid);
+    }
+
+    .step-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--gold);
+      padding-top: 0.15rem;
+    }
+
+    .step-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.4rem;
+    }
+
+    .step-desc {
+      font-size: 0.84rem;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .stack-table {
+      display: grid;
+      gap: 1px;
+      background: var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
     }
 
     .stack-row {
       display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 0.95rem;
+      grid-template-columns: 110px 1fr;
+      gap: 1rem;
       align-items: start;
-      padding: 1rem;
-      border-radius: 16px;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(255, 255, 255, 0.03);
+      padding: 1.2rem 1.4rem;
+      background: var(--ink-soft);
+      transition: background 0.15s;
     }
 
-    .stack-row strong {
-      color: var(--text);
-      display: block;
-      margin-bottom: 0.25rem;
-    }
-
-    .stack-row span {
-      color: var(--muted);
-      font-size: 0.9rem;
-      line-height: 1.6;
+    .stack-row:hover {
+      background: var(--ink-mid);
     }
 
     .stack-tag {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      padding: 0.45rem 0.75rem;
-      border-radius: 999px;
-      font-size: 0.76rem;
+      padding: 0.3rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.7rem;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
-      border: 1px solid rgba(94, 234, 212, 0.2);
-      color: #c7fff6;
-      background: rgba(94, 234, 212, 0.08);
+      background: var(--gold-pale);
+      border: 1px solid rgba(245, 195, 50, 0.15);
+      color: var(--gold);
+      white-space: nowrap;
     }
 
-    .table-wrap {
-      border-radius: 20px;
-      overflow: hidden;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(7, 17, 28, 0.78);
+    .stack-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.3rem;
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-
-    th,
-    td {
-      padding: 1rem;
-      text-align: left;
-      vertical-align: top;
-      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
-    }
-
-    th {
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: #8fead8;
-      background: rgba(255, 255, 255, 0.03);
-    }
-
-    td {
+    .stack-desc {
+      font-size: 0.8rem;
       color: var(--muted);
       line-height: 1.65;
     }
 
-    tr:last-child td {
-      border-bottom: none;
+    /* ═══════════════════════════════════════════
+       FEATURES
+    ═══════════════════════════════════════════ */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+      margin-top: 3rem;
     }
 
+    .feat {
+      padding: 1.8rem;
+      background: var(--ink-soft);
+      transition: background 0.15s;
+    }
+
+    .feat:hover {
+      background: var(--ink-mid);
+    }
+
+    .feat-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      background: var(--gold-pale);
+      border: 1px solid rgba(245, 195, 50, 0.14);
+      color: var(--gold);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.1rem;
+    }
+
+    .feat-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .feat-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+    }
+
+    .feat-desc {
+      font-size: 0.84rem;
+      color: var(--muted);
+      line-height: 1.75;
+    }
+
+    /* ═══════════════════════════════════════════
+       API
+    ═══════════════════════════════════════════ */
+    .api-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.1fr;
+      gap: 4rem;
+      align-items: start;
+      margin-top: 3rem;
+    }
+
+    .api-cards {
+      display: grid;
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+
+    .api-card {
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      padding: 1.25rem;
+      background: var(--ink-soft);
+      transition: border-color 0.2s;
+    }
+
+    .api-card:hover {
+      border-color: rgba(245, 195, 50, 0.22);
+    }
+
+    .api-card-tag {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 0.5rem;
+    }
+
+    .api-card-desc {
+      font-size: 0.84rem;
+      color: var(--muted);
+      line-height: 1.7;
+      margin-top: 0.4rem;
+    }
+
+    .ref-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 1.2rem;
+    }
+
+    .ref-card {
+      display: block;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      padding: 1.2rem;
+      background: var(--ink-soft);
+      color: inherit;
+      transition: border-color 0.18s, transform 0.18s;
+    }
+
+    .ref-card:hover {
+      border-color: var(--border-hi);
+      transform: translateY(-3px);
+    }
+
+    .ref-card-tag {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 0.4rem;
+    }
+
+    .ref-card-title {
+      font-size: 0.96rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.4rem;
+    }
+
+    .ref-card-desc {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ═══════════════════════════════════════════
+       EXAMPLE
+    ═══════════════════════════════════════════ */
+    .example-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 3rem;
+      align-items: start;
+      margin-top: 3rem;
+    }
+
+    .what-proves {
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      padding: 1.4rem;
+      background: var(--ink-soft);
+    }
+
+    .what-proves-tag {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 0.75rem;
+    }
+
+    .what-proves ul {
+      list-style: none;
+      display: grid;
+      gap: 0.6rem;
+    }
+
+    .what-proves li {
+      font-size: 0.85rem;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      line-height: 1.5;
+    }
+
+    .what-proves li::before {
+      content: '→';
+      color: var(--gold);
+      flex-shrink: 0;
+    }
+
+    .next-docs {
+      display: grid;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .next-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.8rem 1rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.02);
+      text-decoration: none;
+      color: var(--text);
+      font-size: 0.86rem;
+      font-weight: 500;
+      transition: border-color 0.15s, background 0.15s, transform 0.15s;
+    }
+
+    .next-link:hover {
+      border-color: var(--border-hi);
+      background: var(--gold-pale);
+      transform: translateX(3px);
+    }
+
+    .next-link small {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-weight: 400;
+      margin-top: 0.1rem;
+    }
+
+    .next-link .arr {
+      color: var(--muted-2);
+      font-size: 0.8rem;
+      transition: color 0.15s;
+    }
+
+    .next-link:hover .arr {
+      color: var(--gold);
+    }
+
+    /* ═══════════════════════════════════════════
+       FOOTER
+    ═══════════════════════════════════════════ */
+    footer {
+      position: relative;
+      z-index: 2;
+      border-top: 1px solid var(--border);
+      background: rgba(7, 9, 13, 0.95);
+      padding: 3rem 2rem;
+    }
+
+    .footer-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .footer-logo-name {
+      font-family: 'Fraunces', serif;
+      font-weight: 600;
+      font-size: 1.25rem;
+      color: var(--text);
+    }
+
+    .footer-tagline {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 0.3rem;
+      max-width: 26rem;
+      line-height: 1.65;
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .footer-bottom {
+      max-width: 1280px;
+      margin: 2rem auto 0;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      font-size: 0.78rem;
+      color: var(--muted-2);
+    }
+
+    /* ═══════════════════════════════════════════
+       REVEAL
+    ═══════════════════════════════════════════ */
     .reveal {
       opacity: 0;
-      transform: translateY(24px);
-      transition: opacity 0.55s ease, transform 0.55s ease;
+      transform: translateY(28px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
     }
 
-    .reveal.visible {
+    .reveal.up {
       opacity: 1;
       transform: translateY(0);
     }
 
-    footer {
-      background: rgba(4, 9, 15, 0.9);
-      border-top: 1px solid rgba(148, 163, 184, 0.1);
+    .reveal-delay-1 {
+      transition-delay: 0.1s;
     }
 
-    ::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
+    .reveal-delay-2 {
+      transition-delay: 0.2s;
     }
 
-    ::-webkit-scrollbar-track {
-      background: #071019;
+    .reveal-delay-3 {
+      transition-delay: 0.3s;
     }
 
-    ::-webkit-scrollbar-thumb {
-      background: rgba(94, 234, 212, 0.25);
-      border-radius: 999px;
-    }
-
-    ::-webkit-scrollbar-thumb:hover {
-      background: rgba(94, 234, 212, 0.42);
-    }
-
+    /* ═══════════════════════════════════════════
+       RESPONSIVE
+    ═══════════════════════════════════════════ */
     @media (max-width: 1024px) {
+      .hero-inner {
+        grid-template-columns: 1fr;
+        max-width: 640px;
+      }
+
+      .hero-panel {
+        display: none;
+      }
+
+      .paths-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .install-grid,
+      .workflow-grid,
+      .api-grid,
+      .example-grid {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+      }
+
+      .features-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
       .stack-row {
         grid-template-columns: 1fr;
       }
     }
 
-    @media (max-width: 820px) {
-      .hero-copy {
-        font-size: 0.98rem;
-      }
-    }
-
     @media (max-width: 640px) {
-      .hero-title {
-        font-size: 2.8rem;
+      .paths-grid {
+        grid-template-columns: 1fr;
       }
 
-      .section-title {
-        font-size: 2rem;
+      .features-grid {
+        grid-template-columns: 1fr;
       }
 
-      .panel,
-      .feature-card,
-      .path-card,
-      .resource-card,
-      .step-card {
-        padding: 1.05rem;
+      .stat-strip {
+        grid-template-columns: 1fr 1fr;
       }
 
-      th,
-      td {
-        padding: 0.85rem;
+      .install-cards {
+        grid-template-columns: 1fr;
+      }
+
+      .ref-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .nav-links {
+        display: none;
+      }
+
+      .section {
+        padding: 4rem 1.5rem;
       }
     }
   </style>
@@ -723,31 +1437,33 @@
 
 <body>
 
-  <nav class="navbar fixed inset-x-0 top-0 z-50">
-    <div class="max-w-7xl mx-auto px-5 h-16 flex items-center justify-between gap-4">
-      <a href="#" class="flex items-center gap-3 shrink-0">
-        <picture class="logo-image">
-          <source srcset="logo_light.svg" media="(prefers-color-scheme: light)" />
-          <source srcset="logo_dark.svg" media="(prefers-color-scheme: dark)" />
-          <img src="logo.svg" alt="ForeBlocks" class="h-8 w-auto" />
-        </picture>
-        <span class="text-white font-bold tracking-tight text-lg">ForeBlocks</span>
+  <!-- ══════════════════════════
+     NAV
+══════════════════════════ -->
+  <nav>
+    <div class="nav-inner">
+      <a href="#" class="nav-logo">
+        <div class="nav-logo-mark">
+          <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polyline points="1,11 5,7 8,9 11,4 15,6" stroke="#0a0700" stroke-width="2.2" stroke-linecap="round"
+              stroke-linejoin="round" />
+          </svg>
+        </div>
+        <span class="nav-logo-name">foreBlocks</span>
       </a>
-      <div class="hidden md:flex items-center gap-2">
-        <a href="#paths" class="nav-link px-3 py-2">Paths</a>
-        <a href="#install" class="nav-link px-3 py-2">Install</a>
-        <a href="#workflow" class="nav-link px-3 py-2">Workflow</a>
-        <a href="#features" class="nav-link px-3 py-2">Features</a>
-        <a href="#api" class="nav-link px-3 py-2">API</a>
-        <a href="#examples" class="nav-link px-3 py-2">Examples</a>
-      </div>
-      <div class="flex items-center gap-2">
-        <a href="/studio/"
-          class="hidden sm:inline-flex cta-secondary px-4 py-2 rounded-full text-sm font-semibold">Studio</a>
-        <a href="docs/" class="hidden sm:inline-flex mini-pill px-4 py-2 rounded-full text-sm font-semibold">Docs</a>
-        <a target="_blank" rel="noopener" href="https://github.com/lseman/foreblocks"
-          class="cta-primary inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold">
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <ul class="nav-links">
+        <li><a href="#paths">Paths</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#workflow">Workflow</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#api">API</a></li>
+        <li><a href="#examples">Examples</a></li>
+      </ul>
+      <div class="nav-actions">
+        <a href="/studio/" class="btn-ghost" style="display:none" id="nav-studio">Studio</a>
+        <a href="docs/" class="btn-ghost">Docs</a>
+        <a href="https://github.com/lseman/foreblocks" target="_blank" rel="noopener" class="btn-gold">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
             <path
               d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
           </svg>
@@ -757,331 +1473,313 @@
     </div>
   </nav>
 
-  <header class="relative overflow-hidden pt-28 pb-14">
-    <div class="grain" aria-hidden="true"></div>
-    <div class="max-w-7xl mx-auto px-6">
-      <div class="grid xl:grid-cols-[1.18fr_.82fr] gap-8 items-center">
-        <div class="reveal">
-          <span class="eyebrow mb-5">
-            <span class="w-2 h-2 rounded-full bg-emerald-300"></span>
-            v0.1.15 | Python 3.10+
-          </span>
-          <h1 class="hero-title text-white">
-            <span class="hero-logo-wrap inline-flex items-center gap-5">
-              <picture>
-                <source srcset="logo_light.svg" media="(prefers-color-scheme: light)" />
-                <source srcset="logo_dark.svg" media="(prefers-color-scheme: dark)" />
-                <img src="logo.svg" alt="ForeBlocks" class="h-56 w-auto" />
-              </picture>
-              <span class="hero-logo-text">
-                forecasting block-by-block
-              </span>
-            </span>
-          </h1>
-          <p class="hero-copy mt-6">
-            Modular PyTorch forecasting blocks, workflow extras, and browser Studio in one package.
-          </p>
-          <div class="flex flex-wrap gap-3 mt-8 justify-center">
-            <a href="docs/getting-started/"
-              class="cta-primary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
-              Start with Getting Started
-              <span aria-hidden="true">-&gt;</span>
-            </a>
-            <a href="/studio/"
-              class="cta-secondary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
-              Launch Studio
-            </a>
-            <a href="docs/reference/public-api/"
-              class="cta-secondary inline-flex items-center gap-2 px-5 py-3 rounded-full font-semibold">
-              Public API
-            </a>
-          </div>
-          <div class="flex flex-wrap gap-2 mt-8">
-            <span class="badge">
-              <svg class="w-4 h-4 text-teal-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              PyTorch core
-            </span>
-            <span class="badge">
-              <svg class="w-4 h-4 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16" />
-              </svg>
-              Optional extras
-            </span>
-            <span class="badge">
-              <svg class="w-4 h-4 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-1 0v14m-7-7h14" />
-              </svg>
-              Research workflows
-            </span>
-            <span class="badge">
-              <svg class="w-4 h-4 text-rose-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M12 8v4l3 3M5.121 19.071A9 9 0 1118.88 4.93" />
-              </svg>
-              Faster onboarding
-            </span>
-          </div>
+  <!-- ══════════════════════════
+     HERO
+══════════════════════════ -->
+  <header class="hero">
+    <!-- animated time-series canvas background -->
+    <canvas id="hero-canvas" aria-hidden="true"></canvas>
+
+    <div class="hero-inner">
+      <div class="reveal">
+        <div class="hero-kicker">v0.1.15 · Python 3.10+</div>
+        <h1 class="hero-title">
+          Forecasting<br>
+          block<em>-by-block,</em><br>
+          your way.
+        </h1>
+        <p class="hero-desc">
+          Modular PyTorch forecasting blocks, robust preprocessing, DARTS architecture search,
+          uncertainty estimation, and a browser Studio — in one package. Start lean, grow deliberately.
+        </p>
+        <div class="hero-ctas">
+          <a href="docs/getting-started/" class="btn-primary">
+            Get started
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+              stroke-linecap="round">
+              <path d="M5 12h14M12 5l7 7-7 7" />
+            </svg>
+          </a>
+          <a href="/studio/" class="btn-outline">Launch Studio</a>
+          <a href="docs/reference/public-api/" class="btn-outline">Public API</a>
         </div>
+        <div class="hero-pills">
+          <span class="pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            PyTorch core
+          </span>
+          <span class="pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
+            Optional extras
+          </span>
+          <span class="pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M11 5h2m-6 4h10M7 13h10M7 17h6" />
+            </svg>
+            Research workflows
+          </span>
+          <span class="pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path
+                d="M9 17v-2m3 2v-6m3 6v-4m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            MIT licensed
+          </span>
+        </div>
+      </div>
 
-        <div class="shell hero-shell p-4 lg:p-5 reveal">
-          <div
-            class="absolute inset-0 bg-gradient-to-br from-teal-300/10 via-transparent to-sky-300/10 pointer-events-none">
+      <!-- terminal panel -->
+      <div class="hero-panel reveal reveal-delay-2">
+        <div class="ver-badge">v0.1.15</div>
+        <div class="terminal-card">
+          <div class="term-bar">
+            <span class="dot" style="background:#ff5f57"></span>
+            <span class="dot" style="background:#ffbd2e"></span>
+            <span class="dot" style="background:#28c840"></span>
+            <span class="term-title">quick-install.sh</span>
           </div>
-          <div class="relative">
-            <div class="hero-shell-top">
-              <div>
-                <div class="label">Quick Start</div>
-                <p class="soft mt-2 text-sm">Core install first. Extras only when you need them.</p>
-              </div>
-              <a href="docs/" class="ghost-link text-sm font-semibold shrink-0">Docs -&gt;</a>
-            </div>
-
-            <div class="terminal">
-              <div class="term-bar">
-                <span class="dot bg-rose-400"></span>
-                <span class="dot bg-amber-300"></span>
-                <span class="dot bg-emerald-400"></span>
-                <span class="ml-3 text-xs text-slate-400"
-                  style="font-family:'IBM Plex Mono', monospace">quick-install.sh</span>
-              </div>
-              <div class="p-5 relative">
-                <button class="copy-btn">Copy</button>
-                <pre><code class="language-bash">pip install foreblocks
+          <div class="term-body">
+            <pre><code class="language-bash">pip install foreblocks
 pip install "foreblocks[preprocessing]"
 pip install "foreblocks[darts]"</code></pre>
-              </div>
-            </div>
-
-            <p class="hero-shell-note">
-              Run one small baseline first, then add preprocessing, search, or tracking from a
-              stable starting point.
-            </p>
-
-            <div class="hero-quick-links">
-              <a class="hero-quick-link" href="docs/getting-started/">
-                <div>
-                  <strong>First training loop</strong>
-                  <small>Validated baseline path.</small>
-                </div>
-                <span aria-hidden="true">-&gt;</span>
+          </div>
+          <div style="border-top:1px solid var(--border);padding:0.8rem 1.1rem;">
+            <p style="font-size:0.78rem;color:var(--muted);margin-bottom:0.7rem;">Core install first. Extras only when
+              you need them.</p>
+            <div class="quick-nav">
+              <a class="quick-link" href="docs/getting-started/">
+                <div><strong>First training loop</strong><small>Validated baseline path.</small></div>
+                <span class="arr">→</span>
               </a>
-              <a class="hero-quick-link" href="docs/preprocessor/">
-                <div>
-                  <strong>Raw series</strong>
-                  <small>Preprocess from <code>[T, D]</code> arrays.</small>
-                </div>
-                <span aria-hidden="true">-&gt;</span>
+              <a class="quick-link" href="docs/preprocessor/">
+                <div><strong>Raw series</strong><small>Preprocess from <code class="inline">[T, D]</code>
+                    arrays.</small></div>
+                <span class="arr">→</span>
               </a>
-              <a class="hero-quick-link" href="docs/darts/">
-                <div>
-                  <strong>DARTS search</strong>
-                  <small>Search, rank, retrain.</small>
-                </div>
-                <span aria-hidden="true">-&gt;</span>
+              <a class="quick-link" href="docs/darts/">
+                <div><strong>DARTS search</strong><small>Search, rank, retrain.</small></div>
+                <span class="arr">→</span>
               </a>
-              <a class="hero-quick-link" href="/studio/">
-                <div>
-                  <strong>Interactive Studio</strong>
-                  <small>Open the live workflow editor in your browser.</small>
-                </div>
-                <span aria-hidden="true">-&gt;</span>
+              <a class="quick-link" href="/studio/">
+                <div><strong>Interactive Studio</strong><small>Browser-based workflow editor.</small></div>
+                <span class="arr">→</span>
               </a>
             </div>
           </div>
         </div>
       </div>
+    </div>
 
-      <div class="grid md:grid-cols-4 gap-4 mt-10 reveal">
-        <div class="mini-card">
-          <strong>Minimal install</strong>
-          <span>The default package keeps dependencies focused on forecasting and training.</span>
-        </div>
-        <div class="mini-card">
-          <strong>Modular stack</strong>
-          <span>Preprocessing, search, tracking, and analysis stay optional.</span>
-        </div>
-        <div class="mini-card">
-          <strong>One docs hub</strong>
-          <span>Tutorials, guides, architecture notes, and reference live in one place.</span>
-        </div>
-        <div class="mini-card">
-          <strong>Interactive Studio</strong>
-          <span>Open the deployed workflow editor under <code>/studio</code> for browser-based model building.</span>
+    <!-- stat strip -->
+    <div style="max-width:1280px;margin:4rem auto 0;padding:0 2rem 5rem;position:relative;z-index:2;">
+      <div
+        style="border:1px solid var(--border);border-radius:18px;overflow:hidden;background:rgba(14,18,25,0.75);backdrop-filter:blur(12px);">
+        <div class="stat-strip reveal reveal-delay-1">
+
+          <div class="stat-item">
+            <div class="stat-spark">
+              <span style="height:30%"></span><span style="height:45%"></span><span style="height:38%"></span>
+              <span style="height:55%"></span><span style="height:48%"></span><span style="height:70%"></span>
+              <span style="height:62%"></span><span style="height:85%"></span><span style="height:78%"></span><span
+                style="height:100%;opacity:0.7"></span>
+            </div>
+            <div class="stat-val">~2<em>MB</em></div>
+            <div class="stat-label">Core install footprint — no bloat, no surprise deps</div>
+            <div class="stat-sub">pip install foreblocks</div>
+          </div>
+
+          <div class="stat-item">
+            <div class="stat-spark">
+              <span style="height:50%"></span><span style="height:50%"></span>
+              <span style="height:100%"></span><span style="height:100%"></span>
+              <span style="height:50%"></span><span style="height:100%"></span>
+              <span style="height:100%"></span><span style="height:50%"></span>
+              <span style="height:100%"></span><span style="height:100%;opacity:0.7"></span>
+            </div>
+            <div class="stat-val">4<em>+</em></div>
+            <div class="stat-label">Optional extras — add only what your workflow needs</div>
+            <div class="stat-sub">preprocessing · darts · mltracker · all</div>
+          </div>
+
+          <div class="stat-item">
+            <div class="stat-spark">
+              <span style="height:60%"></span><span style="height:72%"></span><span style="height:58%"></span>
+              <span style="height:80%"></span><span style="height:65%"></span><span style="height:90%"></span>
+              <span style="height:75%"></span><span style="height:95%"></span><span style="height:85%"></span><span
+                style="height:100%;opacity:0.7"></span>
+            </div>
+            <div class="stat-val">3.10<em>+</em></div>
+            <div class="stat-label">Python version — modern syntax, type hints, match statements</div>
+            <div class="stat-sub">tested on 3.10 · 3.11 · 3.12</div>
+          </div>
+
+          <div class="stat-item">
+            <div class="stat-spark">
+              <span style="height:40%"></span><span style="height:55%"></span><span style="height:48%"></span>
+              <span style="height:65%"></span><span style="height:58%"></span><span style="height:72%"></span>
+              <span style="height:80%"></span><span style="height:88%"></span><span style="height:95%"></span><span
+                style="height:100%;opacity:0.7"></span>
+            </div>
+            <div class="stat-val">MIT</div>
+            <div class="stat-label">License — use it, fork it, build products on it</div>
+            <div class="stat-sub">open source · no restrictions</div>
+          </div>
+
         </div>
       </div>
     </div>
   </header>
 
-  <div class="accent-line"></div>
+  <div class="divider"></div>
 
-  <section id="paths" class="py-24">
-    <div class="max-w-7xl mx-auto px-6">
+  <!-- ══════════════════════════
+     PATHS
+══════════════════════════ -->
+  <section id="paths" class="section">
+    <div class="container">
       <div class="reveal">
-        <div class="section-kicker">Choose A Route</div>
-        <h2 class="section-title mt-3">Three clear ways into the repository</h2>
-        <p class="section-copy mt-4">
-          ForeBlocks covers forecasting, preprocessing, search, and companion tooling.
-          These are the fastest ways to get to the part of the repository you actually need.
-        </p>
+        <div class="section-num">01 — Choose a route</div>
+        <h2 class="section-title">Three clear ways <em>in</em></h2>
+        <p class="section-copy">foreBlocks covers forecasting, preprocessing, search, and companion tooling. These are
+          the fastest routes to the part you actually need.</p>
       </div>
 
-      <div class="grid lg:grid-cols-3 gap-5 mt-10">
-        <article class="path-card reveal">
-          <div class="icon-wrap mb-5">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M11 5h2m-6 4h10M7 13h10M7 17h6" />
+      <div class="paths-grid">
+        <article class="path-card reveal reveal-delay-1">
+          <div class="path-num">01</div>
+          <div class="path-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M11 5h2m-6 4h10M7 13h10M7 17h6" />
             </svg>
           </div>
-          <div class="label">Path 01</div>
-          <h3 class="text-2xl font-bold mt-3">Train a baseline first</h3>
-          <p class="soft mt-4">
-            Use the safest path through the public API: build a head or encoder/decoder pair,
-            create dataloaders, train with <code>Trainer</code>, and evaluate before you add
-            more moving parts.
-          </p>
-          <div class="mt-6 flex flex-wrap gap-2">
-            <a href="docs/getting-started/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Getting
-              Started</a>
-            <a href="docs/tutorials/train-direct-model/"
-              class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Direct Model Tutorial</a>
+          <div class="path-tag">Path 01</div>
+          <h3 class="path-title">Train a baseline first</h3>
+          <p class="path-desc">Use the safest path through the public API: build a head or encoder/decoder pair, create
+            dataloaders, train with <code class="inline">Trainer</code>, and evaluate before adding complexity.</p>
+          <div class="path-links">
+            <a href="docs/getting-started/" class="chip">Getting Started</a>
+            <a href="docs/tutorials/train-direct-model/" class="chip">Direct Model Tutorial</a>
           </div>
         </article>
 
-        <article class="path-card reveal">
-          <div class="icon-wrap mb-5"
-            style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M7 12h10M10 17h4" />
+        <article class="path-card reveal reveal-delay-2">
+          <div class="path-num">02</div>
+          <div class="path-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 8l4-4 4 4m8 8l-4 4-4-4M8 4v16m8-16v16" />
             </svg>
           </div>
-          <div class="label">Path 02</div>
-          <h3 class="text-2xl font-bold mt-3">Start from raw series</h3>
-          <p class="soft mt-4">
-            When your input is a raw <code>[T, D]</code> array instead of ready-made training
-            windows, reach for the preprocessing stack first so scaling, filtering, and slicing
-            stay consistent.
-          </p>
-          <div class="mt-6 flex flex-wrap gap-2">
-            <a href="docs/preprocessor/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Preprocessor
-              Guide</a>
-            <a href="docs/foretools/feature-engineering/"
-              class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Feature Engineering</a>
+          <div class="path-tag">Path 02</div>
+          <h3 class="path-title">Start from raw series</h3>
+          <p class="path-desc">When your input is a raw <code class="inline">[T, D]</code> array rather than ready-made
+            training windows, reach for the preprocessing stack so scaling, filtering, and slicing stay consistent.</p>
+          <div class="path-links">
+            <a href="docs/preprocessor/" class="chip">Preprocessor Guide</a>
+            <a href="docs/foretools/feature-engineering/" class="chip">Feature Engineering</a>
           </div>
         </article>
 
-        <article class="path-card reveal">
-          <div class="icon-wrap mb-5"
-            style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.18);color:var(--accent-3)">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-6m3 6V7m3 10v-3m5 5H4" />
+        <article class="path-card reveal reveal-delay-3">
+          <div class="path-num">03</div>
+          <div class="path-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M9 17v-6m3 6V7m3 10v-3m5 5H4" />
             </svg>
           </div>
-          <div class="label">Path 03</div>
-          <h3 class="text-2xl font-bold mt-3">Search and compare architectures</h3>
-          <p class="soft mt-4">
-            Once the baseline loop is working, move into staged DARTS search, multi-fidelity
-            ranking, BOHB optimization, and retraining workflows with dedicated docs and tutorials.
-          </p>
-          <div class="mt-6 flex flex-wrap gap-2">
-            <a href="docs/darts/" class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">DARTS Guide</a>
-            <a href="docs/tutorials/darts-multifidelity-search/"
-              class="mini-pill px-3 py-2 rounded-full text-sm font-semibold">Search Tutorial</a>
+          <div class="path-tag">Path 03</div>
+          <h3 class="path-title">Search and compare architectures</h3>
+          <p class="path-desc">Once the baseline loop is working, move into staged DARTS search, multi-fidelity ranking,
+            BOHB optimization, and retraining workflows.</p>
+          <div class="path-links">
+            <a href="docs/darts/" class="chip">DARTS Guide</a>
+            <a href="docs/tutorials/darts-multifidelity-search/" class="chip">Search Tutorial</a>
           </div>
         </article>
       </div>
     </div>
   </section>
 
-  <div class="accent-line"></div>
+  <div class="divider"></div>
 
-  <section id="install" class="py-24">
-    <div class="max-w-7xl mx-auto px-6">
-      <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 items-start">
+  <!-- ══════════════════════════
+     INSTALL
+══════════════════════════ -->
+  <section id="install" class="section">
+    <div class="container">
+      <div class="install-grid">
         <div class="reveal">
-          <div class="section-kicker">Install</div>
-          <h2 class="section-title mt-3">A lean default install, with extras that map to real workflows</h2>
-          <p class="section-copy mt-4">
-            Install the core package for forecasting and training. Add extras only when you need
-            preprocessing, search, tracking, or analysis dependencies.
-          </p>
-
-          <div class="grid sm:grid-cols-2 gap-4 mt-8">
-            <div class="resource-card">
-              <div class="label">Recommended</div>
-              <h3 class="text-xl font-bold mt-3">Start small</h3>
-              <p class="soft mt-3">Use the minimal install, validate one training loop, then add extras for
-                preprocessing or search.</p>
+          <div class="section-num">02 — Install</div>
+          <h2 class="section-title">Lean by default, <em>modular</em> by design</h2>
+          <p class="section-copy">Install the core package for forecasting and training. Add extras only when you need
+            preprocessing, search, tracking, or analysis.</p>
+          <div class="install-cards">
+            <div class="install-card">
+              <div class="install-card-tag">Recommended</div>
+              <div class="install-card-title">Start small</div>
+              <div class="install-card-desc">Validate one training loop, then add extras for preprocessing or search.
+              </div>
             </div>
-            <div class="resource-card">
-              <div class="label">Source</div>
-              <h3 class="text-xl font-bold mt-3">Hack locally</h3>
-              <p class="soft mt-3">Editable installs remain the best path when you are modifying blocks, docs, or
-                training internals.</p>
+            <div class="install-card">
+              <div class="install-card-tag">Source</div>
+              <div class="install-card-title">Hack locally</div>
+              <div class="install-card-desc">Editable installs are best when modifying blocks, docs, or training
+                internals.</div>
             </div>
           </div>
         </div>
 
-        <div class="grid gap-5 reveal">
-          <div class="panel">
-            <div class="flex items-center justify-between gap-4 mb-4">
-              <div>
-                <div class="label">Core + Extras</div>
-                <p class="soft mt-2 text-sm">Common install paths for the main workflows.</p>
-              </div>
+        <div class="reveal reveal-delay-1">
+          <div class="code-panel">
+            <div class="code-panel-header">
+              <span class="code-panel-label">Core + Extras</span>
+              <button class="copy-btn" data-target="install-code">Copy</button>
             </div>
-            <div class="grid gap-3">
-              <div class="relative">
-                <button class="copy-btn">Copy</button>
-                <pre><code class="language-bash">pip install foreblocks</code></pre>
-              </div>
-              <div class="relative">
-                <button class="copy-btn">Copy</button>
-                <pre><code class="language-bash">pip install "foreblocks[preprocessing]"
+            <div class="code-block">
+              <pre><code class="language-bash" id="install-code">pip install foreblocks
+
+pip install "foreblocks[preprocessing]"
 pip install "foreblocks[darts]"
 pip install "foreblocks[mltracker]"
-pip install "foreblocks[all]"</code></pre>
-              </div>
-              <div class="relative">
-                <button class="copy-btn">Copy</button>
-                <pre><code class="language-bash">git clone https://github.com/lseman/foreblocks.git
-cd foreblocks
-pip install -e ".[dev]"</code></pre>
-              </div>
+pip install "foreblocks[all]"
+
+git clone https://github.com/lseman/foreblocks.git
+cd foreblocks && pip install -e ".[dev]"</code></pre>
             </div>
           </div>
 
-          <div class="table-wrap">
-            <table>
+          <div class="code-panel" style="margin-top:1rem; border-radius:var(--r-sm); overflow:hidden;">
+            <table class="install-table">
               <thead>
                 <tr>
                   <th>Need</th>
                   <th>Install</th>
-                  <th>Docs route</th>
+                  <th>Docs</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Core forecasting only</td>
-                  <td><code>foreblocks</code></td>
-                  <td><a href="docs/getting-started/" class="ghost-link">Getting Started</a></td>
+                  <td>Core forecasting</td>
+                  <td><code class="inline">foreblocks</code></td>
+                  <td><a href="docs/getting-started/">Getting Started →</a></td>
                 </tr>
                 <tr>
-                  <td>Raw-series preprocessing</td>
-                  <td><code>foreblocks[preprocessing]</code></td>
-                  <td><a href="docs/preprocessor/" class="ghost-link">Preprocessor</a></td>
+                  <td>Preprocessing</td>
+                  <td><code class="inline">foreblocks[preprocessing]</code></td>
+                  <td><a href="docs/preprocessor/">Preprocessor →</a></td>
                 </tr>
                 <tr>
-                  <td>DARTS search loops</td>
-                  <td><code>foreblocks[darts]</code></td>
-                  <td><a href="docs/darts/" class="ghost-link">DARTS Guide</a></td>
+                  <td>DARTS search</td>
+                  <td><code class="inline">foreblocks[darts]</code></td>
+                  <td><a href="docs/darts/">DARTS Guide →</a></td>
                 </tr>
                 <tr>
-                  <td>Tracking UI and API clients</td>
-                  <td><code>foreblocks[mltracker]</code></td>
-                  <td><a href="docs/webui/" class="ghost-link">Web UI</a></td>
+                  <td>Tracking UI</td>
+                  <td><code class="inline">foreblocks[mltracker]</code></td>
+                  <td><a href="docs/webui/">Web UI →</a></td>
                 </tr>
               </tbody>
             </table>
@@ -1091,72 +1789,84 @@ pip install -e ".[dev]"</code></pre>
     </div>
   </section>
 
-  <div class="accent-line"></div>
+  <div class="divider"></div>
 
-  <section id="workflow" class="py-24">
-    <div class="max-w-7xl mx-auto px-6">
+  <!-- ══════════════════════════
+     WORKFLOW
+══════════════════════════ -->
+  <section id="workflow" class="section">
+    <div class="container">
       <div class="reveal">
-        <div class="section-kicker">Workflow</div>
-        <h2 class="section-title mt-3">How the stack is organized</h2>
-        <p class="section-copy mt-4">
-          The repository is organized around a small forecasting core, optional workflow extras,
-          companion tools, and docs that point you to the right layer.
-        </p>
+        <div class="section-num">03 — Workflow</div>
+        <h2 class="section-title">How the <em>stack</em> is organized</h2>
+        <p class="section-copy">A small forecasting core, optional workflow extras, companion tools, and docs that point
+          you to the right layer.</p>
       </div>
 
-      <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 mt-10 items-start">
-        <div class="grid gap-4 reveal">
-          <div class="step-card">
-            <div class="label">Step 01</div>
-            <h3 class="text-xl font-bold mt-3">Build a baseline</h3>
-            <p class="soft mt-3">Use the public API and verify your shapes, loss loop, and evaluation path before adding
-              architectural complexity.</p>
+      <div class="workflow-grid">
+        <div class="steps reveal reveal-delay-1">
+          <div class="step">
+            <div class="step-num">01 →</div>
+            <div>
+              <div class="step-title">Build a baseline</div>
+              <div class="step-desc">Use the public API and verify your shapes, loss loop, and evaluation path before
+                adding architectural complexity.</div>
+            </div>
           </div>
-          <div class="step-card">
-            <div class="label">Step 02</div>
-            <h3 class="text-xl font-bold mt-3">Add preprocessing or custom blocks</h3>
-            <p class="soft mt-3">Bring in <code>TimeSeriesHandler</code>, transformer blocks, or composable heads when
-              your data or architecture needs them.</p>
+          <div class="step">
+            <div class="step-num">02 →</div>
+            <div>
+              <div class="step-title">Add preprocessing or custom blocks</div>
+              <div class="step-desc">Bring in <code class="inline">TimeSeriesHandler</code>, transformer blocks, or
+                composable heads when your data or architecture needs them.</div>
+            </div>
           </div>
-          <div class="step-card">
-            <div class="label">Step 03</div>
-            <h3 class="text-xl font-bold mt-3">Search, compare, and retrain</h3>
-            <p class="soft mt-3">Move into DARTS, BOHB, uncertainty intervals, and analysis only after the baseline path
-              is already healthy.</p>
+          <div class="step">
+            <div class="step-num">03 →</div>
+            <div>
+              <div class="step-title">Search, compare, and retrain</div>
+              <div class="step-desc">Move into DARTS, BOHB, uncertainty intervals, and analysis only after the baseline
+                path is already healthy.</div>
+            </div>
           </div>
         </div>
 
-        <div class="panel reveal">
-          <div class="label mb-4">What lives where</div>
-          <div class="stack-diagram">
+        <div class="reveal reveal-delay-2">
+          <div
+            style="font-size:0.7rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.8rem;">
+            What lives where</div>
+          <div class="stack-table">
             <div class="stack-row">
               <div><span class="stack-tag">foreblocks</span></div>
               <div>
-                <strong>Core forecasting library</strong>
-                <span><code>ForecastingModel</code>, <code>Trainer</code>, dataloaders, configs,
-                  transformer blocks, evaluation, and the preprocessing bridge.</span>
+                <div class="stack-title">Core forecasting library</div>
+                <div class="stack-desc"><code class="inline">ForecastingModel</code>, <code
+                    class="inline">Trainer</code>, dataloaders, configs, transformer blocks, evaluation, and the
+                  preprocessing bridge.</div>
               </div>
             </div>
             <div class="stack-row">
               <div><span class="stack-tag">Extras</span></div>
               <div>
-                <strong>Workflow-specific dependency bundles</strong>
-                <span>Preprocessing, DARTS, analysis, MLTracker, VMD, wavelets, benchmarking, and mining.</span>
+                <div class="stack-title">Workflow-specific dependency bundles</div>
+                <div class="stack-desc">Preprocessing, DARTS, analysis, MLTracker, VMD, wavelets, benchmarking, and
+                  mining.</div>
               </div>
             </div>
             <div class="stack-row">
               <div><span class="stack-tag">foretools</span></div>
               <div>
-                <strong>Companion utilities</strong>
-                <span>Generators, BOHB search, VMD decomposition, feature engineering, and analysis utilities.</span>
+                <div class="stack-title">Companion utilities</div>
+                <div class="stack-desc">Generators, BOHB search, VMD decomposition, feature engineering, and analysis
+                  utilities.</div>
               </div>
             </div>
             <div class="stack-row">
               <div><span class="stack-tag">Docs</span></div>
               <div>
-                <strong>Tutorials, guides, reference, and architecture notes</strong>
-                <span>Start with baseline training and preprocessing guides, then move into architecture notes,
-                  tutorials, and reference pages as needed.</span>
+                <div class="stack-title">Tutorials, guides, reference, architecture notes</div>
+                <div class="stack-desc">Start with baseline training, then move into architecture notes, tutorials, and
+                  reference pages as needed.</div>
               </div>
             </div>
           </div>
@@ -1165,129 +1875,117 @@ pip install -e ".[dev]"</code></pre>
     </div>
   </section>
 
-  <div class="accent-line"></div>
+  <div class="divider"></div>
 
-  <section id="features" class="py-24">
-    <div class="max-w-7xl mx-auto px-6">
+  <!-- ══════════════════════════
+     FEATURES
+══════════════════════════ -->
+  <section id="features" class="section">
+    <div class="container">
       <div class="reveal">
-        <div class="section-kicker">Capabilities</div>
-        <h2 class="section-title mt-3">What ForeBlocks covers</h2>
-        <p class="section-copy mt-4">
-          ForeBlocks covers the core training loop, data preparation, model composition,
-          evaluation, and search workflows around it.
-        </p>
+        <div class="section-num">04 — Capabilities</div>
+        <h2 class="section-title">What foreBlocks <em>covers</em></h2>
+        <p class="section-copy">The full training loop, data preparation, model composition, evaluation, and search
+          workflows — all in one place.</p>
       </div>
 
-      <div class="grid sm:grid-cols-2 xl:grid-cols-3 gap-5 mt-10">
-        <article class="feature-card reveal">
-          <div class="icon-wrap mb-5">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h7" />
-            </svg>
-          </div>
-          <h3 class="text-xl font-bold">Forecasting core</h3>
-          <p class="soft mt-3">Direct heads, encoder/decoder models, seq2seq strategies, and a unified
-            training loop exposed through the main <code>foreblocks</code> imports.</p>
-        </article>
-
-        <article class="feature-card reveal">
-          <div class="icon-wrap mb-5"
-            style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M4 8l4-4 4 4m8 8l-4 4-4-4M8 4v16m8-16v16" />
-            </svg>
-          </div>
-          <h3 class="text-xl font-bold">Preprocessing bridge</h3>
-          <p class="soft mt-3">Window generation, scaling, filtering, imputation, and time-feature helpers help you move
-            from raw arrays into a consistent training pipeline.</p>
-        </article>
-
-        <article class="feature-card reveal">
-          <div class="icon-wrap mb-5"
-            style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.18);color:var(--accent-3)">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+      <div class="features-grid reveal reveal-delay-1">
+        <div class="feat">
+          <div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round">
+              <path d="M4 6h16M4 12h10M4 18h7" />
+            </svg></div>
+          <div class="feat-title">Forecasting core</div>
+          <div class="feat-desc">Direct heads, encoder/decoder models, seq2seq strategies, and a unified training loop
+            exposed through the main <code class="inline">foreblocks</code> imports.</div>
+        </div>
+        <div class="feat">
+          <div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round">
+              <path d="M4 8l4-4 4 4m8 8l-4 4-4-4M8 4v16m8-16v16" />
+            </svg></div>
+          <div class="feat-title">Preprocessing bridge</div>
+          <div class="feat-desc">Window generation, scaling, filtering, imputation, and time-feature helpers move you
+            from raw arrays into a consistent training pipeline.</div>
+        </div>
+        <div class="feat">
+          <div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round">
+              <path
                 d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-            </svg>
-          </div>
-          <h3 class="text-xl font-bold">Composable architecture blocks</h3>
-          <p class="soft mt-3">Attach heads, attention, transformer components, MoE routing, SSM blocks, and specialty
-            modules without rewriting the entire training stack.</p>
-        </article>
-
-        <article class="feature-card reveal">
-          <div class="icon-wrap mb-5"
-            style="background:rgba(251,113,133,0.1);border-color:rgba(251,113,133,0.18);color:var(--accent-4)">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            </svg></div>
+          <div class="feat-title">Composable architecture blocks</div>
+          <div class="feat-desc">Attach heads, attention, transformer components, MoE routing, SSM blocks, and specialty
+            modules without rewriting the entire training stack.</div>
+        </div>
+        <div class="feat">
+          <div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round">
+              <path
                 d="M9 17v-2m3 2v-6m3 6v-4m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-          </div>
-          <h3 class="text-xl font-bold">Experiment workflow</h3>
-          <p class="soft mt-3">AMP, schedulers, evaluation helpers, plots, cross-validation, tracking,
-            and local dashboards stay close to the trainer.</p>
-        </article>
-
-        <article class="feature-card reveal">
-          <div class="icon-wrap mb-5">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M7 8h10M7 12h6m-6 4h10M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" />
-            </svg>
-          </div>
-          <h3 class="text-xl font-bold">Uncertainty and evaluation</h3>
-          <p class="soft mt-3">Conformal workflows and evaluation guides help you move from point predictions to
-            interval-aware reporting and more careful comparisons.</p>
-        </article>
-
-        <article class="feature-card reveal">
-          <div class="icon-wrap mb-5"
-            style="background:rgba(56,189,248,0.1);border-color:rgba(56,189,248,0.18);color:var(--accent-2)">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h12" />
-            </svg>
-          </div>
-          <h3 class="text-xl font-bold">Search and analysis</h3>
-          <p class="soft mt-3">DARTS, BOHB, synthetic data utilities, decomposition helpers, and analysis
-            tools support broader research workflows.</p>
-        </article>
+            </svg></div>
+          <div class="feat-title">Experiment workflow</div>
+          <div class="feat-desc">AMP, schedulers, evaluation helpers, plots, cross-validation, tracking, and local
+            dashboards stay close to the trainer.</div>
+        </div>
+        <div class="feat">
+          <div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round">
+              <path d="M7 8h10M7 12h6m-6 4h10M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" />
+            </svg></div>
+          <div class="feat-title">Uncertainty &amp; evaluation</div>
+          <div class="feat-desc">Conformal workflows and evaluation guides move you from point predictions to
+            interval-aware reporting and more careful comparisons.</div>
+        </div>
+        <div class="feat">
+          <div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round">
+              <path d="M4 7h16M4 12h16M4 17h12" />
+            </svg></div>
+          <div class="feat-title">Search &amp; analysis</div>
+          <div class="feat-desc">DARTS, BOHB, synthetic data utilities, decomposition helpers, and analysis tools
+            support broader research workflows.</div>
+        </div>
       </div>
     </div>
   </section>
 
-  <div class="accent-line"></div>
+  <div class="divider"></div>
 
-  <section id="api" class="py-24">
-    <div class="max-w-7xl mx-auto px-6">
-      <div class="grid xl:grid-cols-[0.95fr_1.05fr] gap-8 items-start">
+  <!-- ══════════════════════════
+     API
+══════════════════════════ -->
+  <section id="api" class="section">
+    <div class="container">
+      <div class="api-grid">
         <div class="reveal">
-          <div class="section-kicker">Public Surface</div>
-          <h2 class="section-title mt-3">Start with the public API</h2>
-          <p class="section-copy mt-4">
-            If you are importing ForeBlocks for the first time, begin with the top-level objects
-            below. Specialist namespaces stay available for search and advanced architecture work.
-          </p>
-
-          <div class="grid gap-4 mt-8">
-            <div class="resource-card">
-              <div class="label">Core imports</div>
-              <p class="soft mt-3"><code>ForecastingModel</code>, <code>Trainer</code>, <code>ModelEvaluator</code>,
-                <code>TimeSeriesHandler</code>, dataloaders, and configs are the main starting points.
-              </p>
+          <div class="section-num">05 — Public surface</div>
+          <h2 class="section-title">Start with the <em>public API</em></h2>
+          <p class="section-copy">If you are importing foreBlocks for the first time, begin with the top-level objects.
+            Specialist namespaces stay available for search and advanced work.</p>
+          <div class="api-cards">
+            <div class="api-card">
+              <div class="api-card-tag">Core imports</div>
+              <div class="api-card-desc"><code class="inline">ForecastingModel</code>, <code
+                  class="inline">Trainer</code>, <code class="inline">ModelEvaluator</code>, <code
+                  class="inline">TimeSeriesHandler</code>, dataloaders, and configs are the main starting points.</div>
             </div>
-            <div class="resource-card">
-              <div class="label">Specialist namespaces</div>
-              <p class="soft mt-3"><code>foreblocks.darts</code>, transformer internals, and Hybrid Mamba are
-                available when you need them, but they are not the default starting point.</p>
+            <div class="api-card">
+              <div class="api-card-tag">Specialist namespaces</div>
+              <div class="api-card-desc"><code class="inline">foreblocks.darts</code>, transformer internals, and Hybrid
+                Mamba are available when you need them — but are not the default starting point.</div>
             </div>
           </div>
         </div>
 
-        <div class="panel reveal">
-          <div class="relative">
-            <button class="copy-btn">Copy</button>
-            <pre><code class="language-python">from foreblocks import (
+        <div class="reveal reveal-delay-1">
+          <div class="code-panel">
+            <div class="code-panel-header">
+              <span class="code-panel-label">Top-level imports</span>
+              <button class="copy-btn" data-target="api-code">Copy</button>
+            </div>
+            <div class="code-block">
+              <pre><code class="language-python" id="api-code">from foreblocks import (
     ForecastingModel,
     Trainer,
     ModelEvaluator,
@@ -1305,17 +2003,18 @@ from foreblocks.darts import (
     FinalTrainConfig,
     MultiFildelitySearchConfig,
 )</code></pre>
+            </div>
           </div>
-          <div class="grid sm:grid-cols-2 gap-4 mt-5">
-            <a href="docs/reference/public-api/" class="resource-card no-underline">
-              <div class="label">Reference</div>
-              <h3 class="text-lg font-bold mt-3">Public API</h3>
-              <p class="soft mt-3">Top-level imports and the main objects exposed by the package.</p>
+          <div class="ref-grid" style="margin-top:1rem;">
+            <a href="docs/reference/public-api/" class="ref-card">
+              <div class="ref-card-tag">Reference</div>
+              <div class="ref-card-title">Public API</div>
+              <div class="ref-card-desc">Top-level imports and main objects exposed by the package.</div>
             </a>
-            <a href="docs/reference/configuration/" class="resource-card no-underline">
-              <div class="label">Configs</div>
-              <h3 class="text-lg font-bold mt-3">Configuration Map</h3>
-              <p class="soft mt-3">Training, model, search, and system settings in one place.</p>
+            <a href="docs/reference/configuration/" class="ref-card">
+              <div class="ref-card-tag">Configs</div>
+              <div class="ref-card-title">Configuration Map</div>
+              <div class="ref-card-desc">Training, model, search, and system settings in one place.</div>
             </a>
           </div>
         </div>
@@ -1323,24 +2022,28 @@ from foreblocks.darts import (
     </div>
   </section>
 
-  <div class="accent-line"></div>
+  <div class="divider"></div>
 
-  <section id="examples" class="py-24">
-    <div class="max-w-7xl mx-auto px-6">
+  <!-- ══════════════════════════
+     EXAMPLES
+══════════════════════════ -->
+  <section id="examples" class="section">
+    <div class="container">
       <div class="reveal">
-        <div class="section-kicker">Quick Example</div>
-        <h2 class="section-title mt-3">A first successful run should feel small and obvious</h2>
-        <p class="section-copy mt-4">
-          This baseline run checks that your environment, dataloaders, trainer, and evaluator are
-          wired correctly before you move into heavier workflows.
-        </p>
+        <div class="section-num">06 — Quick example</div>
+        <h2 class="section-title">A first run should feel <em>small</em></h2>
+        <p class="section-copy">This baseline checks that your environment, dataloaders, trainer, and evaluator are
+          wired correctly — before you move into heavier workflows.</p>
       </div>
 
-      <div class="grid xl:grid-cols-[1.08fr_.92fr] gap-8 mt-10 items-start">
-        <div class="panel reveal">
-          <div class="relative">
-            <button class="copy-btn">Copy</button>
-            <pre><code class="language-python">import numpy as np
+      <div class="example-grid" style="margin-top:2.5rem;">
+        <div class="code-panel reveal">
+          <div class="code-panel-header">
+            <span class="code-panel-label">baseline_run.py</span>
+            <button class="copy-btn" data-target="example-code">Copy</button>
+          </div>
+          <div class="code-block">
+            <pre><code class="language-python" id="example-code">import numpy as np
 import torch
 import torch.nn as nn
 
@@ -1352,15 +2055,13 @@ from foreblocks import (
     create_dataloaders,
 )
 
-seq_len = 24
-horizon = 6
-n_features = 4
+seq_len, horizon, n_features = 24, 6, 4
 
 rng = np.random.default_rng(0)
 X_train = rng.normal(size=(64, seq_len, n_features)).astype("float32")
 y_train = rng.normal(size=(64, horizon)).astype("float32")
-X_val = rng.normal(size=(16, seq_len, n_features)).astype("float32")
-y_val = rng.normal(size=(16, horizon)).astype("float32")
+X_val   = rng.normal(size=(16, seq_len, n_features)).astype("float32")
+y_val   = rng.normal(size=(16, horizon)).astype("float32")
 
 train_loader, val_loader = create_dataloaders(
     X_train, y_train, X_val, y_val, batch_size=16
@@ -1382,7 +2083,10 @@ model = ForecastingModel(
 
 trainer = Trainer(
     model,
-    config=TrainingConfig(num_epochs=5, batch_size=16, patience=3, use_amp=False),
+    config=TrainingConfig(
+        num_epochs=5, batch_size=16,
+        patience=3, use_amp=False,
+    ),
     auto_track=False,
 )
 
@@ -1395,46 +2099,37 @@ print(history.train_losses[-1], metrics)</code></pre>
           </div>
         </div>
 
-        <div class="grid gap-4 reveal">
-          <div class="resource-card">
-            <div class="label">What this proves</div>
-            <ul class="soft mt-3 space-y-2">
-              <li>- Your installation is healthy.</li>
-              <li>- Dataloader shapes line up with the trainer.</li>
-              <li>- The model can train and evaluate without extra subsystems.</li>
-              <li>- You can add preprocessing or search from a working baseline.</li>
+        <div class="reveal reveal-delay-1" style="display:grid;gap:1rem;align-content:start;">
+          <div class="what-proves">
+            <div class="what-proves-tag">What this proves</div>
+            <ul>
+              <li>Your installation is healthy.</li>
+              <li>Dataloader shapes line up with the trainer.</li>
+              <li>The model can train and evaluate without extra subsystems.</li>
+              <li>You can add preprocessing or search from a working baseline.</li>
             </ul>
           </div>
-          <div class="resource-card">
-            <div class="label">Next docs to open</div>
-            <div class="route-list grid gap-3 mt-3">
-              <a href="docs/getting-started/">
-                <div>
-                  <strong class="block text-white">Getting Started</strong>
-                  <small>First-run path and shape guidance.</small>
-                </div>
-                <span aria-hidden="true">-&gt;</span>
+
+          <div>
+            <div
+              style="font-size:0.7rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.6rem;">
+              Next docs to open</div>
+            <div class="next-docs">
+              <a class="next-link" href="docs/getting-started/">
+                <div><strong>Getting Started</strong><small>First-run path and shape guidance.</small></div>
+                <span class="arr">→</span>
               </a>
-              <a href="docs/overview/">
-                <div>
-                  <strong class="block text-white">Overview</strong>
-                  <small>Repository structure and the main docs routes.</small>
-                </div>
-                <span aria-hidden="true">-&gt;</span>
+              <a class="next-link" href="docs/overview/">
+                <div><strong>Overview</strong><small>Repository structure and main docs routes.</small></div>
+                <span class="arr">→</span>
               </a>
-              <a href="docs/troubleshooting/">
-                <div>
-                  <strong class="block text-white">Troubleshooting</strong>
-                  <small>Install, import, and shape mismatches.</small>
-                </div>
-                <span aria-hidden="true">-&gt;</span>
+              <a class="next-link" href="docs/troubleshooting/">
+                <div><strong>Troubleshooting</strong><small>Install, import, and shape mismatches.</small></div>
+                <span class="arr">→</span>
               </a>
-              <a href="/studio/">
-                <div>
-                  <strong class="block text-white">Studio</strong>
-                  <small>Run the browser-based node editor from the deployed site.</small>
-                </div>
-                <span aria-hidden="true">-&gt;</span>
+              <a class="next-link" href="/studio/">
+                <div><strong>Studio</strong><small>Browser-based node editor from the deployed site.</small></div>
+                <span class="arr">→</span>
               </a>
             </div>
           </div>
@@ -1443,136 +2138,284 @@ print(history.train_losses[-1], metrics)</code></pre>
     </div>
   </section>
 
-  <footer class="py-12">
-    <div class="max-w-7xl mx-auto px-6">
-      <div class="grid lg:grid-cols-[1fr_auto] gap-8 items-center">
-        <div>
-          <div class="flex items-center gap-3">
-            <img src="logo.svg" alt="ForeBlocks" class="h-9 w-auto opacity-90" />
-            <div>
-              <div class="font-bold text-lg text-white">ForeBlocks</div>
-              <div class="foot-note text-sm">Modular forecasting, preprocessing, search, and tooling for PyTorch.</div>
-            </div>
+  <div class="divider"></div>
+
+  <!-- ══════════════════════════
+     FOOTER
+══════════════════════════ -->
+  <footer>
+    <div class="footer-inner">
+      <div>
+        <div style="display:flex;align-items:center;gap:0.6rem;">
+          <div class="nav-logo-mark">
+            <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <polyline points="1,11 5,7 8,9 11,4 15,6" stroke="#0a0700" stroke-width="2.2" stroke-linecap="round"
+                stroke-linejoin="round" />
+            </svg>
           </div>
-          <p class="foot-note mt-4 max-w-2xl text-sm leading-7">
-            Start here for install, baseline training, and the main routes into the docs. Use the
-            docs for tutorials, architecture details, and reference material.
-          </p>
+          <span class="footer-logo-name">foreBlocks</span>
         </div>
-        <div class="flex flex-wrap gap-3">
-          <a href="/studio/"
-            class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Studio</a>
-          <a href="docs/" class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Docs</a>
-          <a href="docs/getting-started/"
-            class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">Getting Started</a>
-          <a target="_blank" rel="noopener" href="https://pypi.org/project/foreblocks/"
-            class="cta-secondary inline-flex items-center px-4 py-2 rounded-full font-semibold">PyPI</a>
+        <div class="footer-tagline">Modular forecasting, preprocessing, search, and tooling for PyTorch. Start lean,
+          grow deliberately.</div>
+        <div class="footer-links">
+          <a href="/studio/" class="btn-ghost">Studio</a>
+          <a href="docs/" class="btn-ghost">Docs</a>
+          <a href="docs/getting-started/" class="btn-ghost">Getting Started</a>
+          <a href="https://pypi.org/project/foreblocks/" target="_blank" rel="noopener" class="btn-ghost">PyPI</a>
         </div>
       </div>
-      <div
-        class="mt-8 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm foot-note border-t border-white/5">
-        <span>Copyright <span id="year"></span> ForeBlocks | MIT License</span>
-        <span>Stable baseline first | optional extras later | docs organized by workflow</span>
-      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>Copyright <span id="year"></span> foreBlocks — MIT License</span>
+      <span>Stable baseline first · optional extras later · docs organized by workflow</span>
     </div>
   </footer>
 
+  <!-- ══════════════════════════
+     SCRIPTS
+══════════════════════════ -->
   <script>
-    document.addEventListener("DOMContentLoaded", () => {
-      const year = document.getElementById("year");
-      if (year) year.textContent = new Date().getFullYear();
+    document.getElementById('year').textContent = new Date().getFullYear();
 
-      document.querySelectorAll("pre").forEach((pre) => pre.classList.add("line-numbers"));
-
-      document.querySelectorAll(".copy-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const pre = btn.parentElement.querySelector("pre");
-          const code = pre && pre.querySelector("code");
-          if (!code) return;
-          try {
-            await navigator.clipboard.writeText(code.innerText);
-            const original = btn.textContent;
-            btn.textContent = "Copied";
-            btn.style.color = "#5eead4";
-            setTimeout(() => {
-              btn.textContent = original;
-              btn.style.color = "";
-            }, 1400);
-          } catch (error) {
-            btn.textContent = "Failed";
-            setTimeout(() => {
-              btn.textContent = "Copy";
-            }, 1400);
-          }
-        });
-      });
-
-      document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
-        anchor.addEventListener("click", (event) => {
-          const href = anchor.getAttribute("href");
-          if (!href || href === "#") return;
-          const target = document.querySelector(href);
-          if (!target) return;
-          event.preventDefault();
-          target.scrollIntoView({ behavior: "smooth", block: "start" });
-        });
-      });
-
-      const navLinks = Array.from(document.querySelectorAll('.nav-link[href^="#"]'));
-      const sections = Array.from(document.querySelectorAll("section[id]"));
-      const linkMap = new Map(navLinks.map((link) => [link.hash.slice(1), link]));
-      const visibility = new Map();
-
-      const updateActive = () => {
-        let bestId = null;
-        let bestRatio = 0;
-        sections.forEach((section) => {
-          const ratio = visibility.get(section.id) || 0;
-          if (ratio >= bestRatio) {
-            bestRatio = ratio;
-            bestId = section.id;
-          }
-        });
-        navLinks.forEach((link) => link.classList.remove("active"));
-        if (bestId && linkMap.has(bestId)) {
-          linkMap.get(bestId).classList.add("active");
+    // Reveal on scroll
+    const revealObserver = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.classList.add('up');
+          revealObserver.unobserve(e.target);
         }
-      };
-
-      const sectionObserver = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          visibility.set(entry.target.id, entry.intersectionRatio);
-        });
-        updateActive();
-      }, {
-        rootMargin: "-72px 0px -50% 0px",
-        threshold: Array.from({ length: 11 }, (_, index) => index / 10),
       });
+    }, { threshold: 0.12 });
+    document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
 
-      sections.forEach((section) => sectionObserver.observe(section));
+    // Trigger hero reveals immediately
+    setTimeout(() => {
+      document.querySelectorAll('.hero .reveal').forEach(el => el.classList.add('up'));
+    }, 80);
 
-      const revealObserver = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add("visible");
-            revealObserver.unobserve(entry.target);
-          }
-        });
-      }, {
-        threshold: 0.16,
-      });
-
-      document.querySelectorAll(".reveal").forEach((node) => revealObserver.observe(node));
-
-      if (location.hash) {
-        const target = document.querySelector(location.hash);
-        if (target) {
-          requestAnimationFrame(() => {
-            target.scrollIntoView({ behavior: "auto", block: "start" });
-          });
+    // Active nav
+    const navLinks = document.querySelectorAll('.nav-links a[href^="#"]');
+    const sections = document.querySelectorAll('section[id]');
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          navLinks.forEach(l => l.classList.remove('active'));
+          const link = document.querySelector(`.nav-links a[href="#${e.target.id}"]`);
+          if (link) link.classList.add('active');
         }
-      }
+      });
+    }, { rootMargin: '-60px 0px -55% 0px', threshold: 0 });
+    sections.forEach(s => io.observe(s));
+
+    // Smooth scroll
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        const href = a.getAttribute('href');
+        if (!href || href === '#') return;
+        const target = document.querySelector(href);
+        if (!target) return;
+        e.preventDefault();
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
     });
+
+    // Copy buttons
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const targetId = btn.dataset.target;
+        let text;
+        if (targetId) {
+          const el = document.getElementById(targetId);
+          text = el ? el.innerText : '';
+        } else {
+          const pre = btn.closest('.code-panel, .term-body, [style]')?.querySelector('pre');
+          text = pre ? pre.innerText : '';
+        }
+        try {
+          await navigator.clipboard.writeText(text);
+          const orig = btn.textContent;
+          btn.textContent = 'Copied!';
+          btn.style.color = 'var(--gold)';
+          btn.style.borderColor = 'var(--border-hi)';
+          setTimeout(() => {
+            btn.textContent = orig;
+            btn.style.color = '';
+            btn.style.borderColor = '';
+          }, 1500);
+        } catch { }
+      });
+    });
+
+    // ── Hero canvas: animated time-series background ──
+    (function () {
+      const canvas = document.getElementById('hero-canvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      let W, H;
+
+      function resize() {
+        W = canvas.width = canvas.parentElement.offsetWidth;
+        H = canvas.height = canvas.parentElement.offsetHeight;
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // ── Value synthesis: sum of sine harmonics at random phases ──
+      // This gives smooth, organic, never-repeating-within-session curves
+      // and scrolls continuously with zero seams.
+      function synth(tNorm, harmonics) {
+        let v = 0;
+        for (const [amp, freq, phase] of harmonics) {
+          v += amp * Math.sin(freq * tNorm * Math.PI * 2 + phase);
+        }
+        return v; // roughly in [-1, 1]
+      }
+
+      const ph = () => Math.random() * Math.PI * 2;
+
+      // 9 series — varied in character, position, speed, weight
+      const SERIES = [
+        // ── foreground gold (main) — wide-range, medium-volatile ──
+        {
+          h: [[0.30, 0.11, ph()], [0.22, 0.43, ph()], [0.14, 1.20, ph()], [0.08, 2.90, ph()], [0.04, 6.10, ph()], [0.02, 13.0, ph()]],
+          yMid: 0.48, ySpan: 0.42, speed: 0.048,
+          color: '#f5c332', alpha: 0.52, width: 1.9, band: true
+        },
+        // ── sky blue — slow-moving wide wave, near top ──
+        {
+          h: [[0.42, 0.08, ph()], [0.24, 0.31, ph()], [0.14, 0.95, ph()], [0.07, 2.40, ph()], [0.03, 5.50, ph()]],
+          yMid: 0.25, ySpan: 0.38, speed: 0.022,
+          color: '#7ecce8', alpha: 0.15, width: 1.1, band: false
+        },
+        // ── warm sage — noisy, occupies lower half ──
+        {
+          h: [[0.28, 0.19, ph()], [0.32, 0.78, ph()], [0.22, 2.10, ph()], [0.12, 4.80, ph()], [0.06, 9.50, ph()]],
+          yMid: 0.68, ySpan: 0.28, speed: 0.058,
+          color: '#a8d8b4', alpha: 0.12, width: 1.0, band: false
+        },
+        // ── amber — spiky/volatile, mid-low ──
+        {
+          h: [[0.18, 0.26, ph()], [0.30, 1.05, ph()], [0.28, 2.80, ph()], [0.16, 6.30, ph()], [0.08, 13.5, ph()]],
+          yMid: 0.62, ySpan: 0.22, speed: 0.071,
+          color: '#e8b870', alpha: 0.10, width: 0.85, band: false
+        },
+        // ── pale lavender — very slow, crosses full height ──
+        {
+          h: [[0.50, 0.07, ph()], [0.22, 0.24, ph()], [0.14, 0.72, ph()], [0.07, 1.80, ph()], [0.03, 4.20, ph()]],
+          yMid: 0.50, ySpan: 0.55, speed: 0.016,
+          color: '#c8c0f0', alpha: 0.08, width: 0.80, band: false
+        },
+        // ── ice blue — medium speed, top quarter ──
+        {
+          h: [[0.35, 0.14, ph()], [0.25, 0.58, ph()], [0.18, 1.55, ph()], [0.10, 3.80, ph()], [0.05, 8.00, ph()]],
+          yMid: 0.18, ySpan: 0.24, speed: 0.034,
+          color: '#b0d8f4', alpha: 0.11, width: 0.75, band: false
+        },
+        // ── thin gold echo — slow, offset from main ──
+        {
+          h: [[0.38, 0.13, ph()], [0.26, 0.52, ph()], [0.16, 1.48, ph()], [0.09, 3.50, ph()], [0.04, 7.60, ph()]],
+          yMid: 0.75, ySpan: 0.20, speed: 0.041,
+          color: '#f5c332', alpha: 0.13, width: 0.70, band: false
+        },
+        // ── dusty rose — high freq texture, upper-mid ──
+        {
+          h: [[0.22, 0.22, ph()], [0.28, 0.90, ph()], [0.24, 2.50, ph()], [0.16, 5.80, ph()], [0.08, 12.0, ph()], [0.04, 24.0, ph()]],
+          yMid: 0.38, ySpan: 0.20, speed: 0.063,
+          color: '#e8b8b8', alpha: 0.08, width: 0.65, band: false
+        },
+        // ── deep teal — huge slow oscillation, background depth ──
+        {
+          h: [[0.55, 0.06, ph()], [0.28, 0.20, ph()], [0.12, 0.62, ph()], [0.06, 1.60, ph()]],
+          yMid: 0.50, ySpan: 0.70, speed: 0.011,
+          color: '#60c8b8', alpha: 0.06, width: 0.60, band: false
+        },
+      ];
+
+      // ── Draw a series using quadratic bezier for smooth curves ──
+      function drawS(s, t) {
+        const N = 90; // sample points across width
+        const scrollT = t * s.speed; // continuously increasing, never wraps
+
+        const pts = [];
+        for (let i = 0; i <= N; i++) {
+          const xFrac = i / N;
+          // map x fraction + scroll to a time sample
+          const tSample = xFrac + scrollT;
+          let raw = synth(tSample, s.h);           // [-1, 1]
+          const norm = 0.5 + raw * 0.48;           // [0.02, 0.98] softly
+          const y = H * (s.yMid - s.ySpan * 0.5 + norm * s.ySpan);
+          pts.push({ x: xFrac * W, y });
+        }
+
+        // confidence band for gold main series
+        if (s.band) {
+          const bw = H * 0.032;
+          ctx.save();
+          ctx.beginPath();
+          pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y - bw) : ctx.lineTo(p.x, p.y - bw));
+          for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(pts[i].x, pts[i].y + bw);
+          ctx.closePath();
+          ctx.fillStyle = 'rgba(245,195,50,0.052)';
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // smooth line via quadratic bezier through midpoints
+        ctx.save();
+        ctx.beginPath();
+        ctx.globalAlpha = s.alpha;
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = s.width;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length - 1; i++) {
+          const mx = (pts[i].x + pts[i + 1].x) * 0.5;
+          const my = (pts[i].y + pts[i + 1].y) * 0.5;
+          ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+        }
+        ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawGrid() {
+        ctx.save();
+        // horizontal rules
+        ctx.strokeStyle = 'rgba(255,255,255,0.032)';
+        ctx.lineWidth = 1;
+        const rows = 8;
+        for (let r = 1; r < rows; r++) {
+          const y = Math.round((r / rows) * H) + 0.5;
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+        }
+        // subtle vertical rules
+        ctx.strokeStyle = 'rgba(255,255,255,0.016)';
+        const cols = 12;
+        for (let c = 1; c < cols; c++) {
+          const x = Math.round((c / cols) * W) + 0.5;
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function frame(ts) {
+        const t = ts / 1000;
+        ctx.clearRect(0, 0, W, H);
+        drawGrid();
+        // render back-to-front (dimmest first)
+        for (let i = SERIES.length - 1; i >= 0; i--) drawS(SERIES[i], t);
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    })();
+
+    // Show studio link if not on studio
+    if (!location.pathname.startsWith('/studio')) {
+      document.getElementById('nav-studio').style.display = 'inline-flex';
+    }
   </script>
 
 </body>
