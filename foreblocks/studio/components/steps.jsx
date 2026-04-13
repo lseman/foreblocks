@@ -232,6 +232,7 @@ export function PreprocessStep({ config, setConfig }) {
                         { value: "mad", label: "MAD" },
                         { value: "hbos", label: "HBOS" },
                         { value: "isolation_forest", label: "Isolation Forest" },
+                        { value: "copod", label: "COPOD" },
                         { value: "lof", label: "Local Outlier Factor" },
                         { value: "ecod", label: "ECOD" },
                         { value: "none", label: "No detection" },

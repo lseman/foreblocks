@@ -387,6 +387,28 @@ export function buildOutlierPreview(data, method) {
         };
     }
 
+    if (method === "copod") {
+        const values = points.map((point) => point.value);
+        const scores = computeCopodScores(values);
+        const contamination = chooseContamination(points.length);
+        const threshold = thresholdForContamination(scores, contamination, 0);
+
+        const rows = points
+            .map((point, index) => ({
+                ...point,
+                score: scores[index],
+                reason: `COPOD tail score = ${formatMetric(scores[index], 3)}`,
+            }))
+            .filter((point) => point.score >= threshold)
+            .sort((left, right) => right.score - left.score);
+
+        return {
+            ...basePreview,
+            ...labelOutlierResults(points, rows),
+            thresholdLabel: `COPOD threshold ${formatMetric(threshold, 3)} (${Math.round(contamination * 100)}% contamination).`,
+        };
+    }
+
     if (method === "lof") {
         const values = points.map((point) => point.value);
         const scores = computeLofScores(values, chooseLofNeighborCount(points.length));
@@ -447,7 +469,39 @@ export function buildOutlierPreview(data, method) {
     };
 }
 
-export function computeLofScores(values, neighborCount = 8) {
+export function computeCopodScores(values) {
+    const n = values.length;
+    if (n === 0) {
+        return values.map(() => 0);
+    }
+
+    const sorted = values
+        .map((value, index) => ({ value, index }))
+        .sort((left, right) => left.value - right.value);
+
+    const ranks = new Array(n);
+    for (let i = 0; i < n; ) {
+        let j = i + 1;
+        while (j < n && sorted[j].value === sorted[i].value) {
+            j += 1;
+        }
+
+        const avgRank = (i + j + 1) / 2;
+        for (let k = i; k < j; k += 1) {
+            ranks[sorted[k].index] = avgRank;
+        }
+        i = j;
+    }
+
+    return values.map((_, index) => {
+        const rank = Math.max(1, Math.min(n, ranks[index]));
+        const lowerScore = Math.log(Math.max(1, n / rank));
+        const upperScore = Math.log(Math.max(1, n / (n - rank + 1)));
+        return Math.max(lowerScore, upperScore);
+    });
+}
+
+function computeLofScores(values, neighborCount = 8) {
     const n = values.length;
     if (n < 3) {
         return values.map(() => 0);

@@ -265,6 +265,13 @@ textarea {
     max-width: 52ch;
 }
 
+.lead-copy,
+.automation-shell-copy {
+    margin: 0;
+    color: var(--text);
+    line-height: 1.65;
+}
+
 .hero-actions,
 .legend-row {
     display: flex;
@@ -1689,10 +1696,36 @@ textarea {
     -webkit-backdrop-filter: blur(16px);
 }
 
+.help-overlay {
+    align-items: start;
+    padding-top: 32px;
+}
+
 .modal-dialog {
     width: min(1120px, calc(100vw - 48px));
     max-height: calc(100vh - 48px);
     overflow: auto;
+}
+
+.help-dialog {
+    width: min(850px, calc(100vw - 64px));
+    padding: 0;
+}
+
+.help-copy {
+    display: grid;
+    gap: 16px;
+    color: var(--text);
+}
+
+.help-copy p {
+    margin: 0 0 1rem;
+    line-height: 1.6;
+}
+
+.help-copy strong,
+.help-copy em {
+    font-weight: 600;
 }
 
 .modal-code-dialog {

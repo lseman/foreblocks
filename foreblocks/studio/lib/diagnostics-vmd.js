@@ -244,13 +244,28 @@ function ifftShift(re, im) {
   return fftShift(re, im);
 }
 
+// FIX 1: Half-period mirror extension matching Dragomiretskiy & Zosso (2014).
+// Layout: [reverse of first half | original signal | reverse of second half]
+// Total length = 2 * n. cropCenter(result, n) then recovers exactly the
+// positions corresponding to the original signal.
 function mirrorExtend(values) {
   const n = values.length;
+  const half = Math.floor(n / 2);
   const out = new Float64Array(2 * n);
 
+  // First n/2 samples: reversed first half of the signal
+  for (let i = 0; i < half; i += 1) {
+    out[i] = values[half - 1 - i];
+  }
+
+  // Middle n samples: the original signal
   for (let i = 0; i < n; i += 1) {
-    out[i] = values[n - 1 - i];
-    out[n + i] = values[i];
+    out[half + i] = values[i];
+  }
+
+  // Last n/2 samples: reversed second half of the signal
+  for (let i = 0; i < half; i += 1) {
+    out[half + n + i] = values[n - 1 - i];
   }
 
   return out;
@@ -334,13 +349,13 @@ function vmdDecompose(
   } = {},
 ) {
   const extended = mirrorExtend(signal);
-  const extendedLength = extended.length;
 
   const spectrum = fftReal(extended);
   const shifted = fftShift(spectrum.re, spectrum.im);
   const fRe = shifted.re;
   const fIm = shifted.im;
 
+  // N is the padded FFT size — all spectral arrays use this consistently.
   const N = fRe.length;
   const freqs = frequencyGridShifted(N);
 
@@ -444,6 +459,8 @@ function vmdDecompose(
   const modes = [];
   for (let k = 0; k < K; k += 1) {
     const shiftedBack = ifftShift(uHatRe[k], uHatIm[k]);
+    // IFFT over the full padded size N, then crop back to the extended signal
+    // length, then extract the center window = original signal length.
     const timeMode = ifftReal(shiftedBack.re, shiftedBack.im, N);
     modes.push(cropCenter(timeMode, signal.length));
   }
@@ -530,13 +547,15 @@ export function computeVmdDiagnostics(
   });
 
   const originalEnergy = energy(values);
-  const componentsRaw = result.modes.slice();
 
-  componentsRaw.sort((a, b) => countZeroCrossings(b) - countZeroCrossings(a));
+  // FIX 2 & 3: Keep omegas paired with their modes before sorting so that
+  // center frequencies remain correctly associated after reordering.
+  const pairs = result.modes.map((mode, i) => ({ mode, omega: result.omegas[i] }));
+  pairs.sort((a, b) => countZeroCrossings(b.mode) - countZeroCrossings(a.mode));
 
   const reconstructedCentered = new Float64Array(count);
-  for (let k = 0; k < componentsRaw.length; k += 1) {
-    const mode = componentsRaw[k];
+  for (let k = 0; k < pairs.length; k += 1) {
+    const mode = pairs[k].mode;
     for (let i = 0; i < count; i += 1) {
       reconstructedCentered[i] += mode[i];
     }
@@ -548,10 +567,10 @@ export function computeVmdDiagnostics(
   }
 
   const components = [];
-  for (let k = 0; k < componentsRaw.length; k += 1) {
+  for (let k = 0; k < pairs.length; k += 1) {
     const mode = new Float64Array(count);
     for (let i = 0; i < count; i += 1) {
-      mode[i] = componentsRaw[k][i];
+      mode[i] = pairs[k].mode[i];
     }
 
     const summary = modeSummary(mode, originalEnergy);
@@ -563,7 +582,7 @@ export function computeVmdDiagnostics(
       zeroCrossings: summary.zeroCrossings,
       extremaCount: summary.extremaCount,
       meanAbs: summary.meanAbs,
-      centerFrequency: Number(Math.abs(result.omegas[k] ?? 0).toFixed(6)),
+      centerFrequency: Number(Math.abs(pairs[k].omega).toFixed(6)),
     });
   }
 
@@ -573,7 +592,7 @@ export function computeVmdDiagnostics(
   }
 
   const reconstructed = reconstructSignal(
-    componentsRaw,
+    pairs.map((p) => p.mode),
     residualWithMean,
   );
 

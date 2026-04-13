@@ -316,21 +316,9 @@ function argMinInRange(values, left, right) {
   return bestIndex;
 }
 
-function buildBoundariesFromPeaks(peaks, spectrumLength) {
-  if (peaks.length === 0) return [];
-
-  const boundaries = [];
-  for (let i = 0; i < peaks.length - 1; i += 1) {
-    const left = peaks[i].index;
-    const right = peaks[i + 1].index;
-    const boundary = argMinInRange(spectrumLength, left, right);
-    boundaries.push(boundary);
-  }
-  return boundaries;
-}
-
-// Bug-safe overload helper
-function buildBoundariesFromPeaksWrapper(peaks, spectrum) {
+// Finds the spectral valley (minimum) between each consecutive pair of peaks.
+// spectrum must be a typed or plain array of magnitude values.
+function buildBoundariesFromPeaks(peaks, spectrum) {
   if (peaks.length <= 1) return [];
   const boundaries = [];
   for (let i = 0; i < peaks.length - 1; i += 1) {
@@ -486,6 +474,20 @@ function reconstructSignal(components, residual) {
   return out;
 }
 
+const UNAVAILABLE = (reason) => ({
+  available: false,
+  method: "ewt_empirical_meyer",
+  methodLabel: "Empirical wavelet transform",
+  interpolationLabel: "Empirical Meyer filter bank",
+  reason,
+  components: [],
+  residual: null,
+  bandCount: 0,
+  reconstructionError: 0,
+  residualEnergyShare: 0,
+  boundaries: [],
+});
+
 export function computeEwtDiagnostics(
   series,
   maxBands = 5,
@@ -496,53 +498,17 @@ export function computeEwtDiagnostics(
   const values = Float64Array.from(series, (point) => point.value);
   const count = values.length;
 
-  if (hasNonFiniteValue(values)) {
-    return {
-      available: false,
-      method: "ewt_empirical_meyer",
-      methodLabel: "Empirical wavelet transform",
-      interpolationLabel: "Empirical Meyer filter bank",
-      reason: "EWT requires a complete series of finite values.",
-      components: [],
-      residual: null,
-      bandCount: 0,
-      reconstructionError: 0,
-      residualEnergyShare: 0,
-      boundaries: [],
-    };
+  if (count < 16) {
+    return UNAVAILABLE("EWT needs at least 16 observations.");
   }
 
-  if (count < 16) {
-    return {
-      available: false,
-      method: "ewt_empirical_meyer",
-      methodLabel: "Empirical wavelet transform",
-      interpolationLabel: "Empirical Meyer filter bank",
-      reason: "EWT needs at least 16 observations.",
-      components: [],
-      residual: null,
-      bandCount: 0,
-      reconstructionError: 0,
-      residualEnergyShare: 0,
-      boundaries: [],
-    };
+  if (hasNonFiniteValue(values)) {
+    return UNAVAILABLE("EWT requires a complete series of finite values.");
   }
 
   const { mean: signalMean, std: signalStd } = meanAndStd(values);
   if (signalStd < 1e-10) {
-    return {
-      available: false,
-      method: "ewt_empirical_meyer",
-      methodLabel: "Empirical wavelet transform",
-      interpolationLabel: "Empirical Meyer filter bank",
-      reason: "EWT needs a non-constant signal.",
-      components: [],
-      residual: null,
-      bandCount: 0,
-      reconstructionError: 0,
-      residualEnergyShare: 0,
-      boundaries: [],
-    };
+    return UNAVAILABLE("EWT needs a non-constant signal.");
   }
 
   const centered = new Float64Array(count);
@@ -563,22 +529,21 @@ export function computeEwtDiagnostics(
   );
 
   if (peaks.length === 0) {
-    return {
-      available: false,
-      method: "ewt_empirical_meyer",
-      methodLabel: "Empirical wavelet transform",
-      interpolationLabel: "Empirical Meyer filter bank",
-      reason: "Could not detect spectral peaks for adaptive partitioning.",
-      components: [],
-      residual: null,
-      bandCount: 0,
-      reconstructionError: 0,
-      residualEnergyShare: 0,
-      boundaries: [],
-    };
+    return UNAVAILABLE("Could not detect spectral peaks for adaptive partitioning.");
   }
 
-  const boundariesBins = buildBoundariesFromPeaksWrapper(peaks, smoothedMag);
+  // FIX 2: A single peak means no inter-peak boundaries can be formed, so no
+  // oscillatory bands can be separated. Report unavailable rather than returning
+  // available: true with an empty component list.
+  if (peaks.length === 1) {
+    return UNAVAILABLE("Only one spectral peak detected; cannot form oscillatory bands.");
+  }
+
+  // FIX 1: removed dead `buildBoundariesFromPeaks` function that incorrectly
+  // received a number instead of an array as its second argument.
+  // `buildBoundariesFromPeaks` now IS the canonical implementation (renamed,
+  // corrected, singular).
+  const boundariesBins = buildBoundariesFromPeaks(peaks, smoothedMag);
   const filters = buildFilterBank(fftLength, boundariesBins, gamma);
 
   const rawBands = [];
@@ -587,13 +552,11 @@ export function computeEwtDiagnostics(
     rawBands.push(ifftReal(filtered.re, filtered.im, count));
   }
 
-  // We treat the first band as low-frequency/trend-like.
-  // Higher bands are the oscillatory EWT components.
+  // First band = low-frequency scaling / trend component.
+  // Remaining bands = oscillatory EWT components, sorted high → low frequency.
   const trend = rawBands[0];
   const componentsRaw = rawBands.slice(1);
 
-  // Sort oscillatory bands from high-frequency to low-frequency
-  // using zero crossings as a simple proxy.
   componentsRaw.sort((a, b) => countZeroCrossings(b) - countZeroCrossings(a));
 
   const originalEnergy = energy(values);

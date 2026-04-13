@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-import { NumberField, Panel, PipelineNode, SelectField, SkeletonBlock, StatPill, ToggleField } from "./base.jsx";
+import { HelpButton, NumberField, Panel, PipelineNode, SelectField, SkeletonBlock, StatPill, ToggleField } from "./base.jsx";
 import { buildOutlierPreview } from "../lib/outlier-algorithms.js";
 import { buildFilterPreview, solveLinearSystem } from "../lib/filter-algorithms.js";
 import { buildDecomposition, shiftValues, buildRollingHistory } from "../lib/signal-algorithms.js";
@@ -32,6 +32,138 @@ function standardDeviation(values, mean) {
 
 function formatMetric(value, digits = 2) {
     return Number(value).toFixed(digits);
+}
+
+const HELP_CONTENT = {
+    emd: {
+        title: "EMD help",
+        content: [
+            "<p>Empirical mode decomposition (EMD) decomposes a signal into adaptive oscillatory modes and a residual trend:</p>",
+            "<p>$$x(t)=\\sum_{k=1}^{K} c_k(t) + r(t),$$</p>",
+            "<p>where each intrinsic mode function (IMF) \\(c_k(t)\\) satisfies:</p>",
+            "<p>1) the number of zero crossings and extrema differ by at most one,</p>",
+            "<p>2) the local mean is zero:</p>",
+            "<p>$$m_k(t)=\\frac{e_{\\text{upper}}(t)+e_{\\text{lower}}(t)}{2}, \\quad \\text{and} \\quad \\overline{c_k(t)} = 0.$$</p>",
+            "<p>The sifting step updates a candidate signal \\(h(t)\\) by subtracting the mean envelope:</p>",
+            "<p>$$h_{i+1}(t)=h_i(t)-m_i(t), \\quad h_0(t)=x(t),$$</p>",
+            "<p>and the iteration stops when the stopping criterion holds, typically when \\(\\|m_i(t)\\|\\) is small and the mode is locally symmetric.</p>",
+            "<p>The residual after extracting \\(K\\) IMFs is</p>",
+            "<p>$$r(t)=x(t)-\\sum_{k=1}^{K} c_k(t),$$</p>",
+            "<p>This adaptive decomposition is powerful for nonlinear, nonstationary time series because the basis functions are data-driven rather than fixed like sinusoidal wavelets.</p>",
+        ],
+    },
+    eemd: {
+        title: "EEMD help",
+        content: [
+            "<p>Ensemble EMD (EEMD) adds Gaussian noise to the input signal and averages repeated EMD decompositions to reduce mode mixing.</p>",
+            "<p>For each ensemble member \\(j\\),</p>",
+            "<p>$$x_j(t)=x(t)+\\varepsilon_j(t), \\qquad \\varepsilon_j(t) \\sim \\mathcal{N}(0,\\sigma^2),$$</p>",
+            "<p>EMD extracts modes \\(c_{k}^{(j)}(t)\\) from each noisy realization, then the final mode estimate is</p>",
+            "<p>$$\\bar c_k(t)=\\frac{1}{J} \\sum_{j=1}^{J} c_{k}^{(j)}(t).$$</p>",
+            "<p>This ensemble average preserves physical modes while canceling noise-induced spurious components, improving the stability of mode estimates.</p>",
+            "<p>The reconstructed signal is still</p>",
+            "<p>$$x(t) \\approx \\sum_{k=1}^{K} \\bar c_k(t) + \\bar r(t).$$</p>",
+        ],
+    },
+    ewt: {
+        title: "EWT help",
+        content: [
+            "<p>Empirical wavelet transform (EWT) adaptively builds a filter bank from the signal spectrum.</p>",
+            "<p>The signal is partitioned in frequency by boundary points \\(\\{\\omega_k\\}\\) obtained from spectral peaks, then each band is filtered with a Meyer-like wavelet:</p>",
+            "<p>$$W_k(\\omega)=\\begin{cases}1,&\\omega_{k-1} \\le |\\omega| \\le \\omega_k\\\\ \\text{smooth transition},&\\text{near boundaries}\\\\ 0,&\\text{otherwise}\\end{cases}$$</p>",
+            "<p>Each component is recovered by inverse filtering in the Fourier domain:</p>",
+            "<p>$$w_k(t)=\\mathcal{F}^{-1}\\{W_k(\\omega) X(\\omega)\\},$$</p>",
+            "<p>and the empirical wavelet reconstruction is</p>",
+            "<p>$$x(t)=\sum_{k=1}^{K} w_k(t) + r(t).$$</p>",
+            "<p>The adaptive frequency boundaries make EWT especially useful for signals whose dominant bands vary and cannot be pre-specified.</p>",
+        ],
+    },
+    isolation_forest: {
+        title: "Isolation Forest help",
+        content: [
+            "<p>Isolation Forest isolates anomalies by recursively partitioning the feature space with random splits.</p>",
+            "<p>For each tree, a point \\(x\\) is isolated after \\(h(x)\\) splits. The expected path length under random splitting is compared to the average path length in a subsample of size \\(n\\):</p>",
+            "<p>$$s(x,n)=2^{-\\frac{E[h(x)]}{c(n)}}, \\qquad c(n)=2H(n-1)-\\frac{2(n-1)}{n},$$</p>",
+            "<p>where \\(H(n)\\) is the harmonic number \\(H(n)=\\sum_{i=1}^{n}1/i\\).</p>",
+            "<p>Points with short average isolation paths have scores near 1 and are more likely anomalies, while normal points have longer paths and scores near 0.5.</p>",
+            "<p>In the 1D series preview, the algorithm uses random subsamples and binary splits on value ranges to approximate the isolation score efficiently.</p>",
+        ],
+    },
+    filter: {
+        none: {
+            title: "No filtering",
+            content: [
+                "<p>No filter is applied in this preview mode. The observed series is shown without smoothing.</p>",
+            ],
+        },
+        savgol: {
+            title: "Savitzky-Golay filter help",
+            content: [
+                "<p>The Savitzky-Golay filter fits a polynomial of order <strong>p</strong> over a sliding window and evaluates it at the center point.</p>",
+                "<p>For a window of width <strong>W</strong>, the filtered value is:</p>",
+                "<p>$$y_t = \\sum_{k=-m}^{m} c_k x_{t+k}, \\quad m=\\frac{W-1}{2},$$</p>",
+                "<p>where coefficients \\(c_k\\) are determined by the least-squares polynomial fit. It preserves local curvature better than a simple moving average.</p>",
+
+            ],
+        },
+        moving_average: {
+            title: "Moving average filter help",
+            content: [
+                "<p>The rolling average replaces each point with the mean over its neighborhood:</p>",
+                "<p>$$y_t = \\frac{1}{W} \\sum_{k=-m}^{m} x_{t+k}, \\quad W=2m+1.$$</p>",
+                "<p>This low-pass filter smooths high-frequency noise but can lag sharp transitions.</p>",
+            ],
+        },
+        median: {
+            title: "Median filter help",
+            content: [
+                "<p>The median filter replaces each point with the median of values in a centered window.</p>",
+                "<p>It is defined as:</p>",
+                "<p>$$y_t = \\mathrm{median}\\{x_{t-m},\\ldots,x_{t+m}\\}.$$</p>",
+                "<p>This is robust to outliers and preserves edges better than mean smoothing.</p>",
+            ],
+        },
+        wiener: {
+            title: "Wiener-like filter help",
+            content: [
+                "<p>The Wiener-like filter in this preview estimates local signal and noise variance to adapt smoothing strength.</p>",
+                "<p>Each output is roughly:</p>",
+                "<p>$$y_t = x_t - \\frac{\\sigma_n^2}{\\sigma_x^2} (x_t - \\mu_t),$$</p>",
+                "<p>where \\(\\mu_t\\) and \\(\\sigma_x^2\\) are local mean and variance, and \\(\\sigma_n^2\\) is noise variance.</p>",
+            ],
+        },
+        gaussian: {
+            title: "Gaussian filter help",
+            content: [
+                "<p>The Gaussian filter weights neighbors with a normal kernel:</p>",
+                "<p>$$y_t = \\sum_{k=-m}^{m} w_k x_{t+k}, \\quad w_k \\propto \\exp\\left(-\\frac{k^2}{2\\sigma^2}\\right).$$</p>",
+                "<p>This produces smooth, bell-shaped averaging and has no sharp cutoffs in frequency.</p>",
+            ],
+        },
+        ema: {
+            title: "Exponential moving average help",
+            content: [
+                "<p>The exponential moving average gives exponentially decreasing weights to older observations.</p>",
+                "<p>Recursively:</p>",
+                "<p>$$y_t = \\alpha x_t + (1-\\alpha) y_{t-1},$$</p>",
+                "<p>with \\(\\alpha\\) controlling the responsiveness to new values.</p>",
+            ],
+        },
+        lowess: {
+            title: "LOWESS filter help",
+            content: [
+                "<p>LOWESS performs a local weighted regression over a window around each point.</p>",
+                "<p>Each fitted value minimizes:</p>",
+                "<p>$$\\sum_{k=-m}^{m} w_k (x_{t+k} - p(t+k))^2,$$</p>",
+                "<p>where \\(p(\\cdot)\\) is a low-order polynomial and weights \\(w_k\\) decline with distance.</p>",
+                "<p>This gives a smooth curve that adapts to local structure better than global polynomial fits.</p>",
+            ],
+        },
+    },
+};
+
+function getFilterHelp(method) {
+    return HELP_CONTENT.filter[method] ?? HELP_CONTENT.filter.none;
 }
 
 function grangerMatrixTone(result) {
@@ -1396,7 +1528,11 @@ export function OutlierPanel({
 
     if (status === "loading") {
         return (
-            <Panel title="Outlier Detection" kicker="Diagnostics sandbox">
+            <Panel
+                title="Outlier Detection"
+                kicker="Diagnostics sandbox"
+                actions={<HelpButton title={HELP_CONTENT.isolation_forest.title} content={HELP_CONTENT.isolation_forest.content} />}
+            >
                 <SkeletonBlock pills={3} chart lines={2} />
             </Panel>
         );
@@ -1404,7 +1540,11 @@ export function OutlierPanel({
 
     if (status === "error") {
         return (
-            <Panel title="Outlier Detection" kicker="Diagnostics sandbox">
+            <Panel
+                title="Outlier Detection"
+                kicker="Diagnostics sandbox"
+                actions={<HelpButton title={HELP_CONTENT.isolation_forest.title} content={HELP_CONTENT.isolation_forest.content} />}
+            >
                 <p className="lead-copy">
                     Outlier preview unavailable: {errorMessage}
                 </p>
@@ -1413,7 +1553,11 @@ export function OutlierPanel({
     }
 
     return (
-        <Panel title="Outlier Detection" kicker="Diagnostics sandbox">
+        <Panel
+            title="Outlier Detection"
+            kicker="Diagnostics sandbox"
+            actions={<HelpButton title={HELP_CONTENT.isolation_forest.title} content={HELP_CONTENT.isolation_forest.content} />}
+        >
             <div className="diagnostics-control-row">
                 <div className="field-grid regime-selector-grid">
                     <SelectField
@@ -1426,6 +1570,7 @@ export function OutlierPanel({
                             { value: "mad", label: "MAD" },
                             { value: "hbos", label: "HBOS" },
                             { value: "isolation_forest", label: "Isolation Forest" },
+                            { value: "copod", label: "COPOD" },
                             { value: "lof", label: "Local Outlier Factor" },
                             { value: "ecod", label: "ECOD" },
                             { value: "none", label: "No detection" },
@@ -1575,8 +1720,14 @@ export function FilterPanel({ status, errorMessage, data, settings, onSettingsCh
         );
     }
 
+    const filterHelp = getFilterHelp(settings.filterMethod);
+
     return (
-        <Panel title="Filter & Detrend" kicker="Diagnostics sandbox">
+        <Panel
+            title="Filter & Detrend"
+            kicker="Diagnostics sandbox"
+            actions={<HelpButton title={filterHelp.title} content={filterHelp.content} />}
+        >
             <div className="preprocess-control-split">
                 <div className="preprocess-control-card preprocess-control-filter">
                     <div className="preprocess-control-heading">Filter</div>
@@ -1807,7 +1958,11 @@ export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = []
 
     if (status === "loading") {
         return (
-            <Panel title="EMD" kicker="Empirical mode decomposition">
+            <Panel
+                title="EMD"
+                kicker="Empirical mode decomposition"
+                actions={<HelpButton title={HELP_CONTENT.emd.title} content={HELP_CONTENT.emd.content} />}
+            >
                 <SkeletonBlock pills={4} chart lines={2} />
             </Panel>
         );
@@ -1815,7 +1970,11 @@ export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = []
 
     if (status === "error") {
         return (
-            <Panel title="EMD" kicker="Empirical mode decomposition">
+            <Panel
+                title="EMD"
+                kicker="Empirical mode decomposition"
+                actions={<HelpButton title={HELP_CONTENT.emd.title} content={HELP_CONTENT.emd.content} />}
+            >
                 <p className="lead-copy">
                     EMD unavailable: {errorMessage}
                 </p>
@@ -1825,7 +1984,11 @@ export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = []
 
     if (!emdDiagnostics?.available) {
         return (
-            <Panel title="EMD" kicker="Empirical mode decomposition">
+            <Panel
+                title="EMD"
+                kicker="Empirical mode decomposition"
+                actions={<HelpButton title={HELP_CONTENT.emd.title} content={HELP_CONTENT.emd.content} />}
+            >
                 <p className="lead-copy">
                     {emdDiagnostics?.reason ?? "EMD needs a longer, non-constant series before intrinsic mode functions can be extracted."}
                 </p>
@@ -1834,7 +1997,11 @@ export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = []
     }
 
     return (
-        <Panel title="EMD" kicker="Empirical mode decomposition">
+        <Panel
+            title="EMD"
+            kicker="Empirical mode decomposition"
+            actions={<HelpButton title={HELP_CONTENT.emd.title} content={HELP_CONTENT.emd.content} />}
+        >
             <div className="summary-card-grid emd-summary-grid">
                 <div className="summary-card">
                     <div className="summary-card-title">IMFs extracted</div>
@@ -2032,7 +2199,11 @@ export function EemdPanel({ status, errorMessage, eemdDiagnostics, seriesData = 
 
     if (status === "loading") {
         return (
-            <Panel title="EEMD" kicker="Ensemble empirical mode decomposition">
+            <Panel
+                title="EEMD"
+                kicker="Ensemble empirical mode decomposition"
+                actions={<HelpButton title={HELP_CONTENT.eemd.title} content={HELP_CONTENT.eemd.content} />}
+            >
                 <SkeletonBlock pills={4} chart lines={2} />
             </Panel>
         );
@@ -2040,7 +2211,11 @@ export function EemdPanel({ status, errorMessage, eemdDiagnostics, seriesData = 
 
     if (status === "error") {
         return (
-            <Panel title="EEMD" kicker="Ensemble empirical mode decomposition">
+            <Panel
+                title="EEMD"
+                kicker="Ensemble empirical mode decomposition"
+                actions={<HelpButton title={HELP_CONTENT.eemd.title} content={HELP_CONTENT.eemd.content} />}
+            >
                 <p className="lead-copy">
                     EEMD unavailable: {errorMessage}
                 </p>
@@ -2050,7 +2225,11 @@ export function EemdPanel({ status, errorMessage, eemdDiagnostics, seriesData = 
 
     if (!eemdDiagnostics?.available) {
         return (
-            <Panel title="EEMD" kicker="Ensemble empirical mode decomposition">
+            <Panel
+                title="EEMD"
+                kicker="Ensemble empirical mode decomposition"
+                actions={<HelpButton title={HELP_CONTENT.eemd.title} content={HELP_CONTENT.eemd.content} />}
+            >
                 <p className="lead-copy">
                     {eemdDiagnostics?.reason ?? "EEMD needs a longer, non-constant series before intrinsic mode functions can be extracted."}
                 </p>
@@ -2059,7 +2238,11 @@ export function EemdPanel({ status, errorMessage, eemdDiagnostics, seriesData = 
     }
 
     return (
-        <Panel title="EEMD" kicker="Ensemble empirical mode decomposition">
+        <Panel
+            title="EEMD"
+            kicker="Ensemble empirical mode decomposition"
+            actions={<HelpButton title={HELP_CONTENT.eemd.title} content={HELP_CONTENT.eemd.content} />}
+        >
             <div className="summary-card-grid emd-summary-grid">
                 <div className="summary-card">
                     <div className="summary-card-title">IMFs extracted</div>
@@ -2270,7 +2453,11 @@ export function EwtPanel({ status, errorMessage, ewtDiagnostics, seriesData = []
 
     if (status === "loading") {
         return (
-            <Panel title="EWT" kicker="Empirical wavelet transform">
+            <Panel
+                title="EWT"
+                kicker="Empirical wavelet transform"
+                actions={<HelpButton title={HELP_CONTENT.ewt.title} content={HELP_CONTENT.ewt.content} />}
+            >
                 <SkeletonBlock pills={4} chart lines={2} />
             </Panel>
         );
@@ -2278,7 +2465,11 @@ export function EwtPanel({ status, errorMessage, ewtDiagnostics, seriesData = []
 
     if (status === "error") {
         return (
-            <Panel title="EWT" kicker="Empirical wavelet transform">
+            <Panel
+                title="EWT"
+                kicker="Empirical wavelet transform"
+                actions={<HelpButton title={HELP_CONTENT.ewt.title} content={HELP_CONTENT.ewt.content} />}
+            >
                 <p className="lead-copy">
                     EWT unavailable: {errorMessage}
                 </p>
@@ -2288,7 +2479,11 @@ export function EwtPanel({ status, errorMessage, ewtDiagnostics, seriesData = []
 
     if (!ewtDiagnostics?.available) {
         return (
-            <Panel title="EWT" kicker="Empirical wavelet transform">
+            <Panel
+                title="EWT"
+                kicker="Empirical wavelet transform"
+                actions={<HelpButton title={HELP_CONTENT.ewt.title} content={HELP_CONTENT.ewt.content} />}
+            >
                 <p className="lead-copy">
                     {ewtDiagnostics?.reason ?? "EWT needs a longer, non-constant series before bands can be extracted."}
                 </p>
@@ -2297,7 +2492,11 @@ export function EwtPanel({ status, errorMessage, ewtDiagnostics, seriesData = []
     }
 
     return (
-        <Panel title="EWT" kicker="Empirical wavelet transform">
+        <Panel
+            title="EWT"
+            kicker="Empirical wavelet transform"
+            actions={<HelpButton title={HELP_CONTENT.ewt.title} content={HELP_CONTENT.ewt.content} />}
+        >
             <div className="summary-card-grid emd-summary-grid">
                 <div className="summary-card">
                     <div className="summary-card-title">Bands extracted</div>

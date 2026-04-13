@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
@@ -405,6 +405,72 @@ export function Panel({ title, kicker, children, actions, accent = false }) {
             </div>
             {children}
         </section>
+    );
+}
+
+export function HelpButton({ title, content }) {
+    const [open, setOpen] = useState(false);
+
+    useEffect(() => {
+        if (!open) {
+            return undefined;
+        }
+
+        const typesetMath = async () => {
+            if (typeof window !== "undefined" && window.MathJax?.typesetPromise) {
+                try {
+                    await window.MathJax.typesetPromise();
+                } catch {
+                    // ignore math rendering failures
+                }
+            }
+        };
+
+        typesetMath();
+        return undefined;
+    }, [open, title, content]);
+
+    return (
+        <>
+            <button
+                type="button"
+                className="ghost-button"
+                title={`Open help for ${title}`}
+                aria-label={`Open help for ${title}`}
+                onClick={() => setOpen(true)}
+            >
+                ?
+            </button>
+            {open ? (
+                <div className="modal-overlay help-overlay" role="presentation" onClick={() => setOpen(false)}>
+                    <div
+                        className="modal-dialog modal-code-dialog help-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label={title}
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            className="modal-close"
+                            type="button"
+                            aria-label={`Close ${title} help`}
+                            onClick={() => setOpen(false)}
+                        >
+                            Close
+                        </button>
+                        <Panel title={title} kicker="Algorithm help">
+                            <div className="help-copy">
+                                {Array.isArray(content)
+                                    ? content.map((html, index) => (
+                                        <div key={index} dangerouslySetInnerHTML={{ __html: html }} />
+                                    ))
+                                    : <div dangerouslySetInnerHTML={{ __html: content }} />}
+                            </div>
+                        </Panel>
+                    </div>
+                </div>
+            ) : null}
+        </>
     );
 }
 
