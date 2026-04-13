@@ -35,6 +35,7 @@ import {
     applyBlueprint,
     DARK_THEME,
     FAMILY_META,
+    GLASS_THEME,
     INITIAL_CONFIG,
     PAPER_THEME,
     STEP_COPY,
@@ -282,7 +283,12 @@ export default function ForeblocksStudio() {
     const [activeEmdLikeSubgroup, setActiveEmdLikeSubgroup] = useState("emd");
     const [activeRegimeSubgroup, setActiveRegimeSubgroup] = useState("signal");
     const [uploadedDataset, setUploadedDataset] = useState(null);
-    const [isDarkMode, setIsDarkMode] = useState(true);
+    const [themeKey, setThemeKey] = useState(() => {
+        if (typeof window !== "undefined") {
+            return localStorage.getItem("studioTheme") || "glass";
+        }
+        return "dark";
+    });
     const [changePointMethod, setChangePointMethod] = useState("segmentation");
     const [outlierPreviewMethod, setOutlierPreviewMethod] = useState(INITIAL_CONFIG.prep.outlierMethod);
     const [filterPreviewSettings, setFilterPreviewSettings] = useState({
@@ -356,7 +362,15 @@ export default function ForeblocksStudio() {
         errorMessage: "",
     });
 
-    const theme = isDarkMode ? DARK_THEME : PAPER_THEME;
+    const theme = useMemo(() => {
+        const themes = {
+            dark: DARK_THEME,
+            paper: PAPER_THEME,
+            glass: GLASS_THEME,
+        };
+        return themes[themeKey] ?? DARK_THEME;
+    }, [themeKey]);
+    const isDarkMode = theme.isDark ?? false;
     const themeStyle = useMemo(() => buildThemeStyle(theme), [theme]);
     const seriesData = useMemo(
         () => formatSeries(datasetState.series.slice(-Math.min(datasetState.series.length, 240))),
@@ -407,6 +421,16 @@ export default function ForeblocksStudio() {
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, [isCodeModalOpen]);
+
+    useEffect(() => {
+        if (typeof window !== "undefined") {
+            try {
+                localStorage.setItem("studioTheme", themeKey);
+            } catch {
+                // ignore storage failures
+            }
+        }
+    }, [themeKey]);
 
     useEffect(() => {
         let cancelled = false;
@@ -835,12 +859,23 @@ export default function ForeblocksStudio() {
                         <span className={`status-dot status-dot-${diagnosticsState.status === "ready" ? "ready" : diagnosticsState.status === "error" ? "error" : "loading"}`} />
                         Diagnostics
                     </span>
+                    <select
+                        className="theme-select"
+                        value={themeKey}
+                        style={{ color: "white" }}
+                        onChange={(event) => setThemeKey(event.target.value)}
+                        aria-label="Choose Studio theme"
+                    >
+                        <option value="dark">Night</option>
+                        <option value="glass">Glass</option>
+                        <option value="paper">Paper</option>
+                    </select>
                     <button
                         className="theme-toggle"
                         type="button"
-                        title={isDarkMode ? "Switch to light mode" : "Switch to dark mode"}
-                        aria-label={isDarkMode ? "Switch to light mode" : "Switch to dark mode"}
-                        onClick={() => setIsDarkMode((d) => !d)}
+                        title={isDarkMode ? "Switch to light theme" : "Switch to dark theme"}
+                        aria-label={isDarkMode ? "Switch to light theme" : "Switch to dark theme"}
+                        onClick={() => setThemeKey((current) => (current === "dark" ? "paper" : "dark"))}
                     >
                         {isDarkMode ? "☀" : "◑"}
                     </button>
