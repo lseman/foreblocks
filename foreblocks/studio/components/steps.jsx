@@ -230,8 +230,10 @@ export function PreprocessStep({ config, setConfig }) {
                         { value: "iqr", label: "IQR fences" },
                         { value: "zscore", label: "Z-score" },
                         { value: "mad", label: "MAD" },
+                        { value: "hbos", label: "HBOS" },
                         { value: "isolation_forest", label: "Isolation Forest" },
                         { value: "lof", label: "Local Outlier Factor" },
+                        { value: "ecod", label: "ECOD" },
                         { value: "none", label: "No detection" },
                     ]}
                     hint="Used for both Studio preview and emitted TimeSeriesHandler code."

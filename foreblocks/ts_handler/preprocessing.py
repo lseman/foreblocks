@@ -33,13 +33,20 @@ import pandas as pd
 import torch
 from joblib import Parallel, delayed
 from scipy.signal import find_peaks, welch
-from scipy.stats import entropy, kurtosis, skew, jarque_bera
+from scipy.stats import entropy, jarque_bera, kurtosis, skew
 from sklearn.impute import KNNImputer
-from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer, PowerTransformer
-from statsmodels.tsa.stattools import acf, adfuller, pacf
+from sklearn.preprocessing import (
+    PowerTransformer,
+    QuantileTransformer,
+    RobustScaler,
+    StandardScaler,
+)
 from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.tsa.stattools import acf, adfuller, pacf
 from tabulate import tabulate
 from tqdm import tqdm
+
+from .ewt import apply_ewt_and_detrend_parallel
 
 # ---- local deps (explicit) ---------------------------------------------------
 from .filters import (
@@ -47,11 +54,10 @@ from .filters import (
     emd_filter,
     kalman_filter,
     lowess_filter,
-    wiener_filter,
     ssa_filter,
     stl_filter,
+    wiener_filter,
 )
-from .ewt import apply_ewt_and_detrend_parallel
 from .impute import SAITSImputer
 from .outlier import _remove_outliers, _remove_outliers_parallel
 
@@ -254,7 +260,9 @@ def _rank_normalize(values: np.ndarray, invert: bool = False) -> np.ndarray:
 def _cyclical_encode(values: np.ndarray, period: float) -> np.ndarray:
     vals = np.asarray(values, dtype=np.float32)
     angle = (2.0 * np.pi * vals) / max(float(period), 1.0)
-    return np.column_stack((np.sin(angle), np.cos(angle))).astype(np.float32, copy=False)
+    return np.column_stack((np.sin(angle), np.cos(angle))).astype(
+        np.float32, copy=False
+    )
 
 
 def apply_log_transform(
@@ -451,9 +459,9 @@ def _get_iterative_imputer_class() -> Optional[Any]:
         return IterativeImputer
     except ImportError:
         try:
+            from sklearn.ensemble import HistGradientBoostingRegressor
             from sklearn.experimental import enable_iterative_imputer
             from sklearn.impute import IterativeImputer
-            from sklearn.ensemble import HistGradientBoostingRegressor
 
             return IterativeImputer
         except ImportError:
@@ -620,7 +628,9 @@ class TimeSeriesHandler:
     filter_selection_: Dict[str, Any] = field(default_factory=dict, init=False)
 
     # Auto-config results
-    scaling_method: str = field(default="standard", init=False) # 'standard', 'robust', 'quantile', 'log_only', 'box_cox'
+    scaling_method: str = field(
+        default="standard", init=False
+    )  # 'standard', 'robust', 'quantile', 'log_only', 'box_cox'
     filter_method: str = field(default="savgol", init=False)
     seasonal: bool = field(default=False, init=False)
 
@@ -665,7 +675,7 @@ class TimeSeriesHandler:
             return float("nan")
         med = float(np.median(x))
         mad = float(np.median(np.abs(x - med)))
-        
+
         # Calculate base threshold scale relative to the raw absolute deviations.
         # Modified Z-score uses 0.6745. The conversion from Z-threshold to raw value is therefore / 0.6745
         return (mad / 0.6745) + 1e-12
@@ -870,14 +880,19 @@ class TimeSeriesHandler:
             kwargs.update(
                 {
                     "period": period,
-                    "seasonal": max(5, min(13, period if period % 2 == 1 else period + 1)),
+                    "seasonal": max(
+                        5, min(13, period if period % 2 == 1 else period + 1)
+                    ),
                     "robust": True,
                 }
             )
         elif method == "ssa":
             kwargs.update(
                 {
-                    "window_length": min( max(7, self.window_size), max(7, stats.get("T_eval", self.window_size * 4) // 4) ),
+                    "window_length": min(
+                        max(7, self.window_size),
+                        max(7, stats.get("T_eval", self.window_size * 4) // 4),
+                    ),
                     "n_components": 2,
                 }
             )
@@ -914,7 +929,9 @@ class TimeSeriesHandler:
         self, data: np.ndarray, stats: Dict[str, Any]
     ) -> np.ndarray:
         x = _as_2d(data)
-        feat_idx = _select_diagnostic_features(x.shape[1], max_features=min(8, x.shape[1]))
+        feat_idx = _select_diagnostic_features(
+            x.shape[1], max_features=min(8, x.shape[1])
+        )
         sampled = x[:, feat_idx]
         max_points = 1024 if stats["T"] > 2000 else 2048
         if sampled.shape[0] > max_points:
@@ -931,13 +948,19 @@ class TimeSeriesHandler:
         deriv_orig = np.diff(orig, axis=0)
         deriv_den = np.diff(den, axis=0)
 
-        derivative_corrs = [
-            abs(_safe_corr_1d(deriv_den[:, j], deriv_orig[:, j]))
-            for j in range(orig.shape[1])
-        ] if orig.shape[0] > 1 else [0.0]
+        derivative_corrs = (
+            [
+                abs(_safe_corr_1d(deriv_den[:, j], deriv_orig[:, j]))
+                for j in range(orig.shape[1])
+            ]
+            if orig.shape[0] > 1
+            else [0.0]
+        )
 
         residual_autocorr = [
-            _mean_abs_autocorr(residual[:, j], max_lag=min(20, max(1, orig.shape[0] // 5)))
+            _mean_abs_autocorr(
+                residual[:, j], max_lag=min(20, max(1, orig.shape[0] // 5))
+            )
             for j in range(orig.shape[1])
         ]
 
@@ -947,8 +970,7 @@ class TimeSeriesHandler:
         ]
 
         fidelity = [
-            float(np.mean((den[:, j] - orig[:, j]) ** 2))
-            for j in range(orig.shape[1])
+            float(np.mean((den[:, j] - orig[:, j]) ** 2)) for j in range(orig.shape[1])
         ]
 
         return {
@@ -996,16 +1018,18 @@ class TimeSeriesHandler:
         scores["score"] = (
             weights["fidelity_mse"] * _rank_normalize(scores["fidelity_mse"].values)
             + weights["roughness"] * _rank_normalize(scores["roughness"].values)
-            + weights["residual_autocorr"] * _rank_normalize(scores["residual_autocorr"].values)
-            + weights["derivative_corr"] * _rank_normalize(
-                scores["derivative_corr"].values, invert=True
-            )
+            + weights["residual_autocorr"]
+            * _rank_normalize(scores["residual_autocorr"].values)
+            + weights["derivative_corr"]
+            * _rank_normalize(scores["derivative_corr"].values, invert=True)
         )
         scores = scores.sort_values("score")
 
         best_method = str(scores.index[0])
         none_score = (
-            float(scores.loc["none", "score"]) if "none" in scores.index else float("inf")
+            float(scores.loc["none", "score"])
+            if "none" in scores.index
+            else float("inf")
         )
         best_score = float(scores.iloc[0]["score"])
         improvement = none_score - best_score
@@ -1064,7 +1088,7 @@ class TimeSeriesHandler:
         med_flat = _nanmedian(flatness_scores)
         med_snr = _nanmedian(snr_scores)
         med_pacf = _nanmedian(pacf_scores)
-        
+
         # Determine formal AR structure via Ljung-Box p-values
         is_autoregressive = _frac(np.array(ljung_box_pvals) < 0.05) > 0.25
 
@@ -1080,7 +1104,7 @@ class TimeSeriesHandler:
                     jb_pvals.append(1.0)
             else:
                 jb_pvals.append(1.0)
-                
+
         is_heavy_tailed = _frac(np.array(jb_pvals) < 0.01) > 0.25
 
         skew_abs = np.abs(np.asarray(skews, dtype=float))
@@ -1191,14 +1215,19 @@ class TimeSeriesHandler:
             )
 
         elif stats["missing_rate"] > 0.30 and (
-            (stats["med_pacf"] < 0.35 and not stats["is_autoregressive"]) or stats["nan_run_ratio"] > 0.08
+            (stats["med_pacf"] < 0.35 and not stats["is_autoregressive"])
+            or stats["nan_run_ratio"] > 0.08
         ):
             archetype = "sparse_irregular"
             self.filter_method, self.apply_filter = "none", False
             self.impute_method = "saits" if stats["missing_rate"] < 0.70 else "ffill"
             self.outlier_method, self.outlier_threshold = "mad", 4.5
 
-        elif stats["extreme_ratio"] > 0.10 or stats["heavy_tails_fraction"] > 0.45 or stats["is_heavy_tailed"]:
+        elif (
+            stats["extreme_ratio"] > 0.10
+            or stats["heavy_tails_fraction"] > 0.45
+            or stats["is_heavy_tailed"]
+        ):
             archetype = "heavy_tailed_outliers"
             self.filter_method, self.apply_filter = (
                 ("ssa", True) if stats["D"] <= 64 else ("savgol", True)
@@ -1291,7 +1320,9 @@ class TimeSeriesHandler:
         if stats["T"] >= 200 and stats["missing_rate"] < 0.35:
             try:
                 pvals = detect_stationarity(x, D)
-                self.detrend = any(p > 0.05 for p in pvals) or stats["is_autoregressive"]
+                self.detrend = (
+                    any(p > 0.05 for p in pvals) or stats["is_autoregressive"]
+                )
             except Exception:
                 self.detrend = stats["is_autoregressive"]
         else:
@@ -1315,7 +1346,8 @@ class TimeSeriesHandler:
             )
 
         self.apply_imputation = bool(
-            stats["missing_rate"] > 0 and self.impute_method not in {"none", "off", "false"}
+            stats["missing_rate"] > 0
+            and self.impute_method not in {"none", "off", "false"}
         )
         self.remove_outliers = bool(
             self.outlier_method not in {"none", "off", "false"}
@@ -1327,9 +1359,9 @@ class TimeSeriesHandler:
         )
 
         if stats["high_skew_fraction"] > 0.5 or (stats["scale_heterogeneity"] > 10.0):
-             self.scaling_method = "quantile"
+            self.scaling_method = "quantile"
         elif stats["extreme_ratio"] > 0.15 or stats["heavy_tails_fraction"] > 0.4:
-             self.scaling_method = "robust" 
+            self.scaling_method = "robust"
         else:
             self.scaling_method = "standard"
 
@@ -1344,7 +1376,17 @@ class TimeSeriesHandler:
                     top = filter_selection["scores"].head(3).copy()
                     if not top.empty:
                         print("[Auto-Filter Ranking]")
-                        print(top[["score", "fidelity_mse", "roughness", "residual_autocorr", "derivative_corr"]].round(4))
+                        print(
+                            top[
+                                [
+                                    "score",
+                                    "fidelity_mse",
+                                    "roughness",
+                                    "residual_autocorr",
+                                    "derivative_corr",
+                                ]
+                            ].round(4)
+                        )
             except Exception as exc:
                 if self.verbose:
                     print(f"[Preprocessing] Filter auto-selection skipped: {exc}")
@@ -1357,7 +1399,7 @@ class TimeSeriesHandler:
                     "pattern": archetype,
                     "log_transform": self.log_transform,
                     "log_fraction": stats["log_fraction_recommended"],
-                    "scaling_method": self.scaling_method, # New field
+                    "scaling_method": self.scaling_method,  # New field
                     "filter_method": self.filter_method,
                     "apply_filter": self.apply_filter,
                     "impute_method": self.impute_method,
@@ -1634,7 +1676,9 @@ class TimeSeriesHandler:
         if self.verbose:
             iterator = tqdm(iterator, desc="Removing outliers")
 
-        backend = "threading" if method in {"zscore", "iqr", "mad", "quantile"} else "loky"
+        backend = (
+            "threading" if method in {"zscore", "iqr", "mad", "quantile"} else "loky"
+        )
         cleaned_cols = Parallel(n_jobs=-1, backend=backend)(
             delayed(_remove_outliers_parallel)(i, x[:, i], method, _thr(i))
             for i in iterator
@@ -1785,9 +1829,7 @@ class TimeSeriesHandler:
 
             y_src = x[self.window_size : self.window_size + max_idx + self.horizon - 1]
             y_all = sliding_window_view(y_src, window_shape=self.horizon, axis=0)
-            y = np.ascontiguousarray(
-                np.transpose(y_all[:, feats_idx, :], (0, 2, 1))
-            )
+            y = np.ascontiguousarray(np.transpose(y_all[:, feats_idx, :], (0, 2, 1)))
 
             tf = None
             if time_feats is not None:

@@ -4,8 +4,9 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, Referen
 
 import { NumberField, Panel, PipelineNode, SelectField, SkeletonBlock, StatPill, ToggleField } from "./base.jsx";
 import { buildOutlierPreview } from "../lib/outlier-algorithms.js";
-import { buildFilterPreview } from "../lib/filter-algorithms.js";
-import { buildDecomposition, buildEmdOverviewData, buildEmdComponentSeries, shiftValues, buildRollingHistory } from "../lib/signal-algorithms.js";
+import { buildFilterPreview, solveLinearSystem } from "../lib/filter-algorithms.js";
+import { buildDecomposition, shiftValues, buildRollingHistory } from "../lib/signal-algorithms.js";
+import { buildEmdOverviewData, buildEmdComponentSeries } from "../lib/diagnostics-emd.js";
 
 function uniqueSuggestions(items) {
     return Array.from(new Map(items.map((item) => [item.window, item])).values());
@@ -1423,8 +1424,10 @@ export function OutlierPanel({
                             { value: "iqr", label: "IQR fences" },
                             { value: "zscore", label: "Z-score" },
                             { value: "mad", label: "MAD" },
+                            { value: "hbos", label: "HBOS" },
                             { value: "isolation_forest", label: "Isolation Forest" },
                             { value: "lof", label: "Local Outlier Factor" },
+                            { value: "ecod", label: "ECOD" },
                             { value: "none", label: "No detection" },
                         ]}
                         hint="This selector only affects the diagnostics preview, not the preprocessing pipeline."
@@ -1752,7 +1755,7 @@ export function FilterPanel({ status, errorMessage, data, settings, onSettingsCh
     );
 }
 
-export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = [] }) {
+export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = [], emdOptions = {}, onOptionsChange = () => { } }) {
     const overviewData = useMemo(
         () => buildEmdOverviewData(seriesData, emdDiagnostics),
         [seriesData, emdDiagnostics],
@@ -1863,6 +1866,36 @@ export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = []
                 </div>
             </div>
 
+            <div className="summary-card-grid emd-summary-grid">
+                <NumberField
+                    label="Max IMFs"
+                    value={emdOptions.maxImfs}
+                    min={1}
+                    max={16}
+                    step={1}
+                    onChange={(value) => onOptionsChange({ ...emdOptions, maxImfs: value })}
+                    hint="Maximum number of IMFs to extract."
+                />
+                <NumberField
+                    label="Max sifts"
+                    value={emdOptions.maxSifts}
+                    min={10}
+                    max={200}
+                    step={5}
+                    onChange={(value) => onOptionsChange({ ...emdOptions, maxSifts: value })}
+                    hint="Limit for sifting iterations per IMF."
+                />
+                <NumberField
+                    label="Stop threshold"
+                    value={emdOptions.siftThreshold}
+                    min={0.01}
+                    max={0.5}
+                    step={0.01}
+                    onChange={(value) => onOptionsChange({ ...emdOptions, siftThreshold: value })}
+                    hint="Sifting convergence threshold for IMF extraction."
+                />
+            </div>
+
             <div className="automation-flag-row">
                 <span className="header-chip">Method: {emdDiagnostics.methodLabel}</span>
                 <span className="header-chip">Interpolation: {emdDiagnostics.interpolationLabel}</span>
@@ -1933,6 +1966,7 @@ export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = []
                             <span className="header-chip">energy {formatMetric((component.energyShare ?? 0) * 100, 1)}%</span>
                             <span className="header-chip">zero crossings {component.zeroCrossings ?? 0}</span>
                             <span className="header-chip">extrema {component.extremaCount ?? 0}</span>
+                            {component.frequency != null ? <span className="header-chip">frequency {formatMetric(component.frequency, 6)}</span> : null}
                             {component.sifts != null ? <span className="header-chip">sifts {component.sifts}</span> : null}
                         </div>
                     </div>
@@ -1941,6 +1975,703 @@ export function EmdPanel({ status, errorMessage, emdDiagnostics, seriesData = []
 
             <p className="lead-copy">
                 This panel runs a real empirical mode decomposition on the loaded series inside the diagnostics worker. IMF 1 is the highest-frequency mode, later IMFs become progressively slower, and the residual captures the remaining trend-like structure after iterative mean-envelope removal.
+            </p>
+        </Panel>
+    );
+}
+
+export function EemdPanel({ status, errorMessage, eemdDiagnostics, seriesData = [], eemdOptions = {}, onOptionsChange = () => { } }) {
+    const overviewData = useMemo(
+        () => buildEmdOverviewData(seriesData, eemdDiagnostics),
+        [seriesData, eemdDiagnostics],
+    );
+    const dominantComponent = useMemo(() => {
+        return (eemdDiagnostics?.components ?? []).reduce((best, component) => (
+            !best || component.energyShare > best.energyShare ? component : best
+        ), null);
+    }, [eemdDiagnostics]);
+    const energyLadder = useMemo(() => {
+        if (!eemdDiagnostics?.available) {
+            return [];
+        }
+
+        return [
+            ...(eemdDiagnostics.components ?? []).map((component) => ({
+                name: component.name,
+                energyShare: component.energyShare,
+            })),
+            {
+                name: eemdDiagnostics.residual?.name ?? "Residual",
+                energyShare: eemdDiagnostics.residual?.energyShare ?? 0,
+            },
+        ];
+    }, [eemdDiagnostics]);
+    const visibleComponents = useMemo(() => {
+        if (!eemdDiagnostics?.available) {
+            return [];
+        }
+
+        const palette = ["var(--accent)", "var(--secondary)", "var(--warm)", "var(--cool)", "#1f6feb"];
+        const components = (eemdDiagnostics.components ?? []).slice(0, 4).map((component, index) => ({
+            ...component,
+            color: palette[index % palette.length],
+            chartData: buildEmdComponentSeries(seriesData, component),
+        }));
+
+        if (eemdDiagnostics.residual) {
+            components.push({
+                ...eemdDiagnostics.residual,
+                name: eemdDiagnostics.residual.name ?? "Residual",
+                color: palette[components.length % palette.length],
+                chartData: buildEmdComponentSeries(seriesData, eemdDiagnostics.residual),
+            });
+        }
+
+        return components;
+    }, [eemdDiagnostics, seriesData]);
+
+    if (status === "loading") {
+        return (
+            <Panel title="EEMD" kicker="Ensemble empirical mode decomposition">
+                <SkeletonBlock pills={4} chart lines={2} />
+            </Panel>
+        );
+    }
+
+    if (status === "error") {
+        return (
+            <Panel title="EEMD" kicker="Ensemble empirical mode decomposition">
+                <p className="lead-copy">
+                    EEMD unavailable: {errorMessage}
+                </p>
+            </Panel>
+        );
+    }
+
+    if (!eemdDiagnostics?.available) {
+        return (
+            <Panel title="EEMD" kicker="Ensemble empirical mode decomposition">
+                <p className="lead-copy">
+                    {eemdDiagnostics?.reason ?? "EEMD needs a longer, non-constant series before intrinsic mode functions can be extracted."}
+                </p>
+            </Panel>
+        );
+    }
+
+    return (
+        <Panel title="EEMD" kicker="Ensemble empirical mode decomposition">
+            <div className="summary-card-grid emd-summary-grid">
+                <div className="summary-card">
+                    <div className="summary-card-title">IMFs extracted</div>
+                    <div className="architecture-name">{eemdDiagnostics.imfCount}</div>
+                    <div className="summary-card-copy">
+                        Ensemble EMD over the loaded series.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Total sifts</div>
+                    <div className="architecture-name">{eemdDiagnostics.totalSifts}</div>
+                    <div className="summary-card-copy">
+                        Stop threshold {formatMetric(eemdDiagnostics.siftThreshold ?? 0.08, 3)} with {eemdDiagnostics.interpolationLabel.toLowerCase()}.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Reconstruction RMSE</div>
+                    <div className="architecture-name">{formatMetric(eemdDiagnostics.reconstructionError, 6)}</div>
+                    <div className="summary-card-copy">
+                        Observed signal vs sum of extracted IMFs plus residual.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Ensemble size</div>
+                    <div className="architecture-name">{eemdDiagnostics.ensembleSize ?? "-"}</div>
+                    <div className="summary-card-copy">
+                        Noise ratio {formatMetric(eemdDiagnostics.noiseStdRatio ?? 0.15, 3)} of the signal standard deviation.
+                    </div>
+                </div>
+            </div>
+
+            <div className="summary-card-grid emd-summary-grid">
+                <NumberField
+                    label="Max IMFs"
+                    value={eemdOptions.maxImfs}
+                    min={1}
+                    max={16}
+                    step={1}
+                    onChange={(value) => onOptionsChange({ ...eemdOptions, maxImfs: value })}
+                    hint="Maximum number of intrinsic mode functions for EEMD."
+                />
+                <NumberField
+                    label="Ensemble size"
+                    value={eemdOptions.ensembleSize}
+                    min={2}
+                    max={20}
+                    step={1}
+                    onChange={(value) => onOptionsChange({ ...eemdOptions, ensembleSize: value })}
+                    hint="Number of noisy EMD realizations to average."
+                />
+                <NumberField
+                    label="Noise ratio"
+                    value={eemdOptions.noiseStdRatio}
+                    min={0.01}
+                    max={0.5}
+                    step={0.01}
+                    onChange={(value) => onOptionsChange({ ...eemdOptions, noiseStdRatio: value })}
+                    hint="Gaussian noise standard deviation ratio relative to signal std."
+                />
+                <NumberField
+                    label="Stop threshold"
+                    value={eemdOptions.siftThreshold}
+                    min={0.01}
+                    max={0.5}
+                    step={0.01}
+                    onChange={(value) => onOptionsChange({ ...eemdOptions, siftThreshold: value })}
+                    hint="Sifting stop threshold for each EMD run."
+                />
+                <NumberField
+                    label="Max sifts"
+                    value={eemdOptions.maxSifts}
+                    min={10}
+                    max={200}
+                    step={5}
+                    onChange={(value) => onOptionsChange({ ...eemdOptions, maxSifts: value })}
+                    hint="Limit for sifting iterations per IMF in EEMD."
+                />
+            </div>
+
+            <div className="automation-flag-row">
+                <span className="header-chip">Method: {eemdDiagnostics.methodLabel}</span>
+                <span className="header-chip">Interpolation: {eemdDiagnostics.interpolationLabel}</span>
+                <span className="header-chip">Residual energy: {formatMetric(eemdDiagnostics.residualEnergyShare * 100, 1)}%</span>
+                {(eemdDiagnostics.components?.length ?? 0) > 4 ? <span className="header-chip">Showing first 4 IMFs plus residual</span> : null}
+            </div>
+
+            <div className="benchmark-chart-grid">
+                <div className="chart-shell benchmark-chart-shell emd-energy-shell">
+                    <div className="mini-chart-title">Observed vs reconstructed</div>
+                    <ResponsiveContainer width="100%" height={280}>
+                        <LineChart data={overviewData}>
+                            <CartesianGrid stroke="var(--grid)" vertical={false} />
+                            <XAxis dataKey="month" tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} minTickGap={20} />
+                            <YAxis tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <Tooltip
+                                labelFormatter={(_label, payload) => payload?.[0]?.payload?.timestamp ?? ""}
+                                formatter={(value, name) => [
+                                    formatMetric(Number(value), 4),
+                                    name === "observed" ? "Observed" : name === "reconstruction" ? "Reconstruction" : "Residual",
+                                ]}
+                                contentStyle={{
+                                    backgroundColor: "var(--panel)",
+                                    borderColor: "var(--border)",
+                                    borderRadius: 16,
+                                    color: "var(--text)",
+                                }}
+                            />
+                            <Line type="monotone" dataKey="observed" stroke="var(--warm)" strokeWidth={2.3} dot={false} />
+                            <Line type="monotone" dataKey="reconstruction" stroke="var(--secondary)" strokeWidth={2.1} dot={false} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+
+                <div className="chart-shell benchmark-chart-shell emd-energy-shell">
+                    <div className="mini-chart-title">Energy ladder</div>
+                    <ResponsiveContainer width="100%" height={280}>
+                        <BarChart data={energyLadder}>
+                            <CartesianGrid stroke="var(--grid)" vertical={false} />
+                            <XAxis dataKey="name" tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <YAxis tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <Tooltip
+                                formatter={(value) => [`${formatMetric(Number(value) * 100, 2)}%`, "Energy share"]}
+                                contentStyle={{
+                                    backgroundColor: "var(--panel)",
+                                    borderColor: "var(--border)",
+                                    borderRadius: 16,
+                                    color: "var(--text)",
+                                }}
+                            />
+                            <Bar dataKey="energyShare" fill="var(--accent)" radius={[6, 6, 0, 0]} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+
+            <div className="emd-component-grid">
+                {visibleComponents.map((component, index) => (
+                    <div key={`${component.name}-${index}`} className="emd-component-card">
+                        <DecompositionSubplot
+                            title={component.name}
+                            data={component.chartData}
+                            dataKey="value"
+                            color={component.color}
+                            showXAxis={index === visibleComponents.length - 1}
+                        />
+                        <div className="automation-flag-row emd-component-meta">
+                            <span className="header-chip">energy {formatMetric((component.energyShare ?? 0) * 100, 1)}%</span>
+                            <span className="header-chip">zero crossings {component.zeroCrossings ?? 0}</span>
+                            <span className="header-chip">extrema {component.extremaCount ?? 0}</span>
+                            {component.frequency != null ? <span className="header-chip">frequency {formatMetric(component.frequency, 6)}</span> : null}
+                            {component.sifts != null ? <span className="header-chip">sifts {component.sifts}</span> : null}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            <p className="lead-copy">
+                This panel runs an ensemble empirical mode decomposition on the loaded series inside the diagnostics worker. EEMD improves mode stability by averaging multiple noisy decompositions.
+            </p>
+        </Panel>
+    );
+}
+
+export function EwtPanel({ status, errorMessage, ewtDiagnostics, seriesData = [], ewtOptions = {}, onOptionsChange = () => { } }) {
+    const overviewData = useMemo(
+        () => buildEmdOverviewData(seriesData, ewtDiagnostics),
+        [seriesData, ewtDiagnostics],
+    );
+    const energyLadder = useMemo(() => {
+        if (!ewtDiagnostics?.available) {
+            return [];
+        }
+
+        return [
+            ...(ewtDiagnostics.components ?? []).map((component) => ({
+                name: component.name,
+                energyShare: component.energyShare,
+            })),
+            {
+                name: ewtDiagnostics.residual?.name ?? "Residual",
+                energyShare: ewtDiagnostics.residual?.energyShare ?? 0,
+            },
+        ];
+    }, [ewtDiagnostics]);
+    const visibleComponents = useMemo(() => {
+        if (!ewtDiagnostics?.available) {
+            return [];
+        }
+
+        const palette = ["var(--accent)", "var(--secondary)", "var(--warm)", "var(--cool)", "#1f6feb"];
+        const components = (ewtDiagnostics.components ?? []).slice(0, 4).map((component, index) => ({
+            ...component,
+            color: palette[index % palette.length],
+            chartData: buildEmdComponentSeries(seriesData, component),
+        }));
+
+        if (ewtDiagnostics.residual) {
+            components.push({
+                ...ewtDiagnostics.residual,
+                name: ewtDiagnostics.residual.name ?? "Residual",
+                color: palette[components.length % palette.length],
+                chartData: buildEmdComponentSeries(seriesData, ewtDiagnostics.residual),
+            });
+        }
+
+        return components;
+    }, [ewtDiagnostics, seriesData]);
+
+    if (status === "loading") {
+        return (
+            <Panel title="EWT" kicker="Empirical wavelet transform">
+                <SkeletonBlock pills={4} chart lines={2} />
+            </Panel>
+        );
+    }
+
+    if (status === "error") {
+        return (
+            <Panel title="EWT" kicker="Empirical wavelet transform">
+                <p className="lead-copy">
+                    EWT unavailable: {errorMessage}
+                </p>
+            </Panel>
+        );
+    }
+
+    if (!ewtDiagnostics?.available) {
+        return (
+            <Panel title="EWT" kicker="Empirical wavelet transform">
+                <p className="lead-copy">
+                    {ewtDiagnostics?.reason ?? "EWT needs a longer, non-constant series before bands can be extracted."}
+                </p>
+            </Panel>
+        );
+    }
+
+    return (
+        <Panel title="EWT" kicker="Empirical wavelet transform">
+            <div className="summary-card-grid emd-summary-grid">
+                <div className="summary-card">
+                    <div className="summary-card-title">Bands extracted</div>
+                    <div className="architecture-name">{ewtDiagnostics.bandCount}</div>
+                    <div className="summary-card-copy">
+                        Adaptive filter-bank decomposition in the frequency domain.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Reconstruction RMSE</div>
+                    <div className="architecture-name">{formatMetric(ewtDiagnostics.reconstructionError, 6)}</div>
+                    <div className="summary-card-copy">
+                        Observed signal vs band reconstruction plus residual.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Residual energy</div>
+                    <div className="architecture-name">{formatMetric(ewtDiagnostics.residualEnergyShare * 100, 1)}%</div>
+                    <div className="summary-card-copy">
+                        Remaining signal energy after extracted bands.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Boundaries</div>
+                    <div className="architecture-name">{ewtDiagnostics.boundaries.length}</div>
+                    <div className="summary-card-copy">
+                        Detected spectral partition boundaries.
+                    </div>
+                </div>
+            </div>
+
+            <div className="summary-card-grid emd-summary-grid">
+                <NumberField
+                    label="Max bands"
+                    value={ewtOptions.maxBands}
+                    min={2}
+                    max={12}
+                    step={1}
+                    onChange={(value) => onOptionsChange({ ...ewtOptions, maxBands: value })}
+                    hint="Upper limit on band count for adaptive EWT partitioning."
+                />
+                <NumberField
+                    label="Window length"
+                    value={ewtOptions.smoothingWindow}
+                    min={3}
+                    max={31}
+                    step={2}
+                    onChange={(value) => onOptionsChange({ ...ewtOptions, smoothingWindow: value })}
+                    hint="Spectral smoothing window used for peak detection."
+                />
+                <NumberField
+                    label="Peak threshold"
+                    value={ewtOptions.detectThreshold}
+                    min={0.01}
+                    max={0.5}
+                    step={0.01}
+                    onChange={(value) => onOptionsChange({ ...ewtOptions, detectThreshold: value })}
+                    hint="Minimum peak prominence for spectral partition boundaries."
+                />
+                <NumberField
+                    label="Gamma"
+                    value={ewtOptions.gamma}
+                    min={0.01}
+                    max={0.5}
+                    step={0.01}
+                    onChange={(value) => onOptionsChange({ ...ewtOptions, gamma: value })}
+                    hint="Meyer filter shape parameter for EWT band design."
+                />
+            </div>
+
+            <div className="automation-flag-row">
+                <span className="header-chip">Method: {ewtDiagnostics.methodLabel}</span>
+                <span className="header-chip">Interpolation: {ewtDiagnostics.interpolationLabel}</span>
+                <span className="header-chip">Max bands: {ewtDiagnostics.maxBands}</span>
+            </div>
+
+            <div className="benchmark-chart-grid">
+                <div className="chart-shell benchmark-chart-shell emd-energy-shell">
+                    <div className="mini-chart-title">Observed vs reconstructed</div>
+                    <ResponsiveContainer width="100%" height={280}>
+                        <LineChart data={overviewData}>
+                            <CartesianGrid stroke="var(--grid)" vertical={false} />
+                            <XAxis dataKey="month" tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} minTickGap={20} />
+                            <YAxis tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <Tooltip
+                                labelFormatter={(_label, payload) => payload?.[0]?.payload?.timestamp ?? ""}
+                                formatter={(value, name) => [
+                                    formatMetric(Number(value), 4),
+                                    name === "observed" ? "Observed" : name === "reconstruction" ? "Reconstruction" : "Residual",
+                                ]}
+                                contentStyle={{
+                                    backgroundColor: "var(--panel)",
+                                    borderColor: "var(--border)",
+                                    borderRadius: 16,
+                                    color: "var(--text)",
+                                }}
+                            />
+                            <Line type="monotone" dataKey="observed" stroke="var(--warm)" strokeWidth={2.3} dot={false} />
+                            <Line type="monotone" dataKey="reconstruction" stroke="var(--secondary)" strokeWidth={2.1} dot={false} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+
+                <div className="chart-shell benchmark-chart-shell emd-energy-shell">
+                    <div className="mini-chart-title">Energy ladder</div>
+                    <ResponsiveContainer width="100%" height={280}>
+                        <BarChart data={energyLadder}>
+                            <CartesianGrid stroke="var(--grid)" vertical={false} />
+                            <XAxis dataKey="name" tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <YAxis tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <Tooltip
+                                formatter={(value) => [`${formatMetric(Number(value) * 100, 2)}%`, "Energy share"]}
+                                contentStyle={{
+                                    backgroundColor: "var(--panel)",
+                                    borderColor: "var(--border)",
+                                    borderRadius: 16,
+                                    color: "var(--text)",
+                                }}
+                            />
+                            <Bar dataKey="energyShare" fill="var(--accent)" radius={[6, 6, 0, 0]} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+
+            <div className="emd-component-grid">
+                {visibleComponents.map((component, index) => (
+                    <div key={`${component.name}-${index}`} className="emd-component-card">
+                        <DecompositionSubplot
+                            title={component.name}
+                            data={component.chartData}
+                            dataKey="value"
+                            color={component.color}
+                            showXAxis={index === visibleComponents.length - 1}
+                        />
+                        <div className="automation-flag-row emd-component-meta">
+                            <span className="header-chip">energy {formatMetric((component.energyShare ?? 0) * 100, 1)}%</span>
+                            <span className="header-chip">zero crossings {component.zeroCrossings ?? 0}</span>
+                            <span className="header-chip">extrema {component.extremaCount ?? 0}</span>
+                            {component.centerFrequency != null ? <span className="header-chip">frequency {formatMetric(component.centerFrequency, 6)}</span> : null}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            <p className="lead-copy">
+                This panel runs an empirical wavelet transform on the loaded series inside the diagnostics worker. The decomposition is adaptive in frequency and shows the detected band partition.
+            </p>
+        </Panel>
+    );
+}
+
+export function VmdPanel({ status, errorMessage, vmdDiagnostics, seriesData = [], vmdOptions = {}, onOptionsChange = () => { } }) {
+    const overviewData = useMemo(
+        () => buildEmdOverviewData(seriesData, vmdDiagnostics),
+        [seriesData, vmdDiagnostics],
+    );
+    const energyLadder = useMemo(() => {
+        if (!vmdDiagnostics?.available) {
+            return [];
+        }
+
+        return [
+            ...(vmdDiagnostics.components ?? []).map((component) => ({
+                name: component.name,
+                energyShare: component.energyShare,
+            })),
+            {
+                name: vmdDiagnostics.residual?.name ?? "Residual",
+                energyShare: vmdDiagnostics.residual?.energyShare ?? 0,
+            },
+        ];
+    }, [vmdDiagnostics]);
+    const visibleComponents = useMemo(() => {
+        if (!vmdDiagnostics?.available) {
+            return [];
+        }
+
+        const palette = ["var(--accent)", "var(--secondary)", "var(--warm)", "var(--cool)", "#1f6feb"];
+        const components = (vmdDiagnostics.components ?? []).slice(0, 4).map((component, index) => ({
+            ...component,
+            color: palette[index % palette.length],
+            chartData: buildEmdComponentSeries(seriesData, component),
+        }));
+
+        if (vmdDiagnostics.residual) {
+            components.push({
+                ...vmdDiagnostics.residual,
+                name: vmdDiagnostics.residual.name ?? "Residual",
+                color: palette[components.length % palette.length],
+                chartData: buildEmdComponentSeries(seriesData, vmdDiagnostics.residual),
+            });
+        }
+
+        return components;
+    }, [vmdDiagnostics, seriesData]);
+
+    if (status === "loading") {
+        return (
+            <Panel title="VMD" kicker="Variational mode decomposition">
+                <SkeletonBlock pills={4} chart lines={2} />
+            </Panel>
+        );
+    }
+
+    if (status === "error") {
+        return (
+            <Panel title="VMD" kicker="Variational mode decomposition">
+                <p className="lead-copy">
+                    VMD unavailable: {errorMessage}
+                </p>
+            </Panel>
+        );
+    }
+
+    if (!vmdDiagnostics?.available) {
+        return (
+            <Panel title="VMD" kicker="Variational mode decomposition">
+                <p className="lead-copy">
+                    {vmdDiagnostics?.reason ?? "VMD needs a longer, non-constant series before modes can be extracted."}
+                </p>
+            </Panel>
+        );
+    }
+
+    return (
+        <Panel title="VMD" kicker="Variational mode decomposition">
+            <div className="summary-card-grid emd-summary-grid">
+                <div className="summary-card">
+                    <div className="summary-card-title">Modes extracted</div>
+                    <div className="architecture-name">{vmdDiagnostics.modeCount}</div>
+                    <div className="summary-card-copy">
+                        Variational mode decomposition over the loaded series.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Reconstruction RMSE</div>
+                    <div className="architecture-name">{formatMetric(vmdDiagnostics.reconstructionError, 6)}</div>
+                    <div className="summary-card-copy">
+                        Observed signal vs sum of extracted modes plus residual.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Residual energy</div>
+                    <div className="architecture-name">{formatMetric(vmdDiagnostics.residualEnergyShare * 100, 1)}%</div>
+                    <div className="summary-card-copy">
+                        Remaining signal energy after extracted modes.
+                    </div>
+                </div>
+                <div className="summary-card">
+                    <div className="summary-card-title">Center frequency</div>
+                    <div className="architecture-name">{vmdDiagnostics.components?.[0]?.centerFrequency ?? "-"}</div>
+                    <div className="summary-card-copy">
+                        Frequency estimate for the first extracted mode.
+                    </div>
+                </div>
+            </div>
+
+            <div className="summary-card-grid emd-summary-grid">
+                <NumberField
+                    label="Mode count"
+                    value={vmdOptions.modeCount}
+                    min={1}
+                    max={12}
+                    step={1}
+                    onChange={(value) => onOptionsChange({ ...vmdOptions, modeCount: value })}
+                    hint="Number of modes extracted by VMD."
+                />
+                <NumberField
+                    label="Alpha"
+                    value={vmdOptions.alpha}
+                    min={100}
+                    max={10000}
+                    step={100}
+                    onChange={(value) => onOptionsChange({ ...vmdOptions, alpha: value })}
+                    hint="Quadratic penalty on bandwidth in VMD."
+                />
+                <NumberField
+                    label="Stopping tolerance"
+                    value={vmdOptions.tolerance}
+                    min={1e-8}
+                    max={1e-4}
+                    step={1e-8}
+                    onChange={(value) => onOptionsChange({ ...vmdOptions, tolerance: value })}
+                    hint="Convergence threshold for ADMM updates."
+                />
+                <NumberField
+                    label="Max iterations"
+                    value={vmdOptions.maxIterations}
+                    min={50}
+                    max={1000}
+                    step={50}
+                    onChange={(value) => onOptionsChange({ ...vmdOptions, maxIterations: value })}
+                    hint="Maximum ADMM iterations before stopping."
+                />
+            </div>
+
+            <div className="automation-flag-row">
+                <span className="header-chip">Method: {vmdDiagnostics.methodLabel}</span>
+                <span className="header-chip">Interpolation: {vmdDiagnostics.interpolationLabel}</span>
+                <span className="header-chip">Residual energy: {formatMetric(vmdDiagnostics.residualEnergyShare * 100, 1)}%</span>
+            </div>
+
+            <div className="benchmark-chart-grid">
+                <div className="chart-shell benchmark-chart-shell emd-energy-shell">
+                    <div className="mini-chart-title">Observed vs reconstructed</div>
+                    <ResponsiveContainer width="100%" height={280}>
+                        <LineChart data={overviewData}>
+                            <CartesianGrid stroke="var(--grid)" vertical={false} />
+                            <XAxis dataKey="month" tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} minTickGap={20} />
+                            <YAxis tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <Tooltip
+                                labelFormatter={(_label, payload) => payload?.[0]?.payload?.timestamp ?? ""}
+                                formatter={(value, name) => [
+                                    formatMetric(Number(value), 4),
+                                    name === "observed" ? "Observed" : name === "reconstruction" ? "Reconstruction" : "Residual",
+                                ]}
+                                contentStyle={{
+                                    backgroundColor: "var(--panel)",
+                                    borderColor: "var(--border)",
+                                    borderRadius: 16,
+                                    color: "var(--text)",
+                                }}
+                            />
+                            <Line type="monotone" dataKey="observed" stroke="var(--warm)" strokeWidth={2.3} dot={false} />
+                            <Line type="monotone" dataKey="reconstruction" stroke="var(--secondary)" strokeWidth={2.1} dot={false} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+
+                <div className="chart-shell benchmark-chart-shell emd-energy-shell">
+                    <div className="mini-chart-title">Energy ladder</div>
+                    <ResponsiveContainer width="100%" height={280}>
+                        <BarChart data={energyLadder}>
+                            <CartesianGrid stroke="var(--grid)" vertical={false} />
+                            <XAxis dataKey="name" tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <YAxis tick={{ fill: "var(--muted)" }} tickLine={false} axisLine={false} />
+                            <Tooltip
+                                formatter={(value) => [`${formatMetric(Number(value) * 100, 2)}%`, "Energy share"]}
+                                contentStyle={{
+                                    backgroundColor: "var(--panel)",
+                                    borderColor: "var(--border)",
+                                    borderRadius: 16,
+                                    color: "var(--text)",
+                                }}
+                            />
+                            <Bar dataKey="energyShare" fill="var(--accent)" radius={[6, 6, 0, 0]} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+
+            <div className="emd-component-grid">
+                {visibleComponents.map((component, index) => (
+                    <div key={`${component.name}-${index}`} className="emd-component-card">
+                        <DecompositionSubplot
+                            title={component.name}
+                            data={component.chartData}
+                            dataKey="value"
+                            color={component.color}
+                            showXAxis={index === visibleComponents.length - 1}
+                        />
+                        <div className="automation-flag-row emd-component-meta">
+                            <span className="header-chip">energy {formatMetric((component.energyShare ?? 0) * 100, 1)}%</span>
+                            <span className="header-chip">zero crossings {component.zeroCrossings ?? 0}</span>
+                            <span className="header-chip">extrema {component.extremaCount ?? 0}</span>
+                            {component.centerFrequency != null ? <span className="header-chip">frequency {formatMetric(component.centerFrequency, 6)}</span> : null}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            <p className="lead-copy">
+                This panel runs a variational mode decomposition on the loaded series inside the diagnostics worker. VMD extracts adaptive frequency modes using an ADMM filter bank.
             </p>
         </Panel>
     );

@@ -82,6 +82,14 @@ class TestTranADOutlier(unittest.TestCase):
 
         np.testing.assert_allclose(scores, np.array([[1.0, 2.0]], dtype=np.float32))
 
+    def test_hbos_removes_high_density_outliers(self):
+        data = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 15.0, 16.0], dtype=float)
+        cleaned = outlier._remove_outliers(data, "hbos", 0.2)
+
+        self.assertTrue(np.isnan(cleaned[5]))
+        self.assertTrue(np.isnan(cleaned[6]))
+        self.assertFalse(np.isnan(cleaned[2]))
+
 
 if __name__ == "__main__":
     unittest.main()

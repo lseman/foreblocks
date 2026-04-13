@@ -10,6 +10,9 @@ import {
     CodePanel,
     DiagnosticsPanel,
     EmdPanel,
+    EemdPanel,
+    EwtPanel,
+    VmdPanel,
     ExplorePanel,
     FeatureLabPanel,
     FilterPanel,
@@ -276,6 +279,7 @@ export default function ForeblocksStudio() {
     const [activeExploreTab, setActiveExploreTab] = useState("series");
     const [activeRightRailTab, setActiveRightRailTab] = useState("explore");
     const [activePrepLabSubgroup, setActivePrepLabSubgroup] = useState("outliers");
+    const [activeEmdLikeSubgroup, setActiveEmdLikeSubgroup] = useState("emd");
     const [activeRegimeSubgroup, setActiveRegimeSubgroup] = useState("signal");
     const [uploadedDataset, setUploadedDataset] = useState(null);
     const [isDarkMode, setIsDarkMode] = useState(true);
@@ -301,6 +305,31 @@ export default function ForeblocksStudio() {
         covariates: [],
         summary: createEmptyDatasetSummary(),
     });
+    const [emdOptions, setEmdOptions] = useState({
+        maxImfs: 6,
+        maxSifts: 80,
+        siftThreshold: 0.03,
+    });
+    const [eemdOptions, setEemdOptions] = useState({
+        maxImfs: 6,
+        ensembleSize: 8,
+        noiseStdRatio: 0.15,
+        siftThreshold: 0.08,
+        maxSifts: 80,
+    });
+    const [ewtOptions, setEwtOptions] = useState({
+        maxBands: 5,
+        smoothingWindow: 7,
+        detectThreshold: 0.05,
+        gamma: 0.1,
+    });
+    const [vmdOptions, setVmdOptions] = useState({
+        modeCount: 4,
+        alpha: 2000,
+        tolerance: 1e-7,
+        maxIterations: 500,
+    });
+
     const [diagnosticsState, setDiagnosticsState] = useState({
         status: "loading",
         analysis: null,
@@ -317,6 +346,9 @@ export default function ForeblocksStudio() {
         forecastabilityDiagnostics: null,
         patchingDiagnostics: null,
         emdDiagnostics: null,
+        eemdDiagnostics: null,
+        ewtDiagnostics: null,
+        vmdDiagnostics: null,
         calendarDiagnostics: null,
         intermittencyDiagnostics: null,
         volatilityDiagnostics: null,
@@ -464,6 +496,8 @@ export default function ForeblocksStudio() {
                 forecastabilityDiagnostics: null,
                 patchingDiagnostics: null,
                 emdDiagnostics: null,
+                eemdDiagnostics: null,
+                ewtDiagnostics: null,
                 calendarDiagnostics: null,
                 intermittencyDiagnostics: null,
                 volatilityDiagnostics: null,
@@ -497,6 +531,9 @@ export default function ForeblocksStudio() {
                     forecastabilityDiagnostics: data.payload.forecastabilityDiagnostics,
                     patchingDiagnostics: data.payload.patchingDiagnostics,
                     emdDiagnostics: data.payload.emdDiagnostics,
+                    eemdDiagnostics: data.payload.eemdDiagnostics,
+                    ewtDiagnostics: data.payload.ewtDiagnostics,
+                    vmdDiagnostics: data.payload.vmdDiagnostics,
                     calendarDiagnostics: data.payload.calendarDiagnostics,
                     intermittencyDiagnostics: data.payload.intermittencyDiagnostics,
                     volatilityDiagnostics: data.payload.volatilityDiagnostics,
@@ -522,6 +559,10 @@ export default function ForeblocksStudio() {
             windowSize: config.prep.windowSize,
             changePointMethod,
             datasetSummary: datasetState.summary,
+            emdOptions,
+            eemdOptions,
+            ewtOptions,
+            vmdOptions,
         });
 
         return () => {
@@ -535,6 +576,10 @@ export default function ForeblocksStudio() {
         config.prep.horizon,
         config.prep.windowSize,
         changePointMethod,
+        emdOptions,
+        eemdOptions,
+        ewtOptions,
+        vmdOptions,
     ]);
 
     const blueprintSummary = diagnosticsState.status === "ready"
@@ -844,6 +889,7 @@ export default function ForeblocksStudio() {
                             { key: "explore", label: "Exploration" },
                             { key: "overview", label: "Overview" },
                             { key: "prep", label: "Preparation Lab" },
+                            { key: "emd-like", label: "EMD-like" },
                             { key: "regime", label: "Regime & Stability" },
                             { key: "automation", label: "Automation Center" },
                             { key: "validation", label: "Validation" },
@@ -928,7 +974,6 @@ export default function ForeblocksStudio() {
                                             { key: "outliers", label: "Outliers" },
                                             { key: "filtering", label: "Filtering" },
                                             { key: "features", label: "Feature Lab" },
-                                            { key: "emd", label: "EMD" },
                                             { key: "intermittency", label: "Intermittency" },
                                             { key: "volatility", label: "Volatility" },
                                             { key: "patching", label: "Patching" },
@@ -985,15 +1030,6 @@ export default function ForeblocksStudio() {
                                     />
                                 ) : null}
 
-                                {activePrepLabSubgroup === "emd" ? (
-                                    <EmdPanel
-                                        status={diagnosticsState.status}
-                                        errorMessage={diagnosticsState.errorMessage}
-                                        emdDiagnostics={diagnosticsState.emdDiagnostics}
-                                        seriesData={regimeSeriesData}
-                                    />
-                                ) : null}
-
                                 {activePrepLabSubgroup === "intermittency" ? (
                                     <IntermittencyPanel
                                         status={diagnosticsState.status}
@@ -1017,6 +1053,85 @@ export default function ForeblocksStudio() {
                                         patchingDiagnostics={diagnosticsState.patchingDiagnostics}
                                         activeWindow={config.prep.windowSize}
                                         onApplyPatchGeometry={applyPatchGeometry}
+                                    />
+                                ) : null}
+                            </>
+                        ) : null}
+
+                        {activeRightRailTab === "emd-like" ? (
+                            <>
+                                <section className="panel automation-shell">
+                                    <div className="panel-head automation-shell-head">
+                                        <div>
+                                            <div className="panel-kicker">EMD-like diagnostics</div>
+                                            <h3 className="panel-title">EMD-like</h3>
+                                        </div>
+                                    </div>
+
+                                    <div className="prep-lab-subgroup-row">
+                                        {[
+                                            { key: "emd", label: "EMD" },
+                                            { key: "eemd", label: "EEMD" },
+                                            { key: "ewt", label: "EWT" },
+                                            { key: "vmd", label: "VMD" },
+                                        ].map((group) => (
+                                            <button
+                                                key={group.key}
+                                                type="button"
+                                                className={`automation-subgroup-tab ${activeEmdLikeSubgroup === group.key ? "automation-subgroup-tab-active" : ""}`}
+                                                onClick={() => setActiveEmdLikeSubgroup(group.key)}
+                                            >
+                                                {group.label}
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    <p className="lead-copy automation-shell-copy">
+                                        These diagnostics expose intrinsic decomposition methods for the current series. Use them to compare adaptive, ensemble, wavelet, and variational mode decompositions in one place.
+                                    </p>
+                                </section>
+
+                                {activeEmdLikeSubgroup === "emd" ? (
+                                    <EmdPanel
+                                        status={diagnosticsState.status}
+                                        errorMessage={diagnosticsState.errorMessage}
+                                        emdDiagnostics={diagnosticsState.emdDiagnostics}
+                                        emdOptions={emdOptions}
+                                        onOptionsChange={setEmdOptions}
+                                        seriesData={regimeSeriesData}
+                                    />
+                                ) : null}
+
+                                {activeEmdLikeSubgroup === "eemd" ? (
+                                    <EemdPanel
+                                        status={diagnosticsState.status}
+                                        errorMessage={diagnosticsState.errorMessage}
+                                        eemdDiagnostics={diagnosticsState.eemdDiagnostics}
+                                        eemdOptions={eemdOptions}
+                                        onOptionsChange={setEemdOptions}
+                                        seriesData={regimeSeriesData}
+                                    />
+                                ) : null}
+
+                                {activeEmdLikeSubgroup === "ewt" ? (
+                                    <EwtPanel
+                                        status={diagnosticsState.status}
+                                        errorMessage={diagnosticsState.errorMessage}
+                                        ewtDiagnostics={diagnosticsState.ewtDiagnostics}
+                                        ewtOptions={ewtOptions}
+                                        onOptionsChange={setEwtOptions}
+                                        seriesData={regimeSeriesData}
+                                    />
+                                ) : null}
+
+                                {activeEmdLikeSubgroup === "vmd" ? (
+                                    <VmdPanel
+                                        status={diagnosticsState.status}
+                                        errorMessage={diagnosticsState.errorMessage}
+                                        vmdDiagnostics={diagnosticsState.vmdDiagnostics}
+                                        vmdOptions={vmdOptions}
+                                        onOptionsChange={setVmdOptions}
+                                        seriesData={regimeSeriesData}
                                     />
                                 ) : null}
                             </>

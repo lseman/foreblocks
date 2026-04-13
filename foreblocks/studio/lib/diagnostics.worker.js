@@ -15,6 +15,10 @@ self.onmessage = (event) => {
       windowSize: data.windowSize,
       changePointMethod: data.changePointMethod,
       datasetSummary: data.datasetSummary,
+      emdOptions: data.emdOptions,
+      eemdOptions: data.eemdOptions,
+      ewtOptions: data.ewtOptions,
+      vmdOptions: data.vmdOptions,
     });
     self.postMessage({ type: "diagnostics-ready", payload: result });
   } catch (error) {

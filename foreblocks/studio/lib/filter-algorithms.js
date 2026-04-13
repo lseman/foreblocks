@@ -2,37 +2,81 @@ function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
+function isFiniteNumber(value) {
+    return Number.isFinite(value);
+}
+
+function ensureOddWindow(value, minimum = 3) {
+    const normalized = Math.max(minimum, Math.round(isFiniteNumber(value) ? value : minimum));
+    return normalized % 2 === 1 ? normalized : normalized + 1;
+}
+
 function average(values) {
-    return values.reduce((total, value) => total + value, 0) / values.length;
+    let sum = 0;
+    let count = 0;
+    for (let i = 0; i < values.length; i += 1) {
+        const value = values[i];
+        if (isFiniteNumber(value)) {
+            sum += value;
+            count += 1;
+        }
+    }
+    return count > 0 ? sum / count : 0;
+}
+
+function variance(values, mean = average(values)) {
+    let sum = 0;
+    let count = 0;
+    for (let i = 0; i < values.length; i += 1) {
+        const value = values[i];
+        if (isFiniteNumber(value)) {
+            const diff = value - mean;
+            sum += diff * diff;
+            count += 1;
+        }
+    }
+    return count > 0 ? sum / count : 0;
+}
+
+function standardDeviation(values, mean = average(values)) {
+    return Math.sqrt(variance(values, mean));
 }
 
 function median(values) {
-    const sorted = [...values].sort((left, right) => left - right);
-    const middle = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
-}
+    const finite = [];
+    for (let i = 0; i < values.length; i += 1) {
+        const value = values[i];
+        if (isFiniteNumber(value)) {
+            finite.push(value);
+        }
+    }
 
-function medianAbsoluteDeviation(values) {
-    const finite = values.filter((value) => Number.isFinite(value));
     if (finite.length === 0) {
         return 0;
     }
 
-    const med = median(finite);
-    const deviations = finite.map((value) => Math.abs(value - med));
+    finite.sort((left, right) => left - right);
+    const middle = Math.floor(finite.length / 2);
+    return finite.length % 2 === 0
+        ? (finite[middle - 1] + finite[middle]) / 2
+        : finite[middle];
+}
+
+function medianAbsoluteDeviation(values) {
+    const med = median(values);
+    const deviations = new Array(values.length);
+    for (let i = 0; i < values.length; i += 1) {
+        const value = values[i];
+        deviations[i] = isFiniteNumber(value) ? Math.abs(value - med) : null;
+    }
     return median(deviations);
 }
 
-function standardDeviation(values, mean) {
-    return Math.sqrt(values.reduce((total, value) => total + (value - mean) ** 2, 0) / values.length);
+function round4(value) {
+    return Number.isFinite(value) ? Number(value.toFixed(4)) : 0;
 }
 
-function ensureOddWindow(value, minimum = 3) {
-    const normalized = Math.max(minimum, Math.round(Number.isFinite(value) ? value : minimum));
-    return normalized % 2 === 1 ? normalized : normalized + 1;
-}
-
-function solveLinearSystem(matrix, vector) {
+export function solveLinearSystem(matrix, vector) {
     const size = matrix.length;
     const augmented = matrix.map((row, rowIndex) => [...row, vector[rowIndex]]);
 
@@ -44,7 +88,7 @@ function solveLinearSystem(matrix, vector) {
             }
         }
 
-        if (Math.abs(augmented[pivotRow][pivot]) < 1e-10) {
+        if (Math.abs(augmented[pivotRow][pivot]) < 1e-12) {
             return null;
         }
 
@@ -71,7 +115,7 @@ function solveLinearSystem(matrix, vector) {
     return augmented.map((row) => row[size]);
 }
 
-function fitPolynomial(xs, ys, order) {
+function fitPolynomial(xs, ys, order, weights = null) {
     if (xs.length === 0 || ys.length === 0) {
         return null;
     }
@@ -81,11 +125,26 @@ function fitPolynomial(xs, ys, order) {
     const system = Array.from({ length: size }, () => Array.from({ length: size }, () => 0));
     const rhs = Array.from({ length: size }, () => 0);
 
-    for (let row = 0; row < size; row += 1) {
-        for (let column = 0; column < size; column += 1) {
-            system[row][column] = xs.reduce((total, value) => total + value ** (row + column), 0);
+    for (let i = 0; i < xs.length; i += 1) {
+        const x = xs[i];
+        const y = ys[i];
+        const w = weights ? weights[i] : 1;
+
+        if (!isFiniteNumber(x) || !isFiniteNumber(y) || !isFiniteNumber(w) || w <= 0) {
+            continue;
         }
-        rhs[row] = xs.reduce((total, value, index) => total + ys[index] * (value ** row), 0);
+
+        const powers = new Array(size * 2).fill(1);
+        for (let p = 1; p < powers.length; p += 1) {
+            powers[p] = powers[p - 1] * x;
+        }
+
+        for (let row = 0; row < size; row += 1) {
+            rhs[row] += w * y * powers[row];
+            for (let column = 0; column < size; column += 1) {
+                system[row][column] += w * powers[row + column];
+            }
+        }
     }
 
     return solveLinearSystem(system, rhs);
@@ -95,128 +154,244 @@ function evaluatePolynomial(coefficients, x) {
     if (!coefficients) {
         return 0;
     }
-    return coefficients.reduce((total, coefficient, power) => total + coefficient * (x ** power), 0);
+    let total = 0;
+    let powerValue = 1;
+    for (let i = 0; i < coefficients.length; i += 1) {
+        total += coefficients[i] * powerValue;
+        powerValue *= x;
+    }
+    return total;
 }
 
 function buildPolynomialTrend(values, order) {
-    const xs = values.map((_value, index) => (values.length <= 1 ? 0 : (index / (values.length - 1)) * 2 - 1));
-    const finite = values
-        .map((value, index) => ({ value, x: xs[index] }))
-        .filter((item) => Number.isFinite(item.value));
+    const n = values.length;
+    if (n === 0) {
+        return [];
+    }
 
-    if (finite.length < order + 1) {
+    const xs = new Array(n);
+    for (let i = 0; i < n; i += 1) {
+        xs[i] = n <= 1 ? 0 : (i / (n - 1)) * 2 - 1;
+    }
+
+    const finiteXs = [];
+    const finiteYs = [];
+    for (let i = 0; i < n; i += 1) {
+        if (isFiniteNumber(values[i])) {
+            finiteXs.push(xs[i]);
+            finiteYs.push(values[i]);
+        }
+    }
+
+    if (finiteXs.length < order + 1) {
         return values.map(() => 0);
     }
 
-    const coefficients = fitPolynomial(
-        finite.map((item) => item.x),
-        finite.map((item) => item.value),
-        order,
-    );
-
+    const coefficients = fitPolynomial(finiteXs, finiteYs, order);
     return xs.map((x) => evaluatePolynomial(coefficients, x));
 }
 
+function buildPrefixSums(values) {
+    const n = values.length;
+    const prefixSum = new Float64Array(n + 1);
+    const prefixCount = new Float64Array(n + 1);
+    const prefixSqSum = new Float64Array(n + 1);
+
+    for (let i = 0; i < n; i += 1) {
+        const value = values[i];
+        const valid = isFiniteNumber(value);
+        prefixSum[i + 1] = prefixSum[i] + (valid ? value : 0);
+        prefixSqSum[i + 1] = prefixSqSum[i] + (valid ? value * value : 0);
+        prefixCount[i + 1] = prefixCount[i] + (valid ? 1 : 0);
+    }
+
+    return { prefixSum, prefixSqSum, prefixCount };
+}
+
+function rangeStats(prefix, start, end) {
+    const sum = prefix.prefixSum[end] - prefix.prefixSum[start];
+    const sqSum = prefix.prefixSqSum[end] - prefix.prefixSqSum[start];
+    const count = prefix.prefixCount[end] - prefix.prefixCount[start];
+    const mean = count > 0 ? sum / count : 0;
+    const varianceValue = count > 0 ? Math.max(0, sqSum / count - mean * mean) : 0;
+    return { sum, sqSum, count, mean, variance: varianceValue };
+}
+
 function applyMovingAverage(values, windowSize) {
+    const n = values.length;
+    if (n === 0) {
+        return [];
+    }
+
     const radius = Math.floor(ensureOddWindow(windowSize) / 2);
-    return values.map((_value, index) => {
-        const window = [];
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidate = values[index + offset];
-            if (Number.isFinite(candidate)) {
-                window.push(candidate);
-            }
-        }
-        return window.length > 0 ? average(window) : values[index];
-    });
+    const prefix = buildPrefixSums(values);
+    const result = new Array(n);
+
+    for (let index = 0; index < n; index += 1) {
+        const start = Math.max(0, index - radius);
+        const end = Math.min(n, index + radius + 1);
+        const { mean, count } = rangeStats(prefix, start, end);
+        result[index] = count > 0 ? mean : (isFiniteNumber(values[index]) ? values[index] : 0);
+    }
+
+    return result;
 }
 
 function applyMedianFilter(values, windowSize) {
+    const n = values.length;
+    if (n === 0) {
+        return [];
+    }
+
     const radius = Math.floor(ensureOddWindow(windowSize) / 2);
-    return values.map((value, index) => {
+    const result = new Array(n);
+
+    for (let index = 0; index < n; index += 1) {
         const window = [];
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidate = values[index + offset];
-            if (Number.isFinite(candidate)) {
+        const start = Math.max(0, index - radius);
+        const end = Math.min(n, index + radius + 1);
+
+        for (let i = start; i < end; i += 1) {
+            const candidate = values[i];
+            if (isFiniteNumber(candidate)) {
                 window.push(candidate);
             }
         }
-        if (window.length === 0) {
-            return value;
-        }
-        const sorted = [...window].sort((left, right) => left - right);
-        const middle = Math.floor(sorted.length / 2);
-        return sorted.length % 2 === 0
-            ? (sorted[middle - 1] + sorted[middle]) / 2
-            : sorted[middle];
-    });
+
+        result[index] = window.length > 0
+            ? median(window)
+            : (isFiniteNumber(values[index]) ? values[index] : 0);
+    }
+
+    return result;
 }
 
 function applyWienerLikeFilter(values, windowSize) {
-    const radius = Math.floor(ensureOddWindow(windowSize) / 2);
-    const localStats = values.map((_value, index) => {
-        const window = [];
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidate = values[index + offset];
-            if (Number.isFinite(candidate)) {
-                window.push(candidate);
-            }
-        }
-        const mean = window.length > 0 ? average(window) : values[index];
-        const variance = window.length > 1
-            ? average(window.map((candidate) => (candidate - mean) ** 2))
-            : 0;
-        return { mean, variance };
-    });
-    const noiseFloor = median(localStats.map((item) => item.variance));
+    const n = values.length;
+    if (n === 0) {
+        return [];
+    }
 
-    return values.map((value, index) => {
-        const { mean, variance } = localStats[index];
-        if (!Number.isFinite(value) || variance < 1e-10) {
-            return mean;
+    const radius = Math.floor(ensureOddWindow(windowSize) / 2);
+    const prefix = buildPrefixSums(values);
+    const means = new Array(n);
+    const variances = new Array(n);
+
+    for (let index = 0; index < n; index += 1) {
+        const start = Math.max(0, index - radius);
+        const end = Math.min(n, index + radius + 1);
+        const stats = rangeStats(prefix, start, end);
+        means[index] = stats.mean;
+        variances[index] = stats.variance;
+    }
+
+    const noiseFloor = median(variances);
+    const result = new Array(n);
+
+    for (let index = 0; index < n; index += 1) {
+        const value = values[index];
+        const localMean = means[index];
+        const localVariance = variances[index];
+
+        if (!isFiniteNumber(value) || localVariance < 1e-12) {
+            result[index] = localMean;
+            continue;
         }
-        const gain = Math.max(0, variance - noiseFloor) / Math.max(variance, 1e-8);
-        return mean + gain * (value - mean);
-    });
+
+        const gain = Math.max(0, localVariance - noiseFloor) / Math.max(localVariance, 1e-12);
+        result[index] = localMean + gain * (value - localMean);
+    }
+
+    return result;
+}
+
+function buildGaussianKernel(windowSize) {
+    const radius = Math.floor(ensureOddWindow(windowSize) / 2);
+    const sigma = Math.max(0.8, radius / 2);
+    const kernel = new Array(radius * 2 + 1);
+    let kernelSum = 0;
+
+    for (let i = -radius; i <= radius; i += 1) {
+        const value = Math.exp(-(i * i) / (2 * sigma * sigma));
+        kernel[i + radius] = value;
+        kernelSum += value;
+    }
+
+    for (let i = 0; i < kernel.length; i += 1) {
+        kernel[i] /= kernelSum;
+    }
+
+    return { kernel, radius };
 }
 
 function applyGaussianFilter(values, windowSize) {
-    const radius = Math.floor(ensureOddWindow(windowSize) / 2);
-    const sigma = Math.max(0.8, radius / 2);
-    const kernel = Array.from({ length: radius * 2 + 1 }, (_value, index) => {
-        const x = index - radius;
-        return Math.exp(-(x ** 2) / (2 * sigma ** 2));
-    });
-    const kernelSum = kernel.reduce((sum, value) => sum + value, 0);
-    return values.map((value, index) => {
-        const window = [];
-        const weights = [];
+    const n = values.length;
+    if (n === 0) {
+        return [];
+    }
+
+    const { kernel, radius } = buildGaussianKernel(windowSize);
+    const result = new Array(n);
+
+    for (let index = 0; index < n; index += 1) {
+        let weightedSum = 0;
+        let weightTotal = 0;
+
         for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidate = values[index + offset];
-            if (Number.isFinite(candidate)) {
-                window.push(candidate);
-                weights.push(kernel[offset + radius]);
+            const candidateIndex = index + offset;
+            if (candidateIndex < 0 || candidateIndex >= n) {
+                continue;
             }
+
+            const candidate = values[candidateIndex];
+            if (!isFiniteNumber(candidate)) {
+                continue;
+            }
+
+            const weight = kernel[offset + radius];
+            weightedSum += candidate * weight;
+            weightTotal += weight;
         }
-        if (window.length === 0) {
-            return value;
-        }
-        const weightedSum = window.reduce((sum, candidate, idx) => sum + candidate * weights[idx], 0);
-        const weightTotal = weights.reduce((sum, w) => sum + w, 0);
-        return weightTotal > 0 ? weightedSum / weightTotal : value;
-    });
+
+        result[index] = weightTotal > 1e-12
+            ? weightedSum / weightTotal
+            : (isFiniteNumber(values[index]) ? values[index] : 0);
+    }
+
+    return result;
 }
 
 function applyEma(values, windowSize) {
+    const n = values.length;
+    if (n === 0) {
+        return [];
+    }
+
     const alpha = 2 / (Math.max(2, windowSize) + 1);
-    let level = values.length > 0 ? values[0] : 0;
-    return values.map((value) => {
-        if (!Number.isFinite(value)) {
-            return level;
+    const result = new Array(n);
+
+    let level = 0;
+    let initialized = false;
+
+    for (let i = 0; i < n; i += 1) {
+        const value = values[i];
+        if (!initialized && isFiniteNumber(value)) {
+            level = value;
+            initialized = true;
         }
-        level = alpha * value + (1 - alpha) * level;
-        return level;
-    });
+
+        if (!initialized) {
+            result[i] = 0;
+            continue;
+        }
+
+        if (isFiniteNumber(value)) {
+            level = alpha * value + (1 - alpha) * level;
+        }
+        result[i] = level;
+    }
+
+    return result;
 }
 
 function tricubeWeight(distance) {
@@ -227,121 +402,290 @@ function tricubeWeight(distance) {
     return value ** 3;
 }
 
+function bisquareWeight(u) {
+    if (u >= 1) {
+        return 0;
+    }
+    const value = 1 - u * u;
+    return value * value;
+}
+
 function applyLowessApproximation(values, fraction) {
     const count = values.length;
     if (count < 5) {
-        return values.map((value) => (Number.isFinite(value) ? value : 0));
+        return values.map((value) => (isFiniteNumber(value) ? value : 0));
     }
 
-    const span = clamp(Math.round(count * fraction), 5, Math.max(5, count - (count + 1) % 2));
+    const span = clamp(Math.round(count * fraction), 5, count);
     const radius = Math.max(2, Math.floor(span / 2));
 
-    const regress = (weights) => values.map((value, index) => {
-        const xs = [];
-        const ys = [];
-        const ws = [];
+    function regress(robustWeights) {
+        const output = new Array(count);
 
-        for (let offset = -radius; offset <= radius; offset += 1) {
-            const candidateIndex = index + offset;
-            const candidateValue = values[candidateIndex];
-            if (!Number.isFinite(candidateValue)) {
+        for (let index = 0; index < count; index += 1) {
+            let sumW = 0;
+            let sumWX = 0;
+            let sumWY = 0;
+            let sumWXX = 0;
+            let sumWXY = 0;
+
+            for (let offset = -radius; offset <= radius; offset += 1) {
+                const candidateIndex = index + offset;
+                if (candidateIndex < 0 || candidateIndex >= count) {
+                    continue;
+                }
+
+                const y = values[candidateIndex];
+                if (!isFiniteNumber(y)) {
+                    continue;
+                }
+
+                const x = offset;
+                const spanWeight = tricubeWeight(Math.abs(offset) / Math.max(radius, 1));
+                const robustWeight = robustWeights ? robustWeights[candidateIndex] : 1;
+                const w = spanWeight * robustWeight;
+
+                if (w <= 0) {
+                    continue;
+                }
+
+                sumW += w;
+                sumWX += w * x;
+                sumWY += w * y;
+                sumWXX += w * x * x;
+                sumWXY += w * x * y;
+            }
+
+            if (sumW < 1e-12) {
+                output[index] = isFiniteNumber(values[index]) ? values[index] : 0;
                 continue;
             }
-            const spanWeight = tricubeWeight(Math.abs(offset) / Math.max(radius, 1));
-            xs.push(offset);
-            ys.push(candidateValue);
-            ws.push(spanWeight * weights[candidateIndex]);
+
+            const denom = sumW * sumWXX - sumWX * sumWX;
+            const intercept = Math.abs(denom) > 1e-12
+                ? (sumWY * sumWXX - sumWX * sumWXY) / denom
+                : sumWY / sumW;
+
+            output[index] = intercept;
         }
 
-        if (xs.length < 3) {
-            return value;
-        }
+        return output;
+    }
 
-        const sumWeights = ws.reduce((total, weight) => total + weight, 0);
-        const xMean = xs.reduce((total, x, idx) => total + x * ws[idx], 0) / Math.max(sumWeights, 1e-8);
-        const yMean = ys.reduce((total, y, idx) => total + y * ws[idx], 0) / Math.max(sumWeights, 1e-8);
-        const numerator = xs.reduce((total, x, idx) => total + ws[idx] * (x - xMean) * (ys[idx] - yMean), 0);
-        const denominator = xs.reduce((total, x, idx) => total + ws[idx] * (x - xMean) ** 2, 0);
-        const slope = denominator > 1e-10 ? numerator / denominator : 0;
-        return yMean - slope * xMean;
-    });
+    const firstPass = regress(null);
+    const residuals = new Array(count);
+    for (let i = 0; i < count; i += 1) {
+        const value = values[i];
+        residuals[i] = isFiniteNumber(value) && isFiniteNumber(firstPass[i])
+            ? Math.abs(value - firstPass[i])
+            : 0;
+    }
 
-    const initialPass = regress(Array.from({ length: count }, () => 1));
-    const residuals = values.map((value, index) => {
-        if (!Number.isFinite(value) || !Number.isFinite(initialPass[index])) {
-            return 0;
-        }
-        return Math.abs(value - initialPass[index]);
-    });
-    const scale = Math.max(medianAbsoluteDeviation(residuals), 1e-8) * 6;
-    const robustWeights = residuals.map((residual) => 1 / (1 + (residual / scale) ** 2));
+    const scale = Math.max(medianAbsoluteDeviation(residuals) * 6, 1e-8);
+    const robustWeights = residuals.map((residual) => bisquareWeight(residual / scale));
 
     return regress(robustWeights);
 }
 
-function applySavGol(values, windowSize, polyorder) {
+function invertMatrix(matrix) {
+    const n = matrix.length;
+    const augmented = matrix.map((row, i) => [
+        ...row,
+        ...Array.from({ length: n }, (_v, j) => (i === j ? 1 : 0)),
+    ]);
+
+    for (let pivot = 0; pivot < n; pivot += 1) {
+        let pivotRow = pivot;
+        for (let row = pivot + 1; row < n; row += 1) {
+            if (Math.abs(augmented[row][pivot]) > Math.abs(augmented[pivotRow][pivot])) {
+                pivotRow = row;
+            }
+        }
+
+        if (Math.abs(augmented[pivotRow][pivot]) < 1e-12) {
+            return null;
+        }
+
+        if (pivotRow !== pivot) {
+            [augmented[pivot], augmented[pivotRow]] = [augmented[pivotRow], augmented[pivot]];
+        }
+
+        const pivotValue = augmented[pivot][pivot];
+        for (let col = 0; col < 2 * n; col += 1) {
+            augmented[pivot][col] /= pivotValue;
+        }
+
+        for (let row = 0; row < n; row += 1) {
+            if (row === pivot) {
+                continue;
+            }
+            const factor = augmented[row][pivot];
+            for (let col = 0; col < 2 * n; col += 1) {
+                augmented[row][col] -= factor * augmented[pivot][col];
+            }
+        }
+    }
+
+    return augmented.map((row) => row.slice(n));
+}
+
+function computeSavGolKernel(windowSize, polyorder) {
     const effectiveWindow = ensureOddWindow(windowSize, 5);
     const radius = Math.floor(effectiveWindow / 2);
-    return values.map((value, index) => {
+    const degree = Math.min(polyorder, effectiveWindow - 1);
+    const cols = degree + 1;
+
+    const xtx = Array.from({ length: cols }, () => Array.from({ length: cols }, () => 0));
+    const xt = Array.from({ length: cols }, () => Array.from({ length: effectiveWindow }, () => 0));
+
+    for (let i = -radius; i <= radius; i += 1) {
+        const row = i + radius;
+        let power = 1;
+        for (let col = 0; col < cols; col += 1) {
+            xt[col][row] = power;
+            power *= i;
+        }
+    }
+
+    for (let row = 0; row < cols; row += 1) {
+        for (let col = 0; col < cols; col += 1) {
+            let sum = 0;
+            for (let k = 0; k < effectiveWindow; k += 1) {
+                sum += xt[row][k] * xt[col][k];
+            }
+            xtx[row][col] = sum;
+        }
+    }
+
+    const xtxInv = invertMatrix(xtx);
+    if (!xtxInv) {
+        return null;
+    }
+
+    const coeffs = new Array(effectiveWindow).fill(0);
+    for (let k = 0; k < effectiveWindow; k += 1) {
+        let sum = 0;
+        for (let j = 0; j < cols; j += 1) {
+            sum += xtxInv[0][j] * xt[j][k];
+        }
+        coeffs[k] = sum;
+    }
+
+    return { coeffs, radius, effectiveWindow };
+}
+
+function applySavGol(values, windowSize, polyorder) {
+    const n = values.length;
+    if (n === 0) {
+        return [];
+    }
+
+    const kernelInfo = computeSavGolKernel(windowSize, polyorder);
+    if (!kernelInfo) {
+        return applyMovingAverage(values, windowSize);
+    }
+
+    const { coeffs, radius, effectiveWindow } = kernelInfo;
+    const result = new Array(n);
+
+    for (let index = 0; index < n; index += 1) {
+        if (index >= radius && index < n - radius) {
+            let sum = 0;
+            let weightSum = 0;
+
+            for (let offset = -radius; offset <= radius; offset += 1) {
+                const value = values[index + offset];
+                if (!isFiniteNumber(value)) {
+                    continue;
+                }
+                const weight = coeffs[offset + radius];
+                sum += weight * value;
+                weightSum += weight;
+            }
+
+            result[index] = Math.abs(weightSum) > 1e-12
+                ? sum / weightSum
+                : (isFiniteNumber(values[index]) ? values[index] : 0);
+            continue;
+        }
+
         const xs = [];
         const ys = [];
         for (let offset = -radius; offset <= radius; offset += 1) {
-            const sample = values[index + offset];
-            if (Number.isFinite(sample)) {
+            const candidateIndex = index + offset;
+            if (candidateIndex < 0 || candidateIndex >= n) {
+                continue;
+            }
+            const sample = values[candidateIndex];
+            if (isFiniteNumber(sample)) {
                 xs.push(offset);
                 ys.push(sample);
             }
         }
 
         if (xs.length <= 2) {
-            return value;
+            result[index] = isFiniteNumber(values[index]) ? values[index] : 0;
+            continue;
         }
 
         const fitted = fitPolynomial(xs, ys, Math.min(polyorder, xs.length - 1));
-        return fitted ? evaluatePolynomial(fitted, 0) : value;
-    });
+        result[index] = fitted ? evaluatePolynomial(fitted, 0) : (isFiniteNumber(values[index]) ? values[index] : 0);
+    }
+
+    return result;
 }
 
 export function buildFilterPreview(data, settings) {
-    const points = (data ?? []).filter((point) => Number.isFinite(point?.value));
+    const points = (data ?? []).filter((point) => isFiniteNumber(point?.value));
+
     if (points.length === 0) {
         return {
             available: false,
             chartData: [],
             rawStd: 0,
             outputStd: 0,
-            filterWindow: ensureOddWindow(settings.filterWindow ?? 9),
-            filterPolyorder: Math.min(settings.filterPolyorder ?? 2, Math.max(1, ensureOddWindow(settings.filterWindow ?? 9) - 2)),
+            filterWindow: ensureOddWindow(settings?.filterWindow ?? 9),
+            filterPolyorder: Math.min(
+                settings?.filterPolyorder ?? 2,
+                Math.max(1, ensureOddWindow(settings?.filterWindow ?? 9) - 2),
+            ),
         };
     }
 
     const values = points.map((point) => point.value);
-    const filterWindow = ensureOddWindow(settings.filterWindow ?? 9, 5);
-    const filterPolyorder = clamp(settings.filterPolyorder ?? 2, 1, Math.max(1, filterWindow - 2));
-    const lowessFraction = clamp(settings.lowessFraction ?? 0.12, 0.04, 0.45);
-    const filterEnabled = settings.filterMethod !== "none";
-    const detrendEnabled = settings.detrenderMethod === "polynomial";
-    const filtered = !filterEnabled
-        ? values
-        : settings.filterMethod === "moving_average"
-            ? applyMovingAverage(values, filterWindow)
-            : settings.filterMethod === "median"
-                ? applyMedianFilter(values, filterWindow)
-                : settings.filterMethod === "wiener"
-                    ? applyWienerLikeFilter(values, filterWindow)
-                    : settings.filterMethod === "gaussian"
-                        ? applyGaussianFilter(values, filterWindow)
-                        : settings.filterMethod === "ema"
-                            ? applyEma(values, filterWindow)
-                            : settings.filterMethod === "lowess"
-                                ? applyLowessApproximation(values, lowessFraction)
-                                : applySavGol(values, filterWindow, filterPolyorder);
+    const filterWindow = ensureOddWindow(settings?.filterWindow ?? 9, 5);
+    const filterPolyorder = clamp(settings?.filterPolyorder ?? 2, 1, Math.max(1, filterWindow - 2));
+    const lowessFraction = clamp(settings?.lowessFraction ?? 0.12, 0.04, 0.45);
+
+    const filterEnabled = settings?.filterMethod !== "none";
+    const detrendEnabled = settings?.detrenderMethod === "polynomial";
+
+    let filtered;
+    if (!filterEnabled) {
+        filtered = values.slice();
+    } else if (settings.filterMethod === "moving_average") {
+        filtered = applyMovingAverage(values, filterWindow);
+    } else if (settings.filterMethod === "median") {
+        filtered = applyMedianFilter(values, filterWindow);
+    } else if (settings.filterMethod === "wiener") {
+        filtered = applyWienerLikeFilter(values, filterWindow);
+    } else if (settings.filterMethod === "gaussian") {
+        filtered = applyGaussianFilter(values, filterWindow);
+    } else if (settings.filterMethod === "ema") {
+        filtered = applyEma(values, filterWindow);
+    } else if (settings.filterMethod === "lowess") {
+        filtered = applyLowessApproximation(values, lowessFraction);
+    } else {
+        filtered = applySavGol(values, filterWindow, filterPolyorder);
+    }
+
     const trend = detrendEnabled
-        ? buildPolynomialTrend(filtered, clamp(settings.detrenderOrder ?? 2, 1, 6))
+        ? buildPolynomialTrend(filtered, clamp(settings?.detrenderOrder ?? 2, 1, 6))
         : filtered.map(() => 0);
+
     const output = filtered.map((value, index) => value - trend[index]);
-    const rawStd = standardDeviation(values, average(values));
-    const outputStd = standardDeviation(output, average(output));
+    const rawStd = standardDeviation(values);
+    const outputStd = standardDeviation(output);
 
     return {
         available: true,
@@ -353,10 +697,10 @@ export function buildFilterPreview(data, settings) {
         chartData: points.map((point, index) => ({
             label: point.month ?? point.timestamp ?? `T${index + 1}`,
             timestamp: point.timestamp ?? `T${index + 1}`,
-            raw: Number(values[index].toFixed(4)),
-            filtered: Number(filtered[index].toFixed(4)),
-            trend: detrendEnabled ? Number(trend[index].toFixed(4)) : null,
-            output: Number(output[index].toFixed(4)),
+            raw: round4(values[index]),
+            filtered: round4(filtered[index]),
+            trend: detrendEnabled ? round4(trend[index]) : null,
+            output: round4(output[index]),
         })),
     };
 }

@@ -1,3 +1,9 @@
+import { buildMstlStyleDecomposition, inferSeasonalPeriods } from "./diagnostics-stl.js";
+import { computeEmdDiagnostics } from "./diagnostics-emd.js";
+import { computeEemdDiagnostics } from "./diagnostics-eemd.js";
+import { computeEwtDiagnostics } from "./diagnostics-ewt.js";
+import { computeVmdDiagnostics } from "./diagnostics-vmd.js";
+
 export function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -1020,313 +1026,6 @@ function classifyStationarity(adf, kpss, slope) {
   return { label: "inconclusive", automationSummary: "Stationarity tests disagree weakly. Prefer robust scaling, monitor drift, and keep preprocessing recommendations under review.", needsDiff: Math.abs(slope) > 0.075, needsDetrend: Math.abs(slope) > 0.035 };
 }
 
-function inferSeasonalPeriods(acfPeaks, count) {
-  const candidates = acfPeaks.map((point) => point.lag).filter((lag) => lag >= 4 && lag <= Math.max(4, Math.floor(count / 3)));
-  const unique = [];
-  for (const lag of candidates) {
-    if (!unique.some((value) => Math.abs(value - lag) <= 2 || lag % value === 0)) {
-      unique.push(lag);
-    }
-    if (unique.length === 2) {
-      break;
-    }
-  }
-  if (unique.length === 0) {
-    unique.push(clamp(Math.floor(count / 12), 4, 24));
-  }
-  return unique;
-}
-
-function buildMstlStyleDecomposition(series, seasonalPeriods) {
-  const observed = series.map((point) => point.value);
-  const periods = seasonalPeriods.length > 0 ? seasonalPeriods : [12];
-  const seasonalComponents = periods.map((period) => ({ period, series: Array.from({ length: observed.length }, () => 0), strength: 0 }));
-  let trend = movingAverage(observed, Math.max(5, periods[0] * 2 - 1));
-
-  for (let iteration = 0; iteration < 2; iteration += 1) {
-    seasonalComponents.forEach((component, componentIndex) => {
-      const otherSeasonal = observed.map((_value, index) => seasonalComponents.reduce((total, current, indexInner) => total + (indexInner === componentIndex ? 0 : current.series[index]), 0));
-      const detrended = observed.map((value, index) => value - trend[index] - otherSeasonal[index]);
-      component.series = buildSeasonalComponent(detrended, component.period);
-    });
-
-    const deseasonalized = observed.map((value, index) => value - seasonalComponents.reduce((total, component) => total + component.series[index], 0));
-    trend = movingAverage(deseasonalized, Math.max(5, Math.min(observed.length - 1, periods[0] * 2 + 1)));
-  }
-
-  const combinedSeasonal = observed.map((_value, index) => seasonalComponents.reduce((total, component) => total + component.series[index], 0));
-  const residual = observed.map((value, index) => value - trend[index] - combinedSeasonal[index]);
-  const deseasonalized = observed.map((value, index) => value - trend[index]);
-
-  seasonalComponents.forEach((component) => {
-    const seasonalPlusResidual = component.series.map((value, index) => value + residual[index]);
-    component.strength = clamp(1 - variance(residual) / Math.max(1e-12, variance(seasonalPlusResidual)), 0, 1);
-  });
-
-  const combinedStrength = clamp(1 - variance(residual) / Math.max(1e-12, variance(deseasonalized)), 0, 1);
-
-  return {
-    periods,
-    strength: combinedStrength,
-    components: seasonalComponents.map((component) => ({ period: component.period, strength: Number(component.strength.toFixed(3)) })),
-    data: series.map((point, index) => ({ ...point, observed: Number(observed[index].toFixed(4)), trend: Number(trend[index].toFixed(4)), seasonal: Number(combinedSeasonal[index].toFixed(4)), residual: Number(residual[index].toFixed(4)) })),
-    residualStd: Number(standardDeviation(residual, 0).toFixed(4)),
-  };
-}
-
-function isMonotonic(values) {
-  const diffs = difference(values);
-  return diffs.every((value) => value >= -1e-10) || diffs.every((value) => value <= 1e-10);
-}
-
-function countZeroCrossings(values) {
-  let count = 0;
-  for (let index = 1; index < values.length; index += 1) {
-    const previousSign = values[index - 1] >= 0 ? 1 : -1;
-    const currentSign = values[index] >= 0 ? 1 : -1;
-    if (previousSign !== currentSign) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function findExtrema(values, kind = "max") {
-  if (values.length < 3) {
-    return { indices: [], values: [] };
-  }
-
-  const indices = [];
-  if ((kind === "max" && values[0] > values[1]) || (kind === "min" && values[0] < values[1])) {
-    indices.push(0);
-  }
-
-  for (let index = 1; index < values.length - 1; index += 1) {
-    const previous = values[index - 1];
-    const current = values[index];
-    const next = values[index + 1];
-    const isExtremum = kind === "max"
-      ? ((current >= previous && current > next) || (current > previous && current >= next))
-      : ((current <= previous && current < next) || (current < previous && current <= next));
-
-    if (isExtremum) {
-      indices.push(index);
-    }
-  }
-
-  const lastIndex = values.length - 1;
-  if ((kind === "max" && values[lastIndex] > values[lastIndex - 1]) || (kind === "min" && values[lastIndex] < values[lastIndex - 1])) {
-    indices.push(lastIndex);
-  }
-
-  const uniqueIndices = [...new Set(indices)].sort((left, right) => left - right);
-  return {
-    indices: uniqueIndices,
-    values: uniqueIndices.map((index) => values[index]),
-  };
-}
-
-function interpolateEnvelope(indices, values, count) {
-  if (indices.length < 2 || values.length < 2) {
-    return null;
-  }
-
-  const envelope = Array.from({ length: count }, () => 0);
-  const firstIndex = indices[0];
-  for (let index = 0; index <= firstIndex; index += 1) {
-    envelope[index] = values[0];
-  }
-
-  for (let segment = 0; segment < indices.length - 1; segment += 1) {
-    const leftIndex = indices[segment];
-    const rightIndex = indices[segment + 1];
-    const leftValue = values[segment];
-    const rightValue = values[segment + 1];
-    const width = Math.max(1, rightIndex - leftIndex);
-
-    for (let index = leftIndex; index <= rightIndex; index += 1) {
-      const ratio = (index - leftIndex) / width;
-      envelope[index] = leftValue * (1 - ratio) + rightValue * ratio;
-    }
-  }
-
-  const lastIndex = indices[indices.length - 1];
-  for (let index = lastIndex; index < count; index += 1) {
-    envelope[index] = values[values.length - 1];
-  }
-
-  return envelope;
-}
-
-function countExtrema(values) {
-  return findExtrema(values, "max").indices.length + findExtrema(values, "min").indices.length;
-}
-
-function siftEmpiricalMode(signal, maxSifts = 60, threshold = 0.03) {
-  let mode = [...signal];
-  let completedSifts = 0;
-
-  for (let iteration = 0; iteration < maxSifts; iteration += 1) {
-    const maxima = findExtrema(mode, "max");
-    const minima = findExtrema(mode, "min");
-    if (maxima.indices.length < 3 || minima.indices.length < 3) {
-      return completedSifts > 0 ? { values: mode, sifts: completedSifts } : null;
-    }
-
-    const upper = interpolateEnvelope(maxima.indices, maxima.values, mode.length);
-    const lower = interpolateEnvelope(minima.indices, minima.values, mode.length);
-    if (!upper || !lower) {
-      return completedSifts > 0 ? { values: mode, sifts: completedSifts } : null;
-    }
-
-    const meanEnvelope = upper.map((value, index) => 0.5 * (value + lower[index]));
-    const updated = mode.map((value, index) => value - meanEnvelope[index]);
-    const delta = sum(updated.map((value, index) => (value - mode[index]) ** 2));
-    const norm = sum(mode.map((value) => value ** 2)) + 1e-12;
-    const relativeChange = delta / norm;
-
-    mode = updated;
-    completedSifts = iteration + 1;
-
-    const zeroCrossings = countZeroCrossings(mode);
-    const extremaCount = countExtrema(mode);
-    const meanEnvelopeStd = standardDeviation(meanEnvelope, average(meanEnvelope));
-    const modeStd = standardDeviation(mode, average(mode));
-    if (
-      relativeChange < threshold
-      || Math.abs(zeroCrossings - extremaCount) <= 1
-      || meanEnvelopeStd < threshold * Math.max(modeStd, 1e-12)
-    ) {
-      break;
-    }
-  }
-
-  return { values: mode, sifts: completedSifts };
-}
-
-function computeEmdDiagnostics(series, maxImfs = 6, maxSifts = 60, siftThreshold = 0.03) {
-  const values = series.map((point) => point.value);
-  const count = values.length;
-  if (count < 16) {
-    return {
-      available: false,
-      method: "emd_linear_sifting",
-      methodLabel: "Empirical mode decomposition",
-      interpolationLabel: "Linear envelopes",
-      reason: "EMD needs at least 16 observations.",
-      components: [],
-      residual: null,
-      imfCount: 0,
-      totalSifts: 0,
-      reconstructionError: 0,
-      residualEnergyShare: 0,
-    };
-  }
-
-  const mean = average(values);
-  const std = standardDeviation(values, mean);
-  if (std < 1e-10) {
-    return {
-      available: false,
-      method: "emd_linear_sifting",
-      methodLabel: "Empirical mode decomposition",
-      interpolationLabel: "Linear envelopes",
-      reason: "EMD needs a non-constant signal.",
-      components: [],
-      residual: null,
-      imfCount: 0,
-      totalSifts: 0,
-      reconstructionError: 0,
-      residualEnergyShare: 0,
-    };
-  }
-
-  const originalEnergy = sum(values.map((value) => value ** 2)) + 1e-12;
-  const originalStd = std;
-  const components = [];
-  let residual = [...values];
-  let totalSifts = 0;
-
-  for (let index = 0; index < maxImfs; index += 1) {
-    const residualEnergyShare = sum(residual.map((value) => value ** 2)) / originalEnergy;
-    if (residualEnergyShare < 1e-6 || isMonotonic(residual)) {
-      break;
-    }
-
-    const sifted = siftEmpiricalMode(residual, maxSifts, siftThreshold);
-    if (!sifted) {
-      break;
-    }
-
-    const componentValues = sifted.values;
-    const energy = sum(componentValues.map((value) => value ** 2));
-    const extremaCount = countExtrema(componentValues);
-    const zeroCrossings = countZeroCrossings(componentValues);
-    const meanAbs = average(componentValues.map((value) => Math.abs(value)));
-
-    components.push({
-      order: components.length + 1,
-      name: `IMF ${components.length + 1}`,
-      values: componentValues.map((value) => Number(value.toFixed(6))),
-      energyShare: Number((energy / originalEnergy).toFixed(4)),
-      zeroCrossings,
-      extremaCount,
-      meanAbs: Number(meanAbs.toFixed(4)),
-      sifts: sifted.sifts,
-    });
-
-    residual = residual.map((value, componentIndex) => value - componentValues[componentIndex]);
-    totalSifts += sifted.sifts;
-
-    if (standardDeviation(componentValues, average(componentValues)) < 1e-10 * originalStd) {
-      break;
-    }
-  }
-
-  if (components.length === 0) {
-    return {
-      available: false,
-      method: "emd_linear_sifting",
-      methodLabel: "Empirical mode decomposition",
-      interpolationLabel: "Linear envelopes",
-      reason: "The signal became monotonic before an IMF could be extracted.",
-      components: [],
-      residual: null,
-      imfCount: 0,
-      totalSifts: 0,
-      reconstructionError: 0,
-      residualEnergyShare: 0,
-    };
-  }
-
-  const reconstruction = values.map((_value, index) => (
-    residual[index] + components.reduce((total, component) => total + component.values[index], 0)
-  ));
-  const reconstructionError = Math.sqrt(average(reconstruction.map((value, index) => (value - values[index]) ** 2)));
-  const residualEnergy = sum(residual.map((value) => value ** 2));
-
-  return {
-    available: true,
-    method: "emd_linear_sifting",
-    methodLabel: "Empirical mode decomposition",
-    interpolationLabel: "Linear envelopes",
-    reason: "",
-    components,
-    residual: {
-      name: "Residual",
-      values: residual.map((value) => Number(value.toFixed(6))),
-      energyShare: Number((residualEnergy / originalEnergy).toFixed(4)),
-      zeroCrossings: countZeroCrossings(residual),
-      extremaCount: countExtrema(residual),
-      meanAbs: Number(average(residual.map((value) => Math.abs(value))).toFixed(4)),
-    },
-    imfCount: components.length,
-    totalSifts,
-    reconstructionError: Number(reconstructionError.toFixed(6)),
-    residualEnergyShare: Number((residualEnergy / originalEnergy).toFixed(4)),
-    siftThreshold: Number(siftThreshold.toFixed(3)),
-  };
-}
 
 function smape(actual, forecast) {
   const values = actual.map((value, index) => {
@@ -3184,7 +2883,7 @@ function buildAutomationDiagnostics({
   };
 }
 
-export function computeSeriesDiagnostics({ series, covariates = [], horizon = 12, windowSize = 48, changePointMethod = "segmentation", datasetSummary = null }) {
+export function computeSeriesDiagnostics({ series, covariates = [], horizon = 12, windowSize = 48, changePointMethod = "segmentation", datasetSummary = null, emdOptions = {}, eemdOptions = {}, ewtOptions = {}, vmdOptions = {} }) {
   const values = series.map((item) => item.value);
   const count = values.length;
   const mean = average(values);
@@ -3231,7 +2930,36 @@ export function computeSeriesDiagnostics({ series, covariates = [], horizon = 12
   const spectralDiagnostics = computeSpectralDiagnostics(series);
   const forecastabilityDiagnostics = computeForecastabilityDiagnostics(spectralDiagnostics, acfPeaks);
   const patchingDiagnostics = computePatchingDiagnostics(series, seasonalPeriods, acfPeaks, spectralDiagnostics, forecastabilityDiagnostics);
-  const emdDiagnostics = computeEmdDiagnostics(series);
+  const emdDiagnostics = computeEmdDiagnostics(
+    series,
+    emdOptions.maxImfs ?? 6,
+    emdOptions.maxSifts ?? 80,
+    emdOptions.siftThreshold ?? 0.03,
+  );
+  const eemdDiagnostics = computeEemdDiagnostics(
+    series,
+    eemdOptions.ensembleSize ?? 8,
+    eemdOptions.noiseStdRatio ?? 0.15,
+    eemdOptions.maxImfs ?? 6,
+    eemdOptions.maxSifts ?? 80,
+    eemdOptions.siftThreshold ?? 0.08,
+  );
+  const ewtDiagnostics = computeEwtDiagnostics(
+    series,
+    ewtOptions.maxBands ?? 5,
+    ewtOptions.smoothingWindow ?? 7,
+    ewtOptions.detectThreshold ?? 0.05,
+    ewtOptions.gamma ?? 0.1,
+  );
+  const vmdDiagnostics = computeVmdDiagnostics(
+    series,
+    vmdOptions.modeCount ?? 4,
+    vmdOptions.alpha ?? 2000,
+    vmdOptions.tau ?? 0,
+    vmdOptions.tolerance ?? 1e-7,
+    vmdOptions.maxIterations ?? 500,
+    vmdOptions.dcMode ?? false,
+  );
   const grangerDiagnostics = computeGrangerDiagnostics(series, covariates, windowSize, horizon);
   const baseWindow = clamp(Math.round(count / 5), 24, 96);
   const suggestedLagWindow = clamp(Math.max(baseWindow, dominantPacfLag * 3, dominantAcfLag * 2, seasonal ? seasonalPeriods[0] * 2 : 24), 24, 96);
@@ -3358,6 +3086,9 @@ export function computeSeriesDiagnostics({ series, covariates = [], horizon = 12
     forecastabilityDiagnostics,
     patchingDiagnostics,
     emdDiagnostics,
+    eemdDiagnostics,
+    ewtDiagnostics,
+    vmdDiagnostics,
     grangerDiagnostics,
     calendarDiagnostics,
     intermittencyDiagnostics,
