@@ -79,9 +79,25 @@ function buildSimpleSeasonalComponent(detrended, period) {
 
 // Main decomposition - closer to MSTL spirit
 export function buildMstlStyleDecomposition(series, seasonalPeriods = []) {
-    const observed = series.map(p => p.value);
+    const safeSeries = Array.isArray(series) ? series : [];
+    const observed = safeSeries.map((p) => (Number.isFinite(p?.value) ? p.value : NaN));
     const n = observed.length;
-    if (n === 0) throw new Error("Empty series");
+    const finiteCount = observed.filter(Number.isFinite).length;
+    if (n === 0 || finiteCount === 0) {
+        return {
+            periods: [],
+            strength: 0,
+            components: [],
+            data: safeSeries.map((point) => ({
+                ...point,
+                observed: null,
+                trend: null,
+                seasonal: null,
+                residual: null,
+            })),
+            residualStd: 0,
+        };
+    }
 
     let periods = seasonalPeriods.length > 0
         ? [...seasonalPeriods].sort((a, b) => a - b)  // ascending order (important!)

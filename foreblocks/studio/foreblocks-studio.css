@@ -1,4 +1,5 @@
 @import "tailwindcss";
+
 @layer base {
     /* Google Fonts loaded via <link> in index.html instead to avoid @import ordering issue */
 }
@@ -159,7 +160,7 @@ textarea {
     color: #fff;
     border-color: transparent;
     font-weight: 600;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.12), 0 4px 12px var(--accent-soft);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 4px 12px var(--accent-soft);
     position: relative;
     overflow: hidden;
 }
@@ -168,7 +169,7 @@ textarea {
     content: "";
     position: absolute;
     inset: 0;
-    background: linear-gradient(to bottom, rgba(255,255,255,0.10), transparent 60%);
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0.10), transparent 60%);
     pointer-events: none;
 }
 
@@ -192,7 +193,7 @@ textarea {
 .solid-button:hover {
     opacity: 0.9;
     transform: translateY(-1px);
-    box-shadow: 0 2px 4px rgba(0,0,0,0.16), 0 8px 20px var(--accent-soft);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.16), 0 8px 20px var(--accent-soft);
 }
 
 .step-button:hover,
@@ -330,6 +331,22 @@ textarea {
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+}
+
+.help-copy .MathJax {
+    display: inline-block !important;
+}
+
+.help-copy .MathJax_Display,
+.help-copy .mjx-display {
+    display: block !important;
+    margin: 0.75em 0 !important;
+}
+
+.help-copy .mjx-chtml,
+.help-copy .mjx-svg {
+    display: inline-block !important;
+    vertical-align: middle !important;
 }
 
 .step-grid {
@@ -764,8 +781,8 @@ textarea {
     height: 18px;
     border-radius: 50%;
     background: var(--muted);
-    transition: transform .2s cubic-bezier(.4,0,.2,1), background .2s ease;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    transition: transform .2s cubic-bezier(.4, 0, .2, 1), background .2s ease;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .toggle-on .toggle-knob {
@@ -860,6 +877,17 @@ textarea {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
+}
+
+.summary-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.summary-card-head .summary-card-title {
+    margin-bottom: 0;
 }
 
 .benchmark-grid,
@@ -1264,7 +1292,7 @@ textarea {
 .automation-subgroup-tab-active {
     background: var(--panel-solid);
     color: var(--text);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
     font-weight: 600;
 }
 
@@ -1301,7 +1329,7 @@ textarea {
 .right-panel-tab-active {
     background: var(--panel-solid);
     color: var(--text);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
     font-weight: 600;
 }
 
@@ -1621,7 +1649,7 @@ textarea {
     overflow: hidden;
     background: var(--code-bg);
     border: 1px solid rgba(255, 255, 255, 0.07);
-    box-shadow: 0 0 0 1px rgba(255,255,255,0.04) inset;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
 }
 
 .code-toolbar {
@@ -1765,6 +1793,7 @@ textarea {
     background: rgba(10, 16, 32, 0.52);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
+    overflow: auto;
 }
 
 .help-overlay {
@@ -1776,17 +1805,29 @@ textarea {
     width: min(1120px, calc(100vw - 48px));
     max-height: calc(100vh - 48px);
     overflow: auto;
+    min-height: 0;
 }
 
 .help-dialog {
     width: min(850px, calc(100vw - 64px));
     padding: 0;
+    max-height: calc(100vh - 64px);
+    display: flex;
+    flex-direction: column;
+}
+
+.help-dialog .panel {
+    min-height: 0;
+    overflow: hidden;
 }
 
 .help-copy {
-    display: grid;
-    gap: 16px;
     color: var(--text);
+    gap: 16px;
+    display: grid;
+    min-height: 0;
+    max-height: calc(100vh - 220px);
+    overflow: auto;
 }
 
 .help-copy p {
@@ -1946,11 +1987,14 @@ textarea {
 
     .modal-overlay {
         padding: 14px;
+        overflow: auto;
     }
 
     .modal-dialog {
         width: min(100vw - 28px, 1120px);
         max-height: calc(100vh - 28px);
+        overflow: auto;
+        min-height: 0;
     }
 
     .modal-close {

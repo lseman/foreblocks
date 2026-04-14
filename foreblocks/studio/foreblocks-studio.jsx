@@ -356,9 +356,9 @@ export default function ForeblocksStudio() {
     const [uploadedDataset, setUploadedDataset] = useState(null);
     const [themeKey, setThemeKey] = useState(() => {
         if (typeof window !== "undefined") {
-            return localStorage.getItem("studioTheme") || "glass";
+            return localStorage.getItem("studioTheme") || "paper";
         }
-        return "dark";
+        return "paper";
     });
     const [changePointMethod, setChangePointMethod] = useState("segmentation");
     const [outlierPreviewMethod, setOutlierPreviewMethod] = useState(INITIAL_CONFIG.prep.outlierMethod);
