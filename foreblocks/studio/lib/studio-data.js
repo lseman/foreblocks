@@ -1,114 +1,138 @@
+// ─── Paper ────────────────────────────────────────────────────────────────────
+// Crisp light: warm neutral base, indigo/cyan accents, amber + emerald signals
 export const PAPER_THEME = {
   name: "Paper",
-  bg: "#eef3f8",
-  bgAlt: "#f8fbff",
-  panel: "rgba(255, 255, 255, 0.82)",
+  bg: "#f1f5f9",           // slate-100
+  bgAlt: "#f8fafc",        // slate-50
+  panel: "rgba(255,255,255,0.75)",
   panelSolid: "#ffffff",
-  panelElevated: "#f3f7fc",
-  border: "rgba(71, 85, 105, 0.13)",
-  borderStrong: "rgba(59, 130, 246, 0.26)",
-  text: "#162033",
-  subtext: "#5b687d",
-  muted: "#8b96a8",
-  accent: "#3b82f6",
-  accentStrong: "#2563eb",
-  accentSoft: "rgba(59, 130, 246, 0.11)",
-  secondary: "#6366f1",
-  secondarySoft: "rgba(99, 102, 241, 0.12)",
-  warm: "#0ea5a4",
-  warmSoft: "rgba(14, 165, 164, 0.10)",
-  cool: "#64748b",
-  coolSoft: "rgba(100, 116, 139, 0.12)",
-  codeBg: "#0d1320",
-  codeTitle: "#c0d4f6",
-  codeBodyText: "#dfebff",
-  codeGutter: "#6f83a8",
-  codeKeyword: "#7dd3fc",
-  codeString: "#86efac",
+  panelElevated: "#f0f4f8",
+  border: "rgba(15,23,42,0.09)",
+  borderStrong: "rgba(37,99,235,0.30)",
+  text: "#0f172a",         // slate-900
+  subtext: "#475569",      // slate-600
+  muted: "#94a3b8",        // slate-400
+  accent: "#2563eb",       // blue-600
+  accentStrong: "#1d4ed8", // blue-700
+  accentSoft: "rgba(37,99,235,0.08)",
+  secondary: "#0891b2",    // cyan-600
+  secondarySoft: "rgba(8,145,178,0.09)",
+  warm: "#b45309",         // amber-700 — dark enough to read on white
+  warmSoft: "rgba(180,83,9,0.08)",
+  cool: "#047857",         // emerald-700
+  coolSoft: "rgba(4,120,87,0.08)",
+  // surface tokens — replace all rgba(255,255,255,X) hardcodes
+  surface1: "rgba(15,23,42,0.02)",   // barely-there tint
+  surface2: "rgba(15,23,42,0.04)",   // faint card bg
+  surface3: "rgba(255,255,255,0.70)", // main card / panel
+  surface4: "rgba(255,255,255,0.90)", // inputs, active chips
+  surface5: "rgba(255,255,255,0.95)", // table headers, elevated
+  codeBg: "#0d1526",
+  codeTitle: "#bfdbfe",
+  codeBodyText: "#e2eeff",
+  codeGutter: "#4d6391",
+  codeKeyword: "#60a5fa",
+  codeString: "#6ee7b7",
   codeNumber: "#f9a8d4",
-  codeComment: "#7c8aa5",
-  codeFunction: "#fcd34d",
+  codeComment: "#5a7298",
+  codeFunction: "#fbbf24",
   codeClass: "#c4b5fd",
-  codeOperator: "#93c5fd",
-  shadow: "0 20px 48px rgba(15, 23, 42, 0.10)",
-  glow: "0 0 0 1px rgba(59, 130, 246, 0.08), 0 18px 44px rgba(37, 99, 235, 0.08)",
-  grid: "rgba(100, 116, 139, 0.14)",
+  codeOperator: "#7dd3fc",
+  shadow: "0 1px 2px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.07), 0 16px 40px rgba(15,23,42,0.06)",
+  glow: "0 0 0 1px rgba(37,99,235,0.10), 0 4px 20px rgba(37,99,235,0.12)",
+  grid: "rgba(15,23,42,0.06)",
   isDark: false,
 };
 
+// ─── Dark ─────────────────────────────────────────────────────────────────────
+// True near-black zinc: amber accent, cyan secondary, clean high-contrast
 export const DARK_THEME = {
   name: "Dark",
-  bg: "#07090d",
-  bgAlt: "#0e1219",
-  panel: "rgba(15, 18, 25, 0.88)",
-  panelSolid: "#101822",
-  panelElevated: "#151f2d",
-  border: "rgba(245, 195, 50, 0.12)",
-  borderStrong: "rgba(245, 195, 50, 0.24)",
-  text: "#f0ede6",
-  subtext: "#7c8a9a",
-  muted: "#4e5c6e",
-  accent: "#f5c332",
-  accentStrong: "#c99c1a",
-  accentSoft: "rgba(245, 195, 50, 0.12)",
-  secondary: "#5ba8d4",
-  secondarySoft: "rgba(91, 168, 212, 0.14)",
-  warm: "#f5c332",
-  warmSoft: "rgba(245, 195, 50, 0.10)",
-  cool: "#5ba8d4",
-  coolSoft: "rgba(91, 168, 212, 0.10)",
-  codeBg: "#07090d",
-  codeTitle: "#f5d752",
-  codeBodyText: "#f0ede6",
-  codeGutter: "#4e5c6e",
-  codeKeyword: "#60b2ff",
-  codeString: "#a1efbd",
+  bg: "#09090b",           // zinc-950
+  bgAlt: "#0f0f12",
+  panel: "rgba(24,24,27,0.90)",    // zinc-900 tinted
+  panelSolid: "#18181b",           // zinc-900
+  panelElevated: "#1f1f23",        // zinc-850
+  border: "rgba(255,255,255,0.08)",
+  borderStrong: "rgba(251,191,36,0.32)",
+  text: "#fafafa",         // zinc-50
+  subtext: "#a1a1aa",      // zinc-400
+  muted: "#52525b",        // zinc-600
+  accent: "#fbbf24",       // amber-400
+  accentStrong: "#f59e0b", // amber-500
+  accentSoft: "rgba(251,191,36,0.11)",
+  secondary: "#22d3ee",    // cyan-400
+  secondarySoft: "rgba(34,211,238,0.10)",
+  warm: "#fb923c",         // orange-400
+  warmSoft: "rgba(251,146,60,0.11)",
+  cool: "#34d399",         // emerald-400
+  coolSoft: "rgba(52,211,153,0.10)",
+  // surface tokens — all dark-mode aware
+  surface1: "rgba(255,255,255,0.03)",
+  surface2: "rgba(255,255,255,0.05)",
+  surface3: "rgba(255,255,255,0.07)",
+  surface4: "rgba(255,255,255,0.09)",
+  surface5: "rgba(255,255,255,0.11)",
+  codeBg: "#07070a",
+  codeTitle: "#fde68a",
+  codeBodyText: "#f4f4f5",
+  codeGutter: "#3f3f46",
+  codeKeyword: "#67e8f9",
+  codeString: "#6ee7b7",
   codeNumber: "#f9a8d4",
-  codeComment: "#5c6b81",
-  codeFunction: "#ffda6f",
-  codeClass: "#d6c7ff",
-  codeOperator: "#93c5fd",
-  shadow: "0 20px 48px rgba(0, 0, 0, 0.52)",
-  glow: "0 0 0 1px rgba(245, 195, 50, 0.10), 0 18px 44px rgba(37, 99, 235, 0.14)",
-  grid: "rgba(91, 168, 212, 0.08)",
+  codeComment: "#52525b",
+  codeFunction: "#fbbf24",
+  codeClass: "#d8b4fe",
+  codeOperator: "#7dd3fc",
+  shadow: "0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.50), 0 24px 56px rgba(0,0,0,0.40)",
+  glow: "0 0 0 1px rgba(251,191,36,0.14), 0 4px 24px rgba(251,191,36,0.10)",
+  grid: "rgba(255,255,255,0.035)",
   isDark: true,
 };
 
+// ─── Glass ────────────────────────────────────────────────────────────────────
+// Midnight indigo: violet/sky pair, frosted glass panels, neon accents
 export const GLASS_THEME = {
   name: "Glass",
-  bg: "#08101f",
-  bgAlt: "#091724",
-  panel: "rgba(12, 18, 34, 0.70)",
-  panelSolid: "rgba(10, 16, 30, 0.95)",
-  panelElevated: "rgba(18, 28, 52, 0.90)",
-  border: "rgba(147, 197, 253, 0.14)",
-  borderStrong: "rgba(59, 130, 246, 0.28)",
-  text: "#e2e8f0",
-  subtext: "#94a3b8",
-  muted: "#6b7c98",
-  accent: "#7c3aed",
-  accentStrong: "#8b5cf6",
-  accentSoft: "rgba(124, 58, 237, 0.12)",
-  secondary: "#38bdf8",
-  secondarySoft: "rgba(56, 189, 248, 0.16)",
-  warm: "#f472b6",
-  warmSoft: "rgba(244, 114, 182, 0.12)",
-  cool: "#60a5fa",
-  coolSoft: "rgba(96, 165, 250, 0.12)",
-  codeBg: "#08101f",
-  codeTitle: "#bfdbfe",
-  codeBodyText: "#e2e8f0",
-  codeGutter: "#7c93b1",
-  codeKeyword: "#c4b5fd",
-  codeString: "#8be9fd",
+  bg: "#05080f",           // near black with blue cast
+  bgAlt: "#070b15",
+  panel: "rgba(15,22,42,0.55)",
+  panelSolid: "rgba(12,18,36,0.98)",
+  panelElevated: "rgba(22,34,62,0.85)",
+  border: "rgba(148,163,184,0.09)",
+  borderStrong: "rgba(139,92,246,0.38)",
+  text: "#f1f5f9",         // slate-100
+  subtext: "#94a3b8",      // slate-400
+  muted: "#64748b",        // slate-500 — readable on dark glass
+  accent: "#818cf8",       // indigo-400
+  accentStrong: "#6366f1", // indigo-500
+  accentSoft: "rgba(129,140,248,0.13)",
+  secondary: "#38bdf8",    // sky-400
+  secondarySoft: "rgba(56,189,248,0.12)",
+  warm: "#f472b6",         // pink-400
+  warmSoft: "rgba(244,114,182,0.12)",
+  cool: "#34d399",         // emerald-400
+  coolSoft: "rgba(52,211,153,0.11)",
+  // surface tokens
+  surface1: "rgba(148,163,184,0.04)",
+  surface2: "rgba(148,163,184,0.07)",
+  surface3: "rgba(148,163,184,0.09)",
+  surface4: "rgba(148,163,184,0.13)",
+  surface5: "rgba(148,163,184,0.17)",
+  codeBg: "#04060e",
+  codeTitle: "#c7d2fe",
+  codeBodyText: "#f1f5f9",
+  codeGutter: "#334155",
+  codeKeyword: "#a5b4fc",
+  codeString: "#67e8f9",
   codeNumber: "#f9a8d4",
-  codeComment: "#94a3b8",
-  codeFunction: "#f5b2ff",
-  codeClass: "#a5b4fc",
-  codeOperator: "#93c5fd",
-  shadow: "0 24px 60px rgba(4, 10, 28, 0.42)",
-  glow: "0 0 0 1px rgba(124, 58, 237, 0.12), 0 20px 50px rgba(56, 189, 248, 0.14)",
-  grid: "rgba(96, 165, 250, 0.08)",
+  codeComment: "#475569",
+  codeFunction: "#fde68a",
+  codeClass: "#c4b5fd",
+  codeOperator: "#7dd3fc",
+  shadow: "0 1px 2px rgba(0,0,0,0.50), 0 8px 32px rgba(4,6,20,0.65), 0 32px 72px rgba(4,6,20,0.55)",
+  glow: "0 0 0 1px rgba(129,140,248,0.20), 0 4px 28px rgba(129,140,248,0.18)",
+  grid: "rgba(129,140,248,0.05)",
   isDark: true,
 };
 
@@ -403,11 +427,20 @@ export function applyBlueprint(currentConfig, analysis, patchingDiagnostics = nu
 
 export const INITIAL_CONFIG = {
   data: {
+    source: "csv",
     filename: "sample_reservoir.csv",
     target: "inflow_m3s",
     timestamp: "date",
     freq: "auto",
     trainSplit: 0.8,
+    generator: {
+      length: 240,
+      baseline: 0,
+      trendSlope: 0.0,
+      seasonalityAmplitude: 10.0,
+      seasonalityPeriod: 12,
+      noiseStd: 1.0,
+    },
   },
   prep: {
     windowSize: 72,

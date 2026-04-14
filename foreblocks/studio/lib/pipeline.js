@@ -437,13 +437,25 @@ export function buildPythonPipeline(config, datasetInfo = null) {
         ]
       : datasetInfo?.kind === "path"
         ? [`# Dataset source: ${datasetInfo.name}`]
-        : []),
-    `DATA_PATH = ${pythonValue(data.filename)}`,
-    "",
-    "# Load a raw [T, D] series from disk",
-    "frame = pd.read_csv(DATA_PATH)",
+        : datasetInfo?.kind === "generated"
+          ? [`# Dataset source: synthetic generated series`]
+          : []),
+    ...(datasetInfo?.kind === "generated"
+      ? [
+          `length = ${pythonValue(data.generator.length)}`,
+          `timestamps = pd.date_range(start="2021-01-01", periods=length, freq=${pythonValue(data.freq === "auto" ? "D" : data.freq)})`,
+          "t = np.arange(length, dtype=np.float32)",
+          `raw = (${pythonValue(data.generator.baseline)} + ${pythonValue(data.generator.trendSlope)} * t + ${pythonValue(data.generator.seasonalityAmplitude)} * np.sin(2 * np.pi * t / ${pythonValue(data.generator.seasonalityPeriod)}) + np.random.default_rng(42).normal(0, ${pythonValue(data.generator.noiseStd)}, size=length).astype(np.float32))`,
+          `frame = pd.DataFrame({${pythonValue(data.timestamp)}: timestamps, ${pythonValue(data.target)}: raw})`,
+        ]
+      : [
+          `DATA_PATH = ${pythonValue(data.filename)}`,
+          "",
+          "# Load a raw [T, D] series from disk",
+          "frame = pd.read_csv(DATA_PATH)",
+        ]),
     `timestamps = pd.to_datetime(frame[${pythonValue(data.timestamp)}])`,
-    `raw = frame[[${pythonValue(data.target)}]].to_numpy(dtype=\"float32\")`,
+    `raw = frame[[${pythonValue(data.target)}]].to_numpy(dtype="float32")`,
     "",
     "# Preprocess with the stable foreBlocks pipeline",
     "pre = TimeSeriesHandler(",

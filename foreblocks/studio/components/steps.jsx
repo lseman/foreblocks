@@ -52,73 +52,167 @@ export function DatasetStep({ config, setConfig, datasetState, onFileLoad }) {
         }));
     };
 
+    const updateGenerator = (key, value) => {
+        setConfig((current) => ({
+            ...current,
+            data: {
+                ...current.data,
+                generator: {
+                    ...current.data.generator,
+                    [key]: value,
+                },
+            },
+        }));
+    };
+
     return (
         <Panel title="Dataset Framing" kicker="Step 01">
             <div className="field-grid">
-                <label
-                    className={`field dropzone ${isDragging ? "dropzone-active" : ""}`}
-                    onDragEnter={(event) => {
-                        event.preventDefault();
-                        setIsDragging(true);
-                    }}
-                    onDragOver={(event) => {
-                        event.preventDefault();
-                        setIsDragging(true);
-                    }}
-                    onDragLeave={(event) => {
-                        event.preventDefault();
-                        if (!event.currentTarget.contains(event.relatedTarget)) {
-                            setIsDragging(false);
-                        }
-                    }}
-                    onDrop={(event) => {
-                        event.preventDefault();
-                        setIsDragging(false);
-                        const file = event.dataTransfer.files?.[0];
-                        if (file) {
-                            onFileLoad(file);
-                        }
-                    }}
-                >
-                    <span className="field-label">CSV upload</span>
-                    <div className="dropzone-copy">
-                        <strong>Drop a CSV here</strong>
-                        <span>or click to choose a file</span>
-                    </div>
-                    <input
-                        className="dropzone-input"
-                        type="file"
-                        accept=".csv,text/csv"
-                        onChange={(event) => {
-                            const file = event.target.files?.[0];
-                            if (file) {
-                                onFileLoad(file);
-                            }
-                            event.target.value = "";
-                        }}
-                    />
-                    <span className="field-hint">
-                        Upload a CSV to drive the real series preview and lag diagnostics.
-                    </span>
-                </label>
-                <TextField
-                    label="Dataset file"
-                    value={config.data.filename}
-                    onChange={(value) => updateDataset("filename", value)}
-                    hint="Relative URL for browser loading, or the filename of an uploaded CSV."
+                <SelectField
+                    label="Dataset source"
+                    value={config.data.source}
+                    onChange={(value) => updateDataset("source", value)}
+                    options={[
+                        { value: "csv", label: "CSV / URL" },
+                        { value: "generated", label: "Synthetic generator" },
+                    ]}
+                    hint="Choose whether to load a CSV or generate a synthetic series."
                 />
-                <TextField
-                    label="Target column"
-                    value={config.data.target}
-                    onChange={(value) => updateDataset("target", value)}
-                    hint="Primary forecasting signal."
-                />
-                <TextField
-                    label="Timestamp column"
-                    value={config.data.timestamp}
-                    onChange={(value) => updateDataset("timestamp", value)}
-                    hint="Datetime index for ordering and time features."
-                />
+                {config.data.source === "csv" ? (
+                    <>
+                        <label
+                            className={`field dropzone ${isDragging ? "dropzone-active" : ""}`}
+                            onDragEnter={(event) => {
+                                event.preventDefault();
+                                setIsDragging(true);
+                            }}
+                            onDragOver={(event) => {
+                                event.preventDefault();
+                                setIsDragging(true);
+                            }}
+                            onDragLeave={(event) => {
+                                event.preventDefault();
+                                if (!event.currentTarget.contains(event.relatedTarget)) {
+                                    setIsDragging(false);
+                                }
+                            }}
+                            onDrop={(event) => {
+                                event.preventDefault();
+                                setIsDragging(false);
+                                const file = event.dataTransfer.files?.[0];
+                                if (file) {
+                                    onFileLoad(file);
+                                }
+                            }}
+                        >
+                            <span className="field-label">CSV upload</span>
+                            <div className="dropzone-copy">
+                                <strong>Drop a CSV here</strong>
+                                <span>or click to choose a file</span>
+                            </div>
+                            <input
+                                className="dropzone-input"
+                                type="file"
+                                accept=".csv,text/csv"
+                                onChange={(event) => {
+                                    const file = event.target.files?.[0];
+                                    if (file) {
+                                        onFileLoad(file);
+                                    }
+                                    event.target.value = "";
+                                }}
+                            />
+                            <span className="field-hint">
+                                Upload a CSV to drive the real series preview and lag diagnostics.
+                            </span>
+                        </label>
+                        <TextField
+                            label="Dataset file"
+                            value={config.data.filename}
+                            onChange={(value) => updateDataset("filename", value)}
+                            hint="Relative URL for browser loading, or the filename of an uploaded CSV."
+                        />
+                        <TextField
+                            label="Target column"
+                            value={config.data.target}
+                            onChange={(value) => updateDataset("target", value)}
+                            hint="Primary forecasting signal."
+                        />
+                        <TextField
+                            label="Timestamp column"
+                            value={config.data.timestamp}
+                            onChange={(value) => updateDataset("timestamp", value)}
+                            hint="Datetime index for ordering and time features."
+                        />
+                    </>
+                ) : (
+                    <>
+                        <NumberField
+                            label="Series length"
+                            value={config.data.generator.length}
+                            onChange={(value) => updateGenerator("length", value)}
+                            min={24}
+                            max={2000}
+                            hint="Number of generated observations."
+                        />
+                        <NumberField
+                            label="Baseline"
+                            value={config.data.generator.baseline}
+                            onChange={(value) => updateGenerator("baseline", value)}
+                            min={-1000}
+                            max={1000}
+                            step={0.1}
+                            hint="Base level for the synthetic series."
+                        />
+                        <NumberField
+                            label="Trend slope"
+                            value={config.data.generator.trendSlope}
+                            onChange={(value) => updateGenerator("trendSlope", value)}
+                            min={-10}
+                            max={10}
+                            step={0.01}
+                            hint="Linear trend increment per step."
+                        />
+                        <NumberField
+                            label="Seasonality amplitude"
+                            value={config.data.generator.seasonalityAmplitude}
+                            onChange={(value) => updateGenerator("seasonalityAmplitude", value)}
+                            min={0}
+                            max={200}
+                            step={0.1}
+                            hint="Magnitude of the seasonal oscillation."
+                        />
+                        <NumberField
+                            label="Seasonality period"
+                            value={config.data.generator.seasonalityPeriod}
+                            onChange={(value) => updateGenerator("seasonalityPeriod", value)}
+                            min={2}
+                            max={120}
+                            hint="Number of steps per seasonal cycle."
+                        />
+                        <NumberField
+                            label="Noise standard deviation"
+                            value={config.data.generator.noiseStd}
+                            onChange={(value) => updateGenerator("noiseStd", value)}
+                            min={0}
+                            max={50}
+                            step={0.1}
+                            hint="Random perturbation level in the synthetic data."
+                        />
+                        <TextField
+                            label="Target column"
+                            value={config.data.target}
+                            onChange={(value) => updateDataset("target", value)}
+                            hint="Column name used for generated target values."
+                        />
+                        <TextField
+                            label="Timestamp column"
+                            value={config.data.timestamp}
+                            onChange={(value) => updateDataset("timestamp", value)}
+                            hint="Column name used for generated timestamps."
+                        />
+                    </>
+                )}
                 <SelectField
                     label="Cadence"
                     value={config.data.freq}

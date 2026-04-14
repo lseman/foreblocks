@@ -3,10 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { HelpButton, NumberField, Panel, PipelineNode, SelectField, SkeletonBlock, StatPill, ToggleField } from "./base.jsx";
-import { buildOutlierPreview } from "../lib/outlier-algorithms.js";
+import { buildOutlierPreview } from "../lib/outliers/outlier-algorithms.js";
 import { buildFilterPreview, solveLinearSystem } from "../lib/filter-algorithms.js";
 import { buildDecomposition, shiftValues, buildRollingHistory } from "../lib/signal-algorithms.js";
-import { buildEmdOverviewData, buildEmdComponentSeries } from "../lib/diagnostics-emd.js";
+import { buildEmdOverviewData, buildEmdComponentSeries } from "../lib/diagnostics/diagnostics-emd.js";
 
 function uniqueSuggestions(items) {
     return Array.from(new Map(items.map((item) => [item.window, item])).values());

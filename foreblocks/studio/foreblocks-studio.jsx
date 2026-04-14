@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Code2, Cpu, Sun, Moon, Layers } from "lucide-react";
 
 import "./foreblocks-studio.css";
 
@@ -110,6 +111,71 @@ function fallbackAnalysis(activeFamily) {
     };
 }
 
+function normalizeGeneratorFreq(freq) {
+    switch (freq) {
+        case "H":
+            return "H";
+        case "D":
+            return "D";
+        case "W":
+            return "W";
+        case "M":
+            return "MS";
+        default:
+            return "D";
+    }
+}
+
+function advanceTimestamp(timestamp, freq) {
+    const next = new Date(timestamp.valueOf());
+    if (freq === "H") {
+        next.setUTCHours(next.getUTCHours() + 1);
+    } else if (freq === "W") {
+        next.setUTCDate(next.getUTCDate() + 7);
+    } else if (freq === "M") {
+        next.setUTCMonth(next.getUTCMonth() + 1);
+    } else {
+        next.setUTCDate(next.getUTCDate() + 1);
+    }
+    return next;
+}
+
+function deterministicNoise(index, seed = 42) {
+    const value = Math.sin(index * 12.9898 + seed) * 43758.5453;
+    const normalized = value - Math.floor(value);
+    return normalized * 2 - 1;
+}
+
+function generateSyntheticSeries(generator, freq, targetColumn, timestampColumn) {
+    const length = Math.max(24, Math.round(generator.length ?? 240));
+    const period = Math.max(2, Math.round(generator.seasonalityPeriod ?? 12));
+    const cadence = normalizeGeneratorFreq(freq);
+    const timestamps = [];
+    let cursor = new Date(Date.UTC(2021, 0, 1, 0, 0, 0));
+
+    for (let index = 0; index < length; index += 1) {
+        timestamps.push(cursor.toISOString());
+        cursor = advanceTimestamp(cursor, cadence);
+    }
+
+    return Array.from({ length }, (_unused, index) => {
+        const seasonal = (generator.seasonalityAmplitude ?? 0) * Math.sin((2 * Math.PI * index) / period);
+        const trend = (generator.trendSlope ?? 0) * index;
+        const noise = (generator.noiseStd ?? 0) * deterministicNoise(index);
+        return {
+            t: index,
+            value: (generator.baseline ?? 0) + trend + seasonal + noise,
+            timestamp: timestamps[index],
+            targetColumn,
+            timestampColumn,
+        };
+    }).map((point) => ({
+        t: point.t,
+        value: point.value,
+        timestamp: point.timestamp,
+    }));
+}
+
 function buildExperimentNarrative({ config, analysis, automationDiagnostics, benchmark, spectralDiagnostics, forecastabilityDiagnostics, datasetSummary, familyMeta }) {
     if (!automationDiagnostics) {
         return {
@@ -204,6 +270,12 @@ function buildThemeStyle(theme) {
         "--warm-soft": theme.warmSoft,
         "--cool": theme.cool,
         "--cool-soft": theme.coolSoft,
+        // surface tokens — themed tint levels, replaces hardcoded rgba(255,255,255,X)
+        "--s1": theme.surface1,
+        "--s2": theme.surface2,
+        "--s3": theme.surface3,
+        "--s4": theme.surface4,
+        "--s5": theme.surface5,
         "--grid": theme.grid,
         "--shadow": theme.shadow,
         "--glow": theme.glow,
@@ -218,10 +290,9 @@ function buildThemeStyle(theme) {
         "--code-function": theme.codeFunction,
         "--code-class": theme.codeClass,
         "--code-operator": theme.codeOperator,
-        "--overlay-opacity": theme.isDark ? 0.08 : 0.14,
+        "--overlay-opacity": theme.isDark ? 0.06 : 0.12,
         "--cool-border": theme.coolSoft,
         "--warm-border": theme.warmSoft,
-        "--button-text": "#f8fbff",
         colorScheme: theme.isDark ? "dark" : "light",
     };
 }
@@ -383,11 +454,14 @@ export default function ForeblocksStudio() {
     const familyMeta = FAMILY_META[config.model.family];
     const analysis = diagnosticsState.analysis ?? fallbackAnalysis(config.model.family);
     const datasetInfo = useMemo(() => {
+        if (config.data.source === "generated") {
+            return { kind: "generated", name: "synthetic" };
+        }
         if (uploadedDataset && uploadedDataset.name === config.data.filename) {
             return { kind: "upload", name: uploadedDataset.name };
         }
         return { kind: "path", name: config.data.filename };
-    }, [config.data.filename, uploadedDataset]);
+    }, [config.data.filename, config.data.source, uploadedDataset]);
     const code = useMemo(() => buildPythonPipeline(config, datasetInfo), [config, datasetInfo]);
     const notebook = useMemo(() => buildNotebook(config, datasetInfo), [config, datasetInfo]);
     const experimentNarrative = useMemo(() => buildExperimentNarrative({
@@ -440,32 +514,66 @@ export default function ForeblocksStudio() {
                 ...current,
                 status: "loading",
                 errorMessage: "",
-                sourceLabel: uploadedDataset?.name === config.data.filename
-                    ? uploadedDataset.name
-                    : config.data.filename,
+                sourceLabel: config.data.source === "generated"
+                    ? "Generated dataset"
+                    : uploadedDataset?.name === config.data.filename
+                        ? uploadedDataset.name
+                        : config.data.filename,
             }));
 
             try {
-                let csvText = "";
-                let sourceLabel = config.data.filename;
+                let parsedDataset;
+                let sourceLabel = config.data.source === "generated"
+                    ? "Generated dataset"
+                    : config.data.filename;
 
-                if (uploadedDataset && uploadedDataset.name === config.data.filename) {
-                    csvText = uploadedDataset.text;
-                    sourceLabel = uploadedDataset.name;
+                if (config.data.source === "generated") {
+                    const series = generateSyntheticSeries(
+                        config.data.generator,
+                        config.data.freq,
+                        config.data.target,
+                        config.data.timestamp,
+                    );
+
+                    parsedDataset = {
+                        headers: [config.data.timestamp, config.data.target],
+                        covariates: [],
+                        summary: {
+                            rowCount: series.length,
+                            columnCount: 2,
+                            missingCellCount: 0,
+                            targetColumn: config.data.target,
+                            timeColumn: config.data.timestamp,
+                            validObservationCount: series.length,
+                            missingTargetCount: 0,
+                            invalidTargetCount: 0,
+                            missingTimestampCount: 0,
+                            droppedRowCount: 0,
+                            exogenousCount: 0,
+                        },
+                        series,
+                    };
                 } else {
-                    const response = await fetch(config.data.filename, { cache: "no-store" });
-                    if (!response.ok) {
-                        throw new Error(
-                            `Could not fetch ${config.data.filename}. Upload a CSV or use a browser-reachable relative path.`,
-                        );
-                    }
-                    csvText = await response.text();
-                }
+                    let csvText = "";
 
-                const parsedDataset = parseSeriesCsvText(csvText, {
-                    targetColumn: config.data.target,
-                    timeColumn: config.data.timestamp,
-                });
+                    if (uploadedDataset && uploadedDataset.name === config.data.filename) {
+                        csvText = uploadedDataset.text;
+                        sourceLabel = uploadedDataset.name;
+                    } else {
+                        const response = await fetch(config.data.filename, { cache: "no-store" });
+                        if (!response.ok) {
+                            throw new Error(
+                                `Could not fetch ${config.data.filename}. Upload a CSV or use a browser-reachable relative path.`,
+                            );
+                        }
+                        csvText = await response.text();
+                    }
+
+                    parsedDataset = parseSeriesCsvText(csvText, {
+                        targetColumn: config.data.target,
+                        timeColumn: config.data.timestamp,
+                    });
+                }
 
                 if (!cancelled) {
                     setDatasetState({
@@ -485,7 +593,7 @@ export default function ForeblocksStudio() {
                         status: "error",
                         series: [],
                         errorMessage: error instanceof Error ? error.message : "Dataset loading failed.",
-                        sourceLabel: config.data.filename,
+                        sourceLabel: config.data.source === "generated" ? "Generated dataset" : config.data.filename,
                         points: 0,
                         headers: [],
                         covariates: [],
@@ -500,7 +608,7 @@ export default function ForeblocksStudio() {
         return () => {
             cancelled = true;
         };
-    }, [config.data.filename, config.data.target, config.data.timestamp, uploadedDataset]);
+    }, [config.data.source, config.data.filename, config.data.target, config.data.timestamp, config.data.freq, config.data.generator, uploadedDataset]);
 
     useEffect(() => {
         if (datasetState.status !== "ready") {
@@ -531,7 +639,7 @@ export default function ForeblocksStudio() {
             return undefined;
         }
 
-        const worker = new Worker(new URL("./lib/diagnostics.worker.js", import.meta.url), {
+        const worker = new Worker(new URL("./lib/diagnostics/diagnostics.worker.js", import.meta.url), {
             type: "module",
         });
 
@@ -862,7 +970,6 @@ export default function ForeblocksStudio() {
                     <select
                         className="theme-select"
                         value={themeKey}
-                        style={{ color: "white" }}
                         onChange={(event) => setThemeKey(event.target.value)}
                         aria-label="Choose Studio theme"
                     >
@@ -877,13 +984,14 @@ export default function ForeblocksStudio() {
                         aria-label={isDarkMode ? "Switch to light theme" : "Switch to dark theme"}
                         onClick={() => setThemeKey((current) => (current === "dark" ? "paper" : "dark"))}
                     >
-                        {isDarkMode ? "☀" : "◑"}
+                        {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
                     </button>
                     <button
                         className="ghost-button"
                         type="button"
                         onClick={() => setIsCodeModalOpen(true)}
                     >
+                        <Code2 size={13} />
                         Generate Code
                     </button>
                     <button
@@ -892,6 +1000,7 @@ export default function ForeblocksStudio() {
                         onClick={applyRecommendedBlueprint}
                         disabled={diagnosticsState.status !== "ready"}
                     >
+                        <Cpu size={13} />
                         Apply Blueprint
                     </button>
                 </div>

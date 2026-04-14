@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Check } from "lucide-react";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
@@ -477,7 +478,9 @@ export function HelpButton({ title, content }) {
 export function StepButton({ active, index, label, onClick }) {
     return (
         <button className={`step-button ${active ? "step-button-active" : ""}`} onClick={onClick}>
-            <span className="step-index">{active ? "●" : index + 1}</span>
+            <span className="step-index">
+                {active ? <Check size={10} strokeWidth={3} /> : index + 1}
+            </span>
             <span>{label}</span>
         </button>
     );
