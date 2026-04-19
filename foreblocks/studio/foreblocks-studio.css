@@ -1855,6 +1855,31 @@ textarea {
     min-height: min(72vh, 820px);
 }
 
+.share-link-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: center;
+    margin-top: 1rem;
+}
+
+.share-link-input {
+    width: 100%;
+    padding: 12px 14px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--text);
+    outline: none;
+    min-width: 0;
+}
+
+.share-link-input:focus {
+    border-color: var(--border-strong);
+    box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
+}
+
 .modal-close {
     appearance: none;
     position: absolute;

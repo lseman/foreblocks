@@ -1,8 +1,8 @@
 from .att import AttentionLayer
 from .conformal import ConformalPredictionEngine
-from .model import BaseHead, ForecastingModel, TimewiseGraph
 from .extend import DistilledForecastingModel
 from .heads import HeadComposer, HeadSpec
+from .model import BaseHead, ForecastingModel, TimewiseGraph
 
 __all__ = [
     "AttentionLayer",

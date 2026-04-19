@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Code2, Cpu, Sun, Moon, Layers } from "lucide-react";
 
 import "./foreblocks-studio.css";
@@ -44,22 +44,10 @@ import {
 } from "./lib/studio-data.js";
 import { inspectCsvText, parseSeriesCsvText } from "./lib/csv-loader.js";
 import { buildNotebook, buildPythonPipeline } from "./lib/pipeline.js";
-
-function createEmptyDatasetSummary() {
-    return {
-        rowCount: 0,
-        columnCount: 0,
-        missingCellCount: 0,
-        targetColumn: "",
-        timeColumn: "",
-        validObservationCount: 0,
-        missingTargetCount: 0,
-        invalidTargetCount: 0,
-        missingTimestampCount: 0,
-        droppedRowCount: 0,
-        exogenousCount: 0,
-    };
-}
+import {
+    createEmptyDatasetSummary,
+    useStudioStore,
+} from "./lib/studio-store.js";
 
 function fallbackAnalysis(activeFamily) {
     return {
@@ -109,6 +97,32 @@ function fallbackAnalysis(activeFamily) {
         recommendedPatchStride: 0,
         multiscaleLabel: "unknown",
     };
+}
+
+function downloadFile(filename, content, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function encodeConfigPayload(value) {
+    const json = JSON.stringify(value);
+    return encodeURIComponent(btoa(unescape(encodeURIComponent(json))));
+}
+
+function decodeConfigPayload(value) {
+    try {
+        const json = decodeURIComponent(escape(atob(decodeURIComponent(value))));
+        return JSON.parse(json);
+    } catch {
+        return null;
+    }
 }
 
 function normalizeGeneratorFreq(freq) {
@@ -345,93 +359,100 @@ function BlueprintStep({ analysis, config, familyMeta, onApplyBlueprint, onReset
 }
 
 export default function ForeblocksStudio() {
-    const [activeStep, setActiveStep] = useState(0);
-    const [config, setConfig] = useState(INITIAL_CONFIG);
-    const [isCodeModalOpen, setIsCodeModalOpen] = useState(false);
-    const [activeExploreTab, setActiveExploreTab] = useState("series");
-    const [activeRightRailTab, setActiveRightRailTab] = useState("explore");
-    const [activePrepLabSubgroup, setActivePrepLabSubgroup] = useState("outliers");
-    const [activeEmdLikeSubgroup, setActiveEmdLikeSubgroup] = useState("emd");
-    const [activeRegimeSubgroup, setActiveRegimeSubgroup] = useState("signal");
-    const [uploadedDataset, setUploadedDataset] = useState(null);
-    const [themeKey, setThemeKey] = useState(() => {
-        if (typeof window !== "undefined") {
-            return localStorage.getItem("studioTheme") || "paper";
-        }
-        return "paper";
-    });
-    const [changePointMethod, setChangePointMethod] = useState("segmentation");
-    const [outlierPreviewMethod, setOutlierPreviewMethod] = useState(INITIAL_CONFIG.prep.outlierMethod);
-    const [filterPreviewSettings, setFilterPreviewSettings] = useState({
-        applyFilter: false,
-        filterMethod: "none",
-        filterWindow: 9,
-        filterPolyorder: 2,
-        lowessFraction: 0.12,
-        detrend: false,
-        detrenderMethod: "none",
-        detrenderOrder: 2,
-    });
-    const [datasetState, setDatasetState] = useState({
-        status: "loading",
-        series: [],
-        errorMessage: "",
-        sourceLabel: INITIAL_CONFIG.data.filename,
-        points: 0,
-        headers: [],
-        covariates: [],
-        summary: createEmptyDatasetSummary(),
-    });
-    const [emdOptions, setEmdOptions] = useState({
-        maxImfs: 6,
-        maxSifts: 80,
-        siftThreshold: 0.03,
-    });
-    const [eemdOptions, setEemdOptions] = useState({
-        maxImfs: 6,
-        ensembleSize: 8,
-        noiseStdRatio: 0.15,
-        siftThreshold: 0.08,
-        maxSifts: 80,
-    });
-    const [ewtOptions, setEwtOptions] = useState({
-        maxBands: 5,
-        smoothingWindow: 7,
-        detectThreshold: 0.05,
-        gamma: 0.1,
-    });
-    const [vmdOptions, setVmdOptions] = useState({
-        modeCount: 4,
-        alpha: 2000,
-        tolerance: 1e-7,
-        maxIterations: 500,
-    });
+    const fileInputRef = useRef(null);
 
-    const [diagnosticsState, setDiagnosticsState] = useState({
-        status: "loading",
-        analysis: null,
-        acfCurve: [],
-        pacfCurve: [],
-        decomposition: null,
-        benchmark: null,
-        exogenousScreening: [],
-        grangerDiagnostics: null,
-        changePoints: null,
-        residualDiagnostics: null,
-        stabilityDiagnostics: null,
-        spectralDiagnostics: null,
-        forecastabilityDiagnostics: null,
-        patchingDiagnostics: null,
-        emdDiagnostics: null,
-        eemdDiagnostics: null,
-        ewtDiagnostics: null,
-        vmdDiagnostics: null,
-        calendarDiagnostics: null,
-        intermittencyDiagnostics: null,
-        volatilityDiagnostics: null,
-        automationDiagnostics: null,
-        errorMessage: "",
-    });
+    const activeStep = useStudioStore((state) => state.activeStep);
+    const setActiveStep = useStudioStore((state) => state.setActiveStep);
+    const isCodeModalOpen = useStudioStore((state) => state.isCodeModalOpen);
+    const setIsCodeModalOpen = useStudioStore((state) => state.setIsCodeModalOpen);
+    const activeExploreTab = useStudioStore((state) => state.activeExploreTab);
+    const setActiveExploreTab = useStudioStore((state) => state.setActiveExploreTab);
+    const activeRightRailTab = useStudioStore((state) => state.activeRightRailTab);
+    const setActiveRightRailTab = useStudioStore((state) => state.setActiveRightRailTab);
+    const activePrepLabSubgroup = useStudioStore((state) => state.activePrepLabSubgroup);
+    const setActivePrepLabSubgroup = useStudioStore((state) => state.setActivePrepLabSubgroup);
+    const activeEmdLikeSubgroup = useStudioStore((state) => state.activeEmdLikeSubgroup);
+    const setActiveEmdLikeSubgroup = useStudioStore((state) => state.setActiveEmdLikeSubgroup);
+    const activeRegimeSubgroup = useStudioStore((state) => state.activeRegimeSubgroup);
+    const setActiveRegimeSubgroup = useStudioStore((state) => state.setActiveRegimeSubgroup);
+    const themeKey = useStudioStore((state) => state.themeKey);
+    const setThemeKey = useStudioStore((state) => state.setThemeKey);
+    const canUndo = useStudioStore((state) => state.canUndo);
+    const canRedo = useStudioStore((state) => state.canRedo);
+    const undoConfig = useStudioStore((state) => state.undoConfig);
+    const redoConfig = useStudioStore((state) => state.redoConfig);
+    const loadWorkspace = useStudioStore((state) => state.loadWorkspace);
+
+    const uploadedDataset = useStudioStore((state) => state.uploadedDataset);
+    const datasetState = useStudioStore((state) => state.datasetState);
+    const setUploadedDataset = useStudioStore((state) => state.setUploadedDataset);
+    const setDatasetState = useStudioStore((state) => state.setDatasetState);
+
+    const changePointMethod = useStudioStore((state) => state.changePointMethod);
+    const setChangePointMethod = useStudioStore((state) => state.setChangePointMethod);
+    const outlierPreviewMethod = useStudioStore((state) => state.outlierPreviewMethod);
+    const setOutlierPreviewMethod = useStudioStore((state) => state.setOutlierPreviewMethod);
+    const filterPreviewSettings = useStudioStore((state) => state.filterPreviewSettings);
+    const setFilterPreviewSettings = useStudioStore((state) => state.setFilterPreviewSettings);
+    const emdOptions = useStudioStore((state) => state.emdOptions);
+    const setEmdOptions = useStudioStore((state) => state.setEmdOptions);
+    const eemdOptions = useStudioStore((state) => state.eemdOptions);
+    const setEemdOptions = useStudioStore((state) => state.setEemdOptions);
+    const ewtOptions = useStudioStore((state) => state.ewtOptions);
+    const setEwtOptions = useStudioStore((state) => state.setEwtOptions);
+    const vmdOptions = useStudioStore((state) => state.vmdOptions);
+    const setVmdOptions = useStudioStore((state) => state.setVmdOptions);
+    const diagnosticsState = useStudioStore((state) => state.diagnosticsState);
+    const setDiagnosticsState = useStudioStore((state) => state.setDiagnosticsState);
+
+    const config = useStudioStore((state) => state.config);
+    const setConfig = useStudioStore((state) => state.setConfig);
+    const resetConfig = useStudioStore((state) => state.resetConfig);
+
+    const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+    const [shareLink, setShareLink] = useState("");
+
+    const copyShareLink = async () => {
+        if (!shareLink) {
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(shareLink);
+        } catch {
+            const textarea = document.createElement("textarea");
+            textarea.value = shareLink;
+            textarea.setAttribute("readonly", "");
+            textarea.style.position = "absolute";
+            textarea.style.left = "-9999px";
+            document.body.appendChild(textarea);
+            textarea.select();
+
+            try {
+                document.execCommand("copy");
+            } catch {
+                window.prompt("Copy this link:", shareLink);
+            }
+
+            document.body.removeChild(textarea);
+        }
+    };
+
+    const openShareModal = () => {
+        if (typeof window === "undefined") {
+            return;
+        }
+
+        const payload = { config };
+        const encoded = encodeConfigPayload(payload);
+        const permalink = `${window.location.origin}${window.location.pathname}?config=${encoded}`;
+        setShareLink(permalink);
+        setIsShareModalOpen(true);
+    };
+
+    const closeShareModal = () => {
+        setIsShareModalOpen(false);
+    };
 
     const theme = useMemo(() => {
         const themes = {
@@ -475,6 +496,74 @@ export default function ForeblocksStudio() {
         familyMeta,
     }), [config, analysis, diagnosticsState.automationDiagnostics, diagnosticsState.benchmark, diagnosticsState.spectralDiagnostics, diagnosticsState.forecastabilityDiagnostics, datasetState.summary, familyMeta]);
 
+    const copyPermalink = async () => {
+        if (typeof window === "undefined") {
+            return;
+        }
+
+        const payload = { config };
+        const encoded = encodeConfigPayload(payload);
+        const permalink = `${window.location.origin}${window.location.pathname}?config=${encoded}`;
+
+        try {
+            await navigator.clipboard.writeText(permalink);
+        } catch {
+            const textarea = document.createElement("textarea");
+            textarea.value = permalink;
+            textarea.setAttribute("readonly", "");
+            textarea.style.position = "absolute";
+            textarea.style.left = "-9999px";
+            document.body.appendChild(textarea);
+            textarea.select();
+
+            try {
+                document.execCommand("copy");
+            } catch {
+                window.prompt("Copy this link:", permalink);
+            }
+
+            document.body.removeChild(textarea);
+        }
+    };
+
+    const exportWorkspace = () => {
+        const workspace = {
+            config,
+            uploadedDataset,
+            datasetState,
+            diagnosticsState,
+            themeKey,
+            activeStep,
+            activeExploreTab,
+            activeRightRailTab,
+            activePrepLabSubgroup,
+            activeEmdLikeSubgroup,
+            activeRegimeSubgroup,
+        };
+        downloadFile("foreblocks_workspace.json", JSON.stringify(workspace, null, 2), "application/json");
+    };
+
+    const handleWorkspaceImport = async (event) => {
+        const file = event.target.files?.[0];
+        if (!file) {
+            return;
+        }
+
+        try {
+            const text = await file.text();
+            const workspace = JSON.parse(text);
+            if (workspace?.config) {
+                loadWorkspace(workspace);
+            }
+        } catch (error) {
+            console.error("Workspace import failed", error);
+        } finally {
+            if (event.target) {
+                event.target.value = "";
+            }
+        }
+    };
+
     useEffect(() => {
         if (!isCodeModalOpen) {
             return undefined;
@@ -505,6 +594,23 @@ export default function ForeblocksStudio() {
             }
         }
     }, [themeKey]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+
+        const params = new URLSearchParams(window.location.search);
+        const configParam = params.get("config");
+        if (!configParam) {
+            return;
+        }
+
+        const decoded = decodeConfigPayload(configParam);
+        if (decoded?.config) {
+            setConfig(decoded.config, { recordHistory: false });
+        }
+    }, [setConfig]);
 
     useEffect(() => {
         let cancelled = false;
@@ -863,23 +969,6 @@ export default function ForeblocksStudio() {
         openWorkflowTarget(action);
     };
 
-    const resetConfig = () => {
-        setConfig(INITIAL_CONFIG);
-        setUploadedDataset(null);
-        setChangePointMethod("segmentation");
-        setOutlierPreviewMethod(INITIAL_CONFIG.prep.outlierMethod);
-        setFilterPreviewSettings({
-            applyFilter: false,
-            filterMethod: "none",
-            filterWindow: 9,
-            filterPolyorder: 2,
-            lowessFraction: 0.12,
-            detrend: false,
-            detrenderMethod: "none",
-            detrenderOrder: 2,
-        });
-    };
-
     const handleFileLoad = async (file) => {
         const text = await file.text();
         let detectedTarget = config.data.target;
@@ -946,6 +1035,13 @@ export default function ForeblocksStudio() {
     return (
         <div className="studio-root" style={themeStyle} data-color-scheme={isDarkMode ? "dark" : "light"}>
             <header className="topbar">
+                <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="application/json"
+                    style={{ display: "none" }}
+                    onChange={handleWorkspaceImport}
+                />
                 <div className="brand">
                     <div className="brand-mark" aria-hidden="true">
                         <StudioLogo />
@@ -985,6 +1081,43 @@ export default function ForeblocksStudio() {
                         onClick={() => setThemeKey((current) => (current === "dark" ? "paper" : "dark"))}
                     >
                         {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
+                    </button>
+                    <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={undoConfig}
+                        disabled={!canUndo}
+                    >
+                        Undo
+                    </button>
+                    <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={redoConfig}
+                        disabled={!canRedo}
+                    >
+                        Redo
+                    </button>
+                    <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={openShareModal}
+                    >
+                        Share
+                    </button>
+                    <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={exportWorkspace}
+                    >
+                        Export
+                    </button>
+                    <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                    >
+                        Import
                     </button>
                     <button
                         className="ghost-button"
@@ -1373,6 +1506,59 @@ export default function ForeblocksStudio() {
                 </section>
             </main>
 
+            {isShareModalOpen ? (
+                <div
+                    className="modal-overlay"
+                    role="presentation"
+                    onClick={closeShareModal}
+                >
+                    <div
+                        className="modal-dialog modal-code-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Share configuration link"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            className="modal-close"
+                            type="button"
+                            aria-label="Close share link dialog"
+                            onClick={closeShareModal}
+                        >
+                            Close
+                        </button>
+                        <div className="panel">
+                            <div className="panel-head">
+                                <div>
+                                    <div className="panel-kicker">Share</div>
+                                    <h3 className="panel-title">Configuration permalink</h3>
+                                </div>
+                            </div>
+                            <div className="panel-body">
+                                <p className="lead-copy">
+                                    Use this link to open the current config in another browser session.
+                                </p>
+                                <div className="share-link-row">
+                                    <input
+                                        type="text"
+                                        readOnly
+                                        className="share-link-input"
+                                        value={shareLink}
+                                        onFocus={(event) => event.target.select()}
+                                    />
+                                    <button
+                                        className="solid-button"
+                                        type="button"
+                                        onClick={copyShareLink}
+                                    >
+                                        Copy link
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
             {isCodeModalOpen ? (
                 <div
                     className="modal-overlay"

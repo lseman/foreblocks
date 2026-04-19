@@ -166,7 +166,7 @@ These are the top-level imports currently exposed by `foreblocks`:
 | `foretools/tsgen` | synthetic time-series generator and notebooks |
 | `examples/` | notebooks and runnable usage examples |
 | `web/` | static landing page assets for the published site root |
-| `docs/` | MkDocs source for the versioned documentation site published under `/docs/` |
+| `docs/` | VitePress source for the versioned documentation site published under `/docs/` |
 
 ## Documentation Map
 
@@ -199,10 +199,10 @@ Useful notebooks and examples:
 - [AdaptiveMRMR Demo](examples/adaptive_mrmr_demo.py)
 - [Example notebooks](examples/)
 
-There is also a repository-local docs navigation file at [`mkdocs.yml`](mkdocs.yml). The current publishing model is:
+There is also a repository-local docs navigation file at [`docs/.vitepress/config.js`](docs/.vitepress/config.js). The current publishing model is:
 
 - site root `/`: custom landing page from `web/index.html`
-- site docs `/docs/`: MkDocs site built from `docs/`
+- site docs `/docs/`: VitePress site built from `docs/`
 
 ## Current Project Status
 

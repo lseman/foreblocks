@@ -19,7 +19,7 @@ The documentation system is organized as:
 - `docs/reference/`: API and repository reference
 - root-level guide pages in `docs/`: subsystem-focused guides
 - [`web/index.html`](https://github.com/lseman/foreblocks/blob/main/web/index.html): static landing page source for the site root
-- [`mkdocs.yml`](https://github.com/lseman/foreblocks/blob/main/mkdocs.yml): navigation and site structure for the `/docs/` site
+- [`docs/.vitepress/config.js`](https://github.com/lseman/foreblocks/blob/main/docs/.vitepress/config.js): navigation and site structure for the `/docs/` site
 
 ## When to update docs
 
@@ -50,22 +50,22 @@ For any meaningful user-facing change, update:
 
 ## Local preview
 
-This repository now uses `mkdocs-material` with `pymdownx` Markdown extensions. Install it first:
+This repository now uses VitePress for the versioned documentation site. Install the Node dependencies first:
 
 ```bash
-pip install mkdocs-material
+npm install
 ```
 
-Then serve the wiki locally:
+Then serve the docs locally:
 
 ```bash
-mkdocs serve
+npm run docs:dev
 ```
 
 Or build a static site:
 
 ```bash
-mkdocs build
+npm run docs:build
 ```
 
 ## Related pages

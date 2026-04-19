@@ -221,6 +221,49 @@
       gap: 0.5rem;
     }
 
+    .nav-toggle {
+      display: none;
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.15s;
+    }
+
+    .nav-toggle:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .nav-toggle span {
+      display: block;
+      width: 18px;
+      height: 2px;
+      border-radius: 999px;
+      background: currentColor;
+      transition: transform 0.25s ease, opacity 0.25s ease;
+    }
+
+    .nav-toggle span+span {
+      margin-top: 4px;
+    }
+
+    .nav-toggle.open span:nth-child(1) {
+      transform: translateY(6px) rotate(45deg);
+    }
+
+    .nav-toggle.open span:nth-child(2) {
+      opacity: 0;
+    }
+
+    .nav-toggle.open span:nth-child(3) {
+      transform: translateY(-6px) rotate(-45deg);
+    }
+
     .btn-ghost {
       font-size: 0.83rem;
       font-weight: 500;
@@ -1373,9 +1416,32 @@
        RESPONSIVE
     ═══════════════════════════════════════════ */
     @media (max-width: 1024px) {
+      .hero {
+        padding: 100px 1.5rem 80px;
+      }
+
       .hero-inner {
         grid-template-columns: 1fr;
         max-width: 640px;
+        gap: 2.5rem;
+      }
+
+      .hero-title {
+        font-size: clamp(3rem, 6vw, 4.4rem);
+      }
+
+      .hero-desc {
+        max-width: 100%;
+      }
+
+      .hero-ctas {
+        margin-bottom: 2rem;
+      }
+
+      .btn-primary,
+      .btn-outline {
+        width: 100%;
+        justify-content: center;
       }
 
       .hero-panel {
@@ -1424,12 +1490,107 @@
         grid-template-columns: 1fr;
       }
 
-      .nav-links {
+      .nav-actions {
         display: none;
       }
 
+      .nav-toggle {
+        display: inline-flex;
+      }
+
+      .nav-links {
+        position: absolute;
+        inset-inline: 0;
+        top: 60px;
+        z-index: 101;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.45rem;
+        padding: 0.75rem 0.8rem 1rem;
+        background: rgba(7, 9, 13, 0.98);
+        border-bottom: 1px solid var(--border);
+        max-height: 0;
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+        transition: max-height 0.28s ease, opacity 0.2s ease;
+      }
+
+      .nav-links.open {
+        max-height: calc(100vh - 60px);
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .nav-links li {
+        width: 100%;
+      }
+
+      .nav-links a {
+        flex: 1 1 auto;
+        min-width: 0;
+        text-align: center;
+        padding: 0.85rem 1rem;
+        border-radius: 14px;
+      }
+
+      .hero {
+        padding: 100px 1rem 98px;
+      }
+
+      .hero-inner {
+        gap: 1.75rem;
+      }
+
+      .hero-title {
+        font-size: clamp(2.4rem, 9vw, 3.6rem);
+      }
+
+      .hero-desc {
+        font-size: 0.98rem;
+        line-height: 1.75;
+      }
+
+      .hero-ctas {
+        gap: 0.6rem;
+      }
+
+      .btn-primary,
+      .btn-outline {
+        padding: 0.75rem 1rem;
+      }
+
+      .nav-inner {
+        padding: 0 1rem;
+      }
+
+      .quick-nav {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.85rem;
+      }
+
+      .install-table,
+      .code-panel,
+      .term-body {
+        overflow-x: auto;
+      }
+
+      .install-table {
+        min-width: 100%;
+      }
+
+      .container {
+        padding-inline: 0.5rem;
+      }
+
+      body {
+        padding-bottom: 84px;
+      }
+
       .section {
-        padding: 4rem 1.5rem;
+        padding: 3rem 1rem;
       }
     }
   </style>
@@ -1459,6 +1620,11 @@
         <li><a href="#api">API</a></li>
         <li><a href="#examples">Examples</a></li>
       </ul>
+      <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" type="button">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
       <div class="nav-actions">
         <a href="/studio/" class="btn-ghost" style="display:none" id="nav-studio">Studio</a>
         <a href="docs/" class="btn-ghost">Docs</a>
@@ -2158,8 +2324,34 @@ print(history.train_losses[-1], metrics)</code></pre>
         if (!target) return;
         e.preventDefault();
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        const navLinksEl = document.querySelector('.nav-links');
+        const navToggle = document.querySelector('.nav-toggle');
+        if (window.innerWidth <= 640 && navLinksEl?.classList.contains('open')) {
+          navLinksEl.classList.remove('open');
+          navToggle?.classList.remove('open');
+        }
       });
     });
+
+    const navToggle = document.querySelector('.nav-toggle');
+    const navLinksEl = document.querySelector('.nav-links');
+
+    if (navToggle && navLinksEl) {
+      navToggle.addEventListener('click', () => {
+        const open = navLinksEl.classList.toggle('open');
+        navToggle.classList.toggle('open');
+        navToggle.setAttribute('aria-expanded', String(open));
+      });
+
+      document.addEventListener('click', (event) => {
+        if (!navLinksEl.contains(event.target) && !navToggle.contains(event.target)) {
+          navLinksEl.classList.remove('open');
+          navToggle.classList.remove('open');
+          navToggle.setAttribute('aria-expanded', 'false');
+        }
+      });
+    }
 
     // Copy buttons
     document.querySelectorAll('.copy-btn').forEach(btn => {

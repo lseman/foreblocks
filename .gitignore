@@ -67,7 +67,9 @@ pygit
 *backup*
 .superpowers/
 
+# Docs build output and local VitePress cache
 site/
+docs/.vitepress/cache/
 
 # ignore all node_modules
 node_modules/

@@ -91,96 +91,96 @@
 
 ## Documentation map
 
-=== "Tutorials"
+### Tutorials
 
-    Step-by-step runnable paths:
+Step-by-step runnable paths:
 
-    - [Getting Started](getting-started.md)
-    - [Train A Direct Model](tutorials/train-direct-model.md)
-    - [Run A DARTS Search](tutorials/darts-multifidelity-search.md)
-    - [Generate Synthetic Series](tutorials/generate-synthetic-series.md)
-    - [Optimize With BOHB](tutorials/optimize-with-bohb.md)
+- [Getting Started](getting-started.md)
+- [Train A Direct Model](tutorials/train-direct-model.md)
+- [Run A DARTS Search](tutorials/darts-multifidelity-search.md)
+- [Generate Synthetic Series](tutorials/generate-synthetic-series.md)
+- [Optimize With BOHB](tutorials/optimize-with-bohb.md)
 
-=== "Guides"
+### Guides
 
-    Topic-based deep dives:
+Topic-based deep dives:
 
-    - [Preprocessor](preprocessor.md)
-    - [Custom Blocks](custom_blocks.md)
-    - [Transformer](transformer.md)
-    - [Mixture of Experts](moe.md)
-    - [Hybrid Mamba](hybrid-mamba.md)
-    - [DARTS](darts.md)
-    - [Evaluation & Metrics](evaluation.md)
-    - [Uncertainty Quantification](uncertainty.md)
-    - [Web UI](webui.md)
-    - [Troubleshooting](troubleshooting.md)
+- [Preprocessor](preprocessor.md)
+- [Custom Blocks](custom_blocks.md)
+- [Transformer](transformer.md)
+- [Mixture of Experts](moe.md)
+- [Hybrid Mamba](hybrid-mamba.md)
+- [DARTS](darts.md)
+- [Evaluation & Metrics](evaluation.md)
+- [Uncertainty Quantification](uncertainty.md)
+- [Web UI](webui.md)
+- [Troubleshooting](troubleshooting.md)
 
-=== "Foretools"
+### Foretools
 
-    Companion utilities and helpers:
+Companion utilities and helpers:
 
-    - [Foretools Overview](foretools/index.md)
-    - [Time Series Generator](foretools/tsgen.md)
-    - [BOHB Search](foretools/bohb.md)
-    - [VMD Decomposition](foretools/vmd.md)
-    - [AutoDA Augmentation](foretools/tsaug.md)
-    - [Feature Engineering](foretools/feature-engineering.md)
+- [Foretools Overview](foretools/index.md)
+- [Time Series Generator](foretools/tsgen.md)
+- [BOHB Search](foretools/bohb.md)
+- [VMD Decomposition](foretools/vmd.md)
+- [AutoDA Augmentation](foretools/tsaug.md)
+- [Feature Engineering](foretools/feature-engineering.md)
 
-=== "Architecture"
+### Architecture
 
-    Internals and system notes:
+Internals and system notes:
 
-    - [System Overview](architecture/system-overview.md)
-    - [Forecasting Pipeline](architecture/forecasting-pipeline.md)
-    - [DARTS Search Pipeline](architecture/darts-pipeline.md)
+- [System Overview](architecture/system-overview.md)
+- [Forecasting Pipeline](architecture/forecasting-pipeline.md)
+- [DARTS Search Pipeline](architecture/darts-pipeline.md)
 
 ## Stable public entry points
 
 Start here before using deep imports:
 
-=== "Core"
+### Core
 
-    ```python
-    from foreblocks import (
-        ForecastingModel,
-        Trainer,
-        ModelEvaluator,
-        TimeSeriesHandler,
-        TimeSeriesDataset,
-        create_dataloaders,
-        ModelConfig,
-        TrainingConfig,
-    )
-    ```
+```python
+from foreblocks import (
+    ForecastingModel,
+    Trainer,
+    ModelEvaluator,
+    TimeSeriesHandler,
+    TimeSeriesDataset,
+    create_dataloaders,
+    ModelConfig,
+    TrainingConfig,
+)
+```
 
-=== "Architecture search"
+### Architecture search
 
-    ```python
-    from foreblocks.darts import (
-        DARTSTrainer,
-        DARTSConfig,
-        DARTSTrainConfig,
-        FinalTrainConfig,
-        MultiFildelitySearchConfig,
-    )
-    ```
+```python
+from foreblocks.darts import (
+    DARTSTrainer,
+    DARTSConfig,
+    DARTSTrainConfig,
+    FinalTrainConfig,
+    MultiFildelitySearchConfig,
+)
+```
 
-=== "Uncertainty"
+### Uncertainty
 
-    ```python
-    from foreblocks.core import ConformalPredictionEngine
-    ```
+```python
+from foreblocks.core import ConformalPredictionEngine
+```
 
-=== "Hybrid Mamba"
+### Hybrid Mamba
 
-    ```python
-    from foreblocks.hybrid_mamba import (
-        HybridMambaBlock,
-        HybridMamba2Block,
-        TinyHybridMamba2LM,
-    )
-    ```
+```python
+from foreblocks.hybrid_mamba import (
+    HybridMambaBlock,
+    HybridMamba2Block,
+    TinyHybridMamba2LM,
+)
+```
 
 <div class="docs-callout">
   The docs now mirror the package split more intentionally: stable forecasting first,

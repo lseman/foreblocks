@@ -4822,14 +4822,30 @@ export function CodePanel({ code, notebook }) {
             kicker="Blueprint"
             actions={
                 <div className="topbar-actions">
+                    <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => downloadFile("forecast_pipeline.py", code, "text/plain;charset=utf-8")}
+                    >
+                        Download .py
+                    </button>
                     {notebook ? (
-                        <button
-                            className="ghost-button"
-                            type="button"
-                            onClick={() => downloadFile("forecast_pipeline.ipynb", notebook, "application/json")}
-                        >
-                            Download .ipynb
-                        </button>
+                        <>
+                            <button
+                                className="ghost-button"
+                                type="button"
+                                onClick={() => downloadFile("forecast_pipeline.ipynb", notebook, "application/json")}
+                            >
+                                Download .ipynb
+                            </button>
+                            <button
+                                className="ghost-button"
+                                type="button"
+                                onClick={() => navigator.clipboard.writeText(notebook)}
+                            >
+                                Copy notebook
+                            </button>
+                        </>
                     ) : null}
                     <button className="ghost-button" type="button" onClick={() => navigator.clipboard.writeText(code)}>
                         Copy script

@@ -5,9 +5,10 @@ on:
     paths:
       - "docs/**"
       - "web/**"
+      - "package.json"
+      - "package-lock.json"
       - "foreblocks/studio/**"
       - "build_studio_web.sh"
-      - "mkdocs.yml"
       - ".github/workflows/docs.yml"
   push:
     branches:
@@ -15,9 +16,10 @@ on:
     paths:
       - "docs/**"
       - "web/**"
+      - "package.json"
+      - "package-lock.json"
       - "foreblocks/studio/**"
       - "build_studio_web.sh"
-      - "mkdocs.yml"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -45,21 +47,26 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node
+        uses: actions/setup-node@v5
         with:
-          python-version: "3.12"
+          node-version: "20"
+          cache: "npm"
 
-      - name: Install MkDocs Material
+      - name: Install docs dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install mkdocs-material
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      - name: Build docs under /docs
-        run: mkdocs build --strict
+      - name: Build VitePress docs under /docs
+        run: npm run docs:build
 
       - name: Assemble root landing page
         run: |
+          mkdir -p site
           cp web/index.html site/index.html
           cp web/logo.svg site/logo.svg
           cp -R web/imgs site/imgs

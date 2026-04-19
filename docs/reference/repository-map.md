@@ -7,9 +7,9 @@ This page gives a quick path through the repository for contributors and power u
 | Path | Purpose |
 | --- | --- |
 | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md) | GitHub landing page |
-| [`mkdocs.yml`](https://github.com/lseman/foreblocks/blob/main/mkdocs.yml) | Navigation and site structure for the `/docs/` site |
+| [`docs/.vitepress/config.js`](https://github.com/lseman/foreblocks/blob/main/docs/.vitepress/config.js) | Navigation and site structure for the `/docs/` site |
 | `web/` | Static landing page assets for the published site root |
-| `docs/` | MkDocs source for the versioned documentation site |
+| `docs/` | VitePress source for the versioned documentation site |
 | `examples/` | Notebooks and runnable examples |
 | `foreblocks/` | Main forecasting library |
 | `foretools/` | Companion tooling |

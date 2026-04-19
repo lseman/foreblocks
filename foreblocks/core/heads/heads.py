@@ -14,6 +14,7 @@ from .learnable_fourier_seasonal_head import (
     LearnableFourierSeasonal,
     LearnableFourierSeasonalHead,
 )
+from .multikernel_conv_head import MultiKernelConvHead
 from .multiscale_conv_head import MultiScaleConv, MultiScaleConvHead
 from .patch_embed_head import PatchEmbed, PatchEmbedHead
 from .revin_head import RevIN, RevINHead
@@ -37,6 +38,7 @@ __all__ = [
     "LearnableFourierSeasonalHead",
     "MultiScaleConv",
     "MultiScaleConvHead",
+    "MultiKernelConvHead",
     "PatchEmbed",
     "PatchEmbedHead",
     "RevIN",

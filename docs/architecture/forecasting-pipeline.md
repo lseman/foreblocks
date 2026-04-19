@@ -51,17 +51,21 @@ If you start from raw series data, `TimeSeriesHandler` handles:
 
 The central abstraction is `ForecastingModel`. Common paths:
 
-=== "Direct"
-    A single `head` module maps from flattened input to the forecast horizon. Simplest path.
+### Direct
 
-=== "Seq2Seq (recurrent)"
-    LSTM or GRU encoder produces a context vector; a separate decoder generates horizon steps.
+A single `head` module maps from flattened input to the forecast horizon. Simplest path.
 
-=== "Transformer"
-    `TransformerEncoder` + `TransformerDecoder` with patching, attention-type selection, MoE feedforward, and skip connections.
+### Seq2Seq (recurrent)
 
-=== "Hybrid Mamba"
-    `HybridMambaBlock` or `HybridMamba2Block` as backbone — SSM dynamics with optional sliding-window attention.
+LSTM or GRU encoder produces a context vector; a separate decoder generates horizon steps.
+
+### Transformer
+
+`TransformerEncoder` + `TransformerDecoder` with patching, attention-type selection, MoE feedforward, and skip connections.
+
+### Hybrid Mamba
+
+`HybridMambaBlock` or `HybridMamba2Block` as backbone - SSM dynamics with optional sliding-window attention.
 
 ## Training
 
@@ -73,8 +77,9 @@ The central abstraction is `ForecastingModel`. Common paths:
 - optional NAS hooks for DARTS
 - optional conformal machinery during training
 
-!!! tip
-    Pass `auto_track=False` for local smoke tests to skip MLTracker initialisation.
+::: tip
+Pass `auto_track=False` for local smoke tests to skip MLTracker initialisation.
+:::
 
 ## Evaluation
 
@@ -83,14 +88,17 @@ See [Evaluation & Metrics](../evaluation.md) for the full API.
 
 ## Optional branches
 
-??? note "Conformal prediction intervals"
-    After training, use `ConformalPredictionEngine` to attach coverage-guaranteed prediction bands to any model, using only a held-out calibration set. See [Uncertainty Quantification](../uncertainty.md).
+::: info Conformal prediction intervals
+After training, use `ConformalPredictionEngine` to attach coverage-guaranteed prediction bands to any model, using only a held-out calibration set. See [Uncertainty Quantification](../uncertainty.md).
+:::
 
-??? note "Neural architecture search"
-    Replace the manual model-assembly step with `DARTSSearcher`. The searcher handles zero-cost screening, bilevel search, and final retraining. See [DARTS Guide](../darts.md).
+::: info Neural architecture search
+Replace the manual model-assembly step with `DARTSSearcher`. The searcher handles zero-cost screening, bilevel search, and final retraining. See [DARTS Guide](../darts.md).
+:::
 
-??? note "Synthetic datasets"
-    Use `foretools.tsgen` to generate controlled AR, seasonal, trend, and noise series for benchmarking or ablation studies. See [Time Series Generator](../foretools/tsgen.md).
+::: info Synthetic datasets
+Use `foretools.tsgen` to generate controlled AR, seasonal, trend, and noise series for benchmarking or ablation studies. See [Time Series Generator](../foretools/tsgen.md).
+:::
 
 ## Related pages
 

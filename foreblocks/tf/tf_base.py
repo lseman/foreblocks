@@ -903,7 +903,7 @@ class BaseTransformer(nn.Module, ABC):
         mod_budget_scheduler: Optional[MoDBudgetScheduler] = None,
         # Global scaling for MoE aux loss (FIX)
         moe_aux_lambda: float = 1.0,
-        use_attention_residual: bool = True,
+        use_attention_residual: bool = False,
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
         **kwargs,

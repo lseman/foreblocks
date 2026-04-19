@@ -75,8 +75,9 @@ Return dict keys:
 | `n_windows` | `int` | Number of windows actually evaluated |
 | `total_points` | `int` | Total sample count |
 
-!!! note "Model is not retrained per fold"
-    This is a walk-forward evaluation of a fixed model, not k-fold retraining. Use it to assess generalisation across temporal shifts, not for model selection.
+::: info Model is not retrained per fold
+This is a walk-forward evaluation of a fixed model, not k-fold retraining. Use it to assess generalisation across temporal shifts, not for model selection.
+:::
 
 ## Plots
 

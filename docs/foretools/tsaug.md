@@ -2,8 +2,9 @@
 
 `foretools.tsaug` is an automated data augmentation framework for time series. It implements the AutoDA-Timeseries method, which jointly learns *which* augmentations to apply and *how strongly* to apply them, in a single end-to-end training pass.
 
-!!! note "Research module"
-    This module implements a method currently under review. The API may change between minor versions.
+::: info Research module
+This module implements a method currently under review. The API may change between minor versions.
+:::
 
 ## Overview
 

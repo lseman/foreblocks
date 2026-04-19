@@ -21,29 +21,29 @@ If you want the broader mental model first, start from [Overview](overview.md).
 
 ## 1. Install
 
-=== "PyPI (stable)"
+### PyPI (stable)
 
-    ```bash
-    pip install foreblocks
-    ```
+```bash
+pip install foreblocks
+```
 
-=== "Editable / dev"
+### Editable / dev
 
-    ```bash
-    git clone https://github.com/lseman/foreblocks.git
-    cd foreblocks
-    pip install -e ".[dev]"
-    ```
+```bash
+git clone https://github.com/lseman/foreblocks.git
+cd foreblocks
+pip install -e ".[dev]"
+```
 
-=== "With extras"
+### With extras
 
-    | Workflow | Install |
-    | --- | --- |
-    | Plotting helpers | `pip install "foreblocks[plotting]"` |
-    | Raw-series preprocessing and scientific utilities | `pip install "foreblocks[preprocessing]"` |
-    | DARTS training, search, and analysis | `pip install "foreblocks[darts]"` |
-    | MLTracker API and TUI | `pip install "foreblocks[mltracker]"` |
-    | Everything | `pip install "foreblocks[all]"` |
+| Workflow | Install |
+| --- | --- |
+| Plotting helpers | `pip install "foreblocks[plotting]"` |
+| Raw-series preprocessing and scientific utilities | `pip install "foreblocks[preprocessing]"` |
+| DARTS training, search, and analysis | `pip install "foreblocks[darts]"` |
+| MLTracker API and TUI | `pip install "foreblocks[mltracker]"` |
+| Everything | `pip install "foreblocks[all]"` |
 
 ## 2. Keep the first run intentionally small
 
@@ -56,11 +56,12 @@ flowchart LR
     E --> F[metrics]
 ```
 
-!!! note "What this first run should validate"
-    - Your `foreblocks` import path is correct.
-    - Dataloader shapes line up with the trainer.
-    - The model trains without needing optional subsystems.
-    - Evaluation works on held-out data.
+::: info What this first run should validate
+- Your `foreblocks` import path is correct.
+- Dataloader shapes line up with the trainer.
+- The model trains without needing optional subsystems.
+- Evaluation works on held-out data.
+:::
 
 ## 3. Minimal training example
 
@@ -122,21 +123,21 @@ print("metrics:", metrics)
 
 ## 4. Shape expectations
 
-=== "Direct forecasting"
+### Direct forecasting
 
-    | Tensor | Shape |
-    | --- | --- |
-    | `X` | `[N, T, F]` - samples x input timesteps x features |
-    | `y` | any shape matching your head's output |
+| Tensor | Shape |
+| --- | --- |
+| `X` | `[N, T, F]` - samples x input timesteps x features |
+| `y` | any shape matching your head's output |
 
-=== "Encoder / decoder"
+### Encoder / decoder
 
-    | Tensor | Shape |
-    | --- | --- |
-    | `X` | `[N, T, F]` |
-    | `y` | `[N, H, D]` - samples x horizon x output channels |
+| Tensor | Shape |
+| --- | --- |
+| `X` | `[N, T, F]` |
+| `y` | `[N, H, D]` - samples x horizon x output channels |
 
-    Decoder-based models have stricter dimension contracts. Read the [Custom Blocks](custom_blocks.md) guide before wiring custom modules.
+Decoder-based models have stricter dimension contracts. Read the [Custom Blocks](custom_blocks.md) guide before wiring custom modules.
 
 ## 5. Starting from raw series instead of windows
 
@@ -159,10 +160,11 @@ pre = TimeSeriesHandler(
 X, y, processed, time_feat = pre.fit_transform(raw)
 ```
 
-!!! tip "Extra required"
-    ```bash
-    pip install "foreblocks[preprocessing]"
-    ```
+::: tip Extra required
+```bash
+pip install "foreblocks[preprocessing]"
+```
+:::
 
 Continue with [Preprocessor Guide](preprocessor.md) once the baseline path itself is working.
 

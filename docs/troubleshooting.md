@@ -92,18 +92,18 @@ That removes AMP from the equation and makes failures easier to interpret.
 
 ## Docs build errors locally
 
-The docs site uses `mkdocs-material` plus `pymdownx` Markdown extensions.
+The docs site is built with VitePress.
 
-Install the docs dependency first:
+Install the Node dependencies first:
 
 ```bash
-pip install mkdocs-material
+npm install
 ```
 
 Then run:
 
 ```bash
-mkdocs serve
+npm run docs:dev
 ```
 
 ## Still not sure where to start
