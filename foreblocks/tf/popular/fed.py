@@ -3,7 +3,6 @@ from typing import Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .transformer_aux import (
     create_norm_layer,  # your helper (rms/layer/batch norm etc.)
@@ -308,7 +307,7 @@ class FEDformerHeadCustom(nn.Module):
     def _reset(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight); 
+                nn.init.xavier_uniform_(m.weight) 
                 if m.bias is not None: nn.init.zeros_(m.bias)
         nn.init.normal_(self.query_pos, std=0.02)
 

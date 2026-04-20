@@ -8,7 +8,7 @@ import numpy as np
 
 try:
     import matplotlib.pyplot as plt
-except Exception as e:  # pragma: no cover - optional dependency
+except Exception:  # pragma: no cover - optional dependency
     plt = None
 
 

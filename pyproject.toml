@@ -79,7 +79,7 @@ studio = []
 # ── foretools extras ──────────────────────────────────────────────────────
 vmd = [
     "foreblocks[scientific]",
-    "pyfftw>=0.13", # VMD decomposition (foretools/vmd/common.py)
+    "pyfftw>=0.13", # decomposition backend (foretools/emd_like/common.py)
     "optuna>=3.0",  # VMD hyperparameter search
 ]
 

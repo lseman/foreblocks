@@ -1,9 +1,7 @@
-import torch
-import torch.nn as nn
-from typing import Optional, Callable
-import math
+from typing import Callable, Optional
 
 from foreblocks.ui.node_spec import node
+
 
 @node(
     type_id="scheduled_sampling",
@@ -16,6 +14,7 @@ class ScheduledSampling:
     """
     Node that provides a scheduled sampling function for teacher forcing.
     """
+
     def __init__(
         self,
         strategy: str = "linear",
@@ -32,18 +31,22 @@ class ScheduledSampling:
         def sampling_fn(epoch: Optional[int]) -> float:
             if epoch is None:
                 return self.start_ratio
-            
+
             if self.strategy == "constant":
                 return self.start_ratio
-            
+
             if self.strategy == "linear":
-                ratio = self.start_ratio - (self.start_ratio - self.end_ratio) * min(1.0, epoch / self.decay_steps)
+                ratio = self.start_ratio - (self.start_ratio - self.end_ratio) * min(
+                    1.0, epoch / self.decay_steps
+                )
                 return max(self.end_ratio, ratio)
-            
+
             if self.strategy == "exponential":
-                ratio = self.start_ratio * (self.end_ratio / self.start_ratio) ** (epoch / self.decay_steps)
+                ratio = self.start_ratio * (self.end_ratio / self.start_ratio) ** (
+                    epoch / self.decay_steps
+                )
                 return max(self.end_ratio, ratio)
-            
+
             return self.start_ratio
 
         return sampling_fn

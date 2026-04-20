@@ -38,7 +38,7 @@ This page gives a quick path through the repository for contributors and power u
 | `foretools/bohb/` | BOHB, TPE configuration, pruning, and optimization plots |
 | `foretools/foreminer/` | Exploratory analysis and diagnostics |
 | `foretools/fengineer/` | Feature engineering utilities |
-| `foretools/vmd/` | Decomposition tools |
+| `foretools/emd_like/` | Decomposition tools |
 | `foretools/tsaug/` | AutoDA-Timeseries: automated data augmentation with adaptive policy |
 
 ## Recommended entry points by task

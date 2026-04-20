@@ -6,7 +6,6 @@ from scipy import stats
 from scipy.stats import (
     anderson,
     chi2_contingency,
-    f_oneway,
     fisher_exact,
     kruskal,
     levene,

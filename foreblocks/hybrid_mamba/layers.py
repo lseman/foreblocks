@@ -12,7 +12,6 @@ from .ops import (
     dt_prep,
     fused_out,
     grouped_ssd_scan,
-    grouped_ssd_scan_reference,
     selective_scan,
 )
 

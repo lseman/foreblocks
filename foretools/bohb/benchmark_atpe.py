@@ -1,7 +1,8 @@
 
 import time
-import numpy as np
-from .bohb import BOHB, torch_mlp_objective
+
+from .bohb import BOHB
+from .objectives import torch_mlp_objective
 
 def benchmark():
     config_space = {

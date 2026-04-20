@@ -10,16 +10,40 @@ Use `foreblocks` when you are building and training forecasting models. Use `for
 | --- | --- | --- |
 | `foretools/tsgen` | create synthetic series with known structure and ground-truth components | [Time Series Generator](tsgen.md) |
 | `foretools/bohb` | run budgeted hyperparameter optimization with Hyperband + TPE | [BOHB Search](bohb.md) |
-| `foretools/vmd` | decompose signals into oscillatory modes with VMD, hierarchical VMD, and multivariate support | [VMD Decomposition](vmd.md) |
+| `foretools/emd_like` | decompose signals into oscillatory modes with VMD, EMD-family methods, hierarchical VMD, and multivariate support | [VMD Decomposition](vmd.md) |
 | `foretools/fengineer` | automated feature engineering with transforms, interactions, MI selection, and RFECV | [Feature Engineering](feature-engineering.md) |
+| `foretools/tsaug` | data augmentation — jitter, scaling, time-warp, window-slice, and AutoDA search | [AutoDA Augmentation](tsaug.md) |
 
 ## Other foretools areas
 
-| Path | Purpose |
-| --- | --- |
-| `foretools/foreminer` | exploratory analysis and diagnostics |
-| `foretools/vmd` | decomposition tools |
-| `foretools/foraug` | augmentation-oriented utilities |
+### `foretools/foreminer`
+
+`foreminer` is an exploratory-analysis toolkit for understanding your time series before modelling.
+
+Key capabilities:
+
+- **Changepoint detection** — locate structural breaks in long series
+- **Cluster analysis** — group series or windows by similarity
+- **Dimensionality diagnostics** — PCA and UMAP projections of window embeddings
+- **Group-level summaries** — aggregate statistics and seasonal decomposition across cohorts
+- **Stationarity checks** — ADF and KPSS tests with automated reporting
+
+Quick import path:
+
+```python
+from foretools.foreminer import ForeMiner
+
+miner = ForeMiner(series)          # series: [T, D] numpy array
+report = miner.run()               # returns a dict of diagnostic frames
+miner.plot_changepoints()
+miner.plot_clusters(n_clusters=4)
+```
+
+`foreminer` is primarily notebook-oriented. It does not expose a stable training-time API and is best used in exploratory phases before committing to a preprocessing and model pipeline.
+
+### `foretools/foraug` (tsaug)
+
+Data augmentation utilities. See [AutoDA Augmentation](tsaug.md) for the full guide.
 
 ## How `foretools` fits the repo
 

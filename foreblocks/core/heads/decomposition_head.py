@@ -8,6 +8,7 @@ import torch.nn as nn
 from foreblocks.core.model import BaseHead
 from foreblocks.ui.node_spec import node
 
+
 @node(
     type_id="decomposition_head",
     name="DecompositionHead",

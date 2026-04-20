@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 from dataclasses import dataclass
@@ -139,7 +138,6 @@ def attach_router_hook(module, moe_logger: MoELogger, step_getter):
     Expects the router module forward(...) to produce gate_logits and topk_idx somewhere.
     Customize extraction below to match your implementation.
     """
-    import torch
 
     def _hook(mod, inp, out):
         # Customize this based on your router outputs

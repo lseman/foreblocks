@@ -25,24 +25,16 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
+import inspect
 import json
 import math
+import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
-
-try:
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-except Exception:
-    torch = None
-    nn = None
-    optim = None
-
-
-from .utils import safe_log
+from .pruning import PruningConfig
 from .tpe import TPE, TPEConf
 from .utils import _canonical_config_key
 from .trial import Trial, TrialPruned
@@ -71,6 +63,8 @@ class BOHB:
         seed: Optional[int] = None,
         tpe_conf: Optional[TPEConf] = None,
         tpe_overrides: Optional[Dict[str, Any]] = None,
+        pruning_conf: Optional[PruningConfig] = None,
+        pruning_overrides: Optional[Dict[str, Any]] = None,
         parallel_jobs: int = 1,
     ):
         self.config_space = config_space
@@ -88,6 +82,10 @@ class BOHB:
         self.seed = seed
         self._rng = np.random.default_rng(seed)
         self.parallel_jobs = int(parallel_jobs)
+        self._evaluate_fn_accepts_trial = self._accepts_trial_argument(evaluate_fn)
+        self.pruning_conf = (
+            PruningConfig() if pruning_conf is None else pruning_conf
+        ).copy_with(**dict(pruning_overrides or {}))
 
         conf = TPEConf() if tpe_conf is None else tpe_conf
         conf_kwargs = conf.to_kwargs()
@@ -109,6 +107,8 @@ class BOHB:
         self.best_loss = float("inf")
         self.best_config: Optional[Dict[str, Any]] = None
         self.best_configs: List[Tuple[Dict[str, Any], float]] = []
+        self._step_history: List[Dict[str, float]] = []
+        self._step_history_lock = threading.Lock()
 
         # cache: (sha1(config), budget) -> loss
         self.config_cache: Dict[Tuple[str, float], float] = {}
@@ -170,57 +170,10 @@ class BOHB:
                     if self.verbose:
                         print(f"  Round {i}/{s}: evaluating {n_i} @ budget {r_i:.4g}")
 
-                    results: List[Tuple[Dict[str, Any], float]] = []
-                    
-                    if self.parallel_jobs > 1:
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_jobs) as executor:
-                            future_to_cfg = {
-                                executor.submit(self._evaluate_with_cache, cfg, r_i, it, s, i): cfg
-                                for cfg in configs[:n_i]
-                            }
-                            for future in concurrent.futures.as_completed(future_to_cfg):
-                                cfg = future_to_cfg[future]
-                                try:
-                                    loss = future.result()
-                                except Exception as exc:
-                                    if self.handle_errors:
-                                        if self.verbose:
-                                            print(f"    Eval error in parallel job: {exc}")
-                                        loss = None
-                                    else:
-                                        raise exc
-                                
-                                if loss is None:
-                                    continue
-                                
-                                results.append((cfg, loss))
-                                self.tpe.observe(cfg, loss, budget=r_i)
-
-                                if loss < self.best_loss:
-                                    self.best_loss = float(loss)
-                                    self.best_config = dict(cfg)
-                                    if self.verbose:
-                                        print(
-                                            f"    New best: {self.best_loss:.6g}  cfg={self.best_config}"
-                                        )
-                    else:
-                        # Only evaluate as many as needed; configs list is already at least n.
-                        for cfg in configs[:n_i]:
-                            loss = self._evaluate_with_cache(cfg, r_i, it, s, i)
-                            if loss is None:
-                                continue
-
-                            results.append((cfg, loss))
-                            self.tpe.observe(cfg, loss, budget=r_i)
-
-                            if loss < self.best_loss:
-                                self.best_loss = float(loss)
-                                self.best_config = dict(cfg)
-                                if self.verbose:
-                                    print(
-                                        f"    New best: {self.best_loss:.6g}  cfg={self.best_config}"
-                                    )
+                    results = self._evaluate_configs(configs[:n_i], r_i, it, s, i)
+                    for cfg, loss in results:
+                        self.tpe.observe(cfg, loss, budget=r_i)
+                        self._update_best(cfg, loss)
 
                     if not results:
                         if self.verbose:
@@ -260,34 +213,134 @@ class BOHB:
 
         return self.best_config, self.best_loss
 
-    def _evaluate_with_cache(
+    @staticmethod
+    def _accepts_trial_argument(evaluate_fn: Callable[..., float]) -> bool:
+        try:
+            return len(inspect.signature(evaluate_fn).parameters) >= 3
+        except (TypeError, ValueError):
+            return False
+
+    def _update_best(self, config: Dict[str, Any], loss: float) -> None:
+        if loss >= self.best_loss:
+            return
+        self.best_loss = float(loss)
+        self.best_config = dict(config)
+        if self.verbose:
+            print(f"    New best: {self.best_loss:.6g}  cfg={self.best_config}")
+
+    def _cache_key(self, config: Dict[str, Any], budget: float) -> Tuple[str, float]:
+        key_json = _canonical_config_key(config)
+        key_hash = hashlib.sha1(key_json.encode("utf-8")).hexdigest()
+        return key_hash, float(budget)
+
+    def _make_history_entry(
         self,
         config: Dict[str, Any],
+        budget: float,
+        loss: float,
+        raw_loss: float,
+        constraint_violation: float,
+        iteration: int,
+        bracket: int,
+        round_idx: int,
+    ) -> Dict[str, Any]:
+        return {
+            "config": dict(config),
+            "budget": float(budget),
+            "loss": float(loss),
+            "raw_loss": float(raw_loss),
+            "constraint_violation": float(constraint_violation),
+            "iteration": int(iteration),
+            "bracket": int(bracket),
+            "round": int(round_idx),
+        }
+
+    def _evaluate_configs(
+        self,
+        configs: List[Dict[str, Any]],
         budget: float,
         iteration: int,
         bracket: int,
         round_idx: int,
-    ) -> Optional[float]:
-        if not self.tpe._hard_constraints_satisfied(config):
-            if self.verbose:
-                print("    Hard constraint violated; skipping.")
-            return None
+    ) -> List[Tuple[Dict[str, Any], float]]:
+        indexed_results: List[Tuple[int, Dict[str, Any], float]] = []
+        pending: List[Tuple[int, Dict[str, Any], Tuple[str, float]]] = []
 
-        key_json = _canonical_config_key(config)
-        key_hash = hashlib.sha1(key_json.encode("utf-8")).hexdigest()
-        cache_key = (key_hash, float(budget))
+        for idx, config in enumerate(configs):
+            if not self.tpe._hard_constraints_satisfied(config):
+                if self.verbose:
+                    print("    Hard constraint violated; skipping.")
+                continue
 
-        if cache_key in self.config_cache:
-            if self.verbose:
-                print("    (cache hit)")
-            return self.config_cache[cache_key]
+            cache_key = self._cache_key(config, budget)
+            if cache_key in self.config_cache:
+                if self.verbose:
+                    print("    (cache hit)")
+                indexed_results.append((idx, config, self.config_cache[cache_key]))
+                continue
 
+            pending.append((idx, config, cache_key))
+
+        if self.parallel_jobs > 1 and len(pending) > 1:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.parallel_jobs
+            ) as executor:
+                future_to_payload = {
+                    executor.submit(
+                        self._evaluate_objective,
+                        config,
+                        budget,
+                    ): (idx, config, cache_key)
+                    for idx, config, cache_key in pending
+                }
+                completed: List[
+                    Tuple[int, Dict[str, Any], Optional[Tuple[float, float, float]], Tuple[str, float]]
+                ] = []
+                for future in concurrent.futures.as_completed(future_to_payload):
+                    idx, config, cache_key = future_to_payload[future]
+                    try:
+                        outcome = future.result()
+                    except Exception as exc:
+                        if self.handle_errors:
+                            if self.verbose:
+                                print(f"    Eval error in parallel job: {exc}")
+                            outcome = None
+                        else:
+                            raise
+                    completed.append((idx, config, outcome, cache_key))
+        else:
+            completed = []
+            for idx, config, cache_key in pending:
+                outcome = self._evaluate_objective(config, budget)
+                completed.append((idx, config, outcome, cache_key))
+
+        completed.sort(key=lambda item: item[0])
+        for idx, config, outcome, cache_key in completed:
+            loss = self._finalize_evaluation(
+                config=config,
+                budget=budget,
+                outcome=outcome,
+                cache_key=cache_key,
+                iteration=iteration,
+                bracket=bracket,
+                round_idx=round_idx,
+            )
+            if loss is None:
+                continue
+            indexed_results.append((idx, config, loss))
+
+        indexed_results.sort(key=lambda item: item[0])
+        return [(config, loss) for _, config, loss in indexed_results]
+
+    def _evaluate_objective(
+        self,
+        config: Dict[str, Any],
+        budget: float,
+    ) -> Optional[Tuple[float, float, float]]:
         trial = Trial(config=config, budget=budget, bohb_instance=self)
 
         try:
-            import inspect
-            sig = inspect.signature(self.evaluate_fn)
-            if len(sig.parameters) >= 3:
+            if self._evaluate_fn_accepts_trial:
                 raw_loss = self.evaluate_fn(config, float(budget), trial)
             else:
                 raw_loss = self.evaluate_fn(config, float(budget))
@@ -301,32 +354,10 @@ class BOHB:
                 if penalty > 0:
                     loss = float(loss) + float(self.tpe.soft_penalty_weight) * penalty
             loss = float(loss)
-
-            if self.early_prune and self._should_prune(loss, budget):
-                if self.verbose:
-                    print("    Early prune (loss above historical quantile).")
-                return None
-
-            self.config_cache[cache_key] = loss
-            self.history.append(
-                {
-                    "config": dict(config),
-                    "budget": float(budget),
-                    "loss": loss,
-                    "raw_loss": float(raw_loss),
-                    "constraint_violation": float(penalty),
-                    "iteration": int(iteration),
-                    "bracket": int(bracket),
-                    "round": int(round_idx),
-                }
-            )
-            return loss
+            return loss, float(raw_loss), float(penalty)
         except TrialPruned:
             if self.verbose:
                 print("    Trial Pruned (Intermediate step gracefully terminated).")
-            # To handle pruning politely, we inject a highly penalized loss, or return None.
-            # Returning None usually causes Successive Halving to discard it if there are enough other samples,
-            # but if all fail, it raises. Using a soft penalty is safer to keep it trackable as an observation:
             return None
         except Exception as e:
             if self.handle_errors:
@@ -334,6 +365,40 @@ class BOHB:
                     print(f"    Eval error: {e}")
                 return None
             raise
+
+    def _finalize_evaluation(
+        self,
+        config: Dict[str, Any],
+        budget: float,
+        outcome: Optional[Tuple[float, float, float]],
+        cache_key: Tuple[str, float],
+        iteration: int,
+        bracket: int,
+        round_idx: int,
+    ) -> Optional[float]:
+        if outcome is None:
+            return None
+
+        loss, raw_loss, penalty = outcome
+        if self.early_prune and self._should_prune(loss, budget):
+            if self.verbose:
+                print("    Early prune (loss above historical quantile).")
+            return None
+
+        self.config_cache[cache_key] = loss
+        self.history.append(
+            self._make_history_entry(
+                config=config,
+                budget=budget,
+                loss=loss,
+                raw_loss=raw_loss,
+                constraint_violation=penalty,
+                iteration=iteration,
+                bracket=bracket,
+                round_idx=round_idx,
+            )
+        )
+        return loss
 
     def _update_top_configs(self, results: List[Tuple[Dict[str, Any], float]]) -> None:
         for cfg, loss in results:
@@ -368,20 +433,18 @@ class BOHB:
                         continue
 
                     self.tpe.observe(cfg, loss, budget=budget)
-                    key_json = _canonical_config_key(cfg)
-                    key_hash = hashlib.sha1(key_json.encode("utf-8")).hexdigest()
-                    self.config_cache[(key_hash, float(budget))] = loss
+                    self.config_cache[self._cache_key(cfg, budget)] = loss
                     self.history.append(
-                        {
-                            "config": dict(cfg),
-                            "budget": float(budget),
-                            "loss": float(loss),
-                            "raw_loss": float(loss),
-                            "constraint_violation": 0.0,
-                            "iteration": -1,
-                            "bracket": -1,
-                            "round": -1,
-                        }
+                        self._make_history_entry(
+                            config=cfg,
+                            budget=budget,
+                            loss=loss,
+                            raw_loss=loss,
+                            constraint_violation=0.0,
+                            iteration=-1,
+                            bracket=-1,
+                            round_idx=-1,
+                        )
                     )
                     if loss < self.best_loss:
                         self.best_loss = float(loss)
@@ -450,7 +513,11 @@ class BOHB:
         return float(min(max(score, 0.0), 1.0))
 
     def _should_prune(self, current_loss: float, current_budget: float) -> bool:
-        if not self.early_prune or current_budget <= self.min_budget * 2:
+        cfg = self.pruning_conf
+        if (
+            not self.early_prune
+            or current_budget <= self.min_budget * cfg.final_budget_gate_multiplier
+        ):
             return False
 
         relevant = [
@@ -459,12 +526,12 @@ class BOHB:
             if h.get("budget", 0) <= current_budget
             and h.get("loss", float("inf")) < float("inf")
         ]
-        if len(relevant) < 8:
+        if len(relevant) < cfg.final_min_history:
             return False
 
         progress = current_budget / self.max_budget
-        q = 0.75 + 0.20 * progress
-        q = min(max(q, 0.70), 0.92)
+        q = cfg.final_quantile_base + cfg.final_quantile_growth * progress
+        q = min(max(q, cfg.final_quantile_min), cfg.final_quantile_max)
 
         threshold = float(np.quantile(relevant, q))
         if current_loss <= threshold:
@@ -472,12 +539,17 @@ class BOHB:
 
         relative_worst = (current_loss - threshold) / (np.std(relevant) + 1e-6)
         if self.pruning_mode == "aggressive":
-            p_base = 0.85
+            p_base = cfg.final_prob_base_aggressive
         elif self.pruning_mode == "balanced":
-            p_base = 0.65
+            p_base = cfg.final_prob_base_balanced
         else:
-            p_base = 0.4
-        p = min(0.95, p_base + 0.25 * max(0.0, relative_worst - 1.0))
+            p_base = cfg.final_prob_base_conservative
+        p = min(
+            cfg.final_prob_cap,
+            p_base
+            + cfg.final_prob_growth
+            * max(0.0, relative_worst - cfg.final_relative_worst_offset),
+        )
 
         roll = self._rng.random()
         if self.verbose and roll < p:
@@ -494,18 +566,102 @@ class BOHB:
         if not self.early_prune:
             return False
 
-        # Gather previous trials' performance at this exact step
-        past_step_losses = []
-        # As BOHB has no global "trial registry", we might need to rely on fully evaluated configs.
-        # But for an advanced implementation, let's keep it simple: 
-        # If the loss is severely worse than `best_loss` globally scaled by step.
-        if self.best_loss == float("inf"):
+        cfg = self.pruning_conf
+        progress = self._step_progress(step, trial.budget)
+        if progress < cfg.step_min_progress:
             return False
-            
-        # Very rough fallback: if intermediate loss > 2x best_loss, prune.
-        if loss > self.best_loss * 2.5:
-            return True
-        return False
+
+        peer_losses = self._get_step_cohort_losses(step, trial.budget)
+        if len(peer_losses) < cfg.step_min_history:
+            return False
+
+        peers = np.asarray(peer_losses, dtype=float)
+        median = float(np.median(peers))
+        mad = float(np.median(np.abs(peers - median)))
+        dispersion = max(1e-6, 1.4826 * mad, 0.5 * float(np.std(peers)))
+
+        if self.pruning_mode == "aggressive":
+            base_quantile = cfg.step_quantile_aggressive
+            base_sigma = cfg.step_sigma_aggressive
+        elif self.pruning_mode == "balanced":
+            base_quantile = cfg.step_quantile_balanced
+            base_sigma = cfg.step_sigma_balanced
+        else:
+            base_quantile = cfg.step_quantile_conservative
+            base_sigma = cfg.step_sigma_conservative
+
+        quantile = max(
+            cfg.step_quantile_floor,
+            base_quantile - cfg.step_quantile_progress_slope * progress,
+        )
+        sigma_threshold = max(
+            cfg.step_sigma_floor,
+            base_sigma - cfg.step_sigma_progress_slope * progress,
+        )
+        quantile_threshold = float(np.quantile(peers, quantile))
+        robust_threshold = median + sigma_threshold * dispersion
+        threshold = max(quantile_threshold, robust_threshold)
+
+        should_prune = float(loss) > threshold
+        if should_prune and self.verbose:
+            print(
+                "    Intermediate prune triggered "
+                f"(step={int(step)}, progress={progress:.2f}, "
+                f"loss={float(loss):.6g}, threshold={threshold:.6g}, "
+                f"peers={len(peer_losses)})"
+            )
+        return should_prune
+
+    def _step_progress(self, step: int, budget: float) -> float:
+        denom = max(float(budget), float(step + 1), 1.0)
+        return min(1.0, float(step + 1) / denom)
+
+    def _record_trial_report(self, trial: Trial, step: int, loss: float) -> None:
+        record = {
+            "step": float(step),
+            "budget": float(trial.budget),
+            "progress": self._step_progress(step, trial.budget),
+            "loss": float(loss),
+        }
+        with self._step_history_lock:
+            self._step_history.append(record)
+
+    def _get_step_cohort_losses(self, step: int, budget: float) -> List[float]:
+        cfg = self.pruning_conf
+        budget = float(budget)
+        target_progress = self._step_progress(step, budget)
+        budget_ratio_limit = (
+            float(max(self.eta, 2))
+            if cfg.step_budget_ratio_limit is None
+            else float(cfg.step_budget_ratio_limit)
+        )
+
+        def _budget_is_compatible(other_budget: float) -> bool:
+            lo = max(min(budget, other_budget), 1e-12)
+            hi = max(budget, other_budget)
+            return (hi / lo) <= budget_ratio_limit
+
+        with self._step_history_lock:
+            exact_matches = [
+                rec["loss"]
+                for rec in self._step_history
+                if int(rec["step"]) == int(step)
+                and _budget_is_compatible(float(rec["budget"]))
+            ]
+            if len(exact_matches) >= cfg.step_exact_match_min:
+                return exact_matches
+
+            nearby_matches = [
+                rec["loss"]
+                for rec in self._step_history
+                if abs(float(rec["progress"]) - target_progress)
+                <= cfg.step_progress_tolerance
+                and _budget_is_compatible(float(rec["budget"]))
+            ]
+
+        if len(nearby_matches) >= len(exact_matches):
+            return nearby_matches
+        return exact_matches
 
     def get_optimization_history(self) -> List[Dict[str, Any]]:
         return list(self.history)
@@ -526,7 +682,10 @@ class BOHB:
                 if isinstance(rng, tuple) and len(rng) == 3 and rng[2] == "log":
                     lo_log, hi_log = math.log10(lo), math.log10(hi)
                     val_log = math.log10(float(config[param]))
-                    new_val = val_log + np.random.normal(0, scale * (hi_log - lo_log))
+                    new_val = val_log + self._rng.normal(
+                        0,
+                        scale * (hi_log - lo_log),
+                    )
                     jittered[param] = 10 ** float(np.clip(new_val, lo_log, hi_log))
                 else:
                     val = float(config[param])
@@ -562,144 +721,3 @@ class BOHB:
         except Exception as e:
             if self.verbose:
                 print(f"Failed to export history JSONL: {e}")
-
-
-# -----------------------------------------------------------------------------
-# Example objective
-# -----------------------------------------------------------------------------
-
-
-def realistic_nn_objective(config: Dict[str, Any], budget: float) -> float:
-    """
-    Simulate training dynamics:
-    - Some hyperparameter optimum
-    - Diminishing returns with budget
-    - Noise decreases with budget
-    """
-    lr = float(config["lr"])
-    batch_size = int(config.get("batch_size", 32))
-    dropout = float(config.get("dropout", 0.0))
-
-    optimal_lr = 1e-2
-    optimal_batch_size = 64
-    optimal_dropout = 0.3
-
-    lr_penalty = (math.log10(lr) - math.log10(optimal_lr)) ** 2
-    bs_penalty = ((batch_size - optimal_batch_size) ** 2) / 1000.0
-    do_penalty = (dropout - optimal_dropout) ** 2
-
-    base_loss = lr_penalty + bs_penalty + do_penalty + 0.1
-
-    improvement = 1.0 / (1.0 + 0.5 * safe_log(budget))
-    noise = np.random.normal(0.0, 0.02 / math.sqrt(max(budget, 1e-12)))
-
-    final_loss = base_loss * improvement + float(noise)
-    return max(1e-3, float(final_loss))
-
-
-def torch_mlp_objective(config: Dict[str, Any], budget: float, trial=None) -> float:
-    """
-    Small Torch MLP objective for BOHB demo.
-    budget controls epochs (rounded to int >= 1).
-    """
-    if torch is None:
-        raise RuntimeError(
-            "PyTorch is not installed. Install torch to use this objective."
-        )
-
-    torch.manual_seed(42)
-    np.random.seed(42)
-
-    lr = float(config["lr"])
-    hidden = int(config.get("hidden", 64))
-    dropout = float(config.get("dropout", 0.2))
-    batch_size = int(config.get("batch_size", 64))
-
-    # Synthetic regression data
-    n_train = 1024
-    n_val = 256
-    n_features = 20
-    X = torch.randn(n_train + n_val, n_features)
-    true_w = torch.randn(n_features, 1) * 0.5
-    y = X @ true_w + 0.1 * torch.randn(n_train + n_val, 1)
-    X_train, X_val = X[:n_train], X[n_train:]
-    y_train, y_val = y[:n_train], y[n_train:]
-
-    model = nn.Sequential(
-        nn.Linear(n_features, hidden),
-        nn.ReLU(),
-        nn.Dropout(p=dropout),
-        nn.Linear(hidden, 1),
-    )
-
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.MSELoss()
-
-    epochs = max(1, int(round(float(budget))))
-    model.train()
-    for ep in range(epochs):
-        idx = torch.randint(0, n_train, (batch_size,))
-        xb = X_train[idx]
-        yb = y_train[idx]
-        optimizer.zero_grad()
-        pred = model(xb)
-        loss = criterion(pred, yb)
-        loss.backward()
-        optimizer.step()
-        
-        # Report intermediate validation loss at the end of each epoch if trial is provided
-        if trial is not None:
-            model.eval()
-            with torch.no_grad():
-                val_pred = model(X_val)
-                val_loss = criterion(val_pred, y_val).item()
-            model.train()
-            trial.report(ep, val_loss)
-
-    model.eval()
-    with torch.no_grad():
-        val_pred = model(X_val)
-        val_loss = criterion(val_pred, y_val).item()
-    return float(val_loss)
-
-
-# -----------------------------------------------------------------------------
-# Run example
-# -----------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    config_space = {
-        "lr": ("float", (1e-5, 1e-1, "log")),
-        "batch_size": ("choice", [16, 32, 64, 128, 256]),
-        "dropout": ("float", (0.0, 0.5)),
-        "hidden": ("int", (16, 256)),
-    }
-
-    bohb = BOHB(
-        config_space=config_space,
-        evaluate_fn=torch_mlp_objective,
-        min_budget=3,
-        max_budget=81,
-        eta=3,
-        n_iterations=3,
-        verbose=True,
-        handle_errors=True,
-        top_n_percent=15,
-        tpe_overrides={"n_startup_trials": 10, "n_ei_candidates": 64, "gamma": 0.15},
-    )
-
-    best_cfg, best_loss = bohb.run()
-
-    from plotter import OptimizationPlotter
-
-    plotter = OptimizationPlotter.from_bohb(bohb)
-    plotter.plot_optimization_history(save_path="fig_history.png")
-    plotter.plot_budget_vs_loss(save_path="fig_budget.png")
-    plotter.plot_bracket_best(save_path="fig_bracket.png")
-    plotter.plot_param_effect("lr", save_path="fig_param_lr.png")
-    plotter.plot_parallel_coordinates(save_path="fig_parallel.png")
-    plotter.plot_param_importance(save_path="fig_importance.png")
-
-    print("\nTop 5 configurations found:")
-    for i, (cfg, loss) in enumerate(bohb.get_top_configs(5), 1):
-        print(f"{i}. loss={loss:.6f}  cfg={cfg}")

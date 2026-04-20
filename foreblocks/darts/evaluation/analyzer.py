@@ -1315,7 +1315,7 @@ class StreamlinedDARTSAnalyzer:
         report.append("=" * 80)
 
         # Overview
-        report.append(f"\n📊 SEARCH OVERVIEW")
+        report.append("\n📊 SEARCH OVERVIEW")
         report.append(f"Total candidates: {len(self.candidates)}")
         report.append(f"Top candidates: {len(self.top_candidates)}")
         report.append(f"Trained models: {len(self.trained_candidates)}")
@@ -1323,7 +1323,7 @@ class StreamlinedDARTSAnalyzer:
         # Component analysis
         component_data = self.patterns["component_analysis"]
         if component_data:
-            report.append(f"\n🏗️ COMPONENT ANALYSIS")
+            report.append("\n🏗️ COMPONENT ANALYSIS")
             for comp_type, data in component_data.items():
                 if data:
                     report.append(f"  {comp_type.title()} Usage:")
@@ -1340,7 +1340,7 @@ class StreamlinedDARTSAnalyzer:
         # Final selections
         final_data = self.patterns["final_analysis"]
         if final_data:
-            report.append(f"\n🎯 FINAL SELECTIONS")
+            report.append("\n🎯 FINAL SELECTIONS")
             for key, value in final_data.items():
                 if isinstance(value, dict) and not key.endswith("_weights"):
                     component_type = key.replace("final_", "").replace("s", "")
@@ -1353,7 +1353,7 @@ class StreamlinedDARTSAnalyzer:
         strong_corr = corr_df[abs(corr_df["correlation"]) > 0.3]
 
         if not strong_corr.empty:
-            report.append(f"\n🔗 STRONG CORRELATIONS (|r| > 0.3)")
+            report.append("\n🔗 STRONG CORRELATIONS (|r| > 0.3)")
             for _, row in strong_corr.head(5).iterrows():
                 sig = "*" if row["p_value"] < 0.05 else ""
                 report.append(
@@ -1362,7 +1362,7 @@ class StreamlinedDARTSAnalyzer:
                 )
 
         # Key insights
-        report.append(f"\n💡 KEY INSIGHTS")
+        report.append("\n💡 KEY INSIGHTS")
 
         # Best performing components
         if component_data:

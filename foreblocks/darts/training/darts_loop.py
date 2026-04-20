@@ -8,7 +8,7 @@ The public entry-point is :func:`train_darts_model`.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch

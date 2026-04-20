@@ -1,7 +1,7 @@
 # ForeBlocks Docs
 
 <div class="hero-panel">
-  <span class="eyebrow">ForeBlocks v0.1.15 | Docs Home</span>
+  <span class="eyebrow">ForeBlocks v{{ $frontmatter.foreBlocksVersion }} | Docs Home</span>
   <h1>Forecasting, preprocessing, search, and tooling in one documentation hub</h1>
   <p class="hero-lead">
     <code>foreblocks</code> is the forecasting library. <code>foretools</code> is the

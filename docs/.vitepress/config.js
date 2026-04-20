@@ -1,4 +1,9 @@
 import { defineConfig } from 'vitepress'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
+
+const pyproject = readFileSync(resolve(__dirname, '../../pyproject.toml'), 'utf-8')
+const version = pyproject.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? 'unknown'
 
 const docsSidebar = [
     {
@@ -72,12 +77,25 @@ const docsSidebar = [
             { text: 'Documentation Workflow', link: '/contributing/docs-workflow' },
         ],
     },
+    {
+        text: 'Release Notes',
+        collapsed: true,
+        items: [
+            { text: 'Changelog', link: '/changelog' },
+        ],
+    },
 ]
 
 export default defineConfig({
     title: 'foreBlocks',
     description: 'Modular time-series forecasting, preprocessing, and architecture search for PyTorch',
     base: '/docs/',
+    define: {
+        __FOREBLOCKS_VERSION__: JSON.stringify(version),
+    },
+    transformPageData(pageData) {
+        pageData.frontmatter.foreBlocksVersion = version
+    },
     appearance: 'force-dark',
     head: [
         ['link', { rel: 'icon', href: '/docs/logo.svg' }],

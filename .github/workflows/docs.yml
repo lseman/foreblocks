@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -42,6 +42,34 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Sync web version from pyproject.toml
+        run: python scripts/update_web_version.py
+
+      - name: Validate version sync on pull requests
+        if: github.event_name == 'pull_request'
+        run: |
+          if ! git diff --quiet -- web/version.js; then
+            echo "web/version.js is out of sync with pyproject.toml"
+            git --no-pager diff -- web/version.js
+            exit 1
+          fi
+
+      - name: Commit synced web/version.js on push
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- web/version.js; then
+            git add web/version.js
+            git commit -m "chore: sync web/version.js with pyproject.toml"
+            git push
+          fi
 
       - name: Set up GitHub Pages
         if: github.event_name != 'pull_request'

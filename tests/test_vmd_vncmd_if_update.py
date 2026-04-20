@@ -33,9 +33,9 @@ def _load_module(name: str, path: pathlib.Path):
 
 
 _ensure_package("foretools", ROOT / "foretools")
-_ensure_package("foretools.vmd", ROOT / "foretools" / "vmd")
-_load_module("foretools.vmd.common", ROOT / "foretools" / "vmd" / "common.py")
-core_module = _load_module("foretools.vmd.core", ROOT / "foretools" / "vmd" / "core.py")
+_ensure_package("foretools.emd_like", ROOT / "foretools" / "emd_like")
+_load_module("foretools.emd_like.common", ROOT / "foretools" / "emd_like" / "common.py")
+core_module = _load_module("foretools.emd_like.core", ROOT / "foretools" / "emd_like" / "core.py")
 VMDCore = core_module.VMDCore
 
 

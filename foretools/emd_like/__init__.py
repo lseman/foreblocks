@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""VMD package API."""
+"""EMD-like decomposition package API."""
+
 
 from .common import (
     BoundaryHandler,

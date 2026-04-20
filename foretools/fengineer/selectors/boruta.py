@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.base import BaseEstimator, TransformerMixin
 

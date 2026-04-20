@@ -1,6 +1,6 @@
 # VMD Decomposition
 
-`foretools/vmd` provides a decomposition toolkit built around Variational Mode Decomposition (VMD), plus hierarchical decomposition, multivariate support, and Optuna-based parameter search.
+`foretools/emd_like` provides a decomposition toolkit covering Variational Mode Decomposition (VMD), empirical mode decomposition variants, hierarchical decomposition, multivariate support, and Optuna-based parameter search.
 
 Use it when you want to split a signal into interpretable oscillatory modes before forecasting, diagnostics, denoising, or downstream feature extraction.
 
@@ -12,14 +12,14 @@ The VMD module requires the `vmd` extra:
 pip install "foreblocks[vmd]"
 ```
 
-This currently pulls in the FFTW and Optuna dependencies that `foretools.vmd` imports eagerly.
+This currently pulls in the FFTW and Optuna dependencies that `foretools.emd_like` imports eagerly.
 
 ## Import surface
 
 For most users, start here:
 
 ```python
-from foretools.vmd import FastVMD, HierarchicalParameters, VMDParameters
+from foretools.emd_like import FastVMD, HierarchicalParameters, VMDParameters
 ```
 
 Other useful exports:
@@ -35,7 +35,7 @@ Other useful exports:
 
 ```python
 import numpy as np
-from foretools.vmd import FastVMD
+from foretools.emd_like import FastVMD
 
 fs = 100.0
 t = np.arange(0, 10, 1 / fs)
@@ -122,7 +122,7 @@ modes, freqs, best = vmd.decompose(
 Use `VMDParameters` when you want a typed view of the available controls.
 
 ```python
-from foretools.vmd import VMDParameters
+from foretools.emd_like import VMDParameters
 
 params = VMDParameters(
     n_trials=24,
@@ -223,7 +223,7 @@ Notes:
 If you want more control than `FastVMD`, use `VMDOptimizer` directly.
 
 ```python
-from foretools.vmd import FFTWManager, VMDOptimizer
+from foretools.emd_like import FFTWManager, VMDOptimizer
 
 fftw = FFTWManager()
 optimizer = VMDOptimizer(fftw)

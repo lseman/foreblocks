@@ -1,11 +1,9 @@
-import math
 
 # autoformer_head_custom.py
-from typing import Literal, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .transformer_aux import (
     create_norm_layer,  # uses your fast Layer/RMS/Temporal/RevIN, etc.

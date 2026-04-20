@@ -11,7 +11,6 @@ Inspired by catch22 (Lubba et al., 2019) and tsfresh feature sets.
 
 import torch
 import numpy as np
-from typing import Optional
 
 
 def extract_features(x: torch.Tensor) -> torch.Tensor:

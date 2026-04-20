@@ -184,6 +184,30 @@ Then continue with:
 
 ## 7. Where to go next
 
+Use this decision tree to pick your next step based on what you want to improve:
+
+```
+Baseline works and metrics are acceptable?
+├── No → improve your data
+│   ├── Raw series (single array)   → Preprocessor Guide
+│   └── Feature engineering        → foretools/fengineer
+│
+├── Yes, but I want better accuracy
+│   ├── Try a stronger backbone     → Transformer Guide
+│   ├── Add MoE feedforward         → MoE Guide
+│   ├── Add preprocessing heads     → Custom Blocks Guide
+│   └── Search architectures        → DARTS Guide
+│
+├── Yes, but I need uncertainty
+│   └── Post-hoc conformal intervals → Uncertainty Guide
+│
+├── Yes, but I need richer evaluation
+│   └── Metrics, plots, CV           → Evaluation Guide
+│
+└── Yes, but training is slow or OOM
+    └── AMP, gradient checkpointing  → Configuration Reference
+```
+
 <div class="path-grid">
   <div class="path-card">
     <p class="route-kicker">Next</p>

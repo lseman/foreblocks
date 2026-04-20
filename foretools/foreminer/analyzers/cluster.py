@@ -1,15 +1,12 @@
-import warnings
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
-from scipy.sparse import csgraph
-from scipy.spatial.distance import pdist, squareform
+from scipy.spatial.distance import pdist
 from sklearn.cluster import DBSCAN, KMeans, SpectralClustering
 from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
 from sklearn.metrics import (
     adjusted_rand_score,
     calinski_harabasz_score,
@@ -19,7 +16,6 @@ from sklearn.metrics import (
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors, kneighbors_graph
 from sklearn.preprocessing import RobustScaler, StandardScaler
-from sklearn.utils import check_random_state
 
 from .analyzer_utils import drop_constant_numeric, get_numeric_frame, safe_call
 from ..core import AnalysisConfig, AnalysisStrategy

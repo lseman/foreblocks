@@ -1,7 +1,6 @@
 # Copyright (c) 2025, Tri Dao
 # Optimized version with improved performance (batched + cu_seqlens support)
 
-import math
 from functools import partial
 from typing import Optional, Tuple, Union
 

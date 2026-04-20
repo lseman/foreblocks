@@ -1,10 +1,9 @@
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
-from scipy import stats
-from scipy.signal import find_peaks, periodogram, welch
+from scipy.signal import find_peaks, welch
 from scipy.stats import linregress
 
 from .analyzer_utils import build_series_map, get_numeric_columns, safe_call

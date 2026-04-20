@@ -1648,7 +1648,7 @@
 
     <div class="hero-inner">
       <div class="reveal">
-        <div class="hero-kicker">v0.1.15 · Python 3.10+</div>
+        <div class="hero-kicker">v<span id="hero-version">0.1.18</span> · Python 3.10+</div>
         <h1 class="hero-title">
           Forecasting<br>
           block<em>-by-block,</em><br>
@@ -1700,7 +1700,7 @@
 
       <!-- terminal panel -->
       <div class="hero-panel reveal reveal-delay-2">
-        <div class="ver-badge">v0.1.15</div>
+        <div class="ver-badge" id="hero-version-badge">v0.1.18</div>
         <div class="terminal-card">
           <div class="term-bar">
             <span class="dot" style="background:#ff5f57"></span>
@@ -2549,6 +2549,17 @@ print(history.train_losses[-1], metrics)</code></pre>
     // Show studio link if not on studio
     if (!location.pathname.startsWith('/studio')) {
       document.getElementById('nav-studio').style.display = 'inline-flex';
+    }
+  </script>
+
+  <script src="./version.js" defer></script>
+  <script>
+    const version = window.__FOREBLOCKS_VERSION__;
+    if (version) {
+      const heroVersion = document.getElementById('hero-version');
+      const badge = document.getElementById('hero-version-badge');
+      if (heroVersion) heroVersion.textContent = version;
+      if (badge) badge.textContent = `v${version}`;
     }
   </script>
 

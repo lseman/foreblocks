@@ -5,8 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import foreblocks.tf.experts.moe as txmoe
-import foreblocks.tf.norms as txaux
 
 # Use your project modules
 from foreblocks.tf.embeddings import PositionalEncoding

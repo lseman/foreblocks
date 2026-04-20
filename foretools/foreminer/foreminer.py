@@ -1700,12 +1700,12 @@ class DatasetAnalyzer:
 
                         # Result interpretation
                         if significant:
-                            print(f"     └─ ✅ Significant difference detected")
+                            print("     └─ ✅ Significant difference detected")
                             if "groups_compared" in test_result:
                                 groups = test_result["groups_compared"]
                                 print(f"     └─ Between: {' vs '.join(groups)}")
                         else:
-                            print(f"     └─ ❌ No significant difference")
+                            print("     └─ ❌ No significant difference")
 
                     # Show specific recommendations for this variable
                     var_recommendations = var_results.get("recommendations", [])
@@ -2055,7 +2055,7 @@ class DatasetAnalyzer:
                     # Small World Properties
                     if topology.get("is_small_world", False):
                         sigma = topology.get("small_world_sigma", 0)
-                        print(f"\n🌍 Small World Network:")
+                        print("\n🌍 Small World Network:")
                         metric(
                             "Small-world σ",
                             f"{sigma:.2f}",
@@ -2069,7 +2069,7 @@ class DatasetAnalyzer:
                     # Degree Statistics
                     degree_stats = topology.get("degree_stats", {})
                     if degree_stats:
-                        print(f"\n📊 Degree Distribution:")
+                        print("\n📊 Degree Distribution:")
                         metric(
                             "Mean Degree",
                             f"{degree_stats.get('mean', 0):.1f}",
@@ -2131,7 +2131,7 @@ class DatasetAnalyzer:
                         comm_info = communities[best_method]
                         n_communities = comm_info.get("n_communities", 0)
 
-                        print(f"🏘️ Community Detection Results:")
+                        print("🏘️ Community Detection Results:")
                         metric(
                             "Best Method",
                             best_method.replace("_", " ").title(),
@@ -2321,20 +2321,20 @@ class DatasetAnalyzer:
                             f"   ✅ MODERATE network structure with {best_edges} relationships among {best_nodes} variables"
                         )
                         print(
-                            f"   📊 Suitable for community analysis and centrality-based feature ranking"
+                            "   📊 Suitable for community analysis and centrality-based feature ranking"
                         )
                     else:
                         print(
                             f"   📈 SPARSE network with {best_edges} key relationships identified"
                         )
                         print(
-                            f"   🔍 Focus on high-centrality variables for feature selection"
+                            "   🔍 Focus on high-centrality variables for feature selection"
                         )
 
                     # Advanced analysis recommendations
                     if best_nodes >= 10 and best_edges >= 20:
                         print(
-                            f"   🚀 Network is complex enough for graph machine learning algorithms"
+                            "   🚀 Network is complex enough for graph machine learning algorithms"
                         )
 
                     if (
@@ -2342,12 +2342,12 @@ class DatasetAnalyzer:
                         and "error" not in embedding_results[best_graph]["node2vec"]
                     ):
                         print(
-                            f"   🧠 Node embeddings available - excellent for feature engineering"
+                            "   🧠 Node embeddings available - excellent for feature engineering"
                         )
                 else:
-                    print(f"   ❌ NO significant network structure detected")
+                    print("   ❌ NO significant network structure detected")
                     print(
-                        f"   💡 Variables appear to be largely independent - traditional analysis may be more suitable"
+                        "   💡 Variables appear to be largely independent - traditional analysis may be more suitable"
                     )
 
         elif graph_results and "error" in graph_results:

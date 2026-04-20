@@ -122,9 +122,9 @@ Shared fields:
 - `update(**kwargs)` for safe field updates
 - `get_conformal_params()` to build the trainer-facing conformal configuration payload
 
-### Starter recipes
+### Workflow recipes
 
-Minimal local smoke test:
+**Smoke test — no optional features:**
 
 ```python
 config = TrainingConfig(
@@ -133,14 +133,81 @@ config = TrainingConfig(
     patience=3,
     use_amp=False,
 )
+trainer = Trainer(model, config=config, auto_track=False)
 ```
 
-Tracking-oriented run:
+**Preprocessing-heavy run — longer training, AMP, gradient clipping:**
+
+```python
+config = TrainingConfig(
+    num_epochs=50,
+    learning_rate=3e-4,
+    batch_size=32,
+    patience=10,
+    use_amp=True,
+    gradient_clip_val=1.0,
+    scheduler_type="cosine",
+    min_lr=1e-6,
+    save_best_model=True,
+    experiment_name="revin_decomp_baseline",
+)
+```
+
+**DARTS / NAS run — architecture parameter alternation:**
+
+```python
+config = TrainingConfig(
+    num_epochs=30,
+    learning_rate=1e-3,
+    batch_size=32,
+    train_nas=True,
+    nas_alpha_lr=3e-4,
+    nas_warmup_epochs=5,
+    nas_alternate_steps=1,
+    nas_use_val_for_alpha=True,
+    nas_discretize_at_end=True,
+    nas_log_alphas=True,
+)
+```
+
+**MoE monitoring run — enable router diagnostics:**
+
+```python
+config = TrainingConfig(
+    num_epochs=40,
+    learning_rate=3e-4,
+    use_amp=True,
+    moe_logging=True,
+    moe_log_latency=True,
+    moe_condition_name="season",
+    moe_condition_cardinality=4,
+    experiment_name="moe_router_audit",
+    save_best_model=True,
+)
+```
+
+**Conformal prediction run — split conformal with 90 % coverage:**
+
+```python
+config = TrainingConfig(
+    num_epochs=30,
+    batch_size=32,
+    conformal_enabled=True,
+    conformal_method="split",
+    conformal_quantile=0.90,
+)
+```
+
+**Tracking-oriented production run:**
 
 ```python
 config = TrainingConfig(
     experiment_name="baseline_direct",
     save_best_model=True,
+    save_model_path="checkpoints/best.pt",
+    use_amp=True,
+    gradient_clip_val=1.0,
+    scheduler_type="cosine",
 )
 ```
 

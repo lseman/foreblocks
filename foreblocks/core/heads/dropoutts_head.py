@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import math
-from typing import Dict, List, Optional, Tuple
-
 import torch
-import torch.fft as fft
 import torch.nn as nn
-import torch.nn.functional as F
 
 from foreblocks.core.model import BaseHead
 from foreblocks.ui.node_spec import node
+
 
 @node(
     type_id="dropoutts_head",
@@ -105,7 +101,9 @@ class _DropoutTS(nn.Module):
             L = min(self.span_len, T)
             for _ in range(self.n_spans):
                 starts = torch.randint(0, max(1, T - L + 1), (B,), device=device)
-                idx = starts.view(B, 1) + torch.arange(L, device=device).view(1, L)  # [B,L]
+                idx = starts.view(B, 1) + torch.arange(L, device=device).view(
+                    1, L
+                )  # [B,L]
                 idx = idx.clamp(max=T - 1)
                 drop.scatter_(1, idx.unsqueeze(-1).expand(B, L, F_), True)
 
@@ -116,8 +114,12 @@ class _DropoutTS(nn.Module):
             y = torch.where(drop, mu.expand_as(x), x)
 
         if self.scale_keep:
-            keep_time = (1.0 - self.p_time) if self.mode in {"timestep", "mixed"} else 1.0
-            keep_feat = (1.0 - self.p_feat) if self.mode in {"feature", "mixed"} else 1.0
+            keep_time = (
+                (1.0 - self.p_time) if self.mode in {"timestep", "mixed"} else 1.0
+            )
+            keep_feat = (
+                (1.0 - self.p_feat) if self.mode in {"feature", "mixed"} else 1.0
+            )
             keep = max(1e-6, keep_time * keep_feat)
             y = y / keep
 

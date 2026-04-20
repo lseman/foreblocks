@@ -12,7 +12,7 @@ This README keeps a short, code-accurate reference close to the implementation.
 ## Import surface
 
 ```python
-from foretools.bohb import BOHB, TPEConf
+from foretools.bohb import BOHB, PruningConfig, TPEConf
 from foretools.bohb.plotter import OptimizationPlotter
 from foretools.bohb.trial import TrialPruned
 ```
@@ -86,4 +86,5 @@ plotter.plot_param_importance()
 - `run()` takes no arguments. Configure `n_iterations` when constructing `BOHB`.
 - The constructor argument is `evaluate_fn`, not `evaluate`.
 - `TPEConf` and `tpe_overrides` control the sampler configuration.
+- `PruningConfig` and `pruning_overrides` control final-loss and intermediate-step pruning behavior.
 - `history_export_jsonl` and `prior_trials_jsonl` support reuse across runs.

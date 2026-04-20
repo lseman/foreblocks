@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List
 
 # NEW: use the unified spec builder (handles inputs/outputs/config + py)
 from foreblocks.ui.auto_spec import build_node_spec

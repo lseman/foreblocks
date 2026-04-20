@@ -1,6 +1,4 @@
-import math
-import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 class TrialPruned(Exception):
     """Exception raised when a trial should be pruned."""
@@ -23,11 +21,13 @@ class Trial:
         Reports an intermediate loss at a given step (e.g., epoch).
         Raises TrialPruned if the trial should be stopped.
         """
+        step = int(step)
         loss = float(loss)
+        should_prune = self.bohb._should_prune_step(self, step, loss)
         self.reports[step] = loss
-        
-        # Check with the central optimizer if we should prune
-        if self.bohb._should_prune_step(self, step, loss):
+        self.bohb._record_trial_report(self, step, loss)
+
+        if should_prune:
             self._is_pruned = True
             raise TrialPruned()
 

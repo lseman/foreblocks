@@ -10,11 +10,9 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from scipy.spatial.distance import pdist, squareform
 from scipy.stats import kurtosis, skew
 from sklearn.decomposition import PCA
 from sklearn.exceptions import ConvergenceWarning
-from sklearn.feature_selection import mutual_info_regression
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tools.sm_exceptions import ValueWarning
 

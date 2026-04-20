@@ -7,7 +7,7 @@ Use it when you want to tune hyperparameters, compare search strategies, or benc
 ## Import surface
 
 ```python
-from foretools.bohb import BOHB, TPEConf
+from foretools.bohb import BOHB, PruningConfig, TPEConf
 from foretools.bohb.plotter import OptimizationPlotter
 from foretools.bohb.trial import TrialPruned
 ```
@@ -105,6 +105,7 @@ In practice you normally catch `TrialPruned` inside the objective and return a f
 | `prior_trials_jsonl` | warm-start source for historical observations |
 | `history_export_jsonl` | export completed evaluations for reuse |
 | `tpe_conf`, `tpe_overrides` | control the TPE sampler behavior |
+| `pruning_conf`, `pruning_overrides` | tune final-loss and `Trial.report()` pruning thresholds |
 
 ## TPE configuration
 
@@ -138,6 +139,41 @@ bohb = BOHB(
 ```
 
 If you only need a few overrides, `tpe_overrides={...}` is lighter than constructing a full config object.
+
+## Pruning configuration
+
+`PruningConfig` exposes the pruning thresholds that BOHB uses for both completed evaluations and intermediate `Trial.report()` calls.
+
+```python
+from foretools.bohb import BOHB, PruningConfig
+
+pruning = PruningConfig(
+    final_min_history=12,
+    final_prob_base_balanced=0.55,
+    step_min_history=10,
+    step_progress_tolerance=0.10,
+    step_quantile_balanced=0.95,
+)
+
+bohb = BOHB(
+    config_space=config_space,
+    evaluate_fn=objective,
+    pruning_conf=pruning,
+)
+```
+
+For smaller adjustments, `pruning_overrides={...}` is usually enough:
+
+```python
+bohb = BOHB(
+    config_space=config_space,
+    evaluate_fn=objective,
+    pruning_overrides={
+        "step_min_history": 12,
+        "step_quantile_balanced": 0.94,
+    },
+)
+```
 
 ## Inspecting results
 
@@ -197,7 +233,7 @@ Use `foreblocks.darts` when:
 - Start with a cheap `max_budget` that still separates bad from good configurations.
 - Keep `parallel_jobs=1` first so objective behavior is easy to debug.
 - Use log-scaled floats for learning rates and weight decays.
-- Treat `Trial.report()` pruning as coarse and objective-specific; the current pruning rule is intentionally simple.
+- Tune `PruningConfig` conservatively at first; pruning is still workload-specific and can bias search if thresholds are too tight.
 - When documenting results or transferring runs, export the history JSONL and keep the exact config space definition with it.
 
 ## Related pages
