@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -20,7 +19,7 @@ class HaarWaveletTopK(nn.Module):
         super().__init__()
         self.topk = int(topk)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         B, T, F_ = x.shape
         pad_added = False
         if T % 2 != 0:

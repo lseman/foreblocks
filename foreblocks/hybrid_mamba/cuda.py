@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import os
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.utils.cpp_extension as cpp_extension
@@ -48,7 +47,7 @@ def load_selective_scan_extension(
     *,
     verbose: bool = False,
     force: bool = False,
-    build_directory: Optional[str | os.PathLike[str]] = None,
+    build_directory: str | os.PathLike[str] | None = None,
 ):
     global _EXT
     if _EXT is not None and not force:
@@ -87,7 +86,7 @@ def precompile_selective_scan_extension(
     *,
     verbose: bool = True,
     force: bool = False,
-    build_directory: Optional[str | os.PathLike[str]] = None,
+    build_directory: str | os.PathLike[str] | None = None,
 ):
     return load_selective_scan_extension(
         verbose=verbose,

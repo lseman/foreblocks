@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import List, Literal, Tuple, Union
+from typing import Literal
 
 import torch
 from torch import Tensor, nn
@@ -34,18 +34,18 @@ class PolyLayerConfig:
     fourier_base_freq: float = 1.0
     fourier_learn_freq: bool = False
 
-    def with_updates(self, **kwargs) -> "PolyLayerConfig":
+    def with_updates(self, **kwargs) -> PolyLayerConfig:
         return replace(self, **kwargs)
 
 
-def _reshape_in_out(x: Tensor, input_dim: int) -> Tuple[Tensor, Tuple[int, ...]]:
+def _reshape_in_out(x: Tensor, input_dim: int) -> tuple[Tensor, tuple[int, ...]]:
     if x.shape[-1] != input_dim:
         raise ValueError(f"Expected last dim {input_dim}, got {x.shape[-1]}")
     orig = x.shape
     return x.reshape(-1, input_dim), orig
 
 
-def _restore_shape(y: Tensor, orig_shape: Tuple[int, ...], output_dim: int) -> Tensor:
+def _restore_shape(y: Tensor, orig_shape: tuple[int, ...], output_dim: int) -> Tensor:
     return y.reshape(*orig_shape[:-1], output_dim)
 
 
@@ -106,11 +106,11 @@ class HahnPolynomials(nn.Module):
 
     def forward(
         self, x: Tensor, return_basis: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    ) -> Tensor | tuple[Tensor, Tensor]:
         x2, orig = _reshape_in_out(x, self.input_dim)
         x2 = _tanh_to_unit(x2)
 
-        terms: List[Tensor] = []
+        terms: list[Tensor] = []
         T0 = torch.ones(x2.shape[0], self.input_dim, device=x2.device, dtype=x2.dtype)
         terms.append(T0)
 
@@ -151,11 +151,11 @@ class ChebyshevPolynomials(nn.Module):
 
     def forward(
         self, x: Tensor, return_basis: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    ) -> Tensor | tuple[Tensor, Tensor]:
         x2, orig = _reshape_in_out(x, self.input_dim)
         x2 = _tanh_to_unit(x2)
 
-        terms: List[Tensor] = [torch.ones_like(x2)]
+        terms: list[Tensor] = [torch.ones_like(x2)]
         if self.degree >= 1:
             terms.append(x2)
         for _ in range(2, self.degree + 1):
@@ -188,14 +188,14 @@ class JacobiPolynomials(nn.Module):
 
     def forward(
         self, x: Tensor, return_basis: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    ) -> Tensor | tuple[Tensor, Tensor]:
         x2, orig = _reshape_in_out(x, self.input_dim)
         x2 = _tanh_to_unit(x2)
 
         a = self.alpha
         b = self.beta
 
-        terms: List[Tensor] = [torch.ones_like(x2)]
+        terms: list[Tensor] = [torch.ones_like(x2)]
         if self.degree >= 1:
             terms.append(0.5 * ((a - b) + (a + b + 2.0) * x2))
 
@@ -255,7 +255,7 @@ class WaveletKAN(nn.Module):
 
     def forward(
         self, x: Tensor, return_basis: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    ) -> Tensor | tuple[Tensor, Tensor]:
         x2, orig = _reshape_in_out(x, self.input_dim)
         x2 = _tanh_to_unit(x2)
 
@@ -298,7 +298,7 @@ class FourierKAN(nn.Module):
 
     def forward(
         self, x: Tensor, return_basis: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    ) -> Tensor | tuple[Tensor, Tensor]:
         x2, orig = _reshape_in_out(x, self.input_dim)
         x2 = _tanh_to_unit(x2)
         basis = self._fourier_basis(x2)
@@ -319,11 +319,11 @@ class ProbHermitePolynomials(nn.Module):
 
     def forward(
         self, x: Tensor, return_basis: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    ) -> Tensor | tuple[Tensor, Tensor]:
         x2, orig = _reshape_in_out(x, self.input_dim)
         x2 = _tanh_to_unit(x2)
 
-        terms: List[Tensor] = [torch.ones_like(x2)]
+        terms: list[Tensor] = [torch.ones_like(x2)]
         if self.degree >= 1:
             terms.append(x2)
         for n in range(1, self.degree):

@@ -1,5 +1,5 @@
 # itransformer_head_custom.py
-from typing import Literal, Optional, Tuple
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -163,8 +163,8 @@ class ITransformerHeadCustom(nn.Module):
         use_cls_token: bool = False,
         head_hidden: int = 0,
         output_mode: Literal["pooled", "nonpool_linear", "nonpool_attn"] = "pooled",
-        in_channels: Optional[int] = None,
-        out_channels: Optional[int] = None,
+        in_channels: int | None = None,
+        out_channels: int | None = None,
         max_vars: int = 2048,
         compressor_mode: Literal["linear", "conv"] = "linear",
         compressor_conv_channels: int = 0,
@@ -295,7 +295,7 @@ class ITransformerHeadCustom(nn.Module):
             nn.init.normal_(self.cls_token, mean=0.0, std=0.02)
 
     # ---------- utils ----------
-    def _maybe_instance_norm_time(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def _maybe_instance_norm_time(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """
         Optional instance normalization over time per variable.
         x: [B, T, C]

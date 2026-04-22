@@ -1,642 +1,34 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple, Union
+from typing import Any
+from collections.abc import Iterator
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import spectral_norm
 
 from foreblocks.ui.node_spec import node
 
-BaseHeadLike = Union[nn.Module]
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Types
-# ──────────────────────────────────────────────────────────────────────────────
-CombineMode = Literal["invert", "add", "none"]
-AlphaMode = Literal["off", "gate", "soft"]
-AlphaMixStyle = Literal["blend", "residual"]
-AlphaWeights = Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]
-
-ComposerMode = Literal["serial", "parallel", "hybrid"]
-ParallelCombine = Literal[
-    "concat",
-    "sum",
-    "mean",
-    "weighted_sum",
-    "hypernetwork_mix",
-    "attention_fusion",
-    "gated_fusion",
-]
-ParallelAlignMode = Literal["strict", "project"]
-SerialNoneMerge = Literal["replace", "add", "concat"]
-ParallelStructuredOutputs = Literal["error", "main", "main_add_second"]
-
-@dataclass
-class BaseRunState:
-    kind: str
-    name: str
-    stage: Literal["parallel", "serial"]
-    base_dim: Optional[int] = None
-
-
-@dataclass
-class ParallelNoneState(BaseRunState):
-    kind: Literal["parallel_none"] = field(default="parallel_none", init=False)
-    mix_w_head: Optional[float] = None
-
-
-@dataclass
-class SerialInvertState(BaseRunState):
-    kind: Literal["serial_invert"] = field(default="serial_invert", init=False)
-    gate_on: bool = True
-    gate_value: Optional[float] = None
-    state: Any = None
-    head_ref: Optional[nn.Module] = None
-
-
-@dataclass
-class SerialAddState(BaseRunState):
-    kind: Literal["serial_add"] = field(default="serial_add", init=False)
-    carry: Optional[torch.Tensor] = None
-    carry_shape: Tuple[int, ...] = ()
-    mix_w_head: Optional[float] = None
-    add_project: bool = True
-
-
-@dataclass
-class SerialNoneState(BaseRunState):
-    kind: Literal["serial_none"] = field(default="serial_none", init=False)
-    mix_w_head: Optional[float] = None
-    serial_none_merge: Optional[SerialNoneMerge] = None
-    serial_none_project_dim: Optional[int] = None
-    serial_none_time_aligned: bool = False
-
-
-RunStateEntry = Union[
-    ParallelNoneState,
-    SerialInvertState,
-    SerialAddState,
-    SerialNoneState,
+from .head_state import HeadStateManager
+from .head_types import (
+    ActiveHead,
+    AlphaWeights,
     BaseRunState,
-]
-RunStateList = List[RunStateEntry]
-
-
-@dataclass
-class HeadSpec:
-    """
-    Describe how a head behaves and (optionally) how to invert it.
-
-    combine:
-      - "invert": force reversible; head must return (y, state) and implement invert(y, state)
-      - "add" : force split-add; head must return (main, carry)
-      - "none" : forward-only; head must return y
-
-    add_project:
-      - If True and combine == "add", project carry to match inverse target feature dim.
-
-    α (architecture) controls:
-      - alpha_mode:
-          "off" : legacy behavior (no α)
-          "gate" : head is gated on/off with straight-through sigmoid (invert-safe)
-          "soft" : y = w_head * head(x) + w_skip * x (non-invert heads only)
-      - alpha_mix_style:
-          "blend" : y_eff = w_head * y + w_skip * x (legacy)
-          "residual" : y_eff = x + w_head * (y - x)
-          For gate mode this becomes residual gating with hard/soft gate weights.
-      - alpha_init: initial scalar/logit for the gate/soft weights (default 0.0)
-      - alpha_trainable: whether α is trainable
-      - weight_carry: when combine="add", also scale the carry by the same head weight
-    """
-
-    head: BaseHeadLike
-    name: str
-    combine: CombineMode = "none"
-    add_project: bool = True
-    custom_add_proj: Optional[nn.Module] = None
-    alpha_mode: AlphaMode = "off"
-    alpha_init: float = 0.0
-    alpha_trainable: bool = True
-    weight_carry: bool = True
-    alpha_mix_style: AlphaMixStyle = "blend"
-
-    def __post_init__(self):
-        valid_combine = ("invert", "add", "none")
-        valid_alpha = ("off", "gate", "soft")
-        valid_alpha_mix = ("blend", "residual")
-
-        if self.combine not in valid_combine:
-            raise ValueError(
-                f"HeadSpec '{self.name}': combine must be one of {valid_combine}, got '{self.combine}'"
-            )
-        if self.alpha_mode not in valid_alpha:
-            raise ValueError(
-                f"HeadSpec '{self.name}': alpha_mode must be one of {valid_alpha}, got '{self.alpha_mode}'"
-            )
-        if self.alpha_mix_style not in valid_alpha_mix:
-            raise ValueError(
-                f"HeadSpec '{self.name}': alpha_mix_style must be one of {valid_alpha_mix}, "
-                f"got '{self.alpha_mix_style}'"
-            )
-        if not self.name:
-            raise ValueError("HeadSpec name cannot be empty")
-        if self.custom_add_proj is not None and self.combine != "add":
-            import warnings
-
-            warnings.warn(
-                f"HeadSpec '{self.name}': custom_add_proj is set but combine='{self.combine}' "
-                "(only used when combine is 'add')"
-            )
-
-    def __repr__(self) -> str:
-        return (
-            f"HeadSpec(name={self.name!r}, combine={self.combine!r}, "
-            f"alpha_mode={self.alpha_mode!r}, alpha_mix_style={self.alpha_mix_style!r}, "
-            f"add_project={self.add_project})"
-        )
-
-
-@dataclass
-class ActiveHead:
-    spec: HeadSpec
-    index: int
-    is_parallel: bool
-    enabled: bool = True
-    hardened: Optional[bool] = None
-    alpha_param: Optional[nn.Parameter] = None
-    mix_logit: Optional[nn.Parameter] = None
-
-    @property
-    def name(self) -> str:
-        return self.spec.name
-
-    @property
-    def stage(self) -> Literal["parallel", "serial"]:
-        return "parallel" if self.is_parallel else "serial"
-
-
-class HeadStateManager(nn.Module):
-    """
-    Centralize mutable per-head state:
-      - NAS alpha parameters
-      - enable/disable masks
-      - hardened architecture decisions
-    """
-
-    _EPS: float = 1e-6
-
-    def __init__(
-        self,
-        active_heads: List[ActiveHead],
-        *,
-        enable_nas: bool,
-        alpha_temperature: float,
-    ) -> None:
-        super().__init__()
-        self._active_heads: List[ActiveHead] = list(active_heads)
-        self._head_by_name: Dict[str, ActiveHead] = {
-            h.name: h for h in self._active_heads
-        }
-        self.enable_nas = bool(enable_nas)
-        self.alpha_temperature = float(alpha_temperature)
-
-        self._alphas = nn.ParameterDict()
-        if self.enable_nas:
-            self._init_alpha_params(self._active_heads)
-
-    @property
-    def alphas(self) -> nn.ParameterDict:
-        return self._alphas
-
-    def _init_alpha_params(self, active_heads: List[ActiveHead]) -> None:
-        for head in active_heads:
-            spec = head.spec
-            if spec.alpha_mode == "off":
-                continue
-            if spec.alpha_mode == "soft":
-                p = nn.Parameter(
-                    torch.tensor([spec.alpha_init, 0.0], dtype=torch.float32)
-                )
-            elif spec.alpha_mode == "gate":
-                p = nn.Parameter(torch.tensor([spec.alpha_init], dtype=torch.float32))
-            else:
-                raise ValueError(
-                    f"alpha_mode must be one of ('off','gate','soft'), got '{spec.alpha_mode}'"
-                )
-            p.requires_grad_(bool(spec.alpha_trainable))
-            self._alphas[spec.name] = p
-            head.alpha_param = p
-
-    def alpha_weights_for_head(self, head: ActiveHead) -> AlphaWeights:
-        spec = head.spec
-        if not self.enable_nas or spec.alpha_mode == "off":
-            return None, None
-
-        a = head.alpha_param if head.alpha_param is not None else self._alphas[spec.name]
-        tau = max(self._EPS, float(self.alpha_temperature))
-
-        if spec.alpha_mode == "soft":
-            w = F.softmax(a / tau, dim=0)
-            return w[0], w[1]
-
-        g = torch.sigmoid(a[0] / tau)
-        return g, 1.0 - g
-
-    @staticmethod
-    def straight_through_hard_gate(g: torch.Tensor) -> torch.Tensor:
-        g_hard = (g > 0.5).float()
-        return g_hard.detach() - g.detach() + g
-
-    def compute_effective_weight(
-        self,
-        spec: HeadSpec,
-        w_head: Optional[torch.Tensor],
-        w_skip: Optional[torch.Tensor],
-        hardened: Optional[bool],
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if hardened is not None:
-            h = float(hardened)
-            return (
-                torch.tensor(h, device=device, dtype=dtype),
-                torch.tensor(1.0 - h, device=device, dtype=dtype),
-            )
-
-        if w_head is None:
-            return (
-                torch.tensor(1.0, device=device, dtype=dtype),
-                torch.tensor(0.0, device=device, dtype=dtype),
-            )
-
-        if spec.alpha_mode == "soft":
-            if w_skip is None:
-                w_skip = 1.0 - w_head
-            return w_head, w_skip
-
-        g_used = self.straight_through_hard_gate(w_head)
-        return g_used, 1.0 - g_used
-
-    def check_head_exists(self, name: str) -> None:
-        if name not in self._head_by_name:
-            available = list(self._head_by_name.keys())
-            raise KeyError(f"Unknown head name: '{name}'. Available: {available}")
-
-    def get_head(self, name: str) -> ActiveHead:
-        self.check_head_exists(name)
-        return self._head_by_name[name]
-
-    @torch.no_grad()
-    def enable_head(self, name: str) -> None:
-        head = self.get_head(name)
-        head.enabled = True
-
-    @torch.no_grad()
-    def disable_head(self, name: str) -> None:
-        head = self.get_head(name)
-        head.enabled = False
-
-    @torch.no_grad()
-    def set_head_enabled(self, name: str, enabled: bool) -> None:
-        head = self.get_head(name)
-        head.enabled = bool(enabled)
-
-    @torch.no_grad()
-    def enable_all(self) -> None:
-        for head in self._active_heads:
-            head.enabled = True
-
-    @torch.no_grad()
-    def disable_all(self) -> None:
-        for head in self._active_heads:
-            head.enabled = False
-
-    def enabled_report(self) -> Dict[str, bool]:
-        return {h.name: h.enabled for h in self._active_heads}
-
-    @contextmanager
-    def temporary_disable(self, *names: str) -> Iterator[None]:
-        previous_states: Dict[str, bool] = {}
-        for name in names:
-            head = self.get_head(name)
-            previous_states[name] = head.enabled
-            head.enabled = False
-        try:
-            yield
-        finally:
-            for name, prev in previous_states.items():
-                self._head_by_name[name].enabled = prev
-
-    @contextmanager
-    def only_heads(self, *names: str) -> Iterator[None]:
-        for name in names:
-            self.check_head_exists(name)
-        previous_states = {h.name: h.enabled for h in self._active_heads}
-        self.disable_all()
-        for name in names:
-            self._head_by_name[name].enabled = True
-        try:
-            yield
-        finally:
-            for name, prev in previous_states.items():
-                self._head_by_name[name].enabled = prev
-
-    def arch_parameters(self) -> Iterator[nn.Parameter]:
-        if not self.enable_nas:
-            return iter([])
-        return (p for p in self._alphas.values() if p.requires_grad)
-
-    def alpha_report(self) -> Dict[str, Dict[str, Any]]:
-        if not self.enable_nas:
-            return {}
-
-        rep: Dict[str, Dict[str, Any]] = {}
-        for head in self._active_heads:
-            spec = head.spec
-            d: Dict[str, Any] = {
-                "mode": spec.alpha_mode,
-                "mix_style": spec.alpha_mix_style,
-                "enabled": head.enabled,
-                "hardened": head.hardened,
-            }
-            if spec.alpha_mode == "off" or spec.name not in self._alphas:
-                rep[spec.name] = d
-                continue
-
-            w_head, w_skip = self.alpha_weights_for_head(head)
-            if spec.alpha_mode == "soft":
-                d["w_head"] = float(w_head.item())
-                d["w_skip"] = float(w_skip.item())
-            else:
-                d["p_on"] = float(w_head.item())
-            rep[spec.name] = d
-        return rep
-
-    @torch.no_grad()
-    def discretize_(self, threshold: float = 0.5) -> Dict[str, bool]:
-        if not self.enable_nas:
-            return {}
-
-        decisions: Dict[str, bool] = {}
-        for head in self._active_heads:
-            spec = head.spec
-            if spec.alpha_mode == "off" or spec.name not in self._alphas:
-                head.hardened = None
-                continue
-            w_head, _ = self.alpha_weights_for_head(head)
-            decision = bool(w_head >= threshold)
-            head.hardened = decision
-            decisions[spec.name] = decision
-        return decisions
-
-    @torch.no_grad()
-    def clear_discretization_(self) -> None:
-        for head in self._active_heads:
-            head.hardened = None
-
-
-class ParallelComposer:
-    """Parallel stage facade: branch collection + fusion."""
-
-    def __init__(self, owner: "HeadComposer") -> None:
-        self.owner = owner
-
-    def forward_stage(
-        self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, RunStateList]:
-        return self.owner._forward_parallel_stage_impl(x)
-
-
-class SerialComposer:
-    """Serial stage facade: reversible chain and inverse."""
-
-    def __init__(self, owner: "HeadComposer") -> None:
-        self.owner = owner
-
-    def forward_stage(
-        self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, RunStateList]:
-        return self.owner._forward_serial_stage_impl(x)
-
-    def inverse_stage(
-        self, y: torch.Tensor, run_state: RunStateList
-    ) -> torch.Tensor:
-        return self.owner._inverse_serial_stage(y, run_state)
-
-
-class HeadOrchestrator:
-    """Coordinate parallel and serial components according to composer mode."""
-
-    def __init__(
-        self,
-        *,
-        mode: ComposerMode,
-        parallel: ParallelComposer,
-        serial: SerialComposer,
-    ) -> None:
-        self.mode = mode
-        self.parallel = parallel
-        self.serial = serial
-
-    def forward_pre(
-        self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, RunStateList]:
-        if self.mode in ("parallel", "hybrid"):
-            x_aug, st_parallel = self.parallel.forward_stage(x)
-        else:
-            x_aug, st_parallel = x, []
-
-        if self.mode in ("serial", "hybrid"):
-            x_out, st_serial = self.serial.forward_stage(x_aug)
-        else:
-            x_out, st_serial = x_aug, []
-
-        return x_out, st_parallel + st_serial
-
-    def inverse_post(
-        self, y: torch.Tensor, run_state: RunStateList
-    ) -> torch.Tensor:
-        if self.mode == "parallel":
-            return y
-        return self.serial.inverse_stage(y, run_state)
-
-
-class ProjectionRegistry(nn.Module):
-    """
-    Unified factory/registry for projection and fusion helper modules.
-
-    Keys are structured by `(category, name, in_dim, out_dim, proj_type, kwargs...)`.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        # Do not touch nn.Module._modules (internal PyTorch container).
-        self.registry = nn.ModuleDict()
-
-    @staticmethod
-    def _safe_token(val: Any) -> str:
-        return str(val).replace("|", "_").replace(":", "_").replace(" ", "_")
-
-    def _make_key(
-        self,
-        *,
-        category: str,
-        name: str,
-        in_dim: int,
-        out_dim: int,
-        proj_type: str,
-        kwargs: Dict[str, Any],
-    ) -> str:
-        parts = [
-            self._safe_token(category),
-            self._safe_token(name),
-            str(int(in_dim)),
-            str(int(out_dim)),
-            self._safe_token(proj_type),
-        ]
-        if kwargs:
-            extras = "|".join(
-                f"{self._safe_token(k)}={self._safe_token(v)}"
-                for k, v in sorted(kwargs.items(), key=lambda kv: kv[0])
-            )
-            parts.append(extras)
-        return "::".join(parts)
-
-    def register_custom(self, *, category: str, name: str, module: nn.Module) -> None:
-        key = self._make_key(
-            category=category,
-            name=name,
-            in_dim=-1,
-            out_dim=-1,
-            proj_type="registered",
-            kwargs={},
-        )
-        self.registry[key] = module
-
-    def get_registered(self, *, category: str, name: str) -> Optional[nn.Module]:
-        key = self._make_key(
-            category=category,
-            name=name,
-            in_dim=-1,
-            out_dim=-1,
-            proj_type="registered",
-            kwargs={},
-        )
-        if key in self.registry:
-            return self.registry[key]
-        return None
-
-    def get_or_create(
-        self,
-        *,
-        category: str,
-        name: str,
-        in_dim: int,
-        out_dim: int,
-        proj_type: str = "linear",
-        device: Optional[torch.device] = None,
-        dtype: Optional[torch.dtype] = None,
-        **kwargs: Any,
-    ) -> nn.Module:
-        key = self._make_key(
-            category=category,
-            name=name,
-            in_dim=in_dim,
-            out_dim=out_dim,
-            proj_type=proj_type,
-            kwargs=kwargs,
-        )
-        if key not in self.registry:
-            self.registry[key] = self._build_module(
-                in_dim=in_dim,
-                out_dim=out_dim,
-                proj_type=proj_type,
-                **kwargs,
-            )
-        mod = self.registry[key]
-        if device is not None or dtype is not None:
-            mod = mod.to(device=device, dtype=dtype)
-        return mod
-
-    def _build_module(
-        self,
-        *,
-        in_dim: int,
-        out_dim: int,
-        proj_type: str,
-        **kwargs: Any,
-    ) -> nn.Module:
-        if proj_type == "identity":
-            return nn.Identity()
-
-        if proj_type == "linear":
-            allow_identity = bool(kwargs.get("allow_identity", True))
-            if allow_identity and int(in_dim) == int(out_dim):
-                return nn.Identity()
-            proj = nn.Linear(int(in_dim), int(out_dim))
-            nn.init.xavier_uniform_(proj.weight)
-            if proj.bias is not None:
-                nn.init.zeros_(proj.bias)
-            return proj
-
-        if proj_type == "conv1d":
-            kernel_size = int(kwargs.get("kernel_size", 1))
-            padding = int(kwargs.get("padding", kernel_size // 2))
-            bias = bool(kwargs.get("bias", True))
-            conv = nn.Conv1d(
-                in_channels=int(in_dim),
-                out_channels=int(out_dim),
-                kernel_size=kernel_size,
-                padding=padding,
-                bias=bias,
-            )
-            nn.init.kaiming_uniform_(conv.weight, a=5**0.5)
-            if conv.bias is not None:
-                nn.init.zeros_(conv.bias)
-            return conv
-
-        if proj_type == "hyper_mlp":
-            hidden_dim = int(kwargs.get("hidden_dim", 64))
-            out_features = int(kwargs.get("out_features", out_dim))
-            dropout = float(kwargs.get("dropout", 0.0))
-            drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-            net = nn.Sequential(
-                nn.Linear(int(in_dim), hidden_dim),
-                nn.GELU(),
-                drop,
-                nn.Linear(hidden_dim, out_features),
-            )
-            if isinstance(net[-1], nn.Linear) and net[-1].bias is not None:
-                nn.init.zeros_(net[-1].bias)
-            return net
-
-        if proj_type == "gate_mlp":
-            hidden_dim = int(kwargs.get("hidden_dim", max(8, int(in_dim) // 2)))
-            out_features = int(kwargs.get("out_features", 1))
-            net = nn.Sequential(
-                nn.Linear(int(in_dim), hidden_dim),
-                nn.GELU(),
-                nn.Linear(hidden_dim, out_features),
-            )
-            if isinstance(net[-1], nn.Linear) and net[-1].bias is not None:
-                nn.init.zeros_(net[-1].bias)
-            return net
-
-        if proj_type == "multihead_attention":
-            num_heads = int(kwargs["num_heads"])
-            dropout = float(kwargs.get("dropout", 0.0))
-            batch_first = bool(kwargs.get("batch_first", True))
-            return nn.MultiheadAttention(
-                embed_dim=int(in_dim),
-                num_heads=num_heads,
-                dropout=dropout,
-                batch_first=batch_first,
-            )
-
-        raise ValueError(f"Unsupported proj_type: {proj_type}")
+    ComposerMode,
+    HeadSpec,
+    ParallelAlignMode,
+    ParallelCombine,
+    ParallelNoneState,
+    ParallelStructuredOutputs,
+    RunStateList,
+    SerialAddState,
+    SerialInvertState,
+    SerialNoneMerge,
+    SerialNoneState,
+)
+from .projection_registry import ProjectionRegistry
 
 
 @node(
@@ -718,12 +110,12 @@ class HeadComposer(nn.Module):
 
     def __init__(
         self,
-        specs: Optional[List[HeadSpec]] = None,
+        specs: list[HeadSpec] | None = None,
         *,
         # For hybrid, split specs:
-        parallel_specs: Optional[List[HeadSpec]] = None,
-        serial_specs: Optional[List[HeadSpec]] = None,
-        output_dim: Optional[int] = None,
+        parallel_specs: list[HeadSpec] | None = None,
+        serial_specs: list[HeadSpec] | None = None,
+        output_dim: int | None = None,
         stop_gradient_on_carry: bool = False,
         alpha_temperature: float = 1.0,
         enable_nas: bool = False,
@@ -732,20 +124,24 @@ class HeadComposer(nn.Module):
         # Parallel stage controls:
         parallel_align_mode: ParallelAlignMode = "strict",
         parallel_project: bool = False,
-        parallel_project_dim: Optional[int] = None,
+        parallel_project_dim: int | None = None,
         parallel_structured_outputs: ParallelStructuredOutputs = "error",
         parallel_hyper_hidden_dim: int = 64,
         parallel_attention_heads: int = 0,
         parallel_fusion_dropout: float = 0.0,
+        moe_temperature: float = 1.0,
+        gumbel_temperature: float = 0.5,
+        anneal_alpha: bool = True,
+        use_spectral_norm_invert: bool = True,
         # Serial stage controls for combine='none':
         serial_none_merge: SerialNoneMerge = "replace",
         serial_none_project: bool = False,
-        serial_none_project_dim: Optional[int] = None,
+        serial_none_project_dim: int | None = None,
     ):
         super().__init__()
 
         # Normalize args
-        specs: List[HeadSpec] = specs or []
+        specs: list[HeadSpec] = specs or []
         parallel_specs = parallel_specs or []
         serial_specs = serial_specs or []
 
@@ -762,6 +158,11 @@ class HeadComposer(nn.Module):
         self.parallel_hyper_hidden_dim = int(parallel_hyper_hidden_dim)
         self.parallel_attention_heads = int(parallel_attention_heads)
         self.parallel_fusion_dropout = float(parallel_fusion_dropout)
+        self.moe_temperature = float(moe_temperature)
+        self.gumbel_temperature = float(gumbel_temperature)
+        self.anneal_alpha = bool(anneal_alpha)
+        self.use_spectral_norm_invert = bool(use_spectral_norm_invert)
+        self._alpha_step = 0
         self.serial_none_merge: SerialNoneMerge = serial_none_merge
         self.serial_none_project = bool(serial_none_project)
         self.serial_none_project_dim = (
@@ -776,52 +177,42 @@ class HeadComposer(nn.Module):
         self.enable_nas = enable_nas
 
         # Choose which specs are active given mode
-        if composer_mode == "serial":
-            if parallel_specs or serial_specs:
-                raise ValueError(
-                    "In composer_mode='serial', pass specs=... only (not parallel_specs/serial_specs)."
-                )
-            self.parallel_meta: List[HeadSpec] = []
-            self.serial_meta: List[HeadSpec] = list(specs)
-        elif composer_mode == "parallel":
-            if specs and parallel_specs:
-                raise ValueError(
-                    "In composer_mode='parallel', pass exactly one of specs=... or parallel_specs=..., not both."
-                )
-            if serial_specs:
-                raise ValueError(
-                    "In composer_mode='parallel', pass parallel_specs=... or specs=..., not serial_specs."
-                )
-            self.parallel_meta = list(parallel_specs) if parallel_specs else list(specs)
-            self.serial_meta = []
-        elif composer_mode == "hybrid":
-            if specs:
-                raise ValueError(
-                    "In composer_mode='hybrid', pass parallel_specs=... and serial_specs=... (not specs)."
-                )
-            self.parallel_meta = list(parallel_specs)
-            self.serial_meta = list(serial_specs)
-        else:
-            raise ValueError(f"Unknown composer_mode: {composer_mode}")
+        self.parallel_meta, self.serial_meta = self._resolve_mode_specs(
+            composer_mode=composer_mode,
+            specs=specs,
+            parallel_specs=parallel_specs,
+            serial_specs=serial_specs,
+        )
 
         # Validate unique names across all heads
         self._validate_unique_names(self.parallel_meta, self.serial_meta)
         self._validate_spec_constraints()
 
         # Register heads as modules (keep ordering stable)
+        if self.use_spectral_norm_invert:
+            for spec in self.parallel_meta + self.serial_meta:
+                if spec.spectral_norm and isinstance(spec.head, nn.Module):
+                    try:
+                        spec.head = spectral_norm(spec.head)
+                    except Exception:
+                        pass
+
         self.parallel_heads = nn.ModuleList([s.head for s in self.parallel_meta])
         self.serial_heads = nn.ModuleList([s.head for s in self.serial_meta])
-        self.parallel_active_heads: List[ActiveHead] = [
-            ActiveHead(spec=s, index=i, is_parallel=True)
-            for i, s in enumerate(self.parallel_meta)
-        ]
-        self.serial_active_heads: List[ActiveHead] = [
-            ActiveHead(spec=s, index=i, is_parallel=False)
-            for i, s in enumerate(self.serial_meta)
-        ]
-        self.active_heads: List[ActiveHead] = (
+        self.parallel_active_heads = self._build_active_heads(
+            self.parallel_meta, is_parallel=True
+        )
+        self.serial_active_heads = self._build_active_heads(
+            self.serial_meta, is_parallel=False
+        )
+        self.active_heads: list[ActiveHead] = (
             self.parallel_active_heads + self.serial_active_heads
         )
+
+        for head in self.active_heads:
+            head.fusion_scale_param = nn.Parameter(
+                torch.tensor(float(head.spec.fusion_scale_init), dtype=torch.float32)
+            )
 
         self.projection_registry = ProjectionRegistry()
         for spec in self.serial_meta:
@@ -832,7 +223,10 @@ class HeadComposer(nn.Module):
                     module=spec.custom_add_proj,
                 )
         self.parallel_mix_logits = nn.ParameterList(
-            [nn.Parameter(torch.zeros(1, dtype=torch.float32)) for _ in self.parallel_meta]
+            [
+                nn.Parameter(torch.zeros(1, dtype=torch.float32))
+                for _ in self.parallel_meta
+            ]
         )
         for i, head in enumerate(self.parallel_active_heads):
             head.mix_logit = self.parallel_mix_logits[i]
@@ -841,29 +235,65 @@ class HeadComposer(nn.Module):
             self.active_heads,
             enable_nas=self.enable_nas,
             alpha_temperature=self.alpha_temperature,
+            gumbel_temperature=self.gumbel_temperature,
         )
 
         # Used for deterministic projection sizing when output_dim is None
-        self._last_base_dim: Optional[int] = None
+        self._last_base_dim: int | None = None
 
         # Validate mode constraints early
         self._validate_mode_constraints()
-
-        # Stage components and orchestrator.
-        self.parallel_composer = ParallelComposer(self)
-        self.serial_composer = SerialComposer(self)
-        self.orchestrator = HeadOrchestrator(
-            mode=self.composer_mode,
-            parallel=self.parallel_composer,
-            serial=self.serial_composer,
-        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Validation
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
+    def _resolve_mode_specs(
+        *,
+        composer_mode: str,
+        specs: list[HeadSpec],
+        parallel_specs: list[HeadSpec],
+        serial_specs: list[HeadSpec],
+    ) -> tuple[list[HeadSpec], list[HeadSpec]]:
+        if composer_mode == "serial":
+            if parallel_specs or serial_specs:
+                raise ValueError(
+                    "In composer_mode='serial', pass specs=... only (not parallel_specs/serial_specs)."
+                )
+            return [], list(specs)
+
+        if composer_mode == "parallel":
+            if specs and parallel_specs:
+                raise ValueError(
+                    "In composer_mode='parallel', pass exactly one of specs=... or parallel_specs=..., not both."
+                )
+            if serial_specs:
+                raise ValueError(
+                    "In composer_mode='parallel', pass parallel_specs=... or specs=..., not serial_specs."
+                )
+            return list(parallel_specs) if parallel_specs else list(specs), []
+
+        if composer_mode == "hybrid":
+            if specs:
+                raise ValueError(
+                    "In composer_mode='hybrid', pass parallel_specs=... and serial_specs=... (not specs)."
+                )
+            return list(parallel_specs), list(serial_specs)
+
+        raise ValueError(f"Unknown composer_mode: {composer_mode}")
+
+    @staticmethod
+    def _build_active_heads(
+        specs: list[HeadSpec], *, is_parallel: bool
+    ) -> list[ActiveHead]:
+        return [
+            ActiveHead(spec=spec, index=index, is_parallel=is_parallel)
+            for index, spec in enumerate(specs)
+        ]
+
+    @staticmethod
     def _validate_unique_names(
-        parallel_specs: List[HeadSpec], serial_specs: List[HeadSpec]
+        parallel_specs: list[HeadSpec], serial_specs: list[HeadSpec]
     ) -> None:
         seen: set[str] = set()
         for s in parallel_specs + serial_specs:
@@ -882,6 +312,9 @@ class HeadComposer(nn.Module):
             "hypernetwork_mix",
             "attention_fusion",
             "gated_fusion",
+            "lora_mix",
+            "moe_routing",
+            "multi_scale_attn",
         )
         if self.parallel_combine not in valid_parallel_combine:
             raise ValueError(
@@ -898,9 +331,9 @@ class HeadComposer(nn.Module):
                 "parallel_structured_outputs must be one of ('error','main','main_add_second'), "
                 f"got {self.parallel_structured_outputs}"
             )
-        if self.serial_none_merge not in ("replace", "add", "concat"):
+        if self.serial_none_merge not in ("replace", "add", "concat", "lora_residual"):
             raise ValueError(
-                "serial_none_merge must be one of ('replace','add','concat'), "
+                "serial_none_merge must be one of ('replace','add','concat','lora_residual'), "
                 f"got {self.serial_none_merge}"
             )
         if self.parallel_project_dim is not None and self.parallel_project_dim <= 0:
@@ -930,7 +363,7 @@ class HeadComposer(nn.Module):
 
         # Parallel stage constraints: tuple outputs are only allowed when policy explicitly enables them.
         if self.composer_mode in ("parallel", "hybrid"):
-            bad: List[str] = []
+            bad: list[str] = []
             if self.parallel_structured_outputs == "error":
                 for s in self.parallel_meta:
                     if s.combine in ("invert", "add"):
@@ -975,7 +408,7 @@ class HeadComposer(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
         proj_type: str = "linear",
-        registered_category: Optional[str] = None,
+        registered_category: str | None = None,
         **kwargs: Any,
     ) -> nn.Module:
         if registered_category is not None:
@@ -1031,8 +464,11 @@ class HeadComposer(nn.Module):
         y: torch.Tensor,
         head_name: str,
         rec: SerialNoneState,
+        spec: HeadSpec,
     ) -> torch.Tensor:
         mode = self.serial_none_merge
+        if spec.combine == "lora_residual":
+            mode = "lora_residual"
         rec.serial_none_merge = mode
 
         if mode == "replace":
@@ -1109,6 +545,24 @@ class HeadComposer(nn.Module):
                 rec.serial_none_project_dim = target_dim
             return merged
 
+        if mode == "lora_residual":
+            if spec.lora_rank is None:
+                raise ValueError(
+                    f"[{head_name}] serial_none_merge='lora_residual' requires spec.lora_rank"
+                )
+            delta = y - cur
+            adapter = self._get_or_build_projection(
+                category="lora_adapter",
+                name=f"lora_residual_{head_name}",
+                in_dim=int(delta.size(-1)),
+                out_dim=int(delta.size(-1)),
+                device=cur.device,
+                dtype=cur.dtype,
+                proj_type="lora_adapter",
+                rank=int(spec.lora_rank),
+            )
+            return cur + adapter(delta)
+
         raise ValueError(f"Unknown serial_none_merge mode: {mode}")
 
     def _parallel_target_dim(self, x_ref: torch.Tensor) -> int:
@@ -1170,9 +624,9 @@ class HeadComposer(nn.Module):
 
     def _align_parallel_branches_for_fusion(
         self,
-        branches: List[Tuple[ActiveHead, torch.Tensor]],
+        branches: list[tuple[ActiveHead, torch.Tensor]],
         x_ref: torch.Tensor,
-    ) -> List[Tuple[ActiveHead, torch.Tensor]]:
+    ) -> list[tuple[ActiveHead, torch.Tensor]]:
         if not branches:
             return []
 
@@ -1190,7 +644,7 @@ class HeadComposer(nn.Module):
 
         target_dim = self._parallel_target_dim(x_ref)
         target_T = int(x_ref.size(1))
-        aligned: List[Tuple[ActiveHead, torch.Tensor]] = []
+        aligned: list[tuple[ActiveHead, torch.Tensor]] = []
         for idx, (head, b) in enumerate(branches):
             if b.size(0) != x_ref.size(0):
                 raise RuntimeError(
@@ -1249,6 +703,25 @@ class HeadComposer(nn.Module):
             dtype=dtype,
         )
 
+    def _get_or_build_moe_gate_net(
+        self,
+        in_dim: int,
+        out_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> nn.Module:
+        return self.projection_registry.get_or_create(
+            category="parallel_moe_gate",
+            name=f"in{int(in_dim)}_out{int(out_dim)}",
+            in_dim=int(in_dim),
+            out_dim=int(out_dim),
+            proj_type="gate_mlp",
+            hidden_dim=max(8, int(in_dim) // 2),
+            out_features=int(out_dim),
+            device=device,
+            dtype=dtype,
+        )
+
     def _resolve_parallel_attention_heads(self, embed_dim: int) -> int:
         if self.parallel_attention_heads > 0:
             if embed_dim % self.parallel_attention_heads != 0:
@@ -1299,12 +772,12 @@ class HeadComposer(nn.Module):
     def _compute_effective_weight(
         self,
         spec: HeadSpec,
-        w_head: Optional[torch.Tensor],
-        w_skip: Optional[torch.Tensor],
-        hardened: Optional[bool],
+        w_head: torch.Tensor | None,
+        w_skip: torch.Tensor | None,
+        hardened: bool | None,
         device: torch.device,
         dtype: torch.dtype,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.state_manager.compute_effective_weight(
             spec=spec,
             w_head=w_head,
@@ -1327,6 +800,23 @@ class HeadComposer(nn.Module):
             return head_out * eff_head + skip * eff_skip
         if spec.alpha_mix_style == "residual":
             return skip + eff_head * (head_out - skip)
+        if spec.alpha_mix_style == "lora":
+            if spec.lora_rank is None:
+                raise ValueError(
+                    f"[{spec.name}] alpha_mix_style='lora' requires spec.lora_rank to be set"
+                )
+            delta = head_out - skip
+            adapter = self._get_or_build_projection(
+                category="lora_adapter",
+                name=f"lora_{spec.name}",
+                in_dim=int(delta.size(-1)),
+                out_dim=int(delta.size(-1)),
+                device=delta.device,
+                dtype=delta.dtype,
+                proj_type="lora_adapter",
+                rank=int(spec.lora_rank),
+            )
+            return skip + eff_head * adapter(delta)
         raise ValueError(
             f"[{spec.name}] unknown alpha_mix_style '{spec.alpha_mix_style}'"
         )
@@ -1337,19 +827,17 @@ class HeadComposer(nn.Module):
         spec: HeadSpec,
         head_out: torch.Tensor,
         skip: torch.Tensor,
-        w_head: Optional[torch.Tensor],
-        w_skip: Optional[torch.Tensor],
-        hardened: Optional[bool],
+        w_head: torch.Tensor | None,
+        w_skip: torch.Tensor | None,
+        hardened: bool | None,
         device: torch.device,
         dtype: torch.dtype,
         context: str,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if w_head is None:
             return head_out, None
 
-        self._ensure_same_shape_for_mixing(
-            spec.name, head_out, skip, context=context
-        )
+        self._ensure_same_shape_for_mixing(spec.name, head_out, skip, context=context)
         eff_head, eff_skip = self._compute_effective_weight(
             spec, w_head, w_skip, hardened, device, dtype
         )
@@ -1385,7 +873,7 @@ class HeadComposer(nn.Module):
     def disable_all(self) -> None:
         self.state_manager.disable_all()
 
-    def enabled_report(self) -> Dict[str, bool]:
+    def enabled_report(self) -> dict[str, bool]:
         return self.state_manager.enabled_report()
 
     @contextmanager
@@ -1401,18 +889,29 @@ class HeadComposer(nn.Module):
     # ──────────────────────────────────────────────────────────────────────────
     # Forward
     # ──────────────────────────────────────────────────────────────────────────
-    def forward_pre(self, x: torch.Tensor) -> Tuple[torch.Tensor, RunStateList]:
+    def forward_pre(self, x: torch.Tensor) -> tuple[torch.Tensor, RunStateList]:
         if x.ndim != 3:
             raise ValueError(f"Expected x to have shape [B,T,F], got {tuple(x.shape)}")
 
         self._last_base_dim = int(x.size(-1))
-        return self.orchestrator.forward_pre(x)
+        run_state: RunStateList = []
+        cur = x
+
+        if self.composer_mode in ("parallel", "hybrid"):
+            cur, parallel_state = self._forward_parallel_stage_impl(cur)
+            run_state.extend(parallel_state)
+
+        if self.composer_mode in ("serial", "hybrid"):
+            cur, serial_state = self._forward_serial_stage_impl(cur)
+            run_state.extend(serial_state)
+
+        return cur, run_state
 
     def forward(
         self,
         x: torch.Tensor,
-        encoder: Optional[nn.Module] = None,
-    ) -> Tuple[torch.Tensor, RunStateList]:
+        encoder: nn.Module | None = None,
+    ) -> tuple[torch.Tensor, RunStateList]:
         out, state = self.forward_pre(x)
         if encoder is not None:
             out = encoder(out)
@@ -1423,127 +922,13 @@ class HeadComposer(nn.Module):
     # ──────────────────────────────────────────────────────────────────────────
     def _forward_parallel_stage_impl(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, RunStateList]:
-        run_state: RunStateList = []
-        branches: List[Tuple[ActiveHead, torch.Tensor]] = []
-
-        for active_head in self.parallel_active_heads:
-            spec = active_head.spec
-            if not active_head.enabled:
-                run_state.append(
-                    BaseRunState(
-                        kind="disabled",
-                        name=active_head.name,
-                        stage="parallel",
-                    )
-                )
-                continue
-
-            out = spec.head(x)
-            y = self._extract_parallel_tensor(spec, out)
-
-            w_head, w_skip = self._alpha_weights_for_head(active_head)
-            hardened = active_head.hardened
-
-            rec = ParallelNoneState(
-                name=active_head.name,
-                stage="parallel",
-                base_dim=self._last_base_dim,
-            )
-
-            y, eff_head = self._mix_with_alpha(
-                spec=spec,
-                head_out=y,
-                skip=x,
-                w_head=w_head,
-                w_skip=w_skip,
-                hardened=hardened,
-                device=x.device,
-                dtype=x.dtype,
-                context="parallel alpha mixing",
-            )
-            rec.mix_w_head = None if eff_head is None else float(eff_head.item())
-
-            branches.append((active_head, y))
-            run_state.append(rec)
+    ) -> tuple[torch.Tensor, RunStateList]:
+        branches, run_state = self._collect_parallel_branches(x)
 
         if not branches:
             return x, run_state
 
-        if self.parallel_combine == "concat":
-            out = torch.cat([b for _, b in branches], dim=-1)
-        elif self.parallel_combine in ("sum", "mean"):
-            aligned = self._align_parallel_branches_for_fusion(branches, x)
-            branch_tensors = [b for _, b in aligned]
-            out = torch.stack(branch_tensors, dim=0).sum(dim=0)
-            if self.parallel_combine == "mean":
-                out = out / float(len(branch_tensors))
-        elif self.parallel_combine == "weighted_sum":
-            aligned = self._align_parallel_branches_for_fusion(branches, x)
-            if any(head.mix_logit is None for head, _ in aligned):
-                raise RuntimeError("Missing parallel mix logits for weighted_sum.")
-            logits = torch.stack(
-                [head.mix_logit[0] for head, _ in aligned],
-                dim=0,
-            ).to(device=x.device)
-            weights = F.softmax(logits.float(), dim=0).to(dtype=aligned[0][1].dtype)
-            out = torch.zeros_like(aligned[0][1])
-            for i, (head, b) in enumerate(aligned):
-                out = out + b * weights[i]
-        elif self.parallel_combine == "hypernetwork_mix":
-            aligned = self._align_parallel_branches_for_fusion(branches, x)
-            branch_stack = torch.stack([b for _, b in aligned], dim=0)  # [N,B,T,F]
-            context = branch_stack.mean(dim=0).mean(dim=1)  # [B,F]
-            hyper = self._get_or_build_parallel_hypernet(
-                in_dim=int(context.size(-1)),
-                device=x.device,
-                dtype=x.dtype,
-            )
-            logits_all = hyper(context)  # [B, N_total_parallel]
-            active_idx = torch.tensor(
-                [head.index for head, _ in aligned],
-                device=x.device,
-                dtype=torch.long,
-            )
-            logits = logits_all.index_select(1, active_idx)
-            weights = F.softmax(logits.float(), dim=1).to(dtype=aligned[0][1].dtype)
-            out = torch.zeros_like(aligned[0][1])
-            for i, (head, b) in enumerate(aligned):
-                w_i = weights[:, i].view(-1, 1, 1)
-                out = out + b * w_i
-        elif self.parallel_combine == "attention_fusion":
-            aligned = self._align_parallel_branches_for_fusion(branches, x)
-            B, T, Fdim = aligned[0][1].shape
-            num_branches = len(aligned)
-            attn = self._get_or_build_parallel_attention(
-                embed_dim=Fdim,
-                device=x.device,
-                dtype=x.dtype,
-            )
-            stacked = torch.stack([b for _, b in aligned], dim=2)  # [B,T,N,F]
-            tokens = stacked.reshape(B * T, num_branches, Fdim)  # [B*T,N,F]
-            attn_out, _ = attn(tokens, tokens, tokens, need_weights=False)
-            out = attn_out.mean(dim=1).reshape(B, T, Fdim)
-        elif self.parallel_combine == "gated_fusion":
-            aligned = self._align_parallel_branches_for_fusion(branches, x)
-            Fdim = aligned[0][1].size(-1)
-            gate_net = self._get_or_build_parallel_gate_net(
-                in_dim=int(Fdim),
-                device=x.device,
-                dtype=x.dtype,
-            )
-            gate_scores = torch.stack(
-                [torch.sigmoid(gate_net(b.mean(dim=1))) for _, b in aligned], dim=1
-            )  # [B,N,1]
-            gate_norm = gate_scores / gate_scores.sum(dim=1, keepdim=True).clamp_min(
-                self._EPS
-            )
-            out = torch.zeros_like(aligned[0][1])
-            for i, (head, b) in enumerate(aligned):
-                g_i = gate_norm[:, i, :].unsqueeze(1).to(dtype=b.dtype)  # [B,1,1]
-                out = out + b * g_i
-        else:
-            raise ValueError(f"Unknown parallel_combine: {self.parallel_combine}")
+        out = self._combine_parallel_branches(branches, x)
 
         if self.parallel_project or self.parallel_project_dim is not None:
             target_dim = self._parallel_target_dim(x)
@@ -1560,74 +945,365 @@ class HeadComposer(nn.Module):
 
         return out, run_state
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Serial stage (reversible)
-    # ──────────────────────────────────────────────────────────────────────────
-    def _forward_serial_stage_impl(
+    def _collect_parallel_branches(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, RunStateList]:
+    ) -> tuple[list[tuple[ActiveHead, torch.Tensor]], RunStateList]:
         run_state: RunStateList = []
-        cur = x
+        branches: list[tuple[ActiveHead, torch.Tensor]] = []
 
-        for active_head in self.serial_active_heads:
+        for active_head in self.parallel_active_heads:
             spec = active_head.spec
             if not active_head.enabled:
                 run_state.append(
                     BaseRunState(
                         kind="disabled",
                         name=active_head.name,
-                        stage="serial",
+                        stage="parallel",
                     )
                 )
                 continue
 
-            out = spec.head(cur)
-            combine = spec.combine
-
+            out = spec.head(x)
+            y = self._extract_parallel_tensor(spec, out)
             w_head, w_skip = self._alpha_weights_for_head(active_head)
-            hardened = active_head.hardened
 
-            if combine == "invert":
-                rec = SerialInvertState(
-                    name=active_head.name,
-                    stage="serial",
-                    base_dim=self._last_base_dim,
-                )
-                cur, rec = self._apply_invert(cur, out, spec, w_head, hardened, rec)
-            elif combine == "add":
-                rec = SerialAddState(
-                    name=active_head.name,
-                    stage="serial",
-                    base_dim=self._last_base_dim,
-                )
-                cur, rec = self._apply_add(
-                    cur, out, spec, w_head, w_skip, hardened, rec
-                )
-            elif combine == "none":
-                rec = SerialNoneState(
-                    name=active_head.name,
-                    stage="serial",
-                    base_dim=self._last_base_dim,
-                )
-                cur, rec = self._apply_none(
-                    cur, out, spec, w_head, w_skip, hardened, rec
-                )
-            else:
-                raise ValueError(f"Unknown combine mode: '{combine}'")
+            rec = ParallelNoneState(
+                name=active_head.name,
+                stage="parallel",
+                base_dim=self._last_base_dim,
+            )
+            y, eff_head = self._mix_with_alpha(
+                spec=spec,
+                head_out=y,
+                skip=x,
+                w_head=w_head,
+                w_skip=w_skip,
+                hardened=active_head.hardened,
+                device=x.device,
+                dtype=x.dtype,
+                context="parallel alpha mixing",
+            )
+            if active_head.fusion_scale_param is not None:
+                y = y * torch.sigmoid(active_head.fusion_scale_param)
+            rec.mix_w_head = None if eff_head is None else float(eff_head.item())
 
+            branches.append((active_head, y))
+            run_state.append(rec)
+
+        return branches, run_state
+
+    def _combine_parallel_branches(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        handlers = {
+            "concat": self._combine_parallel_concat,
+            "sum": self._combine_parallel_sum,
+            "mean": self._combine_parallel_mean,
+            "weighted_sum": self._combine_parallel_weighted_sum,
+            "hypernetwork_mix": self._combine_parallel_hypernetwork_mix,
+            "attention_fusion": self._combine_parallel_attention_fusion,
+            "gated_fusion": self._combine_parallel_gated_fusion,
+            "lora_mix": self._combine_parallel_lora_mix,
+            "moe_routing": self._combine_parallel_moe_routing,
+            "multi_scale_attn": self._combine_parallel_multi_scale_attn,
+        }
+        try:
+            return handlers[self.parallel_combine](branches, x)
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown parallel_combine: {self.parallel_combine}"
+            ) from exc
+
+    @staticmethod
+    def _combine_parallel_concat(
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        del x
+        return torch.cat([branch for _, branch in branches], dim=-1)
+
+    def _combine_parallel_sum(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        aligned = self._align_parallel_branches_for_fusion(branches, x)
+        return torch.stack([branch for _, branch in aligned], dim=0).sum(dim=0)
+
+    def _combine_parallel_mean(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        aligned = self._align_parallel_branches_for_fusion(branches, x)
+        branch_tensors = [branch for _, branch in aligned]
+        return torch.stack(branch_tensors, dim=0).mean(dim=0)
+
+    def _combine_parallel_weighted_sum(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        aligned = self._align_parallel_branches_for_fusion(branches, x)
+        if any(head.mix_logit is None for head, _ in aligned):
+            raise RuntimeError("Missing parallel mix logits for weighted_sum.")
+
+        logits = torch.stack(
+            [head.mix_logit[0] for head, _ in aligned],
+            dim=0,
+        ).to(device=x.device)
+        weights = F.softmax(logits.float(), dim=0).to(dtype=aligned[0][1].dtype)
+        out = torch.zeros_like(aligned[0][1])
+        for i, (_, branch) in enumerate(aligned):
+            out = out + branch * weights[i]
+        return out
+
+    def _combine_parallel_hypernetwork_mix(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        aligned = self._align_parallel_branches_for_fusion(branches, x)
+        branch_stack = torch.stack([branch for _, branch in aligned], dim=0)
+        context = branch_stack.mean(dim=0).mean(dim=1)
+        hyper = self._get_or_build_parallel_hypernet(
+            in_dim=int(context.size(-1)),
+            device=x.device,
+            dtype=x.dtype,
+        )
+        logits_all = hyper(context)
+        active_idx = torch.tensor(
+            [head.index for head, _ in aligned],
+            device=x.device,
+            dtype=torch.long,
+        )
+        logits = logits_all.index_select(1, active_idx)
+        weights = F.softmax(logits.float(), dim=1).to(dtype=aligned[0][1].dtype)
+        out = torch.zeros_like(aligned[0][1])
+        for i, (_, branch) in enumerate(aligned):
+            out = out + branch * weights[:, i].view(-1, 1, 1)
+        return out
+
+    def _combine_parallel_attention(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        aligned = self._align_parallel_branches_for_fusion(branches, x)
+        batch_size, time_steps, feature_dim = aligned[0][1].shape
+        num_branches = len(aligned)
+        attn = self._get_or_build_parallel_attention(
+            embed_dim=feature_dim,
+            device=x.device,
+            dtype=x.dtype,
+        )
+        stacked = torch.stack([branch for _, branch in aligned], dim=2)
+        tokens = stacked.reshape(batch_size * time_steps, num_branches, feature_dim)
+        attn_out, _ = attn(tokens, tokens, tokens, need_weights=False)
+        return attn_out.mean(dim=1).reshape(batch_size, time_steps, feature_dim)
+
+    def _combine_parallel_attention_fusion(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        return self._combine_parallel_attention(branches, x)
+
+    def _combine_parallel_multi_scale_attn(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        return self._combine_parallel_attention(branches, x)
+
+    def _combine_parallel_lora_mix(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        aligned = self._align_parallel_branches_for_fusion(branches, x)
+        out = torch.zeros_like(aligned[0][1])
+        for head, branch in aligned:
+            rank = head.spec.lora_rank or max(1, int(branch.size(-1) // 4))
+            adapter = self._get_or_build_projection(
+                category="lora_adapter",
+                name=f"lora_mix_{head.name}",
+                in_dim=int(branch.size(-1)),
+                out_dim=int(branch.size(-1)),
+                device=branch.device,
+                dtype=branch.dtype,
+                proj_type="lora_adapter",
+                rank=rank,
+            )
+            out = out + adapter(branch)
+        return out
+
+    def _combine_parallel_moe_routing(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        aligned = self._align_parallel_branches_for_fusion(branches, x)
+        context = x.mean(dim=1)
+        moe_net = self._get_or_build_moe_gate_net(
+            in_dim=int(context.size(-1)),
+            out_dim=len(aligned),
+            device=x.device,
+            dtype=x.dtype,
+        )
+        logits = moe_net(context)
+        weights = F.softmax(logits / self.moe_temperature, dim=-1)
+        topk = min(max(1, min(head.spec.moe_k for head, _ in aligned)), len(aligned))
+        _, topk_idx = torch.topk(weights, k=topk, dim=-1)
+        mask = torch.zeros_like(weights).scatter_(1, topk_idx, 1.0)
+        weights = weights * mask
+        weights = weights / (weights.sum(dim=-1, keepdim=True) + self._EPS)
+        out = torch.zeros_like(aligned[0][1])
+        for i, (_, branch) in enumerate(aligned):
+            out = out + branch * weights[:, i].view(-1, 1, 1).to(dtype=branch.dtype)
+        return out
+
+    def _combine_parallel_gated_fusion(
+        self,
+        branches: list[tuple[ActiveHead, torch.Tensor]],
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        aligned = self._align_parallel_branches_for_fusion(branches, x)
+        feature_dim = aligned[0][1].size(-1)
+        gate_net = self._get_or_build_parallel_gate_net(
+            in_dim=int(feature_dim),
+            device=x.device,
+            dtype=x.dtype,
+        )
+        gate_scores = torch.stack(
+            [torch.sigmoid(gate_net(branch.mean(dim=1))) for _, branch in aligned], dim=1
+        )
+        gate_norm = gate_scores / gate_scores.sum(dim=1, keepdim=True).clamp_min(
+            self._EPS
+        )
+        out = torch.zeros_like(aligned[0][1])
+        for i, (_, branch) in enumerate(aligned):
+            out = out + branch * gate_norm[:, i, :].unsqueeze(1).to(dtype=branch.dtype)
+        return out
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Serial stage (reversible)
+    # ──────────────────────────────────────────────────────────────────────────
+    def _forward_serial_stage_impl(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, RunStateList]:
+        run_state: RunStateList = []
+        cur = x
+
+        for active_head in self.serial_active_heads:
+            cur, rec = self._apply_serial_head(cur, active_head)
             run_state.append(rec)
 
         return cur, run_state
+
+    def _apply_serial_head(
+        self, cur: torch.Tensor, active_head: ActiveHead
+    ) -> tuple[torch.Tensor, BaseRunState]:
+        spec = active_head.spec
+        if not active_head.enabled:
+            return (
+                cur,
+                BaseRunState(
+                    kind="disabled",
+                    name=active_head.name,
+                    stage="serial",
+                ),
+            )
+
+        out = spec.head(cur)
+        w_head, w_skip = self._alpha_weights_for_head(active_head)
+        handlers = {
+            "invert": self._apply_serial_invert,
+            "add": self._apply_serial_add,
+            "none": self._apply_serial_none,
+            "lora_residual": self._apply_serial_none,
+        }
+        try:
+            handler = handlers[spec.combine]
+        except KeyError as exc:
+            raise ValueError(f"Unknown combine mode: '{spec.combine}'") from exc
+
+        return handler(
+            cur=cur,
+            out=out,
+            spec=spec,
+            w_head=w_head,
+            w_skip=w_skip,
+            hardened=active_head.hardened,
+            name=active_head.name,
+        )
+
+    def _apply_serial_invert(
+        self,
+        *,
+        cur: torch.Tensor,
+        out: Any,
+        spec: HeadSpec,
+        w_head: torch.Tensor | None,
+        w_skip: torch.Tensor | None,
+        hardened: bool | None,
+        name: str,
+    ) -> tuple[torch.Tensor, SerialInvertState]:
+        del w_skip
+        rec = SerialInvertState(
+            name=name,
+            stage="serial",
+            base_dim=self._last_base_dim,
+        )
+        return self._apply_invert(cur, out, spec, w_head, hardened, rec)
+
+    def _apply_serial_add(
+        self,
+        *,
+        cur: torch.Tensor,
+        out: Any,
+        spec: HeadSpec,
+        w_head: torch.Tensor | None,
+        w_skip: torch.Tensor | None,
+        hardened: bool | None,
+        name: str,
+    ) -> tuple[torch.Tensor, SerialAddState]:
+        rec = SerialAddState(
+            name=name,
+            stage="serial",
+            base_dim=self._last_base_dim,
+        )
+        return self._apply_add(cur, out, spec, w_head, w_skip, hardened, rec)
+
+    def _apply_serial_none(
+        self,
+        *,
+        cur: torch.Tensor,
+        out: Any,
+        spec: HeadSpec,
+        w_head: torch.Tensor | None,
+        w_skip: torch.Tensor | None,
+        hardened: bool | None,
+        name: str,
+    ) -> tuple[torch.Tensor, SerialNoneState]:
+        rec = SerialNoneState(
+            name=name,
+            stage="serial",
+            base_dim=self._last_base_dim,
+        )
+        return self._apply_none(cur, out, spec, w_head, w_skip, hardened, rec)
 
     def _apply_invert(
         self,
         cur: torch.Tensor,
         out: Any,
         spec: HeadSpec,
-        w_head: Optional[torch.Tensor],
-        hardened: Optional[bool],
+        w_head: torch.Tensor | None,
+        hardened: bool | None,
         rec: SerialInvertState,
-    ) -> Tuple[torch.Tensor, SerialInvertState]:
+    ) -> tuple[torch.Tensor, SerialInvertState]:
         if not self._is_2tuple(out) or not isinstance(out[0], torch.Tensor):
             raise RuntimeError(
                 f"[{spec.name}] expected (y: Tensor, state: Any) for 'invert', got {type(out).__name__}"
@@ -1671,11 +1347,11 @@ class HeadComposer(nn.Module):
         cur: torch.Tensor,
         out: Any,
         spec: HeadSpec,
-        w_head: Optional[torch.Tensor],
-        w_skip: Optional[torch.Tensor],
-        hardened: Optional[bool],
+        w_head: torch.Tensor | None,
+        w_skip: torch.Tensor | None,
+        hardened: bool | None,
         rec: SerialAddState,
-    ) -> Tuple[torch.Tensor, SerialAddState]:
+    ) -> tuple[torch.Tensor, SerialAddState]:
         if not self._both_tensors(out):
             raise RuntimeError(
                 f"[{spec.name}] expected (main: Tensor, carry: Tensor) for 'add', got {type(out).__name__}"
@@ -1735,11 +1411,11 @@ class HeadComposer(nn.Module):
         cur: torch.Tensor,
         out: Any,
         spec: HeadSpec,
-        w_head: Optional[torch.Tensor],
-        w_skip: Optional[torch.Tensor],
-        hardened: Optional[bool],
+        w_head: torch.Tensor | None,
+        w_skip: torch.Tensor | None,
+        hardened: bool | None,
         rec: SerialNoneState,
-    ) -> Tuple[torch.Tensor, SerialNoneState]:
+    ) -> tuple[torch.Tensor, SerialNoneState]:
         if not isinstance(out, torch.Tensor):
             raise RuntimeError(
                 f"[{spec.name}] expected single Tensor for 'none', got {type(out).__name__}"
@@ -1770,16 +1446,17 @@ class HeadComposer(nn.Module):
             y=y_eff,
             head_name=spec.name,
             rec=rec,
+            spec=spec,
         )
         return cur2, rec
 
     # ──────────────────────────────────────────────────────────────────────────
     # Inverse (only serial stage)
     # ──────────────────────────────────────────────────────────────────────────
-    def inverse_post(
-        self, y: torch.Tensor, run_state: RunStateList
-    ) -> torch.Tensor:
-        return self.orchestrator.inverse_post(y, run_state)
+    def inverse_post(self, y: torch.Tensor, run_state: RunStateList) -> torch.Tensor:
+        if self.composer_mode == "parallel":
+            return y
+        return self._inverse_serial_stage(y, run_state)
 
     def _inverse_serial_stage(
         self, y: torch.Tensor, run_state: RunStateList
@@ -1787,21 +1464,19 @@ class HeadComposer(nn.Module):
         cur = y
         serial_states = [s for s in run_state if s.stage == "serial"]
         for state in reversed(serial_states):
-            if state.kind in (
-                "disabled",
-                "parallel_none",
-                "serial_none",
-            ):
-                continue
-            if isinstance(state, SerialAddState):
-                cur = self._inverse_add(cur, state)
-            elif isinstance(state, SerialInvertState):
-                cur = self._inverse_invert(cur, state)
-            else:
-                raise ValueError(
-                    f"Unknown combine mode during inverse: '{state.kind}'"
-                )
+            cur = self._inverse_serial_state(cur, state)
         return cur
+
+    def _inverse_serial_state(
+        self, cur: torch.Tensor, state: BaseRunState
+    ) -> torch.Tensor:
+        if state.kind in ("disabled", "parallel_none", "serial_none"):
+            return cur
+        if isinstance(state, SerialAddState):
+            return self._inverse_add(cur, state)
+        if isinstance(state, SerialInvertState):
+            return self._inverse_invert(cur, state)
+        raise ValueError(f"Unknown combine mode during inverse: '{state.kind}'")
 
     def _inverse_add(self, cur: torch.Tensor, state: SerialAddState) -> torch.Tensor:
         name = state.name
@@ -1840,15 +1515,17 @@ class HeadComposer(nn.Module):
 
         return cur + carry
 
-    def _inverse_invert(self, cur: torch.Tensor, state: SerialInvertState) -> torch.Tensor:
+    def _inverse_invert(
+        self, cur: torch.Tensor, state: SerialInvertState
+    ) -> torch.Tensor:
         name = state.name
         head = state.head_ref
         st = state.state
         gate_on = state.gate_on
 
-        if head is None or st is None:
+        if head is None:
             raise RuntimeError(
-                f"[{name}] missing head_ref/state for invert (corrupted run_state)."
+                f"[{name}] missing head_ref for invert (corrupted run_state)."
             )
 
         if not gate_on:
@@ -1873,11 +1550,11 @@ class HeadComposer(nn.Module):
         alpha_ids = {id(p) for p in self.state_manager.alphas.values()}
         return (p for p in self.parameters() if id(p) not in alpha_ids)
 
-    def alpha_report(self) -> Dict[str, Dict[str, Any]]:
+    def alpha_report(self) -> dict[str, dict[str, Any]]:
         return self.state_manager.alpha_report()
 
     @torch.no_grad()
-    def discretize_(self, threshold: float = 0.5) -> Dict[str, bool]:
+    def discretize_(self, threshold: float = 0.5) -> dict[str, bool]:
         return self.state_manager.discretize_(threshold)
 
     @torch.no_grad()
@@ -1891,7 +1568,7 @@ class HeadComposer(nn.Module):
     def warmup(
         self,
         example_x: torch.Tensor,
-        example_y_like: Optional[torch.Tensor] = None,
+        example_y_like: torch.Tensor | None = None,
     ) -> None:
         """
         Dry run forward_pre + inverse_post to force creation/registration of:
@@ -1975,7 +1652,9 @@ class HeadComposer(nn.Module):
                 if hardened is not None:
                     alpha_info = f" [hardened={'on' if hardened else 'off'}]"
                 else:
-                    w_head, _ = self._alpha_weights_for_head(head)
+                    w_head, _ = self.state_manager.deterministic_alpha_weights_for_head(
+                        head
+                    )
                     if w_head is not None:
                         alpha_info = f" [alpha={w_head.item():.3f}]"
             stage = head.stage
@@ -1986,13 +1665,13 @@ class HeadComposer(nn.Module):
         return "\n".join(lines)
 
     @property
-    def head_names(self) -> List[str]:
+    def head_names(self) -> list[str]:
         return [s.name for s in (self.parallel_meta + self.serial_meta)]
 
     @property
-    def enabled_heads(self) -> List[str]:
+    def enabled_heads(self) -> list[str]:
         return [h.name for h in self.active_heads if h.enabled]
 
     @property
-    def disabled_heads(self) -> List[str]:
+    def disabled_heads(self) -> list[str]:
         return [h.name for h in self.active_heads if not h.enabled]

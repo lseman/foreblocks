@@ -8,7 +8,8 @@ import contextlib
 import copy
 import datetime
 import warnings
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import torch
@@ -88,7 +89,7 @@ def _ensure_y_shape_like_intervals(y_np: np.ndarray, lower: np.ndarray) -> np.nd
     return y_np
 
 
-def _collect_xy_from_loader(cal_loader) -> Tuple[np.ndarray, np.ndarray]:
+def _collect_xy_from_loader(cal_loader) -> tuple[np.ndarray, np.ndarray]:
     """
     Collect (X, y) from a DataLoader.
 
@@ -136,30 +137,30 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        config: Optional[Union[TrainingConfig, Dict[str, Any]]] = None,
-        optimizer: Optional[torch.optim.Optimizer] = None,
-        criterion: Optional[Callable] = None,
-        scheduler: Optional[Any] = None,
-        device: Optional[str] = None,
+        config: TrainingConfig | dict[str, Any] | None = None,
+        optimizer: torch.optim.Optimizer | None = None,
+        criterion: Callable | None = None,
+        scheduler: Any | None = None,
+        device: str | None = None,
         use_wandb: bool = False,
-        wandb_config: Optional[Dict[str, Any]] = None,
-        moe_meta_builder: Optional[
+        wandb_config: dict[str, Any] | None = None,
+        moe_meta_builder: None | (
             Callable[
                 [
                     torch.Tensor,
-                    Optional[torch.Tensor],
-                    Optional[torch.Tensor],
+                    torch.Tensor | None,
+                    torch.Tensor | None,
                     int,
                     int,
                 ],
-                Optional[Dict[str, Any]],
+                dict[str, Any] | None,
             ]
-        ] = None,
-        alpha_optimizer: Optional[torch.optim.Optimizer] = None,
-        mltracker: Optional[Any] = None,  # Pass an existing MLTracker instance
-        mltracker_uri: Optional[
+        ) = None,
+        alpha_optimizer: torch.optim.Optimizer | None = None,
+        mltracker: Any | None = None,  # Pass an existing MLTracker instance
+        mltracker_uri: None | (
             str
-        ] = None,  # DB directory; defaults to <project_root>/mltracker_data
+        ) = None,  # DB directory; defaults to <project_root>/mltracker_data
         auto_track: bool = True,  # Auto-create MLTracker when none is supplied
     ):
 
@@ -205,7 +206,7 @@ class Trainer:
         else:
             self.mltracker = None
         self._mltracker_uri = mltracker_uri
-        self._last_run_id: Optional[str] = None  # set each time train() starts a run
+        self._last_run_id: str | None = None  # set each time train() starts a run
 
         # -----------------------------------------
         # Config init
@@ -262,7 +263,7 @@ class Trainer:
         # MoE logging setup
         # -----------------------------------------
         self.global_step = 0
-        self.moe_log: Optional[MoELogger] = None
+        self.moe_log: MoELogger | None = None
         self.moe_meta_builder = moe_meta_builder or self._default_moe_meta_builder
 
         if self.config.moe_logging and MoELogger is not None:
@@ -332,11 +333,11 @@ class Trainer:
     @staticmethod
     def _default_moe_meta_builder(
         X: torch.Tensor,
-        y: Optional[torch.Tensor],
-        time_feat: Optional[torch.Tensor],
+        y: torch.Tensor | None,
+        time_feat: torch.Tensor | None,
         epoch: int,
         batch_idx: int,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         if time_feat is None:
             return None
         meta = {}
@@ -347,7 +348,7 @@ class Trainer:
     def _wire_moe_logger(
         self,
         module: nn.Module,
-        moe_logger: "MoELogger",
+        moe_logger: MoELogger,
         step_getter: Callable[[], int],
         log_latency: bool,
     ):
@@ -392,7 +393,7 @@ class Trainer:
             weight_decay=self.config.weight_decay,
         )
 
-    def _create_scheduler(self) -> Optional[Any]:
+    def _create_scheduler(self) -> Any | None:
         if self.config.scheduler_type == "step":
             return torch.optim.lr_scheduler.StepLR(
                 self.optimizer,
@@ -412,7 +413,7 @@ class Trainer:
     @staticmethod
     def _unpack_batch(
         batch: Any,
-    ) -> Tuple[Any, Optional[Any], Optional[Any]]:
+    ) -> tuple[Any, Any | None, Any | None]:
         """Normalize batch formats to (X, y, time_feat)."""
         if isinstance(batch, (list, tuple)):
             if len(batch) == 3:
@@ -429,9 +430,9 @@ class Trainer:
     def _move_batch_to_device(
         self,
         X: Any,
-        y: Optional[Any],
-        time_feat: Optional[Any] = None,
-    ) -> Tuple[Any, Optional[Any], Optional[Any]]:
+        y: Any | None,
+        time_feat: Any | None = None,
+    ) -> tuple[Any, Any | None, Any | None]:
         """Move available tensors in a batch to the trainer device."""
         if torch.is_tensor(X):
             X = X.to(self.device)
@@ -445,9 +446,9 @@ class Trainer:
         self,
         X: torch.Tensor,
         y: torch.Tensor,
-        time_feat: Optional[torch.Tensor] = None,
+        time_feat: torch.Tensor | None = None,
         batch_idx: int = 0,
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
         aux = {}
         meta = (
             self.moe_meta_builder(X, y, time_feat, self.current_epoch, batch_idx)
@@ -627,12 +628,12 @@ class Trainer:
         return total_loss / max(num_steps, 1)
 
     def train_epoch(
-        self, train_loader: DataLoader, val_loader: Optional[DataLoader] = None
-    ) -> Tuple[float, Dict[str, float]]:
+        self, train_loader: DataLoader, val_loader: DataLoader | None = None
+    ) -> tuple[float, dict[str, float]]:
         """Train for one epoch with optional NAS alpha optimization."""
         self.model.train()
         total_loss = 0.0
-        all_components: Dict[str, List[float]] = {}
+        all_components: dict[str, list[float]] = {}
 
         do_nas = (
             self.config.train_nas
@@ -706,8 +707,8 @@ class Trainer:
         return (total_loss / max(n, 1)) if n > 0 else float("nan")
 
     def _init_mltracker_run_context(
-        self, run_name: Optional[str]
-    ) -> Tuple[Any, Optional[str]]:
+        self, run_name: str | None
+    ) -> tuple[Any, str | None]:
         run_context = contextlib.nullcontext()
         if not self.mltracker:
             return run_context, run_name
@@ -723,8 +724,8 @@ class Trainer:
             print(f"[MLTracker] Warning: Failed to initialize run context: {e}")
         return run_context, run_name
 
-    def _get_mltracker_params(self) -> Dict[str, Any]:
-        params: Dict[str, Any] = {}
+    def _get_mltracker_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
         if hasattr(self.config, "__dict__"):
             params.update(self.config.__dict__)
         elif isinstance(self.config, dict):
@@ -743,9 +744,9 @@ class Trainer:
     def _build_mltracker_metrics(
         train_loss: float,
         lr: float,
-        components: Dict[str, float],
-        val_loss: Optional[float],
-    ) -> Dict[str, float]:
+        components: dict[str, float],
+        val_loss: float | None,
+    ) -> dict[str, float]:
         metrics = {"train_loss": train_loss, "lr": lr}
         if val_loss is not None:
             metrics["val_loss"] = val_loss
@@ -758,8 +759,8 @@ class Trainer:
         epoch: int,
         train_loss: float,
         lr: float,
-        components: Dict[str, float],
-        val_loss: Optional[float],
+        components: dict[str, float],
+        val_loss: float | None,
     ):
         if not self.mltracker:
             return
@@ -811,7 +812,7 @@ class Trainer:
         if not self.mltracker:
             return
         try:
-            summary: Dict[str, Any] = {"epochs_completed": total_epochs}
+            summary: dict[str, Any] = {"epochs_completed": total_epochs}
             if self.best_val_loss < float("inf"):
                 summary["best_val_loss"] = self.best_val_loss
             self.mltracker.log_metrics(summary, step=total_epochs)
@@ -827,8 +828,8 @@ class Trainer:
 
     def _log_to_last_run(
         self,
-        metrics: Dict[str, float],
-        step: Optional[int] = None,
+        metrics: dict[str, float],
+        step: int | None = None,
         prefix: str = "",
     ) -> None:
         """Log metrics to the most recently finished training run without re-opening it."""
@@ -863,11 +864,11 @@ class Trainer:
     def train(
         self,
         train_loader: DataLoader,
-        val_loader: Optional[DataLoader] = None,
-        callbacks: Optional[List[Any]] = None,
-        epochs: Optional[int] = None,
-        moe_report_outdir: Optional[str] = None,
-        run_name: Optional[str] = None,  # New: Optional run name for MLTracker
+        val_loader: DataLoader | None = None,
+        callbacks: list[Any] | None = None,
+        epochs: int | None = None,
+        moe_report_outdir: str | None = None,
+        run_name: str | None = None,  # New: Optional run name for MLTracker
     ) -> TrainingHistory:
         callbacks = callbacks or []
         num_epochs = epochs if epochs is not None else self.config.num_epochs
@@ -975,12 +976,12 @@ class Trainer:
     def calibrate_conformal(
         self,
         cal_loader,
-        state_model: Optional[Callable] = None,
-        feature_extractor: Optional[nn.Module] = None,
-        jackknife_cv_models: Optional[Sequence[nn.Module]] = None,
-        jackknife_cv_indices: Optional[Sequence[np.ndarray]] = None,
-        enbpi_member_models: Optional[Sequence[nn.Module]] = None,
-        enbpi_boot_indices: Optional[np.ndarray] = None,
+        state_model: Callable | None = None,
+        feature_extractor: nn.Module | None = None,
+        jackknife_cv_models: Sequence[nn.Module] | None = None,
+        jackknife_cv_indices: Sequence[np.ndarray] | None = None,
+        enbpi_member_models: Sequence[nn.Module] | None = None,
+        enbpi_boot_indices: np.ndarray | None = None,
     ):
         """
         Calibrate conformal engine with held-out calibration data.
@@ -1035,8 +1036,8 @@ class Trainer:
         self,
         X_new: torch.Tensor,
         y_new: torch.Tensor,
-        state_model: Optional[Callable] = None,
-        feature_extractor: Optional[nn.Module] = None,
+        state_model: Callable | None = None,
+        feature_extractor: nn.Module | None = None,
         sequential: bool = True,  # Process point-by-point within batch
     ):
         """
@@ -1127,7 +1128,7 @@ class Trainer:
         self,
         X: torch.Tensor,
         y: torch.Tensor,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """
         Empirical coverage and basic interval stats.
 
@@ -1205,7 +1206,7 @@ class Trainer:
             self.conformal_engine.radii = checkpoint["conformal_radii"]
 
     @staticmethod
-    def _infer_num_experts(model: nn.Module) -> Optional[int]:
+    def _infer_num_experts(model: nn.Module) -> int | None:
         for m in model.modules():
             if hasattr(m, "num_experts"):
                 try:
@@ -1223,15 +1224,15 @@ class Trainer:
         self,
         X_val: torch.Tensor,
         y_val: torch.Tensor,
-        full_series: Optional[torch.Tensor] = None,
+        full_series: torch.Tensor | None = None,
         offset: int = 0,
         stride: int = 1,
-        figsize: Tuple[int, int] = (12, 4),
+        figsize: tuple[int, int] = (12, 4),
         show: bool = True,
-        names: Optional[Union[str, list]] = None,
+        names: str | list | None = None,
         pred_color: str = "orange",
         series_color: str = "blue",
-        save_path: Optional[str] = None,
+        save_path: str | None = None,
     ) -> plt.Figure:
         _require_matplotlib()
         evaluator = ModelEvaluator(self)
@@ -1388,7 +1389,7 @@ class Trainer:
 
     def metrics(
         self, X_val: torch.Tensor, y_val: torch.Tensor, batch_size: int = 256
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         evaluator = ModelEvaluator(self)
         result = evaluator.compute_metrics(X_val, y_val, batch_size)
         # Log each metric back to the last training run (prefixed with "eval/")
@@ -1401,9 +1402,9 @@ class Trainer:
         y: torch.Tensor,
         n_windows: int,
         horizon: int,
-        step_size: Optional[int] = None,
+        step_size: int | None = None,
         batch_size: int = 256,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         evaluator = ModelEvaluator(self)
         return evaluator.cross_validation(
             X, y, n_windows, horizon, step_size, batch_size
@@ -1413,13 +1414,13 @@ class Trainer:
         self,
         X_val: torch.Tensor,
         y_val: torch.Tensor,
-        full_series: Optional[torch.Tensor] = None,
-        time_index: Optional[Sequence[Any]] = None,
+        full_series: torch.Tensor | None = None,
+        time_index: Sequence[Any] | None = None,
         offset: int = 0,
         stride: int = 1,
-        figsize: Tuple[int, int] = (14, 5),
+        figsize: tuple[int, int] = (14, 5),
         show: bool = True,
-        names: Optional[Union[str, list]] = None,
+        names: str | list | None = None,
         interval_alpha: float = 0.25,
         pred_color: str = "blue",
         interval_color: str = "blue",
@@ -1734,7 +1735,7 @@ class Trainer:
         dataloader: DataLoader,
         do_update: bool = True,
         return_numpy: bool = True,
-        sequential: Optional[bool] = None,  # ADD THIS
+        sequential: bool | None = None,  # ADD THIS
     ):
         """
         Streaming (rolling) prediction over a DataLoader.
@@ -1796,8 +1797,8 @@ class Trainer:
         self,
         dataloader: DataLoader,
         do_update: bool = True,
-        sequential: Optional[bool] = None,
-    ) -> Dict[str, Any]:
+        sequential: bool | None = None,
+    ) -> dict[str, Any]:
         """
         Coverage diagnostics for streaming/rolling evaluation.
 
@@ -1841,9 +1842,9 @@ class Trainer:
         dataloader: DataLoader,
         feature: int = 0,
         do_update: bool = True,
-        figsize: Tuple[int, int] = (10, 4),
+        figsize: tuple[int, int] = (10, 4),
         show: bool = True,
-        sequential: Optional[bool] = None,
+        sequential: bool | None = None,
     ) -> plt.Figure:
         _require_matplotlib()
         """

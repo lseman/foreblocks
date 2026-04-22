@@ -17,7 +17,7 @@ class AutoCorrelation(nn.Module):
         attention_dropout=0.1,
         output_attention=False,
     ):
-        super(AutoCorrelation, self).__init__()
+        super().__init__()
         self.factor = factor
         self.scale = scale
         self.mask_flag = mask_flag
@@ -114,7 +114,7 @@ class AutoCorrelationLayer(nn.Module):
     """AutoCorrelation layer with projections."""
 
     def __init__(self, correlation, d_model, n_heads, d_keys=None, d_values=None):
-        super(AutoCorrelationLayer, self).__init__()
+        super().__init__()
 
         d_keys = d_keys or (d_model // n_heads)
         d_values = d_values or (d_model // n_heads)

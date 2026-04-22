@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -13,14 +12,14 @@ class Differencing(nn.Module):
     Forward: (delta, ctx) where delta[:,0,:]=0 and ctx['x0']=first step.
     """
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         delta = x.clone()
         delta[:, 1:, :] = x[:, 1:, :] - x[:, :-1, :]
         delta[:, :1, :] = 0.0
         ctx = {"x0": x[:, :1, :]}
         return delta, ctx
 
-    def invert(self, y_hat: torch.Tensor, ctx: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def invert(self, y_hat: torch.Tensor, ctx: dict[str, torch.Tensor]) -> torch.Tensor:
         x0 = ctx["x0"]
         rec = torch.cumsum(y_hat, dim=1)
         rec[:, :1, :] = 0.0

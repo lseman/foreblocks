@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from foreblocks.ui.node_spec import node
 
@@ -27,8 +27,8 @@ class ScheduledSampling:
         self.end_ratio = end_ratio
         self.decay_steps = decay_steps
 
-    def forward(self) -> Callable[[Optional[int]], float]:
-        def sampling_fn(epoch: Optional[int]) -> float:
+    def forward(self) -> Callable[[int | None], float]:
+        def sampling_fn(epoch: int | None) -> float:
             if epoch is None:
                 return self.start_ratio
 

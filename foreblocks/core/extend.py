@@ -3,7 +3,6 @@ import copy
 # -----------------------------
 # Graph + Per-Node Core Wrapper
 # -----------------------------
-from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -41,18 +40,18 @@ class DistilledForecastingModel(ForecastingModel):
     def __init__(
         self,
         distillation_mode: str = "none",
-        teacher_model: Optional[nn.Module] = None,
+        teacher_model: nn.Module | None = None,
         distillation_temperature: float = 4.0,
         distillation_alpha: float = 0.7,
-        feature_distillation_layers: Optional[List[str]] = None,
-        attention_distillation_layers: Optional[List[str]] = None,
+        feature_distillation_layers: list[str] | None = None,
+        attention_distillation_layers: list[str] | None = None,
         # NEW:
         task_type: str = "regression",  # "regression" | "logits"
         alpha_schedule=None,  # Optional[Callable[[int], float]]
         temp_schedule=None,  # Optional[Callable[[int], float]]
-        loss_weights: Optional[
-            Dict[str, float]
-        ] = None,  # keys: "output","feature","attention"
+        loss_weights: None | (
+            dict[str, float]
+        ) = None,  # keys: "output","feature","attention"
         **kwargs,
     ):
         assert distillation_mode in self.VALID_DISTILLATION_MODES, (
@@ -83,12 +82,12 @@ class DistilledForecastingModel(ForecastingModel):
             self.loss_weights.update(loss_weights)
 
         # Hook storages
-        self.feature_hooks: Dict[str, any] = {}
-        self.attention_hooks: Dict[str, any] = {}
-        self.teacher_features: Dict[str, torch.Tensor] = {}
-        self.teacher_attentions: Dict[str, torch.Tensor] = {}
-        self.student_features: Dict[str, torch.Tensor] = {}
-        self.student_attentions: Dict[str, torch.Tensor] = {}
+        self.feature_hooks: dict[str, any] = {}
+        self.attention_hooks: dict[str, any] = {}
+        self.teacher_features: dict[str, torch.Tensor] = {}
+        self.teacher_attentions: dict[str, torch.Tensor] = {}
+        self.student_features: dict[str, torch.Tensor] = {}
+        self.student_attentions: dict[str, torch.Tensor] = {}
 
         # Cached adapters (registered parameters)
         self._feat_adapters = nn.ModuleDict()  # feature width adapters
@@ -100,7 +99,7 @@ class DistilledForecastingModel(ForecastingModel):
     # ==================== UTILITIES ====================
 
     @staticmethod
-    def _get_module_by_name(root: nn.Module, dotted: str) -> Optional[nn.Module]:
+    def _get_module_by_name(root: nn.Module, dotted: str) -> nn.Module | None:
         if not dotted:
             return None
         mod = root
@@ -326,7 +325,7 @@ class DistilledForecastingModel(ForecastingModel):
     # ==================== LOSS COMBINATION ====================
 
     def _combine_distillation_losses(
-        self, losses: Dict[str, torch.Tensor]
+        self, losses: dict[str, torch.Tensor]
     ) -> torch.Tensor:
         """
         Combine task loss and available distillation losses with alpha and per-component weights.
@@ -374,7 +373,7 @@ class DistilledForecastingModel(ForecastingModel):
         self.student_features.clear()
         self.student_attentions.clear()
 
-    def get_distillation_info(self) -> Dict[str, Union[str, int, float, bool]]:
+    def get_distillation_info(self) -> dict[str, str | int | float | bool]:
         return {
             "distillation_enabled": self.distillation_mode != "none",
             "distillation_mode": self.distillation_mode,
@@ -393,11 +392,11 @@ class DistilledForecastingModel(ForecastingModel):
     def forward(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        time_features: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
         return_teacher_outputs: bool = False,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         # Update schedules (if provided)
         if self.distillation_mode != "none" and self.teacher_model is not None:
             if self.alpha_schedule is not None and epoch is not None:
@@ -617,7 +616,7 @@ class QuantizedForecastingModel(DistilledForecastingModel):
                 output = self.dequant(output)
         return output
 
-    def get_model_size(self) -> Dict[str, Union[int, float]]:
+    def get_model_size(self) -> dict[str, int | float]:
         """Estimate model size in MB depending on quantization"""
         param_count = sum(p.numel() for p in self.parameters())
         buffer_count = sum(b.numel() for b in self.buffers())
@@ -644,7 +643,7 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         )
         return result
 
-    def get_quantization_info(self) -> Dict[str, Union[str, int, float, bool]]:
+    def get_quantization_info(self) -> dict[str, str | int | float | bool]:
         return {
             "quantization_enabled": self.quantization_mode != "none",
             "quantization_mode": self.quantization_mode,

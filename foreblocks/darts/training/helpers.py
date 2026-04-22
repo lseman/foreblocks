@@ -1,7 +1,6 @@
 """Training-time helper utilities for DARTS search."""
 
 from enum import Enum
-from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -51,8 +50,8 @@ class ArchitectureRegularizer:
 
     def __init__(
         self,
-        reg_types: List[RegularizationType],
-        weights: Optional[List[float]] = None,
+        reg_types: list[RegularizationType],
+        weights: list[float] | None = None,
         as_probability_vector_fn=default_as_probability_vector,
     ):
         self.reg_types = reg_types
@@ -91,7 +90,7 @@ class ArchitectureRegularizer:
         return torch.tensor(0.0, device=next(model.parameters()).device)
 
     @staticmethod
-    def _zero_on_arch_device(arch_params: List[torch.Tensor]) -> torch.Tensor:
+    def _zero_on_arch_device(arch_params: list[torch.Tensor]) -> torch.Tensor:
         if arch_params:
             return torch.tensor(0.0, device=arch_params[0].device)
         return torch.tensor(0.0)
@@ -99,10 +98,10 @@ class ArchitectureRegularizer:
     def compute_regularization(
         self,
         model: nn.Module,
-        arch_params: List[torch.Tensor],
+        arch_params: list[torch.Tensor],
         epoch: int = 0,
         total_epochs: int = 100,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Compute all specified regularization terms."""
         if not arch_params:
             zero = self._zero_on_model_device(model)
@@ -110,7 +109,7 @@ class ArchitectureRegularizer:
             reg_losses["total"] = zero
             return reg_losses
 
-        reg_losses: Dict[str, torch.Tensor] = {}
+        reg_losses: dict[str, torch.Tensor] = {}
         total_reg = self._zero_on_model_device(model)
 
         for reg_type, weight in zip(self.reg_types, self.weights):
@@ -126,7 +125,7 @@ class ArchitectureRegularizer:
     def _compute_single_regularization(
         self,
         model: nn.Module,
-        arch_params: List[torch.Tensor],
+        arch_params: list[torch.Tensor],
         reg_type: RegularizationType,
         epoch: int,
         total_epochs: int,
@@ -136,12 +135,12 @@ class ArchitectureRegularizer:
             return self._zero_on_model_device(model)
         return reg_fn(model, arch_params, epoch, total_epochs)
 
-    def _iter_arch_probs(self, arch_params: List[torch.Tensor]):
+    def _iter_arch_probs(self, arch_params: list[torch.Tensor]):
         for param in arch_params:
             if param.dim() >= 1:
                 yield F.softmax(param.view(-1, param.size(-1)), dim=-1)
 
-    def _entropy_regularization(self, arch_params: List[torch.Tensor]) -> torch.Tensor:
+    def _entropy_regularization(self, arch_params: list[torch.Tensor]) -> torch.Tensor:
         """Entropy regularization to encourage exploration."""
         total_entropy = self._zero_on_arch_device(arch_params)
         for probs in self._iter_arch_probs(arch_params):
@@ -150,7 +149,7 @@ class ArchitectureRegularizer:
         return total_entropy
 
     def _kl_divergence_regularization(
-        self, arch_params: List[torch.Tensor]
+        self, arch_params: list[torch.Tensor]
     ) -> torch.Tensor:
         """Encourage specialization by maximizing divergence from uniform."""
         total_kl = self._zero_on_arch_device(arch_params)
@@ -164,7 +163,7 @@ class ArchitectureRegularizer:
         # Return negative KL so minimizing total loss increases KL(probs || uniform).
         return -total_kl
 
-    def _l2_norm_regularization(self, arch_params: List[torch.Tensor]) -> torch.Tensor:
+    def _l2_norm_regularization(self, arch_params: list[torch.Tensor]) -> torch.Tensor:
         """L2 norm regularization on architecture parameters."""
         total_l2 = self._zero_on_arch_device(arch_params)
         for param in arch_params:
@@ -198,7 +197,7 @@ class ArchitectureRegularizer:
         return diversity_loss
 
     def _sparsity_regularization(
-        self, arch_params: List[torch.Tensor], epoch: int, total_epochs: int
+        self, arch_params: list[torch.Tensor], epoch: int, total_epochs: int
     ) -> torch.Tensor:
         """Sparsity regularization that increases over time."""
         sparsity_loss = self._zero_on_arch_device(arch_params)
@@ -247,7 +246,7 @@ class ArchitectureRegularizer:
 
     def _scheduled_regularization(
         self,
-        arch_params: List[torch.Tensor],
+        arch_params: list[torch.Tensor],
         epoch: int,
         total_epochs: int,
     ) -> torch.Tensor:
@@ -362,9 +361,9 @@ class BilevelOptimizer:
         *,
         arch_optimizer,
         arch_scheduler,
-        arch_params: List[torch.Tensor],
-        edge_arch_params: List[torch.Tensor],
-        component_arch_params: List[torch.Tensor],
+        arch_params: list[torch.Tensor],
+        edge_arch_params: list[torch.Tensor],
+        component_arch_params: list[torch.Tensor],
         use_bilevel_optimization: bool,
         train_arch_loader,
         val_loader,
@@ -385,7 +384,7 @@ class BilevelOptimizer:
         # EMA buffer for arch gradients.  beta > 0 smooths noisy bilevel
         # gradient estimates; beta = 0.0 (default) disables the feature.
         self.arch_grad_ema_beta = float(arch_grad_ema_beta)
-        self._arch_grad_ema: Dict[int, torch.Tensor] = {}
+        self._arch_grad_ema: dict[int, torch.Tensor] = {}
 
         self.train_arch_iter = (
             iter(train_arch_loader)
@@ -430,7 +429,7 @@ class BilevelOptimizer:
         scaler: GradScaler,
         *,
         already_backward: bool = False,
-        implicit_corrections: Optional[List[Optional[torch.Tensor]]] = None,
+        implicit_corrections: list[torch.Tensor | None] | None = None,
     ):
         if not already_backward:
             scaler.scale(total_arch_loss).backward()
@@ -811,7 +810,7 @@ class AlphaTracker:
         return current_alphas
 
     def log_component_arch_updates(
-        self, model, prev_component_probs: Dict[str, torch.Tensor]
+        self, model, prev_component_probs: dict[str, torch.Tensor]
     ):
         for source in self.component_alpha_sources(model):
             comp_key = source["name"]
@@ -884,7 +883,7 @@ class AlphaTracker:
                 )
             prev_component_probs[comp_key] = probs.clone()
 
-    def summarize_edge_updates(self, model, prev_edge_probs: Dict[str, torch.Tensor]):
+    def summarize_edge_updates(self, model, prev_edge_probs: dict[str, torch.Tensor]):
         edge_deltas = []
         edge_confidences = []
         edge_samples = []
@@ -939,8 +938,8 @@ class AlphaTracker:
     def log_architecture_update_block(
         self,
         model,
-        prev_component_probs: Dict[str, torch.Tensor],
-        prev_edge_probs: Dict[str, torch.Tensor],
+        prev_component_probs: dict[str, torch.Tensor],
+        prev_edge_probs: dict[str, torch.Tensor],
         *,
         last_edge_sharpen_weight: float,
         last_edge_entropy: float,

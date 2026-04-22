@@ -7,7 +7,7 @@ DARTSTrainer methods.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def compute_metrics(preds: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
+def compute_metrics(preds: np.ndarray, targets: np.ndarray) -> dict[str, float]:
     """
     Compute standard regression / forecasting metrics.
 
@@ -107,7 +107,7 @@ def compute_final_metrics(
     *,
     autocast_ctx=None,
     progress_fn=None,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Collect all predictions from a dataloader and compute regression metrics.
 

@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -16,7 +15,7 @@ class TemporalNorm(nn.Module):
         affine: bool = True,
         mode: str = "standard",
         causal: bool = False,
-        window_size: Optional[int] = None,
+        window_size: int | None = None,
         center: bool = True,
         scale: bool = True,
     ):
@@ -40,8 +39,8 @@ class TemporalNorm(nn.Module):
 
     @staticmethod
     def _apply_mask(
-        x: torch.Tensor, mask: Optional[torch.Tensor]
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        x: torch.Tensor, mask: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if mask is None:
             return x, None
         if mask.dim() == 3 and mask.size(-1) == 1:
@@ -49,8 +48,8 @@ class TemporalNorm(nn.Module):
         return x * mask, mask
 
     def _reduce_full(
-        self, x: torch.Tensor, mask: Optional[torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, x: torch.Tensor, mask: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.mode == "standard":
             if mask is None:
                 loc = (
@@ -108,8 +107,8 @@ class TemporalNorm(nn.Module):
         return loc, scale
 
     def _reduce_rolling(
-        self, x: torch.Tensor, mask: Optional[torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, x: torch.Tensor, mask: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         B, T, D = x.shape
         W = int(self.window_size)
         idx = torch.arange(T, device=x.device)
@@ -192,7 +191,7 @@ class TemporalNorm(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
         return_stats: bool = False,
     ):
         if x.dim() != 3 or x.size(-1) != self.d_model:

@@ -7,7 +7,7 @@
 # - Triton path is inference-only; if grads are needed we use torch.mm.
 # -----------------------------------------------------------------------------
 
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import torch
 import torch.nn.functional as F
@@ -227,12 +227,12 @@ if TRITON_AVAILABLE:
 # ============================== Python helpers ===============================
 
 
-def _split_by_offsets(x: torch.Tensor, offsets: torch.Tensor) -> List[torch.Tensor]:
+def _split_by_offsets(x: torch.Tensor, offsets: torch.Tensor) -> list[torch.Tensor]:
     """
     Given x of shape [S, D] and offsets [E+1], return a list of E views: x[start:end].
     Only used in the CPU / fallback path.
     """
-    out: List[torch.Tensor] = []
+    out: list[torch.Tensor] = []
     for e in range(offsets.numel() - 1):
         s = int(offsets[e].item())
         t = int(offsets[e + 1].item())
@@ -241,11 +241,11 @@ def _split_by_offsets(x: torch.Tensor, offsets: torch.Tensor) -> List[torch.Tens
 
 
 def _foreach_mm(
-    A_blocks: List[torch.Tensor],
-    B_blocks: List[torch.Tensor],
-) -> List[torch.Tensor]:
+    A_blocks: list[torch.Tensor],
+    B_blocks: list[torch.Tensor],
+) -> list[torch.Tensor]:
     """Portable fallback (no Triton): per-group matmul with autograd."""
-    Y: List[torch.Tensor] = []
+    Y: list[torch.Tensor] = []
     for A, B in zip(A_blocks, B_blocks):
         if A.numel() == 0:
             Y.append(A.new_zeros((0, B.shape[1])))
@@ -263,7 +263,7 @@ def grouped_mm_varM(
     A_packed: torch.Tensor,  # [S, K]
     offsets: torch.Tensor,  # [E+1]
     B_per_expert: Sequence[torch.Tensor],  # each [K, N], same K,N
-    out_dtype: Optional[torch.dtype] = None,
+    out_dtype: torch.dtype | None = None,
     use_fp16_acc: bool = False,  # Optional tuning toggle for Triton path
     use_shared_b: bool = False,  # Ignored for now; kept for API compat
     allow_triton_training: bool = True,
@@ -382,14 +382,14 @@ def grouped_mm_varM(
 
 def _weights_from_swiglu_experts(
     experts: Sequence[torch.nn.Module],
-) -> Tuple[List[torch.Tensor], List[torch.Tensor], int]:
+) -> tuple[list[torch.Tensor], list[torch.Tensor], int]:
     """
     Extract per-expert weights for SwiGLU experts.
     Returns ([w12_e], [w3_e], H), with shapes [D,2H] and [H,D].
     """
-    w12_list: List[torch.Tensor] = []
-    w3_list: List[torch.Tensor] = []
-    H: Optional[int] = None
+    w12_list: list[torch.Tensor] = []
+    w3_list: list[torch.Tensor] = []
+    H: int | None = None
 
     for e in experts:
         if hasattr(e, "w12") and hasattr(e, "w3"):
@@ -417,12 +417,12 @@ def grouped_mlp_swiglu(
     experts: Sequence[torch.nn.Module],
     dropout_p: float = 0.0,
     training: bool = False,
-    out_dtype: Optional[torch.dtype] = None,
+    out_dtype: torch.dtype | None = None,
     use_fp16_acc: bool = False,  # Passed through for optional tuning
     use_shared_b: bool = False,  # Currently ignored in Triton path (see grouped_mm_varM)
     allow_triton_training: bool = True,
-    B12_cat_prepacked: Optional[torch.Tensor] = None,
-    B3_cat_prepacked: Optional[torch.Tensor] = None,
+    B12_cat_prepacked: torch.Tensor | None = None,
+    B3_cat_prepacked: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     SwiGLU MLP in grouped mode over packed slices:

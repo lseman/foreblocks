@@ -5,7 +5,7 @@ Model persistence and summary utilities.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -22,9 +22,9 @@ def save_model(
     model: nn.Module,
     filepath: str,
     *,
-    final_metrics: Optional[Dict[str, float]] = None,
-    training_info: Optional[Dict[str, Any]] = None,
-    search_config: Optional[Dict[str, Any]] = None,
+    final_metrics: dict[str, float] | None = None,
+    training_info: dict[str, Any] | None = None,
+    search_config: dict[str, Any] | None = None,
 ) -> None:
     """
     Save a model checkpoint to *filepath*.
@@ -36,7 +36,7 @@ def save_model(
         training_info:  Optional dict with training metadata.
         search_config:  Optional dict with search configuration.
     """
-    payload: Dict[str, Any] = {"model_state_dict": model.state_dict()}
+    payload: dict[str, Any] = {"model_state_dict": model.state_dict()}
     if final_metrics is not None:
         payload["final_metrics"] = final_metrics
     if training_info is not None:
@@ -54,7 +54,7 @@ def save_model(
 def load_model_checkpoint(
     filepath: str,
     device: str = "cpu",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Load a checkpoint saved with :func:`save_model`.
 
@@ -66,7 +66,7 @@ def load_model_checkpoint(
         The raw checkpoint dict (keys: ``"model_state_dict"``, and
         whichever optional keys were saved).
     """
-    ckpt: Dict[str, Any] = torch.load(filepath, map_location=device)
+    ckpt: dict[str, Any] = torch.load(filepath, map_location=device)
     print(f"Loaded checkpoint from {filepath}")
     if "final_metrics" in ckpt:
         m = ckpt["final_metrics"]
@@ -137,7 +137,7 @@ def format_training_summary(training_history: list) -> str:
     return "\n".join(lines)
 
 
-def print_final_results(results: Dict[str, Any]) -> None:
+def print_final_results(results: dict[str, Any]) -> None:
     """
     Pretty-print the final training results to the NASLogger.
 

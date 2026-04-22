@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -10,17 +9,17 @@ from torch import Tensor, nn
 
 @dataclass(frozen=True)
 class RouterConfig:
-    hidden: Optional[int] = None
+    hidden: int | None = None
     temperature: float = 1.0
-    top_k: Optional[int] = 2
+    top_k: int | None = 2
 
 
 def resolve_router_config(
     base: RouterConfig | None = None,
     *,
-    hidden: Optional[int] = None,
+    hidden: int | None = None,
     temperature: float | None = None,
-    top_k: Optional[int] = None,
+    top_k: int | None = None,
 ) -> RouterConfig:
     cfg = base or RouterConfig()
     return RouterConfig(
@@ -37,9 +36,9 @@ class TokenRouter(nn.Module):
         num_experts: int,
         *,
         router_config: RouterConfig | None = None,
-        hidden: Optional[int] = None,
+        hidden: int | None = None,
         temperature: float | None = None,
-        top_k: Optional[int] = None,
+        top_k: int | None = None,
     ):
         super().__init__()
         cfg = resolve_router_config(
@@ -67,7 +66,7 @@ class TokenRouter(nn.Module):
         mask.scatter_(-1, idx, True)
         return mask
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         logits = self.net(x) / max(self.temperature, 1e-6)
         if self.top_k is not None and self.top_k < self.num_experts:
             logits = logits.masked_fill(

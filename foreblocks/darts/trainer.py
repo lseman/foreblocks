@@ -17,7 +17,7 @@ Heavy logic is delegated to focused sub-modules:
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import torch
@@ -83,16 +83,16 @@ class DARTSTrainer:
     def __init__(
         self,
         input_dim: int = 3,
-        hidden_dims: List[int] = None,
+        hidden_dims: list[int] = None,
         forecast_horizon: int = 6,
         seq_length: int = 12,
         device: str = "auto",
-        all_ops: Optional[List[str]] = None,
-        arch_modes: Optional[List[str]] = None,
-        op_families: Optional[Dict[str, List[str]]] = None,
-        family_range: Tuple[int, int] = (1, 3),
-        attention_variants: Optional[List[str]] = None,
-        ffn_variants: Optional[List[str]] = None,
+        all_ops: list[str] | None = None,
+        arch_modes: list[str] | None = None,
+        op_families: dict[str, list[str]] | None = None,
+        family_range: tuple[int, int] = (1, 3),
+        attention_variants: list[str] | None = None,
+        ffn_variants: list[str] | None = None,
     ):
         if hidden_dims is None:
             hidden_dims = [32, 64, 128]
@@ -145,9 +145,9 @@ class DARTSTrainer:
         ] or list(DEFAULT_FFN_VARIANTS)
 
         # Runtime accumulation
-        self.search_history: List[Dict[str, Any]] = []
-        self.training_history: List[Dict[str, Any]] = []
-        self.final_model: Optional[nn.Module] = None
+        self.search_history: list[dict[str, Any]] = []
+        self.training_history: list[dict[str, Any]] = []
+        self.final_model: nn.Module | None = None
 
         print(f"DARTSTrainer initialised on {device}")
         print(f"  input_dim={input_dim}  forecast_horizon={forecast_horizon}")
@@ -180,11 +180,11 @@ class DARTSTrainer:
 
     def _split_architecture_and_model_params(
         self, model: nn.Module
-    ) -> Tuple[List, List, List, List]:
-        arch_params: List[torch.Tensor] = []
-        model_params: List[torch.Tensor] = []
-        edge_arch_params: List[torch.Tensor] = []
-        component_arch_params: List[torch.Tensor] = []
+    ) -> tuple[list, list, list, list]:
+        arch_params: list[torch.Tensor] = []
+        model_params: list[torch.Tensor] = []
+        edge_arch_params: list[torch.Tensor] = []
+        component_arch_params: list[torch.Tensor] = []
         arch_param_ids: set = set()
 
         for name, param in model.named_parameters():
@@ -212,11 +212,11 @@ class DARTSTrainer:
 
     def _build_arch_param_groups(
         self,
-        edge_arch_params: List,
-        component_arch_params: List,
-        arch_params: List,
+        edge_arch_params: list,
+        component_arch_params: list,
+        arch_params: list,
         arch_learning_rate: float,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         groups = []
         if edge_arch_params:
             groups.append({"params": edge_arch_params, "lr": arch_learning_rate * 1.5})
@@ -238,7 +238,7 @@ class DARTSTrainer:
                     continue
         return count
 
-    def _capture_progressive_state(self, model: nn.Module) -> Optional[Dict]:
+    def _capture_progressive_state(self, model: nn.Module) -> dict | None:
         if not hasattr(model, "cells"):
             return None
         return {
@@ -249,7 +249,7 @@ class DARTSTrainer:
         }
 
     def _restore_progressive_state(
-        self, model: nn.Module, state: Optional[Dict]
+        self, model: nn.Module, state: dict | None
     ) -> None:
         if state is None or not hasattr(model, "cells"):
             return
@@ -273,7 +273,7 @@ class DARTSTrainer:
         *,
         model: nn.Module,
         train_model_loader,
-        model_params: List,
+        model_params: list,
         model_optimizer,
         model_scheduler,
         scaler: GradScaler,
@@ -367,7 +367,7 @@ class DARTSTrainer:
 
     def _compute_metrics(
         self, preds: np.ndarray, targets: np.ndarray
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         mse = float(np.mean((preds - targets) ** 2))
         rmse = float(np.sqrt(mse))
         mae = float(np.mean(np.abs(preds - targets)))
@@ -380,11 +380,11 @@ class DARTSTrainer:
         return {"mse": mse, "rmse": rmse, "mae": mae, "mape": mape, "r2_score": r2}
 
     def _normalize_op_families(
-        self, op_families: Optional[Dict[str, List[str]]]
-    ) -> Dict[str, List[str]]:
+        self, op_families: dict[str, list[str]] | None
+    ) -> dict[str, list[str]]:
         family_source = op_families or DEFAULT_OP_FAMILIES
         allowed_ops = set(self.all_ops)
-        normalized: Dict[str, List[str]] = {}
+        normalized: dict[str, list[str]] = {}
         for family_name, ops in family_source.items():
             filtered = [op for op in ops if op in allowed_ops]
             if filtered or str(family_name).lower() == "ssm":
@@ -394,10 +394,10 @@ class DARTSTrainer:
         return normalized
 
     def _resolve_candidate_families(
-        self, rng, allowed_ops: List[str]
-    ) -> Tuple[Dict[str, List[str]], List[str], List[str]]:
+        self, rng, allowed_ops: list[str]
+    ) -> tuple[dict[str, list[str]], list[str], list[str]]:
         allowed_set = set(allowed_ops)
-        family_space: Dict[str, List[str]] = {}
+        family_space: dict[str, list[str]] = {}
         for family_name, ops in self.op_families.items():
             filtered = [op for op in ops if op in allowed_set]
             if filtered:
@@ -430,14 +430,14 @@ class DARTSTrainer:
         self,
         rng,
         *,
-        family_space: Dict[str, List[str]],
-        op_families: List[str],
+        family_space: dict[str, list[str]],
+        op_families: list[str],
         require_identity: bool,
         min_ops: int,
-        max_ops: Optional[int],
-    ) -> Tuple[List[str], Dict[str, List[str]]]:
-        guaranteed_ops: List[str] = []
-        family_choices: Dict[str, List[str]] = {}
+        max_ops: int | None,
+    ) -> tuple[list[str], dict[str, list[str]]]:
+        guaranteed_ops: list[str] = []
+        family_choices: dict[str, list[str]] = {}
 
         for family_name in op_families:
             family_pool = [op for op in family_space.get(family_name, []) if op != "Identity"]
@@ -488,17 +488,17 @@ class DARTSTrainer:
     def _make_candidate_config(
         self,
         rng,
-        allowed_ops: List[str],
-        hidden_dim_choices: List[int],
-        cell_range: Tuple[int, int],
-        node_range: Tuple[int, int],
+        allowed_ops: list[str],
+        hidden_dim_choices: list[int],
+        cell_range: tuple[int, int],
+        node_range: tuple[int, int],
         *,
         min_ops: int = 2,
-        max_ops: Optional[int] = None,
+        max_ops: int | None = None,
         require_identity: bool = True,
         edge_to_op_target: float = 1.0,
         edge_to_op_max_ratio: float = 1.8,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         family_space, selected_families, op_families = self._resolve_candidate_families(
             rng, allowed_ops
         )
@@ -566,7 +566,7 @@ class DARTSTrainer:
             "transformer_use_moe": transformer_ffn_variant == "moe",
         }
 
-    def _build_candidate_model(self, cfg: Dict[str, Any]) -> nn.Module:
+    def _build_candidate_model(self, cfg: dict[str, Any]) -> nn.Module:
         return TimeSeriesDARTS(
             input_dim=self.input_dim,
             hidden_dim=cfg["hidden_dim"],
@@ -612,10 +612,10 @@ class DARTSTrainer:
 
     def _plot_training_curve(
         self,
-        train_losses: List[float],
-        val_losses: List[float],
+        train_losses: list[float],
+        val_losses: list[float],
         title: str = "Training Progress",
-        save_path: Optional[str] = None,
+        save_path: str | None = None,
     ):
         import matplotlib.pyplot as plt
 
@@ -626,7 +626,7 @@ class DARTSTrainer:
 
     # ── Search orchestrator delegates ─────────────────────────────────────
 
-    def _make_default_search_candidate_config(self, rng=None) -> Dict[str, Any]:
+    def _make_default_search_candidate_config(self, rng=None) -> dict[str, Any]:
         return make_default_search_candidate_config(trainer=self, rng=rng)
 
     def _evaluate_search_candidate(
@@ -638,7 +638,7 @@ class DARTSTrainer:
         num_batches: int = 1,
         include_timing: bool = False,
         rng=None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return evaluate_search_candidate(
             trainer=self,
             candidate_id=candidate_id,
@@ -650,7 +650,7 @@ class DARTSTrainer:
         )
 
     @staticmethod
-    def _select_top_candidates(candidates: List[Dict], top_k: int) -> List[Dict]:
+    def _select_top_candidates(candidates: list[dict], top_k: int) -> list[dict]:
         return select_top_candidates(candidates, top_k)
 
     def _run_parallel_candidate_collection(
@@ -658,10 +658,10 @@ class DARTSTrainer:
         num_candidates: int,
         candidate_fn,
         *,
-        max_workers: Optional[int] = None,
+        max_workers: int | None = None,
         on_result=None,
         error_log_fn=None,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         return run_parallel_candidate_collection(
             num_candidates=num_candidates,
             candidate_fn=candidate_fn,
@@ -683,7 +683,7 @@ class DARTSTrainer:
         max_samples: int = 32,
         num_batches: int = 1,
         fast_mode: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Compute zero-cost raw metrics (no weighting)."""
         return _zc_mod.evaluate_zero_cost_metrics_raw(
             self,
@@ -705,7 +705,7 @@ class DARTSTrainer:
         n_random: int = 10,
         random_sigma: float = 0.1,
         seed: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Compute weighted zero-cost metrics with optional weight-scheme ablation."""
         return _zc_mod.evaluate_zero_cost_metrics(
             self,
@@ -744,7 +744,7 @@ class DARTSTrainer:
         model_weight_decay: float = 1e-4,
         arch_weight_decay: float = 1e-3,
         # legacy alias kept for backward compatibility
-        weight_decay: Optional[float] = None,
+        weight_decay: float | None = None,
         # ── bilevel / optimization ───────────────────────────────────────
         use_swa: bool = False,
         use_bilevel_optimization: bool = True,
@@ -756,8 +756,8 @@ class DARTSTrainer:
         warmup_epochs: int = 2,
         architecture_update_freq: int = 3,
         # ── regularization ───────────────────────────────────────────────
-        regularization_types: Optional[List[str]] = None,
-        regularization_weights: Optional[List[float]] = None,
+        regularization_types: list[str] | None = None,
+        regularization_weights: list[float] | None = None,
         # legacy: if False, disables regularization entirely
         use_regularization: bool = True,
         # ── temperature ──────────────────────────────────────────────────
@@ -772,13 +772,13 @@ class DARTSTrainer:
         edge_identity_cap: float = 0.45,
         edge_identity_cap_weight: float = 0.02,
         # legacy aliases
-        identity_dominance_cap: Optional[float] = None,
+        identity_dominance_cap: float | None = None,
         # ── edge sharpening ──────────────────────────────────────────────
         edge_sharpening_max_weight: float = 0.03,
         edge_sharpening_start_frac: float = 0.35,
         # legacy aliases
-        edge_sharpening_strength: Optional[float] = None,
-        edge_sharpening_start_epoch: Optional[int] = None,
+        edge_sharpening_strength: float | None = None,
+        edge_sharpening_start_epoch: int | None = None,
         # ── progressive shrinking / pruning ──────────────────────────────
         progressive_shrinking: bool = True,
         hybrid_pruning_start_epoch: int = 20,
@@ -787,10 +787,10 @@ class DARTSTrainer:
         hybrid_pruning_strategy: str = "performance",
         hybrid_pruning_freeze_logit: float = -20.0,
         # legacy aliases
-        use_progressive_training: Optional[bool] = None,
-        pruning_enabled: Optional[bool] = None,
-        pruning_start_epoch: Optional[int] = None,
-        pruning_threshold: Optional[float] = None,
+        use_progressive_training: bool | None = None,
+        pruning_enabled: bool | None = None,
+        pruning_start_epoch: int | None = None,
+        pruning_threshold: float | None = None,
         # ── misc ─────────────────────────────────────────────────────────
         bilevel_split_seed: int = 42,
         state_mix_ortho_reg_weight: float = 1e-3,
@@ -800,10 +800,10 @@ class DARTSTrainer:
         transformer_exploration_weight: float = 1e-2,
         # silently absorbed legacy-only kwargs
         temperature: float = 1.0,  # noqa: superseded by temperature_schedule
-        pruning_hard_epoch: Optional[int] = None,  # noqa: not used in new loop
+        pruning_hard_epoch: int | None = None,  # noqa: not used in new loop
         log_arch_gradients: bool = False,  # noqa: controlled via verbose
         use_gdas: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Run DARTS bilevel architecture search training.
 
@@ -920,7 +920,7 @@ class DARTSTrainer:
         swa_start: int = 75,
         swa_lr: float = 5e-4,
         compute_final_metrics: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Train the final fixed-architecture model.
 
@@ -958,16 +958,16 @@ class DARTSTrainer:
         final_epochs: int = 100,
         max_samples: int = 32,
         top_k: int = 5,
-        max_workers: Optional[int] = None,
+        max_workers: int | None = None,
         collect_stats: bool = False,
         parallelism_levels=None,
         stats_dir: str = "search_stats",
-        run_name: Optional[str] = None,
+        run_name: str | None = None,
         retrain_final_from_scratch: bool = True,
         discrete_arch_threshold: float = 0.3,
         use_amp: bool = True,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run the complete multi-fidelity DARTS search pipeline."""
         return _mf_mod.run_multi_fidelity_search(
             self,
@@ -1000,7 +1000,7 @@ class DARTSTrainer:
         val_loader,
         test_loader,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Wrapper that enables ``collect_stats=True`` by default."""
         kwargs.setdefault("collect_stats", True)
         return self.multi_fidelity_search(
@@ -1019,7 +1019,7 @@ class DARTSTrainer:
         arch_lrs=(3e-4, 1e-3, 3e-3, 1e-2),
         seeds=(0, 1, 2),
         epochs: int = 30,
-        save_csv_path: Optional[str] = None,
+        save_csv_path: str | None = None,
     ):
         """Grid-search over (model_lr, arch_lr, seed) with bilevel optimisation."""
         return _mf_mod.bilevel_lr_sensitivity(
@@ -1049,17 +1049,17 @@ class DARTSTrainer:
         random_sigma: float = 0.25,
         top_k: int = 5,
         seed: int = 0,
-        max_workers: Optional[int] = None,
+        max_workers: int | None = None,
         save_plots: bool = True,
         save_csv: bool = True,
         output_dir: str = "ablation_results",
-        run_id: Optional[str] = None,
+        run_id: str | None = None,
         cell_range: tuple = (1, 2),
         node_range: tuple = (2, 4),
         min_ops: int = 2,
-        max_ops: Optional[int] = None,
+        max_ops: int | None = None,
         require_identity: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run weight-scheme ablation over zero-cost metrics."""
         return _abl_mod.ablation_weight_search(
             self,
@@ -1099,19 +1099,19 @@ class DARTSTrainer:
         max_samples: int = 32,
         num_batches: int = 1,
         seed: int = 0,
-        max_workers: Optional[int] = None,
+        max_workers: int | None = None,
         use_weight_schemes: bool = False,
         n_random: int = 50,
         random_sigma: float = 0.25,
         robustness_mode: str = "topk_freq",
-        topk_ref: Optional[int] = None,
+        topk_ref: int | None = None,
         min_ops: int = 2,
-        max_ops: Optional[int] = None,
+        max_ops: int | None = None,
         cell_range: tuple = (1, 2),
         node_range: tuple = (2, 4),
-        hidden_dim_choices: Optional[List[int]] = None,
+        hidden_dim_choices: list[int] | None = None,
         require_identity: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Evaluate robustness of architecture selection w.r.t. operator pool."""
         return _rp_mod.robust_initial_pool_over_op_pools(
             self,
@@ -1207,7 +1207,7 @@ class DARTSTrainer:
 
     def plot_alpha_evolution(
         self,
-        alpha_values: List,
+        alpha_values: list,
         save_path: str = "alpha_evolution.png",
     ) -> None:
         """Plot the evolution of architecture parameters during search."""
@@ -1234,7 +1234,7 @@ class DARTSTrainer:
         offset: int = 0,
         figsize=(14, 8),
         show: bool = True,
-        device: Optional[str] = None,
+        device: str | None = None,
         names=None,
         batch_size: int = 256,
     ):

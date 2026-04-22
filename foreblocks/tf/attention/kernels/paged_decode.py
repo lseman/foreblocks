@@ -1,4 +1,3 @@
-from typing import Optional
 
 import torch
 
@@ -132,7 +131,7 @@ def triton_paged_decode(
     cache,
     kv_repeat: int,
     scale: float,
-    q_start_pos: Optional[torch.Tensor] = None,
+    q_start_pos: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if not _TRITON_AVAILABLE:
         raise RuntimeError("Triton is not available")

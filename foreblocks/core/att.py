@@ -1,6 +1,5 @@
 import math
 from contextlib import nullcontext
-from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -47,18 +46,18 @@ class AttentionLayer(nn.Module):
     def __init__(
         self,
         decoder_hidden_size: int,
-        encoder_hidden_size: Optional[int] = None,
+        encoder_hidden_size: int | None = None,
         method: str = "mha",
         attention_backend: str = "torch",
         nhead: int = 8,
-        n_kv_heads: Optional[int] = None,
+        n_kv_heads: int | None = None,
         dropout: float = 0.1,
         num_scales: int = 3,
         use_residual_ln: bool = True,
         use_swiglu: bool = True,
         # Method-specific
         sampling_factor: int = 5,
-        top_k: Optional[int] = None,
+        top_k: int | None = None,
         window_size: int = 512,
         n_hashes: int = 4,
         bucket_size: int = 64,
@@ -324,11 +323,11 @@ class AttentionLayer(nn.Module):
 
     def forward(
         self,
-        decoder_hidden: Union[torch.Tensor, Tuple[torch.Tensor, ...]],
+        decoder_hidden: torch.Tensor | tuple[torch.Tensor, ...],
         encoder_outputs: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if isinstance(decoder_hidden, tuple):
             dec_h = decoder_hidden[0][-1]
         else:

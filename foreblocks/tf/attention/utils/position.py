@@ -1,4 +1,3 @@
-from typing import Tuple
 
 import torch
 
@@ -17,7 +16,7 @@ class PositionEncodingApplier:
         q: torch.Tensor,
         k: torch.Tensor,
         **context,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         for _, transform in self._transforms:
             q, k = transform(q, k, context)
         return q, k

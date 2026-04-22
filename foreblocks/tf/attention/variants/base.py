@@ -1,4 +1,4 @@
-from typing import Optional, Protocol, Tuple, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import torch
 
@@ -10,9 +10,9 @@ class AttentionImpl(Protocol):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
         **extra,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]: ...
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]: ...

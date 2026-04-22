@@ -1,5 +1,4 @@
 import math
-from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -22,7 +21,7 @@ class NSAImpl:
         need_weights,
         layer_state=None,
         **_,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
         q, k, v = self.parent._prepare_qkv_attention(query, key, value, layer_state)
         out, weights = self._nsa_attention(
@@ -41,11 +40,11 @@ class NSAImpl:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self.parent.nsa_gate_proj is None:
             return self.parent._compute_attention(
                 q,
@@ -104,10 +103,10 @@ class NSAImpl:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         is_causal: bool,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
         block_size = max(1, min(self.parent.nsa_block_size, T_k if T_k > 0 else 1))
@@ -171,8 +170,8 @@ class NSAImpl:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         block_scores: torch.Tensor,
         block_mask: torch.Tensor,

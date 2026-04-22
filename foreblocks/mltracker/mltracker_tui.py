@@ -6,14 +6,13 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from foreblocks.mltracker import MLTracker
 
-DEFAULT_TRACKING_URI = str((Path(__file__).resolve().parent / "mltracker_data"))
+DEFAULT_TRACKING_URI = str(Path(__file__).resolve().parent / "mltracker_data")
 
 
-def _sparkline(values: List[float], width: int = 80) -> str:
+def _sparkline(values: list[float], width: int = 80) -> str:
     if not values:
         return ""
     ticks = "▁▂▃▄▅▆▇█"
@@ -21,7 +20,7 @@ def _sparkline(values: List[float], width: int = 80) -> str:
     width = max(8, int(width))
     if n > width:
         step = n / width
-        sampled: List[float] = []
+        sampled: list[float] = []
         i = 0.0
         while int(i) < n and len(sampled) < width:
             sampled.append(values[int(i)])
@@ -45,13 +44,13 @@ def _sparkline(values: List[float], width: int = 80) -> str:
 
 
 def _fetch_runs(
-    tracker: MLTracker, experiment_name: Optional[str] = None
-) -> List[Dict]:
+    tracker: MLTracker, experiment_name: str | None = None
+) -> list[dict]:
     return tracker.search_runs(experiment_name=experiment_name)
 
 
-def _fetch_artifacts(tracker: MLTracker, run_id: str) -> List[Tuple[str, str]]:
-    rows: List[Tuple[str, str]] = []
+def _fetch_artifacts(tracker: MLTracker, run_id: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
     conn = sqlite3.connect(tracker.db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -65,8 +64,8 @@ def _fetch_artifacts(tracker: MLTracker, run_id: str) -> List[Tuple[str, str]]:
 
 def _fetch_metric_history(
     tracker: MLTracker, run_id: str
-) -> List[Tuple[str, int, float, str]]:
-    rows: List[Tuple[str, int, float, str]] = []
+) -> list[tuple[str, int, float, str]]:
+    rows: list[tuple[str, int, float, str]] = []
     conn = sqlite3.connect(tracker.db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -162,12 +161,12 @@ def create_app(tracking_uri: str = DEFAULT_TRACKING_URI):
         def __init__(self, tracking_uri: str):
             super().__init__()
             self.tracker = MLTracker(tracking_uri=tracking_uri)
-            self._runs: List[Dict] = []
-            self._selected_run_id: Optional[str] = None
-            self._history_by_metric: Dict[str, List[Tuple[int, float, str]]] = {}
+            self._runs: list[dict] = []
+            self._selected_run_id: str | None = None
+            self._history_by_metric: dict[str, list[tuple[int, float, str]]] = {}
             self._metric_log_scale: bool = False
             self._metric_plot_enabled: bool = True
-            self._current_metric_key: Optional[str] = None
+            self._current_metric_key: str | None = None
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -248,7 +247,7 @@ def create_app(tracking_uri: str = DEFAULT_TRACKING_URI):
                 except Exception:
                     pass
 
-        def _artifact_abs_path(self, rel_path: str) -> Optional[Path]:
+        def _artifact_abs_path(self, rel_path: str) -> Path | None:
             if not self._selected_run_id:
                 return None
             return (
@@ -338,7 +337,7 @@ def create_app(tracking_uri: str = DEFAULT_TRACKING_URI):
             self._current_metric_key = None
             self.query_one("#metric_plot", Static).update("Select a metric to plot.")
 
-        def _update_metric_plot(self, metric_key: Optional[str]) -> None:
+        def _update_metric_plot(self, metric_key: str | None) -> None:
             plot = self.query_one("#metric_plot", Static)
             if not self._metric_plot_enabled:
                 plot.update("Plot hidden (table-only mode). Press 'p' to show plot.")

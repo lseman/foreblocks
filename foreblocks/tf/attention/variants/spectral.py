@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import torch
 
@@ -17,7 +16,7 @@ class SpectralAttentionImpl:
         is_causal,
         need_weights,
         **_,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         if self.parent.attention_type == "frequency":
             out, weights = self.parent.freq_attention(
                 query,

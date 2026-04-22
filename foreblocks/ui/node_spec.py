@@ -1,23 +1,24 @@
 # foreblocks/node.py
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
+from collections.abc import Callable
 
 
 def node(
     *,
-    type_id: Optional[str] = None,
-    name: Optional[str] = None,
+    type_id: str | None = None,
+    name: str | None = None,
     category: str = "Misc",
     color: str = "bg-gradient-to-br from-slate-700 to-slate-800",
-    subtypes: Optional[List[str]] = None,
+    subtypes: list[str] | None = None,
     # Optional hard overrides (skip inference for these fields if provided)
-    inputs: Optional[List[str]] = None,
-    outputs: Optional[List[str]] = None,
-    config: Optional[Dict[str, Any]] = None,
-    config_sources: Optional[List[type]] = None,
+    inputs: list[str] | None = None,
+    outputs: list[str] | None = None,
+    config: dict[str, Any] | None = None,
+    config_sources: list[type] | None = None,
     # Optional explicit codegen spec (if provided, we won't auto-infer it)
-    py: Optional[Dict[str, Any]] = None,
+    py: dict[str, Any] | None = None,
     # Control whether we run auto-inference (default yes)
     infer: bool = True,
 ) -> Callable[[type], type]:

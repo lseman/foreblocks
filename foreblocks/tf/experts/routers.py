@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-RouterOutput = Tuple[
+RouterOutput = tuple[
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
@@ -26,9 +26,9 @@ class Router(nn.Module, ABC):
         super().__init__()
         self.num_experts = int(num_experts)
         # Exposed metrics (detached copies for hooks/logging)
-        self.last_gate_logits: Optional[torch.Tensor] = None
-        self.last_topk_idx: Optional[torch.Tensor] = None
-        self.last_per_token_k: Optional[torch.Tensor] = None
+        self.last_gate_logits: torch.Tensor | None = None
+        self.last_topk_idx: torch.Tensor | None = None
+        self.last_per_token_k: torch.Tensor | None = None
         self.last_tokens_dropped: int = 0
         self.last_aux_loss: float = 0.0
         self.last_latency_ms: float = 0.0
@@ -36,7 +36,7 @@ class Router(nn.Module, ABC):
 
     def _empty_out(
         self, x: torch.Tensor, return_raw_logits: bool = False
-    ) -> RouterOutput | Tuple[torch.Tensor, torch.Tensor]:
+    ) -> RouterOutput | tuple[torch.Tensor, torch.Tensor]:
         shp = (*x.shape[:-1], self.num_experts)
         z = x.new_zeros(shp)
         if return_raw_logits:
@@ -48,7 +48,7 @@ class Router(nn.Module, ABC):
         self,
         x: torch.Tensor,
         return_raw_logits: bool = False,
-        tau: Optional[float] = None,
+        tau: float | None = None,
     ):
         raise NotImplementedError
 
@@ -67,7 +67,7 @@ class LinearRouter(Router):
         self,
         x: torch.Tensor,
         return_raw_logits: bool = False,
-        tau: Optional[float] = None,
+        tau: float | None = None,
     ):
         del tau
         if x.numel() == 0:
@@ -87,7 +87,7 @@ class NoisyTopKRouter(Router):
         jitter: float = 0.01,
         use_bias: bool = False,
         expert_bias_init: float = 0.0,
-        clamp_range: Tuple[float, float] = (-1e4, 1e4),
+        clamp_range: tuple[float, float] = (-1e4, 1e4),
     ):
         super().__init__(num_experts=num_experts)
         self.router = nn.Linear(d_model, num_experts, bias=use_bias)
@@ -108,7 +108,7 @@ class NoisyTopKRouter(Router):
             if self.router.bias is not None:
                 self.router.bias.zero_()
 
-    def _compute_logits(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _compute_logits(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if self.training and self.input_dropout is not None:
             x = self.input_dropout(x)
 
@@ -125,7 +125,7 @@ class NoisyTopKRouter(Router):
         self,
         x: torch.Tensor,
         return_raw_logits: bool = False,
-        tau: Optional[float] = None,
+        tau: float | None = None,
     ):
         del tau
         if x.numel() == 0:
@@ -148,7 +148,7 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
         jitter: float = 0.01,
         use_bias: bool = False,
         expert_bias_init: float = 0.0,
-        clamp_range: Tuple[float, float] = (-1e4, 1e4),
+        clamp_range: tuple[float, float] = (-1e4, 1e4),
     ):
         super().__init__(
             d_model=d_model,
@@ -165,15 +165,15 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
         self.k_logits = nn.Linear(k_head_dim, self.max_k, bias=True)
         nn.init.normal_(self.k_logits.weight, mean=0.0, std=0.02)
 
-        self.last_k_logits: Optional[torch.Tensor] = None
-        self.last_k: Optional[torch.Tensor] = None
-        self.last_k_probs: Optional[torch.Tensor] = None
+        self.last_k_logits: torch.Tensor | None = None
+        self.last_k: torch.Tensor | None = None
+        self.last_k_probs: torch.Tensor | None = None
 
     def forward(
         self,
         x: torch.Tensor,
         return_raw_logits: bool = False,
-        tau: Optional[float] = None,
+        tau: float | None = None,
     ):
         if x.numel() == 0:
             if return_raw_logits:
@@ -220,7 +220,7 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
         jitter: float = 0.01,
         use_bias: bool = False,
         expert_bias_init: float = 0.0,
-        clamp_range: Tuple[float, float] = (-1e4, 1e4),
+        clamp_range: tuple[float, float] = (-1e4, 1e4),
     ):
         super().__init__(
             d_model=d_model,
@@ -238,7 +238,7 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
         self,
         x: torch.Tensor,
         return_raw_logits: bool = False,
-        tau: Optional[float] = None,
+        tau: float | None = None,
     ):
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
@@ -274,7 +274,7 @@ class ContinuousTopKRouter(NoisyTopKRouter):
         jitter: float = 0.01,
         use_bias: bool = False,
         expert_bias_init: float = 0.0,
-        clamp_range: Tuple[float, float] = (-1e4, 1e4),
+        clamp_range: tuple[float, float] = (-1e4, 1e4),
     ):
         super().__init__(
             d_model=d_model,
@@ -293,7 +293,7 @@ class ContinuousTopKRouter(NoisyTopKRouter):
         self,
         x: torch.Tensor,
         return_raw_logits: bool = False,
-        tau: Optional[float] = None,
+        tau: float | None = None,
     ):
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
@@ -330,7 +330,7 @@ class HashTopKRouter(NoisyTopKRouter):
         jitter: float = 0.01,
         use_bias: bool = False,
         expert_bias_init: float = 0.0,
-        clamp_range: Tuple[float, float] = (-1e4, 1e4),
+        clamp_range: tuple[float, float] = (-1e4, 1e4),
     ):
         super().__init__(
             d_model=d_model,
@@ -398,7 +398,7 @@ class HashTopKRouter(NoisyTopKRouter):
         self,
         x: torch.Tensor,
         return_raw_logits: bool = False,
-        tau: Optional[float] = None,
+        tau: float | None = None,
     ):
         del tau
         if x.numel() == 0:

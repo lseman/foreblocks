@@ -1,5 +1,4 @@
 # foreblocks/fusions.py
-# -*- coding: utf-8 -*-
 """
 Lightweight fused ops:
 - Dropout → Residual Add
@@ -15,7 +14,6 @@ Goals:
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -85,7 +83,7 @@ except Exception:  # pragma: no cover
 # ---------------------------------------------------------------------------
 
 
-def get_dropout_p(layer: Optional[nn.Module]) -> float:
+def get_dropout_p(layer: nn.Module | None) -> float:
     """
     Safely extract p from a Dropout-like module or return 0.0 for Identity/None.
 
@@ -100,7 +98,7 @@ def get_dropout_p(layer: Optional[nn.Module]) -> float:
         return 0.0
 
 
-def _apply_norm(norm_layer: Optional[nn.Module], x: torch.Tensor) -> torch.Tensor:
+def _apply_norm(norm_layer: nn.Module | None, x: torch.Tensor) -> torch.Tensor:
     """
     Supports either:
       - NormWrapper (has .norm(x))
@@ -117,7 +115,7 @@ def _apply_norm(norm_layer: Optional[nn.Module], x: torch.Tensor) -> torch.Tenso
     return norm_layer(x)
 
 
-def _resolve_norm_module(norm_layer: Optional[nn.Module]) -> Optional[nn.Module]:
+def _resolve_norm_module(norm_layer: nn.Module | None) -> nn.Module | None:
     if norm_layer is None:
         return None
     norm_fn = getattr(norm_layer, "norm", None)
@@ -127,7 +125,7 @@ def _resolve_norm_module(norm_layer: Optional[nn.Module]) -> Optional[nn.Module]
 
 
 def _apply_norm_triton_if_possible(
-    norm_layer: Optional[nn.Module], x: torch.Tensor
+    norm_layer: nn.Module | None, x: torch.Tensor
 ) -> torch.Tensor:
     """
     Dedicated Triton norm fast path for post-norm branches.
@@ -197,7 +195,7 @@ def _apply_norm_triton_if_possible(
 def _can_fused_add_rmsnorm(
     residual: torch.Tensor,
     update: torch.Tensor,
-    norm_layer: Optional[nn.Module],
+    norm_layer: nn.Module | None,
 ) -> bool:
     if not (_HAS_TRITON_NORM_BACKEND and _NORM_TRITON_AVAILABLE):
         return False
@@ -311,7 +309,7 @@ def fused_dropout_add(
 def fused_dropout_add_norm(
     residual: torch.Tensor,
     update: torch.Tensor,
-    norm_layer: Optional[nn.Module],
+    norm_layer: nn.Module | None,
     p: float,
     training: bool,
 ) -> torch.Tensor:
@@ -336,16 +334,16 @@ def fused_dropout_add_norm(
 def fused_dropout_gateskip_norm(
     residual: torch.Tensor,
     update: torch.Tensor,
-    gate: Optional[nn.Module],  # expected: ResidualGate
+    gate: nn.Module | None,  # expected: ResidualGate
     use_gateskip: bool,
-    gate_budget: Optional[float],
-    aux_l2_terms: Optional[List[torch.Tensor]],
+    gate_budget: float | None,
+    aux_l2_terms: list[torch.Tensor] | None,
     gate_lambda: float,
-    norm_layer: Optional[nn.Module],
+    norm_layer: nn.Module | None,
     p: float,
     training: bool,
-    active_mask: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    active_mask: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     """
     Fuse: Dropout(update) → GateSkip(residual, update) → Norm
 
@@ -396,7 +394,7 @@ def fused_dropout_gateskip_norm(
 def fused_dropout_add_from_layer(
     residual: torch.Tensor,
     update: torch.Tensor,
-    dropout: Optional[nn.Module],
+    dropout: nn.Module | None,
     training: bool,
 ) -> torch.Tensor:
     """
@@ -411,8 +409,8 @@ def fused_dropout_add_from_layer(
 def fused_dropout_add_norm_from_layers(
     residual: torch.Tensor,
     update: torch.Tensor,
-    dropout: Optional[nn.Module],
-    norm_layer: Optional[nn.Module],
+    dropout: nn.Module | None,
+    norm_layer: nn.Module | None,
     training: bool,
 ) -> torch.Tensor:
     """
@@ -437,15 +435,15 @@ def fused_dropout_add_norm_from_layers(
 def fused_dropout_gateskip_norm_from_layers(
     residual: torch.Tensor,
     update: torch.Tensor,
-    gate: Optional[nn.Module],
+    gate: nn.Module | None,
     use_gateskip: bool,
-    gate_budget: Optional[float],
-    aux_l2_terms: Optional[List[torch.Tensor]],
+    gate_budget: float | None,
+    aux_l2_terms: list[torch.Tensor] | None,
     gate_lambda: float,
-    dropout: Optional[nn.Module],
-    norm_layer: Optional[nn.Module],
+    dropout: nn.Module | None,
+    norm_layer: nn.Module | None,
     training: bool,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     """
     Convenience wrapper for the full GateSkip branch:
 

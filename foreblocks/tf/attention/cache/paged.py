@@ -1,4 +1,3 @@
-from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -29,11 +28,11 @@ class PagedKVCache:
         batch_size: int,
         n_kv_heads: int,
         head_dim: int,
-        latent_dim: Optional[int] = None,
+        latent_dim: int | None = None,
         block_size: int = 128,
         max_blocks: int = 1024,
-        device: Optional[torch.device] = None,
-        dtype: Optional[torch.dtype] = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
     ):
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}")
@@ -80,8 +79,8 @@ class PagedKVCache:
             dtype=torch.long,
         )
         # Per-sequence metadata
-        self.block_table: List[List[int]] = [[] for _ in range(self.B)]
-        self.write_pos: List[Tuple[int, int]] = [
+        self.block_table: list[list[int]] = [[] for _ in range(self.B)]
+        self.write_pos: list[tuple[int, int]] = [
             (0, 0) for _ in range(self.B)
         ]  # (idx_in_table, offset_in_block)
         self.seq_len: Tensor = torch.zeros(self.B, device=self.device, dtype=torch.long)
@@ -89,7 +88,7 @@ class PagedKVCache:
             self.B, device=self.device, dtype=torch.long
         )
         # Free block pool
-        self._free_blocks: List[int] = list(range(self.max_blocks))
+        self._free_blocks: list[int] = list(range(self.max_blocks))
 
     # ---------------------------------------------------------------------
     # Construction / ensure
@@ -97,11 +96,11 @@ class PagedKVCache:
 
     @staticmethod
     def ensure(
-        layer_state: Dict,
+        layer_state: dict,
         batch_size: int,
         n_kv_heads: int,
         head_dim: int,
-        latent_dim: Optional[int],
+        latent_dim: int | None,
         block_size: int,
         device: torch.device,
         dtype: torch.dtype,
@@ -171,7 +170,7 @@ class PagedKVCache:
         v_htd: Tensor,
         b: int,
         positions_t: Tensor,
-        beta_ht: Optional[Tensor] = None,
+        beta_ht: Tensor | None = None,
     ) -> None:
         if self.use_latent_cache:
             raise RuntimeError("Dense append with metadata is unavailable in latent mode.")
@@ -410,8 +409,8 @@ class PagedKVCache:
         k_htd: Tensor,
         v_htd: Tensor,
         positions_t: Tensor,
-        beta_ht: Optional[Tensor] = None,
-        logical_seq_len: Optional[int] = None,
+        beta_ht: Tensor | None = None,
+        logical_seq_len: int | None = None,
     ) -> None:
         """
         Replace sequence `b` with a compacted dense representation.
@@ -431,7 +430,7 @@ class PagedKVCache:
     # These are primarily for debugging / non-paged attention paths.
     # Your fast decode path can operate directly on storage + block_table.
 
-    def gather_kv_batched(self) -> Tuple[Tensor, Tensor]:
+    def gather_kv_batched(self) -> tuple[Tensor, Tensor]:
         """
         Gather all cached tokens into contiguous [B, Hkv, T_max, D] tensors.
         This is a convenience / debug method. For fast decode, you likely want
@@ -481,7 +480,7 @@ class PagedKVCache:
             v_out[b, :, :seq_len_b, :] = v_flat
         return k_out, v_out
 
-    def gather_kv_for_seq(self, b: int) -> Tuple[Tensor, Tensor]:
+    def gather_kv_for_seq(self, b: int) -> tuple[Tensor, Tensor]:
         """
         Gather KV for a single sequence b into contiguous [Hkv, T, D] tensors.
         Useful when you only decode one sequence at a time.

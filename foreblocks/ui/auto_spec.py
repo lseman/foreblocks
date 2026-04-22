@@ -14,19 +14,13 @@ from dataclasses import fields, is_dataclass
 from typing import (
     Annotated,
     Any,
-    Dict,
-    List,
     Literal,
-    Mapping,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
     Union,
     get_args,
     get_origin,
     get_type_hints,
 )
+from collections.abc import Mapping, Sequence
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Port markers used in type annotations
@@ -51,7 +45,7 @@ def _is_annotated_port(tp, marker) -> bool:
         isinstance(a, marker) or a is marker for a in get_args(tp)[1:]
     )
 
-def _typed_dict_keys(tp) -> Optional[List[str]]:
+def _typed_dict_keys(tp) -> list[str] | None:
     anns = getattr(tp, "__annotations__", None)
     return list(anns.keys()) if isinstance(anns, dict) else None
 
@@ -136,11 +130,11 @@ def _safe_default_for_annotation(ann):
         return args[0]
 
     # Collections
-    if origin in (list, List, Sequence, tuple, Tuple):
+    if origin in (list, list, Sequence, tuple, tuple):
         return []
-    if origin in (dict, Dict, Mapping):
+    if origin in (dict, dict, Mapping):
         return {}
-    if origin in (set, Set):
+    if origin in (set, set):
         return []  # JSON-safe
 
     # Primitives
@@ -173,18 +167,18 @@ def _safe_default_for_param(p: inspect.Parameter) -> Any:
 # Config inference
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _collect_config_from_dataclass(cfg_cls) -> Dict[str, Any]:
+def _collect_config_from_dataclass(cfg_cls) -> dict[str, Any]:
     # requires default values
     inst = cfg_cls()
     return {f.name: getattr(inst, f.name) for f in fields(cfg_cls)}
 
-def _collect_config_from_pydantic(cfg_cls) -> Dict[str, Any]:
+def _collect_config_from_pydantic(cfg_cls) -> dict[str, Any]:
     # pydantic v2
     inst = cfg_cls()
     return inst.model_dump()
 
-def _collect_config_from_signature(sig: inspect.Signature) -> Dict[str, Any]:
-    cfg: Dict[str, Any] = {}
+def _collect_config_from_signature(sig: inspect.Signature) -> dict[str, Any]:
+    cfg: dict[str, Any] = {}
     for name, p in sig.parameters.items():
         if name in ("self", "args", "kwargs", "*args", "**kwargs"):
             continue
@@ -197,7 +191,7 @@ def _collect_config_from_signature(sig: inspect.Signature) -> Dict[str, Any]:
     return cfg
 
 
-def _collect_config_from_init(cls) -> Dict[str, Any]:
+def _collect_config_from_init(cls) -> dict[str, Any]:
     """
     Include ALL non-variadic __init__ parameters (except self), including
     inherited constructor parameters from parent classes.
@@ -206,7 +200,7 @@ def _collect_config_from_init(cls) -> Dict[str, Any]:
     expose most of their configurable surface through ``**kwargs`` forwarded
     into a richer base class constructor.
     """
-    cfg: Dict[str, Any] = {}
+    cfg: dict[str, Any] = {}
     mro = [base for base in reversed(cls.mro()) if base not in (object,)]
     for base in mro:
         init = base.__dict__.get("__init__")
@@ -219,15 +213,15 @@ def _collect_config_from_init(cls) -> Dict[str, Any]:
         cfg.update(_collect_config_from_signature(sig))
     return cfg
 
-def infer_config(cls, extra_sources: Optional[List[type]] = None) -> Dict[str, Any]:
+def infer_config(cls, extra_sources: list[type] | None = None) -> dict[str, Any]:
     """
     Order:
       - If inner class `Config` exists: try dataclass → try pydantic v2
       - Else fall back to __init__ signature (now includes safe defaults)
     """
-    merged: Dict[str, Any] = {}
+    merged: dict[str, Any] = {}
 
-    def _infer_single(source_cls: type) -> Dict[str, Any]:
+    def _infer_single(source_cls: type) -> dict[str, Any]:
         Config = getattr(source_cls, "Config", None)
         if Config is not None:
             try:
@@ -272,7 +266,7 @@ def infer_config(cls, extra_sources: Optional[List[type]] = None) -> Dict[str, A
 
 # Names that should be considered "component inputs" if present in __init__,
 # regardless of exact annotation (useful when hints are missing/Any)
-_WHITELIST_INIT_INPUTS: Set[str] = {
+_WHITELIST_INIT_INPUTS: set[str] = {
     # core
     "encoder", "decoder", "head",
     # processing / pre/post
@@ -309,7 +303,7 @@ def _looks_like_init_input(name: str, ann) -> bool:
             return True
     return False
 
-def infer_inputs(cls) -> List[str]:
+def infer_inputs(cls) -> list[str]:
     """
     STRICT-STRICT + INIT-COMPONENTS:
       - If class defines __inputs__, use that.
@@ -322,7 +316,7 @@ def infer_inputs(cls) -> List[str]:
     if hasattr(cls, "__inputs__"):
         return list(getattr(cls, "__inputs__"))
 
-    ins: List[str] = []
+    ins: list[str] = []
 
     # 1) forward(...) explicit PortIn markers
     fwd = getattr(cls, "forward", None)
@@ -366,7 +360,7 @@ def infer_inputs(cls) -> List[str]:
     return ins
 
 
-def infer_outputs(cls) -> List[str]:
+def infer_outputs(cls) -> list[str]:
     """
     - If class defines __outputs__, use that.
     - Else inspect forward(...) return annotation:
@@ -427,7 +421,7 @@ def infer_outputs(cls) -> List[str]:
 # Generic code-gen spec inference (NEW)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _infer_ctor_and_bindings(cls: type, inputs: List[str], cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _infer_ctor_and_bindings(cls: type, inputs: list[str], cfg: dict[str, Any]) -> dict[str, Any]:
     """
     Heuristic for building a default 'py' spec when authors don't provide one.
 
@@ -441,7 +435,7 @@ def _infer_ctor_and_bindings(cls: type, inputs: List[str], cfg: Dict[str, Any]) 
           - else: skip (user can override in decorator or __py__/py_spec)
     - output_map: omitted → frontend will default each output port to "@self"
     """
-    kwargs: Dict[str, Any] = {}
+    kwargs: dict[str, Any] = {}
     try:
         sig = inspect.signature(cls.__init__)
     except (TypeError, ValueError):
@@ -467,7 +461,7 @@ def _infer_ctor_and_bindings(cls: type, inputs: List[str], cfg: Dict[str, Any]) 
     return py
 
 
-def build_node_spec(cls: type, options: Dict[str, Any]) -> Dict[str, Any]:
+def build_node_spec(cls: type, options: dict[str, Any]) -> dict[str, Any]:
     """
     Merge:
       - decorator overrides

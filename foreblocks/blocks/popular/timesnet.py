@@ -1,5 +1,4 @@
 import math
-from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -15,9 +14,9 @@ from foreblocks.ui.node_spec import node
 def _period_bounds(
     L: int,
     min_period: int = 2,
-    max_period: Optional[int] = None,
+    max_period: int | None = None,
     max_period_frac: float = 0.5,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     lo = max(min_period, 1)
     hi = min(L - 1, max_period if max_period is not None else int(L * max_period_frac))
     if lo > hi:
@@ -29,7 +28,7 @@ def _topk_periods_amplitude(
     x: torch.Tensor,
     k: int,
     min_period: int = 2,
-    max_period: Optional[int] = None,
+    max_period: int | None = None,
     max_period_frac: float = 0.5,
 ) -> torch.Tensor:
     """
@@ -76,7 +75,7 @@ def _topk_periods_autocorr(
     x: torch.Tensor,
     k: int,
     min_period: int = 2,
-    max_period: Optional[int] = None,
+    max_period: int | None = None,
     max_period_frac: float = 0.5,
 ) -> torch.Tensor:
     """
@@ -112,7 +111,7 @@ def _topk_periods(
     x: torch.Tensor,
     k: int,
     min_period: int = 2,
-    max_period: Optional[int] = None,
+    max_period: int | None = None,
     max_period_frac: float = 0.5,
     method: str = "amplitude",
 ) -> torch.Tensor:
@@ -185,7 +184,7 @@ class Inception2D(nn.Module):
         self,
         in_ch: int,
         out_ch: int,
-        ks: Tuple[int, ...] = (3, 5, 7),
+        ks: tuple[int, ...] = (3, 5, 7),
         expand: int = 2,
         dropout: float = 0.0,
         norm_type: str = "rms",
@@ -235,8 +234,8 @@ class TimesBlock(nn.Module):
         self,
         d_model: int,
         k_periods: int = 3,
-        hidden: Optional[int] = None,
-        ks: Tuple[int, ...] = (3, 5, 7),
+        hidden: int | None = None,
+        ks: tuple[int, ...] = (3, 5, 7),
         expand: int = 2,
         dropout: float = 0.1,
         norm_type: str = "rms",
@@ -295,7 +294,7 @@ class TimesBlock(nn.Module):
             )
         return x_t.transpose(1, 2).contiguous()
 
-    def _fold(self, x: torch.Tensor, p: int) -> Tuple[torch.Tensor, int]:
+    def _fold(self, x: torch.Tensor, p: int) -> tuple[torch.Tensor, int]:
         B, L, C = x.shape
         Np = (L + p - 1) // p
         pad = Np * p - L
@@ -407,14 +406,14 @@ class TimesNetHeadCustom(nn.Module):
         d_model: int = 512,
         n_blocks: int = 2,
         k_periods: int = 3,
-        inception_kernels: Tuple[int, ...] = (3, 5, 7),
+        inception_kernels: tuple[int, ...] = (3, 5, 7),
         expand: int = 2,
         dropout: float = 0.1,
         norm_type: str = "rms",
         layer_norm_eps: float = 1e-5,
         use_glu_gate: bool = True,
         use_channel_mixer: bool = False,
-        quantiles: Optional[Tuple[float, ...]] = None,
+        quantiles: tuple[float, ...] | None = None,
         max_period_frac: float = 0.5,
         pad_mode: str = "right",
         period_method: str = "amplitude",
@@ -504,7 +503,7 @@ class TimesNetHeadCustom(nn.Module):
 
         return y
 
-    def split_quantiles(self, y: torch.Tensor) -> Dict[float, torch.Tensor]:
+    def split_quantiles(self, y: torch.Tensor) -> dict[float, torch.Tensor]:
         if self.quantiles is None:
             raise ValueError("No quantiles configured")
         Q = len(self.quantiles)

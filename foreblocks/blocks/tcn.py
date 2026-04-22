@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -56,7 +55,7 @@ class CausalTCNBlock(nn.Module):
         self.norm = nn.LayerNorm(channels)  # most common in recent TCNs
         self.act = nn.GELU() if activation == "gelu" else nn.SiLU()
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         x: (B*N, C, T)
         Returns:
@@ -154,7 +153,7 @@ class TCNPlus(nn.Module):
 
     def forward(
         self, x: torch.Tensor, *args
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict]:
         """
         x: (B, T_in, N, D_in)
         Returns: (B, T_out, N), None, {}

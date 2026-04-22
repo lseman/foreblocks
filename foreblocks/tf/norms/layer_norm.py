@@ -1,4 +1,3 @@
-from typing import Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -17,7 +16,7 @@ class FastLayerNorm(nn.Module):
 
     def __init__(
         self,
-        normalized_shape: Union[int, Tuple[int, ...]],
+        normalized_shape: int | tuple[int, ...],
         eps: float = 1e-5,
         elementwise_affine: bool = True,
     ):

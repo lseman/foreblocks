@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Tuple
 
 import torch
 import torch.fft as fft
@@ -18,7 +17,7 @@ class FFTTopK(nn.Module):
         super().__init__()
         self.topk = int(topk)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         B, T, F_ = x.shape
         Xf = fft.rfft(x, dim=1)  # [B, Tr, F]
         mag = Xf.abs()

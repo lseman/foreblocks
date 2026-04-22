@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 
@@ -54,12 +54,12 @@ def append_whatif_estimates(
     *,
     phase: str,
     run_id: str,
-    work_times: List[float],
-    parallelism_levels: List[int],
+    work_times: list[float],
+    parallelism_levels: list[int],
     overhead_per_task: float,
     fixed_overhead: float,
-    whatif_rows: List[List[Any]],
-) -> List[Dict[str, float]]:
+    whatif_rows: list[list[Any]],
+) -> list[dict[str, float]]:
     estimates = []
     for w in parallelism_levels:
         est = lpt_estimate(

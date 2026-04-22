@@ -1,7 +1,5 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import List, Optional
 
 import torch
 import torch.fft as fft
@@ -273,7 +271,7 @@ class MultiScalePyramid(nn.Module):
             )
 
         # Will be lazily built on first forward because sequence length T is only known then.
-        self._built_for_T: Optional[int] = None
+        self._built_for_T: int | None = None
         self._filters: nn.ModuleList = nn.ModuleList()
         self._fuse_proj: nn.ModuleList = nn.ModuleList()
         self._refine_blocks: nn.ModuleList = nn.ModuleList()
@@ -287,7 +285,7 @@ class MultiScalePyramid(nn.Module):
         self._refine_blocks = nn.ModuleList()
 
         # Determine per-scale lengths (must stay >= 2 to make sense)
-        lengths: List[int] = []
+        lengths: list[int] = []
         cur = int(T)
         for _ in range(self.num_scales):
             lengths.append(cur)
@@ -381,12 +379,12 @@ class MultiScalePyramid(nn.Module):
         cm = self._chan_mixer(x) if self.use_channel_mixer else torch.zeros_like(x)
 
         # 1) Build pyramid (scales)
-        Xs: List[torch.Tensor] = [x]
+        Xs: list[torch.Tensor] = [x]
         for _ in range(1, self.num_scales):
             Xs.append(self._avg_pool_time(Xs[-1], self.pool_factor))
 
         # 2) Per-scale spectral filtering (or identity)
-        Ys: List[torch.Tensor] = [f(Xi) for f, Xi in zip(self._filters, Xs)]
+        Ys: list[torch.Tensor] = [f(Xi) for f, Xi in zip(self._filters, Xs)]
 
         # 3) Coarse-to-fine hierarchical fusion:
         #    legacy mode: Y_i = Y_i + Proj(Upsample(Y_{i+1}))

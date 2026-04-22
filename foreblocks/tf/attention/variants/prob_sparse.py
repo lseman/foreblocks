@@ -1,5 +1,4 @@
 import math
-from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -14,13 +13,13 @@ class ProbSparseAttentionImpl:
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
         layer_state=None,
         **_,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
         q, k, v = self.parent._prepare_qkv_attention(query, key, value, layer_state)
         out, weights = self._prob_sparse_attention(
@@ -39,11 +38,11 @@ class ProbSparseAttentionImpl:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
 

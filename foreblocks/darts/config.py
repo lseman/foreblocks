@@ -8,19 +8,18 @@ single object instead of long keyword-argument lists.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Architecture / Search-space
 # ---------------------------------------------------------------------------
 
-DEFAULT_ARCH_MODES: List[str] = [
+DEFAULT_ARCH_MODES: list[str] = [
     "encoder_decoder",
     "encoder_only",
     "decoder_only",
 ]
 
-DEFAULT_OPS: List[str] = [
+DEFAULT_OPS: list[str] = [
     "Identity",
     "TimeConv",
     "GRN",
@@ -39,7 +38,7 @@ DEFAULT_OPS: List[str] = [
     "TimesNet",
 ]
 
-DEFAULT_OP_FAMILIES: Dict[str, List[str]] = {
+DEFAULT_OP_FAMILIES: dict[str, list[str]] = {
     "conv": [
         "TimeConv",
         "TCN",
@@ -65,32 +64,32 @@ DEFAULT_OP_FAMILIES: Dict[str, List[str]] = {
     ],
 }
 
-DEFAULT_ATTENTION_VARIANTS: List[str] = ["auto"]
-DEFAULT_FFN_VARIANTS: List[str] = ["auto"]
+DEFAULT_ATTENTION_VARIANTS: list[str] = ["auto"]
+DEFAULT_FFN_VARIANTS: list[str] = ["auto"]
 
 
 @dataclass
 class DARTSSearchSpaceConfig:
     """Defines the operation/cell/node search space."""
 
-    all_ops: List[str] = field(default_factory=lambda: list(DEFAULT_OPS))
-    arch_modes: List[str] = field(default_factory=lambda: list(DEFAULT_ARCH_MODES))
-    op_families: Dict[str, List[str]] = field(
+    all_ops: list[str] = field(default_factory=lambda: list(DEFAULT_OPS))
+    arch_modes: list[str] = field(default_factory=lambda: list(DEFAULT_ARCH_MODES))
+    op_families: dict[str, list[str]] = field(
         default_factory=lambda: {k: list(v) for k, v in DEFAULT_OP_FAMILIES.items()}
     )
-    hidden_dims: List[int] = field(default_factory=lambda: [32, 64, 128])
-    cell_range: Tuple[int, int] = (1, 2)
-    node_range: Tuple[int, int] = (2, 4)
-    family_range: Tuple[int, int] = (1, 3)
+    hidden_dims: list[int] = field(default_factory=lambda: [32, 64, 128])
+    cell_range: tuple[int, int] = (1, 2)
+    node_range: tuple[int, int] = (2, 4)
+    family_range: tuple[int, int] = (1, 3)
     min_ops: int = 2
-    max_ops: Optional[int] = None
+    max_ops: int | None = None
     require_identity: bool = True
     edge_to_op_target: float = 1.0
     edge_to_op_max_ratio: float = 1.8
-    attention_variants: List[str] = field(
+    attention_variants: list[str] = field(
         default_factory=lambda: list(DEFAULT_ATTENTION_VARIANTS)
     )
-    ffn_variants: List[str] = field(default_factory=lambda: list(DEFAULT_FFN_VARIANTS))
+    ffn_variants: list[str] = field(default_factory=lambda: list(DEFAULT_FFN_VARIANTS))
 
 
 # ---------------------------------------------------------------------------
@@ -123,10 +122,10 @@ class DARTSTrainConfig:
     use_amp: bool = True
     gradient_accumulation_steps: int = 1
     verbose: bool = True
-    regularization_types: Optional[List[str]] = (
+    regularization_types: list[str] | None = (
         None  # defaults to ["kl_divergence", "efficiency"]
     )
-    regularization_weights: Optional[List[float]] = None  # defaults to [0.05, 0.01]
+    regularization_weights: list[float] | None = None  # defaults to [0.05, 0.01]
     temperature_schedule: str = "cosine"
     edge_sharpening_max_weight: float = 0.03
     edge_sharpening_start_frac: float = 0.35
@@ -197,22 +196,22 @@ class MultiFildelitySearchConfig:
     final_epochs: int = 100
     max_samples: int = 32
     top_k: int = 5
-    max_workers: Optional[int] = None
+    max_workers: int | None = None
     collect_stats: bool = False
-    parallelism_levels: Optional[List[int]] = None
+    parallelism_levels: list[int] | None = None
     est_overhead_per_task: float = 0.0
     est_fixed_overhead_phase1: float = 0.0
     est_fixed_overhead_phase3: float = 0.0
-    benchmark_phase1_workers: Optional[List[int]] = None
-    benchmark_phase1_candidates: Optional[int] = None
+    benchmark_phase1_workers: list[int] | None = None
+    benchmark_phase1_candidates: int | None = None
     stats_dir: str = "search_stats"
-    run_name: Optional[str] = None
+    run_name: str | None = None
     retrain_final_from_scratch: bool = True
     discrete_arch_threshold: float = 0.3
     phase1_rescore_mode: str = "pool"
     phase3_reduction_factor: int = 2
     phase3_min_epoch_budget: int = 2
-    phase3_rung_epochs: Optional[List[int]] = None
+    phase3_rung_epochs: list[int] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +227,7 @@ class AblationSearchConfig:
     max_samples: int = 32
     num_batches: int = 1
     top_k: int = 5
-    max_workers: Optional[int] = None
+    max_workers: int | None = None
     n_random: int = 50
     random_sigma: float = 0.25
     seed: int = 0
@@ -246,24 +245,24 @@ class RobustPoolSearchConfig:
     """Hyperparameters for robust initial-pool search over op-pool perturbations."""
 
     n_pools: int = 25
-    pool_size_range: Tuple[int, int] = (4, 10)
+    pool_size_range: tuple[int, int] = (4, 10)
     pool_seed: int = 0
     num_candidates: int = 50
     top_k: int = 10
     max_samples: int = 32
     num_batches: int = 1
-    max_workers: Optional[int] = None
+    max_workers: int | None = None
     seed: int = 0
     use_weight_schemes: bool = False
     n_random: int = 0
     random_sigma: float = 0.25
     robustness_mode: str = "spearman"
-    topk_ref: Optional[int] = None
+    topk_ref: int | None = None
     min_ops: int = 2
-    max_ops: Optional[int] = None
-    cell_range: Tuple[int, int] = (1, 2)
-    node_range: Tuple[int, int] = (2, 4)
-    hidden_dim_choices: Optional[List[int]] = None
+    max_ops: int | None = None
+    cell_range: tuple[int, int] = (1, 2)
+    node_range: tuple[int, int] = (2, 4)
+    hidden_dim_choices: list[int] | None = None
     require_identity: bool = True
 
 

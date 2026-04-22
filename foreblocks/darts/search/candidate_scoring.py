@@ -1,11 +1,11 @@
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import numpy as np
 
 from .scoring import normalize_metric_value
 
 
-def candidate_diversity_bonus(selected_ops: List[str], all_ops: List[str]) -> float:
+def candidate_diversity_bonus(selected_ops: list[str], all_ops: list[str]) -> float:
     """Small bounded score bonus for operation-set diversity."""
     if not selected_ops:
         return 0.0
@@ -19,7 +19,7 @@ def candidate_diversity_bonus(selected_ops: List[str], all_ops: List[str]) -> fl
     return 0.12 * ratio
 
 
-def candidate_signature(candidate: Dict[str, Any]) -> Tuple[Any, ...]:
+def candidate_signature(candidate: dict[str, Any]) -> tuple[Any, ...]:
     ops = tuple(sorted(candidate.get("selected_ops", [])))
     return (
         ops,
@@ -29,9 +29,9 @@ def candidate_signature(candidate: Dict[str, Any]) -> Tuple[Any, ...]:
     )
 
 
-def deduplicate_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def deduplicate_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep best-scoring candidate for each architecture signature."""
-    best_by_sig: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+    best_by_sig: dict[tuple[Any, ...], dict[str, Any]] = {}
     for cand in candidates:
         sig = candidate_signature(cand)
         prev = best_by_sig.get(sig)
@@ -47,7 +47,7 @@ def normalize_metric_for_pool(metric: str, value: float) -> float:
     return normalize_metric_value(metric, float(value))
 
 
-def rescore_candidates_poolwise(candidates: List[Dict[str, Any]]) -> None:
+def rescore_candidates_poolwise(candidates: list[dict[str, Any]]) -> None:
     """Rescore candidates using pool-wise z-scored metrics for balanced weighting."""
     if not candidates:
         return
@@ -60,7 +60,7 @@ def rescore_candidates_poolwise(candidates: List[Dict[str, Any]]) -> None:
 
     metric_keys = list(weights.keys())
 
-    transformed_by_metric: Dict[str, List[float]] = {k: [] for k in metric_keys}
+    transformed_by_metric: dict[str, list[float]] = {k: [] for k in metric_keys}
     for cand in candidates:
         raw_metrics = cand.get("metrics", {}).get("metrics", {})
         for metric in metric_keys:
@@ -68,7 +68,7 @@ def rescore_candidates_poolwise(candidates: List[Dict[str, Any]]) -> None:
             tval = normalize_metric_for_pool(metric, float(raw_val))
             transformed_by_metric[metric].append(tval)
 
-    z_by_metric: Dict[str, List[float]] = {}
+    z_by_metric: dict[str, list[float]] = {}
     for metric, vals in transformed_by_metric.items():
         arr = np.asarray(vals, dtype=np.float64)
         mu = float(np.mean(arr)) if arr.size else 0.0

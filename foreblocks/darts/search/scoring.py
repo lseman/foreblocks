@@ -1,6 +1,5 @@
 """Shared metric normalization and scoring utilities for DARTS search."""
 
-from typing import Dict
 
 import numpy as np
 
@@ -32,7 +31,7 @@ def normalize_metric_value(metric: str, value: float) -> float:
     return float(value)
 
 
-def score_from_metrics(metrics: Dict[str, float], weights: Dict[str, float]) -> float:
+def score_from_metrics(metrics: dict[str, float], weights: dict[str, float]) -> float:
     """Compute weighted aggregate score from raw metrics."""
     total_score = 0.0
     total_weight = 0.0

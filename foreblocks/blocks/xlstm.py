@@ -1,7 +1,4 @@
 import math
-from typing import List
-from typing import Optional
-from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -21,7 +18,7 @@ def _zeros_like_param(shape, device):
     return torch.zeros(*shape, device=device, requires_grad=False)
 
 
-def _stack_states_per_layer(states: List[Tensor]) -> Tensor:
+def _stack_states_per_layer(states: list[Tensor]) -> Tensor:
     # stacks list length = num_layers into [num_layers, B, ...]
     return torch.stack(states, dim=0)
 
@@ -103,10 +100,10 @@ class sLSTMLayer(nn.Module):
     def forward(
         self,
         x: Tensor,  # [B, D]
-        state: Tuple[
+        state: tuple[
             Tensor, Tensor, Tensor, Tensor
         ],  # (h_prev, c_prev, n_prev, m_prev)
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor]]:
+    ) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor, Tensor]]:
         h_prev, c_prev, n_prev, m_prev = state  # each [B, H] except m: [B, H]
 
         # Gates pre-activations
@@ -213,10 +210,10 @@ class mLSTMLayer(nn.Module):
     def forward(
         self,
         x: Tensor,  # [B, D]
-        mlstm_state: Tuple[
+        mlstm_state: tuple[
             Tensor, Tensor, Tensor
         ],  # (c_prev [B,NH,Dh,Dh], n_prev [B,NH,Dh,1], m_prev [B,NH,1,1])
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor, Tensor]]:
+    ) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor]]:
         B = x.size(0)
         c_prev, n_prev, m_prev = mlstm_state  # shapes per comment
 
@@ -319,9 +316,9 @@ class sLSTMEncoder(EncoderBase):
     def forward(
         self,
         x: Tensor,  # [B, T, D]
-        hidden: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
-        time_features: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor]]:
+        hidden: tuple[Tensor, Tensor, Tensor, Tensor] | None = None,
+        time_features: Tensor | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor, Tensor]]:
         B, T, _ = x.shape
         device = x.device
 
@@ -424,8 +421,8 @@ class sLSTMDecoder(DecoderBase):
     def forward(
         self,
         x: Tensor,  # [B,D] or [B,T,D]
-        hidden: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor]]:
+        hidden: tuple[Tensor, Tensor, Tensor, Tensor] | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor, Tensor]]:
         if x.dim() == 2:
             x = x.unsqueeze(1)  # [B,1,D]
         elif x.dim() != 3:
@@ -540,9 +537,9 @@ class mLSTMEncoder(EncoderBase):
     def forward(
         self,
         x: Tensor,  # [B,T,D]
-        hidden: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
-        time_features: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor]]:
+        hidden: tuple[Tensor, Tensor, Tensor, Tensor] | None = None,
+        time_features: Tensor | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor, Tensor]]:
         B, T, _ = x.shape
         device = x.device
 
@@ -636,8 +633,8 @@ class mLSTMDecoder(DecoderBase):
     def forward(
         self,
         x: Tensor,  # [B,D] or [B,T,D]
-        hidden: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor]]:
+        hidden: tuple[Tensor, Tensor, Tensor, Tensor] | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor, Tensor]]:
         if x.dim() == 2:
             x = x.unsqueeze(1)
         elif x.dim() != 3:

@@ -7,7 +7,8 @@ import pickle
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any
+from collections.abc import Mapping
 
 import requests
 
@@ -19,7 +20,7 @@ class MLTrackerAPI:
         self.timeout = timeout
 
     # ---- runs ----
-    def start_run(self, experiment_name: str = "default", run_name: Optional[str] = None) -> str:
+    def start_run(self, experiment_name: str = "default", run_name: str | None = None) -> str:
         r = self.s.post(f"{self.base}/api/runs",
                         json={"experiment_name": experiment_name, "run_name": run_name},
                         timeout=self.timeout)

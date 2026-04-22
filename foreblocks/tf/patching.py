@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 import math
-from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,12 +27,12 @@ def _compute_patch_pad(T: int, P: int, S: int) -> int:
 
 
 def patchify_padding_mask(
-    kpm: Optional[torch.Tensor],  # [B,T] bool
+    kpm: torch.Tensor | None,  # [B,T] bool
     T: int,
     patch_len: int,
     stride: int,
     pad_end: bool = True,
-) -> Optional[torch.Tensor]:
+) -> torch.Tensor | None:
     """
     Convert timestep key-padding-mask [B,T] to patch-token mask [B,Np].
     Heuristic: a patch token is "padded" if ALL timesteps inside that patch are padded.
@@ -80,7 +79,7 @@ class PatchTokenizer(nn.Module):
         self.pad_end = bool(pad_end)
         self.proj = nn.Linear(self.patch_len * self.d_model, self.d_model, bias=bias)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, PatchInfo]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, PatchInfo]:
         if x.dim() != 3:
             raise ValueError(f"PatchTokenizer expects [B,T,D], got {tuple(x.shape)}")
         B, T, D = x.shape

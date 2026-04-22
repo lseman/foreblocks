@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import List, Optional
 
 import torch
 import torch.nn as nn
@@ -111,7 +110,7 @@ class _Chronos2EmbedderModule(nn.Module):
             self._hook_module = self._model.input_patch_embedding
 
         # Lazy init for projector (Chronos D -> input F)
-        self._proj: Optional[nn.Linear] = None  # created on first forward once we know D and F
+        self._proj: nn.Linear | None = None  # created on first forward once we know D and F
 
     @torch.no_grad()
     def _get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
@@ -142,7 +141,7 @@ class _Chronos2EmbedderModule(nn.Module):
             .sort_values(["id", "timestamp"])
         )
 
-        collected: List[torch.Tensor] = []
+        collected: list[torch.Tensor] = []
 
         def _hook(_, __, out):
             collected.append(out.detach().to("cpu") if self.offload_cpu else out.detach())

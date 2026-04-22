@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import List, Optional
 
 
 @dataclass
@@ -14,14 +13,14 @@ class ModelConfig:
     target_len: int = 10
     strategy: str = "seq2seq"
     teacher_forcing_ratio: float = 0.5
-    input_processor_output_size: Optional[int] = None
+    input_processor_output_size: int | None = None
     input_skip_connection: bool = False
     dim_feedforward: int = 512
     multi_encoder_decoder: bool = False
     dropout: float = 0.2
     num_encoder_layers: int = 1
     num_decoder_layers: int = 1
-    latent_size: Optional[int] = 32  # for VAE
+    latent_size: int | None = 32  # for VAE
     nheads: int = 8
 
 
@@ -36,25 +35,25 @@ class TrainingConfig:
     patience: int = 10
     min_delta: float = 1e-4
     use_amp: bool = True
-    gradient_clip_val: Optional[float] = None
+    gradient_clip_val: float | None = None
     gradient_accumulation_steps: int = 1
     l1_regularization: float = 0.0
     kl_weight: float = 1.0
-    scheduler_type: Optional[str] = None
+    scheduler_type: str | None = None
     lr_step_size: int = 30
     lr_gamma: float = 0.1
     min_lr: float = 1e-6
     verbose: bool = True
     log_interval: int = 10
     save_best_model: bool = True
-    save_model_path: Optional[str] = None
+    save_model_path: str | None = None
     experiment_name: str = "default_experiment"
 
     # MoE logging toggles
     moe_logging: bool = False
     moe_log_latency: bool = False
-    moe_condition_name: Optional[str] = None
-    moe_condition_cardinality: Optional[int] = None
+    moe_condition_name: str | None = None
+    moe_condition_cardinality: int | None = None
 
     # ── NEW: NAS training toggles ──
     train_nas: bool = False  # Enable two-step NAS optimization
@@ -75,7 +74,7 @@ class TrainingConfig:
     conformal_local_window: int = 5000
     conformal_aci_gamma: float = 0.01
     conformal_rolling_alpha: float = 0.1
-    conformal_agaci_gammas: Optional[List[float]] = None
+    conformal_agaci_gammas: list[float] | None = None
     conformal_enbpi_B: int = 20
     conformal_enbpi_window: int = 500
     conformal_tsp_lambda: float = 0.01

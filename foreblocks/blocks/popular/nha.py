@@ -1,5 +1,4 @@
 import math
-from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -238,11 +237,11 @@ class HierarchicalBlock(nn.Module):
         xu = F.interpolate(xd, size=T, mode="linear", align_corners=False)
         return xu.transpose(1, 2)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x_mr = self._down_up(x, self.pooling_kernel)
         h = self.in_proj(x_mr)
 
-        level_feats: List[torch.Tensor] = []
+        level_feats: list[torch.Tensor] = []
         cur = h
 
         for i in range(self.num_levels):
@@ -293,11 +292,11 @@ class NHA(nn.Module):
         attention_heads: int = 4,
         dropout: float = 0.1,
         share_blocks: bool = False,
-        pooling_kernels: Optional[List[int]] = None,
+        pooling_kernels: list[int] | None = None,
         groups_base: int = 8,
         use_cross_level_attn: bool = True,
         attn_causal: bool = False,
-        accumulation_scale: Optional[float] = None,
+        accumulation_scale: float | None = None,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -424,7 +423,7 @@ class NHA(nn.Module):
             raise ValueError(f"Unknown pooling: {pooling}")
 
     @torch.no_grad()
-    def extract_hierarchical_features(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def extract_hierarchical_features(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         residual = x.clone()
         features_acc = torch.zeros_like(x)
 

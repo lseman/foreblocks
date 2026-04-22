@@ -42,7 +42,8 @@ fig.savefig("gpt_style.png", dpi=220, bbox_inches="tight")
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any
+from collections.abc import Iterable, Sequence
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -165,7 +166,7 @@ def _color(t: str) -> str:
     return _TYPE_COLOR.get(t.lower(), COLORS["generic"])
 
 
-def _name(t: str, override: Optional[str] = None) -> str:
+def _name(t: str, override: str | None = None) -> str:
     return override or _TYPE_NAME.get(t.lower(), t)
 
 
@@ -181,9 +182,9 @@ def _container(
     w: float,
     h: float,
     *,
-    label: Optional[str] = None,
+    label: str | None = None,
     fc: str = "#FFFFFF",
-    ec: Optional[str] = None,
+    ec: str | None = None,
     lw: float = 1.4,
     dashed: bool = False,
     label_size: float = 12,
@@ -231,9 +232,9 @@ def _box(
     *,
     fontsize: float = 9.0,
     radius: float = 0.10,
-    sublabel: Optional[str] = None,
-    ec: Optional[str] = None,
-    text_color: Optional[str] = None,
+    sublabel: str | None = None,
+    ec: str | None = None,
+    text_color: str | None = None,
     fontweight: str = "normal",
     zorder: int = 3,
 ):
@@ -307,7 +308,7 @@ def _arrow(
     x2: float,
     y2: float,
     *,
-    color: Optional[str] = None,
+    color: str | None = None,
     lw: float = 1.4,
     zorder: int = 2,
 ):
@@ -364,7 +365,7 @@ def _curly_brace(
     *,
     width: float = 0.16,
     lw: float = 1.6,
-    color: Optional[str] = None,
+    color: str | None = None,
     facing: str = "right",
     zorder: int = 3,
 ):
@@ -441,8 +442,8 @@ def _accent_text(
     ha: str = "left",
     va: str = "center",
     weight: str = "bold",
-    accent_color: Optional[str] = None,
-    base_color: Optional[str] = None,
+    accent_color: str | None = None,
+    base_color: str | None = None,
     zorder: int = 5,
 ):
     accent_color = accent_color or COLORS["accent"]
@@ -512,11 +513,11 @@ def _sub_block(
     norm_type: str,
     norm_pos: str,
     *,
-    attn_label: Optional[str] = None,
-    ffn_label: Optional[str] = None,
-    attn_sublabel: Optional[str] = None,
-    ffn_sublabel: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    attn_label: str | None = None,
+    ffn_label: str | None = None,
+    attn_sublabel: str | None = None,
+    ffn_sublabel: str | None = None,
+) -> list[dict[str, Any]]:
     nl = norm_type.upper()
     al = attn_label or _name(attn_type)
     fl = ffn_label or _name(ffn_type)
@@ -546,17 +547,17 @@ def make_encoder_layers(
     ffn_type: str = "feedforward",
     norm_type: str = "rmsnorm",
     norm_pos: str = "pre",
-    attn_label: Optional[str] = None,
-    ffn_label: Optional[str] = None,
+    attn_label: str | None = None,
+    ffn_label: str | None = None,
     include_embed: bool = True,
     include_output: bool = True,
     embed_type: str = "embedding",
     embed_label: str = "Token embedding layer",
-    embed_sublabel: Optional[str] = None,
+    embed_sublabel: str | None = None,
     output_label: str = "Linear output layer",
-    output_sublabel: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    layers: List[Dict[str, Any]] = []
+    output_sublabel: str | None = None,
+) -> list[dict[str, Any]]:
+    layers: list[dict[str, Any]] = []
     if include_embed:
         layers.append(
             {
@@ -595,25 +596,25 @@ def make_decoder_layers(
     ffn_type: str = "feedforward",
     norm_type: str = "rmsnorm",
     norm_pos: str = "pre",
-    self_attn_label: Optional[str] = None,
-    ffn_label: Optional[str] = None,
+    self_attn_label: str | None = None,
+    ffn_label: str | None = None,
     include_embed: bool = True,
     include_output: bool = True,
     embed_type: str = "embedding",
     embed_label: str = "Token embedding layer",
-    embed_sublabel: Optional[str] = None,
+    embed_sublabel: str | None = None,
     output_label: str = "Linear output layer",
-    output_sublabel: Optional[str] = None,
+    output_sublabel: str | None = None,
     cross_attn_type: str = "cross_attn",
     cross_attn_label: str = "Cross-attention",
-    cross_attn_sublabel: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    cross_attn_sublabel: str | None = None,
+) -> list[dict[str, Any]]:
     nt = norm_type
     nl = nt.upper()
     sal = self_attn_label or (_name(self_attn_type) + " (masked)")
     fl = ffn_label or _name(ffn_type)
 
-    layers: List[Dict[str, Any]] = []
+    layers: list[dict[str, Any]] = []
     if include_embed:
         layers.append(
             {
@@ -685,8 +686,8 @@ def make_hybrid_layers(
     ratio: int = 3,
     include_embed: bool = True,
     include_output: bool = True,
-) -> List[Dict[str, Any]]:
-    layers: List[Dict[str, Any]] = []
+) -> list[dict[str, Any]]:
+    layers: list[dict[str, Any]] = []
     if include_embed:
         layers.append({"type": "embedding", "label": "Token embedding layer"})
     for _ in range(ratio):
@@ -755,14 +756,14 @@ class TransformerBlock:
     def __init__(
         self,
         title: str,
-        layers: Sequence[Dict[str, Any]],
+        layers: Sequence[dict[str, Any]],
         *,
-        num_repeats: Optional[int] = None,
+        num_repeats: int | None = None,
         input_label: str = "Input",
-        bg_color: Optional[str] = None,
+        bg_color: str | None = None,
         show_input: bool = True,
         show_output: bool = True,
-        stack_label: Optional[str] = None,
+        stack_label: str | None = None,
         show_inner_group: bool = True,
     ):
         self.title = title
@@ -778,7 +779,7 @@ class TransformerBlock:
         self._cx = None
         self._y0 = None
         self._y1 = None
-        self._lys: List[float] = []
+        self._lys: list[float] = []
         self._stack_bounds = None
         self._inner_bounds = None
 
@@ -817,7 +818,7 @@ class TransformerBlock:
             return True
         return False
 
-    def _repeat_core_indices(self) -> List[int]:
+    def _repeat_core_indices(self) -> list[int]:
         return [i for i in range(len(self.layers)) if not self._is_outside_stack(i)]
 
     def draw(self, ax, cx: float, y_bottom: float) -> float:
@@ -834,7 +835,7 @@ class TransformerBlock:
         outer_y0 = y
         y += self.OUTER_BOTTOM_PAD
 
-        lys: List[float] = []
+        lys: list[float] = []
         for _ in self.layers:
             lys.append(y + self.BOX_H / 2)
             y += step
@@ -1027,8 +1028,8 @@ class TransformerBlock:
 
         return outer_y1 + (self.IO_H if self.show_output else 0.0)
 
-    def _residual_groups(self) -> List[Tuple[int, int]]:
-        groups: List[Tuple[int, int]] = []
+    def _residual_groups(self) -> list[tuple[int, int]]:
+        groups: list[tuple[int, int]] = []
         for ei, spec in enumerate(self.layers):
             if spec.get("type", "").lower() != "add":
                 continue
@@ -1072,20 +1073,20 @@ class TransformerBlock:
             plus_r=self.PLUS_R,
         )
 
-    def cross_attn_port(self) -> Optional[Tuple[float, float]]:
+    def cross_attn_port(self) -> tuple[float, float] | None:
         for i, spec in enumerate(self.layers):
             if spec.get("type", "").lower() == "cross_attn":
                 return (self._cx - self.BOX_W / 2, self._lys[i])
         return None
 
-    def encoder_mem_port(self) -> Tuple[float, float]:
+    def encoder_mem_port(self) -> tuple[float, float]:
         bw = self.block_width()
         return (self._cx + bw / 2, (self._y0 + self._y1) / 2)
 
-    def stack_bounds(self) -> Optional[Tuple[float, float, float, float]]:
+    def stack_bounds(self) -> tuple[float, float, float, float] | None:
         return self._stack_bounds
 
-    def inner_bounds(self) -> Optional[Tuple[float, float, float, float]]:
+    def inner_bounds(self) -> tuple[float, float, float, float] | None:
         return self._inner_bounds
 
 
@@ -1099,9 +1100,9 @@ def _draw_ffn_zoom_panel(
     x: float,
     y: float,
     *,
-    title: Optional[str] = None,
+    title: str | None = None,
     ffn_type: str = "swiglu",
-    hidden_dim_text: Optional[str] = None,
+    hidden_dim_text: str | None = None,
     scale: float = 1.0,
 ):
     w = 3.1 * scale
@@ -1287,7 +1288,7 @@ def _best_choice(weights: Any, default: str = "unknown") -> str:
 
 
 def _compact_choice(
-    value: Any, mapping: Optional[Dict[str, str]] = None, default: str = "unknown"
+    value: Any, mapping: dict[str, str] | None = None, default: str = "unknown"
 ) -> str:
     if value is None:
         return default
@@ -1307,7 +1308,7 @@ def _top_level_transformer(module_obj: Any):
     )
 
 
-def extract_selected_transformer_spec(model: Any) -> Dict[str, Any]:
+def extract_selected_transformer_spec(model: Any) -> dict[str, Any]:
     weights = {}
     getter = getattr(model, "get_operation_weights", None)
     if callable(getter):
@@ -1428,14 +1429,14 @@ def extract_selected_transformer_spec(model: Any) -> Dict[str, Any]:
     }
 
 
-def _summary_title(base: str, pairs: Iterable[Tuple[str, Optional[str]]]) -> str:
+def _summary_title(base: str, pairs: Iterable[tuple[str, str | None]]) -> str:
     parts = [f"{key}={value}" for key, value in pairs if value and value != "unknown"]
     if not parts:
         return base
     return f"{base}\n" + " | ".join(parts)
 
 
-def make_encoder_layers_from_spec(spec: Dict[str, Any]):
+def make_encoder_layers_from_spec(spec: dict[str, Any]):
     tokenizer = _compact_choice(spec.get("tokenizer"), _TOKENIZER_NAMES)
     self_attn = _compact_choice(spec.get("self_attention"))
     position = _compact_choice(spec.get("self_position"))
@@ -1467,7 +1468,7 @@ def make_encoder_layers_from_spec(spec: Dict[str, Any]):
     return layers, title, int(spec.get("num_layers") or 1)
 
 
-def make_decoder_layers_from_spec(spec: Dict[str, Any], *, encoder_available: bool):
+def make_decoder_layers_from_spec(spec: dict[str, Any], *, encoder_available: bool):
     style = _compact_choice(spec.get("style"), _STYLE_NAMES)
     query_mode = _compact_choice(spec.get("query_mode"), _QUERY_MODE_NAMES)
     self_attn = _compact_choice(spec.get("self_attention"))
@@ -1535,7 +1536,7 @@ def make_decoder_layers_from_spec(spec: Dict[str, Any], *, encoder_available: bo
 
 
 def draw_selected_transformer_architecture(
-    model: Any, title: Optional[str] = None, figsize=None
+    model: Any, title: str | None = None, figsize=None
 ):
     spec = extract_selected_transformer_spec(model)
     arch_mode = spec["arch_mode"]
@@ -1622,17 +1623,17 @@ def draw_selected_transformer_architecture(
 
 
 def draw_single_block(
-    layers: Sequence[Dict[str, Any]],
+    layers: Sequence[dict[str, Any]],
     *,
     title: str = "Transformer block",
-    num_repeats: Optional[int] = None,
+    num_repeats: int | None = None,
     input_label: str = "Input",
-    bg_color: Optional[str] = None,
+    bg_color: str | None = None,
     figsize=None,
     add_ffn_zoom: bool = False,
     ffn_zoom_type: str = "swiglu",
-    ffn_hidden_dim_text: Optional[str] = None,
-    stack_label: Optional[str] = None,
+    ffn_hidden_dim_text: str | None = None,
+    stack_label: str | None = None,
 ):
     block = TransformerBlock(
         title,
@@ -1692,12 +1693,12 @@ def draw_single_block(
 
 def draw_encoder_decoder(
     *,
-    encoder_layers: Sequence[Dict[str, Any]],
-    decoder_layers: Sequence[Dict[str, Any]],
+    encoder_layers: Sequence[dict[str, Any]],
+    decoder_layers: Sequence[dict[str, Any]],
     encoder_title: str = "Encoder",
     decoder_title: str = "Decoder",
-    encoder_repeats: Optional[int] = 6,
-    decoder_repeats: Optional[int] = 6,
+    encoder_repeats: int | None = 6,
+    decoder_repeats: int | None = 6,
     encoder_input: str = "Source tokens",
     decoder_input: str = "Target tokens (shifted right)",
     title: str = "Transformer architecture",
@@ -1796,14 +1797,14 @@ def draw_encoder_decoder(
 def draw_model_summary(
     *,
     title: str,
-    layers: Sequence[Dict[str, Any]],
+    layers: Sequence[dict[str, Any]],
     num_repeats: int,
     input_label: str = "Sample input text",
     tokenizer_label: str = "Tokenized text",
-    top_vocab_text: Optional[str] = None,
-    embedding_dim_text: Optional[str] = None,
-    hidden_dim_text: Optional[str] = None,
-    context_len_text: Optional[str] = None,
+    top_vocab_text: str | None = None,
+    embedding_dim_text: str | None = None,
+    hidden_dim_text: str | None = None,
+    context_len_text: str | None = None,
     ffn_zoom_type: str = "swiglu",
     figsize=None,
 ):

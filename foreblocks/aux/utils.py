@@ -4,7 +4,8 @@ Trainer utility helpers shared across the training stack.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 try:
     import matplotlib.pyplot as plt
@@ -46,8 +47,8 @@ class TimeSeriesDataset(Dataset):
     def __init__(
         self,
         X: np.ndarray,
-        y: Optional[np.ndarray] = None,
-        time_feat: Optional[np.ndarray] = None,
+        y: np.ndarray | None = None,
+        time_feat: np.ndarray | None = None,
     ):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32) if y is not None else None
@@ -71,13 +72,13 @@ class TimeSeriesDataset(Dataset):
 def create_dataloaders(
     X_train: np.ndarray,
     y_train: np.ndarray,
-    X_val: Optional[np.ndarray] = None,
-    y_val: Optional[np.ndarray] = None,
+    X_val: np.ndarray | None = None,
+    y_val: np.ndarray | None = None,
     batch_size: int = 32,
     shuffle_train: bool = True,
-    time_feat_train: Optional[np.ndarray] = None,
-    time_feat_val: Optional[np.ndarray] = None,
-) -> Tuple[DataLoader, Optional[DataLoader]]:
+    time_feat_train: np.ndarray | None = None,
+    time_feat_val: np.ndarray | None = None,
+) -> tuple[DataLoader, DataLoader | None]:
 
     train_loader = DataLoader(
         TimeSeriesDataset(X_train, y_train, time_feat_train),
@@ -108,18 +109,18 @@ class LossComputer:
         self,
         model: nn.Module,
         config: TrainingConfig,
-        criterion: Optional[Callable] = None,
+        criterion: Callable | None = None,
     ):
         self.model = model
         self.config = config
         self.criterion = criterion or nn.MSELoss()
-        self.components: Dict[str, float] = {}
+        self.components: dict[str, float] = {}
 
     def compute(
         self,
         outputs: torch.Tensor,
         targets: torch.Tensor,
-        aux_data: Optional[Dict[str, Any]] = None,
+        aux_data: dict[str, Any] | None = None,
     ) -> torch.Tensor:
         self.components = {}
         aux_data = aux_data or {}
@@ -178,26 +179,26 @@ class LossComputer:
 
 @dataclass
 class TrainingHistory:
-    train_losses: List[float] = field(default_factory=list)
-    val_losses: List[float] = field(default_factory=list)
-    learning_rates: List[float] = field(default_factory=list)
-    task_losses: List[float] = field(default_factory=list)
-    distillation_losses: List[float] = field(default_factory=list)
-    model_info: List[Dict[str, Any]] = field(default_factory=list)
+    train_losses: list[float] = field(default_factory=list)
+    val_losses: list[float] = field(default_factory=list)
+    learning_rates: list[float] = field(default_factory=list)
+    task_losses: list[float] = field(default_factory=list)
+    distillation_losses: list[float] = field(default_factory=list)
+    model_info: list[dict[str, Any]] = field(default_factory=list)
 
     # ── NEW: NAS tracking ──
-    alpha_values: List[Dict[str, Any]] = field(
+    alpha_values: list[dict[str, Any]] = field(
         default_factory=list
     )  # Per-epoch alpha snapshots
 
     def record_epoch(
         self,
         train_loss: float,
-        val_loss: Optional[float],
+        val_loss: float | None,
         lr: float,
-        loss_components: Dict[str, float],
-        model_info: Optional[Dict[str, Any]] = None,
-        alpha_info: Optional[Dict[str, Any]] = None,
+        loss_components: dict[str, float],
+        model_info: dict[str, Any] | None = None,
+        alpha_info: dict[str, Any] | None = None,
     ):
         self.train_losses.append(train_loss)
         if val_loss is not None:
@@ -233,7 +234,7 @@ class NASHelper:
     def __init__(self, model: nn.Module, config: TrainingConfig):
         self.model = model
         self.config = config
-        self.composers: List[Tuple[str, nn.Module]] = []
+        self.composers: list[tuple[str, nn.Module]] = []
 
         # Find all HeadComposer instances
         if HeadComposer is not None:
@@ -246,14 +247,14 @@ class NASHelper:
         if config.train_nas and not self.has_nas:
             logging.warning("train_nas=True but no HeadComposer found in model")
 
-    def get_alpha_parameters(self) -> List[torch.nn.Parameter]:
+    def get_alpha_parameters(self) -> list[torch.nn.Parameter]:
         """Collect all alpha parameters from all composers."""
         params = []
         for name, composer in self.composers:
             params.extend(composer.arch_parameters())
         return params
 
-    def get_weight_parameters(self) -> List[torch.nn.Parameter]:
+    def get_weight_parameters(self) -> list[torch.nn.Parameter]:
         """Collect all non-alpha parameters."""
         if not self.has_nas:
             return list(self.model.parameters())
@@ -270,14 +271,14 @@ class NASHelper:
                 weight_params.append(p)
         return weight_params
 
-    def collect_alpha_report(self) -> Dict[str, Any]:
+    def collect_alpha_report(self) -> dict[str, Any]:
         """Collect alpha values from all composers."""
         report = {}
         for name, composer in self.composers:
             report[name] = composer.alpha_report()
         return report
 
-    def discretize_all(self, threshold: Optional[float] = None):
+    def discretize_all(self, threshold: float | None = None):
         """Discretize alphas in all composers."""
         thresh = threshold or self.config.nas_discretize_threshold
         for name, composer in self.composers:
@@ -290,7 +291,7 @@ class NASHelper:
 # ============================================================================
 
 
-def plot_alpha_evolution(history: TrainingHistory, figsize: Tuple[int, int] = (15, 6)):
+def plot_alpha_evolution(history: TrainingHistory, figsize: tuple[int, int] = (15, 6)):
     """
     Plot the evolution of alpha values across training epochs.
 

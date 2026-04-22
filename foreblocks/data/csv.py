@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Any
 from foreblocks.ui.node_spec import node
 from foreblocks.ui.auto_spec import PortOutBundle
 from typing import Annotated
@@ -20,12 +20,12 @@ class CSVSource:
     def __init__(
         self,
         file_path: str = "",
-        target_column: Optional[str] = None,
-        time_column: Optional[str] = None,
-        feature_columns: Optional[List[str]] = None,
+        target_column: str | None = None,
+        time_column: str | None = None,
+        feature_columns: list[str] | None = None,
         sep: str = ",",
         header: int = 0,
-        index_col: Optional[int] = None,
+        index_col: int | None = None,
     ):
         self.file_path = file_path
         self.target_column = target_column
@@ -39,7 +39,7 @@ class CSVSource:
         self._input_size = 0
         self._output_size = 0
 
-    def load_and_analyze(self) -> Dict[str, Any]:
+    def load_and_analyze(self) -> dict[str, Any]:
         """
         Loads the CSV and returns metadata for the UI (auto-detect dimensions).
         """
@@ -80,7 +80,7 @@ class CSVSource:
         except Exception as e:
             return {"error": str(e)}
 
-    def forward(self) -> Annotated[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]], PortOutBundle("X", "y", "time_features")]:
+    def forward(self) -> Annotated[tuple[np.ndarray, np.ndarray, np.ndarray | None], PortOutBundle("X", "y", "time_features")]:
         """
         Returns the processed arrays.
         """

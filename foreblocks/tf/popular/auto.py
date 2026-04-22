@@ -1,6 +1,4 @@
-
 # autoformer_head_custom.py
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -22,7 +20,7 @@ class SeriesDecomp(nn.Module):
         self.avg = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=pad, bias=False)
         nn.init.constant_(self.avg.weight, 1.0 / kernel_size)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         x: [B, T, C]  ->  seasonal, trend: [B, T, C]
         """
@@ -36,7 +34,7 @@ class SeriesDecomp(nn.Module):
 # 2) Auto-Correlation (multi-head) per Autoformer
 #    Efficient FFT-based correlation + top-k delays.
 # =========================================================
-def _topk_delays(corr: torch.Tensor, k: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def _topk_delays(corr: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
     """
     corr: [B, Hh, Lq, Lk] correlation map (time-delay domain).
     Returns:
@@ -154,7 +152,7 @@ class AutoformerEncoderLayer(nn.Module):
         )
         self.norm2 = create_norm_layer(norm_type, d_model, eps=eps)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         x: [B, L, D]
         returns: seasonal_out, trend_residual
@@ -192,7 +190,7 @@ class AutoformerDecoderLayer(nn.Module):
         )
         self.norm3 = create_norm_layer(norm_type, d_model, eps=eps)
 
-    def forward(self, x: torch.Tensor, mem: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, mem: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         x:   seasonal input [B, Ld, D]
         mem: encoder seasonal memory [B, Le, D]
@@ -238,7 +236,7 @@ class AutoformerHeadCustom(nn.Module):
         norm_type: str = "rms",     # try "temporal" or "revin" too
         eps: float = 1e-5,
         activation: str = "gelu",
-        quantiles: Optional[Tuple[float, ...]] = None,
+        quantiles: tuple[float, ...] | None = None,
     ):
         super().__init__()
         self.pred_len = pred_len
@@ -279,7 +277,7 @@ class AutoformerHeadCustom(nn.Module):
                 if m.bias is not None: nn.init.zeros_(m.bias)
 
     # ---------- helper: build decoder inputs per Autoformer ----------
-    def _build_decoder_inputs(self, s_enc: torch.Tensor, t_enc: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _build_decoder_inputs(self, s_enc: torch.Tensor, t_enc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         s_enc, t_enc: [B, L_in, D]
         Returns:

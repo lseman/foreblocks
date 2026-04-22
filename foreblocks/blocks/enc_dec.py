@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -15,9 +14,9 @@ class EncoderBase(nn.Module):
     def forward(
         self,
         x: Tensor,
-        hidden: Optional[Tuple[Tensor, ...]] = None,
-        time_features: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tuple[Tensor, ...]]:
+        hidden: tuple[Tensor, ...] | None = None,
+        time_features: Tensor | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, ...]]:
         raise NotImplementedError
 
 
@@ -25,8 +24,8 @@ class DecoderBase(nn.Module):
     def forward(
         self,
         x: Tensor,
-        hidden: Optional[Tuple[Tensor, ...]] = None,
-    ) -> Tuple[Tensor, Tuple[Tensor, ...]]:
+        hidden: tuple[Tensor, ...] | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, ...]]:
         raise NotImplementedError
 
 
@@ -78,9 +77,9 @@ class LSTMEncoder(EncoderBase):
     def forward(
         self,
         x: Tensor,  # [B, T, input_size]
-        hidden: Optional[Tuple[Tensor, Tensor]] = None,
-        time_features: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+        hidden: tuple[Tensor, Tensor] | None = None,
+        time_features: Tensor | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
         if time_features is not None:
             # Example: concat on last dim (very common pattern)
             x = torch.cat([x, time_features], dim=-1)
@@ -142,8 +141,8 @@ class LSTMDecoder(DecoderBase):
     def forward(
         self,
         x: Tensor,  # [B, 1, input_size] or [B, T_dec, input_size]
-        hidden: Optional[Tuple[Tensor, Tensor]] = None,
-    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+        hidden: tuple[Tensor, Tensor] | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
         if x.dim() == 2:
             x = x.unsqueeze(1)  # teacher forcing or single-step input
 
@@ -192,9 +191,9 @@ class GRUEncoder(EncoderBase):
     def forward(
         self,
         x: Tensor,
-        hidden: Optional[Tensor] = None,
-        time_features: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+        hidden: Tensor | None = None,
+        time_features: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
         if time_features is not None:
             x = torch.cat([x, time_features], dim=-1)
 
@@ -246,8 +245,8 @@ class GRUDecoder(DecoderBase):
     def forward(
         self,
         x: Tensor,
-        hidden: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+        hidden: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
         if x.dim() == 2:
             x = x.unsqueeze(1)
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -70,8 +69,8 @@ class SelfAttention(nn.Module):
     ``local``, ``auto``.
     """
 
-    MODES: Tuple[str, ...] = ("sdp", "linear", "probsparse", "cosine", "local")
-    POSITION_MODES: Tuple[str, ...] = ("rope", "alibi", "none", "seasonal")
+    MODES: tuple[str, ...] = ("sdp", "linear", "probsparse", "cosine", "local")
+    POSITION_MODES: tuple[str, ...] = ("rope", "alibi", "none", "seasonal")
     LOCAL_WINDOW_RATIO: float = 0.25
     PROBSPARSE_C: int = 5
 
@@ -137,7 +136,7 @@ class SelfAttention(nn.Module):
 
     def _apply_rotary_pair(
         self, q: torch.Tensor, k: torch.Tensor, q_len: int, k_len: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         cos_q, sin_q = self.rotary_emb.get_embeddings_for_length(q_len, q.device)
         cos_k, sin_k = self.rotary_emb.get_embeddings_for_length(k_len, k.device)
         cos = cos_q.to(dtype=q.dtype)
@@ -187,7 +186,7 @@ class SelfAttention(nn.Module):
 
     def _build_relative_bias(
         self, position_mode: str, query_len: int, key_len: int, device, dtype
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         if position_mode == "alibi":
             q_pos = torch.arange(query_len, device=device, dtype=dtype).unsqueeze(1)
             k_pos = torch.arange(key_len, device=device, dtype=dtype).unsqueeze(0)
@@ -206,7 +205,7 @@ class SelfAttention(nn.Module):
 
     def _apply_position_mode(
         self, q: torch.Tensor, k: torch.Tensor, position_mode: str
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         query_len = q.size(-2)
         key_len = k.size(-2)
         if position_mode == "rope":
@@ -396,8 +395,8 @@ class AttentionBridge(nn.Module):
     Pass a fixed string to pin a mode without searchable parameters.
     """
 
-    MODES: Tuple[str, ...] = ("none", "sdp", "linear", "probsparse", "cosine", "local")
-    POSITION_MODES: Tuple[str, ...] = ("rope", "alibi", "none", "seasonal")
+    MODES: tuple[str, ...] = ("none", "sdp", "linear", "probsparse", "cosine", "local")
+    POSITION_MODES: tuple[str, ...] = ("rope", "alibi", "none", "seasonal")
 
     # Fraction of encoder length used as local window (clamped ≥ 4)
     LOCAL_WINDOW_RATIO: float = 0.25
@@ -474,7 +473,7 @@ class AttentionBridge(nn.Module):
 
     def _apply_rotary_pair(
         self, q: torch.Tensor, k: torch.Tensor, q_len: int, k_len: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         cos_q, sin_q = self.rotary_emb.get_embeddings_for_length(q_len, q.device)
         cos_k, sin_k = self.rotary_emb.get_embeddings_for_length(k_len, k.device)
         q = self.rotary_emb.apply_rotary_pos_emb(
@@ -524,7 +523,7 @@ class AttentionBridge(nn.Module):
 
     def _build_relative_bias(
         self, position_mode: str, query_len: int, key_len: int, device, dtype
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         if position_mode == "alibi":
             q_pos = torch.arange(query_len, device=device, dtype=dtype).unsqueeze(1)
             k_pos = torch.arange(key_len, device=device, dtype=dtype).unsqueeze(0)
@@ -543,7 +542,7 @@ class AttentionBridge(nn.Module):
 
     def _apply_position_mode(
         self, q: torch.Tensor, k: torch.Tensor, position_mode: str, q_len: int, k_len: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         if position_mode == "rope":
             return (*self._apply_rotary_pair(q, k, q_len, k_len), None)
         if position_mode == "none":
@@ -571,7 +570,7 @@ class AttentionBridge(nn.Module):
         B: int,
         L_dec: int,
         L_enc: int,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         q = self._reshape(q, B, L_dec)
         k = self._reshape(k, B, L_enc)
@@ -609,7 +608,7 @@ class AttentionBridge(nn.Module):
         B: int,
         L_dec: int,
         L_enc: int,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         q = self._reshape(q, B, L_dec)
         k = self._reshape(k, B, L_enc)
@@ -634,7 +633,7 @@ class AttentionBridge(nn.Module):
         B: int,
         L_dec: int,
         L_enc: int,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         import math
 
@@ -693,7 +692,7 @@ class AttentionBridge(nn.Module):
         B: int,
         L_dec: int,
         L_enc: int,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         q = self._reshape(q, B, L_dec)
         k = self._reshape(k, B, L_enc)
@@ -731,7 +730,7 @@ class AttentionBridge(nn.Module):
         B: int,
         L_dec: int,
         L_enc: int,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         q = self._reshape(q, B, L_dec)
         k = self._reshape(k, B, L_enc)
@@ -774,8 +773,8 @@ class AttentionBridge(nn.Module):
     def forward(
         self,
         decoder_hidden: torch.Tensor,
-        encoder_output: Optional[torch.Tensor] = None,
-        encoder_context: Optional[torch.Tensor] = None,
+        encoder_output: torch.Tensor | None = None,
+        encoder_context: torch.Tensor | None = None,
         temperature: float = 1.0,
         single_path: bool = False,
     ) -> torch.Tensor:

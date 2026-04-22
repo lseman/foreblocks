@@ -1,4 +1,3 @@
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -129,7 +128,7 @@ class MHCHyperConnection(nn.Module):
     def pre_aggregate(
         self,
         streams: torch.Tensor,
-        maps: Optional[dict] = None,
+        maps: dict | None = None,
     ) -> tuple[torch.Tensor, dict]:
         maps = self.compute_maps(streams) if maps is None else maps
         streams_btnd = streams.permute(0, 2, 1, 3).contiguous()
@@ -140,7 +139,7 @@ class MHCHyperConnection(nn.Module):
         self,
         streams: torch.Tensor,
         update: torch.Tensor,
-        maps: Optional[dict] = None,
+        maps: dict | None = None,
     ) -> torch.Tensor:
         maps = self.compute_maps(streams) if maps is None else maps
         streams_btnd = streams.permute(0, 2, 1, 3).contiguous()

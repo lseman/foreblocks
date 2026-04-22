@@ -1,17 +1,15 @@
-# -*- coding: utf-8 -*-
-from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from ..sype import AdaptiveWarp, SyPERotator
-from .compaction import AttentionMatchingCompactor, AttentionMatchingConfig
-from .decode_stream import paged_stream_decode_standard
+from .cache.decode_stream import paged_stream_decode_standard
+from .cache.kv import DenseKVProvider, KVProvider, PagedKVProvider
+from .cache.paged import PagedKVCache
 from .kernels import triton_apply_rope, triton_paged_decode
-from .kv import DenseKVProvider, KVProvider, PagedKVProvider
-from .paged import PagedKVCache
-from .position import PositionEncodingApplier
+from .utils.compaction import AttentionMatchingCompactor, AttentionMatchingConfig
+from .utils.position import PositionEncodingApplier
 from .variants.base import AttentionImpl
 from .variants.standard import StandardAttentionImpl
 
@@ -19,7 +17,7 @@ from .variants.standard import StandardAttentionImpl
 # ─────────────────────────────────────────────────────────────────────────────
 # Backend detection helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _get_available_backends() -> Dict[str, bool]:
+def _get_available_backends() -> dict[str, bool]:
     """
     Detect which attention backends are available in the current environment.
 
@@ -100,7 +98,7 @@ class MultiAttention(nn.Module):
         self,
         d_model: int,
         n_heads: int,
-        n_kv_heads: Optional[int] = None,
+        n_kv_heads: int | None = None,
         dropout: float = 0.1,
         attention_type: str = "standard",
         prob_sparse_factor: float = 0.4,
@@ -125,7 +123,7 @@ class MultiAttention(nn.Module):
         gated_attn_bias: bool = True,
         # NEW: Multi-head Latent Attention (MLA)
         use_mla: bool = True,
-        kv_latent_dim: Optional[int] = None,
+        kv_latent_dim: int | None = None,
         # NEW: Attention-matching KV compaction
         use_attention_matching_compaction: bool = False,
         attention_matching_keep_ratio: float = 0.25,
@@ -134,8 +132,8 @@ class MultiAttention(nn.Module):
         attention_matching_query_budget: int = 64,
         attention_matching_force_single_step: bool = False,
         # NEW: NSA-specific knobs
-        nsa_block_size: Optional[int] = None,
-        nsa_topk_ratio: Optional[float] = None,
+        nsa_block_size: int | None = None,
+        nsa_topk_ratio: float | None = None,
     ):
         super().__init__()
 
@@ -157,9 +155,7 @@ class MultiAttention(nn.Module):
         self.kv_latent_dim = (
             int(kv_latent_dim) if kv_latent_dim is not None else int(default_latent)
         )
-        self.use_attention_matching_compaction = bool(
-            use_attention_matching_compaction
-        )
+        self.use_attention_matching_compaction = bool(use_attention_matching_compaction)
         if self.use_attention_matching_compaction and self.use_mla:
             raise ValueError(
                 "attention-matching KV compaction currently requires use_mla=False"
@@ -172,9 +168,7 @@ class MultiAttention(nn.Module):
             attention_matching_force_single_step
         )
         if not (0.0 < self.attention_matching_keep_ratio <= 1.0):
-            raise ValueError(
-                "attention_matching_keep_ratio must be in (0, 1]"
-            )
+            raise ValueError("attention_matching_keep_ratio must be in (0, 1]")
         if self.attention_matching_min_keep <= 0:
             raise ValueError("attention_matching_min_keep must be > 0")
         if self.attention_matching_query_budget <= 0:
@@ -377,19 +371,19 @@ class MultiAttention(nn.Module):
             self.nsa_gate_proj = None
 
             if attention_type == "frequency":
-                from .frequency_att import FrequencyAttention
+                from .modules.frequency_att import FrequencyAttention
 
                 self.freq_attention = FrequencyAttention(
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
                 )
             elif attention_type == "dwt":
-                from .dwt_att import DWTAttention
+                from .modules.dwt_att import DWTAttention
 
                 self.dwt_attention = DWTAttention(
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
                 )
             elif attention_type == "autocor":
-                from .autocor_att import AutoCorrelation, AutoCorrelationLayer
+                from .modules.autocor_att import AutoCorrelation, AutoCorrelationLayer
 
                 autocorr = AutoCorrelation(
                     mask_flag=True,
@@ -441,8 +435,8 @@ class MultiAttention(nn.Module):
         self,
         q: torch.Tensor,
         k: torch.Tensor,
-        context: Dict,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        context: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if not (self.use_rotary and self.rotary_emb is not None):
             return q, k
         seqlen_offset = context.get("seqlen_offset", 0)
@@ -452,8 +446,8 @@ class MultiAttention(nn.Module):
         self,
         q: torch.Tensor,
         k: torch.Tensor,
-        context: Dict,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        context: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.use_sype:
             return q, k
         query = context.get("query")
@@ -484,15 +478,15 @@ class MultiAttention(nn.Module):
     def forward(
         self,
         query: torch.Tensor,
-        key: Optional[torch.Tensor] = None,
-        value: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
+        key: torch.Tensor | None = None,
+        value: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
         need_weights: bool = False,
-        layer_state: Optional[Dict[str, torch.Tensor]] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Dict[str, torch.Tensor]]]:
+        layer_state: dict[str, torch.Tensor] | None = None,
+        cu_seqlens: torch.LongTensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, torch.Tensor] | None]:
         """
         Parameters
         ----------
@@ -540,7 +534,7 @@ class MultiAttention(nn.Module):
             if attn is not None and hasattr(attn, "cache"):
                 attn.cache.clear()
 
-    def reset_paged_cache(self, layer_state: Optional[Dict[str, torch.Tensor]]):
+    def reset_paged_cache(self, layer_state: dict[str, torch.Tensor] | None):
         """Clear paged cache for all batch items (if present in layer_state)."""
         if layer_state and "paged_cache" in layer_state:
             cache: PagedKVCache = layer_state["paged_cache"]
@@ -561,11 +555,11 @@ class MultiAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-    ) -> Tuple[
+    ) -> tuple[
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
-        Optional[torch.Tensor],
+        torch.Tensor | None,
     ]:
         """Project [B,T,C] inputs into head-first tensors."""
         B, T_q, _ = query.shape
@@ -616,7 +610,7 @@ class MultiAttention(nn.Module):
 
     def _ensure_paged_cache(
         self,
-        layer_state: Dict,
+        layer_state: dict,
         batch_size: int,
         device: torch.device,
         dtype: torch.dtype,
@@ -637,8 +631,8 @@ class MultiAttention(nn.Module):
     def _can_apply_attention_matching_compaction(
         self,
         *,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         need_weights: bool,
         cache: PagedKVCache,
         t_new: int,
@@ -663,13 +657,15 @@ class MultiAttention(nn.Module):
         *,
         cache: PagedKVCache,
         q: torch.Tensor,
-        q_start_pos: Optional[torch.Tensor],
+        q_start_pos: torch.Tensor | None,
         t_new: int,
     ) -> None:
         if self.attention_matching_compactor is None:
             return
         if q_start_pos is None:
-            raise ValueError("q_start_pos is required for attention-matching compaction")
+            raise ValueError(
+                "q_start_pos is required for attention-matching compaction"
+            )
         self.attention_matching_compactor.compact_batch(
             cache=cache,
             q_bhtd=q,
@@ -684,7 +680,7 @@ class MultiAttention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         seqlen_offset=0,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Apply RoPE to q and k, with an optional per-batch seqlen_offset.
         q, k: [B, H, T, D]
@@ -791,8 +787,8 @@ class MultiAttention(nn.Module):
     def _apply_masks(
         self,
         scores: torch.Tensor,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         """
         Apply attn_mask and key_padding_mask with "True = masked" semantics.
@@ -860,7 +856,7 @@ class MultiAttention(nn.Module):
 
     def _slice_attn_mask(
         self,
-        attn_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
         B: int,
         H: int,
         q_start: int,
@@ -869,7 +865,7 @@ class MultiAttention(nn.Module):
         k_end: int,
         T_q_full: int,
         T_k_full: int,
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         """Slice normalized attention mask for chunked attention regions."""
         if attn_mask is None:
             return None
@@ -887,12 +883,12 @@ class MultiAttention(nn.Module):
     # --------------------------------------------------------------------- #
     def _make_kv_provider(
         self,
-        layer_state: Optional[Dict],
+        layer_state: dict | None,
         *,
         batch_size: int,
         device: torch.device,
         dtype: torch.dtype,
-        force_paged: Optional[bool] = None,
+        force_paged: bool | None = None,
     ) -> KVProvider:
         use_paged_now = (
             self.use_paged_cache
@@ -931,16 +927,16 @@ class MultiAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        layer_state: Optional[Dict],
+        layer_state: dict | None,
         *,
-        force_paged: Optional[bool] = None,
-    ) -> Tuple[
+        force_paged: bool | None = None,
+    ) -> tuple[
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
-        Optional[torch.Tensor],
+        torch.Tensor | None,
         KVProvider,
-        Optional[torch.Tensor],
+        torch.Tensor | None,
     ]:
         B, _, _ = query.shape
         q, k, v, kv_latent = self._project_qkv_heads(query, key, value)
@@ -953,7 +949,7 @@ class MultiAttention(nn.Module):
             force_paged=force_paged,
         )
 
-        q_start_pos: Optional[torch.Tensor] = None
+        q_start_pos: torch.Tensor | None = None
         if not self.cross_attention:
             q_start_pos = provider.get_start_positions(B, q.device)
 
@@ -973,8 +969,8 @@ class MultiAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        layer_state: Optional[Dict],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        layer_state: dict | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q, k, v, kv_latent, provider, _ = self._prepare_qkv_with_provider(
             query,
             key,
@@ -994,8 +990,8 @@ class MultiAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        layer_state: Dict,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        layer_state: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q, k, v, kv_latent, provider, _ = self._prepare_qkv_with_provider(
             query,
             key,
@@ -1016,8 +1012,8 @@ class MultiAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        layer_state: Optional[Dict],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        layer_state: dict | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q, k, v, kv_latent, provider, _ = self._prepare_qkv_with_provider(
             query,
             key,
@@ -1038,12 +1034,12 @@ class MultiAttention(nn.Module):
         q: torch.Tensor,  # [B, H, T_q, D]
         k: torch.Tensor,  # [B, H, T_k, D]
         v: torch.Tensor,  # [B, H, T_k, D]
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
-        q_start_pos: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        q_start_pos: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
 

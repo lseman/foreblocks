@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -27,8 +26,8 @@ class DecompositionHead(nn.Module):
         self,
         kernel_size: int = 25,
         feature_dim: int = None,  # Input features F (required)
-        hidden_dim: Optional[int] = None,  # Optional projection on seasonal
-        groups: Optional[int] = None,
+        hidden_dim: int | None = None,  # Optional projection on seasonal
+        groups: int | None = None,
     ):
         super().__init__()
         if feature_dim is None:
@@ -78,7 +77,7 @@ class DecompositionHead(nn.Module):
             else nn.Identity()
         )
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # x: [B,T,F]
         if x.ndim != 3:
             raise RuntimeError(f"Expected x with shape [B,T,F], got {tuple(x.shape)}")
@@ -105,14 +104,14 @@ class DecompositionBlock(BaseHead):
         self,
         kernel_size: int = 25,
         feature_dim: int = 1,
-        hidden_dim: Optional[int] = None,
+        hidden_dim: int | None = None,
     ):
         decomp_module = DecompositionHead(
             kernel_size=kernel_size, feature_dim=feature_dim, hidden_dim=hidden_dim
         )
         super().__init__(module=decomp_module, name="decomposition")
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.module(x)
 
 

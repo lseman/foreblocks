@@ -2,12 +2,12 @@ import concurrent.futures
 import random
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .candidate_scoring import candidate_diversity_bonus
 
 
-def make_default_search_candidate_config(trainer, rng=None) -> Dict[str, Any]:
+def make_default_search_candidate_config(trainer, rng=None) -> dict[str, Any]:
     rng = rng or random
     return trainer._make_candidate_config(
         rng,
@@ -30,7 +30,7 @@ def evaluate_search_candidate(
     num_batches: int = 1,
     include_timing: bool = False,
     rng=None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     t0 = time.perf_counter() if include_timing else None
     cfg = make_default_search_candidate_config(trainer, rng=rng)
     model = trainer._build_candidate_model(cfg)
@@ -64,7 +64,7 @@ def evaluate_search_candidate(
     return out
 
 
-def select_top_candidates(candidates: List[Dict[str, Any]], top_k: int):
+def select_top_candidates(candidates: list[dict[str, Any]], top_k: int):
     candidates.sort(key=lambda x: x["score"], reverse=True)
     return candidates[: min(int(top_k), len(candidates))]
 
@@ -73,10 +73,10 @@ def run_parallel_candidate_collection(
     *,
     num_candidates: int,
     candidate_fn,
-    max_workers: Optional[int] = None,
+    max_workers: int | None = None,
     on_result=None,
     error_log_fn=None,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     collected = []
     lock = threading.Lock()
     completed = 0

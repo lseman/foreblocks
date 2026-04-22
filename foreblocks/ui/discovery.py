@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
-from typing import Dict, Iterable, List
+from collections.abc import Iterable
 
 # NEW: use the unified spec builder (handles inputs/outputs/config + py)
 from foreblocks.ui.auto_spec import build_node_spec
@@ -41,12 +41,12 @@ def _all_candidate_classes() -> Iterable[type]:
                 if obj.__module__ == mod.__name__:
                     yield obj
 
-def _discover_node_specs() -> Dict[str, Dict]:
+def _discover_node_specs() -> dict[str, dict]:
     """
     Discover decorated node classes and build normalized specs using build_node_spec().
     Returns a dict: {type_id: full_spec}
     """
-    out: Dict[str, Dict] = {}
+    out: dict[str, dict] = {}
     for cls in _all_candidate_classes():
         # Only include classes that have been explicitly decorated (not inherited)
         if "__is_node__" not in cls.__dict__:
@@ -76,8 +76,8 @@ def _discover_node_specs() -> Dict[str, Dict]:
         out[type_id] = spec
     return out
 
-def categories_map(nodes: Dict[str, Dict]) -> Dict[str, List[str]]:
-    cats: Dict[str, List[str]] = {}
+def categories_map(nodes: dict[str, dict]) -> dict[str, list[str]]:
+    cats: dict[str, list[str]] = {}
     for t, spec in nodes.items():
         cats.setdefault(spec.get("category", "Misc"), []).append(t)
     for k in cats:
@@ -85,7 +85,7 @@ def categories_map(nodes: Dict[str, Dict]) -> Dict[str, List[str]]:
     return cats
 
 # ── Back-compat function: preserve original signature if other code expects it
-def discover_nodes() -> Dict[str, Dict]:
+def discover_nodes() -> dict[str, dict]:
     """
     Back-compat: return a simplified map for callers that don't need categories.
     Each node dict contains name/category/inputs/outputs/config/subtypes/color/py.
@@ -107,7 +107,7 @@ def discover_nodes() -> Dict[str, Dict]:
     return simplified
 
 # ── Preferred endpoint payload for /nodes
-def discover_nodes_payload() -> Dict[str, Dict]:
+def discover_nodes_payload() -> dict[str, dict]:
     """
     Return the full payload expected by the frontend:
       { "nodes": {type_id: {...}}, "categories": {category: [type_ids...] } }

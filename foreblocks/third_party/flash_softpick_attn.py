@@ -4,7 +4,6 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
 
-from typing import Optional
 
 import torch
 
@@ -548,8 +547,8 @@ def parallel_softpick_attn_fwd(
     v: torch.Tensor,
     scale: float,
     chunk_size: int = 128,
-    offsets: Optional[torch.LongTensor] = None,
-    indices: Optional[torch.LongTensor] = None,
+    offsets: torch.LongTensor | None = None,
+    indices: torch.LongTensor | None = None,
 ):
     B, T, H, K, V = *k.shape, v.shape[-1]
     HQ = q.shape[2]
@@ -622,8 +621,8 @@ def parallel_softpick_attn_bwd(
     do: torch.Tensor,
     scale: float = None,
     chunk_size: int = 128,
-    offsets: Optional[torch.LongTensor] = None,
-    indices: Optional[torch.LongTensor] = None,
+    offsets: torch.LongTensor | None = None,
+    indices: torch.LongTensor | None = None,
 ):
     B, T, H, K, V = *k.shape, v.shape[-1]
     HQ = q.shape[2]
@@ -769,8 +768,8 @@ def parallel_softpick_attn(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    scale: Optional[float] = None,
-    cu_seqlens: Optional[torch.LongTensor] = None,
+    scale: float | None = None,
+    cu_seqlens: torch.LongTensor | None = None,
     head_first: bool = False,
 ) -> torch.Tensor:
     r"""

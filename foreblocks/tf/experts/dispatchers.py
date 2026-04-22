@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
 
@@ -19,10 +18,10 @@ class DroplessPackedDispatcher:
 
         # Reusable buffers (grown as needed)
         self._buffer_size = 0
-        self._sort_buffer: Optional[torch.Tensor] = None
-        self._offsets_buffer: Optional[torch.Tensor] = None
-        self._arange_buffer: Optional[torch.Tensor] = None
-        self._tokens_buffer: Optional[torch.Tensor] = None
+        self._sort_buffer: torch.Tensor | None = None
+        self._offsets_buffer: torch.Tensor | None = None
+        self._arange_buffer: torch.Tensor | None = None
+        self._tokens_buffer: torch.Tensor | None = None
 
     def _ensure_buffers(self, size: int, device: torch.device):
         cur_device = self._sort_buffer.device if self._sort_buffer is not None else None
@@ -44,7 +43,7 @@ class DroplessPackedDispatcher:
         x_flat: torch.Tensor,  # [T, D]
         topk_p: torch.Tensor,  # [T, K]
         topk_i: torch.Tensor,  # [T, K]
-        capacity_factor: Optional[float] = None,
+        capacity_factor: float | None = None,
     ):
         device = x_flat.device
         T, D = x_flat.shape
@@ -144,7 +143,7 @@ class ExpertChoiceDispatcher:
         num_experts: int,
         top_k: int,
         capacity_factor: float = 1.25,
-        tokens_per_expert: Optional[int] = None,
+        tokens_per_expert: int | None = None,
     ):
         self.num_experts = int(num_experts)
         self.top_k = int(top_k)

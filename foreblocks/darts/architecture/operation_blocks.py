@@ -1,4 +1,3 @@
-from typing import List, Optional
 
 import torch
 import torch.nn as nn
@@ -181,7 +180,7 @@ class TCNOp(nn.Module):
         latent_dim: int,
         kernel_size: int = 3,
         causal: bool = True,
-        dilations: Optional[List[int]] = None,
+        dilations: list[int] | None = None,
     ):
         super().__init__()
         self.dilations = list(dilations) if dilations is not None else [1, 2, 4]
@@ -254,7 +253,7 @@ class FourierOp(nn.Module):
         input_dim: int,
         latent_dim: int,
         seq_length: int,
-        num_frequencies: Optional[int] = None,
+        num_frequencies: int | None = None,
     ):
         super().__init__()
         self.seq_length = seq_length
@@ -354,7 +353,7 @@ class WaveletOp(nn.Module):
         input_dim: int,
         latent_dim: int,
         num_scales: int = 3,
-        dilations: Optional[List[int]] = None,
+        dilations: list[int] | None = None,
     ):
         super().__init__()
         candidate_dilations = dilations or [1, 2, 4, 8]
@@ -484,7 +483,7 @@ class MultiScaleConvOp(nn.Module):
         self,
         input_dim: int,
         latent_dim: int,
-        scales: Optional[List[int]] = None,
+        scales: list[int] | None = None,
     ):
         super().__init__()
         self.scales = scales or [1, 3, 5, 7]
@@ -688,7 +687,7 @@ class PatchEmbedOp(nn.Module):
         input_dim: int,
         latent_dim: int,
         patch_size: int = 16,
-        stride: Optional[int] = None,
+        stride: int | None = None,
     ):
         super().__init__()
         self.patch_size = max(2, int(patch_size))
@@ -940,7 +939,7 @@ class TimesNetOp(nn.Module):
         )
 
     @staticmethod
-    def _top_k_periods(x: torch.Tensor, k: int) -> List[int]:
+    def _top_k_periods(x: torch.Tensor, k: int) -> list[int]:
         """Return the top-k dominant periods inferred from FFT amplitudes."""
         T = x.size(1)
         # Average over B and C so the period is a dataset-level statistic
@@ -964,7 +963,7 @@ class TimesNetOp(nn.Module):
         with torch.no_grad():
             periods = self._top_k_periods(x_proj, self.top_k)
 
-        period_outputs: List[torch.Tensor] = []
+        period_outputs: list[torch.Tensor] = []
         for period in periods:
             # Pad T to the next multiple of `period`
             pad_len = (period - T % period) % period

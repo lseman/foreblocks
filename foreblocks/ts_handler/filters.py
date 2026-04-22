@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -146,7 +145,7 @@ def _adaptive_savgol_column(
     *,
     robust_center: bool,
     fill_nans_for_filter: bool,
-) -> Tuple[int, np.ndarray]:
+) -> tuple[int, np.ndarray]:
     """
     Adaptive SavGol smoothing to a single column.
     Preserves NaN mask.
@@ -299,7 +298,7 @@ def wiener_filter(
     data: np.ndarray,
     mysize: int = 15,
     *,
-    noise: Optional[float] = None,
+    noise: float | None = None,
     fill_nans_for_filter: bool = True,
 ) -> np.ndarray:
     """
@@ -367,7 +366,7 @@ def emd_filter(
 
     keep_ratio = float(np.clip(keep_ratio, 0.0, 1.0))
 
-    def _emd_one(j: int) -> Tuple[int, np.ndarray]:
+    def _emd_one(j: int) -> tuple[int, np.ndarray]:
         col = x[:, j]
         if np.isnan(col).any() or col.size < min_points:
             return j, col
@@ -403,7 +402,7 @@ def emd_filter(
 # =============================================================================
 def ssa_filter(
     data: np.ndarray,
-    window_length: Optional[int] = None,
+    window_length: int | None = None,
     n_components: int = 2,
     *,
     fill_nans_for_filter: bool = True,
@@ -481,7 +480,7 @@ def stl_filter(
     *,
     robust: bool = True,
     seasonal: int = 7,
-    trend: Optional[int] = None,
+    trend: int | None = None,
     return_component: str = "trend_seasonal",  # "trend", "seasonal", or "trend_seasonal"
     fill_nans_for_filter: bool = True,
 ) -> np.ndarray:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import warnings
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -143,7 +142,7 @@ class SequenceStateAdapter:
         hidden_size: int,
         device: torch.device,
         dtype: torch.dtype,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if state is None:
             h = torch.zeros(
                 num_layers, batch_size, hidden_size, device=device, dtype=dtype
@@ -176,7 +175,7 @@ class SequenceStateAdapter:
         batch_size: int,
         hidden_size: int,
         device: torch.device,
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
     ):
         state_dtype = dtype or SequenceStateAdapter._extract_tensor_dtype(state)
         h, c = SequenceStateAdapter._coerce_pair_state(
@@ -200,10 +199,10 @@ class SequenceStateAdapter:
         hidden_size: int,
         device: torch.device,
         dtype: torch.dtype,
-    ) -> Tuple[
-        Tuple[torch.Tensor, torch.Tensor],
+    ) -> tuple[
+        tuple[torch.Tensor, torch.Tensor],
         torch.Tensor,
-        Tuple[torch.Tensor, torch.Tensor],
+        tuple[torch.Tensor, torch.Tensor],
     ]:
         pair_state = SequenceStateAdapter.ensure_rnn_state(
             hidden_state,
@@ -309,7 +308,7 @@ class BaseMixedSequenceBlock(nn.Module):
         hard = torch.zeros_like(soft).scatter_(dim, hard_idx, 1.0)
         return hard - soft.detach() + soft
 
-    def _get_arch_weights(self, layer_idx: Optional[int] = None) -> torch.Tensor:
+    def _get_arch_weights(self, layer_idx: int | None = None) -> torch.Tensor:
         logits = self._get_layer_arch_logits()
         tau = max(float(self.temperature), 1e-3)
         if self._should_use_stochastic_arch_sampling():

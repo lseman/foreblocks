@@ -8,7 +8,7 @@ The public entry-point is :func:`train_darts_model`.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -65,8 +65,8 @@ def train_darts_model(
     use_amp: bool = True,
     gradient_accumulation_steps: int = 1,
     verbose: bool = True,
-    regularization_types: Optional[List[str]] = None,
-    regularization_weights: Optional[List[float]] = None,
+    regularization_types: list[str] | None = None,
+    regularization_weights: list[float] | None = None,
     temperature_schedule: str = "cosine",
     edge_sharpening_max_weight: float = 0.03,
     edge_sharpening_start_frac: float = 0.35,
@@ -88,7 +88,7 @@ def train_darts_model(
     initial_drnas_concentration: float = 10.0,
     final_drnas_concentration: float = 2.0,
     use_gdas: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run one DARTS bilevel training cycle.
 
@@ -230,8 +230,8 @@ def train_darts_model(
     best_state = None
     best_progressive_state = None
     train_losses, val_losses, alpha_values, diversity_scores = [], [], [], []
-    prev_component_probs: Dict = {}
-    prev_edge_probs: Dict = {}
+    prev_component_probs: dict = {}
+    prev_edge_probs: dict = {}
     last_edge_entropy = float("nan")
     last_edge_sharpen_weight = 0.0
     last_moe_balance_loss = float("nan")
@@ -321,7 +321,7 @@ def train_darts_model(
                 # direct correction applied to arch param gradients after
                 # backward.  Correction = -xi/(2ε) * (∇_α L_val(w+) - ∇_α L_val(w-))
                 # where w± are model weights perturbed along ∇_w L_train.
-                implicit_corrections: Optional[List[Optional[torch.Tensor]]] = None
+                implicit_corrections: list[torch.Tensor | None] | None = None
                 hessian_penalty = torch.tensor(0.0, device=device)
                 if (
                     hessian_penalty_weight > 0.0
@@ -358,7 +358,7 @@ def train_darts_model(
                 # w' = w - xi * unit(∇_w L_train).  The arch gradient is then
                 # computed at w' instead of w, reducing bias from shared weights
                 # being positioned sub-optimally relative to the arch optimum.
-                darts_pt_originals: Optional[List[torch.Tensor]] = None
+                darts_pt_originals: list[torch.Tensor] | None = None
                 if use_darts_pt and model_params:
                     pt_batch = bilevel_optimizer.next_hessian_batch()
                     pt_train_x, pt_train_y, pt_train_model_kwargs = (
@@ -434,7 +434,7 @@ def train_darts_model(
 
                     transformer_exploration_bonus = torch.tensor(0.0, device=device)
                     if transformer_exploration_weight > 0.0:
-                        entropy_terms: List[torch.Tensor] = []
+                        entropy_terms: list[torch.Tensor] = []
                         for source in trainer.alpha_tracker.component_alpha_sources(model):
                             name = str(source.get("name", ""))
                             if not (
@@ -697,7 +697,7 @@ def _run_model_training_epoch(
     *,
     model: nn.Module,
     train_model_loader,
-    model_params: List[torch.Tensor],
+    model_params: list[torch.Tensor],
     model_optimizer,
     model_scheduler,
     scaler: GradScaler,
@@ -794,15 +794,15 @@ def _run_validation_epoch(
 def _apply_darts_pt_perturbation(
     *,
     model: nn.Module,
-    model_params: List[torch.Tensor],
+    model_params: list[torch.Tensor],
     train_x: torch.Tensor,
     train_y: torch.Tensor,
-    train_model_kwargs: Optional[Dict[str, Any]],
+    train_model_kwargs: dict[str, Any] | None,
     loss_fn,
     xi: float,
     device: str,
     use_amp: bool,
-) -> List[torch.Tensor]:
+) -> list[torch.Tensor]:
     """Perturb model weights by ``-xi * unit(∇_w L_train)`` (DARTS-PT step).
 
     Returns the list of original parameter tensors so the caller can restore
@@ -843,8 +843,8 @@ def _apply_darts_pt_perturbation(
 
 
 def _restore_model_params(
-    model_params: List[torch.Tensor],
-    originals: List[torch.Tensor],
+    model_params: list[torch.Tensor],
+    originals: list[torch.Tensor],
 ) -> None:
     """Restore model parameters to their pre-perturbation values."""
     with torch.no_grad():
@@ -858,17 +858,17 @@ def compute_implicit_arch_gradient_correction(
     loss_fn,
     arch_x: torch.Tensor,
     arch_y: torch.Tensor,
-    arch_model_kwargs: Optional[Dict[str, Any]],
+    arch_model_kwargs: dict[str, Any] | None,
     train_x: torch.Tensor,
     train_y: torch.Tensor,
-    train_model_kwargs: Optional[Dict[str, Any]],
-    model_params: List[torch.Tensor],
-    arch_params: List[torch.Tensor],
+    train_model_kwargs: dict[str, Any] | None,
+    model_params: list[torch.Tensor],
+    arch_params: list[torch.Tensor],
     xi: float,
     eps: float,
     device: str,
     use_amp: bool,
-) -> List[Optional[torch.Tensor]]:
+) -> list[torch.Tensor | None]:
     """Compute second-order implicit arch gradient correction.
 
     Implements the DARTS second-order approximation via finite differences in
@@ -914,7 +914,7 @@ def compute_implicit_arch_gradient_correction(
     with torch.no_grad():
         originals = [p.detach().clone() for p in model_params]
 
-    corrections: List[Optional[torch.Tensor]] = [None] * len(arch_params)
+    corrections: list[torch.Tensor | None] = [None] * len(arch_params)
     try:
         # ∇_α L_val(w⁺)
         with torch.no_grad():
@@ -967,11 +967,11 @@ def finite_difference_hessian_penalty(
     arch_loss: torch.Tensor,
     arch_x: torch.Tensor,
     arch_y: torch.Tensor,
-    arch_model_kwargs: Optional[Dict[str, Any]],
+    arch_model_kwargs: dict[str, Any] | None,
     train_x: torch.Tensor,
     train_y: torch.Tensor,
-    train_model_kwargs: Optional[Dict[str, Any]],
-    model_params: List[torch.Tensor],
+    train_model_kwargs: dict[str, Any] | None,
+    model_params: list[torch.Tensor],
     device: str,
     eps: float = 1e-2,
     use_amp: bool = True,
@@ -1053,7 +1053,7 @@ def _add_edge_diversity_reg(
             continue
 
         edge_probs_by_name = []
-        union_op_names: List[str] = []
+        union_op_names: list[str] = []
 
         for edge in cell.edges:
             probs = _extract_edge_probs(edge)
@@ -1078,7 +1078,7 @@ def _add_edge_diversity_reg(
             continue
 
         base_zero = edge_probs_by_name[0][union_op_names[0]].new_tensor(0.0)
-        aligned: List[torch.Tensor] = []
+        aligned: list[torch.Tensor] = []
         for prob_map in edge_probs_by_name:
             vec = torch.stack(
                 [prob_map.get(n, base_zero) for n in union_op_names], dim=0
@@ -1213,7 +1213,7 @@ def _add_edge_sharpening(
     return total_arch_loss, edge_entropy, edge_sharpen_weight
 
 
-def _extract_edge_probs(edge) -> Optional[torch.Tensor]:
+def _extract_edge_probs(edge) -> torch.Tensor | None:
     """Return per-operation probability vector for a single DARTS edge."""
     if (
         hasattr(edge, "use_hierarchical")

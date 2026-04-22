@@ -1,5 +1,4 @@
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -134,7 +133,7 @@ class HierarchicalAttention(nn.Module):
         return x_pooled.transpose(1, 2)
 
     def forward(
-        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
         """
         Args:

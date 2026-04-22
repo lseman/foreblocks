@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -52,12 +51,12 @@ class LightweightTransformerEncoder(nn.Module):
         dropout=0.1,
         nhead=4,
         max_seq_len=512,
-        seq_len: Optional[int] = None,
+        seq_len: int | None = None,
         causal=False,
         self_attention_type: str = "auto",
         self_attention_position_mode: str = "auto",
         use_moe: bool = False,
-        ffn_variant: Optional[str] = None,
+        ffn_variant: str | None = None,
         rope_base: float = 500000.0,
         use_checkpoint: bool = False,
         temperature: float = 1.0,
@@ -65,7 +64,7 @@ class LightweightTransformerEncoder(nn.Module):
         enable_patch_search: bool = False,
         patching_mode: str = "direct",
         patch_size: int = 16,
-        stride: Optional[int] = None,
+        stride: int | None = None,
     ):
         super().__init__()
         resolved_self_attention_type = str(self_attention_type).lower()
@@ -239,7 +238,7 @@ class LightweightTransformerEncoder(nn.Module):
 
     def _summarize_sequence(
         self, x: torch.Tensor, output_len: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         if x.size(1) != output_len:
             output = F.interpolate(
                 x.transpose(1, 2), size=output_len, mode="linear", align_corners=False
@@ -282,7 +281,7 @@ class LightweightTransformerEncoder(nn.Module):
 
     def _encode_channel_independent_patch_mode(
         self, x: torch.Tensor, patch_size: int, output_len: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         B, _, C = x.shape
         tokens = self._build_patch_tokens(x, patch_size)
         encoded = self._run_encoder_layers(tokens)
@@ -306,7 +305,7 @@ class LightweightTransformerEncoder(nn.Module):
 
     def _encode_mode(
         self, x: torch.Tensor, mode: str, output_len: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         if mode == "direct":
             encoded = self._run_encoder_layers(self.input_proj(x))
             return self._summarize_sequence(encoded, output_len=output_len)
@@ -423,7 +422,7 @@ class LightweightTransformerDecoder(nn.Module):
         cross_attention_type: str = "auto",
         cross_attention_position_mode: str = "auto",
         use_moe: bool = False,
-        ffn_variant: Optional[str] = None,
+        ffn_variant: str | None = None,
         rope_base: float = 500000.0,
         use_checkpoint: bool = False,
         temperature: float = 1.0,
@@ -502,7 +501,7 @@ class LightweightTransformerDecoder(nn.Module):
             if ffn is not None and hasattr(ffn, "set_temperature"):
                 ffn.set_temperature(self.temperature)
 
-    def _prepare_memory(self, memory_or_hidden, batch_size: Optional[int] = None):
+    def _prepare_memory(self, memory_or_hidden, batch_size: int | None = None):
         if memory_or_hidden is None:
             return None
 

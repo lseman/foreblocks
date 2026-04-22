@@ -1,6 +1,6 @@
 import copy
 import math
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -37,9 +37,9 @@ def _default_as_probability_vector(
 
 def derive_final_architecture(
     model: nn.Module,
-    as_probability_vector_fn: Optional[
+    as_probability_vector_fn: None | (
         Callable[[torch.Tensor, float], torch.Tensor]
-    ] = None,
+    ) = None,
 ) -> nn.Module:
     """Create optimized model with fixed operations based on search results."""
     prob_fn = as_probability_vector_fn or _default_as_probability_vector
@@ -316,9 +316,9 @@ def derive_final_architecture(
 
     def _assign_cell_edges_with_diversity(
         cell: nn.Module,
-        edge_weight_list: List[Optional[torch.Tensor]],
-        edge_importance: Optional[List[float]] = None,
-    ) -> Tuple[List[int], Dict[str, int]]:
+        edge_weight_list: list[torch.Tensor | None],
+        edge_importance: list[float] | None = None,
+    ) -> tuple[list[int], dict[str, int]]:
         """
         Diversity-aware edge assignment:
         1) first cover a target number of unique ops inside the cell
@@ -330,8 +330,8 @@ def derive_final_architecture(
         if edge_importance is None or len(edge_importance) != n_edges:
             edge_importance = [1.0] * n_edges
 
-        assignments: List[Optional[int]] = [None] * n_edges
-        op_counts_by_name: Dict[str, int] = {}
+        assignments: list[int | None] = [None] * n_edges
+        op_counts_by_name: dict[str, int] = {}
         used_unique_ops = set()
 
         # Estimate available operation names for target diversity sizing.

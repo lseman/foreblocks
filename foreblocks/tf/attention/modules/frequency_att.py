@@ -1,5 +1,4 @@
 import math
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -34,13 +33,13 @@ class FrequencyAttention(nn.Module):
     def forward(
         self,
         query: torch.Tensor,
-        key: Optional[torch.Tensor] = None,
-        value: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
+        key: torch.Tensor | None = None,
+        value: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
         need_weights: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if key is None:
             key = query
         if value is None:

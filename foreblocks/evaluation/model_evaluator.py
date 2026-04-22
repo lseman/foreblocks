@@ -1,5 +1,3 @@
-
-
 # ============================================================================
 # Model Evaluator (unchanged from original)
 # ============================================================================
@@ -8,7 +6,7 @@ from __future__ import annotations
 import torch
 import contextlib
 from torch.amp import autocast
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 import numpy as np
 
 try:
@@ -52,9 +50,9 @@ class ModelEvaluator:
         y: torch.Tensor,
         n_windows: int,
         horizon: int,
-        step_size: Optional[int] = None,
+        step_size: int | None = None,
         batch_size: int = 256
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if step_size is None:
             step_size = horizon
 
@@ -101,7 +99,7 @@ class ModelEvaluator:
             'total_points': len(all_preds_cat)
         }
 
-    def _compute_window_metrics(self, predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
+    def _compute_window_metrics(self, predictions: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
         targets = targets.to(predictions.device)
         diff = (predictions - targets).float()
 
@@ -118,11 +116,11 @@ class ModelEvaluator:
             'mape': mape
         }
 
-    def compute_metrics(self, X: torch.Tensor, y: torch.Tensor, batch_size: int = 256) -> Dict[str, float]:
+    def compute_metrics(self, X: torch.Tensor, y: torch.Tensor, batch_size: int = 256) -> dict[str, float]:
         predictions = self.predict(X, batch_size)
         return self._compute_window_metrics(predictions, y)
 
-    def plot_cv_results(self, cv_results: Dict[str, Any], figsize: Tuple[int, int] = (15, 8)):
+    def plot_cv_results(self, cv_results: dict[str, Any], figsize: tuple[int, int] = (15, 8)):
         _require_matplotlib()
         fig, axes = plt.subplots(2, 2, figsize=figsize)
 
@@ -163,7 +161,7 @@ Per-Window Stats:
         plt.tight_layout()
         return fig
 
-    def plot_learning_curves(self, figsize: Tuple[int, int] = (15, 5)):
+    def plot_learning_curves(self, figsize: tuple[int, int] = (15, 5)):
         _require_matplotlib()
         history = self.trainer.history
         fig, axes = plt.subplots(1, 3, figsize=figsize)

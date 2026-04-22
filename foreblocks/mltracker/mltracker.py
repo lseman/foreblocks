@@ -23,7 +23,8 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Union
+from typing import Any, Literal
+from collections.abc import Iterable, Mapping
 
 try:
     import getpass
@@ -86,7 +87,7 @@ def _hashdict(d: Mapping[str, Any]) -> str:
     return hashlib.md5(payload.encode()).hexdigest()[:16]
 
 
-def _maybe_git_info() -> Dict[str, str]:
+def _maybe_git_info() -> dict[str, str]:
     info = {}
     try:
         import subprocess
@@ -106,7 +107,7 @@ def _maybe_git_info() -> Dict[str, str]:
     return info
 
 
-def _sys_info() -> Dict[str, str]:
+def _sys_info() -> dict[str, str]:
     d = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
@@ -128,7 +129,7 @@ def _sys_info() -> Dict[str, str]:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _module_tree(module: Any, name: str = "model") -> Dict[str, Any]:
+def _module_tree(module: Any, name: str = "model") -> dict[str, Any]:
     children = []
     if hasattr(module, "named_children"):
         try:
@@ -162,7 +163,7 @@ def _module_tree(module: Any, name: str = "model") -> Dict[str, Any]:
     return node
 
 
-def _model_summary(model: Any) -> Dict[str, int]:
+def _model_summary(model: Any) -> dict[str, int]:
     if not hasattr(model, "parameters"):
         return {"total": 0, "trainable": 0, "non_trainable": 0}
     try:
@@ -199,7 +200,7 @@ class MLTracker:
         self.artifacts_path.mkdir(exist_ok=True)
 
         self._init_db()
-        self._active_run: Optional[str] = None
+        self._active_run: str | None = None
 
     # ---------- DB ----------
     @contextmanager
@@ -303,7 +304,7 @@ class MLTracker:
             ).fetchone()
             return int(row[0])
 
-    def get_experiment(self, name: str) -> Optional[int]:
+    def get_experiment(self, name: str) -> int | None:
         with self._get_db() as conn:
             row = conn.execute(
                 "SELECT experiment_id FROM experiments WHERE name = ?", (name,)
@@ -312,7 +313,7 @@ class MLTracker:
 
     # ---------- Runs ----------
     def start_run(
-        self, experiment_name: str = "default", run_name: Optional[str] = None
+        self, experiment_name: str = "default", run_name: str | None = None
     ) -> str:
         exp_id = self.get_experiment(experiment_name) or self.create_experiment(
             experiment_name
@@ -379,7 +380,7 @@ class MLTracker:
         for k, v in tags.items():
             self.set_tag(k, v)
 
-    def log_artifact(self, local_path: Union[str, Path], artifact_path: str = ""):
+    def log_artifact(self, local_path: str | Path, artifact_path: str = ""):
         if not self._active_run:
             raise RuntimeError("No active run. Call start_run() first.")
         local_file = Path(local_path)
@@ -515,7 +516,7 @@ class MLTracker:
             return pickle.load(f)
 
     # ---------- Queries ----------
-    def get_run(self, run_id: str) -> Dict[str, Any]:
+    def get_run(self, run_id: str) -> dict[str, Any]:
         with self._get_db() as conn:
             run = conn.execute(
                 "SELECT * FROM runs WHERE run_id = ?", (run_id,)
@@ -530,7 +531,7 @@ class MLTracker:
                 )
             }
             # latest value per metric
-            metrics: Dict[str, float] = {}
+            metrics: dict[str, float] = {}
             for row in conn.execute(
                 "SELECT key, value, step FROM metrics WHERE run_id = ? ORDER BY key, step DESC",
                 (run_id,),
@@ -569,7 +570,7 @@ class MLTracker:
                 conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
 
-    def search_runs(self, experiment_name: Optional[str] = None) -> List[Dict]:
+    def search_runs(self, experiment_name: str | None = None) -> list[dict]:
         with self._get_db() as conn:
             if experiment_name:
                 exp_id = self.get_experiment(experiment_name)
@@ -587,7 +588,7 @@ class MLTracker:
 
     # ---------- Context manager ----------
     @contextmanager
-    def run(self, experiment_name: str = "default", run_name: Optional[str] = None):
+    def run(self, experiment_name: str = "default", run_name: str | None = None):
         run_id = self.start_run(experiment_name, run_name)
         try:
             yield run_id
@@ -600,7 +601,7 @@ class MLTracker:
     def autolog(
         self,
         experiment: str = "default",
-        run_name: Optional[str] = "{func}__{timestamp}",
+        run_name: str | None = "{func}__{timestamp}",
         log_args: bool = True,
         ignore: Iterable[str] = (
             "self",
@@ -613,7 +614,7 @@ class MLTracker:
         ),  # skip heavy objects
         capture_system: bool = True,
         capture_git: bool = True,
-        log_return: Union[None, str, Literal["metrics", "artifact"]] = None,
+        log_return: None | str | Literal["metrics", "artifact"] = None,
         return_artifact_name: str = "return.pkl",
         inject_param: str = "_mlt",
     ):
@@ -700,7 +701,7 @@ class MLTracker:
                     def tags(_, tdict: Mapping[str, str]):
                         self.set_tags(tdict)
 
-                    def artifact(_, path: Union[str, Path], artifact_path: str = ""):
+                    def artifact(_, path: str | Path, artifact_path: str = ""):
                         self.log_artifact(path, artifact_path)
 
                     def bytes(_, data: bytes, filename: str, artifact_path: str = ""):
@@ -799,7 +800,7 @@ if __name__ == "__main__":
         log_args=True,
         log_return="metrics",
     )
-    def train_epoch(config: Dict[str, Any], data=None, _mlt=None):
+    def train_epoch(config: dict[str, Any], data=None, _mlt=None):
         # log inside the function
         _mlt.params({"optimizer": config.get("optimizer", "adam")})
         for step in range(3):

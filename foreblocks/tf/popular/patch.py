@@ -1,5 +1,5 @@
 # dlinear_head_custom.py
-from typing import Literal, Optional
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -137,8 +137,8 @@ class PatchTSTHeadCustom(nn.Module):
         use_cls_token: bool = False,
         head_hidden: int = 0,
         output_mode: Literal["pooled", "nonpool_linear", "nonpool_attn"] = "pooled",
-        in_channels: Optional[int] = None,
-        out_channels: Optional[int] = None,
+        in_channels: int | None = None,
+        out_channels: int | None = None,
         max_patches: int = 10_000,
     ):
         super().__init__()

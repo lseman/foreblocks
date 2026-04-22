@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -12,7 +11,7 @@ def _dense_kv_block(
     b: int,
     blk: int,
     blen: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     k_blk = cache.storage_k[b, :, blk, :blen, :]
     v_blk = cache.storage_v[b, :, blk, :blen, :]
     pos_blk = cache.storage_pos[b, blk, :blen]
@@ -26,9 +25,9 @@ def _latent_kv_block(
     blk: int,
     blen: int,
     d_head: int,
-    mla_k_up_proj: Optional[nn.Module],
-    mla_v_up_proj: Optional[nn.Module],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    mla_k_up_proj: nn.Module | None,
+    mla_v_up_proj: nn.Module | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if mla_k_up_proj is None or mla_v_up_proj is None:
         raise RuntimeError(
             "MLA latent paged decode requires k_up/v_up projection modules."
@@ -58,11 +57,11 @@ def paged_stream_decode_standard(
     dropout_p: float,
     training: bool,
     is_causal: bool,
-    q_start_pos: Optional[torch.Tensor] = None,
-    attn_mask: Optional[torch.Tensor] = None,
-    key_padding_mask: Optional[torch.Tensor] = None,
-    mla_k_up_proj: Optional[nn.Module] = None,
-    mla_v_up_proj: Optional[nn.Module] = None,
+    q_start_pos: torch.Tensor | None = None,
+    attn_mask: torch.Tensor | None = None,
+    key_padding_mask: torch.Tensor | None = None,
+    mla_k_up_proj: nn.Module | None = None,
+    mla_v_up_proj: nn.Module | None = None,
 ) -> torch.Tensor:
     B, Hq, Tq, D = q_bhtd.shape
     BS = cache.block_size

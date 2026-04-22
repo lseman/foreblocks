@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -76,8 +75,8 @@ class RotaryEmbedding(nn.Module):
         inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self._seq_len_cached = 0
-        self._cos_cached: Optional[torch.Tensor] = None
-        self._sin_cached: Optional[torch.Tensor] = None
+        self._cos_cached: torch.Tensor | None = None
+        self._sin_cached: torch.Tensor | None = None
         self._build_cache(max_seq_len)
 
     def _build_cache(self, seq_len: int) -> None:
@@ -97,7 +96,7 @@ class RotaryEmbedding(nn.Module):
 
     def forward(
         self, q: torch.Tensor, k: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply RoPE to Q and K tensors of shape ``(B, H, T, head_dim)``."""
         seqlen = q.shape[2]
         self._build_cache(seqlen)
@@ -109,7 +108,7 @@ class RotaryEmbedding(nn.Module):
 
     def apply_at_pos(
         self, q: torch.Tensor, k: torch.Tensor, pos: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply RoPE to single-token tensors ``(B, H, head_dim)`` at position *pos*.
 
         Used during recurrent (step-by-step) inference with a KV cache.
@@ -151,7 +150,7 @@ class SlidingWindowAttention(nn.Module):
         self,
         d_model: int,
         num_heads: int = 8,
-        n_kv_heads: Optional[int] = None,
+        n_kv_heads: int | None = None,
         window_size: int = 128,
         dropout: float = 0.0,
         bias: bool = False,
@@ -284,8 +283,8 @@ def _conv_step(
     u_raw: torch.Tensor,
     state_conv: torch.Tensor,
     weight: torch.Tensor,
-    bias: Optional[torch.Tensor],
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    bias: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """One step of a causal depthwise conv from a ring buffer.
 
     Args:
@@ -326,10 +325,10 @@ class HybridMambaBlock(nn.Module):
     def __init__(
         self,
         d_model: int,
-        d_inner: Optional[int] = None,
+        d_inner: int | None = None,
         d_state: int = 16,
         d_conv: int = 4,
-        dt_rank: Optional[int] = None,
+        dt_rank: int | None = None,
         dt_min: float = 1e-4,
         dt_max: float = 1.0,
         use_cuda_scan: bool = True,
@@ -380,7 +379,7 @@ class HybridMambaBlock(nn.Module):
             dt = dt * (math.log(self.dt_max) - math.log(self.dt_min)) + math.log(self.dt_min)
             self.dt_bias.copy_(_inverse_softplus(dt.exp()))
 
-    def _split_proj(self, p: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+    def _split_proj(self, p: torch.Tensor) -> tuple[torch.Tensor, ...]:
         batch_size, seqlen, _ = p.shape
         D = self.d_inner
         N = self.d_state
@@ -415,14 +414,14 @@ class HybridMambaBlock(nn.Module):
     # Recurrent inference
     # ------------------------------------------------------------------
 
-    def make_state(self, batch: int, device=None, dtype=None) -> Dict[str, torch.Tensor]:
+    def make_state(self, batch: int, device=None, dtype=None) -> dict[str, torch.Tensor]:
         """Return a fresh recurrent state for *batch* sequences."""
         return {
             "conv": torch.zeros(batch, self.d_inner, self.d_conv - 1, device=device, dtype=dtype),
             "ssm":  torch.zeros(batch, self.d_inner, self.d_state,    device=device, dtype=dtype),
         }
 
-    def step(self, x: torch.Tensor, state: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def step(self, x: torch.Tensor, state: dict[str, torch.Tensor]) -> torch.Tensor:
         """Single-token recurrent forward.
 
         Args:
@@ -487,10 +486,10 @@ class StructuredStateSpaceDualityBranch(nn.Module):
     def __init__(
         self,
         d_model: int,
-        d_inner: Optional[int] = None,
+        d_inner: int | None = None,
         d_state: int = 16,
         d_conv: int = 4,
-        dt_rank: Optional[int] = None,
+        dt_rank: int | None = None,
         num_heads: int = 8,
         dt_min: float = 1e-4,
         dt_max: float = 1.0,
@@ -544,7 +543,7 @@ class StructuredStateSpaceDualityBranch(nn.Module):
             dt = dt * (math.log(self.dt_max) - math.log(self.dt_min)) + math.log(self.dt_min)
             self.dt_bias.copy_(_inverse_softplus(dt.exp()))
 
-    def _split_proj(self, p: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+    def _split_proj(self, p: torch.Tensor) -> tuple[torch.Tensor, ...]:
         batch_size, seqlen, _ = p.shape
         h = self.num_heads
         n = self.d_state
@@ -584,14 +583,14 @@ class StructuredStateSpaceDualityBranch(nn.Module):
     # Recurrent inference
     # ------------------------------------------------------------------
 
-    def make_state(self, batch: int, device=None, dtype=None) -> Dict[str, torch.Tensor]:
+    def make_state(self, batch: int, device=None, dtype=None) -> dict[str, torch.Tensor]:
         """Return a fresh recurrent state for *batch* sequences."""
         return {
             "conv": torch.zeros(batch, self.d_inner, self.d_conv - 1, device=device, dtype=dtype),
             "ssm":  torch.zeros(batch, self.num_heads, self.head_dim, self.d_state, device=device, dtype=dtype),
         }
 
-    def step(self, x: torch.Tensor, state: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def step(self, x: torch.Tensor, state: dict[str, torch.Tensor]) -> torch.Tensor:
         """Single-token recurrent forward.
 
         Args:
@@ -681,12 +680,12 @@ class HybridMamba2Block(nn.Module):
     def __init__(
         self,
         d_model: int,
-        d_inner: Optional[int] = None,
+        d_inner: int | None = None,
         d_state: int = 16,
         d_conv: int = 4,
-        dt_rank: Optional[int] = None,
+        dt_rank: int | None = None,
         num_heads: int = 8,
-        n_kv_heads: Optional[int] = None,
+        n_kv_heads: int | None = None,
         window_size: int = 128,
         attn_dropout: float = 0.0,
         use_gated_delta: bool = False,
@@ -823,7 +822,7 @@ class TinyHybridMambaLM(nn.Module):
         n_layers: int = 4,
         d_state: int = 16,
         d_conv: int = 4,
-        dt_rank: Optional[int] = None,
+        dt_rank: int | None = None,
         tie_embeddings: bool = True,
         use_pre_norm: bool = True,
         mlp_every_n: int = 0,
@@ -846,7 +845,7 @@ class TinyHybridMambaLM(nn.Module):
                 for _ in range(n_layers)
             ]
         )
-        self._has_ffn: List[bool] = [
+        self._has_ffn: list[bool] = [
             mlp_every_n > 0 and (i + 1) % mlp_every_n == 0
             for i in range(n_layers)
         ]
@@ -869,7 +868,7 @@ class TinyHybridMambaLM(nn.Module):
         x = self.final_norm(x)
         return self.lm_head(x)
 
-    def make_states(self, batch: int, device=None, dtype=None) -> List[Dict]:
+    def make_states(self, batch: int, device=None, dtype=None) -> list[dict]:
         """Return per-block recurrent states for token-by-token inference."""
         return [blk.make_state(batch, device=device, dtype=dtype) for blk in self.blocks]
 
@@ -908,7 +907,7 @@ class TinyHybridMambaLM(nn.Module):
         for t in range(input_ids.shape[1]):
             last = _step(input_ids[:, t])
 
-        generated: List[torch.Tensor] = []
+        generated: list[torch.Tensor] = []
         logits = self.lm_head(last)
         for _ in range(max_new_tokens):
             if temperature == 0.0:
@@ -964,9 +963,9 @@ class TinyHybridMamba2LM(nn.Module):
         n_layers: int = 4,
         d_state: int = 16,
         d_conv: int = 4,
-        dt_rank: Optional[int] = None,
+        dt_rank: int | None = None,
         num_heads: int = 8,
-        n_kv_heads: Optional[int] = None,
+        n_kv_heads: int | None = None,
         window_size: int = 128,
         attn_every_n: int = 2,
         tie_embeddings: bool = True,
@@ -1016,7 +1015,7 @@ class TinyHybridMamba2LM(nn.Module):
             blocks.append(block)
 
         self.blocks = nn.ModuleList(blocks)
-        self._has_ffn: List[bool] = [
+        self._has_ffn: list[bool] = [
             mlp_every_n > 0 and (i + 1) % mlp_every_n == 0
             for i in range(n_layers)
         ]
@@ -1039,7 +1038,7 @@ class TinyHybridMamba2LM(nn.Module):
         x = self.final_norm(x)
         return self.lm_head(x)
 
-    def make_states(self, batch: int, device=None, dtype=None) -> List[dict]:
+    def make_states(self, batch: int, device=None, dtype=None) -> list[dict]:
         """Return per-block recurrent states for token-by-token inference."""
         return [blk.make_state(batch, device=device, dtype=dtype) for blk in self.blocks]
 
@@ -1078,7 +1077,7 @@ class TinyHybridMamba2LM(nn.Module):
         for t in range(input_ids.shape[1]):
             last = _step(input_ids[:, t])
 
-        generated: List[torch.Tensor] = []
+        generated: list[torch.Tensor] = []
         logits = self.lm_head(last)
         for _ in range(max_new_tokens):
             if temperature == 0.0:

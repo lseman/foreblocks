@@ -4,7 +4,7 @@ import math
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -44,7 +44,7 @@ class Config:
     conditioning_power_iters: int = 6
     conditioning_exact_max_dim: int = 64
     conditioning_inverse_shift: float = 1e-6
-    weights: Dict[str, float] = field(
+    weights: dict[str, float] = field(
         default_factory=lambda: {
             "synflow": 0.25,
             "grasp": 0.20,
@@ -234,7 +234,7 @@ class MetricsComputer:
                 model.train()
 
     def _finite_difference_jacobian(
-        self, model, inputs: torch.Tensor, d_out: Optional[int] = None
+        self, model, inputs: torch.Tensor, d_out: int | None = None
     ) -> float:
         """Directional finite-difference proxy for Tr(JJ^T)/d_in."""
         was_training = model.training
@@ -286,7 +286,7 @@ class MetricsComputer:
             if was_training:
                 model.train()
 
-    def compute_model_only_metrics(self, model: nn.Module) -> Dict[str, Result]:
+    def compute_model_only_metrics(self, model: nn.Module) -> dict[str, Result]:
         return {
             "params": self.params(model),
             "conditioning": self.conditioning(model),
@@ -296,10 +296,10 @@ class MetricsComputer:
         self,
         model: nn.Module,
         inputs: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
+        targets: torch.Tensor | None = None,
         include_heavy_metrics: bool = True,
-        model_only_results: Optional[Dict[str, Result]] = None,
-    ) -> Dict[str, Result]:
+        model_only_results: dict[str, Result] | None = None,
+    ) -> dict[str, Result]:
         """Compute all metrics with shared hooks and minimal forward passes"""
         results = {}
 
@@ -571,8 +571,8 @@ class MetricsComputer:
         inputs,
         targets,
         include_snip: bool = True,
-        shared_inputs: Optional[torch.Tensor] = None,
-        shared_outputs: Optional[torch.Tensor] = None,
+        shared_inputs: torch.Tensor | None = None,
+        shared_outputs: torch.Tensor | None = None,
     ):
         """Compute GRASP/Fisher on current weights and SNIP on init-time weights."""
         results = {}
@@ -925,8 +925,8 @@ class MetricsComputer:
         self,
         model,
         inputs,
-        shared_outputs: Optional[torch.Tensor] = None,
-        shared_inputs: Optional[torch.Tensor] = None,
+        shared_outputs: torch.Tensor | None = None,
+        shared_inputs: torch.Tensor | None = None,
     ):
         """
         Jacobian trace approximation with multi-probe Hutchinson estimator.
@@ -976,7 +976,7 @@ class MetricsComputer:
                 d_out = min(total_out, int(self.config.max_outputs))
                 probes = max(1, int(getattr(self.config, "jacobian_probes", 2)))
 
-                trace_vals: List[float] = []
+                trace_vals: list[float] = []
                 device = out.device
 
                 for probe_idx in range(probes):
@@ -1292,8 +1292,8 @@ class MetricsComputer:
         self,
         model: nn.Module,
         inputs: torch.Tensor,
-        shared_outputs: Optional[torch.Tensor] = None,
-        shared_inputs: Optional[torch.Tensor] = None,
+        shared_outputs: torch.Tensor | None = None,
+        shared_inputs: torch.Tensor | None = None,
     ) -> Result:
         """Input-gradient sensitivity (plain input influence signal)."""
 
@@ -1367,7 +1367,7 @@ class MetricsComputer:
 class ZeroCostNAS:
     """Main zero-cost NAS evaluation class"""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Config | None = None):
         self.config = config or Config()
         self.computer = MetricsComputer(self.config)
 
@@ -1378,7 +1378,7 @@ class ZeroCostNAS:
         device: torch.device,
         num_batches: int = 3,
         verbose: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Evaluate a single model"""
         model = model.to(device)
         model.eval()
@@ -1410,7 +1410,7 @@ class ZeroCostNAS:
             )
             all_results.append(batch_results)
         # print("Aggregating results across batches...")
-        final_results: Dict[str, Result] = self._aggregate_results(all_results)
+        final_results: dict[str, Result] = self._aggregate_results(all_results)
         score = self._compute_score(final_results)
 
         return {
@@ -1452,8 +1452,8 @@ class ZeroCostNAS:
         return inputs, targets
 
     def _aggregate_results(
-        self, all_results: List[Dict[str, Result]]
-    ) -> Dict[str, Result]:
+        self, all_results: list[dict[str, Result]]
+    ) -> dict[str, Result]:
         """Aggregate metric results across batches using sigma-clipped mean."""
         metrics = all_results[0].keys()
         aggregated = {}
@@ -1505,12 +1505,12 @@ class ZeroCostNAS:
 
         return aggregated
 
-    def _compute_score(self, results: Dict[str, Result]) -> float:
+    def _compute_score(self, results: dict[str, Result]) -> float:
         """Compute weighted aggregate score"""
         total_score = 0.0
         total_weight = 0.0
 
-        def _weight_for_metric(metric: str) -> Optional[float]:
+        def _weight_for_metric(metric: str) -> float | None:
             if metric in self.config.weights:
                 return float(self.config.weights[metric])
             if metric == "activation_diversity" and "zennas" in self.config.weights:
@@ -1539,7 +1539,7 @@ class ZeroCostNAS:
         dataloader: DataLoader,
         device: torch.device,
         num_batches: int = 3,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Compute raw metric values only (no weighting).
         Robust to individual metric failures, returning:
@@ -1555,7 +1555,7 @@ class ZeroCostNAS:
         model.eval()
 
         # ---- collect (inputs, targets) batches (same as evaluate_model)
-        batches: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        batches: list[tuple[torch.Tensor, torch.Tensor]] = []
         for i, batch in enumerate(dataloader):
             print(f"Extracting batch {i + 1} for raw metrics...")
             if i >= num_batches:
@@ -1579,10 +1579,10 @@ class ZeroCostNAS:
                 "errors": {"_global": "No valid batches after extraction/slicing."},
             }
 
-        per_metric_values: Dict[str, List[float]] = {}
-        per_metric_success: Dict[str, int] = {}
-        per_metric_total: Dict[str, int] = {}
-        per_metric_errors: Dict[str, str] = {}
+        per_metric_values: dict[str, list[float]] = {}
+        per_metric_success: dict[str, int] = {}
+        per_metric_total: dict[str, int] = {}
+        per_metric_errors: dict[str, str] = {}
         model_only_results = self.computer.compute_model_only_metrics(model)
         heavy_batches = max(1, int(getattr(self.config, "heavy_metrics_batches", 1)))
 
@@ -1622,13 +1622,13 @@ class ZeroCostNAS:
                 except Exception as e:
                     per_metric_errors[name] = str(e)
 
-        raw_metrics: Dict[str, float] = {
+        raw_metrics: dict[str, float] = {
             name: float(sum(vals) / len(vals))
             for name, vals in per_metric_values.items()
             if len(vals) > 0
         }
 
-        success_rates: Dict[str, float] = {
+        success_rates: dict[str, float] = {
             name: float(per_metric_success.get(name, 0) / max(tot, 1))
             for name, tot in per_metric_total.items()
         }
@@ -1646,7 +1646,7 @@ class ZeroCostNAS:
         }
 
     def score_from_metrics(
-        self, metrics: Dict[str, float], weights: Dict[str, float]
+        self, metrics: dict[str, float], weights: dict[str, float]
     ) -> float:
         """Compute weighted score from precomputed raw metrics."""
         return _score_from_metrics_shared(metrics, weights)

@@ -1,4 +1,5 @@
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -10,7 +11,7 @@ from foreblocks.ui.node_spec import node
 # =============================================================================
 
 
-def _ensure_batch_adj(adj: Optional[torch.Tensor], B: int) -> Optional[torch.Tensor]:
+def _ensure_batch_adj(adj: torch.Tensor | None, B: int) -> torch.Tensor | None:
     """
     Normalize adjacency to [B, N, N] or return None.
 
@@ -65,7 +66,7 @@ class TimewiseGraph(nn.Module):
         self._accepts_time_dim = True
 
     def forward(
-        self, x: torch.Tensor, adj: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, adj: torch.Tensor | None = None
     ) -> torch.Tensor:
         if x.dim() == 3:  # [B, N, F]
             return self.gblock(x, adj)
@@ -91,11 +92,11 @@ class BaseHead(nn.Module):
       - attribute delegation
     """
 
-    def __init__(self, module: nn.Module, name: Optional[str] = None) -> None:
+    def __init__(self, module: nn.Module, name: str | None = None) -> None:
         super().__init__()
         self.module = module
         self.name: str = name or self.__class__.__name__
-        self._fallback_device: Optional[torch.device] = None
+        self._fallback_device: torch.device | None = None
 
     def forward(self, *args, **kwargs):
         return self.module(*args, **kwargs)
@@ -166,34 +167,34 @@ class ForecastingModel(nn.Module):
         self,
         *,
         # Core modules
-        encoder: Optional[nn.Module] = None,
-        decoder: Optional[nn.Module] = None,
-        head: Optional[nn.Module] = None,
+        encoder: nn.Module | None = None,
+        decoder: nn.Module | None = None,
+        head: nn.Module | None = None,
         # Strategy & shape
         forecasting_strategy: str = "seq2seq",
         model_type: str = "lstm",
         target_len: int = 5,
-        output_size: Optional[int] = None,
+        output_size: int | None = None,
         hidden_size: int = 64,
         # Processing modules
-        input_preprocessor: Optional[nn.Module] = None,
-        output_postprocessor: Optional[nn.Module] = None,
-        input_normalization: Optional[nn.Module] = None,
-        output_normalization: Optional[nn.Module] = None,
-        output_block: Optional[nn.Module] = None,
+        input_preprocessor: nn.Module | None = None,
+        output_postprocessor: nn.Module | None = None,
+        input_normalization: nn.Module | None = None,
+        output_normalization: nn.Module | None = None,
+        output_block: nn.Module | None = None,
         input_skip_connection: bool = False,
         # Attention
-        attention_module: Optional[nn.Module] = None,
+        attention_module: nn.Module | None = None,
         # Training
         teacher_forcing_ratio: float = 0.5,
-        scheduled_sampling_fn: Optional[Callable[[Optional[int]], float]] = None,
+        scheduled_sampling_fn: Callable[[int | None], float] | None = None,
         # Time embeddings
-        time_feature_embedding_enc: Optional[nn.Module] = None,
-        time_feature_embedding_dec: Optional[nn.Module] = None,
+        time_feature_embedding_enc: nn.Module | None = None,
+        time_feature_embedding_dec: nn.Module | None = None,
         # Transformer-style decoding prompt length
-        label_len: Optional[int] = None,
+        label_len: int | None = None,
         # Optional HeadComposer to own pre/inverse processing
-        head_composer: Optional[nn.Module] = None,
+        head_composer: nn.Module | None = None,
     ) -> None:
         super().__init__()
 
@@ -256,11 +257,11 @@ class ForecastingModel(nn.Module):
         self.label_len = label_len if label_len is not None else target_len // 2
 
         # Aux (kept for backward compatibility)
-        self._kl: Optional[torch.Tensor] = None
-        self._mem_model_bridge: Optional[nn.Module] = None
+        self._kl: torch.Tensor | None = None
+        self._mem_model_bridge: nn.Module | None = None
 
         # Small cache for causal masks to avoid re-allocating every step
-        self._mask_cache: Dict[Tuple[int, torch.device], torch.Tensor] = {}
+        self._mask_cache: dict[tuple[int, torch.device], torch.Tensor] = {}
 
         # === Decoder input/feedback projection bridges (if decoder exists) ===
         if self.decoder is not None:
@@ -296,7 +297,7 @@ class ForecastingModel(nn.Module):
         self._setup_output_layers()
 
         # === Optional graph blocks registry ===
-        self._graph_blocks: Dict[str, nn.Module] = {}
+        self._graph_blocks: dict[str, nn.Module] = {}
 
         # === Validate configuration ===
         self._validate_configuration()
@@ -400,9 +401,9 @@ class ForecastingModel(nn.Module):
             raise ValueError(f"Invalid position: {position}")
         return self
 
-    def list_heads(self) -> Dict[str, Any]:
+    def list_heads(self) -> dict[str, Any]:
         """List all registered heads in the model."""
-        heads: Dict[str, Any] = {}
+        heads: dict[str, Any] = {}
         if self.encoder:
             heads["encoder"] = type(self.encoder).__name__
         if self.decoder:
@@ -492,11 +493,11 @@ class ForecastingModel(nn.Module):
 
         return loss
 
-    def get_kl(self) -> Optional[torch.Tensor]:
+    def get_kl(self) -> torch.Tensor | None:
         """Get KL divergence loss (kept for backward compatibility)."""
         return self._kl
 
-    def get_model_size(self) -> Dict[str, Any]:
+    def get_model_size(self) -> dict[str, Any]:
         """Calculate model size statistics."""
         params = sum(p.numel() for p in self.parameters())
         buffers = sum(b.numel() for b in self.buffers())
@@ -511,7 +512,7 @@ class ForecastingModel(nn.Module):
 
     def benchmark_inference(
         self, input_tensor: torch.Tensor, num_runs: int = 100, warmup_runs: int = 10
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Benchmark inference time and throughput."""
         import time
 
@@ -540,10 +541,10 @@ class ForecastingModel(nn.Module):
     def attribute_forward(
         self,
         src: torch.Tensor,
-        time_features: Optional[torch.Tensor] = None,
-        targets: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
-        output_idx: Optional[int] = None,
+        time_features: torch.Tensor | None = None,
+        targets: torch.Tensor | None = None,
+        epoch: int | None = None,
+        output_idx: int | None = None,
     ) -> torch.Tensor:
         """Forward pass for attribution analysis (gradients enabled)."""
         self.train()
@@ -563,7 +564,7 @@ class ForecastingModel(nn.Module):
             return module
         return BaseHead(module, name)
 
-    def _get_model_device_dtype(self) -> Tuple[torch.device, Optional[torch.dtype]]:
+    def _get_model_device_dtype(self) -> tuple[torch.device, torch.dtype | None]:
         """Get device and dtype from model parameters."""
         ref_param = next(self.parameters(), None)
         if ref_param is None:
@@ -630,7 +631,7 @@ class ForecastingModel(nn.Module):
         )
 
     def _apply_graph_block(
-        self, x: torch.Tensor, adj: Optional[torch.Tensor], block_name: str
+        self, x: torch.Tensor, adj: torch.Tensor | None, block_name: str
     ) -> torch.Tensor:
         """Apply registered graph block by name."""
         block = self._graph_blocks.get(block_name)
@@ -667,9 +668,9 @@ class ForecastingModel(nn.Module):
     def _run_strategy(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor],
-        time_features: Optional[torch.Tensor],
-        epoch: Optional[int],
+        targets: torch.Tensor | None,
+        time_features: torch.Tensor | None,
+        epoch: int | None,
     ) -> torch.Tensor:
         """Run selected strategy and return raw predictions."""
         return self._get_strategy_fn()(src, targets, time_features, epoch)
@@ -677,7 +678,7 @@ class ForecastingModel(nn.Module):
     def _encode_memory(
         self,
         src: torch.Tensor,
-        time_features: Optional[torch.Tensor] = None,
+        time_features: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Encode source (with optional time features) and align to decoder dim."""
         if self.encoder is None:
@@ -692,13 +693,13 @@ class ForecastingModel(nn.Module):
 
     @staticmethod
     def _targets_to_horizon(
-        targets: Optional[torch.Tensor],
+        targets: torch.Tensor | None,
         horizon: int,
         *,
         batch_size: int,
         device: torch.device,
         dtype: torch.dtype,
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         """Clip/pad targets to exactly `horizon` steps."""
         if targets is None:
             return None
@@ -716,7 +717,7 @@ class ForecastingModel(nn.Module):
     def _next_decoder_input(
         self,
         output: torch.Tensor,
-        targets: Optional[torch.Tensor],
+        targets: torch.Tensor | None,
         t: int,
         use_tf: bool,
     ) -> torch.Tensor:
@@ -730,8 +731,8 @@ class ForecastingModel(nn.Module):
         *,
         decoder_input: torch.Tensor,
         steps: int,
-        targets: Optional[torch.Tensor],
-        epoch: Optional[int],
+        targets: torch.Tensor | None,
+        epoch: int | None,
         step_fn: Callable[[torch.Tensor, int], torch.Tensor],
         select_fn: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
         aggregate: str = "cat",
@@ -768,8 +769,8 @@ class ForecastingModel(nn.Module):
 
     def _should_use_teacher_forcing(
         self,
-        targets: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        epoch: int | None = None,
         fallback_device: str = "cpu",
     ) -> bool:
         """Determine whether to use teacher forcing for current step."""
@@ -836,7 +837,7 @@ class ForecastingModel(nn.Module):
             if isinstance(m, nn.Dropout):
                 m.p = 0.0
 
-    def _decoder_model_dim(self) -> Optional[int]:
+    def _decoder_model_dim(self) -> int | None:
         """Get model dimension from decoder if available."""
         if self.decoder is None:
             return None
@@ -886,9 +887,9 @@ class ForecastingModel(nn.Module):
     def forward(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        time_features: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
     ) -> torch.Tensor:
         """
         Main forward pass. Returns finalized predictions.
@@ -932,11 +933,11 @@ class ForecastingModel(nn.Module):
     def _forward_graph_4d(
         self,
         src: torch.Tensor,  # [B, T, N, F]
-        targets: Optional[torch.Tensor] = None,  # [B, L, N, D_out]
-        time_features: Optional[torch.Tensor] = None,  # [B, T, N, Ft]
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,  # [B, L, N, D_out]
+        time_features: torch.Tensor | None = None,  # [B, T, N, Ft]
+        epoch: int | None = None,
         *,
-        adj: Optional[torch.Tensor] = None,
+        adj: torch.Tensor | None = None,
         mode: str = "temporal_per_node",
     ) -> torch.Tensor:
         """
@@ -1007,9 +1008,9 @@ class ForecastingModel(nn.Module):
     def _forward_direct(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        time_features: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
     ) -> torch.Tensor:
         """Direct prediction strategy (no autoregression)."""
         return self.head(src)  # RAW
@@ -1017,9 +1018,9 @@ class ForecastingModel(nn.Module):
     def _forward_autoregressive(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        time_features: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
     ) -> torch.Tensor:
         """Autoregressive prediction strategy."""
         if self.decoder is None:
@@ -1042,9 +1043,9 @@ class ForecastingModel(nn.Module):
     def _forward_seq2seq(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        time_features: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
     ) -> torch.Tensor:
         """Sequence-to-sequence prediction strategy."""
         if self.encoder is None or self.decoder is None:
@@ -1058,9 +1059,9 @@ class ForecastingModel(nn.Module):
     def _forward_rnn_style(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        time_features: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
     ) -> torch.Tensor:
         """RNN-style seq2seq forward pass."""
         enc_out, enc_hidden = self.encoder(src)
@@ -1088,9 +1089,9 @@ class ForecastingModel(nn.Module):
     def _forward_transformer_style(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        time_features: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
     ) -> torch.Tensor:
         """Transformer-style seq2seq forward pass."""
         device = src.device
@@ -1142,9 +1143,9 @@ class ForecastingModel(nn.Module):
     def _forward_informer_style(
         self,
         src: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        time_features: Optional[torch.Tensor] = None,
-        epoch: Optional[int] = None,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
         *,
         teacher_forcing: str = "none",  # "none" | "prefix" | "scheduled"
         teacher_forcing_k: int = 0,  # used when teacher_forcing == "prefix"

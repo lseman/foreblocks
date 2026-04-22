@@ -9,7 +9,7 @@ discrete model to convergence.  The public entry-point is
 from __future__ import annotations
 
 import time
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import torch
@@ -41,7 +41,7 @@ def train_final_model(
     swa_start_ratio: float = 0.33,
     grad_clip_norm: float = 1.0,
     use_amp: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Train the *fixed-operation* model resulting from architecture derivation.
 
@@ -94,7 +94,7 @@ def train_final_model(
     # ── State ─────────────────────────────────────────────────────────────
     best_val_loss = float("inf")
     patience_counter = 0
-    best_state: Dict = {}
+    best_state: dict = {}
     train_losses, val_losses = [], []
 
     print(f"Training final model for {epochs} epochs")
@@ -293,7 +293,7 @@ def _finalize_swa(
 
 def _evaluate_test_set(
     trainer, model: nn.Module, test_loader, loss_type: str, *, amp_enabled: bool = False
-) -> Dict:
+) -> dict:
     """Evaluate model on the test set and return loss + metrics dict."""
     print("\nEvaluating on test set...")
     device = trainer.device

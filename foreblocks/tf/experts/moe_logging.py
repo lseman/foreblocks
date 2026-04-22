@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any
+from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -40,8 +41,8 @@ class MoELogger:
     to the plotting/report functions below.
     """
 
-    def __init__(self, max_buffer_steps: Optional[int] = None) -> None:
-        self.buff: Dict[str, List[Any]] = {}
+    def __init__(self, max_buffer_steps: int | None = None) -> None:
+        self.buff: dict[str, list[Any]] = {}
         self.max_buffer_steps = max_buffer_steps
 
     def _append(self, key: str, value: Any) -> None:
@@ -51,10 +52,10 @@ class MoELogger:
             if len(self.buff[key]) > self.max_buffer_steps:
                 self.buff[key].pop(0)
 
-    def state_dict(self) -> Dict[str, List[Any]]:
+    def state_dict(self) -> dict[str, list[Any]]:
         return self.buff
 
-    def load_state_dict(self, d: Dict[str, List[Any]]) -> None:
+    def load_state_dict(self, d: dict[str, list[Any]]) -> None:
         self.buff = d
 
     def to_json(self, path: str) -> None:
@@ -71,8 +72,8 @@ class MoELogger:
             json.dump(safe, f)
 
     @staticmethod
-    def from_json(path: str) -> "MoELogger":
-        with open(path, "r", encoding="utf-8") as f:
+    def from_json(path: str) -> MoELogger:
+        with open(path, encoding="utf-8") as f:
             d = json.load(f)
         m = MoELogger()
         m.load_state_dict(d)
@@ -81,13 +82,13 @@ class MoELogger:
     # Main per-step logging entry point
     def log_router(
         self,
-        step: Union[int, float],
-        gate_logits: Union["np.ndarray", "torch.Tensor"],  # [N, E]
-        topk_idx: Union["np.ndarray", "torch.Tensor"],     # [N, K]
+        step: int | float,
+        gate_logits: np.ndarray | torch.Tensor,  # [N, E]
+        topk_idx: np.ndarray | torch.Tensor,     # [N, K]
         capacity_dropped: int = 0,
-        aux_loss: Optional[float] = None,
-        latency_ms: Optional[float] = None,
-        meta: Optional[Dict[str, Union["np.ndarray", "torch.Tensor", Sequence[int], Sequence[float]]]] = None,
+        aux_loss: float | None = None,
+        latency_ms: float | None = None,
+        meta: dict[str, np.ndarray | torch.Tensor | Sequence[int] | Sequence[float]] | None = None,
     ) -> None:
         # convert to numpy
         gate_logits = _to_numpy(gate_logits)
@@ -187,13 +188,13 @@ def _entropy(p: np.ndarray, axis=-1) -> np.ndarray:
     p = np.clip(p, 1e-12, 1.0)
     return -np.sum(p * np.log(p), axis=axis)
 
-def _steps(d: Dict[str, List[Any]]) -> np.ndarray:
+def _steps(d: dict[str, list[Any]]) -> np.ndarray:
     return np.asarray(d.get("step", []), dtype=float)
 
-def _stack_list_of_lists(x: List[List[float]]) -> np.ndarray:
+def _stack_list_of_lists(x: list[list[float]]) -> np.ndarray:
     return np.asarray(x, dtype=float) if len(x) > 0 else np.zeros((0,))
 
-def _maybe_save(fig, outdir: Optional[str], name: str):
+def _maybe_save(fig, outdir: str | None, name: str):
     if outdir:
         os.makedirs(outdir, exist_ok=True)
         fig.savefig(os.path.join(outdir, name), bbox_inches="tight")
@@ -201,7 +202,7 @@ def _maybe_save(fig, outdir: Optional[str], name: str):
 
 # ——— 1) Expert Utilization over Time ————————————————————————————
 
-def plot_expert_utilization_over_time(log: Dict[str, List[Any]], title="Expert Utilization"):
+def plot_expert_utilization_over_time(log: dict[str, list[Any]], title="Expert Utilization"):
     steps = _steps(log)
     util = np.asarray(log.get("expert_util", []), dtype=float)   # [S, E]
     if util.ndim != 2 or util.shape[0] == 0:
@@ -216,7 +217,7 @@ def plot_expert_utilization_over_time(log: Dict[str, List[Any]], title="Expert U
 
 # ——— 2) Load Imbalance CV ——————————————————————————————————————
 
-def plot_load_imbalance_cv(log: Dict[str, List[Any]], title="Expert Load Imbalance (CV)"):
+def plot_load_imbalance_cv(log: dict[str, list[Any]], title="Expert Load Imbalance (CV)"):
     util = np.asarray(log.get("expert_util", []), dtype=float)  # [S, E]
     steps = _steps(log)
     if util.ndim != 2 or util.shape[0] == 0:
@@ -232,7 +233,7 @@ def plot_load_imbalance_cv(log: Dict[str, List[Any]], title="Expert Load Imbalan
 
 # ——— 3) Router Entropy & Aux Loss ——————————————————————————————
 
-def plot_entropy_and_aux(log: Dict[str, List[Any]]):
+def plot_entropy_and_aux(log: dict[str, list[Any]]):
     steps = _steps(log)
     ent = _stack_list_of_lists(log.get("router_entropy", []))
     aux = _stack_list_of_lists(log.get("aux_loss", []))
@@ -247,7 +248,7 @@ def plot_entropy_and_aux(log: Dict[str, List[Any]]):
 
 # ——— 4) Tokens Dropped (Capacity Pressure) ————————————————————
 
-def plot_tokens_dropped(log: Dict[str, List[Any]]):
+def plot_tokens_dropped(log: dict[str, list[Any]]):
     steps = _steps(log)
     dropped = np.asarray(log.get("tokens_dropped", []), dtype=float)
     if dropped.size == 0:
@@ -262,8 +263,8 @@ def plot_tokens_dropped(log: Dict[str, List[Any]]):
 # ——— 5) Specialization Heatmap (expert × condition) ———————————
 
 def heatmap_expert_by_condition(
-    topk_snapshots: List[np.ndarray],   # a few [N,K] arrays
-    cond_snapshots: List[np.ndarray],   # a few [N] arrays in [0,C)
+    topk_snapshots: list[np.ndarray],   # a few [N,K] arrays
+    cond_snapshots: list[np.ndarray],   # a few [N] arrays in [0,C)
     E: int,
     C: int,
     title: str = "Expert × Condition usage"
@@ -339,7 +340,7 @@ def plot_horizon_wise_error(err_moe: Sequence[float], err_dense: Sequence[float]
 
 # ——— 9) Accuracy–Latency Pareto ——————————————————————————————
 
-def pareto_accuracy_latency(points: List[Dict[str, float]], title="Accuracy–Latency Pareto"):
+def pareto_accuracy_latency(points: list[dict[str, float]], title="Accuracy–Latency Pareto"):
     """
     points: [{"name": "MoE", "metric": 0.13, "latency_ms": 7.5, "size_m": 120}, ...]
     Lower metric is better (e.g., sMAPE, MASE, RMSE).
@@ -377,26 +378,26 @@ def plot_attn_entropy_by_expert(attn_entropy_per_token: np.ndarray, primary_expe
 
 @dataclass
 class ReportInputs:
-    log: Dict[str, List[Any]]
+    log: dict[str, list[Any]]
     # Optional extras for specific plots:
     # For heatmap:
-    E: Optional[int] = None
-    condition_name: Optional[str] = None  # e.g., "hour", "node_id", "horizon"
-    condition_cardinality: Optional[int] = None  # e.g., 24 for hour
+    E: int | None = None
+    condition_name: str | None = None  # e.g., "hour", "node_id", "horizon"
+    condition_cardinality: int | None = None  # e.g., 24 for hour
     # For reliability:
-    reliability_conf: Optional[np.ndarray] = None
-    reliability_correct: Optional[np.ndarray] = None
+    reliability_conf: np.ndarray | None = None
+    reliability_correct: np.ndarray | None = None
     # For ablation:
-    full_metric: Optional[float] = None
-    metric_without_expert: Optional[Sequence[float]] = None
+    full_metric: float | None = None
+    metric_without_expert: Sequence[float] | None = None
     # For horizon-wise:
-    err_moe: Optional[Sequence[float]] = None
-    err_dense: Optional[Sequence[float]] = None
+    err_moe: Sequence[float] | None = None
+    err_dense: Sequence[float] | None = None
     # For pareto:
-    pareto_points: Optional[List[Dict[str, float]]] = None
+    pareto_points: list[dict[str, float]] | None = None
     # For attention × expert:
-    attn_entropy_per_token: Optional[np.ndarray] = None
-    primary_expert_per_token: Optional[np.ndarray] = None
+    attn_entropy_per_token: np.ndarray | None = None
+    primary_expert_per_token: np.ndarray | None = None
 
 def _maybe_save(fig, outdir: str | None, name: str, close: bool = True) -> str | None:
     """
@@ -417,14 +418,14 @@ def _maybe_save(fig, outdir: str | None, name: str, close: bool = True) -> str |
 
 def build_moe_report(
     ri: ReportInputs,
-    outdir: Optional[str] = None,
-) -> Dict[str, Optional[plt.Figure]]:
+    outdir: str | None = None,
+) -> dict[str, plt.Figure | None]:
     """
     Builds and (optionally) saves all core figures. Returns dict of figures.
     Also prints a short manifest of what was saved or skipped.
     """
-    figs: Dict[str, Optional[plt.Figure]] = {}
-    manifest: Dict[str, str] = {}
+    figs: dict[str, plt.Figure | None] = {}
+    manifest: dict[str, str] = {}
 
     # 1 Utilization over time
     figs["util_over_time"] = plot_expert_utilization_over_time(ri.log)
@@ -535,7 +536,7 @@ def build_moe_report(
 def run_per_expert_ablation(
     eval_fn_disable_expert,   # callable: (e:int) -> metric_value (lower is better)
     E: int
-) -> List[float]:
+) -> list[float]:
     """
     Convenience wrapper to measure metric when each expert is disabled.
     Example:
@@ -554,10 +555,10 @@ def run_per_expert_ablation(
 # ╚═════════════════════════════════════════════════════════════════════════╝
 
 def make_reliability_proxy_from_contrib(
-    top1_conf_list: List[np.ndarray],
-    delta_improvement_list: List[np.ndarray],
+    top1_conf_list: list[np.ndarray],
+    delta_improvement_list: list[np.ndarray],
     threshold: float = 0.0
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Build (confidence, correctness) arrays for reliability_diagram:
     - top1_conf_list: list of arrays with top-1 gate probs per token.

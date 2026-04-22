@@ -5,7 +5,7 @@ Python client for interacting with MLTracker API
 
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import requests
 
@@ -28,20 +28,20 @@ class MLTrackerClient:
         return response.json() if response.content else None
     
     # Experiment methods
-    def create_experiment(self, name: str) -> Dict:
+    def create_experiment(self, name: str) -> dict:
         """Create a new experiment"""
         return self._request("POST", "/api/experiments", json={"name": name})
     
-    def get_experiment(self, name: str) -> Dict:
+    def get_experiment(self, name: str) -> dict:
         """Get experiment by name"""
         return self._request("GET", f"/api/experiments/{name}")
     
-    def list_experiments(self) -> List[Dict]:
+    def list_experiments(self) -> list[dict]:
         """List all experiments"""
         return self._request("GET", "/api/experiments")
     
     # Run methods
-    def start_run(self, experiment_name: str = "default", run_name: Optional[str] = None) -> str:
+    def start_run(self, experiment_name: str = "default", run_name: str | None = None) -> str:
         """Start a new run"""
         response = self._request("POST", "/api/runs", json={
             "experiment_name": experiment_name,
@@ -50,7 +50,7 @@ class MLTrackerClient:
         self._active_run_id = response["run_id"]
         return self._active_run_id
     
-    def end_run(self, run_id: Optional[str] = None, status: str = "FINISHED"):
+    def end_run(self, run_id: str | None = None, status: str = "FINISHED"):
         """End a run"""
         rid = run_id or self._active_run_id
         if not rid:
@@ -61,18 +61,18 @@ class MLTrackerClient:
         if rid == self._active_run_id:
             self._active_run_id = None
     
-    def get_run(self, run_id: str) -> Dict:
+    def get_run(self, run_id: str) -> dict:
         """Get run details"""
         return self._request("GET", f"/api/runs/{run_id}")
     
-    def search_runs(self, experiment_name: Optional[str] = None) -> List[Dict]:
+    def search_runs(self, experiment_name: str | None = None) -> list[dict]:
         """Search for runs"""
         params = {"experiment_name": experiment_name} if experiment_name else {}
         result = self._request("GET", "/api/runs", params=params)
         return result["runs"]
     
     # Logging methods
-    def log_param(self, key: str, value: Any, run_id: Optional[str] = None):
+    def log_param(self, key: str, value: Any, run_id: str | None = None):
         """Log a parameter"""
         rid = run_id or self._active_run_id
         if not rid:
@@ -83,7 +83,7 @@ class MLTrackerClient:
             "value": value
         })
     
-    def log_params(self, params: Dict[str, Any], run_id: Optional[str] = None):
+    def log_params(self, params: dict[str, Any], run_id: str | None = None):
         """Log multiple parameters"""
         rid = run_id or self._active_run_id
         if not rid:
@@ -91,7 +91,7 @@ class MLTrackerClient:
         
         self._request("POST", f"/api/runs/{rid}/params/batch", json=params)
     
-    def log_metric(self, key: str, value: float, step: int = 0, run_id: Optional[str] = None):
+    def log_metric(self, key: str, value: float, step: int = 0, run_id: str | None = None):
         """Log a metric"""
         rid = run_id or self._active_run_id
         if not rid:
@@ -103,7 +103,7 @@ class MLTrackerClient:
             "step": step
         })
     
-    def log_metrics(self, metrics: Dict[str, float], step: int = 0, run_id: Optional[str] = None):
+    def log_metrics(self, metrics: dict[str, float], step: int = 0, run_id: str | None = None):
         """Log multiple metrics"""
         rid = run_id or self._active_run_id
         if not rid:
@@ -112,7 +112,7 @@ class MLTrackerClient:
         self._request("POST", f"/api/runs/{rid}/metrics/batch", 
                      json=metrics, params={"step": step})
     
-    def set_tag(self, key: str, value: str, run_id: Optional[str] = None):
+    def set_tag(self, key: str, value: str, run_id: str | None = None):
         """Set a tag"""
         rid = run_id or self._active_run_id
         if not rid:
@@ -124,7 +124,7 @@ class MLTrackerClient:
         })
     
     # Artifact methods
-    def log_artifact(self, local_path: str, artifact_path: str = "", run_id: Optional[str] = None):
+    def log_artifact(self, local_path: str, artifact_path: str = "", run_id: str | None = None):
         """Upload an artifact"""
         rid = run_id or self._active_run_id
         if not rid:
@@ -149,7 +149,7 @@ class MLTrackerClient:
             
             return response.json()
     
-    def list_artifacts(self, run_id: str) -> List[Dict]:
+    def list_artifacts(self, run_id: str) -> list[dict]:
         """List artifacts for a run"""
         result = self._request("GET", f"/api/runs/{run_id}/artifacts")
         return result["artifacts"]
@@ -170,24 +170,24 @@ class MLTrackerClient:
                 f.write(chunk)
     
     # Analysis methods
-    def get_metric_history(self, run_id: str, metric_key: Optional[str] = None) -> Dict:
+    def get_metric_history(self, run_id: str, metric_key: str | None = None) -> dict:
         """Get metric history"""
         params = {"metric_key": metric_key} if metric_key else {}
         result = self._request("GET", f"/api/runs/{run_id}/metrics/history", params=params)
         return result["metrics"]
     
-    def compare_runs(self, run_ids: List[str]) -> Dict:
+    def compare_runs(self, run_ids: list[str]) -> dict:
         """Compare multiple runs"""
         return self._request("POST", "/api/runs/compare", json=run_ids)
     
-    def health_check(self) -> Dict:
+    def health_check(self) -> dict:
         """Check API health"""
         return self._request("GET", "/api/health")
 
 
 @contextmanager
 def start_run(client: MLTrackerClient, experiment_name: str = "default", 
-              run_name: Optional[str] = None):
+              run_name: str | None = None):
     """Context manager for runs"""
     run_id = client.start_run(experiment_name, run_name)
     try:

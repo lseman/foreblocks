@@ -7,7 +7,6 @@ as arguments rather than accessing a trainer instance.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,11 +20,11 @@ from torch.amp import autocast
 
 
 def plot_training_curve(
-    train_losses: List[float],
-    val_losses: List[float],
+    train_losses: list[float],
+    val_losses: list[float],
     *,
     title: str = "Training Progress",
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
 ) -> plt.Figure:
     """
     Plot train / validation loss curves side by side.
@@ -63,10 +62,10 @@ def plot_training_curve(
 
 
 def plot_alpha_evolution(
-    alpha_values: List,
+    alpha_values: list,
     *,
     save_path: str = "alpha_evolution.png",
-) -> Optional[plt.Figure]:
+) -> plt.Figure | None:
     """
     Plot how architecture weights (alphas) evolve across training epochs.
 
@@ -89,7 +88,7 @@ def plot_alpha_evolution(
 
     for edge_idx in range(num_edges_to_plot):
         ax = axes[edge_idx]
-        edge_alphas: List[np.ndarray] = []
+        edge_alphas: list[np.ndarray] = []
 
         for epoch_alphas in alpha_values:
             if edge_idx < len(epoch_alphas):
@@ -211,12 +210,12 @@ def plot_prediction(
     X_val: torch.Tensor,
     y_val: torch.Tensor,
     *,
-    full_series: Optional[torch.Tensor] = None,
+    full_series: torch.Tensor | None = None,
     offset: int = 0,
-    figsize: Tuple[int, int] = (12, 4),
+    figsize: tuple[int, int] = (12, 4),
     show: bool = False,
-    device: Optional[torch.device] = None,
-    names: Optional[List[str]] = None,
+    device: torch.device | None = None,
+    names: list[str] | None = None,
     batch_size: int = 256,
 ) -> plt.Figure:
     """

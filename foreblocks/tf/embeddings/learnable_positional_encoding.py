@@ -1,5 +1,4 @@
 import math
-from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -16,10 +15,10 @@ class LearnablePositionalEncoding(nn.Module):
         dropout: float = 0.1,
         initialization: str = "normal",
         scale_strategy: str = "fixed",
-        scale_value: Optional[float] = None,
+        scale_value: float | None = None,
         use_layer_norm: bool = True,
         norm_strategy: str = "pre_add",
-        low_rank_dim: Optional[int] = None,
+        low_rank_dim: int | None = None,
         per_head_scale: bool = False,
     ):
         super().__init__()
@@ -49,7 +48,7 @@ class LearnablePositionalEncoding(nn.Module):
         self.dropout = nn.Dropout(dropout) if dropout > 0 else None
 
         self.per_head_scale = nn.Parameter(torch.ones(d_model)) if per_head_scale else None
-        self._cache: Dict[int, torch.Tensor] = {}
+        self._cache: dict[int, torch.Tensor] = {}
 
     def _init_pe(self, mode: str, shape: tuple) -> torch.Tensor:
         if mode == "normal":
@@ -61,7 +60,7 @@ class LearnablePositionalEncoding(nn.Module):
             return torch.zeros(shape)
         return torch.randn(shape) * 0.02
 
-    def forward(self, x: torch.Tensor, positions: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, positions: torch.Tensor | None = None) -> torch.Tensor:
         B, T, _ = x.shape
         device, dtype = x.device, x.dtype
 

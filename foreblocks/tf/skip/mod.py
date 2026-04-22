@@ -1,6 +1,5 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -64,7 +63,7 @@ class MoDRouter(nn.Module):
     @staticmethod
     def predictor_keep_mask(
         logits: torch.Tensor,
-        active_mask: Optional[torch.Tensor] = None,
+        active_mask: torch.Tensor | None = None,
         threshold: float = 0.0,
     ) -> torch.Tensor:
         scores = logits.squeeze(-1) if logits.dim() == 3 else logits
@@ -77,7 +76,7 @@ class MoDRouter(nn.Module):
 
 def _normalize_active_mask(
     scores: torch.Tensor,
-    active_mask: Optional[torch.Tensor],
+    active_mask: torch.Tensor | None,
 ) -> torch.Tensor:
     if active_mask is None:
         return torch.ones_like(scores, dtype=torch.bool)
@@ -93,7 +92,7 @@ def _normalize_active_mask(
 def mod_topk_mask(
     logits: torch.Tensor,
     keep_rate: float,
-    active_mask: Optional[torch.Tensor] = None,
+    active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Expert-choice top-k routing used by Mixture-of-Depths.
@@ -138,8 +137,8 @@ def mod_capacity(
 
 def mod_routed_indices(
     keep_mask: torch.Tensor,
-    capacity: Optional[int] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    capacity: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Convert a keep mask [B,T] into sorted routed indices [B,C] and slot mask [B,C].
     """
@@ -170,7 +169,7 @@ def mod_routed_indices(
 def mod_router_aux_loss(
     logits: torch.Tensor,
     keep_mask: torch.Tensor,
-    active_mask: Optional[torch.Tensor] = None,
+    active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     BCE auxiliary used to train the causal router predictor from non-causal top-k

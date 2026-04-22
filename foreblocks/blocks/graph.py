@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Tuple
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -64,10 +64,10 @@ def _normalize_row(adj: Tensor, eps: float = 1e-9) -> Tensor:
 def _to_dense_from_edge_index(
     edge_index: Tensor,
     num_nodes: int,
-    edge_weight: Optional[Tensor] = None,
-    batch_size: Optional[int] = None,
+    edge_weight: Tensor | None = None,
+    batch_size: int | None = None,
     dtype: torch.dtype = torch.float32,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
 ) -> Tensor:
     device = device or edge_index.device
     if batch_size is None:
@@ -86,11 +86,11 @@ def _to_dense_from_edge_index(
         return A
 
 def _ensure_adj(
-    adj: Optional[Tensor],
-    edge_index: Optional[Tensor],
+    adj: Tensor | None,
+    edge_index: Tensor | None,
     num_nodes: int,
-    edge_weight: Optional[Tensor],
-    batch_size: Optional[int],
+    edge_weight: Tensor | None,
+    batch_size: int | None,
     dtype: torch.dtype,
     device: torch.device,
 ) -> Tensor:
@@ -176,15 +176,15 @@ class AdaptiveEdgeSparsifier(nn.Module):
 class CorrelationConfigNTF:
     num_nodes: int
     feat_dim: int
-    hidden_size: Optional[int] = None
-    out_feat_dim: Optional[int] = None
+    hidden_size: int | None = None
+    out_feat_dim: int | None = None
     cheb_k: int = 3
     eps: float = 1e-8
     learnable_alpha: bool = True
     init_alpha: float = 0.5
     temperature: float = 1.0
     low_rank: bool = False
-    rank: Optional[int] = None
+    rank: int | None = None
     dropout_graph: float = 0.0
     use_graph_norm: bool = True
     spectral_norm: bool = False
@@ -400,7 +400,7 @@ class LatentCorrelationLearnerNTF(nn.Module):
                 T0, T1 = T1, Tk
             return out
 
-    def _forward_impl(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    def _forward_impl(self, x: Tensor) -> tuple[Tensor, Tensor]:
         x = self.ln_in(x)
         A_data = self._data_graph(x)
         A_learn = self._learned_graph()
@@ -413,7 +413,7 @@ class LatentCorrelationLearnerNTF(nn.Module):
         y = self.ln_out(self.out_proj(h))
         return y, A
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         if self.cfg.gradient_checkpointing and self.training:
             return torch.utils.checkpoint.checkpoint(self._forward_impl, x, use_reentrant=False)
         return self._forward_impl(x)
@@ -451,9 +451,9 @@ class MessagePassingNTF(nn.Module):
     def propagate(
         self,
         x: Tensor,
-        adj: Optional[Tensor] = None,
-        edge_index: Optional[Tensor] = None,
-        edge_weight: Optional[Tensor] = None,
+        adj: Tensor | None = None,
+        edge_index: Tensor | None = None,
+        edge_weight: Tensor | None = None,
         pre_aggregated: bool = False,
     ) -> Tensor:
         B, T, N, Fdim = x.shape
@@ -523,9 +523,9 @@ class GCNConvNTF(MessagePassingNTF):
     def forward(
         self,
         x: Tensor,
-        adj: Optional[Tensor] = None,
-        edge_index: Optional[Tensor] = None,
-        edge_weight: Optional[Tensor] = None,
+        adj: Tensor | None = None,
+        edge_index: Tensor | None = None,
+        edge_weight: Tensor | None = None,
         pre_normalized: bool = False,
     ) -> Tensor:
         B, T, N, _ = x.shape
@@ -591,9 +591,9 @@ class SAGEConvNTF(MessagePassingNTF):
     def forward(
         self,
         x: Tensor,
-        adj: Optional[Tensor] = None,
-        edge_index: Optional[Tensor] = None,
-        edge_weight: Optional[Tensor] = None,
+        adj: Tensor | None = None,
+        edge_index: Tensor | None = None,
+        edge_weight: Tensor | None = None,
     ) -> Tensor:
         B, T, N, _ = x.shape
         A = _ensure_adj(adj, edge_index, N, edge_weight,
@@ -662,9 +662,9 @@ class GATConvNTF(MessagePassingNTF):
     def forward(
         self,
         x: Tensor,
-        adj: Optional[Tensor] = None,
-        edge_index: Optional[Tensor] = None,
-        edge_weight: Optional[Tensor] = None,
+        adj: Tensor | None = None,
+        edge_index: Tensor | None = None,
+        edge_weight: Tensor | None = None,
     ) -> Tensor:
         B, T, N, Fin = x.shape
         A = _ensure_adj(adj, edge_index, N, edge_weight,
@@ -804,15 +804,15 @@ class JumpKnowledgeNTF(nn.Module):
     def __init__(
         self,
         mode: Literal["none", "last", "sum", "max", "concat", "lstm"] = "none",
-        hidden_size: Optional[int] = None,
-        output_size: Optional[int] = None,
-        num_layers_hint: Optional[int] = None,
+        hidden_size: int | None = None,
+        output_size: int | None = None,
+        num_layers_hint: int | None = None,
     ):
         super().__init__()
         self.mode = mode
         self.hidden = hidden_size
         self.output = output_size
-        self.concat_proj: Optional[nn.Linear] = None
+        self.concat_proj: nn.Linear | None = None
 
         if mode == "lstm":
             if hidden_size is None:
@@ -831,7 +831,7 @@ class JumpKnowledgeNTF(nn.Module):
             self.concat_proj = nn.Linear(concat_dim, self.output).to(like.device, like.dtype)
             _xavier_zero_bias(self.concat_proj)
 
-    def forward(self, xs: List[Tensor]) -> Tensor:
+    def forward(self, xs: list[Tensor]) -> Tensor:
         if not xs:
             raise ValueError("JK received empty list")
         base = xs[0].shape[:-1]
@@ -890,7 +890,7 @@ class LatentGraphNetworkNTF(nn.Module):
         dropout: float = 0.0,
         stochastic_depth: float = 0.1,
         jk: Literal["none", "last", "sum", "max", "concat", "lstm"] = "none",
-        corr_cfg: Optional[CorrelationConfigNTF] = None,
+        corr_cfg: CorrelationConfigNTF | None = None,
         residual: bool = True,
         pre_norm: bool = True,
     ):
@@ -917,7 +917,7 @@ class LatentGraphNetworkNTF(nn.Module):
             )
         )
 
-        blocks: List[nn.Module] = []
+        blocks: list[nn.Module] = []
         sd_rates = [stochastic_depth * i / passes for i in range(passes)]
         
         for sd_rate in sd_rates:
@@ -968,7 +968,7 @@ class LatentGraphNetworkNTF(nn.Module):
         returns: [B, T, N, out_feat_dim]
         """
         h, A = self.corr(x)
-        outs: List[Tensor] = []
+        outs: list[Tensor] = []
         
         for block in self.blocks:
             h_new = block['conv'](h, adj=A)
@@ -1018,7 +1018,7 @@ class GraphPreprocessorNTF(nn.Module):
         self,
         num_nodes: int,
         in_feat_dim: int,
-        out_feat_dim: Optional[int] = None,
+        out_feat_dim: int | None = None,
         passes: int = 2,
         layer: Literal["gcn", "sage", "gat", "edge_cond"] = "edge_cond",
         gat_heads: int = 4,
@@ -1058,7 +1058,7 @@ class GraphPreprocessorNTF(nn.Module):
             self.output_size = None
 
         # For inspection/logging
-        self.last_adj: Optional[torch.Tensor] = None
+        self.last_adj: torch.Tensor | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

@@ -2,7 +2,6 @@
 # Optimized version with improved performance (batched + cu_seqlens support)
 
 from functools import partial
-from typing import Optional, Tuple, Union
 
 import torch
 from einops import rearrange, repeat
@@ -62,9 +61,9 @@ def apply_rotary(
     x: Tensor,
     cos: Tensor,
     sin: Tensor,
-    seqlen_offsets: Union[int, Tensor] = 0,
-    cu_seqlens: Optional[Tensor] = None,
-    max_seqlen: Optional[int] = None,
+    seqlen_offsets: int | Tensor = 0,
+    cu_seqlens: Tensor | None = None,
+    max_seqlen: int | None = None,
     interleaved: bool = False,
     inplace: bool = False,
     conjugate: bool = False,
@@ -122,10 +121,10 @@ def _prepare_cos_sin_batch(
     batch: int,
     seqlen: int,
     ro_dim: int,
-    seqlen_offsets: Optional[Tensor],
-    max_seqlen: Optional[int],
+    seqlen_offsets: Tensor | None,
+    max_seqlen: int | None,
     device: torch.device,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """
     Normalize cos/sin to shape (batch, seqlen, rotary_dim / 2)
     for the standard batched case (no cu_seqlens).
@@ -184,8 +183,8 @@ def _apply_rotary_batch(
     x: Tensor,
     cos: Tensor,
     sin: Tensor,
-    seqlen_offsets: Union[int, Tensor],
-    max_seqlen: Optional[int],
+    seqlen_offsets: int | Tensor,
+    max_seqlen: int | None,
     ro_dim: int,
     interleaved: bool,
     inplace: bool,
@@ -275,8 +274,8 @@ def _apply_rotary_cu_seqlens(
     cos: Tensor,
     sin: Tensor,
     cu_seqlens: Tensor,
-    seqlen_offsets: Union[int, Tensor],
-    max_seqlen: Optional[int],
+    seqlen_offsets: int | Tensor,
+    max_seqlen: int | None,
     ro_dim: int,
     interleaved: bool,
     inplace: bool,
@@ -371,9 +370,9 @@ class ApplyRotaryEmb(torch.autograd.Function):
         sin: Tensor,
         interleaved: bool = False,
         inplace: bool = False,
-        seqlen_offsets: Union[int, Tensor] = 0,
-        cu_seqlens: Optional[Tensor] = None,
-        max_seqlen: Optional[int] = None,
+        seqlen_offsets: int | Tensor = 0,
+        cu_seqlens: Tensor | None = None,
+        max_seqlen: int | None = None,
     ):
         out = apply_rotary(
             x,
@@ -424,9 +423,9 @@ def apply_rotary_emb(
     sin: Tensor,
     interleaved: bool = False,
     inplace: bool = False,
-    seqlen_offsets: Union[int, Tensor] = 0,
-    cu_seqlens: Optional[Tensor] = None,
-    max_seqlen: Optional[int] = None,
+    seqlen_offsets: int | Tensor = 0,
+    cu_seqlens: Tensor | None = None,
+    max_seqlen: int | None = None,
 ) -> Tensor:
     """
     Public entry point: same signature as original Tri Dao function.
@@ -451,13 +450,13 @@ def _apply_rotary_emb_qkv(
     qkv: Tensor,
     cos: Tensor,
     sin: Tensor,
-    cos_k: Optional[Tensor] = None,
-    sin_k: Optional[Tensor] = None,
+    cos_k: Tensor | None = None,
+    sin_k: Tensor | None = None,
     interleaved: bool = False,
     inplace: bool = False,
     conjugate: bool = False,
-    seqlen_offsets: Union[int, Tensor] = 0,
-    num_heads_q: Optional[int] = None,
+    seqlen_offsets: int | Tensor = 0,
+    num_heads_q: int | None = None,
 ) -> Tensor:
     apply_rotary_fn = partial(
         apply_rotary,
@@ -531,11 +530,11 @@ class ApplyRotaryEmbQKV_(torch.autograd.Function):
         qkv: Tensor,
         cos: Tensor,
         sin: Tensor,
-        cos_k: Optional[Tensor] = None,
-        sin_k: Optional[Tensor] = None,
+        cos_k: Tensor | None = None,
+        sin_k: Tensor | None = None,
         interleaved: bool = False,
-        seqlen_offsets: Union[int, Tensor] = 0,
-        num_heads_q: Optional[int] = None,
+        seqlen_offsets: int | Tensor = 0,
+        num_heads_q: int | None = None,
     ):
         qkv = _apply_rotary_emb_qkv(
             qkv,
@@ -585,11 +584,11 @@ def apply_rotary_emb_qkv_(
     qkv: Tensor,
     cos: Tensor,
     sin: Tensor,
-    cos_k: Optional[Tensor] = None,
-    sin_k: Optional[Tensor] = None,
+    cos_k: Tensor | None = None,
+    sin_k: Tensor | None = None,
     interleaved: bool = False,
-    seqlen_offsets: Union[int, Tensor] = 0,
-    num_heads_q: Optional[int] = None,
+    seqlen_offsets: int | Tensor = 0,
+    num_heads_q: int | None = None,
 ) -> Tensor:
     """
     Arguments:
@@ -620,7 +619,7 @@ class ApplyRotaryEmbKV_(torch.autograd.Function):
         cos: Tensor,
         sin: Tensor,
         interleaved: bool = False,
-        seqlen_offsets: Union[int, Tensor] = 0,
+        seqlen_offsets: int | Tensor = 0,
     ):
         batch, seqlen, two, nheads, headdim = kv.shape
         assert two == 2
@@ -666,7 +665,7 @@ def apply_rotary_emb_kv_(
     cos: Tensor,
     sin: Tensor,
     interleaved: bool = False,
-    seqlen_offsets: Union[int, Tensor] = 0,
+    seqlen_offsets: int | Tensor = 0,
 ) -> Tensor:
     """
     Arguments:
@@ -694,7 +693,7 @@ class RotaryEmbedding(torch.nn.Module):
         dim: int,
         base: float = 10000.0,
         interleaved: bool = False,
-        scale_base: Optional[float] = None,
+        scale_base: float | None = None,
         device=None,
     ):
         super().__init__()
@@ -715,10 +714,10 @@ class RotaryEmbedding(torch.nn.Module):
         self.register_buffer("scale", scale, persistent=False)
 
         self._seq_len_cached = 0
-        self._cos_cached: Optional[Tensor] = None
-        self._sin_cached: Optional[Tensor] = None
-        self._cos_k_cached: Optional[Tensor] = None
-        self._sin_k_cached: Optional[Tensor] = None
+        self._cos_cached: Tensor | None = None
+        self._sin_cached: Tensor | None = None
+        self._cos_k_cached: Tensor | None = None
+        self._sin_k_cached: Tensor | None = None
 
     def _compute_inv_freq(self, device=None) -> Tensor:
         return 1.0 / (
@@ -782,11 +781,11 @@ class RotaryEmbedding(torch.nn.Module):
     def forward(
         self,
         qkv: Tensor,
-        kv: Optional[Tensor] = None,
-        seqlen_offset: Union[int, Tensor] = 0,
-        max_seqlen: Optional[int] = None,
-        num_heads_q: Optional[int] = None,
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+        kv: Tensor | None = None,
+        seqlen_offset: int | Tensor = 0,
+        max_seqlen: int | None = None,
+        num_heads_q: int | None = None,
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """
         qkv:
           - If kv is None:

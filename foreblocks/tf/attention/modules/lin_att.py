@@ -1,5 +1,3 @@
-
-from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,7 +16,7 @@ class LinearAttention(nn.Module):
         freq_modes: int = 16,  # Ignored
         cross_attention: bool = False,  # Ignored (separate Q/K/V projs anyway)
         feature_map: str = "elu",  # "elu" (default), "relu", or "rff" (random Fourier features)
-        num_features: Optional[int] = None,  # For "rff"; else uses d_head
+        num_features: int | None = None,  # For "rff"; else uses d_head
     ):
         super().__init__()
         self.d_model = d_model
@@ -62,11 +60,11 @@ class LinearAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
-        layer_state: Optional[dict] = None,
-    ) -> Tuple[torch.Tensor, None, None]:
+        layer_state: dict | None = None,
+    ) -> tuple[torch.Tensor, None, None]:
         B, Lq, _ = query.shape
         Lk = key.shape[1]
 

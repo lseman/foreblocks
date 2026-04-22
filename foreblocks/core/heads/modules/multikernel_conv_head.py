@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import List
 
 import torch
 import torch.nn as nn
@@ -18,7 +17,7 @@ class MultiKernelConv(nn.Module):
     def __init__(
         self,
         feature_dim: int,
-        kernels: List[int] = [3, 5, 7, 11],
+        kernels: list[int] = [3, 5, 7, 11],
         dilation: int = 1,
         dropout: float = 0.0,
     ):

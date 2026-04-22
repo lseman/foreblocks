@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import pickle
 import warnings
-from typing import Callable, Dict, Literal, Optional, Sequence, Tuple
+from typing import Literal
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import torch
@@ -131,7 +132,7 @@ def _exact_quantile_higher_np(
 
 
 def weighted_quantile(
-    values: torch.Tensor, q: float, weights: Optional[torch.Tensor], dim: int = 0
+    values: torch.Tensor, q: float, weights: torch.Tensor | None, dim: int = 0
 ) -> torch.Tensor:
     """
     Weighted quantile along `dim` (non-differentiable; suitable for conformal).
@@ -215,8 +216,8 @@ class DefaultFeatureExtractor(nn.Module):
         hidden: int = 256,
         depth: int = 3,
         dropout: float = 0.1,
-        seq_len: Optional[int] = None,
-        n_features: Optional[int] = None,
+        seq_len: int | None = None,
+        n_features: int | None = None,
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -318,7 +319,7 @@ class ConformalPredictionEngine:
         local_window: int = 5000,
         rolling_alpha: float = 0.05,
         aci_gamma: float = 0.01,
-        agaci_gammas: Optional[Sequence[float]] = None,
+        agaci_gammas: Sequence[float] | None = None,
         enbpi_B: int = 20,
         enbpi_window: int = 500,
         cptc_window: int = 500,
@@ -375,44 +376,44 @@ class ConformalPredictionEngine:
         self.agaci_gammas = list(agaci_gammas)
 
         # State variables
-        self.radii: Optional[np.ndarray] = None
+        self.radii: np.ndarray | None = None
 
         # local
-        self.cal_X_feat: Optional[np.ndarray] = None
-        self.local_residuals: Optional[np.ndarray] = None
+        self.cal_X_feat: np.ndarray | None = None
+        self.local_residuals: np.ndarray | None = None
 
         # rolling/agaci
-        self.residuals_buffer: Optional[torch.Tensor] = None
-        self.agaci_experts: Optional[list[dict]] = None
+        self.residuals_buffer: torch.Tensor | None = None
+        self.agaci_experts: list[dict] | None = None
 
         # enbpi
-        self.enbpi_oob_residuals: Optional[torch.Tensor] = None
-        self._enbpi_member_models: Optional[Sequence[nn.Module]] = None
+        self.enbpi_oob_residuals: torch.Tensor | None = None
+        self._enbpi_member_models: Sequence[nn.Module] | None = None
 
         # cptc
-        self.cptc_state_model: Optional[Callable] = None
-        self.cptc_states_buffer: Optional[torch.Tensor] = None
-        self.cptc_residuals_buffer: Optional[torch.Tensor] = None
+        self.cptc_state_model: Callable | None = None
+        self.cptc_states_buffer: torch.Tensor | None = None
+        self.cptc_residuals_buffer: torch.Tensor | None = None
 
         # afocp
-        self.afocp_feature_extractor: Optional[nn.Module] = None
-        self.afocp_attn: Optional[nn.Module] = None
-        self.afocp_feats_buffer: Optional[torch.Tensor] = None
-        self.afocp_residuals_buffer: Optional[torch.Tensor] = None
-        self._afocp_opt: Optional[torch.optim.Optimizer] = None
-        self._afocp_input_dim: Optional[int] = None
+        self.afocp_feature_extractor: nn.Module | None = None
+        self.afocp_attn: nn.Module | None = None
+        self.afocp_feats_buffer: torch.Tensor | None = None
+        self.afocp_residuals_buffer: torch.Tensor | None = None
+        self._afocp_opt: torch.optim.Optimizer | None = None
+        self._afocp_input_dim: int | None = None
 
         # cqr
-        self.cqr_correction: Optional[np.ndarray] = None
+        self.cqr_correction: np.ndarray | None = None
 
         # jackknife+
-        self.jackknife_residuals: Optional[torch.Tensor] = None
-        self._jackknife_cv_models: Optional[Sequence[nn.Module]] = None
-        self._jackknife_cv_indices: Optional[Sequence[np.ndarray]] = None
+        self.jackknife_residuals: torch.Tensor | None = None
+        self._jackknife_cv_models: Sequence[nn.Module] | None = None
+        self._jackknife_cv_indices: Sequence[np.ndarray] | None = None
 
         # tsp
-        self.tsp_residuals: Optional[torch.Tensor] = None
-        self.tsp_weights: Optional[torch.Tensor] = None
+        self.tsp_residuals: torch.Tensor | None = None
+        self.tsp_weights: torch.Tensor | None = None
 
     # ======================================================================
     # Batched forward pass
@@ -446,12 +447,12 @@ class ConformalPredictionEngine:
         y_cal: np.ndarray | torch.Tensor,
         device: str = "cpu",
         batch_size: int = 256,
-        state_model: Optional[Callable] = None,
-        feature_extractor: Optional[nn.Module] = None,
-        enbpi_member_models: Optional[Sequence[nn.Module]] = None,
-        enbpi_boot_indices: Optional[np.ndarray | torch.Tensor] = None,
-        jackknife_cv_models: Optional[Sequence[nn.Module]] = None,
-        jackknife_cv_indices: Optional[Sequence[np.ndarray]] = None,
+        state_model: Callable | None = None,
+        feature_extractor: nn.Module | None = None,
+        enbpi_member_models: Sequence[nn.Module] | None = None,
+        enbpi_boot_indices: np.ndarray | torch.Tensor | None = None,
+        jackknife_cv_models: Sequence[nn.Module] | None = None,
+        jackknife_cv_indices: Sequence[np.ndarray] | None = None,
     ):
         print(
             f"Calibrating ConformalPredictionEngine [{self.method}] (quantile={self.q})..."
@@ -740,9 +741,9 @@ class ConformalPredictionEngine:
         X: np.ndarray | torch.Tensor,
         device: str = "cpu",
         batch_size: int = 256,
-        jackknife_cv_models: Optional[Sequence[nn.Module]] = None,
+        jackknife_cv_models: Sequence[nn.Module] | None = None,
         jackknife_use_stored: bool = True,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self.radii is None:
             raise RuntimeError("Engine must be calibrated before calling predict().")
 
@@ -936,10 +937,10 @@ class ConformalPredictionEngine:
         y_new: np.ndarray | torch.Tensor,
         device: str = "cpu",
         batch_size: int = 256,
-        sequential: Optional[bool] = None,
-        enbpi_member_models: Optional[Sequence[nn.Module]] = None,
-        state_model: Optional[Callable] = None,
-        feature_extractor: Optional[nn.Module] = None,
+        sequential: bool | None = None,
+        enbpi_member_models: Sequence[nn.Module] | None = None,
+        state_model: Callable | None = None,
+        feature_extractor: nn.Module | None = None,
     ):
         """
         Online update for adaptive conformal methods.
@@ -1093,9 +1094,9 @@ class ConformalPredictionEngine:
         new_residuals: torch.Tensor,
         device: str,
         batch_size: int,
-        enbpi_member_models: Optional[Sequence[nn.Module]] = None,
-        state_model: Optional[Callable] = None,
-        feature_extractor: Optional[Callable] = None,
+        enbpi_member_models: Sequence[nn.Module] | None = None,
+        state_model: Callable | None = None,
+        feature_extractor: Callable | None = None,
     ):
         """
         Batch update for non-ACI methods or when sequential=False.
@@ -1353,7 +1354,7 @@ class ConformalPredictionEngine:
         y: np.ndarray | torch.Tensor,
         device: str = "cpu",
         batch_size: int = 256,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         preds, lower, upper = self.predict(model, X, device, batch_size)
         y_t = _to_tensor(y, device="cpu")
         y3 = _ensure_3d_y(y_t, torch.from_numpy(preds))
@@ -1390,7 +1391,7 @@ class ConformalPredictionEngine:
         """Get the current miscoverage level (useful for ACI methods)."""
         return self.alpha
 
-    def get_expert_alphas(self) -> Optional[Dict[float, float]]:
+    def get_expert_alphas(self) -> dict[float, float] | None:
         """Get current alpha values for each AgACI expert."""
         if self.agaci_experts is None:
             return None

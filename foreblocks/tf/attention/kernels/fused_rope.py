@@ -1,4 +1,3 @@
-from typing import Tuple
 
 import torch
 
@@ -124,7 +123,7 @@ def triton_apply_rope(
     sin: torch.Tensor,  # [T_max, D//2]
     seqlen_offset: int = 0,
     block_t: int = 16,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     if not _TRITON_AVAILABLE:
         raise RuntimeError("Triton is not available")
     if cos.dim() != 2 or sin.dim() != 2:

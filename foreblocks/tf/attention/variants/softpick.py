@@ -1,5 +1,4 @@
 import warnings
-from typing import Optional, Tuple
 
 import torch
 
@@ -20,7 +19,7 @@ class SoftpickAttentionImpl:
         layer_state=None,
         cu_seqlens=None,
         **_,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         if not self.parent.backends.get("softpick"):
             warnings.warn(
                 "[MultiAttention] SoftPick unavailable, falling back to standard."

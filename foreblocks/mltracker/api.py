@@ -15,7 +15,7 @@ import tempfile
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import (
     BackgroundTasks,
@@ -125,7 +125,7 @@ def _delete_file(path: Path):
         pass
 
 
-def _dur_seconds(start_iso: Optional[str], end_iso: Optional[str]) -> Optional[int]:
+def _dur_seconds(start_iso: str | None, end_iso: str | None) -> int | None:
     if not start_iso or not end_iso:
         return None
     try:
@@ -145,7 +145,7 @@ class ExperimentCreate(BaseModel):
 
 class RunCreate(BaseModel):
     experiment_name: str = "default"
-    run_name: Optional[str] = None
+    run_name: str | None = None
 
 
 class RunUpdate(BaseModel):
@@ -158,7 +158,7 @@ class ParamLog(BaseModel):
 
 
 class ParamsLog(BaseModel):
-    params: Dict[str, Any]
+    params: dict[str, Any]
 
 
 class MetricLog(BaseModel):
@@ -168,7 +168,7 @@ class MetricLog(BaseModel):
 
 
 class MetricsLog(BaseModel):
-    metrics: Dict[str, float]
+    metrics: dict[str, float]
     step: int = 0
 
 
@@ -178,7 +178,7 @@ class TagSet(BaseModel):
 
 
 class CompareRequest(BaseModel):
-    run_ids: List[str] = Field(..., min_items=1, max_items=50)
+    run_ids: list[str] = Field(..., min_items=1, max_items=50)
 
 
 # -----------------------------------------------------------------------------
@@ -304,11 +304,11 @@ async def get_run(run_id: str, tracker: MLTracker = Depends(get_tracker)):
 
 @app.get("/api/runs")
 async def search_runs(
-    experiment_name: Optional[str] = None,
-    status: Optional[str] = Query(None, pattern="^(FINISHED|FAILED|RUNNING|CANCELED)$"),
-    q: Optional[str] = Query(None, description="search in name or run_id"),
-    from_time: Optional[str] = Query(None, description="ISO start lower bound"),
-    to_time: Optional[str] = Query(None, description="ISO start upper bound"),
+    experiment_name: str | None = None,
+    status: str | None = Query(None, pattern="^(FINISHED|FAILED|RUNNING|CANCELED)$"),
+    q: str | None = Query(None, description="search in name or run_id"),
+    from_time: str | None = Query(None, description="ISO start lower bound"),
+    to_time: str | None = Query(None, description="ISO start upper bound"),
     sort: str = Query(
         "-start_time", description="start_time|-start_time|duration|-duration"
     ),
@@ -320,7 +320,7 @@ async def search_runs(
     tracker: MLTracker = Depends(get_tracker),
 ):
     where = ["1=1"]
-    params: List[Any] = []
+    params: list[Any] = []
 
     if experiment_name:
         exp_id = tracker.get_experiment(experiment_name)
@@ -513,7 +513,7 @@ async def download_artifact(
 @app.get("/api/runs/{run_id}/metrics/history")
 async def get_metric_history(
     run_id: str,
-    metric_key: Optional[str] = None,
+    metric_key: str | None = None,
     tracker: MLTracker = Depends(get_tracker),
 ):
     try:
@@ -530,7 +530,7 @@ async def get_metric_history(
                        WHERE run_id = ? ORDER BY key, step""",
                     (run_id,),
                 ).fetchall()
-        hist: Dict[str, List[Dict[str, Any]]] = {}
+        hist: dict[str, list[dict[str, Any]]] = {}
         for m in rows:
             hist.setdefault(m["key"], []).append(
                 {"value": m["value"], "step": m["step"], "timestamp": m["timestamp"]}

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -43,11 +42,11 @@ def _layer_component(layer, key: str):
     return None
 
 
-def _collect_layer_components(module_obj, key: str) -> List[nn.Module]:
+def _collect_layer_components(module_obj, key: str) -> list[nn.Module]:
     layers = getattr(module_obj, "layers", None)
     if not layers:
         return []
-    out: List[nn.Module] = []
+    out: list[nn.Module] = []
     for layer in layers:
         component = _layer_component(layer, key)
         if component is not None:
@@ -56,12 +55,12 @@ def _collect_layer_components(module_obj, key: str) -> List[nn.Module]:
 
 
 def _mean_component_mode_probs(
-    components: List[nn.Module],
+    components: list[nn.Module],
     *,
     direct_attr: str,
     logits_attr: str,
     mode_names,
-) -> Optional[torch.Tensor]:
+) -> torch.Tensor | None:
     probs = []
     mode_names = tuple(mode_names)
     for component in components:
@@ -513,15 +512,15 @@ class MixedEncoder(nn.Module):
             name: idx for idx, name in enumerate(self.encoder_names)
         }
 
-        self.last_selected_output_idx: Optional[int] = None
-        self.last_selected_layer_idx: Optional[torch.Tensor] = None
+        self.last_selected_output_idx: int | None = None
+        self.last_selected_layer_idx: torch.Tensor | None = None
         self.normalizer = ArchitectureNormalizer(latent_dim)
         self.context_proj = nn.Linear(latent_dim, latent_dim)
         self.rnn = self.transformer
 
     def forward(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         x = self.searchable_decomp(x, temperature=self.temperature)
         single_path_active = self.training and self.single_path_search
         self.last_selected_output_idx = 0
@@ -574,7 +573,7 @@ class MixedDecoder(nn.Module):
         arch_path_keep_prob: float = 0.85,
         attention_temperature_mult: float = 0.7,
         min_attention_temperature: float = 0.25,
-        memory_query_options: Optional[List[int]] = None,
+        memory_query_options: list[int] | None = None,
         transformer_self_attention_type: str = "auto",
         transformer_cross_attention_type: str = "auto",
         transformer_use_moe: bool = False,
@@ -713,7 +712,7 @@ class MixedDecoder(nn.Module):
         ref = next(self.parameters())
         return ref.new_ones(1)
 
-    def _get_memory_query_weights(self) -> Optional[torch.Tensor]:
+    def _get_memory_query_weights(self) -> torch.Tensor | None:
         if not (
             self.use_learned_memory_pooling
             and hasattr(self, "memory_query_alphas")
@@ -739,10 +738,10 @@ class MixedDecoder(nn.Module):
 
     def _build_shared_memory(
         self,
-        memory: Optional[torch.Tensor],
-        encoder_output: Optional[torch.Tensor],
-        encoder_context: Optional[torch.Tensor],
-    ) -> Optional[torch.Tensor]:
+        memory: torch.Tensor | None,
+        encoder_output: torch.Tensor | None,
+        encoder_context: torch.Tensor | None,
+    ) -> torch.Tensor | None:
         source = encoder_output
         if source is None:
             source = memory
@@ -805,11 +804,11 @@ class MixedDecoder(nn.Module):
         tgt: torch.Tensor,
         memory: torch.Tensor,
         hidden_state=None,
-        encoder_output: Optional[torch.Tensor] = None,
-        encoder_context: Optional[torch.Tensor] = None,
-        forced_output_idx: Optional[int] = None,
-        forced_layer_idx: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        encoder_output: torch.Tensor | None = None,
+        encoder_context: torch.Tensor | None = None,
+        forced_output_idx: int | None = None,
+        forced_layer_idx: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         tgt = self.searchable_decomp(tgt, temperature=self.temperature)
         batch_size = tgt.size(0)
         single_path_active = self.training and self.single_path_search
@@ -861,7 +860,7 @@ class ArchitectureConverter:
     def get_best_architecture(
         alphas: torch.Tensor,
         num_options: int = 4,
-        arch_names: Optional[List[str]] = None,
+        arch_names: list[str] | None = None,
     ) -> str:
         arch_names = list(arch_names or ["transformer"])
         num_options = min(max(1, int(num_options)), len(arch_names))
@@ -892,7 +891,7 @@ class ArchitectureConverter:
             mixed_model.set_temperature(temperature)
 
     @staticmethod
-    def create_fixed_encoder(mixed_encoder, **kwargs) -> "FixedEncoder":
+    def create_fixed_encoder(mixed_encoder, **kwargs) -> FixedEncoder:
         kwargs.pop("forced_arch_type", None)
         best_type = "transformer"
         self_attention_type = None
@@ -928,7 +927,7 @@ class ArchitectureConverter:
         return fixed_encoder
 
     @staticmethod
-    def create_fixed_decoder(mixed_decoder, **kwargs) -> "FixedDecoder":
+    def create_fixed_decoder(mixed_decoder, **kwargs) -> FixedDecoder:
         kwargs.pop("forced_arch_type", None)
         kwargs.pop("use_attention_bridge", None)
         legacy_attention_variant = kwargs.pop("attention_variant", None)
@@ -986,10 +985,10 @@ class ArchitectureConverter:
         mixed_encoder,
         fixed_encoder,
         arch_type: str,
-        self_attention_type: Optional[str] = None,
-        self_attention_position_mode: Optional[str] = None,
-        ffn_mode: Optional[str] = None,
-        patch_mode: Optional[str] = None,
+        self_attention_type: str | None = None,
+        self_attention_position_mode: str | None = None,
+        ffn_mode: str | None = None,
+        patch_mode: str | None = None,
     ):
         try:
             if arch_type == "transformer":
@@ -1053,12 +1052,12 @@ class ArchitectureConverter:
         mixed_decoder,
         fixed_decoder,
         arch_type: str,
-        self_attention_type: Optional[str] = None,
-        self_attention_position_mode: Optional[str] = None,
-        cross_attention_type: Optional[str] = None,
-        cross_attention_position_mode: Optional[str] = None,
-        ffn_mode: Optional[str] = None,
-        decode_style: Optional[str] = None,
+        self_attention_type: str | None = None,
+        self_attention_position_mode: str | None = None,
+        cross_attention_type: str | None = None,
+        cross_attention_position_mode: str | None = None,
+        ffn_mode: str | None = None,
+        decode_style: str | None = None,
     ):
         try:
             if arch_type == "transformer":
@@ -1140,10 +1139,10 @@ class FixedEncoder(BaseFixedSequenceBlock):
         latent_dim: int = 64,
         num_layers: int = 2,
         dropout: float = 0.0,
-        self_attention_type: Optional[str] = None,
-        self_attention_position_mode: Optional[str] = None,
-        ffn_mode: Optional[str] = None,
-        patching_mode: Optional[str] = None,
+        self_attention_type: str | None = None,
+        self_attention_position_mode: str | None = None,
+        ffn_mode: str | None = None,
+        patching_mode: str | None = None,
     ):
         self.self_attention_type = (
             str(self_attention_type).lower() if self_attention_type is not None else None
@@ -1231,12 +1230,12 @@ class FixedDecoder(BaseFixedSequenceBlock):
         use_attention_bridge: bool = False,
         attention_layers: int = 1,
         attention_variant: str = "sdp",
-        self_attention_type: Optional[str] = None,
-        self_attention_position_mode: Optional[str] = None,
-        cross_attention_type: Optional[str] = None,
-        cross_attention_position_mode: Optional[str] = None,
-        ffn_mode: Optional[str] = None,
-        decode_style: Optional[str] = None,
+        self_attention_type: str | None = None,
+        self_attention_position_mode: str | None = None,
+        cross_attention_type: str | None = None,
+        cross_attention_position_mode: str | None = None,
+        ffn_mode: str | None = None,
+        decode_style: str | None = None,
     ):
         self.self_attention_type = (
             str(self_attention_type).lower() if self_attention_type is not None else None

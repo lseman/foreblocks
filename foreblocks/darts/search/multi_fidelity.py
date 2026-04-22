@@ -19,7 +19,7 @@ import datetime
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import torch
 
@@ -48,22 +48,22 @@ def run_multi_fidelity_search(
     final_epochs: int = 100,
     max_samples: int = 32,
     top_k: int = 5,
-    max_workers: Optional[int] = None,
+    max_workers: int | None = None,
     collect_stats: bool = False,
     parallelism_levels=None,
     est_overhead_per_task: float = 0.0,
     est_fixed_overhead_phase1: float = 0.0,
     est_fixed_overhead_phase3: float = 0.0,
     benchmark_phase1_workers=None,
-    benchmark_phase1_candidates: Optional[int] = None,
+    benchmark_phase1_candidates: int | None = None,
     stats_dir: str = "search_stats",
-    run_name: Optional[str] = None,
+    run_name: str | None = None,
     logger=None,
     retrain_final_from_scratch: bool = True,
     discrete_arch_threshold: float = 0.3,
     use_amp: bool = False,
     **kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run the complete multi-fidelity DARTS search pipeline.
 
@@ -97,7 +97,7 @@ def run_multi_fidelity_search(
 
     if parallelism_levels is None:
         cpu = os.cpu_count() or 8
-        parallelism_levels = sorted(set([1, 2, 4, 8, cpu]))
+        parallelism_levels = sorted({1, 2, 4, 8, cpu})
     else:
         parallelism_levels = list(parallelism_levels)
 
@@ -135,7 +135,7 @@ def run_multi_fidelity_search(
     phase3_verbose = bool(kwargs.pop("phase3_verbose", True))
 
     # Training-config kwargs forwarded to every train_darts_model call in phase 3.
-    train_kwargs: Dict[str, Any] = {
+    train_kwargs: dict[str, Any] = {
         k: kwargs.pop(k)
         for k in (
             "use_gdas",
@@ -153,13 +153,13 @@ def run_multi_fidelity_search(
         if k in kwargs
     }
 
-    phase_summary: Dict[str, Any] = {}
-    per_candidate_rows: List[List] = []
-    whatif_rows: List[List] = []
-    bench_rows: List[List] = []
+    phase_summary: dict[str, Any] = {}
+    per_candidate_rows: list[list] = []
+    whatif_rows: list[list] = []
+    bench_rows: list[list] = []
 
     # ── (Optional) Phase 1 benchmark across worker counts ─────────────────
-    phase1_benchmark_results: List[Dict] = []
+    phase1_benchmark_results: list[dict] = []
     if collect_stats and benchmark_phase1_workers:
         phase1_benchmark_results, bench_rows = _run_phase1_benchmark(
             trainer=trainer,
@@ -175,7 +175,7 @@ def run_multi_fidelity_search(
     phase1_msg = "Phase 1: generating + zero-cost evaluating candidates (parallel)"
     print(f"\n=== {phase1_msg} ===")
     logger.info(phase1_msg)
-    phase1_task_times: List[float] = []
+    phase1_task_times: list[float] = []
 
     def _make_threadsafe_eval_loader(base_loader):
         """Create a per-task eval loader to avoid sharing DataLoader iterators across threads."""
@@ -192,7 +192,7 @@ def run_multi_fidelity_search(
             drop_last=False,
         )
 
-    def _generate_and_eval(cid: int) -> Dict[str, Any]:
+    def _generate_and_eval(cid: int) -> dict[str, Any]:
         local_val_loader = _make_threadsafe_eval_loader(val_loader)
         return trainer._evaluate_search_candidate(
             candidate_id=cid,
@@ -302,11 +302,11 @@ def run_multi_fidelity_search(
     logger.info(phase3_msg)
     t_p3_0 = time.perf_counter()
 
-    trained_candidates: List[Dict] = []
-    trained_non_derived: List[Dict] = []
-    p3_task_times: List[float] = []
-    p3_search_times: List[float] = []
-    p3_derive_times: List[float] = []
+    trained_candidates: list[dict] = []
+    trained_non_derived: list[dict] = []
+    p3_task_times: list[float] = []
+    p3_search_times: list[float] = []
+    p3_derive_times: list[float] = []
     asha_states = [
         {
             "candidate": cand,
@@ -319,7 +319,7 @@ def run_multi_fidelity_search(
         }
         for cand in top_candidates
     ]
-    phase3_rounds: List[Dict[str, Any]] = []
+    phase3_rounds: list[dict[str, Any]] = []
 
     for rung_idx, rung_epoch in enumerate(rung_epochs):
         if not asha_states:
@@ -331,7 +331,7 @@ def run_multi_fidelity_search(
         )
         print(rung_msg)
         logger.info(rung_msg)
-        round_rows: List[Dict[str, Any]] = []
+        round_rows: list[dict[str, Any]] = []
 
         for state_idx, state in enumerate(asha_states):
             cand = state["candidate"]
@@ -548,7 +548,7 @@ def run_multi_fidelity_search(
 
     final_model = copy.deepcopy(best_candidate["model"])
     final_conf = getattr(final_model, "get_config", lambda: {})()
-    final_discrete_arch: Dict = {}
+    final_discrete_arch: dict = {}
     if hasattr(final_model, "derive_discrete_architecture"):
         try:
             final_discrete_arch = final_model.derive_discrete_architecture(
@@ -584,10 +584,10 @@ def run_multi_fidelity_search(
         mode = modes[top_idx] if 0 <= top_idx < len(modes) else f"mode_{top_idx}"
         return f"{mode} (weight={top_w:.3f})"
 
-    def _cell_ops_summary(model_obj) -> List[str]:
-        out: List[str] = []
+    def _cell_ops_summary(model_obj) -> list[str]:
+        out: list[str] = []
         for ci, cell in enumerate(getattr(model_obj, "cells", [])):
-            edge_ops: List[str] = []
+            edge_ops: list[str] = []
             for edge in getattr(cell, "edges", []):
                 op_name = None
                 fixed_op = getattr(edge, "op", None)
@@ -598,7 +598,7 @@ def run_multi_fidelity_search(
                 else:
                     edge_ops.append(op_name)
             if edge_ops:
-                counts: Dict[str, int] = {}
+                counts: dict[str, int] = {}
                 for n in edge_ops:
                     counts[n] = counts.get(n, 0) + 1
                 counts_txt = ", ".join(f"{k}:{v}" for k, v in sorted(counts.items()))
@@ -900,7 +900,7 @@ def run_multi_fidelity_search(
             return str(modes[int(torch.argmax(probs).item())])
         return "unknown"
 
-    def _transformer_summary(model_obj, sel_cfg: Dict[str, Any]) -> str:
+    def _transformer_summary(model_obj, sel_cfg: dict[str, Any]) -> str:
         enc_choice = _enc_dec_choice(model_obj, "encoder").lower()
         dec_choice = _enc_dec_choice(model_obj, "decoder").lower()
         uses_transformer = ("transformer" in enc_choice) or ("transformer" in dec_choice)
@@ -918,7 +918,7 @@ def run_multi_fidelity_search(
     # Print selected architecture before entering final training.
     sel = best_candidate.get("candidate", {})
     arch_mode = sel.get("arch_mode", getattr(final_model, "arch_mode", "N/A"))
-    p5_lines: List[str] = [
+    p5_lines: list[str] = [
         "[P5] Selected architecture before final training:",
         (
             "[P5]   candidate_id="
@@ -1040,7 +1040,7 @@ def run_multi_fidelity_search(
     )
 
     # ── Return search summary ─────────────────────────────────────────────
-    summary: Dict[str, Any] = {
+    summary: dict[str, Any] = {
         "final_model": final_results["model"],
         "candidates": candidates,
         "top_candidates": top_candidates,
@@ -1107,7 +1107,7 @@ def _resolve_phase3_rung_epochs(
     min_epoch_budget: int,
     reduction_factor: int,
     explicit,
-) -> List[int]:
+) -> list[int]:
     """Build monotonically increasing ASHA rung budgets ending at search_epochs."""
     max_epochs = max(1, int(search_epochs))
     if explicit:
@@ -1120,7 +1120,7 @@ def _resolve_phase3_rung_epochs(
             rung_epochs.append(max_epochs)
         return rung_epochs
 
-    budgets: List[int] = []
+    budgets: list[int] = []
     cur = max(1, min(int(min_epoch_budget), max_epochs))
     while cur < max_epochs:
         budgets.append(int(cur))
@@ -1129,7 +1129,7 @@ def _resolve_phase3_rung_epochs(
             break
         cur = nxt
     budgets.append(max_epochs)
-    return sorted(set(int(x) for x in budgets))
+    return sorted({int(x) for x in budgets})
 
 
 def _run_phase1_benchmark(
@@ -1314,7 +1314,7 @@ def bilevel_lr_sensitivity(
     arch_lrs=(3e-4, 1e-3, 3e-3, 1e-2),
     seeds=(0, 1, 2),
     epochs: int = 30,
-    save_csv_path: Optional[str] = None,
+    save_csv_path: str | None = None,
 ):
     """
     Grid-search over (``model_lr``, ``arch_lr``, ``seed``) configurations.

@@ -8,7 +8,7 @@ shared experts that are always evaluated.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -84,7 +84,7 @@ class DARTSMoEFeedForward(nn.Module):
             ]
         )
         self.out_dropout = nn.Dropout(self.dropout_p)
-        self.last_routing_stats: Dict[str, Optional[torch.Tensor]] = {}
+        self.last_routing_stats: dict[str, torch.Tensor | None] = {}
 
     def _route(self, x_flat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         logits = self.router(x_flat)
@@ -139,7 +139,7 @@ class DARTSMoEFeedForward(nn.Module):
         target = torch.full_like(usage, 1.0 / max(1, self.num_routed))
         return F.mse_loss(usage, target)
 
-    def get_router_stats(self) -> Dict[str, Optional[torch.Tensor]]:
+    def get_router_stats(self) -> dict[str, torch.Tensor | None]:
         return dict(self.last_routing_stats)
 
 
@@ -158,7 +158,7 @@ class DARTSFeedForward(nn.Module):
         expand: int = 4,
         dropout: float = 0.0,
         use_moe: bool = False,
-        ffn_mode: Optional[str] = None,
+        ffn_mode: str | None = None,
         temperature: float = 1.0,
         single_path_search: bool = True,
         num_experts: int = 8,
@@ -272,8 +272,8 @@ class DARTSFeedForward(nn.Module):
             return torch.tensor(0.0)
         return ref.new_zeros(())
 
-    def get_router_stats(self) -> Dict[str, Optional[torch.Tensor]]:
-        stats: Dict[str, Optional[torch.Tensor]] = {}
+    def get_router_stats(self) -> dict[str, torch.Tensor | None]:
+        stats: dict[str, torch.Tensor | None] = {}
         if self.supports_moe:
             stats.update(self.moe_block.get_router_stats())
         mode_probs = self.get_ffn_mode_probs()

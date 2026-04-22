@@ -1,8 +1,7 @@
-from typing import Optional, Tuple
 
 import torch
 
-from ..kv import PagedKVProvider
+from ..cache.kv import PagedKVProvider
 
 
 class StandardAttentionImpl:
@@ -14,13 +13,13 @@ class StandardAttentionImpl:
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        attn_mask: Optional[torch.Tensor],
-        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
         layer_state=None,
         **_,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
         T_k = key.shape[1]
 

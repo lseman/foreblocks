@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 gated_delta.py — Gated Delta Network Attention
 
@@ -41,7 +40,6 @@ For standalone use (internal KimiAttention-style) pass `x` directly:
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -259,8 +257,8 @@ class GatedDeltaNet(nn.Module):
         freq_modes: int = 16,
         cross_attention: bool = False,
         # GDN-specific
-        d_key: Optional[int] = None,
-        d_val: Optional[int] = None,
+        d_key: int | None = None,
+        d_val: int | None = None,
         chunk_size: int = 64,
         use_short_conv: bool = True,
         conv_kernel: int = 4,
@@ -333,7 +331,7 @@ class GatedDeltaNet(nn.Module):
 
     def _project(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Linear project and apply optional short conv. Returns (Q,K,V) raw."""
         q_raw = self.q_proj(x)  # [B, T, H*Dk]
         k_raw = self.k_proj(x)
@@ -346,7 +344,7 @@ class GatedDeltaNet(nn.Module):
 
     def _gate_params(
         self, x: torch.Tensor, BH: int, T: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute forget (α) and write (β) gates.
 
@@ -451,7 +449,7 @@ class GatedDeltaNet(nn.Module):
         q_t: torch.Tensor,
         alpha_t: torch.Tensor,
         beta_t: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Inference-only Triton fast step; numerically aligned with _delta_step."""
         k32 = k_t.to(torch.float32).contiguous()
         v32 = v_t.to(torch.float32).contiguous()
@@ -481,7 +479,7 @@ class GatedDeltaNet(nn.Module):
         q_t: torch.Tensor,  # [BH, Dk]       normalised query
         alpha_t: torch.Tensor,  # [BH, 1]        or [BH, Dk] scalar/vector decay
         beta_t: torch.Tensor,  # [BH, 1]        write strength
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Delta-rule update + retrieval.
 
@@ -560,8 +558,8 @@ class GatedDeltaNet(nn.Module):
     def _forward_recurrent(
         self,
         x: torch.Tensor,  # [B, T, D]
-        state: Optional[torch.Tensor] = None,  # [B, H, Dk, Dv]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        state: torch.Tensor | None = None,  # [B, H, Dk, Dv]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Full recurrence over T steps.
         Returns (y [B, T, D], next_state [B, H, Dk, Dv]).
@@ -666,8 +664,8 @@ class GatedDeltaNet(nn.Module):
     def _step(
         self,
         x_t: torch.Tensor,  # [B, 1, D]
-        state: Optional[torch.Tensor],  # [B, H, Dk, Dv]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        state: torch.Tensor | None,  # [B, H, Dk, Dv]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """One-step forward for incremental (KV-cached) decoding."""
         B, _, _ = x_t.shape
         device, dtype = x_t.device, x_t.dtype
@@ -729,11 +727,11 @@ class GatedDeltaNet(nn.Module):
         query: torch.Tensor,  # [B, Tq, D]
         key: torch.Tensor,  # [B, Tk, D]  (self-attn: same as query)
         value: torch.Tensor,  # [B, Tk, D]
-        attn_mask: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
-        layer_state: Optional[Dict] = None,
-    ) -> Tuple[torch.Tensor, None, None]:
+        layer_state: dict | None = None,
+    ) -> tuple[torch.Tensor, None, None]:
         """
         Drop-in forward.
 
@@ -796,7 +794,7 @@ class GatedDeltaNet(nn.Module):
         query: torch.Tensor,  # [B, Tq, D]
         key: torch.Tensor,  # [B, Tm, D]   (memory)
         value: torch.Tensor,  # [B, Tm, D]
-        key_padding_mask: Optional[torch.Tensor] = None,
+        key_padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Approximate cross-attention using the delta rule:
@@ -879,8 +877,8 @@ class GatedDeltaNet(nn.Module):
     def forward_standalone(
         self,
         x: torch.Tensor,
-        state: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        state: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Standalone forward (KimiAttention-compatible interface).
 

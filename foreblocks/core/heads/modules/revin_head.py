@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -29,20 +28,20 @@ class RevIN(nn.Module):
             self.register_buffer("beta", torch.zeros(1, 1, self.num_features))
 
     @torch.no_grad()
-    def _stats(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _stats(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         mu = x.mean(dim=1, keepdim=True)  # [B,1,F]
         var = x.var(dim=1, unbiased=False, keepdim=True)  # [B,1,F]
         sigma = torch.sqrt(var + self.eps)
         return mu, sigma
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         mu, sigma = self._stats(x)
         x_hat = (x - mu) / sigma
         x_hat = x_hat * self.gamma + self.beta
         ctx = {"mu": mu, "sigma": sigma}
         return x_hat, ctx
 
-    def invert(self, x_hat: torch.Tensor, ctx: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def invert(self, x_hat: torch.Tensor, ctx: dict[str, torch.Tensor]) -> torch.Tensor:
         x = (x_hat - self.beta) / (self.gamma + 1e-12)
         return x * ctx["sigma"] + ctx["mu"]
 

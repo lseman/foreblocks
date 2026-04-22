@@ -1,9 +1,8 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import torch
 
-from .paged import PagedKVCache
+from ..cache.paged import PagedKVCache
 
 
 @dataclass
@@ -95,7 +94,7 @@ class AttentionMatchingCompactor:
         q_start: int,
         kv_repeat: int,
         scale: float,
-    ) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int] | None:
         k_full, v_full = cache.gather_kv_for_seq(batch_idx)
         pos_full = cache.gather_positions_for_seq(batch_idx)
         seq_len = int(k_full.size(1))
@@ -176,7 +175,7 @@ class AttentionMatchingCompactor:
         kept_indices: torch.Tensor,
         kv_repeat: int,
         scale: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         h_kv, _, _ = k_full.shape
         keep = int(kept_indices.numel())
         v_comp = v_full.new_zeros((h_kv, keep, v_full.size(-1)))
@@ -203,7 +202,9 @@ class AttentionMatchingCompactor:
                     cluster = kept_indices.new_tensor([int(kept_indices[j].item())])
                 weights = mass.index_select(0, cluster)
                 weights = weights / weights.sum().clamp_min(1e-9)
-                v_comp[h, j] = (weights.unsqueeze(-1) * v_full[h].index_select(0, cluster)).sum(dim=0)
+                v_comp[h, j] = (
+                    weights.unsqueeze(-1) * v_full[h].index_select(0, cluster)
+                ).sum(dim=0)
 
                 sel_idx = int(kept_indices[j].item())
                 sel_mass = mass[sel_idx]

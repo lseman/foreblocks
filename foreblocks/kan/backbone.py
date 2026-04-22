@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import torch
 import torch.nn.functional as F
@@ -199,9 +199,9 @@ class HeteroMoKANLayer(nn.Module):
         router_config: RouterConfig | None = None,
         degree_intra: int | None = None,
         degree_inter: int | None = None,
-        top_k: Optional[int] = 2,
+        top_k: int | None = 2,
         router_temperature: float | None = None,
-        router_hidden: Optional[int] = None,
+        router_hidden: int | None = None,
         load_balance_coef: float = 0.0,
         hahn_alpha: float | None = None,
         hahn_beta: float | None = None,
@@ -259,7 +259,7 @@ class HeteroMoKANLayer(nn.Module):
         self.last_router_probs: Tensor | None = None
         self.last_router_logits: Tensor | None = None
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Dict[str, Tensor]]:
+    def forward(self, x: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         probs, logits = self.router(x)
         self.last_router_probs = probs.detach()
         self.last_router_logits = logits.detach()
@@ -269,7 +269,7 @@ class HeteroMoKANLayer(nn.Module):
         y = (outs * weights).sum(dim=0)
 
         mean_probs = probs.mean(dim=(0, 1))
-        aux: Dict[str, Tensor] = {
+        aux: dict[str, Tensor] = {
             "router_probs": probs,
             "router_logits": logits,
             "mean_expert_prob": mean_probs,
@@ -306,15 +306,15 @@ class Backbone(nn.Module):
         patch_len: int,
         d_model: int = 128,
         depth: int = 5,
-        families: Optional[Sequence[PolyFamily]] = None,
+        families: Sequence[PolyFamily] | None = None,
         *,
         poly_config: PolyLayerConfig | None = None,
         router_config: RouterConfig | None = None,
         degree_intra: int | None = None,
         degree_inter: int | None = None,
-        top_k: Optional[int] = 2,
+        top_k: int | None = 2,
         router_temperature: float | None = None,
-        router_hidden: Optional[int] = None,
+        router_hidden: int | None = None,
         load_balance_coef: float = 0.0,
         hahn_alpha: float | None = None,
         hahn_beta: float | None = None,
@@ -368,7 +368,7 @@ class Backbone(nn.Module):
                 for _ in range(depth)
             ]
         )
-        self.last_aux: Dict[str, Tensor] = {}
+        self.last_aux: dict[str, Tensor] = {}
 
     def forward(self, x: Tensor) -> Tensor:
         n_vars = x.shape[1]

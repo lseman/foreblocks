@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
 
 import torch
 from torch import nn, Tensor
@@ -18,7 +17,7 @@ def _safe_minmax(x: Tensor, dim: int, eps: float = 1e-8) -> Tensor:
     return (x - xmin) / (xmax - xmin + eps)
 
 
-def _ols_detrend(x: Tensor, eps: float = 1e-8) -> Tuple[Tensor, Tensor]:
+def _ols_detrend(x: Tensor, eps: float = 1e-8) -> tuple[Tensor, Tensor]:
     """
     Global linear detrending per sample & channel:
       xtrend(t) = w * t + b
@@ -85,7 +84,7 @@ class SpectralNoiseScorer(nn.Module):
         self.bs = nn.Parameter(torch.tensor(float(bs_init)))
         self.eps = eps
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """
         x: [B, L, C]
         Returns:
@@ -243,7 +242,7 @@ class DropoutTS(nn.Module):
         s, _ = self.scorer(x)
         return self.adrop.map_score_to_p(s)
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """
         x: [B,L,C]
         Returns: (p, s, debug)

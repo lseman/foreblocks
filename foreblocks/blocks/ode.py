@@ -1,4 +1,3 @@
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -29,7 +28,7 @@ class NeuralODE(nn.Module):
         step_size: float = 0.05,
         rtol: float = 1e-4,
         atol: float = 1e-6,
-        ode_net: Optional[nn.Module] = None,
+        ode_net: nn.Module | None = None,
         use_adjoint: bool = True,  # only if torchdiffeq available
         max_steps: int = 100_000,
         min_dt: float = 1e-7,
@@ -62,7 +61,7 @@ class NeuralODE(nn.Module):
     def forward(
         self,
         x: torch.Tensor,  # [B, T, C]
-        times: Optional[torch.Tensor] = None,
+        times: torch.Tensor | None = None,
         return_all: bool = True,
     ) -> torch.Tensor:
         """

@@ -3,7 +3,7 @@ import math
 import re
 import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -50,7 +50,7 @@ class SearchableNorm(nn.Module):
         return w[0] * rev + w[1] * inst + w[2] * x
 
     def apply_output_denorm(
-        self, y: torch.Tensor, alpha: torch.Tensor, selected_norm: Optional[str] = None
+        self, y: torch.Tensor, alpha: torch.Tensor, selected_norm: str | None = None
     ) -> torch.Tensor:
         """
         Denormalize output when RevIN is selected.
@@ -90,7 +90,7 @@ class DARTSModelConfig:
     num_nodes: int = 4
     dropout: float = 0.1
     initial_search: bool = False
-    selected_ops: Optional[List[str]] = None
+    selected_ops: list[str] | None = None
     loss_type: str = "huber"
     use_gradient_checkpointing: bool = False
     temperature: float = 1.0
@@ -196,7 +196,7 @@ class DARTSModelConfig:
 class MixedOp(nn.Module):
     """Enhanced MixedOp using your existing operators with better search strategy"""
 
-    _efficiency_cache: Dict[Any, Dict[str, float]] = {}
+    _efficiency_cache: dict[Any, dict[str, float]] = {}
     _flops_warning_emitted: bool = False
 
     def __init__(
@@ -204,7 +204,7 @@ class MixedOp(nn.Module):
         input_dim: int,
         latent_dim: int,
         seq_length: int,
-        available_ops: Optional[List[str]] = None,
+        available_ops: list[str] | None = None,
         drop_prob: float = 0.1,
         temperature: float = 1.0,
         use_gumbel: bool = True,
@@ -392,7 +392,7 @@ class MixedOp(nn.Module):
             2, self.seq_length, self.latent_dim, device=device, dtype=dtype
         )
 
-        inverse_scores: Dict[str, float] = {}
+        inverse_scores: dict[str, float] = {}
         for op_name, op in zip(self.available_ops, self.ops):
             was_training = op.training
             try:
@@ -497,14 +497,14 @@ class MixedOp(nn.Module):
         )  # Use _alphas internally
         self._flops_profiled = False
 
-    def _get_weights(self, top_k: Optional[int] = None):
+    def _get_weights(self, top_k: int | None = None):
         """Get operation weights with optional top-k selection"""
         if self.use_hierarchical:
             return self._get_hierarchical_weights(top_k)
         else:
             return self._get_flat_weights(top_k)
 
-    def _get_hierarchical_weights(self, top_k: Optional[int] = None):
+    def _get_hierarchical_weights(self, top_k: int | None = None):
         """Get weights for hierarchical search"""
         # Keep group routing smoother than op-level routing to reduce early collapse.
         group_weights = F.softmax(self.group_alphas / self.group_temperature, dim=0)
@@ -558,7 +558,7 @@ class MixedOp(nn.Module):
         weight_tensor = weight_tensor / weight_tensor.sum().clamp_min(1e-8)
         return list(zip(selected_ops, weight_tensor))
 
-    def _get_flat_weights(self, top_k: Optional[int] = None):
+    def _get_flat_weights(self, top_k: int | None = None):
         """Get weights for flat search"""
         logits = self._alphas
         if self.adaptive_sampling and self.training:
@@ -681,7 +681,7 @@ class MixedOp(nn.Module):
         scale = soft[sampled_pos] / soft[sampled_pos].detach()
         return out * scale
 
-    def forward(self, x: torch.Tensor, top_k: Optional[int] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, top_k: int | None = None) -> torch.Tensor:
         """Enhanced forward with better operation selection"""
         if self.use_gdas and self.training:
             return self._gdas_forward(x)
@@ -845,7 +845,7 @@ class MixedOp(nn.Module):
         """Update the DrNAS Dirichlet concentration parameter."""
         self.drnas_concentration = max(float(concentration), 1e-3)
 
-    def get_operation_statistics(self) -> Dict[str, Any]:
+    def get_operation_statistics(self) -> dict[str, Any]:
         """Get statistics about operation usage and performance"""
         stats = {}
 
@@ -861,7 +861,7 @@ class MixedOp(nn.Module):
 
         return stats
 
-    def describe(self, top_k: int = 3) -> Dict[str, float]:
+    def describe(self, top_k: int = 3) -> dict[str, float]:
         """Return top-k operations and their weights for inspection"""
         alphas = self.get_alphas()
         topk_vals, topk_idx = torch.topk(alphas, min(top_k, len(alphas)))
@@ -893,7 +893,7 @@ class DARTSCell(nn.Module):
         seq_length: int,
         num_nodes: int = 4,
         initial_search: bool = False,
-        selected_ops: Optional[List[str]] = None,
+        selected_ops: list[str] | None = None,
         aggregation: str = "weighted",
         temperature: float = 1.0,
         use_checkpoint: bool = False,
@@ -989,7 +989,7 @@ class DARTSCell(nn.Module):
             self.progressive_stage, self.stage_operations["basic"]
         )
 
-    def _ops_for_stage(self, stage: str) -> List[str]:
+    def _ops_for_stage(self, stage: str) -> list[str]:
         stage_ops = list(
             self.stage_operations.get(stage, self.stage_operations["basic"])
         )
@@ -1307,7 +1307,7 @@ class DARTSCell(nn.Module):
             if hasattr(edge, "set_drnas_concentration"):
                 edge.set_drnas_concentration(concentration)
 
-    def get_edge_statistics(self) -> Dict[str, Any]:
+    def get_edge_statistics(self) -> dict[str, Any]:
         """Get detailed statistics about edge usage"""
         stats = {}
         for i, edge in enumerate(self.edges):
@@ -1335,7 +1335,7 @@ class TimeSeriesDARTS(nn.Module):
         num_nodes: int = 4,
         dropout: float = 0.1,
         initial_search: bool = False,
-        selected_ops: Optional[List] = None,
+        selected_ops: list | None = None,
         loss_type: str = "huber",
         use_gradient_checkpointing: bool = False,
         temperature: float = 1.0,
@@ -1703,8 +1703,8 @@ class TimeSeriesDARTS(nn.Module):
     def forward(
         self,
         x_seq: torch.Tensor,
-        x_future: Optional[torch.Tensor] = None,
-        decoder_targets: Optional[torch.Tensor] = None,
+        x_future: torch.Tensor | None = None,
+        decoder_targets: torch.Tensor | None = None,
         teacher_forcing_ratio: float = 0.5,
     ) -> torch.Tensor:
         """Forward pass"""
@@ -1833,7 +1833,7 @@ class TimeSeriesDARTS(nn.Module):
         self,
         final_features: torch.Tensor,
         x_seq: torch.Tensor,
-        selected_norm: Optional[str],
+        selected_norm: str | None,
     ) -> torch.Tensor:
         """Non-autoregressive path: encode → pool last state → direct projection."""
         B = x_seq.shape[0]
@@ -1852,9 +1852,9 @@ class TimeSeriesDARTS(nn.Module):
         self,
         final_features: torch.Tensor,
         x_seq: torch.Tensor,
-        selected_norm: Optional[str],
-        x_future: Optional[torch.Tensor] = None,
-        decoder_targets: Optional[torch.Tensor] = None,
+        selected_norm: str | None,
+        x_future: torch.Tensor | None = None,
+        decoder_targets: torch.Tensor | None = None,
         teacher_forcing_ratio: float = 0.5,
     ) -> torch.Tensor:
         """Decoder-only path: DARTS backbone context + autoregressive decoder."""
@@ -1881,7 +1881,7 @@ class TimeSeriesDARTS(nn.Module):
         )
         return forecasts_tensor
 
-    def _get_decoder_style_weights(self, decoder) -> Optional[torch.Tensor]:
+    def _get_decoder_style_weights(self, decoder) -> torch.Tensor | None:
         if decoder is None:
             return None
         getter = getattr(decoder, "get_decode_style_weights", None)
@@ -1900,7 +1900,7 @@ class TimeSeriesDARTS(nn.Module):
                 return weights
         return None
 
-    def _get_decoder_query_mode_weights(self) -> Optional[torch.Tensor]:
+    def _get_decoder_query_mode_weights(self) -> torch.Tensor | None:
         logits = getattr(self, "decoder_query_alphas", None)
         if isinstance(logits, torch.Tensor):
             tau = max(float(getattr(self, "temperature", 1.0)), 1e-3)
@@ -1926,7 +1926,7 @@ class TimeSeriesDARTS(nn.Module):
             return weights
         return None
 
-    def get_decoder_query_mode_probs(self) -> Optional[torch.Tensor]:
+    def get_decoder_query_mode_probs(self) -> torch.Tensor | None:
         logits = getattr(self, "decoder_query_alphas", None)
         if isinstance(logits, torch.Tensor):
             return F.softmax(logits.detach(), dim=0)
@@ -1957,8 +1957,8 @@ class TimeSeriesDARTS(nn.Module):
     def _build_parallel_decoder_input(
         self,
         x_seq: torch.Tensor,
-        x_future: Optional[torch.Tensor] = None,
-        decoder_targets: Optional[torch.Tensor] = None,
+        x_future: torch.Tensor | None = None,
+        decoder_targets: torch.Tensor | None = None,
         teacher_forcing_ratio: float = 0.5,
     ) -> torch.Tensor:
         last_token = x_seq[:, -1:, :]
@@ -2023,7 +2023,7 @@ class TimeSeriesDARTS(nn.Module):
     def _decode_autoregressive_path(
         self,
         x_seq: torch.Tensor,
-        decoder_targets: Optional[torch.Tensor],
+        decoder_targets: torch.Tensor | None,
         teacher_forcing_ratio: float,
         memory: torch.Tensor,
         encoder_output: torch.Tensor,
@@ -2066,8 +2066,8 @@ class TimeSeriesDARTS(nn.Module):
     def _decode_parallel_informer_path(
         self,
         x_seq: torch.Tensor,
-        x_future: Optional[torch.Tensor],
-        decoder_targets: Optional[torch.Tensor],
+        x_future: torch.Tensor | None,
+        decoder_targets: torch.Tensor | None,
         teacher_forcing_ratio: float,
         memory: torch.Tensor,
         encoder_output: torch.Tensor,
@@ -2098,8 +2098,8 @@ class TimeSeriesDARTS(nn.Module):
         self,
         *,
         x_seq: torch.Tensor,
-        x_future: Optional[torch.Tensor],
-        decoder_targets: Optional[torch.Tensor],
+        x_future: torch.Tensor | None,
+        decoder_targets: torch.Tensor | None,
         teacher_forcing_ratio: float,
         memory: torch.Tensor,
         encoder_output: torch.Tensor,
@@ -2136,7 +2136,7 @@ class TimeSeriesDARTS(nn.Module):
         return style_weights[0] * ar_out + style_weights[1] * informer_out
 
     # Analysis methods
-    def get_all_alphas(self) -> Dict[str, torch.Tensor]:
+    def get_all_alphas(self) -> dict[str, torch.Tensor]:
         """Extract all architecture parameters"""
         alphas = {}
 
@@ -2311,7 +2311,7 @@ class TimeSeriesDARTS(nn.Module):
 
         return alphas
 
-    def derive_discrete_architecture(self, threshold: float = 0.3) -> Dict[str, Any]:
+    def derive_discrete_architecture(self, threshold: float = 0.3) -> dict[str, Any]:
         """Derive discrete architecture from continuous weights"""
         discrete_arch = {}
         weights = self.get_operation_weights()
@@ -2350,7 +2350,7 @@ class TimeSeriesDARTS(nn.Module):
 
         return discrete_arch
 
-    def get_operation_weights(self) -> Dict[str, Dict[str, float]]:
+    def get_operation_weights(self) -> dict[str, dict[str, float]]:
         """Get normalized operation weights"""
         weights = {}
 
@@ -2586,7 +2586,7 @@ class TimeSeriesDARTS(nn.Module):
         return weights
 
     def get_moe_balance_loss(self) -> torch.Tensor:
-        losses: List[torch.Tensor] = []
+        losses: list[torch.Tensor] = []
         for module in self.modules():
             if isinstance(module, DARTSFeedForward) and getattr(module, "supports_moe", False):
                 losses.append(module.get_balance_loss())
@@ -2667,9 +2667,9 @@ class TimeSeriesDARTS(nn.Module):
         epoch: int,
         total_epochs: int,
         *,
-        schedule_type: Optional[str] = None,
-        final_temp: Optional[float] = None,
-        warmup_epochs: Optional[int] = None,
+        schedule_type: str | None = None,
+        final_temp: float | None = None,
+        warmup_epochs: int | None = None,
     ) -> float:
         """
         Compute and apply temperature using the model's built-in schedule.
@@ -2729,7 +2729,7 @@ class TimeSeriesDARTS(nn.Module):
     # PRUNING METHODS
     def prune_weak_operations(
         self, threshold: float = 0.1, strategy: str = "probability"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Prune weak operations based on their weights/importance
 
@@ -2766,7 +2766,7 @@ class TimeSeriesDARTS(nn.Module):
         )
         return pruning_stats
 
-    def _prune_by_probability(self, threshold: float) -> Dict[str, Any]:
+    def _prune_by_probability(self, threshold: float) -> dict[str, Any]:
         """Prune operations based on their probability weights"""
         stats = {"operations_pruned": 0, "operations_kept": 0, "pruned_details": {}}
 
@@ -2828,7 +2828,7 @@ class TimeSeriesDARTS(nn.Module):
 
     def freeze_pruned_operations(
         self,
-        pruning_stats: Optional[Dict[str, Any]] = None,
+        pruning_stats: dict[str, Any] | None = None,
         logit_value: float = -20.0,
     ) -> int:
         """
@@ -2870,7 +2870,7 @@ class TimeSeriesDARTS(nn.Module):
 
         return frozen
 
-    def _prune_by_gradient_magnitude(self, threshold: float) -> Dict[str, Any]:
+    def _prune_by_gradient_magnitude(self, threshold: float) -> dict[str, Any]:
         """Prune operations with consistently low architecture-gradient signal."""
         stats = {
             "operations_pruned": 0,
@@ -2949,7 +2949,7 @@ class TimeSeriesDARTS(nn.Module):
 
         return stats
 
-    def _prune_by_entropy(self, threshold: float) -> Dict[str, Any]:
+    def _prune_by_entropy(self, threshold: float) -> dict[str, Any]:
         """Prune low-probability ops more aggressively when an edge distribution is confident."""
         stats = {"operations_pruned": 0, "operations_kept": 0, "pruned_details": {}}
 
@@ -2996,7 +2996,7 @@ class TimeSeriesDARTS(nn.Module):
 
         return stats
 
-    def _prune_by_performance(self, threshold: float) -> Dict[str, Any]:
+    def _prune_by_performance(self, threshold: float) -> dict[str, Any]:
         """Prune operations using combined probability and tracked runtime performance."""
         stats = {"operations_pruned": 0, "operations_kept": 0, "pruned_details": {}}
 

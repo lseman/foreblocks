@@ -1,5 +1,4 @@
 import math
-from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -27,13 +26,13 @@ class PositionalEncoding(nn.Module):
         self.register_buffer(
             "pe", self._build_table(d_model, max_len), persistent=False
         )
-        self._pe_cache: Dict[int, torch.Tensor] = {}
+        self._pe_cache: dict[int, torch.Tensor] = {}
 
     @staticmethod
     def _build_table(
         D: int,
         T: int,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
     ):
         pos = torch.arange(T, dtype=dtype, device=device).unsqueeze(1)
@@ -64,7 +63,7 @@ class PositionalEncoding(nn.Module):
             return tbl[:, :T]
         return cached[:, :T].to(device=device)
 
-    def forward(self, x: torch.Tensor, pos: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pos: torch.Tensor | None = None) -> torch.Tensor:
         B, T, D = x.shape
         device, dtype = x.device, x.dtype
 

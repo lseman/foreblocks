@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,7 +18,7 @@ class StreamlinedDARTSAnalyzer:
     Provides comprehensive analysis with minimal code repetition.
     """
 
-    def __init__(self, search_results: Dict[str, Any]):
+    def __init__(self, search_results: dict[str, Any]):
         """Initialize analyzer with search results from DARTSTrainer.multi_fidelity_search()"""
         self.search_results = search_results
         self.candidates = search_results.get("candidates", [])
@@ -46,7 +46,7 @@ class StreamlinedDARTSAnalyzer:
 
         return pd.DataFrame(data)
 
-    def _extract_candidate_features(self, candidate: Dict) -> Dict:
+    def _extract_candidate_features(self, candidate: dict) -> dict:
         """Extract all features from a single candidate"""
         row = {
             # Basic info
@@ -72,7 +72,7 @@ class StreamlinedDARTSAnalyzer:
 
         return row
 
-    def _add_zcm_features(self, candidate: Dict, row: Dict):
+    def _add_zcm_features(self, candidate: dict, row: dict):
         """Add zero-cost metrics to row"""
         metrics = candidate.get("metrics", {})
         print(
@@ -93,7 +93,7 @@ class StreamlinedDARTSAnalyzer:
             f"Added zero-cost metrics for candidate {candidate['candidate_id']}: {row}"
         )
 
-    def _add_operation_features(self, candidate: Dict, row: Dict):
+    def _add_operation_features(self, candidate: dict, row: dict):
         """Add operation presence features to row"""
         selected_ops = candidate.get("selected_ops", [])
         all_ops = [
@@ -112,7 +112,7 @@ class StreamlinedDARTSAnalyzer:
         for op in all_ops:
             row[f"op_{op}"] = 1 if op in selected_ops else 0
 
-    def _add_encoder_decoder_features(self, candidate: Dict, row: Dict):
+    def _add_encoder_decoder_features(self, candidate: dict, row: dict):
         """Add encoder/decoder features to row"""
         model = candidate.get("model")
         if model is None:
@@ -129,7 +129,7 @@ class StreamlinedDARTSAnalyzer:
         self._extract_attention_info(model, row)
 
     def _extract_component_info(
-        self, model, component_attr: str, component_type: str, row: Dict
+        self, model, component_attr: str, component_type: str, row: dict
     ):
         """Generic method to extract encoder or decoder information"""
         component = getattr(model, component_attr, None)
@@ -148,7 +148,7 @@ class StreamlinedDARTSAnalyzer:
             row["likely_rnn_type"] = str(component_name)
             row["likely_rnn_weight"] = 1.0
 
-    def _extract_attention_info(self, model, row: Dict):
+    def _extract_attention_info(self, model, row: dict):
         """Extract attention mechanism information"""
         try:
             decoder = getattr(model, "forecast_decoder", None)
@@ -206,7 +206,7 @@ class StreamlinedDARTSAnalyzer:
         except Exception as e:
             row["attention_extraction_error"] = str(e)
 
-    def _add_training_status(self, candidate: Dict, row: Dict):
+    def _add_training_status(self, candidate: dict, row: dict):
         """Add training status and results"""
         # Check if in top candidates
         row["is_top_candidate"] = any(
@@ -227,14 +227,14 @@ class StreamlinedDARTSAnalyzer:
             row["val_loss"] = np.nan
             row["is_best"] = False
 
-    def _find_trained_info(self, candidate_id: str) -> Optional[Dict]:
+    def _find_trained_info(self, candidate_id: str) -> dict | None:
         """Find training information for a candidate"""
         for tc in self.trained_candidates:
             if tc["candidate"]["candidate_id"] == candidate_id:
                 return tc
         return None
 
-    def _add_final_architecture_info(self, trained_info: Dict, row: Dict):
+    def _add_final_architecture_info(self, trained_info: dict, row: dict):
         """Add final architecture choices from trained models"""
         try:
             search_results = trained_info.get("search_results", {})
@@ -264,7 +264,7 @@ class StreamlinedDARTSAnalyzer:
             row["final_arch_extraction_error"] = str(e)
 
     def _extract_final_component_choice(
-        self, model, component_attr: str, component_type: str, row: Dict
+        self, model, component_attr: str, component_type: str, row: dict
     ):
         """Extract final component choice from trained model"""
         component = getattr(model, component_attr, None)
@@ -277,7 +277,7 @@ class StreamlinedDARTSAnalyzer:
         if component_type == "decoder":
             row["final_rnn_type"] = selected_component
 
-    def _extract_final_attention_choice(self, model, row: Dict):
+    def _extract_final_attention_choice(self, model, row: dict):
         """Extract final attention choice from trained model"""
         decoder = getattr(model, "forecast_decoder", None)
         transformer = getattr(decoder, "transformer", None) if decoder is not None else None
@@ -327,7 +327,7 @@ class StreamlinedDARTSAnalyzer:
             row["final_attention_choice"] = selected_mode
             row["final_uses_attention"] = 1
 
-    def _analyze_all_patterns(self) -> Dict[str, Any]:
+    def _analyze_all_patterns(self) -> dict[str, Any]:
         """Analyze all architectural patterns in one pass"""
         patterns = {
             "component_analysis": {},
@@ -354,7 +354,7 @@ class StreamlinedDARTSAnalyzer:
 
         return patterns
 
-    def _analyze_component_patterns(self, component_type: str) -> Dict[str, Any]:
+    def _analyze_component_patterns(self, component_type: str) -> dict[str, Any]:
         """Generic method to analyze any component type patterns"""
         likely_col = f"likely_{component_type}"
         weight_col = f"likely_{component_type}_weight"
@@ -381,7 +381,7 @@ class StreamlinedDARTSAnalyzer:
 
         return freq_data
 
-    def _analyze_attention_patterns(self) -> Dict[str, Any]:
+    def _analyze_attention_patterns(self) -> dict[str, Any]:
         """Analyze attention usage patterns"""
         if "uses_attention" not in self.analysis_df.columns:
             return {}
@@ -405,7 +405,7 @@ class StreamlinedDARTSAnalyzer:
 
         return attention_stats
 
-    def _analyze_final_patterns(self) -> Dict[str, Any]:
+    def _analyze_final_patterns(self) -> dict[str, Any]:
         """Analyze final architecture patterns for trained models"""
         trained_df = self.analysis_df[self.analysis_df["was_trained"]]
         if trained_df.empty:
@@ -445,7 +445,7 @@ class StreamlinedDARTSAnalyzer:
 
         return final_analysis
 
-    def _analyze_operation_patterns(self) -> Dict[str, Any]:
+    def _analyze_operation_patterns(self) -> dict[str, Any]:
         """Analyze operation frequency patterns"""
         op_columns = [col for col in self.analysis_df.columns if col.startswith("op_")]
         operation_names = [col.replace("op_", "") for col in op_columns]
@@ -522,7 +522,7 @@ class StreamlinedDARTSAnalyzer:
         return pd.DataFrame(corr_data)
 
     def plot_encoder_decoder_analysis(
-        self, figsize: Tuple[int, int] = (12, 6)
+        self, figsize: tuple[int, int] = (12, 6)
     ) -> plt.Figure:
         """Create focused encoder/decoder/attention analysis plot"""
         fig, axes = plt.subplots(1, 3, figsize=figsize)
@@ -546,7 +546,7 @@ class StreamlinedDARTSAnalyzer:
         return fig
 
     def plot_operation_analysis(
-        self, figsize: Tuple[int, int] = (16, 10)
+        self, figsize: tuple[int, int] = (16, 10)
     ) -> plt.Figure:
         """Create focused operation/block analysis plot with a centered plot on second row"""
         fig = plt.figure(figsize=figsize)
@@ -571,7 +571,7 @@ class StreamlinedDARTSAnalyzer:
         return fig
 
     def plot_correlation_analysis(
-        self, figsize: Tuple[int, int] = (14, 8)
+        self, figsize: tuple[int, int] = (14, 8)
     ) -> plt.Figure:
         """Create focused correlation analysis plot"""
         fig, axes = plt.subplots(1, 2, figsize=figsize)
@@ -591,7 +591,7 @@ class StreamlinedDARTSAnalyzer:
         return fig
 
     def plot_performance_analysis(
-        self, figsize: Tuple[int, int] = (16, 8)
+        self, figsize: tuple[int, int] = (16, 8)
     ) -> plt.Figure:
         """Create focused performance analysis plot"""
         fig, axes = plt.subplots(1, 2, figsize=figsize)
@@ -1563,7 +1563,7 @@ class StreamlinedDARTSAnalyzer:
         ax.set_ylim(0, max(success_rates) * 1.2 if success_rates else 100)
 
     def plot_architecture_space_exploration(
-        self, figsize: Tuple[int, int] = (14, 6)
+        self, figsize: tuple[int, int] = (14, 6)
     ) -> plt.Figure:
         """Visualize the exploration of architectural space"""
         fig, axes = plt.subplots(1, 2, figsize=figsize)
@@ -1691,7 +1691,7 @@ class StreamlinedDARTSAnalyzer:
         return fig
 
     def plot_architecture_configurations(
-        self, top_k: int = 20, figsize: Tuple[int, int] = (10, 6)
+        self, top_k: int = 20, figsize: tuple[int, int] = (10, 6)
     ) -> plt.Figure:
         """
         Plot the frequency of combined architecture configurations like '2C-3N-128H'.
@@ -1746,7 +1746,7 @@ class StreamlinedDARTSAnalyzer:
 
 
 def analyze_darts_search(
-    search_results: Dict[str, Any], save_plots: bool = True, plot_dir: str = "./plots/"
+    search_results: dict[str, Any], save_plots: bool = True, plot_dir: str = "./plots/"
 ) -> StreamlinedDARTSAnalyzer:
     """
     Streamlined analysis of DARTS search results with focused plots.

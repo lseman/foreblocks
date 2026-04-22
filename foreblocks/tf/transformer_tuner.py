@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
+from collections.abc import Iterable
 
 import numpy as np
 import torch
@@ -134,6 +135,7 @@ class TransformerTuningReport(BaseModel):
 
     available: bool
     series_length: int
+    context_length: int | None = None
 
     # Patching
     patching_label: Literal["good", "moderate", "weak", "insufficient"]
@@ -141,6 +143,7 @@ class TransformerTuningReport(BaseModel):
     recommended_patch_len: int
     recommended_patch_stride: int
     recommended_patch_set: tuple[int, ...]
+    estimated_num_patches: int | None = None
 
     # Periodicity
     dominant_period: float
@@ -200,20 +203,27 @@ class ModernTransformerTuner:
         self,
         series: Any,
         seasonal_periods: Iterable[int] | None = None,
+        context_length: int | None = None,
     ) -> TransformerTuningReport:
         values = _to_1d_array(series)
         n = int(values.size)
         known_periods = [int(p) for p in (seasonal_periods or []) if int(p) >= 2]
 
-        if n < 36:
+        effective_context = (
+            context_length if context_length is not None and context_length >= 32 else n
+        )
+
+        if effective_context < 36:
             return TransformerTuningReport(
                 available=False,
                 series_length=n,
+                context_length=context_length,
                 patching_label="insufficient",
                 patching_score=0,
                 recommended_patch_len=0,
                 recommended_patch_stride=0,
                 recommended_patch_set=(),
+                estimated_num_patches=None,
                 dominant_period=0.0,
                 dominant_periods=(),
                 acf_periods=(),
@@ -310,7 +320,10 @@ class ModernTransformerTuner:
         forecastability_score = round(100.0 * (1.0 - spectral_entropy), 2)
 
         # Patching recommendation (influenced by roughness + dominant period)
-        max_patch = max(4, min(max(self.candidate_patch_lengths), n // 3))
+        max_patch = max(
+            4,
+            min(max(self.candidate_patch_lengths), effective_context // 4),
+        )
         base_patch = dominant_period / (3 if dominant_period >= 24 else 2)
 
         if roughness > 1.05:
@@ -318,15 +331,35 @@ class ModernTransformerTuner:
         elif roughness < 0.55:
             base_patch *= 1.15
 
+        if context_length is not None and context_length >= 32:
+            divisors = [
+                d
+                for d in self.candidate_patch_lengths
+                if d <= max_patch and context_length % d == 0
+            ]
+            if divisors:
+                base_patch = (base_patch + float(np.mean(divisors))) / 2.0
+
         rec_patch_len = _choose_nearest_candidate(
             base_patch, self.candidate_patch_lengths, max_patch
         )
+
+        target_patches = max(32, min(96, effective_context // 8))
+        ideal_stride = max(1, effective_context // target_patches)
+
         rec_stride = min(
             rec_patch_len,
             _choose_nearest_candidate(
-                max(1.0, rec_patch_len / 2), self.candidate_strides, rec_patch_len
+                max(1.0, ideal_stride), self.candidate_strides, rec_patch_len
             ),
         )
+
+        if rec_stride > 0:
+            estimated_num_patches = (
+                effective_context - rec_patch_len
+            ) // rec_stride + 1
+        else:
+            estimated_num_patches = None
 
         forecastability_penalty = (
             10 if forecastability_score < 35 else 4 if forecastability_score < 55 else 0
@@ -340,7 +373,7 @@ class ModernTransformerTuner:
                         0.30 * min(1.0, peak_concentration / 0.22)
                         + 0.25 * min(1.0, repeatability / 0.45)
                         + 0.25 * (1.0 - min(1.0, roughness / 1.45))
-                        + 0.20 * min(1.0, n / 240.0)
+                        + 0.20 * min(1.0, effective_context / 240.0)
                     )
                 )
                 - forecastability_penalty,
@@ -510,7 +543,7 @@ class ModernTransformerTuner:
 
         notes = [
             f"Patch tokenization is {patching_label} (score {patching_score}/100) for {n} observations.",
-            f"Recommended starting point: patch_len={rec_patch_len}, stride={rec_stride}. Dominant period ≈ {dominant_period:.1f}.",
+            f"Recommended starting point: patch_len={rec_patch_len}, stride={rec_stride} ({estimated_num_patches} patches for context={effective_context}).",
             f"Scale energy: short={short * 100:.1f}% (≤8), medium={medium * 100:.1f}% (8–24), long={long_ * 100:.1f}% (>24).",
         ]
         if hierarchical_label in {"moderate", "high"} and hierarchy_periods:
@@ -519,6 +552,11 @@ class ModernTransformerTuner:
                 + ", ".join(map(str, hierarchy_periods[:4]))
                 + "."
             )
+        if context_length is not None and context_length != n:
+            notes.append(
+                f"Recommendations optimized for context_length={context_length} while series length is {n}."
+            )
+
         if decomps:
             notes.append(
                 "Suggested decompositions: "
@@ -535,16 +573,20 @@ class ModernTransformerTuner:
             "recommended_patch_set": list(rec_patch_set),
             "use_multiscale": multiscale_label in {"moderate", "high"},
             "use_hierarchical": hierarchical_label in {"moderate", "high"},
+            "context_length": context_length,
+            "estimated_num_patches": estimated_num_patches,
         }
 
         return TransformerTuningReport(
             available=True,
             series_length=n,
+            context_length=context_length,
             patching_label=patching_label,
             patching_score=patching_score,
             recommended_patch_len=int(rec_patch_len),
             recommended_patch_stride=int(rec_stride),
             recommended_patch_set=rec_patch_set,
+            estimated_num_patches=estimated_num_patches,
             dominant_period=round(float(dominant_period), 2),
             dominant_periods=dominant_periods,
             acf_periods=acf_periods,

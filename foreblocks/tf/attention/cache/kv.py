@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -13,9 +12,9 @@ class KVProvider(ABC):
         self,
         new_k: torch.Tensor,
         new_v: torch.Tensor,
-        kv_latent: Optional[torch.Tensor] = None,
-        batch_idx: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        kv_latent: torch.Tensor | None = None,
+        batch_idx: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return full/current K and V (possibly gathered)."""
 
     @abstractmethod
@@ -24,7 +23,7 @@ class KVProvider(ABC):
         k: torch.Tensor,
         v: torch.Tensor,
         batch_idx: int,
-        kv_latent: Optional[torch.Tensor] = None,
+        kv_latent: torch.Tensor | None = None,
     ) -> None: ...
 
     @abstractmethod
@@ -45,11 +44,11 @@ class KVProvider(ABC):
 class DenseKVProvider(KVProvider):
     def __init__(
         self,
-        layer_state: Optional[Dict],
+        layer_state: dict | None,
         cross_attention: bool,
         use_mla: bool = False,
-        k_up_proj: Optional[nn.Module] = None,
-        v_up_proj: Optional[nn.Module] = None,
+        k_up_proj: nn.Module | None = None,
+        v_up_proj: nn.Module | None = None,
     ):
         self.layer_state = layer_state
         self.cross_attention = cross_attention
@@ -61,9 +60,9 @@ class DenseKVProvider(KVProvider):
         self,
         new_k: torch.Tensor,
         new_v: torch.Tensor,
-        kv_latent: Optional[torch.Tensor] = None,
-        batch_idx: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        kv_latent: torch.Tensor | None = None,
+        batch_idx: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.cross_attention:
             return new_k, new_v
 
@@ -114,7 +113,7 @@ class DenseKVProvider(KVProvider):
         k: torch.Tensor,
         v: torch.Tensor,
         batch_idx: int,
-        kv_latent: Optional[torch.Tensor] = None,
+        kv_latent: torch.Tensor | None = None,
     ) -> None:
         raise RuntimeError("DenseKVProvider.append is not used in batched mode.")
 
@@ -137,8 +136,8 @@ class PagedKVProvider(KVProvider):
         self,
         cache: PagedKVCache,
         use_mla: bool = False,
-        k_up_proj: Optional[nn.Module] = None,
-        v_up_proj: Optional[nn.Module] = None,
+        k_up_proj: nn.Module | None = None,
+        v_up_proj: nn.Module | None = None,
     ):
         self.cache = cache
         self.use_mla = bool(use_mla)
@@ -149,9 +148,9 @@ class PagedKVProvider(KVProvider):
         self,
         new_k: torch.Tensor,
         new_v: torch.Tensor,
-        kv_latent: Optional[torch.Tensor] = None,
-        batch_idx: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        kv_latent: torch.Tensor | None = None,
+        batch_idx: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.use_mla:
             if kv_latent is None:
                 raise ValueError("MLA paged provider expects kv_latent.")
@@ -188,7 +187,7 @@ class PagedKVProvider(KVProvider):
         k: torch.Tensor,
         v: torch.Tensor,
         batch_idx: int,
-        kv_latent: Optional[torch.Tensor] = None,
+        kv_latent: torch.Tensor | None = None,
     ) -> None:
         if self.use_mla:
             if kv_latent is None:

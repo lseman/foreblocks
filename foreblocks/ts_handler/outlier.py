@@ -1,6 +1,5 @@
 # Standard Library
 import warnings
-from typing import Optional, Union
 
 # Scientific Computing and Visualization
 import numpy as np
@@ -437,8 +436,8 @@ class TranADDetector:
     def __init__(
         self,
         seq_len: int = 24,
-        d_model: Optional[int] = None,
-        n_heads: Optional[int] = None,
+        d_model: int | None = None,
+        n_heads: int | None = None,
         n_layers: int = 1,
         epochs: int = 50,
         batch_size: int = 256,
@@ -446,7 +445,7 @@ class TranADDetector:
         weight_decay: float = 1e-5,
         dropout: float = 0.1,
         patience: int = 10,
-        device: Optional[str] = None,
+        device: str | None = None,
         scaler_type: str = "minmax",
         use_mixed_precision: bool = True,
         compile_model: bool = False,  # New: PyTorch 2.0 compilation
@@ -497,7 +496,7 @@ class TranADDetector:
         return (0.5 * diff1 + 0.5 * diff2).detach().cpu().numpy()
 
     def fit_predict(
-        self, series: Union[np.ndarray, torch.Tensor], validation_split: float = 0.2
+        self, series: np.ndarray | torch.Tensor, validation_split: float = 0.2
     ) -> np.ndarray:
         if isinstance(series, torch.Tensor):
             series = series.cpu().numpy()
@@ -708,7 +707,7 @@ class TranADDetector:
 
         return np.concatenate(scores, axis=0) if scores else np.empty((0, 0))
 
-    def predict(self, series: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
+    def predict(self, series: np.ndarray | torch.Tensor) -> np.ndarray:
         """Optimized prediction method"""
         if self.model is None:
             raise RuntimeError("Model not trained. Call fit_predict first.")

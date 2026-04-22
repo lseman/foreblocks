@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -134,21 +135,21 @@ class FeedForwardBlock(nn.Module):
         router_hash_bucket_size: int = 8,
         router_hash_seed: int = 17,
         routing_mode: str = "token_choice",
-        expert_choice_tokens_per_expert: Optional[int] = None,
+        expert_choice_tokens_per_expert: int | None = None,
         use_bias: bool = False,
         input_dropout: float = 0.0,
         jitter: float = 0.01,
         expert_dropout: float = 0.0,
         use_gradient_checkpointing: bool = False,
-        d_ff_shared: Optional[int] = None,
+        d_ff_shared: int | None = None,
         shared_scale_init: float = 1.0,
         shared_combine: str = "add",
         adaptive_k_head_dim: int = 32,
         adaptive_k_tau: float = 1.0,
         adaptive_k_baseline_momentum: float = 0.99,
         adaptive_k_sparsity_lambda: float = 0.0,
-        moe_logger: Optional["MoELogger"] = None,
-        step_getter: Optional[Callable[[], int]] = None,
+        moe_logger: MoELogger | None = None,
+        step_getter: Callable[[], int] | None = None,
         log_latency: bool = False,
         compile_router: bool = True,
         compile_experts: bool = True,
@@ -164,8 +165,8 @@ class FeedForwardBlock(nn.Module):
         mtp_loss_weight: float = 0.0,
         mtp_init_scale: float = 0.02,
         moe_use_latent: bool = False,
-        moe_latent_dim: Optional[int] = None,
-        moe_latent_d_ff: Optional[int] = None,
+        moe_latent_dim: int | None = None,
+        moe_latent_d_ff: int | None = None,
     ):
         super().__init__()
         self.use_moe = bool(use_moe)
@@ -257,7 +258,7 @@ class FeedForwardBlock(nn.Module):
             reward, detach_reward=detach_reward
         )
 
-    def get_last_per_token_k(self) -> Optional[torch.Tensor]:
+    def get_last_per_token_k(self) -> torch.Tensor | None:
         if not self.use_moe:
             return None
         if not hasattr(self.block, "get_last_per_token_k"):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -34,7 +33,7 @@ class LearnableFourierSeasonal(nn.Module):
         cos = torch.cos(ang)
         return torch.cat([sin, cos], dim=-1)  # [T,2K]
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         B, T, F_ = x.shape
         if F_ != self.feature_dim:
             raise RuntimeError(f"Input F={F_} != feature_dim={self.feature_dim}")

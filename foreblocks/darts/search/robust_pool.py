@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
@@ -46,21 +46,21 @@ def robust_initial_pool_over_op_pools(
     max_samples: int = 32,
     num_batches: int = 1,
     seed: int = 0,
-    max_workers: Optional[int] = None,
+    max_workers: int | None = None,
     # optional: weight-scheme robustness inside each pool
     use_weight_schemes: bool = False,
     n_random: int = 50,
     random_sigma: float = 0.25,
     robustness_mode: str = "topk_freq",  # "topk_freq" | "avg_rank" | "worst_rank"
-    topk_ref: Optional[int] = None,
+    topk_ref: int | None = None,
     # candidate knobs
     min_ops: int = 2,
-    max_ops: Optional[int] = None,
+    max_ops: int | None = None,
     cell_range: tuple = (1, 2),
     node_range: tuple = (2, 4),
-    hidden_dim_choices: Optional[List[int]] = None,
+    hidden_dim_choices: list[int] | None = None,
     require_identity: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Evaluate robustness of architecture selection w.r.t. the operator pool.
 
@@ -105,9 +105,9 @@ def robust_initial_pool_over_op_pools(
 
     # ── Sample operator pools ─────────────────────────────────────────────
     py_rng_pools = random.Random(pool_seed)
-    base_ops: List[str] = list(trainer.all_ops)
+    base_ops: list[str] = list(trainer.all_ops)
 
-    def _sample_pool() -> List[str]:
+    def _sample_pool() -> list[str]:
         ops_no_id = [op for op in base_ops if op != "Identity"]
         lo, hi = pool_size_range
         k = py_rng_pools.randint(
@@ -117,7 +117,7 @@ def robust_initial_pool_over_op_pools(
         picked = py_rng_pools.sample(ops_no_id, k=min(k, len(ops_no_id)))
         return ["Identity"] + picked if require_identity else picked
 
-    op_pools: List[List[str]] = []
+    op_pools: list[list[str]] = []
     seen: set = set()
     while len(op_pools) < n_pools:
         p = tuple(_sample_pool())
@@ -126,14 +126,14 @@ def robust_initial_pool_over_op_pools(
             op_pools.append(list(p))
 
     # ── Per-pool evaluation ────────────────────────────────────────────────
-    all_pool_results: List[Dict] = []
+    all_pool_results: list[dict] = []
     # signature → accumulator
-    agg: Dict[str, Dict] = {}
+    agg: dict[str, dict] = {}
 
     for pool_idx, allowed_ops in enumerate(op_pools):
         py_rng = random.Random(seed + pool_idx)
 
-        def _make_config() -> Dict[str, Any]:
+        def _make_config() -> dict[str, Any]:
             return trainer._make_candidate_config(
                 py_rng,
                 allowed_ops,
@@ -145,7 +145,7 @@ def robust_initial_pool_over_op_pools(
                 require_identity=require_identity,
             )
 
-        def _eval_one(candidate_id: int) -> Dict[str, Any]:  # noqa: ARG001
+        def _eval_one(candidate_id: int) -> dict[str, Any]:  # noqa: ARG001
             cfg = _make_config()
             try:
                 model = trainer._build_candidate_model(cfg)
@@ -168,7 +168,7 @@ def robust_initial_pool_over_op_pools(
                 return {"success": False, "error": str(exc)}
 
         # Run inner evaluation (parallel)
-        candidates: List[Dict] = []
+        candidates: list[dict] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
             futs = [ex.submit(_eval_one, i) for i in range(num_candidates)]
             for fut in concurrent.futures.as_completed(futs):
@@ -216,7 +216,7 @@ def robust_initial_pool_over_op_pools(
         k_eff = min(top_k, len(candidates))
         top_idx = order[:k_eff].tolist()
 
-        pool_top: List[Dict] = []
+        pool_top: list[dict] = []
         for local_rank, i in enumerate(top_idx, start=1):
             c = candidates[i]
             sig = _sig_from_cfg(c)
@@ -252,7 +252,7 @@ def robust_initial_pool_over_op_pools(
         )
 
     # ── Aggregate robustness across pools ─────────────────────────────────
-    table: List[Dict] = []
+    table: list[dict] = []
     for sig, st in agg.items():
         ranks = np.array(st["ranks"], dtype=np.float64)
         scores_arr = np.array(st["scores"], dtype=np.float64)

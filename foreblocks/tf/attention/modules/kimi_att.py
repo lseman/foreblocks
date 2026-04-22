@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 kimi_att_fast.py — Corrected KDA (DeltaNet-style) Linear Attention
 
@@ -34,7 +33,6 @@ Fixes vs previous version
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -299,9 +297,9 @@ class _KDA_Fast(nn.Module):
         self,
         d_model: int,
         num_heads: int,
-        d_k: Optional[int] = None,
-        d_v: Optional[int] = None,
-        gate_rank: Optional[int] = None,
+        d_k: int | None = None,
+        d_v: int | None = None,
+        gate_rank: int | None = None,
         dropout: float = 0.0,
         shortconv_mode: str = "depthwise",
         chunk_size: int = 64,
@@ -370,7 +368,7 @@ class _KDA_Fast(nn.Module):
 
     def _project(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, T, _ = x.shape
         Q = (
             self.q_proj(self.pre_q(x))
@@ -396,7 +394,7 @@ class _KDA_Fast(nn.Module):
 
     def _gate_params(
         self, x: torch.Tensor, BH: int, T: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
             alpha [BH, T, Dk]  — per-step decay (clamped when safe_updates=True)
@@ -527,7 +525,7 @@ class _KDA_Fast(nn.Module):
         a_t: torch.Tensor,  # [BH, Dk]
         b_t: torch.Tensor,  # [BH, 1]
         use_triton_path: bool,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """One recurrence step → (o_t [BH, Dv], S_next [BH, Dk, Dv])."""
         if use_triton_path:
             # NOTE: in-place ops on S; only safe outside autograd
@@ -608,8 +606,8 @@ class _KDA_Fast(nn.Module):
     def forward(
         self,
         x: torch.Tensor,  # [B, T, D]
-        state: Optional[torch.Tensor] = None,  # [B, H, Dk, Dv]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        state: torch.Tensor | None = None,  # [B, H, Dk, Dv]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
             y          [B, T, D]
@@ -754,11 +752,11 @@ class KimiAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,  # ignored (recurrent)
-        key_padding_mask: Optional[torch.Tensor] = None,  # ignored (recurrent)
+        attn_mask: torch.Tensor | None = None,  # ignored (recurrent)
+        key_padding_mask: torch.Tensor | None = None,  # ignored (recurrent)
         is_causal: bool = True,  # always causal
-        layer_state: Optional[Dict] = None,
-    ) -> Tuple[torch.Tensor, None, Optional[Dict]]:
+        layer_state: dict | None = None,
+    ) -> tuple[torch.Tensor, None, dict | None]:
         """
         Returns:
             out          [B, T, D]

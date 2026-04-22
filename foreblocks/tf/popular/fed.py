@@ -1,5 +1,5 @@
 # fedformer_head_custom.py
-from typing import Literal, Optional, Tuple
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -29,7 +29,7 @@ class SeriesDecomp(nn.Module):
         )
         nn.init.constant_(self.avg.weight, 1.0 / kernel_size)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         x: [B, T, C]
         Returns: seasonal [B, T, C], trend [B, T, C]
@@ -63,7 +63,7 @@ class FourierModeSelector(nn.Module):
         self.modes = modes
         self.mode_select = mode_select
 
-    def forward(self, Xf: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, Xf: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Xf: [B, F, C, 2] complex spectrum (one-sided real FFT representation)
         Returns selected (Xf_sel, idx) with shape [B, K, C, 2], idx [B, K]
@@ -249,7 +249,7 @@ class FEDformerHeadCustom(nn.Module):
         custom_norm: str = "rms",
         layer_norm_eps: float = 1e-5,
         use_channel_mixer: bool = True,
-        quantiles: Optional[Tuple[float, ...]] = None,
+        quantiles: tuple[float, ...] | None = None,
     ):
         super().__init__()
         self.pred_len = pred_len

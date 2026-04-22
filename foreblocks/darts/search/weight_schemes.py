@@ -1,15 +1,14 @@
 """Weight-scheme generation and stability utilities for zero-cost ablations."""
 
-from typing import Dict
 
 import numpy as np
 
 
-def weights_uniform(base: Dict[str, float]) -> Dict[str, float]:
+def weights_uniform(base: dict[str, float]) -> dict[str, float]:
     return {k: (1.0 if v >= 0 else -1.0) for k, v in base.items()}
 
 
-def weights_family_subsets(base: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+def weights_family_subsets(base: dict[str, float]) -> dict[str, dict[str, float]]:
     grad = ["grasp", "fisher", "snip", "jacobian", "sensitivity"]
     act = ["naswot", "activation_diversity", "zennas"]
     complexity = ["params", "flops", "conditioning"]
@@ -28,7 +27,7 @@ def weights_family_subsets(base: Dict[str, float]) -> Dict[str, Dict[str, float]
     }
 
 
-def weights_leave_one_out(base: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+def weights_leave_one_out(base: dict[str, float]) -> dict[str, dict[str, float]]:
     out = {}
     for key in list(base.keys()):
         w = dict(base)
@@ -38,8 +37,8 @@ def weights_leave_one_out(base: Dict[str, float]) -> Dict[str, Dict[str, float]]
 
 
 def sample_random_weights_around(
-    base: Dict[str, float], sigma: float, seed: int
-) -> Dict[str, float]:
+    base: dict[str, float], sigma: float, seed: int
+) -> dict[str, float]:
     rng = np.random.default_rng(seed)
     out = {}
     for key, w0 in base.items():
@@ -49,12 +48,12 @@ def sample_random_weights_around(
 
 
 def build_weight_schemes(
-    base_weights: Dict[str, float],
+    base_weights: dict[str, float],
     n_random: int = 20,
     random_sigma: float = 0.25,
     seed: int = 0,
-) -> Dict[str, Dict[str, float]]:
-    schemes: Dict[str, Dict[str, float]] = {}
+) -> dict[str, dict[str, float]]:
+    schemes: dict[str, dict[str, float]] = {}
     schemes["baseline"] = dict(base_weights)
     schemes["uniform"] = weights_uniform(base_weights)
     schemes.update(weights_family_subsets(base_weights))

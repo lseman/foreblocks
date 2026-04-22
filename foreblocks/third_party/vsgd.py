@@ -1,6 +1,5 @@
 # https://github.com/generativeai-tue/vsgd
 
-from typing import List
 
 import torch
 from torch import Tensor
@@ -44,7 +43,7 @@ class VSGD(Optimizer):
         super().__init__(params, defaults)
 
     def __setstate__(self, state):
-        super(VSGD, self).__setstate__(state)
+        super().__setstate__(state)
 
     def step(self, closure=None):
         """Performs a single optimization step.
@@ -108,15 +107,15 @@ class VSGD(Optimizer):
     def _init_group(
         self,
         group,
-        params_with_grad: List[Tensor],
-        grads: List[Tensor],
-        mug_list: List,
-        step_list: List,
-        pa2_list: List,
-        pbg2_list: List,
-        pbhg2_list: List,
-        bg_list: List,
-        bhg_list: List,
+        params_with_grad: list[Tensor],
+        grads: list[Tensor],
+        mug_list: list,
+        step_list: list,
+        pa2_list: list,
+        pbg2_list: list,
+        pbhg2_list: list,
+        bg_list: list,
+        bhg_list: list,
         ghattg: float,
         ps: float,
     ):
@@ -159,15 +158,15 @@ class VSGD(Optimizer):
 
 
 def vsgd(
-    params_with_grad: List[Tensor],
-    grads: List[Tensor],
-    mug_list: List[Tensor],
-    step_list: List[Tensor],
-    pa2_list: List[Tensor],
-    pbg2_list: List[Tensor],
-    pbhg2_list: List[Tensor],
-    bg_list: List[Tensor],
-    bhg_list: List[Tensor],
+    params_with_grad: list[Tensor],
+    grads: list[Tensor],
+    mug_list: list[Tensor],
+    step_list: list[Tensor],
+    pa2_list: list[Tensor],
+    pbg2_list: list[Tensor],
+    pbhg2_list: list[Tensor],
+    bg_list: list[Tensor],
+    bhg_list: list[Tensor],
     tau1: float,
     tau2: float,
     lr: float,

@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -19,7 +18,7 @@ class SlidingWindowAttentionImpl:
         need_weights,
         layer_state=None,
         **_,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[dict]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
         q, k, v = self.parent._prepare_qkv_attention(query, key, value, layer_state)
 
@@ -85,7 +84,7 @@ class SlidingWindowAttentionImpl:
         is_causal,
         need_weights,
         apply_gate: bool = True,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
 

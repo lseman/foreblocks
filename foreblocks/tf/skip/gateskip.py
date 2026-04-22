@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -13,7 +12,7 @@ class BudgetScheduler:
         self,
         b_start: float = 1.0,
         b_end: float = 0.8,
-        total_steps: Optional[int] = None,
+        total_steps: int | None = None,
     ):
         self.b_start = float(b_start)
         self.b_end = float(b_end)
@@ -26,7 +25,7 @@ class BudgetScheduler:
     def step(self):
         self._step += 1
 
-    def get_budget(self, current_step: Optional[int] = None) -> float:
+    def get_budget(self, current_step: int | None = None) -> float:
         s = self._step if current_step is None else int(current_step)
         if self.total_steps is None or self.total_steps <= 0:
             return self.b_end
@@ -69,7 +68,7 @@ class ResidualGate(nn.Module):
         self,
         d_model: int,
         gate_dim: int = 1,
-        hidden_dim: Optional[int] = None,
+        hidden_dim: int | None = None,
         norm_type: str = "layernorm",
         layer_norm_eps: float = 1e-5,
         init_bias: float = 2.0,
@@ -109,8 +108,8 @@ class ResidualGate(nn.Module):
     def gate_scores(
         self,
         h_prev: torch.Tensor,
-        active_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        active_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
             g:    [B,T,gate_dim]
@@ -141,15 +140,15 @@ class ResidualGate(nn.Module):
         self,
         h_prev: torch.Tensor,
         o: torch.Tensor,
-        active_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        active_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         g, gbar = self.gate_scores(h_prev, active_mask=active_mask)
         h_gated = h_prev + g * o
         return h_gated, g, gbar
 
 
 def _normalize_active_mask(
-    active_mask: Optional[torch.Tensor],
+    active_mask: torch.Tensor | None,
     ref: torch.Tensor,
 ) -> torch.Tensor:
     B, T = ref.shape[:2]
@@ -168,7 +167,7 @@ def _normalize_active_mask(
 def _exact_topk_keep_mask(
     gbar: torch.Tensor,
     keep: float,
-    active_mask: Optional[torch.Tensor] = None,
+    active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Returns a per-row boolean keep mask using exact top-k over active positions.
@@ -225,7 +224,7 @@ def _exact_topk_keep_mask(
 
 def _compute_gate_smoothness(
     gbar: torch.Tensor,
-    active_mask: Optional[torch.Tensor] = None,
+    active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Mean absolute temporal variation over adjacent active positions.
@@ -244,9 +243,9 @@ def _compute_gate_smoothness(
 
 def _compute_gate_stats(
     gbar: torch.Tensor,
-    keep_mask: Optional[torch.Tensor],
-    budget: Optional[float],
-    active_mask: Optional[torch.Tensor] = None,
+    keep_mask: torch.Tensor | None,
+    budget: float | None,
+    active_mask: torch.Tensor | None = None,
 ) -> GateStats:
     active_mask = _normalize_active_mask(active_mask, gbar)
 
@@ -285,14 +284,14 @@ def gateskip_apply(
     h_prev: torch.Tensor,
     o: torch.Tensor,
     gate: ResidualGate,
-    budget: Optional[float],
-    aux_terms: List[torch.Tensor],
+    budget: float | None,
+    aux_terms: list[torch.Tensor],
     lambda_s: float,
-    active_mask: Optional[torch.Tensor] = None,
+    active_mask: torch.Tensor | None = None,
     lambda_budget: float = 0.0,
     lambda_smooth: float = 0.0,
     warmup_soft_only: bool = False,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], GateStats]:
+) -> tuple[torch.Tensor, torch.Tensor | None, GateStats]:
     """
     Returns:
         h_out,
@@ -332,7 +331,7 @@ def gateskip_apply(
     # Inactive positions are always copied through.
     h_gated = torch.where(active_mask.unsqueeze(-1), h_gated, h_prev)
 
-    keep_mask: Optional[torch.Tensor] = None
+    keep_mask: torch.Tensor | None = None
     if (budget is not None) and (not warmup_soft_only):
         budget = float(budget)
         if budget >= 1.0:
@@ -371,11 +370,11 @@ def gateskip_apply(
 
 
 def apply_skip_to_kv(
-    updated: Optional[Dict[str, torch.Tensor]],
+    updated: dict[str, torch.Tensor] | None,
     skip_mask: torch.Tensor,
-    prev_layer_state: Optional[Dict[str, Dict[str, torch.Tensor]]],
+    prev_layer_state: dict[str, dict[str, torch.Tensor]] | None,
     attn_type: str,
-) -> Optional[Dict[str, torch.Tensor]]:
+) -> dict[str, torch.Tensor] | None:
     """
     For skipped tokens, copy KV from previous layer cache.
 

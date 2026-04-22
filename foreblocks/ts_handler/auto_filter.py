@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Callable
+from collections.abc import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np

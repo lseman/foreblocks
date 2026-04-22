@@ -1,4 +1,3 @@
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -23,7 +22,7 @@ class RevIN(nn.Module):
         self,
         x: torch.Tensor,
         mode: str = "norm",
-        stats: Optional[dict] = None,
+        stats: dict | None = None,
     ):
         if mode == "norm":
             self.mean = x.mean(dim=1, keepdim=True)

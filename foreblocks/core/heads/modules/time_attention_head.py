@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -59,7 +58,7 @@ class TimeAttention(nn.Module):
         dropout: float = 0.0,
         ffn_mult: int = 4,
         causal: bool = False,
-        window: Optional[int] = None,  # if set, mask attention to |i-j| <= window
+        window: int | None = None,  # if set, mask attention to |i-j| <= window
         use_rope: bool = True,
     ):
         super().__init__()
@@ -111,7 +110,7 @@ class TimeAttention(nn.Module):
         head_dim = d_model // n_heads
         self.rope = _RoPE1D(head_dim) if self.use_rope else None
 
-    def _attn_mask(self, T: int, device: torch.device, dtype: torch.dtype) -> Optional[torch.Tensor]:
+    def _attn_mask(self, T: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor | None:
         if (not self.causal) and (self.window is None):
             return None
 
@@ -129,7 +128,7 @@ class TimeAttention(nn.Module):
 
         return mask
 
-    def _apply_rope_qk(self, q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _apply_rope_qk(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if self.rope is None:
             return q, k
         # q,k: [N, T, d_model] -> [N, T, n_heads, head_dim]
@@ -204,7 +203,7 @@ class TimeAttentionHead(BaseHead):
         dropout: float = 0.0,
         ffn_mult: int = 4,
         causal: bool = False,
-        window: Optional[int] = None,
+        window: int | None = None,
         use_rope: bool = True,
     ):
         super().__init__(

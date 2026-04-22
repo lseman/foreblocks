@@ -5,7 +5,6 @@ Cleaned-up, fixed and modernized version (2025/2026 style)
 """
 
 import math
-from typing import List, Tuple
 
 import numpy as np
 import torch
@@ -29,7 +28,7 @@ def phi_fn(
     return poly(x) * (1.0 - mask)
 
 
-def get_phi_psi(k: int, base: str = "legendre") -> Tuple[List, List, List]:
+def get_phi_psi(k: int, base: str = "legendre") -> tuple[list, list, list]:
     """
     Compute scaling functions phi and wavelets psi1, psi2.
     Returns list of callable polynomial functions (np.poly1d or partial).
@@ -116,7 +115,7 @@ def get_phi_psi(k: int, base: str = "legendre") -> Tuple[List, List, List]:
     return phi, psi1, psi2
 
 
-def get_filter(base: str, k: int) -> Tuple[np.ndarray, ...]:
+def get_filter(base: str, k: int) -> tuple[np.ndarray, ...]:
     """Compute filter matrices H0,H1,G0,G1 and reconstruction PHI0,PHI1."""
     phi, psi1, psi2 = get_phi_psi(k, base)
 
@@ -246,8 +245,8 @@ class MWT_CZ1d(nn.Module):
 
         ns = int(math.log2(nl))
 
-        Ud: List[torch.Tensor] = []
-        Us: List[torch.Tensor] = []
+        Ud: list[torch.Tensor] = []
+        Us: list[torch.Tensor] = []
 
         # Decomposition
         for _ in range(ns - self.levels):
@@ -266,7 +265,7 @@ class MWT_CZ1d(nn.Module):
 
         return x[..., :N_orig, :, :]
 
-    def wavelet_transform(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def wavelet_transform(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """One level decomposition."""
         xa = torch.cat([x[:, ::2], x[:, 1::2]], dim=-1)
         d = xa @ self.ec_d

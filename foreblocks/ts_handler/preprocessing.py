@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -136,7 +136,7 @@ def _as_2d(data: Any) -> np.ndarray:
 
 def _prepare_series_for_diagnostics(
     values: np.ndarray, *, max_points: int = 4096
-) -> Tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, int]:
     clean = np.asarray(values, dtype=float)
     clean = clean[~np.isnan(clean)]
     if clean.size == 0:
@@ -267,9 +267,9 @@ def _cyclical_encode(values: np.ndarray, period: float) -> np.ndarray:
 
 def apply_log_transform(
     data: np.ndarray,
-    log_flags: List[bool],
-    offsets: Optional[np.ndarray] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+    log_flags: list[bool],
+    offsets: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Apply per-feature log transform with stable offsets.
 
@@ -306,7 +306,7 @@ def apply_log_transform(
 
 def compute_basic_stats(
     data: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     x = np.asarray(data, dtype=float)
     valid_mask = ~np.isnan(x)
     coverage = np.mean(valid_mask, axis=0)
@@ -317,8 +317,8 @@ def compute_basic_stats(
     return coverage, means, stds, skews, kurts
 
 
-def detect_stationarity(data: np.ndarray, D: int) -> List[float]:
-    pvals: List[float] = []
+def detect_stationarity(data: np.ndarray, D: int) -> list[float]:
+    pvals: list[float] = []
     for i in range(D):
         clean, _ = _prepare_series_for_diagnostics(data[:, i], max_points=2048)
         if len(clean) <= 10:
@@ -333,9 +333,9 @@ def detect_stationarity(data: np.ndarray, D: int) -> List[float]:
 
 def detect_seasonality(
     data: np.ndarray, D: int
-) -> Tuple[List[bool], List[Optional[int]]]:
-    seasonal_flags: List[bool] = []
-    detected_periods: List[Optional[int]] = []
+) -> tuple[list[bool], list[int | None]]:
+    seasonal_flags: list[bool] = []
+    detected_periods: list[int | None] = []
 
     for i in range(D):
         clean, stride = _prepare_series_for_diagnostics(data[:, i], max_points=4096)
@@ -376,9 +376,9 @@ def detect_seasonality(
     return seasonal_flags, detected_periods
 
 
-def analyze_signal_quality(data: np.ndarray, D: int) -> Tuple[List[float], List[float]]:
-    flatness_scores: List[float] = []
-    snr_scores: List[float] = []
+def analyze_signal_quality(data: np.ndarray, D: int) -> tuple[list[float], list[float]]:
+    flatness_scores: list[float] = []
+    snr_scores: list[float] = []
 
     for i in range(D):
         clean, _ = _prepare_series_for_diagnostics(data[:, i], max_points=4096)
@@ -405,9 +405,9 @@ def analyze_signal_quality(data: np.ndarray, D: int) -> Tuple[List[float], List[
     return flatness_scores, snr_scores
 
 
-def score_ljung_box(data: np.ndarray, D: int) -> List[float]:
+def score_ljung_box(data: np.ndarray, D: int) -> list[float]:
     """Formal test for whether the series is structurally autoregressive vs white noise."""
-    pvals: List[float] = []
+    pvals: list[float] = []
     for i in range(D):
         clean, _ = _prepare_series_for_diagnostics(data[:, i], max_points=2048)
         if len(clean) < 30:
@@ -422,8 +422,8 @@ def score_ljung_box(data: np.ndarray, D: int) -> List[float]:
     return pvals
 
 
-def score_pacf(data: np.ndarray, D: int) -> List[int]:
-    scores: List[int] = []
+def score_pacf(data: np.ndarray, D: int) -> list[int]:
+    scores: list[int] = []
     for i in range(D):
         clean, _ = _prepare_series_for_diagnostics(data[:, i], max_points=2048)
         if len(clean) < 30:
@@ -437,8 +437,8 @@ def score_pacf(data: np.ndarray, D: int) -> List[int]:
     return scores
 
 
-def estimate_ewt_bands(data: np.ndarray, D: int) -> List[int]:
-    band_estimates: List[int] = []
+def estimate_ewt_bands(data: np.ndarray, D: int) -> list[int]:
+    band_estimates: list[int] = []
     for i in range(D):
         clean = data[:, i][~np.isnan(data[:, i])]
         if len(clean) < 20:
@@ -452,7 +452,7 @@ def estimate_ewt_bands(data: np.ndarray, D: int) -> List[int]:
     return band_estimates
 
 
-def _get_iterative_imputer_class() -> Optional[Any]:
+def _get_iterative_imputer_class() -> Any | None:
     try:
         from fancyimpute import IterativeImputer
 
@@ -468,7 +468,7 @@ def _get_iterative_imputer_class() -> Optional[Any]:
             return None
 
 
-def summarize_configuration(params: Dict[str, Any]) -> None:
+def summarize_configuration(params: dict[str, Any]) -> None:
     print(
         "\n"
         + tabulate(
@@ -614,18 +614,18 @@ class TimeSeriesHandler:
     plot_max_features: int = 8
 
     # Learned / fitted attributes
-    scaler: Optional[Any] = field(default=None, init=False)
-    log_offset: Optional[np.ndarray] = field(default=None, init=False)
-    diff_values: Optional[np.ndarray] = field(default=None, init=False)
-    trend_component: Optional[np.ndarray] = field(default=None, init=False)
-    ewt_components: Optional[List[Any]] = field(default=None, init=False)
-    ewt_boundaries: Optional[List[Any]] = field(default=None, init=False)
-    log_transform_flags: Optional[List[bool]] = field(default=None, init=False)
+    scaler: Any | None = field(default=None, init=False)
+    log_offset: np.ndarray | None = field(default=None, init=False)
+    diff_values: np.ndarray | None = field(default=None, init=False)
+    trend_component: np.ndarray | None = field(default=None, init=False)
+    ewt_components: list[Any] | None = field(default=None, init=False)
+    ewt_boundaries: list[Any] | None = field(default=None, init=False)
+    log_transform_flags: list[bool] | None = field(default=None, init=False)
 
     # Outlier calibration
-    outlier_thresholds_: Optional[np.ndarray] = field(default=None, init=False)
-    outlier_calibration_: Dict[str, Any] = field(default_factory=dict, init=False)
-    filter_selection_: Dict[str, Any] = field(default_factory=dict, init=False)
+    outlier_thresholds_: np.ndarray | None = field(default=None, init=False)
+    outlier_calibration_: dict[str, Any] = field(default_factory=dict, init=False)
+    filter_selection_: dict[str, Any] = field(default_factory=dict, init=False)
 
     # Auto-config results
     scaling_method: str = field(
@@ -636,10 +636,10 @@ class TimeSeriesHandler:
 
     # Bookkeeping
     fitted_: bool = field(default=False, init=False)
-    feature_dim_: Optional[int] = field(default=None, init=False)
+    feature_dim_: int | None = field(default=None, init=False)
 
     # Optional method availability map (kept)
-    available_methods: Dict[str, bool] = field(
+    available_methods: dict[str, bool] = field(
         default_factory=lambda: {
             "ecod": True,
             "tranad": True,
@@ -685,7 +685,7 @@ class TimeSeriesHandler:
         original: np.ndarray,
         cleaned: np.ndarray,
         title: str,
-        time_stamps: Optional[np.ndarray],
+        time_stamps: np.ndarray | None,
     ) -> None:
         if not self.plot:
             return
@@ -707,7 +707,7 @@ class TimeSeriesHandler:
         if self.verbose:
             print(f"[Preprocessing] {message}")
 
-    def _build_scaler(self, method: Optional[str], n_samples: int) -> Optional[Any]:
+    def _build_scaler(self, method: str | None, n_samples: int) -> Any | None:
         scaling = (method or "standard").lower()
         if scaling in {"none", "off", "false", "log_only"}:
             return None
@@ -843,7 +843,7 @@ class TimeSeriesHandler:
             return "w"
         return "m"
 
-    def _auto_filter_weights(self, stats: Dict[str, Any]) -> Dict[str, float]:
+    def _auto_filter_weights(self, stats: dict[str, Any]) -> dict[str, float]:
         weights = {
             "fidelity_mse": 0.40,
             "roughness": 0.10,
@@ -869,9 +869,9 @@ class TimeSeriesHandler:
         total = sum(weights.values())
         return {k: float(v / total) for k, v in weights.items()}
 
-    def _filter_eval_kwargs(self, method: str, stats: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_eval_kwargs(self, method: str, stats: dict[str, Any]) -> dict[str, Any]:
         method = (method or "none").lower()
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "fill_nans_for_filter": True,
             "n_jobs": 1,
         }
@@ -904,7 +904,7 @@ class TimeSeriesHandler:
             kwargs.update({"robust_center": True})
         return kwargs
 
-    def _filter_candidate_pool(self, stats: Dict[str, Any]) -> List[str]:
+    def _filter_candidate_pool(self, stats: dict[str, Any]) -> list[str]:
         candidates = ["none", self.filter_method]
 
         if stats["strong_periods"] >= 1 or stats["seasonal_fraction"] > 0.25:
@@ -918,7 +918,7 @@ class TimeSeriesHandler:
         if stats["missing_rate"] < 0.2 and stats["T"] > 250:
             candidates.append("kalman")
 
-        ordered: List[str] = []
+        ordered: list[str] = []
         for name in candidates:
             lname = (name or "none").lower()
             if lname not in ordered:
@@ -926,7 +926,7 @@ class TimeSeriesHandler:
         return ordered
 
     def _sample_for_filter_selection(
-        self, data: np.ndarray, stats: Dict[str, Any]
+        self, data: np.ndarray, stats: dict[str, Any]
     ) -> np.ndarray:
         x = _as_2d(data)
         feat_idx = _select_diagnostic_features(
@@ -941,7 +941,7 @@ class TimeSeriesHandler:
 
     def _score_filter_candidate(
         self, original: np.ndarray, denoised: np.ndarray
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         orig = _as_2d(original)
         den = _as_2d(denoised)
         residual = orig - den
@@ -981,12 +981,12 @@ class TimeSeriesHandler:
         }
 
     def _auto_select_filter_method(
-        self, data: np.ndarray, stats: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, data: np.ndarray, stats: dict[str, Any]
+    ) -> dict[str, Any]:
         x_eval = self._sample_for_filter_selection(data, stats)
         x_eval = _mean_fill_2d(_linear_interpolate_2d(x_eval))
         candidates = self._filter_candidate_pool(stats)
-        metrics_rows: List[Dict[str, Any]] = []
+        metrics_rows: list[dict[str, Any]] = []
 
         for method in candidates:
             try:
@@ -1093,7 +1093,7 @@ class TimeSeriesHandler:
         is_autoregressive = _frac(np.array(ljung_box_pvals) < 0.05) > 0.25
 
         # Jarque-Bera Test for formal Non-Normality / Heavy Tails
-        jb_pvals: List[float] = []
+        jb_pvals: list[float] = []
         for i in range(D):
             clean = x[:, i][~np.isnan(x[:, i])]
             if len(clean) > 8:
@@ -1123,7 +1123,7 @@ class TimeSeriesHandler:
         scale_heterogeneity = float(max_std / (med_std + 1e-8)) if max_std > 0 else 1.0
 
         # Log decision
-        log_recommend_per_channel: List[bool] = []
+        log_recommend_per_channel: list[bool] = []
         for i in range(D):
             sk = float(skews[i])
             ku = float(kurts[i])
@@ -1153,9 +1153,9 @@ class TimeSeriesHandler:
         extreme_ratio = float(
             np.nanmean(np.any(np.abs(self._centered(x, means)) > 6.0 * stds, axis=0))
         )
-        strong_periods = len(set(int(p) for p in periods if (p is not None and p > 1)))
+        strong_periods = len({int(p) for p in periods if (p is not None and p > 1)})
 
-        stats: Dict[str, Any] = {
+        stats: dict[str, Any] = {
             "T": T,
             "D": D,
             "missing_rate": float(missing_rate),
@@ -1419,9 +1419,9 @@ class TimeSeriesHandler:
     def fit_transform(
         self,
         data: np.ndarray,
-        time_stamps: Optional[np.ndarray] = None,
-        feats: Optional[List[int]] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        time_stamps: np.ndarray | None = None,
+        feats: list[int] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         x = _as_2d(data)
         self.feature_dim_ = x.shape[1]
 
@@ -1438,7 +1438,7 @@ class TimeSeriesHandler:
         return X, y, processed, tf
 
     def transform(
-        self, data: np.ndarray, time_stamps: Optional[np.ndarray] = None
+        self, data: np.ndarray, time_stamps: np.ndarray | None = None
     ) -> np.ndarray:
         if not self.fitted_:
             raise RuntimeError("Preprocessor not fitted. Call fit_transform first.")
@@ -1526,7 +1526,7 @@ class TimeSeriesHandler:
     # Canonical pipeline runner (removes duplication)
     # -------------------------------------------------------------------------
     def _run_pipeline(
-        self, x: np.ndarray, *, mode: Mode, time_stamps: Optional[np.ndarray]
+        self, x: np.ndarray, *, mode: Mode, time_stamps: np.ndarray | None
     ) -> np.ndarray:
         """
         Runs the preprocessing stages in a single place.
@@ -1594,8 +1594,8 @@ class TimeSeriesHandler:
         return self._apply_scaling_stage(processed, mode)
 
     def _maybe_make_time_features(
-        self, time_stamps: Optional[np.ndarray], *, T: int
-    ) -> Optional[np.ndarray]:
+        self, time_stamps: np.ndarray | None, *, T: int
+    ) -> np.ndarray | None:
         if time_stamps is None or not self.generate_time_features:
             return None
         tf = self._generate_time_features(
@@ -1614,7 +1614,7 @@ class TimeSeriesHandler:
         base: float,
         method: str,
         q: float = 0.995,
-        clamp: Tuple[float, float] = (2.5, 8.0),
+        clamp: tuple[float, float] = (2.5, 8.0),
     ) -> np.ndarray:
         x = np.asarray(data, dtype=float)
         _, D = x.shape
@@ -1799,9 +1799,9 @@ class TimeSeriesHandler:
         self,
         data: np.ndarray,
         *,
-        feats: Optional[List[int]] = None,
-        time_feats: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        feats: list[int] | None = None,
+        time_feats: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         """
         Fast windowing:
           X: [N, window, D]
@@ -1848,9 +1848,9 @@ class TimeSeriesHandler:
             )
 
         except Exception:
-            X_list: List[np.ndarray] = []
-            y_list: List[np.ndarray] = []
-            tf_list: List[np.ndarray] = []
+            X_list: list[np.ndarray] = []
+            y_list: list[np.ndarray] = []
+            tf_list: list[np.ndarray] = []
 
             for i in tqdm(range(max_idx), desc="Creating sequences"):
                 X_list.append(x[i : i + self.window_size])
@@ -1875,8 +1875,8 @@ class TimeSeriesHandler:
         original: np.ndarray,
         cleaned: np.ndarray,
         title: str = "Preprocessing Comparison",
-        time_stamps: Optional[np.ndarray] = None,
-        max_features: Optional[int] = None,
+        time_stamps: np.ndarray | None = None,
+        max_features: int | None = None,
     ) -> None:
         max_features = (
             self.plot_max_features if max_features is None else int(max_features)
@@ -1921,8 +1921,8 @@ class TimeSeriesHandler:
     # -------------------------------------------------------------------------
     # Getters (kept)
     # -------------------------------------------------------------------------
-    def get_ewt_components(self) -> Optional[List[Any]]:
+    def get_ewt_components(self) -> list[Any] | None:
         return self.ewt_components if self.apply_ewt else None
 
-    def get_trend_component(self) -> Optional[np.ndarray]:
+    def get_trend_component(self) -> np.ndarray | None:
         return self.trend_component if self.detrend else None

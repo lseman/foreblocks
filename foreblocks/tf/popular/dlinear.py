@@ -1,5 +1,4 @@
 # dlinear_head_custom.py
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -28,8 +27,8 @@ class DLinearHeadCustom(nn.Module):
     def __init__(
         self,
         pred_len: int,
-        in_channels: Optional[int] = None,
-        out_channels: Optional[int] = None,
+        in_channels: int | None = None,
+        out_channels: int | None = None,
         individual: bool = True,
         use_decomposition: bool = True,
         ma_kernel: int = 25,
@@ -78,7 +77,7 @@ class DLinearHeadCustom(nn.Module):
         if self.use_decomposition and self.W_trend is None:
             self.W_trend,  self.b_trend  = make_params()
 
-    def _proj(self, x: torch.Tensor, W: torch.Tensor, b: Optional[torch.Tensor], individual: bool) -> torch.Tensor:
+    def _proj(self, x: torch.Tensor, W: torch.Tensor, b: torch.Tensor | None, individual: bool) -> torch.Tensor:
         # x: [B,L,C] -> [B,T,C]
         if individual:
             y = torch.einsum("blc,ctl->btc", x, W)

@@ -14,7 +14,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,13 +48,13 @@ def ablation_weight_search(
     max_samples: int = 32,
     num_batches: int = 1,
     top_k: int = 5,
-    max_workers: Optional[int] = None,
+    max_workers: int | None = None,
     n_random: int = 50,
     random_sigma: float = 0.25,
     seed: int = 0,
     save_dir: str = ".",
     save_prefix: str = "zc_weight_ablation",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run a lightweight ablation study that evaluates raw zero-cost metrics
     ONCE per candidate, then re-scores candidates under many weight schemes.
@@ -102,7 +102,7 @@ def ablation_weight_search(
     # ------------------------------------------------------------------
     # Phase 1: generate candidates + compute raw metrics (parallel)
     # ------------------------------------------------------------------
-    def _eval_one(candidate_id: int) -> Dict[str, Any]:
+    def _eval_one(candidate_id: int) -> dict[str, Any]:
         cfg = trainer._make_candidate_config(
             _random,
             trainer.all_ops,
@@ -130,7 +130,7 @@ def ablation_weight_search(
             "base_weights": out.get("base_weights", {}),
         }
 
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     lock = threading.Lock()
     done_count = 0
 

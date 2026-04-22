@@ -11,16 +11,16 @@
 
 from __future__ import annotations
 
-import inspect
-import math
 import time
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch._tensor import Tensor
 
+from .expert_blocks import MTPHead, MoE_FFNExpert, MoE_SwiGLUExpert
 # Optional import: adjust to your package path
 try:
     from .moe_logging import MoELogger  # type: ignore
@@ -36,6 +36,14 @@ from .routers import (
     Router,
     StraightThroughTopKRouter,
 )
+from .moe_utils import (
+    autocast_bf16_enabled as _autocast_bf16_enabled,
+    eager_topk_routing,
+    maybe_compile,
+    optimized_topk_routing,
+    should_fallback_router_topk as _should_fallback_router_topk,
+    supports_grouped_prepacked as _supports_grouped_prepacked,
+)
 
 # Optional grouped kernel path (can accept prepacked B* if your wrapper supports)
 try:
@@ -44,183 +52,6 @@ try:
 except Exception:
     grouped_mlp_swiglu = None  # fallback uses Python loop
     fused_router_topk = None  # type: ignore
-
-
-# -----------------------------------------------------------------------------
-# Utilities
-# -----------------------------------------------------------------------------
-def maybe_compile(
-    mod: nn.Module, enabled: bool = True, dynamic: bool = True
-) -> nn.Module:
-    """
-    Wrap with torch.compile if available and enabled, else return the module.
-    Kept tiny/defensive to avoid surprising failures.
-    """
-    if not enabled:
-        return mod
-    try:
-        return torch.compile(mod, dynamic=dynamic)
-    except Exception:
-        return mod
-
-
-def _autocast_bf16_enabled(device_type: str) -> bool:
-    """
-    Decide whether to enable bf16 autocast for the given device_type.
-    For now: only CUDA; CPU autocast in bf16 is still not universally stable.
-    """
-    if device_type != "cuda":
-        return False
-    return torch.cuda.is_available()
-
-
-def _supports_grouped_prepacked() -> bool:
-    """
-    Detect once whether grouped_mlp_swiglu supports prepacked expert args.
-    Avoids exception-driven probing on every forward.
-    """
-    if grouped_mlp_swiglu is None:
-        return False
-    try:
-        sig = inspect.signature(grouped_mlp_swiglu)
-        return ("B12_cat_prepacked" in sig.parameters) and (
-            "B3_cat_prepacked" in sig.parameters
-        )
-    except Exception:
-        return False
-
-
-# -----------------------------------------------------------------------------
-# Optimized Top-K routing (softmax over Top-K only)
-# -----------------------------------------------------------------------------
-@torch.jit.script
-def optimized_topk_routing(logits: torch.Tensor, k: int):
-    """
-    Returns (top_p, top_i) for K experts per token.
-    - Take topk on raw logits (no full softmax over E).
-    - Normalize only within the chosen K.
-
-    logits: [T, E]
-    top_p:  [T, K]  (probabilities within top-k)
-    top_i:  [T, K]  (expert indices)
-    """
-    if k == 1:
-        top_v, top_i = torch.max(logits, dim=-1, keepdim=True)
-        # When K=1, the top expert gets prob=1
-        top_p = torch.ones_like(top_v)
-        return top_p, top_i
-    else:
-        top_v, top_i = torch.topk(logits, k, dim=-1, sorted=False)
-        m = top_v.max(dim=-1, keepdim=True).values
-        expv = torch.exp(top_v - m)
-        top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
-        return top_p, top_i
-
-
-def eager_topk_routing(logits: torch.Tensor, k: int):
-    """
-    Non-scripted fallback for environments where the TorchScript/fused routing
-    path fails at runtime (for example missing NVRTC builtins on CUDA).
-    """
-    if k == 1:
-        top_v, top_i = torch.max(logits, dim=-1, keepdim=True)
-        top_p = torch.ones_like(top_v)
-        return top_p, top_i
-    top_v, top_i = torch.topk(logits, k, dim=-1, sorted=False)
-    m = top_v.max(dim=-1, keepdim=True).values
-    expv = torch.exp(top_v - m)
-    top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
-    return top_p, top_i
-
-
-def _should_fallback_router_topk(exc: RuntimeError) -> bool:
-    msg = str(exc).lower()
-    return (
-        "nvrtc" in msg
-        or "libnvrtc-builtins" in msg
-        or "torchscript interpreter" in msg
-    )
-
-
-# -----------------------------------------------------------------------------
-# Experts
-# -----------------------------------------------------------------------------
-class MoE_SwiGLUExpert(nn.Module):
-    def __init__(
-        self, d_model: int, d_ff: int, dropout: float = 0.0, expert_dropout: float = 0.0
-    ):
-        super().__init__()
-        self.d_model = d_model
-        self.d_ff = d_ff
-        self.dropout_p = float(dropout)
-        self.expert_dropout_p = float(expert_dropout)
-        self._needs_dropout = dropout > 0
-        self._needs_edrop = expert_dropout > 0
-        self.w12 = nn.Linear(d_model, 2 * d_ff, bias=False)
-        self.w3 = nn.Linear(d_ff, d_model, bias=False)
-        nn.init.xavier_uniform_(self.w12.weight)
-        nn.init.xavier_uniform_(self.w3.weight)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gu = self.w12(x)
-        g, u = gu.split(self.d_ff, dim=-1)
-        h = F.silu(g) * u
-        if self.training and self._needs_dropout:
-            h = F.dropout(h, p=self.dropout_p, training=True)
-        if self.training and self._needs_edrop:
-            h = F.dropout(h, p=self.expert_dropout_p, training=True)
-        return self.w3(h)
-
-
-class MoE_FFNExpert(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        d_ff: int,
-        dropout: float = 0.0,
-        activation: str = "gelu",
-        expert_dropout: float = 0.0,
-    ):
-        super().__init__()
-        self.dropout_p = float(dropout)
-        self.expert_dropout_p = float(expert_dropout)
-        self._needs_dropout = dropout > 0
-        self._needs_edrop = expert_dropout > 0
-        self.fc1 = nn.Linear(d_model, d_ff, bias=False)
-        self.fc2 = nn.Linear(d_ff, d_model, bias=False)
-        self.activation = getattr(F, activation.lower(), F.gelu)
-        nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.xavier_uniform_(self.fc2.weight)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.activation(self.fc1(x))
-        if self.training and self._needs_dropout:
-            x = F.dropout(x, p=self.dropout_p, training=True)
-        if self.training and self._needs_edrop:
-            x = F.dropout(x, p=self.expert_dropout_p, training=True)
-        return self.fc2(x)
-
-
-class MTPHead(nn.Module):
-    """Simple multi-token/multi-horizon prediction head bank."""
-
-    def __init__(self, d_model: int, n_extra: int = 3, init_scale: float = 0.02):
-        super().__init__()
-        self.n_extra = int(n_extra)
-        self.extra_heads = nn.ModuleList(
-            [nn.Linear(d_model, d_model, bias=False) for _ in range(self.n_extra)]
-        )
-        std = float(init_scale) / math.sqrt(max(self.n_extra + 1, 1))
-        for h in self.extra_heads:
-            nn.init.normal_(h.weight, mean=0.0, std=std)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # [N, D] -> [N, H, D]
-        if self.n_extra <= 0:
-            return x.new_zeros((x.size(0), 0, x.size(-1)))
-        preds = [h(x) for h in self.extra_heads]
-        return torch.stack(preds, dim=1)
-
 
 # -----------------------------------------------------------------------------
 # dMoE FFN (fast path)
@@ -247,13 +78,13 @@ class MoEFeedForwardDMoE(nn.Module):
         router_hash_bucket_size: int = 8,
         router_hash_seed: int = 17,
         routing_mode: str = "token_choice",
-        expert_choice_tokens_per_expert: Optional[int] = None,
+        expert_choice_tokens_per_expert: int | None = None,
         use_bias: bool = False,
         input_dropout: float = 0.0,
         jitter: float = 0.01,
         expert_dropout: float = 0.0,
         use_gradient_checkpointing: bool = False,
-        d_ff_shared: Optional[int] = None,
+        d_ff_shared: int | None = None,
         shared_scale_init: float = 1.0,
         shared_combine: str = "add",
         adaptive_k_head_dim: int = 32,
@@ -261,8 +92,8 @@ class MoEFeedForwardDMoE(nn.Module):
         adaptive_k_baseline_momentum: float = 0.99,
         adaptive_k_sparsity_lambda: float = 0.0,
         # Optional logging
-        moe_logger: Optional["MoELogger"] = None,
-        step_getter: Optional[Callable[[], int]] = None,
+        moe_logger: MoELogger | None = None,
+        step_getter: Callable[[], int] | None = None,
         log_latency: bool = False,
         # Optional compile toggles
         compile_router: bool = True,
@@ -279,8 +110,8 @@ class MoEFeedForwardDMoE(nn.Module):
         mtp_loss_weight: float = 0.0,
         mtp_init_scale: float = 0.02,
         moe_use_latent: bool = False,
-        moe_latent_dim: Optional[int] = None,
-        moe_latent_d_ff: Optional[int] = None,
+        moe_latent_dim: int | None = None,
+        moe_latent_d_ff: int | None = None,
     ):
         super().__init__()
         num_experts = int(num_experts)
@@ -591,8 +422,8 @@ class MoEFeedForwardDMoE(nn.Module):
         self._B12_cat = None  # [E, D, 2H] or [E, K, N] depending on wrapper
         self._B3_cat = None  # [E, H, D]
         self._last_num_assignments = 0
-        self.last_per_token_k: Optional[torch.Tensor] = None
-        self.last_log_prob_k: Optional[torch.Tensor] = None
+        self.last_per_token_k: torch.Tensor | None = None
+        self.last_log_prob_k: torch.Tensor | None = None
         self.register_buffer("adaptive_k_baseline", torch.tensor(0.0))
         self.last_mtp_loss = torch.tensor(0.0)
 
@@ -627,14 +458,14 @@ class MoEFeedForwardDMoE(nn.Module):
 
     # ---------- Helpers ----------
     def _compute_router_outputs(
-        self, x_flat: torch.Tensor, tau: Optional[float] = None
-    ) -> Tuple[
+        self, x_flat: torch.Tensor, tau: float | None = None
+    ) -> tuple[
         torch.Tensor,
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
     ]:
         """
         Unified router output parser.
@@ -673,7 +504,7 @@ class MoEFeedForwardDMoE(nn.Module):
 
     def _adaptive_topk_routing(
         self, logits: torch.Tensor, per_token_k: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # Sorted top-k so we can take first K entries per token
         top_v, top_i = torch.topk(logits, self.top_k, dim=-1, sorted=True)
         ranks = torch.arange(self.top_k, device=logits.device).unsqueeze(0)
@@ -703,7 +534,7 @@ class MoEFeedForwardDMoE(nn.Module):
             decay = float(self.momentum)
             self.expert_usage.mul_(decay).add_(cur, alpha=1.0 - decay)
 
-    def _get_router_expert_bias(self) -> Optional[torch.Tensor]:
+    def _get_router_expert_bias(self) -> torch.Tensor | None:
         r = self.router
         if hasattr(r, "expert_bias"):
             return getattr(r, "expert_bias")
@@ -766,7 +597,7 @@ class MoEFeedForwardDMoE(nn.Module):
         return tgt
 
     def _compute_mtp_loss(
-        self, out_flat: torch.Tensor, mtp_targets: Optional[torch.Tensor]
+        self, out_flat: torch.Tensor, mtp_targets: torch.Tensor | None
     ) -> torch.Tensor:
         if (
             (not self.training)
@@ -796,10 +627,10 @@ class MoEFeedForwardDMoE(nn.Module):
         x: torch.Tensor,  # [..., T, D] or [B, T, D]
         return_aux_loss: bool = True,
         tau: float = 1.0,
-        downstream_loss: Optional[torch.Tensor] = None,
-        mtp_targets: Optional[torch.Tensor] = None,
+        downstream_loss: torch.Tensor | None = None,
+        mtp_targets: torch.Tensor | None = None,
         *,
-        meta: Optional[Dict[str, Any]] = None,
+        meta: dict[str, Any] | None = None,
     ):
         # Pre-norm
         x_norm = self.input_norm(x)
@@ -931,11 +762,12 @@ class MoEFeedForwardDMoE(nn.Module):
                 self.aux_loss = aux.detach()
                 self.last_mtp_loss = aux.detach()
                 latency_ms = self._maybe_stop_timer(t0)
+                aux_scalar = float(aux.detach())
                 self._populate_router_last(
                     logits,
                     top_i,
                     dropped,
-                    float(aux),
+                    aux_scalar,
                     latency_ms,
                     meta,
                     per_token_k=per_token_k,
@@ -944,7 +776,7 @@ class MoEFeedForwardDMoE(nn.Module):
                     logits,
                     top_i,
                     dropped,
-                    float(aux),
+                    aux_scalar,
                     latency_ms,
                     meta,
                     per_token_k=per_token_k,
@@ -1051,11 +883,12 @@ class MoEFeedForwardDMoE(nn.Module):
             self.last_mtp_loss = aux.detach()
 
         latency_ms = self._maybe_stop_timer(t0)
+        aux_scalar = float(aux.detach())
         self._populate_router_last(
             logits,
             top_i,
             dropped,
-            float(aux),
+            aux_scalar,
             latency_ms,
             meta,
             per_token_k=per_token_k,
@@ -1064,7 +897,7 @@ class MoEFeedForwardDMoE(nn.Module):
             logits,
             top_i,
             dropped,
-            float(aux),
+            aux_scalar,
             latency_ms,
             meta,
             per_token_k=per_token_k,
@@ -1078,7 +911,7 @@ class MoEFeedForwardDMoE(nn.Module):
         logits: torch.Tensor,
         num_tokens: int,
         experts_seq: torch.Tensor,
-        num_assignments: Optional[int] = None,
+        num_assignments: int | None = None,
     ):
         aux = logits.new_zeros(())
 
@@ -1114,12 +947,12 @@ class MoEFeedForwardDMoE(nn.Module):
             advantage = advantage.expand_as(self.last_log_prob_k)
         return (advantage * self.last_log_prob_k).mean()
 
-    def get_last_per_token_k(self) -> Optional[torch.Tensor]:
+    def get_last_per_token_k(self) -> torch.Tensor | None:
         return self.last_per_token_k
 
     # ---------- Stats ----------
     @torch.no_grad()
-    def get_expert_stats(self) -> Dict[str, torch.Tensor]:
+    def get_expert_stats(self) -> dict[str, torch.Tensor]:
         eps = float(self._eps)
         usage = self.expert_usage.clamp_min(eps)
         entropy = -(usage * usage.log()).sum()
@@ -1151,8 +984,8 @@ class MoEFeedForwardDMoE(nn.Module):
         tokens_dropped: int,
         aux_loss: float,
         latency_ms: float,
-        meta: Optional[Dict[str, Any]],
-        per_token_k: Optional[torch.Tensor] = None,
+        meta: dict[str, Any] | None,
+        per_token_k: torch.Tensor | None = None,
     ):
         r = self.router
         try:
@@ -1176,8 +1009,8 @@ class MoEFeedForwardDMoE(nn.Module):
         tokens_dropped: int,
         aux_loss: float,
         latency_ms: float,
-        meta: Optional[Dict[str, Any]],
-        per_token_k: Optional[torch.Tensor] = None,
+        meta: dict[str, Any] | None,
+        per_token_k: torch.Tensor | None = None,
     ):
         if self.moe_logger is None or MoELogger is None:
             return

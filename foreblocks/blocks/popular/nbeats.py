@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -29,7 +28,7 @@ class NBEATSBlock(nn.Module):
         self,
         input_size: int,
         basis_size: int,  # usually = forecast horizon
-        theta_size: Optional[int] = None,  # if None → input_size + basis_size
+        theta_size: int | None = None,  # if None → input_size + basis_size
         hidden_size: int = 512,
         stack_layers: int = 4,  # total number of layers (>= 2 recommended)
         activation: str = "relu",
@@ -113,7 +112,7 @@ class NBEATSBlock(nn.Module):
         nn.init.xavier_uniform_(self.backcast_basis.weight, gain=1.0)
         nn.init.xavier_uniform_(self.forecast_basis.weight, gain=1.0)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             x: [B, input_size]
@@ -161,7 +160,7 @@ class NBEATS(nn.Module):
         hidden_size: int = 512,
         stack_layers: int = 4,
         n_blocks: int = 4,  # total number of blocks (usually 4–30)
-        theta_size: Optional[int] = None,
+        theta_size: int | None = None,
         activation: str = "relu",
         share_weights_in_block: bool = False,
         dropout: float = 0.0,

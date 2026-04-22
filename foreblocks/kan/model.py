@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import torch
 from torch import Tensor, nn
@@ -87,15 +87,15 @@ class Model(nn.Module):
         affine: bool = True,
         subtract_last: bool = False,
         depth: int = 5,
-        families: Optional[Sequence[PolyFamily]] = None,
+        families: Sequence[PolyFamily] | None = None,
         *,
         poly_config: PolyLayerConfig | None = None,
         router_config: RouterConfig | None = None,
         degree_intra: int | None = None,
         degree_inter: int | None = None,
-        top_k: Optional[int] = 2,
+        top_k: int | None = 2,
         router_temperature: float | None = None,
-        router_hidden: Optional[int] = None,
+        router_hidden: int | None = None,
         load_balance_coef: float = 0.0,
         hahn_alpha: float | None = None,
         hahn_beta: float | None = None,

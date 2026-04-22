@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Callable, List, Literal, Optional, Tuple
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -9,11 +9,11 @@ import torch.nn.functional as F
 
 from foreblocks.ui.node_spec import node
 
-from .attention.gated_delta import GatedDeltaNet
-from .attention.kimi_att import KimiAttention
-from .attention.lin_att import LinearAttention
+from .attention.modules.gated_delta import GatedDeltaNet
+from .attention.modules.kimi_att import KimiAttention
+from .attention.modules.lin_att import LinearAttention
 from .attention.multi_att import MultiAttention
-from .attention.residuals import (
+from .attention.utils.residuals import (
     AttentionResidual,
     BlockAttentionResidual,
     normalize_attention_residual_mode,
@@ -68,7 +68,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         num_experts: int = 8,
         top_k: int = 2,
         use_gateskip: bool = False,
-        gate_budget: Optional[float] = None,
+        gate_budget: float | None = None,
         gate_lambda: float = 0.1,
         layer_attention_type: str = "standard",
         use_mhc: bool = False,
@@ -76,8 +76,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         mhc_sinkhorn_iters: int = 20,
         mhc_collapse: str = "first",
         moe_use_latent: bool = False,
-        moe_latent_dim: Optional[int] = None,
-        moe_latent_d_ff: Optional[int] = None,
+        moe_latent_dim: int | None = None,
+        moe_latent_d_ff: int | None = None,
         use_attention_matching_compaction: bool = False,
         attention_matching_keep_ratio: float = 0.25,
         attention_matching_trigger_len: int = 512,
@@ -159,8 +159,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         self.gate_attn = ResidualGate(d_model)
         self.gate_ff = ResidualGate(d_model)
 
-        self.mhc_conn_attn: Optional[nn.Module] = None
-        self.mhc_conn_ff: Optional[nn.Module] = None
+        self.mhc_conn_attn: nn.Module | None = None
+        self.mhc_conn_ff: nn.Module | None = None
         if self.use_mhc:
             self._ensure_mhc_mixers()
 
@@ -210,36 +210,23 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         ):
             self.mhc_conn_ff = self._new_mhc_connection()
 
-    def _run_attnres_core(
-        self,
-        x: torch.Tensor,
-        normw: NormWrapper,
-        core_fn: Callable[[torch.Tensor], Tuple[torch.Tensor, Optional[dict]]],
-    ) -> Tuple[torch.Tensor, Optional[dict]]:
-        x_in = normw.norm(x) if normw.strategy in ("pre_norm", "sandwich_norm") else x
-        out, updated = core_fn(x_in)
-        out = normw.dropout(out)
-        if normw.strategy in ("post_norm", "sandwich_norm"):
-            out = normw.norm(out)
-        return out, updated
-
     def forward(
         self,
         src: torch.Tensor,
-        src_mask: Optional[torch.Tensor] = None,
-        src_key_padding_mask: Optional[torch.Tensor] = None,
-        gate_budget: Optional[float] = None,
-        gate_lambda: Optional[float] = None,
-        use_gateskip: Optional[bool] = None,
-        streams: Optional[torch.Tensor] = None,
-        use_mhc: Optional[bool] = None,
-        mhc_n_streams: Optional[int] = None,
-        mhc_sinkhorn_iters: Optional[int] = None,
-        mhc_collapse: Optional[str] = None,
-        mtp_targets: Optional[torch.Tensor] = None,
-        attention_residual_state: Optional[dict] = None,
-        gateskip_active_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        src_mask: torch.Tensor | None = None,
+        src_key_padding_mask: torch.Tensor | None = None,
+        gate_budget: float | None = None,
+        gate_lambda: float | None = None,
+        use_gateskip: bool | None = None,
+        streams: torch.Tensor | None = None,
+        use_mhc: bool | None = None,
+        mhc_n_streams: int | None = None,
+        mhc_sinkhorn_iters: int | None = None,
+        mhc_collapse: str | None = None,
+        mtp_targets: torch.Tensor | None = None,
+        attention_residual_state: dict | None = None,
+        gateskip_active_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         self._reset_aux_loss()
         gateskip_active_mask = (
             gateskip_active_mask.to(dtype=torch.bool)
@@ -259,7 +246,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             gate_lambda=gate_lambda,
             training=self.training,
         )
-        aux_l2_terms: List[torch.Tensor] = []
+        aux_l2_terms: list[torch.Tensor] = []
 
         attn_mod = self._self_attn()
 
@@ -287,7 +274,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
 
             def attn_core_attnres(
                 x_in: torch.Tensor,
-            ) -> Tuple[torch.Tensor, Optional[dict]]:
+            ) -> tuple[torch.Tensor, dict | None]:
                 out, _, _ = attn_mod(x_in, x_in, x_in, src_mask, src_key_padding_mask)
                 return out, None
 
@@ -302,7 +289,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
 
             def ff_core_attnres(
                 x_in: torch.Tensor,
-            ) -> Tuple[torch.Tensor, Optional[dict]]:
+            ) -> tuple[torch.Tensor, dict | None]:
                 return self._ff_forward_with_aux(x_in, mtp_targets=mtp_targets), None
 
             ff_out, _ = self._run_attnres_core(ff_in, self.ff_norm, ff_core_attnres)
@@ -332,7 +319,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             active_mask=gateskip_active_mask,
         )
 
-        def ff_core(x_in: torch.Tensor) -> Tuple[torch.Tensor, Optional[dict]]:
+        def ff_core(x_in: torch.Tensor) -> tuple[torch.Tensor, dict | None]:
             return self._ff_forward_with_aux(x_in, mtp_targets=mtp_targets), None
 
         def ff_mhc_core(x_in: torch.Tensor) -> torch.Tensor:
@@ -409,8 +396,8 @@ class TransformerEncoder(BaseTransformer):
         )
 
         # FIX: stash last patched mask + patch info to avoid decoder mismatch bugs
-        self.last_memory_key_padding_mask: Optional[torch.Tensor] = None
-        self.last_patch_info: Optional[PatchInfo] = None
+        self.last_memory_key_padding_mask: torch.Tensor | None = None
+        self.last_patch_info: PatchInfo | None = None
 
     @staticmethod
     def _compute_ct_patch_pad(T: int, P: int, S: int) -> int:
@@ -422,7 +409,7 @@ class TransformerEncoder(BaseTransformer):
         T_pad = (n_patches - 1) * S + P
         return max(0, T_pad - T)
 
-    def _ct_patchify(self, src: torch.Tensor) -> Tuple[torch.Tensor, PatchInfo]:
+    def _ct_patchify(self, src: torch.Tensor) -> tuple[torch.Tensor, PatchInfo]:
         if self.ct_patch_embed is None:
             raise RuntimeError("CT-PatchTST is not enabled.")
         if src.dim() != 3:
@@ -472,10 +459,10 @@ class TransformerEncoder(BaseTransformer):
     def forward(
         self,
         src: torch.Tensor,  # [B, T, C]
-        src_mask: Optional[torch.Tensor] = None,
-        src_key_padding_mask: Optional[torch.Tensor] = None,  # [B,T] bool
-        time_features: Optional[torch.Tensor] = None,  # [B, T, F_tf]
-        gateskip_active_mask: Optional[torch.Tensor] = None,  # [B,T] bool
+        src_mask: torch.Tensor | None = None,
+        src_key_padding_mask: torch.Tensor | None = None,  # [B,T] bool
+        time_features: torch.Tensor | None = None,  # [B, T, F_tf]
+        gateskip_active_mask: torch.Tensor | None = None,  # [B,T] bool
     ) -> torch.Tensor:
         B, T, C = src.shape
         if C != self.input_size:
@@ -485,7 +472,7 @@ class TransformerEncoder(BaseTransformer):
 
         self.mod_aux_loss.zero_()
 
-        patch_info: Optional[PatchInfo] = None
+        patch_info: PatchInfo | None = None
         if self.ct_patchtst:
             x, patch_info = self._ct_patchify(src)  # [B, Np, D]
             if x.shape[1] > self.max_seq_len:
@@ -564,7 +551,7 @@ class TransformerEncoder(BaseTransformer):
         attention_residual_state = self._init_attention_residual_state(x)
 
         # mHC streams
-        streams: Optional[torch.Tensor] = (
+        streams: torch.Tensor | None = (
             mhc_init_streams(x, self.mhc_n_streams) if self.use_mhc else None
         )
 
@@ -578,7 +565,7 @@ class TransformerEncoder(BaseTransformer):
         invoke = _ModelLayerInvokeStrategy(owner=self, use_checkpoint=use_ckpt)
         runtime_budget = self._get_runtime_budget()
 
-        used_indices: List[int] = []
+        used_indices: list[int] = []
 
         for i in range(self.num_layers):
             if self.use_mod:

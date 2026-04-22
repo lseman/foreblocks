@@ -8,7 +8,7 @@ receive a ``trainer`` as their first argument.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 import torch.nn as nn
 
@@ -28,7 +28,7 @@ def evaluate_zero_cost_metrics_raw(
     max_samples: int = 32,
     num_batches: int = 1,
     fast_mode: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Compute zero-cost proxies once and return the raw per-metric values.
 
@@ -83,7 +83,7 @@ def evaluate_zero_cost_metrics(
     n_random: int = 20,
     random_sigma: float = 0.25,
     seed: int = 0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Evaluate a model using zero-cost proxy metrics.
 
@@ -125,7 +125,7 @@ def evaluate_zero_cost_metrics(
         seed=seed,
     )
 
-    per_scheme: Dict[str, Any] = {}
+    per_scheme: dict[str, Any] = {}
     for scheme_name, weights in schemes.items():
         scheme_cfg = _make_config(max_samples=max_samples, fast_mode=fast_mode)
         scheme_cfg.weights = weights

@@ -8,7 +8,7 @@ and parameter-group construction helpers.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ from tqdm import tqdm
 # Loss functions
 # ---------------------------------------------------------------------------
 
-_LOSS_REGISTRY: Dict[str, Any] = {
+_LOSS_REGISTRY: dict[str, Any] = {
     "huber": lambda p, t: F.huber_loss(p, t, delta=0.1),
     "mse": F.mse_loss,
     "mae": F.l1_loss,
@@ -98,8 +98,8 @@ def unpack_forecasting_batch(
     device: str,
     *,
     include_decoder_targets: bool = False,
-    teacher_forcing_ratio: Optional[float] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor | float]]:
+    teacher_forcing_ratio: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor | float]]:
     """
     Parse a forecasting batch into model inputs, targets, and model kwargs.
 
@@ -119,7 +119,7 @@ def unpack_forecasting_batch(
 
     x = batch[0].to(device, non_blocking=True)
     y = batch[1].to(device, non_blocking=True)
-    model_kwargs: Dict[str, torch.Tensor | float] = {}
+    model_kwargs: dict[str, torch.Tensor | float] = {}
 
     x_future = None
     if len(batch) >= 3:
@@ -166,7 +166,7 @@ def unpack_forecasting_batch(
 def split_arch_and_model_params(
     model: nn.Module,
     alpha_tracker=None,
-) -> Tuple[List, List, List, List]:
+) -> tuple[list, list, list, list]:
     """
     Separate architecture (alpha) parameters from regular model parameters.
 
@@ -180,10 +180,10 @@ def split_arch_and_model_params(
         Four lists: ``(arch_params, model_params,
                        edge_arch_params, component_arch_params)``.
     """
-    arch_params: List[torch.Tensor] = []
-    model_params: List[torch.Tensor] = []
-    edge_arch_params: List[torch.Tensor] = []
-    component_arch_params: List[torch.Tensor] = []
+    arch_params: list[torch.Tensor] = []
+    model_params: list[torch.Tensor] = []
+    edge_arch_params: list[torch.Tensor] = []
+    component_arch_params: list[torch.Tensor] = []
     arch_param_ids = set()
 
     _arch_names = ("alphas", "arch_", "alpha_", "norm_alpha")
@@ -216,11 +216,11 @@ def split_arch_and_model_params(
 
 
 def build_arch_param_groups(
-    edge_arch_params: List[torch.Tensor],
-    component_arch_params: List[torch.Tensor],
-    arch_params: List[torch.Tensor],
+    edge_arch_params: list[torch.Tensor],
+    component_arch_params: list[torch.Tensor],
+    arch_params: list[torch.Tensor],
     arch_learning_rate: float,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Build optimizer parameter groups for architecture parameters.
 
@@ -275,7 +275,7 @@ def reset_model_parameters(model: nn.Module) -> int:
     return count
 
 
-def capture_progressive_state(model: nn.Module) -> Optional[Dict[str, Any]]:
+def capture_progressive_state(model: nn.Module) -> dict[str, Any] | None:
     """
     Snapshot the ``progressive_stage`` of each DARTS cell.
 
@@ -296,7 +296,7 @@ def capture_progressive_state(model: nn.Module) -> Optional[Dict[str, Any]]:
 
 
 def restore_progressive_state(
-    model: nn.Module, state: Optional[Dict[str, Any]]
+    model: nn.Module, state: dict[str, Any] | None
 ) -> None:
     """
     Restore the ``progressive_stage`` snapshot captured by

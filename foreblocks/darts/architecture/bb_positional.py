@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -33,7 +32,7 @@ class RotaryPositionalEncoding(nn.Module):
             inv_freq = torch.zeros(0, dtype=torch.float32)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
-        self._device_cache: Dict[str, Dict[str, torch.Tensor]] = {}
+        self._device_cache: dict[str, dict[str, torch.Tensor]] = {}
         self._init_cache(self.max_seq_len)
 
     def _cache_key(self, device: torch.device) -> str:
@@ -44,7 +43,7 @@ class RotaryPositionalEncoding(nn.Module):
 
     def _compute_chunk(
         self, start: int, end: int, device: torch.device
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.rotary_dim == 0:
             empty = torch.zeros(
                 end - start, 0, device=device, dtype=self.inv_freq.dtype
@@ -66,7 +65,7 @@ class RotaryPositionalEncoding(nn.Module):
 
     def _ensure_cache(
         self, seq_len: int, device: torch.device
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         key = self._cache_key(device)
 
         if key not in self._device_cache:
@@ -91,7 +90,7 @@ class RotaryPositionalEncoding(nn.Module):
 
     def forward(
         self, seq_len: int, device: torch.device = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if device is None:
             device = self.inv_freq.device
         return self._ensure_cache(int(seq_len), device)
@@ -123,7 +122,7 @@ class RotaryPositionalEncoding(nn.Module):
 
     def get_embeddings_for_length(
         self, seq_len: int, device: torch.device = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.forward(seq_len, device)
 
 

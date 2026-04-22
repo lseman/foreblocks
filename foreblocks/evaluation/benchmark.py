@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Reusable NumPy → NeuralForecast Benchmark
 
@@ -13,7 +12,7 @@ from __future__ import annotations
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -62,7 +61,7 @@ def _ffill_numpy_colwise(arr: np.ndarray) -> np.ndarray:
     return out
 
 
-def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     mse_v = mean_squared_error(y_true, y_pred)
     rmse_v = float(np.sqrt(mse_v))
     mae_v = mean_absolute_error(y_true, y_pred)
@@ -77,7 +76,7 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
 class NPTimeseriesNFBenchmark:
     # Core data
     time_series_original: np.ndarray                    # [T, N]
-    series_names: Optional[List[str]] = None            # len N (optional)
+    series_names: list[str] | None = None            # len N (optional)
     start_date: str = "2018-01-01"
     freq: str = "D"
 
@@ -95,23 +94,23 @@ class NPTimeseriesNFBenchmark:
     _T: int = field(init=False, default=0)
     _N: int = field(init=False, default=0)
     _split_point: int = field(init=False, default=0)
-    _date_index: Optional[pd.DatetimeIndex] = field(init=False, default=None)
-    _norm_params: Dict[str, Dict[str, object]] = field(init=False, default_factory=dict)
+    _date_index: pd.DatetimeIndex | None = field(init=False, default=None)
+    _norm_params: dict[str, dict[str, object]] = field(init=False, default_factory=dict)
 
     # DataFrames on both spaces
-    _df_norm_full: Optional[pd.DataFrame] = field(init=False, default=None)   # long: [unique_id, ds, y] (normalized)
-    _df_orig_full: Optional[pd.DataFrame] = field(init=False, default=None)   # long: [unique_id, ds, y] (original)
+    _df_norm_full: pd.DataFrame | None = field(init=False, default=None)   # long: [unique_id, ds, y] (normalized)
+    _df_orig_full: pd.DataFrame | None = field(init=False, default=None)   # long: [unique_id, ds, y] (original)
 
     # Splits (long)
-    _train_df: Optional[pd.DataFrame] = field(init=False, default=None)
-    _test_df: Optional[pd.DataFrame] = field(init=False, default=None)
+    _train_df: pd.DataFrame | None = field(init=False, default=None)
+    _test_df: pd.DataFrame | None = field(init=False, default=None)
 
     # Results
-    metrics_normalized: Optional[pd.DataFrame] = field(init=False, default=None)
-    metrics_original: Optional[pd.DataFrame] = field(init=False, default=None)
+    metrics_normalized: pd.DataFrame | None = field(init=False, default=None)
+    metrics_original: pd.DataFrame | None = field(init=False, default=None)
 
     # Models that require n_series arg
-    MODELS_REQUIRE_NSERIES: Tuple[str, ...] = ("iTransformer", "TimeMixer", "TimeXer", "StemGNN")
+    MODELS_REQUIRE_NSERIES: tuple[str, ...] = ("iTransformer", "TimeMixer", "TimeXer", "StemGNN")
 
     def __post_init__(self):
         self._prepare_data()
@@ -121,10 +120,10 @@ class NPTimeseriesNFBenchmark:
     # ──────────────────────────────────────────────────────────────────────────
     def run(
         self,
-        models: Optional[Sequence[Tuple[type, str]]] = None,
-        step_size: Optional[int] = None,
+        models: Sequence[tuple[type, str]] | None = None,
+        step_size: int | None = None,
         verbose: bool = True,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Trains/evaluates all models with NeuralForecast cross_validation.
         Returns (metrics_normalized_df, metrics_original_df)
@@ -135,8 +134,8 @@ class NPTimeseriesNFBenchmark:
         step_size = int(step_size or self.horizon)
 
         # Dicts for row-wise assembly
-        m_norm: Dict[str, Dict[str, float]] = {}
-        m_orig: Dict[str, Dict[str, float]] = {}
+        m_norm: dict[str, dict[str, float]] = {}
+        m_orig: dict[str, dict[str, float]] = {}
 
         # Full DF (train + test) on normalized space
         full_df = pd.concat([self._train_df, self._test_df], ignore_index=True)
@@ -264,7 +263,7 @@ class NPTimeseriesNFBenchmark:
     # Configuration helpers
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def default_models() -> List[Tuple[type, str]]:
+    def default_models() -> list[tuple[type, str]]:
         """Safe default list: include what’s available in this environment."""
         base = [
             (TiDE, 'TiDE'),
@@ -362,7 +361,7 @@ class NPTimeseriesNFBenchmark:
             parts.append(pd.DataFrame({"unique_id": name, "ds": df_wide.index, "y": df_wide[name].to_numpy()}))
         return pd.concat(parts, ignore_index=True).sort_values(["unique_id", "ds"]).reset_index(drop=True)
 
-    def _split_long(self, df_long_norm: pd.DataFrame, split_point: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def _split_long(self, df_long_norm: pd.DataFrame, split_point: int) -> tuple[pd.DataFrame, pd.DataFrame]:
         train_list, test_list = [], []
         for name in self.series_names:
             d = df_long_norm[df_long_norm["unique_id"] == name].reset_index(drop=True)
