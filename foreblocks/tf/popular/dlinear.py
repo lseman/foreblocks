@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 # Use your project modules
 
 
@@ -24,6 +23,7 @@ class DLinearHeadCustom(nn.Module):
     ma_kernel: int            # MA window
     bias: bool
     """
+
     def __init__(
         self,
         pred_len: int,
@@ -42,19 +42,24 @@ class DLinearHeadCustom(nn.Module):
         self.bias_flag = bias
 
         self.channel_mixer = None
-        if in_channels is not None and out_channels is not None and out_channels != in_channels:
+        if (
+            in_channels is not None
+            and out_channels is not None
+            and out_channels != in_channels
+        ):
             self.channel_mixer = nn.Linear(in_channels, out_channels, bias=True)
 
         self.register_parameter("W_season", None)
         self.register_parameter("b_season", None)
-        self.register_parameter("W_trend",  None)
-        self.register_parameter("b_trend",  None)
+        self.register_parameter("W_trend", None)
+        self.register_parameter("b_trend", None)
 
     @staticmethod
     def _moving_average(x: torch.Tensor, k: int) -> torch.Tensor:
-        if k <= 1: return x
+        if k <= 1:
+            return x
         B, L, C = x.shape
-        x_n = x.permute(0, 2, 1)                      # [B,C,L]
+        x_n = x.permute(0, 2, 1)  # [B,C,L]
         pad = (k - 1) // 2
         x_pad = F.pad(x_n, (pad, pad), mode="reflect")
         w = torch.ones(1, 1, k, device=x.device, dtype=x.dtype) / k
@@ -64,27 +69,45 @@ class DLinearHeadCustom(nn.Module):
     def _lazy_build(self, L: int, C: int, device, dtype):
         def make_params():
             if self.individual:
-                W = nn.Parameter(torch.empty(C, self.pred_len, L, device=device, dtype=dtype))
-                b = nn.Parameter(torch.zeros(C, self.pred_len,      device=device, dtype=dtype)) if self.bias_flag else None
+                W = nn.Parameter(
+                    torch.empty(C, self.pred_len, L, device=device, dtype=dtype)
+                )
+                b = (
+                    nn.Parameter(
+                        torch.zeros(C, self.pred_len, device=device, dtype=dtype)
+                    )
+                    if self.bias_flag
+                    else None
+                )
             else:
-                W = nn.Parameter(torch.empty(self.pred_len, L, device=device, dtype=dtype))
-                b = nn.Parameter(torch.zeros(self.pred_len,    device=device, dtype=dtype)) if self.bias_flag else None
+                W = nn.Parameter(
+                    torch.empty(self.pred_len, L, device=device, dtype=dtype)
+                )
+                b = (
+                    nn.Parameter(torch.zeros(self.pred_len, device=device, dtype=dtype))
+                    if self.bias_flag
+                    else None
+                )
             nn.init.xavier_uniform_(W)
             return W, b
 
         if self.W_season is None:
             self.W_season, self.b_season = make_params()
         if self.use_decomposition and self.W_trend is None:
-            self.W_trend,  self.b_trend  = make_params()
+            self.W_trend, self.b_trend = make_params()
 
-    def _proj(self, x: torch.Tensor, W: torch.Tensor, b: torch.Tensor | None, individual: bool) -> torch.Tensor:
+    def _proj(
+        self, x: torch.Tensor, W: torch.Tensor, b: torch.Tensor | None, individual: bool
+    ) -> torch.Tensor:
         # x: [B,L,C] -> [B,T,C]
         if individual:
             y = torch.einsum("blc,ctl->btc", x, W)
-            if b is not None: y = y + b.transpose(0, 1)  # [T,C]
+            if b is not None:
+                y = y + b.transpose(0, 1)  # [T,C]
         else:
             y = torch.einsum("blc,tl->btc", x, W)
-            if b is not None: y = y + b.unsqueeze(-1)    # [T,1]
+            if b is not None:
+                y = y + b.unsqueeze(-1)  # [T,1]
         return y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -94,10 +117,11 @@ class DLinearHeadCustom(nn.Module):
         self._lazy_build(L, C, x.device, x.dtype)
 
         if self.use_decomposition:
-            trend    = self._moving_average(x, self.ma_kernel)
+            trend = self._moving_average(x, self.ma_kernel)
             seasonal = x - trend
-            y = self._proj(seasonal, self.W_season, self.b_season, self.individual) \
-              + self._proj(trend,   self.W_trend,  self.b_trend,  self.individual)
+            y = self._proj(
+                seasonal, self.W_season, self.b_season, self.individual
+            ) + self._proj(trend, self.W_trend, self.b_trend, self.individual)
         else:
             y = self._proj(x, self.W_season, self.b_season, self.individual)
 

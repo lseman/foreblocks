@@ -3,7 +3,6 @@ import copy
 # -----------------------------
 # Graph + Per-Node Core Wrapper
 # -----------------------------
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -49,9 +48,8 @@ class DistilledForecastingModel(ForecastingModel):
         task_type: str = "regression",  # "regression" | "logits"
         alpha_schedule=None,  # Callable[[int], float] | None
         temp_schedule=None,  # Callable[[int], float] | None
-        loss_weights: None | (
-            dict[str, float]
-        ) = None,  # keys: "output","feature","attention"
+        loss_weights: None
+        | (dict[str, float]) = None,  # keys: "output","feature","attention"
         **kwargs,
     ):
         assert distillation_mode in self.VALID_DISTILLATION_MODES, (

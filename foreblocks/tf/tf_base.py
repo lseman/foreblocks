@@ -274,9 +274,7 @@ def _attention_residual_input(
     return module(state["blocks"], state["partial"])
 
 
-def _append_attention_residual_update(
-    state: dict | None, update: torch.Tensor
-) -> None:
+def _append_attention_residual_update(state: dict | None, update: torch.Tensor) -> None:
     if state is None:
         return
 
@@ -487,9 +485,8 @@ class _LayerExecutionStrategy:
         gate: ResidualGate,
         cfg: ResidualRunCfg,
         aux_l2_terms: list[torch.Tensor],
-        core_fn: None | (
-            Callable[[torch.Tensor], tuple[torch.Tensor, dict | None]]
-        ) = None,
+        core_fn: None
+        | (Callable[[torch.Tensor], tuple[torch.Tensor, dict | None]]) = None,
         mhc_core: Callable[[torch.Tensor], torch.Tensor] | None = None,
         hyper_conn: nn.Module | None = None,
         prev_layer_state: dict | None = None,

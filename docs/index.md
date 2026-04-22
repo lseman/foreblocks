@@ -4,10 +4,9 @@
   <span class="eyebrow">ForeBlocks v{{ $frontmatter.foreBlocksVersion }} | Docs Home</span>
   <h1>Forecasting, preprocessing, search, and tooling in one documentation hub</h1>
   <p class="hero-lead">
-    <code>foreblocks</code> is the forecasting library. <code>foretools</code> is the
-    companion toolbox. The safest way in is still the small public API path, but the docs
-    now make it easier to branch into preprocessing, architecture search, uncertainty,
-    or dashboard tooling once the baseline loop is already working.
+    <code>foreblocks</code> is the forecasting library. <code>foretools</code> is the companion toolbox.
+    The docs are designed to keep the first run small, then help you branch into preprocessing,
+    architecture search, uncertainty, or dashboard tooling once the baseline path is working.
   </p>
   <div class="hero-actions">
     <a class="md-button md-button--primary" href="getting-started/">Run your first model</a>
@@ -17,10 +16,10 @@
 </div>
 
 <div class="metric-strip">
-  <div class="metric-chip"><strong>Stable first step</strong><span><code>ForecastingModel</code> + <code>Trainer</code> + <code>ModelEvaluator</code> remain the best first run.</span></div>
-  <div class="metric-chip"><strong>Raw-series bridge</strong><span><code>TimeSeriesHandler</code> helps when your input is a raw <code>[T, D]</code> array instead of ready-made windows.</span></div>
-  <div class="metric-chip"><strong>Search stack</strong><span>DARTS guides cover screening, bilevel search, retraining, and result analysis.</span></div>
-  <div class="metric-chip"><strong>Companion tooling</strong><span><code>foretools</code> adds BOHB, synthetic series generation, VMD, and feature engineering.</span></div>
+  <div class="metric-chip"><strong>Stable first step</strong><span><code>ForecastingModel</code> + <code>Trainer</code> + <code>ModelEvaluator</code> are the best first run.</span></div>
+  <div class="metric-chip"><strong>Raw-series bridge</strong><span><code>TimeSeriesHandler</code> converts raw <code>[T, D]</code> arrays into training windows.</span></div>
+  <div class="metric-chip"><strong>Search stack</strong><span>DARTS guides cover screening, bilevel search, retraining, and analysis.</span></div>
+  <div class="metric-chip"><strong>Companion tooling</strong><span><code>foretools</code> adds BOHB, synthetic generation, VMD, and feature engineering.</span></div>
 </div>
 
 ## Choose your route
@@ -29,7 +28,7 @@
   <div class="path-card">
     <p class="route-kicker">Path 01</p>
     <h3><a href="getting-started/">Train a baseline first</a></h3>
-    <p>Use the smallest reliable path through the public API before adding preprocessing, search, or dashboard features.</p>
+    <p>Use the smallest reliable public API path before adding preprocessing, search, or dashboard features.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 02</p>
@@ -39,22 +38,22 @@
   <div class="path-card">
     <p class="route-kicker">Path 03</p>
     <h3><a href="transformer/">Customize architectures</a></h3>
-    <p>Transformer, MoE, custom blocks, and Hybrid Mamba guides explain the more configurable internal subsystems.</p>
+    <p>Transformer, MoE, custom blocks, and Hybrid Mamba guides explain the more configurable model internals.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 04</p>
     <h3><a href="darts/">Search architectures</a></h3>
-    <p>Move into DARTS once the baseline path is healthy and you want automated structure search instead of hand-picking modules.</p>
+    <p>Move into DARTS once the baseline path is healthy and you want automated structure search.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 05</p>
     <h3><a href="uncertainty/">Add uncertainty intervals</a></h3>
-    <p>Use conformal workflows when point predictions are not enough for reporting, coverage analysis, or online adaptation.</p>
+    <p>Use conformal workflows when point predictions are not enough for reporting or coverage analysis.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 06</p>
     <h3><a href="foretools/">Open the companion toolbox</a></h3>
-    <p>Explore synthetic data, BOHB, VMD decomposition, and feature-engineering utilities documented in the same site.</p>
+    <p>Explore synthetic data, BOHB, VMD decomposition, and feature-engineering utilities.</p>
   </div>
 </div>
 
@@ -63,7 +62,7 @@
 <div class="step-grid">
   <div class="step-card">
     <strong>1. Confirm the baseline path</strong>
-    <span>Start with <a href="getting-started/">Getting Started</a> and make sure one small training loop runs end to end.</span>
+    <span>Start with <a href="getting-started/">Getting Started</a> and make sure a small training loop runs end to end.</span>
   </div>
   <div class="step-card">
     <strong>2. Learn the mental model</strong>

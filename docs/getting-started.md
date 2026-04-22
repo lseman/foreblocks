@@ -21,6 +21,8 @@ If you want the broader mental model first, start from [Overview](overview.md).
 
 ## 1. Install
 
+This project targets Python 3.10 and newer.
+
 ### PyPI (stable)
 
 ```bash
@@ -63,7 +65,17 @@ flowchart LR
 - Evaluation works on held-out data.
 :::
 
-## 3. Minimal training example
+## 3. Validate the import surface first
+
+Run a quick import check before the full example:
+
+```bash
+python -c "from foreblocks import ForecastingModel, Trainer; print('foreblocks import OK')"
+```
+
+If this fails, verify your Python environment and installed extras.
+
+## 4. Minimal training example
 
 ```python
 import numpy as np
@@ -85,8 +97,8 @@ n_features = 4
 rng = np.random.default_rng(0)
 X_train = rng.normal(size=(64, seq_len, n_features)).astype("float32")
 y_train = rng.normal(size=(64, horizon)).astype("float32")
-X_val   = rng.normal(size=(16, seq_len, n_features)).astype("float32")
-y_val   = rng.normal(size=(16, horizon)).astype("float32")
+X_val = rng.normal(size=(16, seq_len, n_features)).astype("float32")
+y_val = rng.normal(size=(16, horizon)).astype("float32")
 
 train_loader, val_loader = create_dataloaders(
     X_train, y_train, X_val, y_val, batch_size=16
@@ -109,7 +121,7 @@ model = ForecastingModel(
 trainer = Trainer(
     model,
     config=TrainingConfig(num_epochs=5, batch_size=16, patience=3, use_amp=False),
-    auto_track=False,  # disable MLTracker during smoke tests
+    auto_track=False,
 )
 
 history = trainer.train(train_loader, val_loader)
@@ -121,7 +133,11 @@ print("final_train_loss:", history.train_losses[-1])
 print("metrics:", metrics)
 ```
 
-## 4. Shape expectations
+## 5. Trainer and MLTracker notes
+
+`Trainer` initializes MLTracker automatically if it is installed. During a local smoke test, keep `auto_track=False` so you can verify the training loop without starting the dashboard.
+
+## 6. Shape expectations
 
 ### Direct forecasting
 
@@ -139,7 +155,7 @@ print("metrics:", metrics)
 
 Decoder-based models have stricter dimension contracts. Read the [Custom Blocks](custom_blocks.md) guide before wiring custom modules.
 
-## 5. Starting from raw series instead of windows
+## 7. Starting from raw series instead of windows
 
 When your starting point is a single `[T, D]` array, use `TimeSeriesHandler` instead of building windows manually:
 
@@ -168,7 +184,7 @@ pip install "foreblocks[preprocessing]"
 
 Continue with [Preprocessor Guide](preprocessor.md) once the baseline path itself is working.
 
-## 6. When to add DARTS
+## 8. When to add DARTS
 
 If the basic training loop works and you want architecture search instead of hand-selecting blocks:
 
@@ -182,15 +198,15 @@ Then continue with:
 - [Run A DARTS Search](tutorials/darts-multifidelity-search.md)
 - [DARTS Search Pipeline](architecture/darts-pipeline.md)
 
-## 7. Where to go next
+## 9. Where to go next
 
-Use this decision tree to pick your next step based on what you want to improve:
+Use this decision tree to pick the next page based on what you want to improve:
 
 ```
 Baseline works and metrics are acceptable?
 ├── No → improve your data
 │   ├── Raw series (single array)   → Preprocessor Guide
-│   └── Feature engineering        → foretools/fengineer
+│   └── Feature engineering        → foretools/feature-engineering.md
 │
 ├── Yes, but I want better accuracy
 │   ├── Try a stronger backbone     → Transformer Guide
@@ -237,7 +253,7 @@ Baseline works and metrics are acceptable?
   <div class="path-card">
     <p class="route-kicker">Safety net</p>
     <h3><a href="troubleshooting/">Troubleshooting</a></h3>
-    <p>Import issues, install problems, and the shape mismatches most likely to show up in a first run.</p>
+    <p>Import issues, install problems, and shape mismatches in a first run.</p>
   </div>
 </div>
 

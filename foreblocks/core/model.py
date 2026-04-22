@@ -65,9 +65,7 @@ class TimewiseGraph(nn.Module):
         # mark capability to avoid re-wrapping
         self._accepts_time_dim = True
 
-    def forward(
-        self, x: torch.Tensor, adj: torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, adj: torch.Tensor | None = None) -> torch.Tensor:
         if x.dim() == 3:  # [B, N, F]
             return self.gblock(x, adj)
         assert x.dim() == 4, "TimewiseGraph expects [B, N, F] or [B, T, N, F]"

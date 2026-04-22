@@ -18,6 +18,7 @@ RouterOutput = tuple[
     torch.Tensor | None,
 ]
 
+
 class Router(nn.Module, ABC):
     """Abstract router contract for MoE gating modules."""
 
@@ -301,7 +302,9 @@ class ContinuousTopKRouter(NoisyTopKRouter):
         temp = max(float(self.temperature if tau is None else tau), 1e-3)
         relaxed_logits = logits
         if self.training and self.perturb_std > 0:
-            relaxed_logits = relaxed_logits + torch.randn_like(relaxed_logits) * self.perturb_std
+            relaxed_logits = (
+                relaxed_logits + torch.randn_like(relaxed_logits) * self.perturb_std
+            )
 
         soft_probs = F.softmax(relaxed_logits / temp, dim=-1)
         k_eff = int(min(max(self.top_k, 1), soft_probs.size(-1)))

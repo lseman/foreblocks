@@ -7,30 +7,41 @@
 ![ForeBlocks Logo](web/logo.svg#gh-light-mode-only)
 ![ForeBlocks Logo](web/logo_dark.svg#gh-dark-mode-only)
 
-**foreBlocks** is a modular PyTorch library for time-series forecasting. The repository combines:
+**foreBlocks** is a modular PyTorch toolkit for time-series forecasting, experiment management, and companion utilities.
 
-- `foreblocks`: forecasting models, training, evaluation, preprocessing, and DARTS search
-- `foretools`: companion utilities, synthetic data generation, decomposition, and analysis notebooks
+This repository is structured as two cooperating packages:
 
-The project is best approached as a research toolkit rather than a single monolithic framework. The most stable public entry points are the top-level imports exported from `foreblocks`.
+- `foreblocks`: forecasting models, training, evaluation, preprocessing, DARTS search, and conformal uncertainty.
+- `foretools`: companion utilities for synthetic data, feature engineering, decomposition, and hyperparameter search.
+
+The recommended workflow is:
+
+1. start with the stable top-level public API in `foreblocks`
+2. validate one small training loop end to end
+3. add preprocessing, search, or specialist tooling only when the baseline path works
 
 ## Install
+
+This package requires Python 3.10 or newer.
+
+### Core install
 
 ```bash
 pip install foreblocks
 ```
 
-Install optional extras when you need specific subsystems:
+### Optional extras
 
 | Extra | Adds |
 | --- | --- |
-| `darts` | DARTS search plus analysis dependencies |
-| `mltracker` | experiment tracking API and UI dependencies |
-| `studio` | bundled Studio frontend launcher command |
-| `vmd` | VMD decomposition and Optuna-based search support |
-| `wavelets` | optional wavelet backends |
+| `preprocessing` | `TimeSeriesHandler`, windowing, scaling, filtering, imputation, and time-feature generation |
+| `darts` | DARTS architecture search, evaluation, and NAS dependencies |
+| `mltracker` | experiment tracking API, local dashboard, and CLI TUI |
+| `studio` | Studio frontend launcher and bundled server command |
+| `vmd` | VMD decomposition, search support, and analysis helpers |
+| `wavelets` | wavelet preprocessing and attention-head utilities |
 | `benchmark` | external forecasting baselines and spreadsheet readers |
-| `foreminer` | changepoint-detection support |
+| `foreminer` | changepoint detection, dataset mining, and analysis utilities |
 | `all` | all runtime extras above |
 
 Examples:
@@ -43,13 +54,21 @@ pip install "foreblocks[vmd,wavelets]"
 pip install "foreblocks[all]"
 ```
 
-Launch the bundled Studio frontend:
+### Local development install
+
+```bash
+git clone https://github.com/lseman/foreblocks.git
+cd foreblocks
+pip install -e ".[dev]"
+```
+
+### Launch the Studio frontend
 
 ```bash
 foreblocks-studio
 ```
 
-By default, this auto-opens a browser when serving on `127.0.0.1` or `localhost`.
+By default, this opens a browser on `127.0.0.1` or `localhost`.
 
 Optional flags:
 
@@ -59,17 +78,9 @@ foreblocks-studio --no-open
 foreblocks-studio --host 0.0.0.0 --port 8080
 ```
 
-Local development install:
+## Quickstart
 
-```bash
-git clone https://github.com/lseman/foreblocks.git
-cd foreblocks
-pip install -e ".[dev]"
-```
-
-## Validated Quickstart
-
-The example below is intentionally small and uses the most reliable path through the current API: a direct forecaster with a custom head, trained through `Trainer`.
+The smallest reliable path is a direct forecasting model with a custom head. This path avoids extra dependencies and verifies that the public API is wired correctly.
 
 ```python
 import numpy as np
@@ -134,18 +145,25 @@ metrics = evaluator.compute_metrics(torch.tensor(X_val), torch.tensor(y_val))
 print(history.train_losses[-1], metrics)
 ```
 
-This path was smoke-tested in the repository. Once that is working, move on to encoder/decoder models, preprocessing, and DARTS.
+### Why this path
+
+- validates that the import surface works
+- checks dataloader shapes and model output sizes
+- avoids optional subsystems during the first run
+- keeps the first success criterion small and confirmable
+
+If you start from a raw `[T, D]` time series instead of windows, use `TimeSeriesHandler` from `foreblocks.ts_handler` after installing `foreblocks[preprocessing]`.
 
 ## Public API
 
-These are the top-level imports currently exposed by `foreblocks`:
+The most stable first imports are exposed from the top-level `foreblocks` package:
 
 | Import | Purpose |
 | --- | --- |
 | `ForecastingModel` | Core forecasting wrapper for direct, autoregressive, and seq2seq-style models |
 | `Trainer` | Training loop with NAS hooks, MLTracker integration, and optional conformal support |
 | `ModelEvaluator` | Prediction helpers, metrics, cross-validation, and training-curve plots |
-| `TimeSeriesHandler` | Time-series handling pipeline for windowing, scaling, filtering, imputation, and time features |
+| `TimeSeriesHandler` | Raw-series preprocessing, windowing, scaling, and imputation bridge |
 | `TimeSeriesDataset` | Dataset wrapper used by the dataloader helper |
 | `create_dataloaders` | Build train/validation PyTorch dataloaders from NumPy arrays |
 | `ModelConfig`, `TrainingConfig` | Lightweight configuration dataclasses |
@@ -153,7 +171,7 @@ These are the top-level imports currently exposed by `foreblocks`:
 | `TransformerEncoder`, `TransformerDecoder` | Transformer backbones and related advanced features |
 | `AttentionLayer` | Attention module entry point |
 
-## Repository Map
+## Repository map
 
 | Path | What it contains |
 | --- | --- |
@@ -163,18 +181,19 @@ These are the top-level imports currently exposed by `foreblocks`:
 | `foreblocks/ts_handler` | `TimeSeriesHandler`, imputation, filtering, outlier handling |
 | `foreblocks/tf` | transformer stack, attention variants, MoE, norms, embeddings |
 | `foreblocks/darts` | neural architecture search pipeline and evaluation |
-| `foretools/tsgen` | synthetic time-series generator and notebooks |
-| `examples/` | notebooks and runnable usage examples |
+| `foreblocks/mltracker` | experiment tracking server, logging, and TUI integration |
+| `foretools` | synthetic time series, BOHB search, feature engineering, decomposition |
+| `examples/` | runnable demos and notebooks |
 | `web/` | static landing page assets for the published site root |
-| `docs/` | VitePress source for the versioned documentation site published under `/docs/` |
+| `docs/` | VitePress source for the documentation site |
 
-## Documentation Map
+## Documentation map
 
 Start here if you are new to the repository:
 
 - [Documentation Overview](docs/overview.md)
 - [Getting Started](docs/getting-started.md)
-- [Docs Home](docs/index.md)
+- [Docs home](docs/index.md)
 
 Topic guides:
 
@@ -192,30 +211,26 @@ Companion tooling:
 - [BOHB Search](docs/foretools/bohb.md)
 - [VMD Decomposition](docs/foretools/vmd.md)
 
-Useful notebooks and examples:
+Examples and notebooks:
 
-- [Synthetic Series Notebook](foretools/tsgen/ts_gen_complete_series.ipynb)
-- [TS Generator Documentation Notebook](foretools/tsgen/ts_gen_doc.ipynb)
-- [AdaptiveMRMR Demo](examples/adaptive_mrmr_demo.py)
-- [Example notebooks](examples/)
+- `examples/adaptive_mrmr_demo.py`
+- `foretools/tsgen/ts_gen_complete_series.ipynb`
+- `foretools/tsgen/ts_gen_doc.ipynb`
+- `examples/`
 
-There is also a repository-local docs navigation file at [`docs/.vitepress/config.js`](docs/.vitepress/config.js). The current publishing model is:
+There is a repository-local docs navigation file at [`docs/.vitepress/config.js`](docs/.vitepress/config.js).
 
-- site root `/`: custom landing page from `web/index.html`
-- site docs `/docs/`: VitePress site built from `docs/`
-
-## Current Project Status
+## Current project status
 
 - The repository is broad and still evolving. Some subsystems are more mature than others.
 - The top-level imports listed above are the safest place to start.
-- `Trainer` supports MLTracker and conformal prediction, but you can disable tracking during local smoke tests with `auto_track=False`.
-- `MultiAttention` now includes an experimental attention-matching KV compaction mode for dense paged causal decode. Enable it with `use_attention_matching_compaction=True` and `use_mla=False`.
-- For decoder-based seq2seq and transformer workflows, use the topic guides before wiring custom modules, because dimension contracts are stricter than the direct head path.
-- `TrainingConfig` now lives in a single canonical location and includes trainer, NAS, MLTracker, and conformal settings.
+- `Trainer` supports MLTracker and conformal prediction; use `auto_track=False` during local smoke tests.
+- Decoder-based seq2seq and transformer workflows have stricter dimension contracts than the direct forecasting path.
+- `TrainingConfig` now centralizes trainer, NAS, MLTracker, and conformal settings.
 
 ## Contributing
 
-Documentation improvements are especially valuable here because the repository spans forecasting models, search, preprocessing, and auxiliary tooling. If you add or change a public API, update:
+Documentation improvements are especially valuable here because `foreblocks` spans forecasting models, search, preprocessing, and auxiliary tooling. If you add or change a public API, update:
 
 1. this `README.md`
 2. the relevant guide under `docs/`

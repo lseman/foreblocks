@@ -26,7 +26,7 @@ from .enc_dec import (
 from .fourier import FNO1dLayer, FourierFeatures
 
 # Graph-based blocks
-from .graph import GraphPreprocessorNTF
+from .graph_btnf import GraphPreprocessor, GraphPreprocessorNTF
 
 # ODE-based blocks
 from .ode import NeuralODE
@@ -59,6 +59,7 @@ __all__ = [
     "AutoCorrelationBlock",
     "AutoCorrelationPreprocessor",
     # Graph-based blocks
+    "GraphPreprocessor",
     "GraphPreprocessorNTF",
     # Multiscale processing blocks
     # "MultiScaleTemporalConv",
