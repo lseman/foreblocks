@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 
@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover - optional dependency
 from .utils import safe_log
 
 
-def realistic_nn_objective(config: Dict[str, Any], budget: float) -> float:
+def realistic_nn_objective(config: dict[str, Any], budget: float) -> float:
     """
     Simulate training dynamics:
     - Some hyperparameter optimum
@@ -46,9 +46,9 @@ def realistic_nn_objective(config: Dict[str, Any], budget: float) -> float:
 
 
 def torch_mlp_objective(
-    config: Dict[str, Any],
+    config: dict[str, Any],
     budget: float,
-    trial: Optional[Any] = None,
+    trial: Any | None = None,
 ) -> float:
     """
     Small Torch MLP objective for BOHB demos.

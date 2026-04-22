@@ -1,24 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Optional
+from collections.abc import Callable
 
 
 
-Observation = Tuple[Dict[str, Any], float, Optional[float]]
+Observation = tuple[dict[str, Any], float, Optional[float]]
 
 
 @dataclass
 class ObservationStore:
-    max_budget: Optional[float] = None
+    max_budget: float | None = None
     split_budget_correction: float = 0.25
 
     def sort_for_split(
         self,
-        observations: List[Observation],
+        observations: list[Observation],
         loss_scale: float,
-        atpe_filter: Optional[Callable[[List[Observation]], List[Observation]]] = None,
-    ) -> List[Observation]:
+        atpe_filter: Callable[[list[Observation]], list[Observation]] | None = None,
+    ) -> list[Observation]:
         if not observations:
             return []
         obs = observations
@@ -41,8 +42,8 @@ class ObservationStore:
         return sorted(obs, key=split_score)
 
     def split_good_bad(
-        self, sorted_observations: List[Observation], n_good: int
-    ) -> Tuple[List[Observation], List[Observation]]:
+        self, sorted_observations: list[Observation], n_good: int
+    ) -> tuple[list[Observation], list[Observation]]:
         if not sorted_observations:
             return [], []
         n = len(sorted_observations)

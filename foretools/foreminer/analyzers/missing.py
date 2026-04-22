@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -14,8 +14,8 @@ class MissingnessAnalyzer(AnalysisStrategy):
         return "missingness"
 
     # --------------- Public API ---------------
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
-        results: Dict[str, Any] = {}
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
+        results: dict[str, Any] = {}
 
         # 1) Basic missing rate
         missing_rate = self._missing_rate(data)
@@ -69,7 +69,7 @@ class MissingnessAnalyzer(AnalysisStrategy):
         return pd.DataFrame(jacc, index=missing_mask.columns, columns=missing_mask.columns)
 
     @staticmethod
-    def _cluster_missingness(missing_mask: pd.DataFrame) -> Dict[str, int]:
+    def _cluster_missingness(missing_mask: pd.DataFrame) -> dict[str, int]:
         """
         Cluster features by similarity of missingness patterns using
         AgglomerativeClustering on a precomputed Hamming distance matrix.
@@ -97,12 +97,12 @@ class MissingnessAnalyzer(AnalysisStrategy):
             return {}
 
     # --------------- MNAR diagnostics ---------------
-    def _analyze_mnar(self, data: pd.DataFrame, target_col: str, config: AnalysisConfig) -> Dict[str, Any]:
+    def _analyze_mnar(self, data: pd.DataFrame, target_col: str, config: AnalysisConfig) -> dict[str, Any]:
         from scipy.stats import chi2_contingency, ks_2samp, ttest_ind
         from sklearn.linear_model import LogisticRegression
         from sklearn.metrics import mutual_info_score, roc_auc_score
 
-        insights: Dict[str, Any] = {}
+        insights: dict[str, Any] = {}
         target = data[target_col]
 
         # Pre-cache target array for logistic regression

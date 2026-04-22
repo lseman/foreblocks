@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 from scipy.special import logsumexp
@@ -26,11 +27,11 @@ class FantasizedBatchSelector(BatchSelector):
 
     def _fantasy_utility(
         self,
-        config: Dict[str, Any],
-        obs: List[Tuple[Dict[str, Any], float, Optional[float]]],
+        config: dict[str, Any],
+        obs: list[tuple[dict[str, Any], float, float | None]],
         predict_fn: Callable[
-            [Dict[str, Any], List[Tuple[Dict[str, Any], float, Optional[float]]], int],
-            Tuple[float, float],
+            [dict[str, Any], list[tuple[dict[str, Any], float, float | None]], int],
+            tuple[float, float],
         ],
         rng: np.random.Generator,
         ei_k: int,
@@ -48,11 +49,11 @@ class FantasizedBatchSelector(BatchSelector):
 
     def _fantasize_loss(
         self,
-        config: Dict[str, Any],
-        obs: List[Tuple[Dict[str, Any], float, Optional[float]]],
+        config: dict[str, Any],
+        obs: list[tuple[dict[str, Any], float, float | None]],
         predict_fn: Callable[
-            [Dict[str, Any], List[Tuple[Dict[str, Any], float, Optional[float]]], int],
-            Tuple[float, float],
+            [dict[str, Any], list[tuple[dict[str, Any], float, float | None]], int],
+            tuple[float, float],
         ],
         rng: np.random.Generator,
         ei_k: int,
@@ -65,11 +66,11 @@ class FantasizedBatchSelector(BatchSelector):
 
     def select(
         self,
-        candidates: List[Dict[str, Any]],
+        candidates: list[dict[str, Any]],
         scores: np.ndarray,
         n: int,
         **kwargs: Any,
-    ) -> List[int]:
+    ) -> list[int]:
         if n <= 0 or not candidates:
             return []
         observations = kwargs.get("observations")
@@ -88,7 +89,7 @@ class FantasizedBatchSelector(BatchSelector):
         ):
             return list(np.argsort(scores)[-n:][::-1])
 
-        selected: List[int] = []
+        selected: list[int] = []
         remaining = list(range(len(candidates)))
         temp_obs = list(observations)
 

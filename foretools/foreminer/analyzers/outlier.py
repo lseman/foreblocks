@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -78,7 +78,7 @@ class OutlierAnalyzer(AnalysisStrategy):
         if numeric.empty:
             raise ValueError("No numeric data available for outlier detection")
 
-        info: Dict[str, Any] = {}
+        info: dict[str, Any] = {}
         n_samples, n_features = numeric.shape
 
         na_counts = numeric.isna().sum()
@@ -406,8 +406,8 @@ class OutlierAnalyzer(AnalysisStrategy):
 
     # ---------------------- Evaluation & Recommendations ----------------------
     def _lightning_evaluation(
-        self, all_results: Dict[str, Any], X: np.ndarray
-    ) -> Dict[str, Any]:
+        self, all_results: dict[str, Any], X: np.ndarray
+    ) -> dict[str, Any]:
         evaluations = {}
         for m, res in all_results.items():
             o = res.get("outliers")
@@ -459,7 +459,7 @@ class OutlierAnalyzer(AnalysisStrategy):
         return recs[:4]
 
     # ---------------------- Main ----------------------
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         try:
             X, complete_indices, prep = self._lightning_preprocessing(data, config)
             N = len(data)
@@ -467,7 +467,7 @@ class OutlierAnalyzer(AnalysisStrategy):
 
             # Run methods (guarded per-method)
             methods = {}
-            method_errors: Dict[str, str] = {}
+            method_errors: dict[str, str] = {}
             method_calls = {
                 "pca_recon": self._pca_reconstruction,
                 "isolation_forest": self._isolation_forest,

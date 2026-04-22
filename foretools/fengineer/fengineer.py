@@ -1,6 +1,6 @@
 import warnings
 import inspect
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -38,7 +38,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
     - Extensive logging and monitoring
     """
 
-    def __init__(self, config: Optional[FeatureConfig] = None):
+    def __init__(self, config: FeatureConfig | None = None):
         self.config = config or FeatureConfig()
         self.transformers_ = {}
         self.correlation_filter_ = None
@@ -77,7 +77,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             return False
         return self._resolve_backend() not in {"tree", "gbdt"}
 
-    def _build_transformers(self) -> Dict[str, Any]:
+    def _build_transformers(self) -> dict[str, Any]:
         """Build ordered transformer registry from config flags."""
         registry = {
             "datetime": (
@@ -145,7 +145,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
     @staticmethod
     def _transform_with_optional_y(
-        transformer: Any, X: pd.DataFrame, y: Optional[pd.Series]
+        transformer: Any, X: pd.DataFrame, y: pd.Series | None
     ) -> pd.DataFrame:
         """Pass y only for transformers that support it (e.g., target-kfold categorical)."""
         if y is None:
@@ -158,7 +158,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             pass
         return transformer.transform(X)
 
-    def fit(self, X: pd.DataFrame, y: Optional[Union[pd.Series, np.ndarray]] = None):
+    def fit(self, X: pd.DataFrame, y: pd.Series | np.ndarray | None = None):
         """Fit comprehensive feature engineering pipeline."""
         X = X.copy()
         if y is not None:
@@ -314,7 +314,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 print(f"{'Selection Method':<15}: {self.selector_.selection_method_}")
         print()
 
-    def get_feature_importance(self) -> Optional[pd.Series]:
+    def get_feature_importance(self) -> pd.Series | None:
         """Get feature importance from feature selection analysis."""
         if self.selector_ and hasattr(self.selector_, "get_feature_scores"):
             return self.selector_.get_feature_scores()
@@ -323,7 +323,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         return None
 
     def plot_feature_importance(
-        self, top_k: int = 20, figsize: Tuple[int, int] = (12, 8)
+        self, top_k: int = 20, figsize: tuple[int, int] = (12, 8)
     ):
         """Plot feature importance with enhanced visualization."""
         import matplotlib.pyplot as plt
@@ -363,7 +363,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         plt.grid(axis="x", alpha=0.3)
         plt.show()
 
-    def get_transformation_report(self) -> Dict[str, Any]:
+    def get_transformation_report(self) -> dict[str, Any]:
         """Get detailed report of transformations applied."""
         report = {
             "feature_stats": self.feature_stats_.copy(),

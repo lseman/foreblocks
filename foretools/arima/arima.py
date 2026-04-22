@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import concurrent.futures
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -85,7 +85,7 @@ def _as_1d(y) -> np.ndarray:
     return y
 
 
-def _as_2d(X, n: int) -> Optional[np.ndarray]:
+def _as_2d(X, n: int) -> np.ndarray | None:
     if X is None:
         return None
     X = np.asarray(X, dtype=float)
@@ -108,8 +108,8 @@ def difference(y: np.ndarray, d: int, D: int, s: int) -> np.ndarray:
 
 
 def difference_exog(
-    X: Optional[np.ndarray], d: int, D: int, s: int
-) -> Optional[np.ndarray]:
+    X: np.ndarray | None, d: int, D: int, s: int
+) -> np.ndarray | None:
     if X is None:
         return None
     out = np.asarray(X, dtype=float)
@@ -335,7 +335,7 @@ def _autocovariances(x: np.ndarray, max_lag: int) -> np.ndarray:
 
 
 # PERF 2: Levinson-Durbin — single phi vector, vectorised inner update
-def _levinson_durbin(gamma: np.ndarray, order: int) -> Tuple[np.ndarray, np.ndarray]:
+def _levinson_durbin(gamma: np.ndarray, order: int) -> tuple[np.ndarray, np.ndarray]:
     gamma = np.asarray(gamma, dtype=float).reshape(-1)
     if order <= 0:
         return np.zeros(0, dtype=float), np.zeros(0, dtype=float)
@@ -381,7 +381,7 @@ def _stationary_coeffs_to_raw(phi: np.ndarray) -> np.ndarray:
 
 def _build_theta_init(
     yd: np.ndarray,
-    Xd: Optional[np.ndarray],
+    Xd: np.ndarray | None,
     *,
     has_c: bool,
     include_exog: bool,
@@ -491,7 +491,7 @@ def _kalman_nll_kernel(
     sigma2: float,
     diffuse_scale: float,
     diffuse_burn: int,
-) -> Tuple[float, int]:
+) -> tuple[float, int]:
     n = int(y_adj.shape[0])
     m = int(T.shape[0])
     a_pred = np.zeros(m, dtype=np.float64)
@@ -582,7 +582,7 @@ if _HAS_JAX:
         r: int,
         p_full: int,
         q_full: int,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         # T = T_base with first row updated:
         #   T[0, :p_full] = phi
         #   T[0, r:r+q_full] = theta
@@ -604,7 +604,7 @@ if _HAS_JAX:
         sigma2: float,
         diffuse_scale: float,
         diffuse_burn: int,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
         y_adj = jnp.asarray(y_adj, dtype=jnp.float64)
         T = jnp.asarray(T, dtype=jnp.float64)
         Z = jnp.asarray(Z, dtype=jnp.float64)
@@ -654,8 +654,8 @@ if _HAS_JAX:
 
 @dataclass(frozen=True)
 class SarimaxSpec:
-    order: Tuple[int, int, int]
-    seasonal_order: Tuple[int, int, int, int]
+    order: tuple[int, int, int]
+    seasonal_order: tuple[int, int, int, int]
     include_intercept: bool = True
     include_exog: bool = True
 
@@ -663,11 +663,11 @@ class SarimaxSpec:
 @dataclass
 class SarimaxFit:
     spec: SarimaxSpec
-    params: Dict[str, np.ndarray]
+    params: dict[str, np.ndarray]
     nll: float
     aicc: float
     converged: bool
-    info: Dict[str, Any]
+    info: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -676,14 +676,14 @@ class SarimaxFit:
 
 
 class SarimaxScratch:
-    _SS_TEMPLATE_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    _SS_TEMPLATE_CACHE: dict[tuple[int, int], dict[str, Any]] = {}
 
     def __init__(self, spec: SarimaxSpec):
         self.spec = spec
-        self.fit_: Optional[SarimaxFit] = None
+        self.fit_: SarimaxFit | None = None
 
     @classmethod
-    def _get_state_space_template(cls, p_full: int, q_full: int) -> Dict[str, Any]:
+    def _get_state_space_template(cls, p_full: int, q_full: int) -> dict[str, Any]:
         key = (int(p_full), int(q_full))
         tpl = cls._SS_TEMPLATE_CACHE.get(key)
         if tpl is not None:
@@ -720,7 +720,7 @@ class SarimaxScratch:
     @classmethod
     def _build_state_space(
         cls, phi: np.ndarray, theta: np.ndarray
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         phi = np.asarray(phi, dtype=float).reshape(-1)
         theta = np.asarray(theta, dtype=float).reshape(-1)
         tpl = cls._get_state_space_template(
@@ -762,7 +762,7 @@ class SarimaxScratch:
         diffuse_burn,
         store,
         use_numba=True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         y_adj = np.asarray(y_adj, dtype=float).reshape(-1)
         n = y_adj.size
         m = T.shape[0]
@@ -823,7 +823,7 @@ class SarimaxScratch:
             P_pred = T @ P_filt @ T.T + RRt
             P_pred = 0.5 * (P_pred + P_pred.T)
 
-        out: Dict[str, Any] = {"nll": float(nll), "n_eff": int(n_eff), "v": v, "F": F}
+        out: dict[str, Any] = {"nll": float(nll), "n_eff": int(n_eff), "v": v, "F": F}
         if store:
             out.update(
                 {
@@ -836,7 +836,7 @@ class SarimaxScratch:
         return out
 
     @staticmethod
-    def _kalman_smoother(T: np.ndarray, filt: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    def _kalman_smoother(T: np.ndarray, filt: dict[str, Any]) -> dict[str, np.ndarray]:
         a_filt = np.asarray(filt["a_filt"], dtype=float)
         P_filt = np.asarray(filt["P_filt"], dtype=float)
         a_pred = np.asarray(filt["a_pred"], dtype=float)
@@ -1011,7 +1011,7 @@ class SarimaxScratch:
 
             def decode_and_nll(
                 theta_u_j: jnp.ndarray,
-            ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+            ) -> tuple[jnp.ndarray, jnp.ndarray]:
                 idx = 0
                 c = theta_u_j[idx] if has_c else jnp.asarray(0.0)
                 if has_c:
@@ -1062,7 +1062,7 @@ class SarimaxScratch:
             if jax_jit:
                 value_and_grad_fn = jax.jit(value_and_grad_fn)
 
-            def objective_and_grad(theta_u: np.ndarray) -> Tuple[float, np.ndarray]:
+            def objective_and_grad(theta_u: np.ndarray) -> tuple[float, np.ndarray]:
                 th = jnp.asarray(np.asarray(theta_u, dtype=np.float64))
                 val_j, grad_j = value_and_grad_fn(th)
                 val = float(np.asarray(val_j))
@@ -1172,7 +1172,7 @@ class SarimaxScratch:
             _th_p = np.empty(dim, dtype=float)
             _th_m = np.empty(dim, dtype=float)
 
-            def objective_and_grad(theta_u: np.ndarray) -> Tuple[float, np.ndarray]:
+            def objective_and_grad(theta_u: np.ndarray) -> tuple[float, np.ndarray]:
                 val = objective(theta_u)
                 grad = np.empty(dim, dtype=float)
                 for i in range(dim):
@@ -1220,7 +1220,7 @@ class SarimaxScratch:
         n_eff = int(filt["n_eff"])
         score = float(aicc(n_eff, dim, nll_hat))
 
-        info: Dict[str, Any] = {
+        info: dict[str, Any] = {
             "n_obs": int(n),
             "n_eff": n_eff,
             "state_dim": int(dec["m"][0]),
@@ -1270,7 +1270,7 @@ class SarimaxScratch:
         )
         return self.fit_
 
-    def filter_smoother(self, y, exog=None) -> Dict[str, np.ndarray]:
+    def filter_smoother(self, y, exog=None) -> dict[str, np.ndarray]:
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
         fit = self.fit_
@@ -1322,7 +1322,7 @@ class SarimaxScratch:
         alpha=0.05,
         num_sim=2000,
         seed=0,
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
         fit = self.fit_
@@ -1540,8 +1540,8 @@ def auto_sarimax_stepwise(
     Xd = difference_exog(X0, d=d, D=D, s=s)
     k_exog = 0 if Xd is None else Xd.shape[1]
 
-    cache: Dict = {}
-    fail_cache: Dict = {}
+    cache: dict = {}
+    fail_cache: dict = {}
     stats = {"fit_calls": 0, "cache_hits": 0, "failures": 0}
     budget_stop = {"stop": False}
 

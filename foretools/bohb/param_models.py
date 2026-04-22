@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 from scipy.special import logsumexp
@@ -33,10 +34,10 @@ class FloatModel(BaseParamModel):
     kind: str
     param: str
     prior_w: float
-    mu: Optional[float]
-    vals: Optional[np.ndarray]
-    bw: Optional[float]
-    w: Optional[np.ndarray]
+    mu: float | None
+    vals: np.ndarray | None
+    bw: float | None
+    w: np.ndarray | None
     min_bandwidth: float
     local_bandwidth: bool
     local_bandwidth_k: int
@@ -45,10 +46,10 @@ class FloatModel(BaseParamModel):
     float_bounds: Callable[[str], tuple[float, float]]
     sample_prior_model_space: Callable[[str], float]
     log_prior_model_space: Callable[[str], float]
-    sample_mixture_1d: Callable[[np.ndarray, float, Optional[np.ndarray]], float]
+    sample_mixture_1d: Callable[[np.ndarray, float, np.ndarray | None], float]
     local_bw_func: Callable[[float, np.ndarray, float, int], float]
     rng: np.random.Generator
-    warp_lmbda: Optional[float] = None
+    warp_lmbda: float | None = None
 
     def sample(self) -> Any:
         lo, hi = self.float_bounds(self.param)
@@ -118,18 +119,18 @@ class IntModel(BaseParamModel):
     lo: int
     hi: int
     prior_w: float
-    mu: Optional[float]
-    vals: Optional[np.ndarray]
-    bw: Optional[float]
-    w: Optional[np.ndarray]
+    mu: float | None
+    vals: np.ndarray | None
+    bw: float | None
+    w: np.ndarray | None
     local_bandwidth: bool
     local_bandwidth_k: int
     sample_prior_model_space: Callable[[str], float]
     log_prior_model_space: Callable[[str], float]
-    sample_mixture_1d: Callable[[np.ndarray, float, Optional[np.ndarray]], float]
+    sample_mixture_1d: Callable[[np.ndarray, float, np.ndarray | None], float]
     local_bw_func: Callable[[float, np.ndarray, float, int], float]
     rng: np.random.Generator
-    probs: Optional[dict[Any, float]] = None
+    probs: dict[Any, float] | None = None
 
     def sample(self) -> Any:
         if self.kind == "int_discrete":

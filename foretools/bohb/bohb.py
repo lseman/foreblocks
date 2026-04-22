@@ -31,7 +31,8 @@ import inspect
 import json
 import math
 import threading
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 from .pruning import PruningConfig
@@ -47,7 +48,7 @@ from .trial import Trial, TrialPruned
 class BOHB:
     def __init__(
         self,
-        config_space: Dict[str, Tuple],
+        config_space: dict[str, tuple],
         evaluate_fn: Callable[..., float],  # Can be (config, budget) or (config, budget, trial)
         min_budget: float = 1.0,
         max_budget: float = 81.0,
@@ -56,15 +57,15 @@ class BOHB:
         verbose: bool = True,
         handle_errors: bool = True,
         top_n_percent: int = 15,
-        prior_trials_jsonl: Optional[str] = None,
+        prior_trials_jsonl: str | None = None,
         pruning_mode: str = "conservative",
-        history_export_jsonl: Optional[str] = None,
+        history_export_jsonl: str | None = None,
         early_prune: bool = True,
-        seed: Optional[int] = None,
-        tpe_conf: Optional[TPEConf] = None,
-        tpe_overrides: Optional[Dict[str, Any]] = None,
-        pruning_conf: Optional[PruningConfig] = None,
-        pruning_overrides: Optional[Dict[str, Any]] = None,
+        seed: int | None = None,
+        tpe_conf: TPEConf | None = None,
+        tpe_overrides: dict[str, Any] | None = None,
+        pruning_conf: PruningConfig | None = None,
+        pruning_overrides: dict[str, Any] | None = None,
         parallel_jobs: int = 1,
     ):
         self.config_space = config_space
@@ -103,20 +104,20 @@ class BOHB:
         overrides.update(user_overrides)
         self.tpe = TPE.from_config(config_space=config_space, cfg=conf, **overrides)
 
-        self.history: List[Dict[str, Any]] = []
+        self.history: list[dict[str, Any]] = []
         self.best_loss = float("inf")
-        self.best_config: Optional[Dict[str, Any]] = None
-        self.best_configs: List[Tuple[Dict[str, Any], float]] = []
-        self._step_history: List[Dict[str, float]] = []
+        self.best_config: dict[str, Any] | None = None
+        self.best_configs: list[tuple[dict[str, Any], float]] = []
+        self._step_history: list[dict[str, float]] = []
         self._step_history_lock = threading.Lock()
 
         # cache: (sha1(config), budget) -> loss
-        self.config_cache: Dict[Tuple[str, float], float] = {}
+        self.config_cache: dict[tuple[str, float], float] = {}
 
         if prior_trials_jsonl:
             self._load_prior_trials_jsonl(prior_trials_jsonl)
 
-    def run(self) -> Tuple[Dict[str, Any], float]:
+    def run(self) -> tuple[dict[str, Any], float]:
         s_max = int(math.log(self.max_budget / self.min_budget, self.eta))
         B = (s_max + 1) * self.max_budget
 
@@ -220,7 +221,7 @@ class BOHB:
         except (TypeError, ValueError):
             return False
 
-    def _update_best(self, config: Dict[str, Any], loss: float) -> None:
+    def _update_best(self, config: dict[str, Any], loss: float) -> None:
         if loss >= self.best_loss:
             return
         self.best_loss = float(loss)
@@ -228,14 +229,14 @@ class BOHB:
         if self.verbose:
             print(f"    New best: {self.best_loss:.6g}  cfg={self.best_config}")
 
-    def _cache_key(self, config: Dict[str, Any], budget: float) -> Tuple[str, float]:
+    def _cache_key(self, config: dict[str, Any], budget: float) -> tuple[str, float]:
         key_json = _canonical_config_key(config)
         key_hash = hashlib.sha1(key_json.encode("utf-8")).hexdigest()
         return key_hash, float(budget)
 
     def _make_history_entry(
         self,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         budget: float,
         loss: float,
         raw_loss: float,
@@ -243,7 +244,7 @@ class BOHB:
         iteration: int,
         bracket: int,
         round_idx: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return {
             "config": dict(config),
             "budget": float(budget),
@@ -257,14 +258,14 @@ class BOHB:
 
     def _evaluate_configs(
         self,
-        configs: List[Dict[str, Any]],
+        configs: list[dict[str, Any]],
         budget: float,
         iteration: int,
         bracket: int,
         round_idx: int,
-    ) -> List[Tuple[Dict[str, Any], float]]:
-        indexed_results: List[Tuple[int, Dict[str, Any], float]] = []
-        pending: List[Tuple[int, Dict[str, Any], Tuple[str, float]]] = []
+    ) -> list[tuple[dict[str, Any], float]]:
+        indexed_results: list[tuple[int, dict[str, Any], float]] = []
+        pending: list[tuple[int, dict[str, Any], tuple[str, float]]] = []
 
         for idx, config in enumerate(configs):
             if not self.tpe._hard_constraints_satisfied(config):
@@ -293,8 +294,8 @@ class BOHB:
                     ): (idx, config, cache_key)
                     for idx, config, cache_key in pending
                 }
-                completed: List[
-                    Tuple[int, Dict[str, Any], Optional[Tuple[float, float, float]], Tuple[str, float]]
+                completed: list[
+                    tuple[int, dict[str, Any], tuple[float, float, float] | None, tuple[str, float]]
                 ] = []
                 for future in concurrent.futures.as_completed(future_to_payload):
                     idx, config, cache_key = future_to_payload[future]
@@ -334,9 +335,9 @@ class BOHB:
 
     def _evaluate_objective(
         self,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         budget: float,
-    ) -> Optional[Tuple[float, float, float]]:
+    ) -> tuple[float, float, float] | None:
         trial = Trial(config=config, budget=budget, bohb_instance=self)
 
         try:
@@ -368,14 +369,14 @@ class BOHB:
 
     def _finalize_evaluation(
         self,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         budget: float,
-        outcome: Optional[Tuple[float, float, float]],
-        cache_key: Tuple[str, float],
+        outcome: tuple[float, float, float] | None,
+        cache_key: tuple[str, float],
         iteration: int,
         bracket: int,
         round_idx: int,
-    ) -> Optional[float]:
+    ) -> float | None:
         if outcome is None:
             return None
 
@@ -400,7 +401,7 @@ class BOHB:
         )
         return loss
 
-    def _update_top_configs(self, results: List[Tuple[Dict[str, Any], float]]) -> None:
+    def _update_top_configs(self, results: list[tuple[dict[str, Any], float]]) -> None:
         for cfg, loss in results:
             self.best_configs.append((dict(cfg), float(loss)))
         self.best_configs.sort(key=lambda x: x[1])
@@ -409,7 +410,7 @@ class BOHB:
 
     def _load_prior_trials_jsonl(self, path: str) -> None:
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -626,7 +627,7 @@ class BOHB:
         with self._step_history_lock:
             self._step_history.append(record)
 
-    def _get_step_cohort_losses(self, step: int, budget: float) -> List[float]:
+    def _get_step_cohort_losses(self, step: int, budget: float) -> list[float]:
         cfg = self.pruning_conf
         budget = float(budget)
         target_progress = self._step_progress(step, budget)
@@ -663,15 +664,15 @@ class BOHB:
             return nearby_matches
         return exact_matches
 
-    def get_optimization_history(self) -> List[Dict[str, Any]]:
+    def get_optimization_history(self) -> list[dict[str, Any]]:
         return list(self.history)
 
-    def get_top_configs(self, n: int = 10) -> List[Tuple[Dict[str, Any], float]]:
+    def get_top_configs(self, n: int = 10) -> list[tuple[dict[str, Any], float]]:
         return list(self.best_configs[: int(n)])
 
     def _jitter_config(
-        self, config: Dict[str, Any], scale: float = 0.08
-    ) -> Dict[str, Any]:
+        self, config: dict[str, Any], scale: float = 0.08
+    ) -> dict[str, Any]:
         jittered = dict(config)
         for param, spec in self.config_space.items():
             typ, rng = spec[0], spec[1]

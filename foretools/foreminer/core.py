@@ -3,7 +3,8 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -97,7 +98,7 @@ def report_metric(
     label: str,
     value: Any,
     unit: str = "",
-    status: Optional[str] = None,
+    status: str | None = None,
     indent: int = 0,
 ) -> None:
     status_tag = {
@@ -131,7 +132,7 @@ def report_pct(num: float, den: float, zeros_as: str = "0.0%") -> str:
     return f"{(num/den)*100:.1f}%"
 
 
-def top_list(items: List[str], n: int = 5) -> str:
+def top_list(items: list[str], n: int = 5) -> str:
     return ", ".join(items[:n]) + (
         f" ... and {len(items)-n} more" if len(items) > n else ""
     )
@@ -145,7 +146,7 @@ def quality_band(value: float) -> str:
     )
 
 
-def _detect_kmedoids_backend() -> Tuple[bool, Optional[str]]:
+def _detect_kmedoids_backend() -> tuple[bool, str | None]:
     candidates = [
         ("sklearn_extra", "from sklearn_extra.cluster import KMedoids"),
         ("pyclustering", "from pyclustering.cluster.kmedoids import kmedoids"),
@@ -209,7 +210,7 @@ class AnalysisConfig:
     outlier_contamination: float = 0.1
     time_series_min_periods: int = 24
     plot_style: str = "seaborn-v0_8"
-    figure_size: Tuple[int, int] = (12, 8)
+    figure_size: tuple[int, int] = (12, 8)
     random_state: int = 42
 
 
@@ -217,8 +218,8 @@ class AnalysisHooks:
     """Hook system for extensible analysis pipeline"""
 
     def __init__(self):
-        self._hooks: Dict[str, List[Callable]] = {}
-        self._plotters: Dict[str, List[Callable]] = {}
+        self._hooks: dict[str, list[Callable]] = {}
+        self._plotters: dict[str, list[Callable]] = {}
 
     def register_hook(self, event: str, callback: Callable) -> None:
         """Register a callback for an analysis event"""
@@ -232,7 +233,7 @@ class AnalysisHooks:
             self._plotters[analysis_type] = []
         self._plotters[analysis_type].append(plotter)
 
-    def trigger(self, event: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    def trigger(self, event: str, context: dict[str, Any]) -> dict[str, Any]:
         """Trigger all hooks for an event"""
         results = {}
         for callback in self._hooks.get(event, []):
@@ -268,7 +269,7 @@ class AnalysisStrategy(ABC):
     """Base class for all analysis strategies"""
 
     @abstractmethod
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         pass
 
     @property
@@ -290,7 +291,7 @@ class PlotHelper:
 
     @staticmethod
     def plot_distributions(
-        data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
+        data: dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
     ):
         """Plot enhanced distribution analysis results"""
         if "summary" not in data:
@@ -341,7 +342,7 @@ class PlotHelper:
 
     @staticmethod
     def plot_correlations(
-        data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
+        data: dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
     ):
         """Plot comprehensive correlation matrices"""
         if not data:
@@ -370,7 +371,7 @@ class PlotHelper:
         
     @staticmethod
     def plot_outliers_pca(
-        data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
+        data: dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
     ):
         """Plot outlier detection results using PCA projection (robust)."""
         if not data:
@@ -433,7 +434,7 @@ class PlotHelper:
 
     @staticmethod
     def plot_clusters(
-        data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
+        data: dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
     ):
         """Plot clustering results (robust to missing labels/mismatch)."""
         if not data:
@@ -504,7 +505,7 @@ class PlotHelper:
 
     @staticmethod
     def plot_dimensionality(
-        data: Dict[str, Any],
+        data: dict[str, Any],
         original_df: pd.DataFrame,
         config: "AnalysisConfig",
         label_key: str = "labels",  # or "cluster_labels" if that's what you use
@@ -606,7 +607,7 @@ class PlotHelper:
     @staticmethod
     @requires_library("networkx")
     def plot_correlation_network(
-        data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
+        data: dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
     ):
         """Create correlation network graph"""
         if not data:
@@ -657,7 +658,7 @@ class PlotHelper:
 
     @staticmethod
     def plot_missingness_analysis(
-        data: Dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
+        data: dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
     ):
         """Plot missingness analysis results"""
         if not data:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 from scipy.special import logsumexp
 from scipy.stats import norm
@@ -15,17 +16,17 @@ class LogRatioAcquisition(AcquisitionStrategy):
         self,
         *,
         log_likelihood_fn: Callable[
-            [Dict[str, Any], Dict[str, Dict[str, Any]]], float
+            [dict[str, Any], dict[str, dict[str, Any]]], float
         ],
-        soft_constraint_violation_fn: Callable[[Dict[str, Any]], float],
-        predict_mu_sigma_fn: Callable[[Dict[str, Any], int], Tuple[float, float]],
-        gp_ucb_score_fn: Callable[[Dict[str, Any]], Optional[float]],
+        soft_constraint_violation_fn: Callable[[dict[str, Any]], float],
+        predict_mu_sigma_fn: Callable[[dict[str, Any], int], tuple[float, float]],
+        gp_ucb_score_fn: Callable[[dict[str, Any]], float | None],
         observations_fn: Callable[
-            [], List[Tuple[Dict[str, Any], float, Optional[float]]]
+            [], list[tuple[dict[str, Any], float, float | None]]
         ],
         soft_constraints_enabled: bool,
         ctpe_constraints: bool,
-        constraint_violation_penalty: Optional[float],
+        constraint_violation_penalty: float | None,
         soft_penalty_weight: float,
         use_ei: bool,
         ei_k: int,
@@ -60,9 +61,9 @@ class LogRatioAcquisition(AcquisitionStrategy):
 
     def score(
         self,
-        config: Dict[str, Any],
-        good_models: Dict[str, Dict[str, Any]],
-        bad_models: Dict[str, Dict[str, Any]],
+        config: dict[str, Any],
+        good_models: dict[str, dict[str, Any]],
+        bad_models: dict[str, dict[str, Any]],
     ) -> float:
         log_l = self.log_likelihood_fn(config, good_models)
         if self.soft_constraints_enabled:

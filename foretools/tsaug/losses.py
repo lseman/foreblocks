@@ -12,7 +12,6 @@ where:
 
 import torch
 import torch.nn as nn
-from typing import List
 
 
 class CompositeLoss(nn.Module):
@@ -39,7 +38,7 @@ class CompositeLoss(nn.Module):
     def forward(
         self,
         task_loss: torch.Tensor,
-        all_probs: List[torch.Tensor],
+        all_probs: list[torch.Tensor],
     ) -> dict:
         """Compute composite loss.
 
@@ -76,7 +75,7 @@ class CompositeLoss(nn.Module):
 
         return total, loss_details
 
-    def _intra_layer_diversity(self, all_probs: List[torch.Tensor]) -> torch.Tensor:
+    def _intra_layer_diversity(self, all_probs: list[torch.Tensor]) -> torch.Tensor:
         """Compute intra-layer diversity as average Shannon entropy (Eq. 9-10).
 
         H(p^(k)_i) = -sum_j p^(k)_{i,j} * log(p^(k)_{i,j} + eps)
@@ -89,7 +88,7 @@ class CompositeLoss(nn.Module):
             total_entropy = total_entropy + entropy.mean()
         return total_entropy
 
-    def _inter_layer_diversity(self, all_probs: List[torch.Tensor]) -> torch.Tensor:
+    def _inter_layer_diversity(self, all_probs: list[torch.Tensor]) -> torch.Tensor:
         """Compute inter-layer diversity as KL divergence between consecutive layers (Eq. 11).
 
         L3 = sum_{k=2}^{K} E_i[KL(p^(k-1)_i || p^(k)_i)]

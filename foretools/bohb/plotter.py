@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
+from collections.abc import Iterable
 
 import numpy as np
 
@@ -15,7 +16,7 @@ except Exception:  # pragma: no cover - optional dependency
 @dataclass
 class PlotStyle:
     dpi: int = 150
-    figsize: Tuple[float, float] = (6.4, 4.0)
+    figsize: tuple[float, float] = (6.4, 4.0)
     grid: bool = True
     best_color: str = "#1f77b4"
     scatter_color: str = "#444444"
@@ -30,16 +31,16 @@ class OptimizationPlotter:
 
     def __init__(
         self,
-        history: List[Dict[str, Any]],
-        config_space: Optional[Dict[str, Tuple]] = None,
-        style: Optional[PlotStyle] = None,
+        history: list[dict[str, Any]],
+        config_space: dict[str, tuple] | None = None,
+        style: PlotStyle | None = None,
     ) -> None:
         self.history = list(history)
         self.config_space = config_space or {}
         self.style = style or PlotStyle()
 
     @classmethod
-    def from_bohb(cls, bohb: Any, style: Optional[PlotStyle] = None) -> "OptimizationPlotter":
+    def from_bohb(cls, bohb: Any, style: PlotStyle | None = None) -> OptimizationPlotter:
         return cls(bohb.get_optimization_history(), bohb.config_space, style=style)
 
     # ------------------------------------------------------------------
@@ -48,10 +49,10 @@ class OptimizationPlotter:
 
     def plot_optimization_history(
         self,
-        ax: Optional[Any] = None,
+        ax: Any | None = None,
         show_best: bool = True,
         title: str = "Optimization History",
-        save_path: Optional[str] = None,
+        save_path: str | None = None,
     ) -> Any:
         self._ensure_matplotlib()
         if ax is None:
@@ -80,10 +81,10 @@ class OptimizationPlotter:
 
     def plot_budget_vs_loss(
         self,
-        ax: Optional[Any] = None,
+        ax: Any | None = None,
         title: str = "Budget vs Loss",
         log_budget: bool = True,
-        save_path: Optional[str] = None,
+        save_path: str | None = None,
     ) -> Any:
         self._ensure_matplotlib()
         if ax is None:
@@ -109,9 +110,9 @@ class OptimizationPlotter:
 
     def plot_bracket_best(
         self,
-        ax: Optional[Any] = None,
+        ax: Any | None = None,
         title: str = "Best Loss by Bracket",
-        save_path: Optional[str] = None,
+        save_path: str | None = None,
     ) -> Any:
         self._ensure_matplotlib()
         if ax is None:
@@ -119,7 +120,7 @@ class OptimizationPlotter:
         else:
             fig = ax.figure
 
-        by_bracket: Dict[int, List[float]] = {}
+        by_bracket: dict[int, list[float]] = {}
         for h in self.history:
             loss = h.get("loss")
             bracket = h.get("bracket")
@@ -150,9 +151,9 @@ class OptimizationPlotter:
     def plot_param_effect(
         self,
         param: str,
-        ax: Optional[Any] = None,
-        title: Optional[str] = None,
-        save_path: Optional[str] = None,
+        ax: Any | None = None,
+        title: str | None = None,
+        save_path: str | None = None,
     ) -> Any:
         self._ensure_matplotlib()
         if ax is None:
@@ -185,7 +186,7 @@ class OptimizationPlotter:
             fig.savefig(save_path, bbox_inches="tight")
         return ax
 
-    def rank_params_by_importance(self) -> List[Tuple[str, float]]:
+    def rank_params_by_importance(self) -> list[tuple[str, float]]:
         """
         Return a simple importance proxy:
         - numeric: absolute Spearman correlation with loss
@@ -198,7 +199,7 @@ class OptimizationPlotter:
         if losses.size == 0:
             return []
 
-        results: List[Tuple[str, float]] = []
+        results: list[tuple[str, float]] = []
         for param in self.config_space.keys():
             xs, ys = self._param_series(param)
             if not xs:
@@ -215,10 +216,10 @@ class OptimizationPlotter:
 
     def plot_param_importance(
         self,
-        ax: Optional[Any] = None,
+        ax: Any | None = None,
         title: str = "Parameter Importance (Proxy)",
-        top_k: Optional[int] = None,
-        save_path: Optional[str] = None,
+        top_k: int | None = None,
+        save_path: str | None = None,
     ) -> Any:
         self._ensure_matplotlib()
         if ax is None:
@@ -246,10 +247,10 @@ class OptimizationPlotter:
 
     def plot_parallel_coordinates(
         self,
-        ax: Optional[Any] = None,
+        ax: Any | None = None,
         title: str = "Parallel Coordinates",
         max_points: int = 200,
-        save_path: Optional[str] = None,
+        save_path: str | None = None,
     ) -> Any:
         self._ensure_matplotlib()
         if ax is None:
@@ -344,7 +345,7 @@ class OptimizationPlotter:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _param_series(self, param: str) -> Tuple[List[Any], List[float]]:
+    def _param_series(self, param: str) -> tuple[list[Any], list[float]]:
         xs, ys = [], []
         for h in self.history:
             cfg = h.get("config", {})

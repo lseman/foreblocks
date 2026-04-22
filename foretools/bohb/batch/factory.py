@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any
+from collections.abc import Callable
 
 from .base import BatchSelector
 from .greedy_diversity import GreedyDiversitySelector
@@ -11,7 +12,7 @@ from .thompson import ThompsonSamplingSelector
 def build_batch_selector(
     strategy: str,
     *,
-    distance_fn: Optional[Callable[[Dict[str, Any], Dict[str, Any]], float]] = None,
+    distance_fn: Callable[[dict[str, Any], dict[str, Any]], float] | None = None,
     penalization_power: float = 2.0,
 ) -> BatchSelector:
     key = str(strategy or "diversity").lower()

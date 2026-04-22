@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import gc
@@ -6,7 +5,7 @@ import inspect
 import math
 import time
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import optuna
@@ -196,11 +195,11 @@ class VMDOptimizer:
         )
 
         # cache: (K, alpha_bin) -> (modes_list, freqs_list, cost)
-        self._cache: Dict[
-            Tuple[int, int], Tuple[List[np.ndarray], List[float], float]
+        self._cache: dict[
+            tuple[int, int], tuple[list[np.ndarray], list[float], float]
         ] = {}
-        self._cache_mv: Dict[
-            Tuple[int, int], Tuple[List[np.ndarray], List[float], float]
+        self._cache_mv: dict[
+            tuple[int, int], tuple[list[np.ndarray], list[float], float]
         ] = {}
 
     def _call_core_decompose(
@@ -212,12 +211,12 @@ class VMDOptimizer:
         K: int,
         init: int,
         p: VMDParameters,
-        precomp: Optional[Dict[str, Any]],
-        trial: Optional[optuna.Trial] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        precomp: dict[str, Any] | None,
+        trial: optuna.Trial | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         params = self._core_decompose_params
         use_if_tracking = bool(getattr(p, "if_tracking", False))
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "signal": signal,
             "alpha": float(alpha),
             "tau": float(p.tau),
@@ -264,7 +263,7 @@ class VMDOptimizer:
         # Route IF/chirp requests to decompose_chirp when available.
         if use_if_tracking and hasattr(self.core, "decompose_chirp"):
             cparams = self._core_chirp_params
-            chirp_kwargs: Dict[str, Any] = {
+            chirp_kwargs: dict[str, Any] = {
                 "signal": signal,
                 "alpha": float(alpha),
                 "tau": float(p.tau),
@@ -311,7 +310,7 @@ class VMDOptimizer:
             getattr(p, "warm_start_u_hat", None) is not None
             or getattr(p, "warm_start_omega", None) is not None
         ):
-            ws: Dict[str, Any] = {}
+            ws: dict[str, Any] = {}
             if getattr(p, "warm_start_u_hat", None) is not None:
                 ws["u_hat"] = np.asarray(p.warm_start_u_hat, dtype=np.complex128)
             if getattr(p, "warm_start_omega", None) is not None:
@@ -335,11 +334,11 @@ class VMDOptimizer:
         signals: np.ndarray,
         fs: float,
         p: VMDParameters,
-        K: Optional[int] = None,
-        alpha: Optional[float] = None,
-    ) -> Tuple[np.ndarray, Optional[np.ndarray], np.ndarray]:
+        K: int | None = None,
+        alpha: float | None = None,
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
         params = self._core_mv_params
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "signals": signals,
             "alpha": float(alpha if alpha is not None else p.alpha_min),
             "tau": float(p.tau),
@@ -388,7 +387,7 @@ class VMDOptimizer:
 
     @staticmethod
     def _kurtosis_reward(
-        modes_list: List[np.ndarray], high_freq_weight: float = 0.6
+        modes_list: list[np.ndarray], high_freq_weight: float = 0.6
     ) -> float:
         if not modes_list:
             return 0.0
@@ -405,11 +404,11 @@ class VMDOptimizer:
         signal: np.ndarray,
         fs: float,
         p: VMDParameters,
-    ) -> Tuple[List[np.ndarray], List[float]]:
+    ) -> tuple[list[np.ndarray], list[float]]:
         x = np.asarray(signal, dtype=np.float64)
         total_E = _energy(x) + 1e-12
 
-        keep: List[np.ndarray] = []
+        keep: list[np.ndarray] = []
         for k in range(modes.shape[0]):
             if _energy(modes[k]) / total_E > float(p.mode_energy_floor):
                 keep.append(np.asarray(modes[k], dtype=np.float64))
@@ -495,7 +494,7 @@ class VMDOptimizer:
         return float(np.clip(alpha, p.alpha_min, p.alpha_max))
 
     @staticmethod
-    def _freq_overlap_penalty(freqs: List[float]) -> float:
+    def _freq_overlap_penalty(freqs: list[float]) -> float:
         if len(freqs) <= 1:
             return 0.0
         dom = np.sort(np.asarray(freqs, dtype=np.float64))
@@ -513,7 +512,7 @@ class VMDOptimizer:
         c = int(max(2, p.entropy_classes))
         d = int(max(1, p.entropy_delay))
 
-        vals: List[float] = [
+        vals: list[float] = [
             self._dispersion_entropy(x, m=m, c=c, delay=d, normalize=True)
         ]
         if scales == 1:
@@ -543,8 +542,8 @@ class VMDOptimizer:
         self,
         signal: np.ndarray,
         fs: float,
-        modes_list: List[np.ndarray],
-        freqs_list: List[float],
+        modes_list: list[np.ndarray],
+        freqs_list: list[float],
         legacy_cost: float,
         p: VMDParameters,
         K: int,
@@ -623,8 +622,8 @@ class VMDOptimizer:
         signal: np.ndarray,
         fs: float,
         p: VMDParameters,
-        precomp: Dict[str, Any],
-    ) -> Tuple[int, float, float]:
+        precomp: dict[str, Any],
+    ) -> tuple[int, float, float]:
         alpha0 = self._estimate_alpha_entropy(signal, p)
         span = float(max(1.05, p.entropy_alpha_span))
         n_grid = int(max(3, p.entropy_alpha_grid_points))
@@ -676,12 +675,12 @@ class VMDOptimizer:
         alpha: float,
         signal: np.ndarray,
         fs: float,
-        precomp: Dict[str, Any],
+        precomp: dict[str, Any],
         p: VMDParameters,
-        trial: Optional[optuna.Trial] = None,
+        trial: optuna.Trial | None = None,
         allow_cache: bool = True,
         return_raw_u: bool = False,
-    ) -> Tuple[List[np.ndarray], List[float], float, Optional[np.ndarray]]:
+    ) -> tuple[list[np.ndarray], list[float], float, np.ndarray | None]:
         """
         The canonical evaluation path:
           - optional cache
@@ -729,16 +728,16 @@ class VMDOptimizer:
         signals: np.ndarray,  # (C, N)
         fs: float,
         p: VMDParameters,
-    ) -> Tuple[List[np.ndarray], List[float], float]:
+    ) -> tuple[list[np.ndarray], list[float], float]:
         X = np.asarray(signals, dtype=np.float64)
         U = np.asarray(modes, dtype=np.float64)
         if X.ndim != 2 or U.ndim != 3:
             return [], [], float("inf")
 
         C = int(X.shape[0])
-        all_modes: List[np.ndarray] = []
-        all_freqs: List[float] = []
-        channel_costs: List[float] = []
+        all_modes: list[np.ndarray] = []
+        all_freqs: list[float] = []
+        channel_costs: list[float] = []
 
         for ch in range(C):
             modes_ch, freqs_ch = self._postprocess_modes(U[ch], X[ch], fs, p)
@@ -764,7 +763,7 @@ class VMDOptimizer:
         p: VMDParameters,
         allow_cache: bool = True,
         return_raw_u: bool = False,
-    ) -> Tuple[List[np.ndarray], List[float], float, Optional[np.ndarray]]:
+    ) -> tuple[list[np.ndarray], list[float], float, np.ndarray | None]:
         if p.warm_start_u_hat is not None or p.warm_start_omega is not None:
             allow_cache = False
 
@@ -802,7 +801,7 @@ class VMDOptimizer:
         signal: np.ndarray,
         fs: float,
         p: VMDParameters,
-        precomp: Dict[str, Any],
+        precomp: dict[str, Any],
         alpha_default: float = 2000.0,
     ) -> int:
         K_candidates = range(2, int(p.max_K) + 1)
@@ -937,7 +936,7 @@ class VMDOptimizer:
         trial: optuna.Trial,
         signal: np.ndarray,
         fs: float,
-        precomp: Dict[str, Any],
+        precomp: dict[str, Any],
         p: VMDParameters,
     ) -> float:
         K = int(trial.suggest_int("K", 2, int(p.max_K)))
@@ -963,7 +962,7 @@ class VMDOptimizer:
         trial: optuna.Trial,
         signal: np.ndarray,
         fs: float,
-        precomp: Dict[str, Any],
+        precomp: dict[str, Any],
         p: VMDParameters,
         K_fixed: int,
     ) -> float:
@@ -1037,7 +1036,7 @@ class VMDOptimizer:
     # -----------------------------
     def optimize(
         self,
-        signal: Union[np.ndarray, List[float]],
+        signal: np.ndarray | list[float],
         fs: float,
         auto_params: bool = True,
         refine_modes: bool = False,
@@ -1076,7 +1075,7 @@ class VMDOptimizer:
                     stacklevel=2,
                 )
 
-            best_K_fixed: Optional[int] = None
+            best_K_fixed: int | None = None
             if p.k_selection.lower() in ("penalized", "fbd"):
                 best_K_fixed = self.select_K_mv(
                     x, float(fs), p, alpha_default=float(p.entropy_alpha_default)
@@ -1161,7 +1160,7 @@ class VMDOptimizer:
                     float(self.proc.dominant_frequency(raw_flat[i], fs))
                     for i in range(raw_flat.shape[0])
                 ]
-                optinfo: Dict[str, Any] = {
+                optinfo: dict[str, Any] = {
                     "best": (int(best_K), float(best_alpha), float(best_cost)),
                     "raw_modes": raw_flat,
                     "raw_freqs": raw_freqs,
@@ -1203,7 +1202,7 @@ class VMDOptimizer:
             str(p.search_method).lower() == "entropy"
             or p.k_selection.lower() == "entropy"
         )
-        best_K_fixed: Optional[int] = None
+        best_K_fixed: int | None = None
         if (not use_entropy_search) and p.k_selection.lower() in ("penalized", "fbd"):
             # The entropy search path performs its own K sweep, so skip the
             # separate penalized/FBD pre-pass to avoid redundant decomposition.
@@ -1247,8 +1246,8 @@ class VMDOptimizer:
             return_raw_u=bool(return_raw_modes),
         )
 
-        raw_modes_np: Optional[np.ndarray] = None
-        raw_freqs_list: List[float] = []
+        raw_modes_np: np.ndarray | None = None
+        raw_freqs_list: list[float] = []
         if bool(return_raw_modes):
             raw_modes_np = (
                 np.asarray(raw_from_eval, dtype=np.float64)
@@ -1296,7 +1295,7 @@ class VMDOptimizer:
             out_raw_freqs = (
                 raw_freqs_list if raw_modes_np is not None else list(freqs_list)
             )
-            optinfo: Dict[str, Any] = {
+            optinfo: dict[str, Any] = {
                 "best": (int(best_K), float(best_alpha), float(best_cost)),
                 "raw_modes": out_raw_modes,
                 "raw_freqs": out_raw_freqs,
@@ -1337,12 +1336,12 @@ class HierarchicalVMD:
         refine_modes: bool = True,
         refine_epochs: int = 50,
         refine_method: str = "informer",
-    ) -> Tuple[np.ndarray, List[float], List[Dict[str, Any]]]:
+    ) -> tuple[np.ndarray, list[float], list[dict[str, Any]]]:
         x = np.asarray(signal, dtype=np.float64)
         original_energy = _energy(x) + 1e-12
 
-        all_modes: List[np.ndarray] = []
-        level_info: List[Dict[str, Any]] = []
+        all_modes: list[np.ndarray] = []
+        level_info: list[dict[str, Any]] = []
         residual = x.copy()
 
         print(f"Starting Hierarchical VMD (max_levels={params.max_levels})")
@@ -1465,7 +1464,7 @@ class HierarchicalVMD:
         return out, sorted_freqs, level_info
 
     @staticmethod
-    def print_summary(level_info: List[Dict[str, Any]]) -> None:
+    def print_summary(level_info: list[dict[str, Any]]) -> None:
         print("\n" + "=" * 60)
         print("HIERARCHICAL VMD SUMMARY")
         print("=" * 60)

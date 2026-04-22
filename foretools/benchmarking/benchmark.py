@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Reusable NumPy → NeuralForecast Benchmark
 
@@ -15,7 +14,7 @@ from __future__ import annotations
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -87,7 +86,7 @@ def _ffill_numpy_colwise(arr: np.ndarray) -> np.ndarray:
     return df_ffill.to_numpy()
 
 
-def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     mse_v = mean_squared_error(y_true, y_pred)
     rmse_v = float(np.sqrt(mse_v))
     mae_v = mean_absolute_error(y_true, y_pred)
@@ -107,7 +106,7 @@ def _find_cliques(
     avg_ranks: pd.Series,
     nemenyi_pvalues: pd.DataFrame,
     alpha: float,
-) -> List[Tuple[float, float]]:
+) -> list[tuple[float, float]]:
     models = avg_ranks.sort_values().index.tolist()
     ranks = avg_ranks.loc[models].values.astype(float)
     K = len(models)
@@ -120,7 +119,7 @@ def _find_cliques(
             mi, mj = models[i], models[j]
             not_sig[i, j] = bool(nemenyi_pvalues.loc[mi, mj] > alpha)
 
-    segments: List[Tuple[int, int]] = []
+    segments: list[tuple[int, int]] = []
     for i in range(K):
         for j in range(i + 1, K):
             ok = True
@@ -134,7 +133,7 @@ def _find_cliques(
             if ok:
                 segments.append((i, j))
 
-    maximal: List[Tuple[int, int]] = []
+    maximal: list[tuple[int, int]] = []
     for i, j in segments:
         is_subset = False
         for i2, j2 in segments:
@@ -144,7 +143,7 @@ def _find_cliques(
         if not is_subset:
             maximal.append((i, j))
 
-    out: List[Tuple[float, float]] = [
+    out: list[tuple[float, float]] = [
         (float(ranks[i]), float(ranks[j])) for i, j in maximal
     ]
     out.sort(key=lambda x: (x[0], -(x[1] - x[0])))
@@ -155,8 +154,8 @@ def _plot_cd_diagram(
     ranks_df: pd.DataFrame,
     alpha: float = 0.05,
     title: str = "Critical Difference Diagram",
-    figsize: Tuple[float, float] = (10, 4),
-    save_path: Optional[str] = None,
+    figsize: tuple[float, float] = (10, 4),
+    save_path: str | None = None,
 ) -> plt.Figure:
     if not _HAS_POSTHOCS:
         raise ImportError(
@@ -251,7 +250,7 @@ def _plot_cd_diagram(
 class NPTimeseriesNFBenchmark:
     # Core data
     time_series_original: np.ndarray  # [T, N]
-    series_names: Optional[List[str]] = None  # len N (optional)
+    series_names: list[str] | None = None  # len N (optional)
     start_date: str = "2018-01-01"
     freq: str = "D"
 
@@ -261,7 +260,7 @@ class NPTimeseriesNFBenchmark:
     horizon: int = 5  # forecast horizon
     max_steps: int = 100  # epochs per model
     early_stop_patience_steps: int = 0
-    val_size: Optional[int] = None  # None -> auto (horizon if early-stop enabled)
+    val_size: int | None = None  # None -> auto (horizon if early-stop enabled)
 
     # Transforms
     normalize: bool = False
@@ -271,31 +270,31 @@ class NPTimeseriesNFBenchmark:
     _T: int = field(init=False, default=0)
     _N: int = field(init=False, default=0)
     _split_point: int = field(init=False, default=0)
-    _date_index: Optional[pd.DatetimeIndex] = field(init=False, default=None)
-    _ds_to_tidx: Optional[pd.Series] = field(init=False, default=None)
-    _norm_params: Dict[str, Dict[str, object]] = field(init=False, default_factory=dict)
-    _params_df: Optional[pd.DataFrame] = field(init=False, default=None)
+    _date_index: pd.DatetimeIndex | None = field(init=False, default=None)
+    _ds_to_tidx: pd.Series | None = field(init=False, default=None)
+    _norm_params: dict[str, dict[str, object]] = field(init=False, default_factory=dict)
+    _params_df: pd.DataFrame | None = field(init=False, default=None)
 
     # DataFrames on both spaces
-    _df_norm_full: Optional[pd.DataFrame] = field(
+    _df_norm_full: pd.DataFrame | None = field(
         init=False, default=None
     )  # long: [unique_id, ds, y] (normalized)
-    _df_orig_full: Optional[pd.DataFrame] = field(
+    _df_orig_full: pd.DataFrame | None = field(
         init=False, default=None
     )  # long: [unique_id, ds, y] (original)
 
     # Splits (long)
-    _train_df: Optional[pd.DataFrame] = field(init=False, default=None)
-    _test_df: Optional[pd.DataFrame] = field(init=False, default=None)
+    _train_df: pd.DataFrame | None = field(init=False, default=None)
+    _test_df: pd.DataFrame | None = field(init=False, default=None)
 
     # Results
-    metrics_normalized: Optional[pd.DataFrame] = field(init=False, default=None)
-    metrics_original: Optional[pd.DataFrame] = field(init=False, default=None)
-    _per_window_rmse_norm: Optional[pd.DataFrame] = field(init=False, default=None)
-    _per_window_rmse_orig: Optional[pd.DataFrame] = field(init=False, default=None)
+    metrics_normalized: pd.DataFrame | None = field(init=False, default=None)
+    metrics_original: pd.DataFrame | None = field(init=False, default=None)
+    _per_window_rmse_norm: pd.DataFrame | None = field(init=False, default=None)
+    _per_window_rmse_orig: pd.DataFrame | None = field(init=False, default=None)
 
     # Models that require n_series arg
-    MODELS_REQUIRE_NSERIES: Tuple[str, ...] = (
+    MODELS_REQUIRE_NSERIES: tuple[str, ...] = (
         "iTransformer",
         "TimeMixer",
         "TimeXer",
@@ -310,10 +309,10 @@ class NPTimeseriesNFBenchmark:
     # ──────────────────────────────────────────────────────────────────────────
     def run(
         self,
-        models: Optional[Sequence[Tuple[type, str]]] = None,
-        step_size: Optional[int] = None,
+        models: Sequence[tuple[type, str]] | None = None,
+        step_size: int | None = None,
         verbose: bool = True,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Trains/evaluates all models with NeuralForecast cross_validation.
         Returns (metrics_normalized_df, metrics_original_df)
@@ -326,10 +325,10 @@ class NPTimeseriesNFBenchmark:
             raise ValueError("step_size must be > 0")
 
         # Dicts for row-wise assembly
-        m_norm: Dict[str, Dict[str, float]] = {}
-        m_orig: Dict[str, Dict[str, float]] = {}
-        per_win_rmse_norm: Dict[str, Dict[str, float]] = {}
-        per_win_rmse_orig: Dict[str, Dict[str, float]] = {}
+        m_norm: dict[str, dict[str, float]] = {}
+        m_orig: dict[str, dict[str, float]] = {}
+        per_win_rmse_norm: dict[str, dict[str, float]] = {}
+        per_win_rmse_orig: dict[str, dict[str, float]] = {}
 
         # Full DF (train + test) on normalized space
         full_df = pd.concat([self._train_df, self._test_df], ignore_index=True)
@@ -483,9 +482,9 @@ class NPTimeseriesNFBenchmark:
         self,
         space: str = "original",
         alpha: float = 0.05,
-        title: Optional[str] = None,
-        figsize: Tuple[float, float] = (12, 5),
-        save_path: Optional[str] = None,
+        title: str | None = None,
+        figsize: tuple[float, float] = (12, 5),
+        save_path: str | None = None,
     ) -> plt.Figure:
         if not _HAS_POSTHOCS:
             raise ImportError(
@@ -580,7 +579,7 @@ class NPTimeseriesNFBenchmark:
     # Configuration helpers
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def default_models() -> List[Tuple[type, str]]:
+    def default_models() -> list[tuple[type, str]]:
         """Safe default list: include what’s available in this environment."""
         base = [
             (TiDE, "TiDE"),
@@ -730,7 +729,7 @@ class NPTimeseriesNFBenchmark:
 
     def _split_long(
         self, df_long_norm: pd.DataFrame, split_point: int
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         train_list, test_list = [], []
         for name in self.series_names:
             d = df_long_norm[df_long_norm["unique_id"] == name].reset_index(drop=True)

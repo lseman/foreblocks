@@ -1,5 +1,4 @@
 import re
-from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -19,8 +18,8 @@ class DateTimeTransformer(BaseFeatureTransformer):
         include_cyclical: bool = True,
         include_flags: bool = True,
         include_elapsed: bool = True,
-        group_key: Optional[str] = None,  # e.g., customer_id, series_id
-        country_holidays: Optional[str] = None,  # e.g., "BR", "US", "GB"
+        group_key: str | None = None,  # e.g., customer_id, series_id
+        country_holidays: str | None = None,  # e.g., "BR", "US", "GB"
     ):
         super().__init__(config)
         self.include_cyclical = include_cyclical
@@ -30,8 +29,8 @@ class DateTimeTransformer(BaseFeatureTransformer):
         self.country_holidays = country_holidays
 
         self.datetime_cols_: list = []
-        self._anchors_global_: Dict[str, pd.Timestamp] = {}
-        self._anchors_group_: Dict[str, Dict[Union[str, int], pd.Timestamp]] = {}
+        self._anchors_global_: dict[str, pd.Timestamp] = {}
+        self._anchors_group_: dict[str, dict[str | int, pd.Timestamp]] = {}
         self._has_holidays = False
         self._holiday_set = None
 
@@ -83,7 +82,7 @@ class DateTimeTransformer(BaseFeatureTransformer):
         return success_count >= min(3, len(sample)) and success_ratio >= 0.6
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "DateTimeTransformer":
         # detect datetime columns, including tz-aware
         self.datetime_cols_ = [c for c in X.columns if self._looks_datetime_like(X[c])]
@@ -125,7 +124,7 @@ class DateTimeTransformer(BaseFeatureTransformer):
         self.is_fitted = True
         return self
 
-    def _cyc(self, x: np.ndarray, period: float) -> Tuple[np.ndarray, np.ndarray]:
+    def _cyc(self, x: np.ndarray, period: float) -> tuple[np.ndarray, np.ndarray]:
         # robust cyclic transform (sin, cos), ignoring NaN
         r = 2.0 * np.pi * (x / period)
         return np.sin(r), np.cos(r)

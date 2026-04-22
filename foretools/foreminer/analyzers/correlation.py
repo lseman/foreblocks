@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -89,7 +89,7 @@ class CorrelationAnalyzer(AnalysisStrategy):
             s > q[2],
         ]
         per = target_size // 4
-        take_idx: List[int] = []
+        take_idx: list[int] = []
         for mask in strata:
             idx = df.index[mask].to_numpy()
             if idx.size == 0:
@@ -109,7 +109,7 @@ class CorrelationAnalyzer(AnalysisStrategy):
     # -----------------------------
     # Core correlations
     # -----------------------------
-    def _compute_core_corrs(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    def _compute_core_corrs(self, df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         results = {}
         results["pearson"] = df.corr(method="pearson", min_periods=30)
         results["spearman"] = df.corr(method="spearman", min_periods=30)
@@ -237,7 +237,7 @@ class CorrelationAnalyzer(AnalysisStrategy):
     # -----------------------------
     # Driver
     # -----------------------------
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         numeric = data.select_dtypes(include=[np.number])
         if numeric.shape[1] < 2:
             return {}
@@ -246,7 +246,7 @@ class CorrelationAnalyzer(AnalysisStrategy):
         n_samples, n_features = numeric.shape
         if n_features < 2:
             return {}
-        results: Dict[str, Any] = {}
+        results: dict[str, Any] = {}
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             core = self._compute_core_corrs(numeric)
@@ -296,7 +296,7 @@ class CorrelationAnalyzer(AnalysisStrategy):
                     print(f"[correlations] Skipped {name}: {e}")
 
             # Ensemble
-            ensemble_parts: List[pd.DataFrame] = []
+            ensemble_parts: list[pd.DataFrame] = []
             for key in (
                 "pearson",
                 "spearman",

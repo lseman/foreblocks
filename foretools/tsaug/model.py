@@ -15,7 +15,7 @@ Usage:
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Any
 
 from .features import extract_features, FEATURE_DIM
 from .layers import StackedAugmentationLayers
@@ -73,8 +73,8 @@ class AutoDATimeseries(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        precomputed_features: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
+        precomputed_features: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
         """Generate augmented time series with adaptive policy.
 
         Args:
@@ -106,10 +106,10 @@ class AutoDATimeseries(nn.Module):
 
     def get_policy_summary(
         self,
-        all_probs: List[torch.Tensor],
-        all_intensities: List[torch.Tensor],
-        all_selected: List[torch.Tensor],
-    ) -> Dict[str, Any]:
+        all_probs: list[torch.Tensor],
+        all_intensities: list[torch.Tensor],
+        all_selected: list[torch.Tensor],
+    ) -> dict[str, Any]:
         """Get a human-readable summary of the augmentation policy.
 
         Args:
@@ -163,9 +163,9 @@ class AutoDATrainer:
         autoda: AutoDATimeseries,
         downstream_model: nn.Module,
         task: str = "forecasting",
-        task_loss_fn: Optional[nn.Module] = None,
+        task_loss_fn: nn.Module | None = None,
         lr: float = 1e-3,
-        aug_lr: Optional[float] = None,
+        aug_lr: float | None = None,
         weight_decay: float = 1e-4,
         device: str = "cpu",
     ):
@@ -201,8 +201,8 @@ class AutoDATrainer:
         self,
         x: torch.Tensor,
         y: torch.Tensor,
-        precomputed_features: Optional[torch.Tensor] = None,
-    ) -> Dict[str, float]:
+        precomputed_features: torch.Tensor | None = None,
+    ) -> dict[str, float]:
         """Single training step.
 
         Args:
@@ -253,7 +253,7 @@ class AutoDATrainer:
         self,
         x: torch.Tensor,
         y: torch.Tensor,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Evaluation step on original (non-augmented) data.
 
         At test time, only the downstream model is used (Section 3.1, Eq. 3).
@@ -281,7 +281,7 @@ class AutoDATrainer:
         epochs: int = 50,
         log_interval: int = 10,
         precompute_features: bool = True,
-    ) -> Dict[str, list]:
+    ) -> dict[str, list]:
         """Full training loop.
 
         Args:
@@ -349,7 +349,7 @@ class AutoDATrainer:
 
         return history
 
-    def _evaluate(self, loader) -> Dict[str, float]:
+    def _evaluate(self, loader) -> dict[str, float]:
         """Evaluate on a DataLoader."""
         all_results = []
         for x, y in loader:

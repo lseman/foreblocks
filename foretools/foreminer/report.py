@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any
 
 import pandas as pd
 
@@ -35,7 +35,7 @@ class DatasetReportPrinter:
         ]:
             self.safe_get(analysis_name)
 
-    def print_executive_summary(self, thresholds: Dict[str, Any]) -> None:
+    def print_executive_summary(self, thresholds: dict[str, Any]) -> None:
         """Print the report's executive summary section."""
         report_section("EXECUTIVE SUMMARY", 1)
         print("Dataset Overview:")
@@ -66,7 +66,7 @@ class DatasetReportPrinter:
         )
         report_metric("Missing Values", f"{miss_pct:.2f}%", status=miss_status)
 
-    def print_distribution_analysis(self, thresholds: Dict[str, Any]) -> None:
+    def print_distribution_analysis(self, thresholds: dict[str, Any]) -> None:
         """Print distribution analysis findings."""
         dist_summary = self.safe_get("distributions", "summary", pd.DataFrame())
         if dist_summary.empty:
@@ -150,7 +150,7 @@ class DatasetReportPrinter:
         if skewed > total_features * 0.5:
             report_recommendation("Many skewed features — batch transform", "medium")
 
-    def print_correlation_analysis(self, thresholds: Dict[str, Any]) -> None:
+    def print_correlation_analysis(self, thresholds: dict[str, Any]) -> None:
         """Print correlation analysis findings."""
         corrs = self.safe_get("correlations") or {}
         if not (

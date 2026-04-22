@@ -1,6 +1,6 @@
 import warnings
 from collections.abc import Iterable
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 
@@ -18,8 +18,8 @@ class FitnessFunc:
     def __init__(
         self,
         p0: float = 0.05,
-        gamma: Optional[float] = None,
-        ncp_prior: Optional[float] = None,
+        gamma: float | None = None,
+        ncp_prior: float | None = None,
     ) -> None:
         self.p0 = p0
         self.gamma = gamma
@@ -28,8 +28,8 @@ class FitnessFunc:
     def validate_input(
         self,
         t: ArrayLike,
-        x: Optional[ArrayLike] = None,
-        sigma: Optional[Union[ArrayLike, float]] = None,
+        x: ArrayLike | None = None,
+        sigma: ArrayLike | float | None = None,
     ):
         t = np.asarray(t, dtype=float)
         if t.ndim != 1 or t.size == 0:
@@ -87,8 +87,8 @@ class FitnessFunc:
     def fit(
         self,
         t: ArrayLike,
-        x: Optional[ArrayLike] = None,
-        sigma: Optional[Union[ArrayLike, float]] = None,
+        x: ArrayLike | None = None,
+        sigma: ArrayLike | float | None = None,
     ) -> np.ndarray:
         t, x, sigma = self.validate_input(t, x, sigma)
         if "a_k" in self._fitness_args:
@@ -214,14 +214,14 @@ class BayesianBlocks:
 
     def __init__(
         self,
-        fitness: Union[str, FitnessFunc] = "events",
+        fitness: str | FitnessFunc = "events",
         verbose: bool = False,
         **kwargs,
     ):
         self.fitness = fitness
         self.kwargs = kwargs
         self.verbose = verbose
-        self.fitfunc: Optional[FitnessFunc] = None
+        self.fitfunc: FitnessFunc | None = None
 
     def _make_fitfunc(self):
         fitcls_or_obj = self.FITNESS.get(self.fitness, self.fitness)
@@ -237,8 +237,8 @@ class BayesianBlocks:
     def fit_edges(
         self,
         t: ArrayLike,
-        x: Optional[ArrayLike] = None,
-        sigma: Optional[Union[ArrayLike, float]] = None,
+        x: ArrayLike | None = None,
+        sigma: ArrayLike | float | None = None,
     ) -> np.ndarray:
         if self.fitfunc is None:
             self._make_fitfunc()
@@ -274,8 +274,8 @@ class BayesianBlocks:
     def fit_bins(
         self,
         t: ArrayLike,
-        x: Optional[ArrayLike] = None,
-        sigma: Optional[Union[ArrayLike, float]] = None,
+        x: ArrayLike | None = None,
+        sigma: ArrayLike | float | None = None,
         max_bins: int = 100,
         fallback: str = "sturges",
     ) -> int:

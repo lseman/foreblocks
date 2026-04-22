@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple, Union
+from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -140,7 +140,7 @@ class AdaptiveMI:
         subsample: int = 2000,
         spearman_gate: float = 0.05,  # gate low-correlation pairs in matrix()
         min_overlap: int = 50,  # minimum valid paired samples
-        ks: Tuple[int, ...] = (3, 5, 10),
+        ks: tuple[int, ...] = (3, 5, 10),
         n_bins: int = 16,
         random_state: int = 42,
         ksg_use_ckdtree: bool = True,  # try cKDTree for large n
@@ -170,9 +170,9 @@ class AdaptiveMI:
         x: ArrayLike,
         y: ArrayLike,
         return_raw_mi: bool = False,
-        method: Optional[str] = None,
+        method: str | None = None,
         return_method: bool = False,
-    ) -> Union[float, Tuple[float, str]]:
+    ) -> float | tuple[float, str]:
         """
         Estimate MI between two 1D variables.
 
@@ -240,7 +240,7 @@ class AdaptiveMI:
 
     def score_pairwise(
         self,
-        X: Union[np.ndarray, pd.DataFrame],
+        X: np.ndarray | pd.DataFrame,
         y: ArrayLike,
         return_raw_mi: bool = False,
     ) -> np.ndarray:
@@ -324,7 +324,7 @@ class AdaptiveMI:
         return pd.DataFrame(out, index=cols, columns=cols)
 
     # ---------------- Estimators ----------------
-    def _mi_ksg1_avg(self, x: np.ndarray, y: np.ndarray, ks: Tuple[int, ...]) -> float:
+    def _mi_ksg1_avg(self, x: np.ndarray, y: np.ndarray, ks: tuple[int, ...]) -> float:
         """
         KSG type-1 averaged over ks.
         """
@@ -347,7 +347,7 @@ class AdaptiveMI:
             nn.fit(Z)
             dists, _ = nn.kneighbors(Z, return_distance=True)
 
-        mi_vals: List[float] = []
+        mi_vals: list[float] = []
         xz = Z[:, 0].copy()
         yz = Z[:, 1].copy()
         for k in ks_eff:
@@ -362,7 +362,7 @@ class AdaptiveMI:
                 mi_vals.append(mi_k)
         return float(np.mean(mi_vals)) if mi_vals else 0.0
 
-    def _mi_ksg2_avg(self, x: np.ndarray, y: np.ndarray, ks: Tuple[int, ...]) -> float:
+    def _mi_ksg2_avg(self, x: np.ndarray, y: np.ndarray, ks: tuple[int, ...]) -> float:
         """
         KSG type-2 averaged over ks.
         """
@@ -384,7 +384,7 @@ class AdaptiveMI:
             nn.fit(Z)
             dists, _ = nn.kneighbors(Z, return_distance=True)
 
-        mi_vals: List[float] = []
+        mi_vals: list[float] = []
         xz = Z[:, 0].copy()
         yz = Z[:, 1].copy()
         for k in ks_eff:
@@ -458,7 +458,7 @@ class AdaptiveMI:
         return 1.0 - (min(np.unique(v).size, n) / float(n))
 
     def _choose_method(
-        self, x: np.ndarray, y: np.ndarray, forced: Optional[str] = None
+        self, x: np.ndarray, y: np.ndarray, forced: str | None = None
     ) -> str:
         if forced is not None:
             return forced
@@ -678,7 +678,7 @@ def mi_neural_infonce_coeff(x, y, **kwargs):
 
 def _valid_pair(
     xi: np.ndarray, yj: np.ndarray, min_overlap: int
-) -> Tuple[np.ndarray, np.ndarray, bool]:
+) -> tuple[np.ndarray, np.ndarray, bool]:
     m = np.isfinite(xi) & np.isfinite(yj)
     if m.sum() < min_overlap:
         return xi, yj, False

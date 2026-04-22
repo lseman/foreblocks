@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -14,10 +14,10 @@ from .rfecv import AdvancedRFECV, RFECVConfig
 class FeatureSelector:
     def __init__(self, config: Any):
         self.config = config
-        self.mi_scores_: Optional[pd.Series] = None
-        self.mrmr_scores_: Optional[pd.Series] = None
-        self.shap_scores_: Optional[pd.Series] = None
-        self.selected_features_: List[str] = []
+        self.mi_scores_: pd.Series | None = None
+        self.mrmr_scores_: pd.Series | None = None
+        self.shap_scores_: pd.Series | None = None
+        self.selected_features_: list[str] = []
 
         # Selector integration
         self.selector_method = str(getattr(config, "selector_method", "mi")).lower()
@@ -102,7 +102,7 @@ class FeatureSelector:
         self.selection_method_ = "mi"
         return self._fit_mi(X, y)
 
-    def _resolve_selector_method(self, n_features: Optional[int] = None) -> str:
+    def _resolve_selector_method(self, n_features: int | None = None) -> str:
         """Resolve selector strategy with backward compatibility."""
         allowed = {"auto", "mi", "mrmr", "rfecv", "boruta"}
         method = self.selector_method
@@ -362,7 +362,7 @@ class FeatureSelector:
 
     def _prepare_data_fast(
         self, X: pd.DataFrame, y: pd.Series
-    ) -> Tuple[pd.DataFrame, pd.Series]:
+    ) -> tuple[pd.DataFrame, pd.Series]:
         # Fast index alignment
         common_idx = X.index.intersection(y.index)
         X_aligned = X.loc[common_idx]
@@ -429,8 +429,8 @@ class FeatureSelector:
             split_iter = splitter.split(X)
 
         names = list(X.columns)
-        fold_scores: Dict[str, List[float]] = {c: [] for c in names}
-        freq: Dict[str, int] = {c: 0 for c in names}
+        fold_scores: dict[str, list[float]] = {c: [] for c in names}
+        freq: dict[str, int] = {c: 0 for c in names}
 
         for tr_idx, _ in split_iter:
             Xf = X.iloc[tr_idx]
@@ -465,8 +465,8 @@ class FeatureSelector:
         return int(np.clip(target, min_features, min(max_features, len(scores))))
 
     def _prune_redundant_features(
-        self, X: pd.DataFrame, ranked_features: List[str]
-    ) -> List[str]:
+        self, X: pd.DataFrame, ranked_features: list[str]
+    ) -> list[str]:
         """Greedy correlation pruning while preserving MI ranking order."""
         if len(ranked_features) < 2:
             return ranked_features
@@ -476,7 +476,7 @@ class FeatureSelector:
         Xp = X[pool]
         corr = Xp.corr().abs().fillna(0.0)
 
-        kept: List[str] = []
+        kept: list[str] = []
         for f in pool:
             drop = False
             for k in kept:
@@ -490,10 +490,10 @@ class FeatureSelector:
         tail = [f for f in ranked_features if f not in pool]
         return kept + tail
 
-    def get_selected_features(self) -> List[str]:
+    def get_selected_features(self) -> list[str]:
         return self.selected_features_.copy()
 
-    def get_feature_scores(self) -> Optional[pd.Series]:
+    def get_feature_scores(self) -> pd.Series | None:
         """Get feature importance scores from the selection method used."""
         if self.selection_method_ == "rfecv" and self.rfecv_selector_ is not None:
             # Get importance scores from RFECV
@@ -516,7 +516,7 @@ class FeatureSelector:
         
         return None
 
-    def get_top_features(self, n: int = 10) -> List[str]:
+    def get_top_features(self, n: int = 10) -> list[str]:
         if self.mi_scores_ is None:
             return self.selected_features_[:n]
         return self.mi_scores_.head(n).index.tolist()

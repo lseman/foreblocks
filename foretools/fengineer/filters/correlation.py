@@ -1,5 +1,4 @@
 import warnings
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -36,9 +35,9 @@ class CorrelationFilter:
         self.dependence_metric = str(dependence_metric).lower()
         self.min_features = min_features
         self.handle_missing = handle_missing
-        self.features_to_drop_: List[str] = []
-        self.correlation_pairs_: List[Tuple[str, str, float]] = []
-        self.feature_rankings_: Dict[str, float] = {}
+        self.features_to_drop_: list[str] = []
+        self.correlation_pairs_: list[tuple[str, str, float]] = []
+        self.feature_rankings_: dict[str, float] = {}
         self.random_state = int(random_state)
         self.mi_subsample = int(mi_subsample)
         self.mi_min_overlap = int(mi_min_overlap)
@@ -80,7 +79,7 @@ class CorrelationFilter:
         return abs(float(feature.corr(y)))
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "CorrelationFilter":
         """Fit correlation filter."""
         numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
@@ -113,7 +112,7 @@ class CorrelationFilter:
             # Store correlation pairs for inspection
             self.correlation_pairs_ = []
             feature_drop_scores = {}
-            target_scores: Dict[str, float] = {}
+            target_scores: dict[str, float] = {}
 
             for i, j in zip(*high_corr_pairs):
                 col1, col2 = dep_matrix.index[i], dep_matrix.columns[j]

@@ -47,8 +47,8 @@ class DistilledForecastingModel(ForecastingModel):
         attention_distillation_layers: list[str] | None = None,
         # NEW:
         task_type: str = "regression",  # "regression" | "logits"
-        alpha_schedule=None,  # Optional[Callable[[int], float]]
-        temp_schedule=None,  # Optional[Callable[[int], float]]
+        alpha_schedule=None,  # Callable[[int], float] | None
+        temp_schedule=None,  # Callable[[int], float] | None
         loss_weights: None | (
             dict[str, float]
         ) = None,  # keys: "output","feature","attention"

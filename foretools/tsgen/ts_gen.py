@@ -31,14 +31,14 @@
 # A CSV is saved at the end for convenience.
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 
-def _poly_trend(n: int, coeffs: List[float]) -> np.ndarray:
+def _poly_trend(n: int, coeffs: list[float]) -> np.ndarray:
     t = np.arange(n)
     y = np.zeros(n, dtype=float)
     for k, c in enumerate(coeffs):
@@ -47,7 +47,7 @@ def _poly_trend(n: int, coeffs: List[float]) -> np.ndarray:
 
 
 def _piecewise_linear_trend(
-    n: int, knots: List[int], slopes: List[float], intercept: float = 0.0
+    n: int, knots: list[int], slopes: list[float], intercept: float = 0.0
 ) -> np.ndarray:
     """
     Piecewise-linear trend with slopes per segment.
@@ -80,7 +80,7 @@ def _seasonal_component(
 
 
 def _arma_innovations(
-    n: int, ar: List[float], ma: List[float], sigma: float, rng: np.random.Generator
+    n: int, ar: list[float], ma: list[float], sigma: float, rng: np.random.Generator
 ) -> np.ndarray:
     """Generate ARMA errors via recursion + filtering (teaching-friendly, not optimized)."""
     p, q = len(ar), len(ma)
@@ -103,7 +103,7 @@ def _arch1_scale(e_prev2: float, alpha0: float, alpha1: float) -> float:
 
 
 def _markov_chain(
-    n: int, P: np.ndarray, pi0: Optional[np.ndarray], rng: np.random.Generator
+    n: int, P: np.ndarray, pi0: np.ndarray | None, rng: np.random.Generator
 ) -> np.ndarray:
     """Sample a Markov chain of length n with transition matrix P and initial probs pi0."""
     k = P.shape[0]
@@ -123,7 +123,7 @@ def _markov_chain(
 
 @dataclass
 class TimeSeriesGenerator:
-    random_state: Optional[int] = None
+    random_state: int | None = None
     _rng: np.random.Generator = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -137,34 +137,34 @@ class TimeSeriesGenerator:
         n_series: int = 1,
         n_steps: int = 500,
         freq: str = "D",
-        start: Union[str, pd.Timestamp, None] = None,
+        start: str | pd.Timestamp | None = None,
         # Trend
-        trend: Optional[Dict[str, Any]] = None,
+        trend: dict[str, Any] | None = None,
         # Seasonality: list of dicts
-        seasonality: Optional[List[Dict[str, Any]]] = None,
+        seasonality: list[dict[str, Any]] | None = None,
         # Low-frequency cycle
-        cycle: Optional[Dict[str, Any]] = None,
+        cycle: dict[str, Any] | None = None,
         # Noise (ARMA)
-        noise: Optional[Dict[str, Any]] = None,
+        noise: dict[str, Any] | None = None,
         # Regime switching
-        regime: Optional[Dict[str, Any]] = None,
+        regime: dict[str, Any] | None = None,
         # Heteroskedasticity (ARCH(1) simple)
-        heterosked: Optional[Dict[str, Any]] = None,
+        heterosked: dict[str, Any] | None = None,
         # Outliers
-        outliers: Optional[Dict[str, Any]] = None,
+        outliers: dict[str, Any] | None = None,
         # Missingness
-        missing: Optional[Dict[str, Any]] = None,
+        missing: dict[str, Any] | None = None,
         # Exogenous
-        exog: Optional[Dict[str, Any]] = None,
+        exog: dict[str, Any] | None = None,
         # Multivariate factor mixing
-        multivariate: Optional[Dict[str, Any]] = None,
+        multivariate: dict[str, Any] | None = None,
         # Calendar features
         add_calendar: bool = True,
         # Return components
         return_components: bool = True,
         # Train/val/test
-        splits: Optional[Tuple[float, float, float]] = None,
-    ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        splits: tuple[float, float, float] | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
         """
         Returns tidy DataFrame and a metadata dict with ground-truth components.
         """
@@ -450,7 +450,7 @@ class TimeSeriesGenerator:
     # Plot helpers (1 chart per plot; no seaborn, no styles)
     # ------------------------------
     def plot_series(
-        self, df: pd.DataFrame, series_id: int = 0, max_points: Optional[int] = None
+        self, df: pd.DataFrame, series_id: int = 0, max_points: int | None = None
     ) -> None:
         d = df[df["series"] == series_id]
         if max_points is not None:
@@ -464,7 +464,7 @@ class TimeSeriesGenerator:
         plt.show()
 
     def plot_decompose(
-        self, meta: Dict[str, Any], series_id: int = 0, max_points: Optional[int] = None
+        self, meta: dict[str, Any], series_id: int = 0, max_points: int | None = None
     ) -> None:
         comps = meta.get("components", None)
         if comps is None:
@@ -510,7 +510,7 @@ class TimeSeriesGenerator:
     # ------------------------------
     def make_train_ready(
         self, n_series: int = 1, n_steps: int = 500, horizon: int = 24, **kwargs
-    ) -> Dict[str, pd.DataFrame]:
+    ) -> dict[str, pd.DataFrame]:
         df, meta = self.make(n_series=n_series, n_steps=n_steps, **kwargs)
         # convert to wide format (one column per series)
         pivot = df.pivot(index="time", columns="series", values="y")

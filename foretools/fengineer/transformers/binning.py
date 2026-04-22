@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -28,9 +28,9 @@ class BinningTransformer(BaseFeatureTransformer):
         config,
         min_samples_per_bin: int = 10,
         max_bins: int = 100,
-        strategies: Optional[List[str]] = None,
+        strategies: list[str] | None = None,
         kmeans_bins: int = 10,
-        shimazaki_k_range: Tuple[int, int] = (4, 128),
+        shimazaki_k_range: tuple[int, int] = (4, 128),
         random_state: int = 42,
     ):
         super().__init__(config)
@@ -52,9 +52,9 @@ class BinningTransformer(BaseFeatureTransformer):
         self.auto_supervised = bool(getattr(self.config, "binning_auto_supervised", True))
         self.min_bin_fraction = float(getattr(self.config, "binning_min_bin_fraction", 0.01))
 
-        self.binning_transformers_: Dict[str, Dict[str, Any]] = {}
-        self.numerical_cols_: List[str] = []
-        self.fill_values_: Dict[str, float] = {}
+        self.binning_transformers_: dict[str, dict[str, Any]] = {}
+        self.numerical_cols_: list[str] = []
+        self.fill_values_: dict[str, float] = {}
         self.is_fitted = False
 
     @staticmethod
@@ -79,10 +79,10 @@ class BinningTransformer(BaseFeatureTransformer):
         initial_bins: int,
         min_count: int,
         subsample: int,
-    ) -> Tuple[Optional[KBinsDiscretizer], int]:
+    ) -> tuple[KBinsDiscretizer | None, int]:
         x_2d = x.reshape(-1, 1)
         k = int(np.clip(initial_bins, 2, max(2, np.unique(x).size)))
-        last_disc: Optional[KBinsDiscretizer] = None
+        last_disc: KBinsDiscretizer | None = None
         last_actual_bins = 0
 
         while k >= 2:
@@ -135,8 +135,8 @@ class BinningTransformer(BaseFeatureTransformer):
         return (k <= 20) or (k / n < 0.05)
 
     def _resolve_strategies_for_col(
-        self, x: np.ndarray, y_col: Optional[np.ndarray]
-    ) -> List[str]:
+        self, x: np.ndarray, y_col: np.ndarray | None
+    ) -> list[str]:
         strategies = [str(s).lower() for s in self.strategies]
         if "auto" not in strategies:
             return strategies
@@ -379,7 +379,7 @@ class BinningTransformer(BaseFeatureTransformer):
         )
         return full_edges
 
-    def _compute_woe_iv(self, x: np.ndarray, y: np.ndarray, edges: np.ndarray) -> Tuple[Dict[int, float], float]:
+    def _compute_woe_iv(self, x: np.ndarray, y: np.ndarray, edges: np.ndarray) -> tuple[dict[int, float], float]:
         """Compute Weight of Evidence and Information Value for a binned feature."""
         # Only for binary classification targets (0/1)
         binned = self._digitize_edges(x, edges)
@@ -411,7 +411,7 @@ class BinningTransformer(BaseFeatureTransformer):
     # ---------- fit/transform ----------
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "BinningTransformer":
         if not getattr(self.config, "create_binning", True):
             self.is_fitted = True

@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Optional
 
 import pandas as pd
 
@@ -15,7 +14,7 @@ class BaseFeatureTransformer(ABC):
 
     @abstractmethod
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "BaseFeatureTransformer":
         """Fit the transformer."""
         pass
@@ -26,7 +25,7 @@ class BaseFeatureTransformer(ABC):
         pass
 
     def fit_transform(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> pd.DataFrame:
         """Fit and transform in one step."""
         return self.fit(X, y).transform(X)

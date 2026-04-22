@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 
@@ -10,15 +11,15 @@ from .base import BatchSelector
 class LocalPenalizationSelector(BatchSelector):
     def __init__(
         self,
-        distance_fn: Callable[[Dict[str, Any], Dict[str, Any]], float],
+        distance_fn: Callable[[dict[str, Any], dict[str, Any]], float],
         penalization_power: float,
     ):
         self.distance_fn = distance_fn
         self.power = float(penalization_power)
 
     def select(
-        self, candidates: List[Dict[str, Any]], scores: np.ndarray, n: int
-    ) -> List[int]:
+        self, candidates: list[dict[str, Any]], scores: np.ndarray, n: int
+    ) -> list[int]:
         if n <= 0:
             return []
         base_scores = scores.copy()

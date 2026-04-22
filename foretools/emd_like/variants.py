@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 """Convenience facade for variational decomposition methods."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -26,12 +25,12 @@ class VariationalVariants:
     def __init__(
         self,
         wisdom_file: str = "vmd_fftw_wisdom.dat",
-        fftw: Optional[FFTWManager] = None,
+        fftw: FFTWManager | None = None,
     ):
         self.fftw = fftw if fftw is not None else FFTWManager(wisdom_file)
         self.core = VMDCore(self.fftw)
 
-    def precompute_fft(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def precompute_fft(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return self.core.precompute_fft(*args, **kwargs)
 
     def estimate_k(self, *args: Any, **kwargs: Any) -> int:
@@ -39,27 +38,27 @@ class VariationalVariants:
 
     def vmd(
         self, *args: Any, **kwargs: Any
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self.core.decompose(*args, **kwargs)
 
     def vncmd(
         self, *args: Any, **kwargs: Any
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         return self.core.decompose_vncmd(*args, **kwargs)
 
     def ncmd(
         self, *args: Any, **kwargs: Any
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         return self.core.decompose_ncmd(*args, **kwargs)
 
     def chirp(
         self, *args: Any, **kwargs: Any
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         return self.core.decompose_chirp(*args, **kwargs)
 
     def mvmd(
         self, *args: Any, **kwargs: Any
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self.core.decompose_multivariate(*args, **kwargs)
 
     def save_wisdom(self) -> None:

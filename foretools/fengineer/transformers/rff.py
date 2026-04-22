@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -36,7 +36,7 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
         self,
         config: Any,
         n_components: int = 50,
-        gamma: Union[float, str] = "auto",
+        gamma: float | str = "auto",
         kernel: str = "rbf",
         max_features: int = 50,
         feature_selection_method: str = "variance",
@@ -118,7 +118,7 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
 
         return float(self.gamma)
 
-    def _select_features_variance(self, X: pd.DataFrame) -> List[str]:
+    def _select_features_variance(self, X: pd.DataFrame) -> list[str]:
         """Select features with highest variance."""
         numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
 
@@ -131,7 +131,7 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
 
     def _select_features_target_aware(
         self, X: pd.DataFrame, y: pd.Series, method: str
-    ) -> List[str]:
+    ) -> list[str]:
         """Select features based on relationship with target."""
         numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
 
@@ -188,8 +188,8 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
             return self._select_features_variance(X)
 
     def _select_features(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
-    ) -> List[str]:
+        self, X: pd.DataFrame, y: pd.Series | None = None
+    ) -> list[str]:
         """Select features using specified method."""
         if self.feature_selection_method == "variance" or y is None:
             return self._select_features_variance(X)
@@ -200,7 +200,7 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
 
     def _generate_random_weights(
         self, n_features: int
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Generate random weights for Fourier features."""
         rng = self._get_random_state()
 
@@ -225,7 +225,7 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
         return weights, offset
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "RandomFourierFeaturesTransformer":
         """Fit the Random Fourier Features transformer."""
         if not getattr(self.config, "create_rff", False):
@@ -342,7 +342,7 @@ class RandomFourierFeaturesTransformer(BaseFeatureTransformer):
         importance = np.mean(np.abs(self.random_weights_), axis=1)
         return pd.Series(importance, index=self.selected_features_)
 
-    def get_feature_names_out(self) -> List[str]:
+    def get_feature_names_out(self) -> list[str]:
         """Get output feature names."""
         if not self.is_fitted:
             return []
@@ -398,7 +398,7 @@ class FourierTransformer(BaseFeatureTransformer):
         lowered = col.lower()
         return int(any(token in lowered for token in cls._TEMPORAL_TOKENS))
 
-    def _select_source_columns(self, X: pd.DataFrame) -> List[str]:
+    def _select_source_columns(self, X: pd.DataFrame) -> list[str]:
         cols = X.select_dtypes(include=[np.number]).columns.tolist()
         if not cols:
             return []
@@ -423,7 +423,7 @@ class FourierTransformer(BaseFeatureTransformer):
         return [col for _, _, col in ranking[: max(1, min(max_cols, len(ranking)))]]
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "FourierTransformer":
         self.numerical_cols_ = self._select_source_columns(X)
         self.fourier_configs_ = {}
@@ -497,7 +497,7 @@ class FourierTransformer(BaseFeatureTransformer):
 class ClusteringTransformer(BaseFeatureTransformer):
     """Modern clustering/embedding-based feature generator."""
 
-    def __init__(self, config, strategies: Optional[Tuple[str, ...]] = None):
+    def __init__(self, config, strategies: tuple[str, ...] | None = None):
         super().__init__(config)
         config_strategies = getattr(config, "clustering_strategies", None)
         if strategies is not None:
@@ -513,7 +513,7 @@ class ClusteringTransformer(BaseFeatureTransformer):
         self.fill_values_ = pd.Series(dtype="float64")
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "ClusteringTransformer":
         if not self.config.create_clustering:
             self.is_fitted = True

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -43,7 +43,7 @@ class CategoricalGroupAnalyzer(AnalysisStrategy):
         self.alpha = 0.05
 
     # --------------------------- Auto-Detection (Simplified) ---------------------------
-    def _auto_detect_categorical_column(self, data: pd.DataFrame) -> Optional[str]:
+    def _auto_detect_categorical_column(self, data: pd.DataFrame) -> str | None:
         """Detect the best categorical column for analysis"""
         candidates = []
         
@@ -127,7 +127,7 @@ class CategoricalGroupAnalyzer(AnalysisStrategy):
 
     # --------------------------- Data Preparation ---------------------------
     def _prepare_group_data(self, data: pd.DataFrame, categorical_col: str, 
-                           target_cols: List[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                           target_cols: list[str] = None) -> tuple[dict[str, Any], dict[str, Any]]:
         """Prepare and validate data for group analysis"""
         if categorical_col not in data.columns:
             raise ValueError(f"Categorical column '{categorical_col}' not found")
@@ -177,8 +177,8 @@ class CategoricalGroupAnalyzer(AnalysisStrategy):
         return grouped_data, group_info
 
     # --------------------------- SOTA Assumption Testing (Streamlined) ---------------------------
-    def _smart_assumption_testing(self, grouped_data: Dict[str, pd.DataFrame], 
-                                 numeric_col: str) -> Dict[str, Any]:
+    def _smart_assumption_testing(self, grouped_data: dict[str, pd.DataFrame], 
+                                 numeric_col: str) -> dict[str, Any]:
         """Streamlined assumption testing using only the most reliable methods"""
         assumptions = {
             "normality_test": {},
@@ -256,8 +256,8 @@ class CategoricalGroupAnalyzer(AnalysisStrategy):
         return assumptions
 
     # --------------------------- SOTA Statistical Tests ---------------------------
-    def _run_statistical_tests(self, grouped_data: Dict[str, pd.DataFrame], 
-                              numeric_col: str, assumptions: Dict[str, Any]) -> Dict[str, Any]:
+    def _run_statistical_tests(self, grouped_data: dict[str, pd.DataFrame], 
+                              numeric_col: str, assumptions: dict[str, Any]) -> dict[str, Any]:
         """Run only the most appropriate and reliable statistical tests"""
         results = {}
         
@@ -443,7 +443,7 @@ class CategoricalGroupAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- Categorical Association Tests ---------------------------
-    def _categorical_association_tests(self, data: pd.DataFrame, cat_col1: str, cat_col2: str) -> Dict[str, Any]:
+    def _categorical_association_tests(self, data: pd.DataFrame, cat_col1: str, cat_col2: str) -> dict[str, Any]:
         """Modern categorical association testing"""
         results = {}
         
@@ -542,8 +542,8 @@ class CategoricalGroupAnalyzer(AnalysisStrategy):
         return "unknown"
 
     # --------------------------- Descriptive Statistics ---------------------------
-    def _compute_descriptives(self, grouped_data: Dict[str, pd.DataFrame], 
-                             numeric_col: str) -> Dict[str, Any]:
+    def _compute_descriptives(self, grouped_data: dict[str, pd.DataFrame], 
+                             numeric_col: str) -> dict[str, Any]:
         """Compute essential descriptive statistics"""
         descriptives = {}
         
@@ -580,9 +580,9 @@ class CategoricalGroupAnalyzer(AnalysisStrategy):
         return descriptives
 
     # --------------------------- Smart Recommendations ---------------------------
-    def _generate_recommendations(self, test_results: Dict[str, Any], 
-                                 assumptions: Dict[str, Any], 
-                                 group_info: Dict[str, Any]) -> List[str]:
+    def _generate_recommendations(self, test_results: dict[str, Any], 
+                                 assumptions: dict[str, Any], 
+                                 group_info: dict[str, Any]) -> list[str]:
         """Generate intelligent recommendations based on results"""
         recommendations = []
         
@@ -653,7 +653,7 @@ class CategoricalGroupAnalyzer(AnalysisStrategy):
 
     # --------------------------- Main Analysis Method ---------------------------
     def analyze(self, data: pd.DataFrame, config: AnalysisConfig, 
-                categorical_col: str = None, target_cols: List[str] = None) -> Dict[str, Any]:
+                categorical_col: str = None, target_cols: list[str] = None) -> dict[str, Any]:
         """
         Modern categorical group analysis with streamlined SOTA methods
         

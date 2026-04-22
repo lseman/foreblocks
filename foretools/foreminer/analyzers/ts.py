@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -57,7 +57,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         self.min_series_length = 10
         self.max_series_count = 20  # Limit for performance
 
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         """Main analysis pipeline using modern time series methods"""
 
         # Get numeric columns excluding time/target
@@ -77,8 +77,8 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
             return {"error": "No valid time series found"}
 
         # Core analysis modules (guarded per-module)
-        module_errors: Dict[str, str] = {}
-        results: Dict[str, Any] = {}
+        module_errors: dict[str, str] = {}
+        results: dict[str, Any] = {}
 
         modules = {
             "stationarity": (self._analyze_stationarity, (series_map, config)),
@@ -111,7 +111,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- SOTA Stationarity Testing ---------------------------
-    def _analyze_stationarity(self, series_map: Dict[str, pd.Series], config: AnalysisConfig) -> pd.DataFrame:
+    def _analyze_stationarity(self, series_map: dict[str, pd.Series], config: AnalysisConfig) -> pd.DataFrame:
         """Modern stationarity analysis using most reliable tests"""
         from statsmodels.tsa.stattools import adfuller, kpss
         
@@ -190,7 +190,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         return pd.DataFrame(results)
 
     # --------------------------- SOTA Temporal Pattern Analysis ---------------------------
-    def _analyze_temporal_patterns(self, series_map: Dict[str, pd.Series], config: AnalysisConfig) -> Dict[str, Any]:
+    def _analyze_temporal_patterns(self, series_map: dict[str, pd.Series], config: AnalysisConfig) -> dict[str, Any]:
         """Modern temporal pattern analysis with trend and seasonality detection"""
         results = {}
         
@@ -272,7 +272,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         else:
             return "none"
 
-    def _analyze_seasonality_stl(self, series: pd.Series) -> Dict[str, Any]:
+    def _analyze_seasonality_stl(self, series: pd.Series) -> dict[str, Any]:
         """STL decomposition for seasonality analysis"""
         try:
             from statsmodels.tsa.seasonal import STL
@@ -353,7 +353,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         else:
             return "none"
 
-    def _analyze_volatility_clustering(self, returns: pd.Series) -> Dict[str, Any]:
+    def _analyze_volatility_clustering(self, returns: pd.Series) -> dict[str, Any]:
         """Analyze volatility clustering in returns"""
         try:
             vol_info = {
@@ -386,7 +386,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
             return {"volatility_error": str(e)}
 
     # --------------------------- SOTA Lag Analysis ---------------------------
-    def _suggest_optimal_lags(self, series_map: Dict[str, pd.Series], config: AnalysisConfig) -> Dict[str, Dict[str, Any]]:
+    def _suggest_optimal_lags(self, series_map: dict[str, pd.Series], config: AnalysisConfig) -> dict[str, dict[str, Any]]:
         """Modern lag selection using PACF and information criteria"""
         from statsmodels.tsa.ar_model import AutoReg
         from statsmodels.tsa.stattools import pacf
@@ -453,7 +453,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- SOTA Seasonality Testing ---------------------------
-    def _test_seasonality(self, data: pd.DataFrame, series_map: Dict[str, pd.Series], config: AnalysisConfig) -> Dict[str, Any]:
+    def _test_seasonality(self, data: pd.DataFrame, series_map: dict[str, pd.Series], config: AnalysisConfig) -> dict[str, Any]:
         """Modern seasonality testing using statistical tests and spectral analysis"""
         from scipy.stats import kruskal
         from statsmodels.stats.diagnostic import acorr_ljungbox
@@ -539,7 +539,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- SOTA Change Point Detection ---------------------------
-    def _detect_change_points(self, data: pd.DataFrame, series_map: Dict[str, pd.Series], config: AnalysisConfig) -> Dict[str, Any]:
+    def _detect_change_points(self, data: pd.DataFrame, series_map: dict[str, pd.Series], config: AnalysisConfig) -> dict[str, Any]:
         """Modern change point detection using ruptures and CUSUM"""
         time_col = getattr(config, "time_col", None)
         if not time_col or time_col not in data.columns:
@@ -619,7 +619,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- SOTA Forecasting Readiness ---------------------------
-    def _assess_forecasting_readiness(self, series_map: Dict[str, pd.Series], config: AnalysisConfig) -> Dict[str, Any]:
+    def _assess_forecasting_readiness(self, series_map: dict[str, pd.Series], config: AnalysisConfig) -> dict[str, Any]:
         """Modern forecasting readiness assessment"""
         results = {}
         
@@ -727,7 +727,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- SOTA Volatility Analysis ---------------------------
-    def _analyze_volatility(self, series_map: Dict[str, pd.Series], config: AnalysisConfig) -> Dict[str, Any]:
+    def _analyze_volatility(self, series_map: dict[str, pd.Series], config: AnalysisConfig) -> dict[str, Any]:
         """Modern volatility analysis with GARCH effects and risk measures"""
         results = {}
         
@@ -806,7 +806,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         return results
 
     # --------------------------- SOTA Granger Causality ---------------------------
-    def _granger_causality_analysis(self, data: pd.DataFrame, numeric_cols: List[str], config: AnalysisConfig) -> Dict[str, Any]:
+    def _granger_causality_analysis(self, data: pd.DataFrame, numeric_cols: list[str], config: AnalysisConfig) -> dict[str, Any]:
         """Modern Granger causality analysis between time series"""
         if len(numeric_cols) < 2:
             return {}
@@ -900,7 +900,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         
         return results
 
-    def _detect_motifs(self, series_map: Dict[str, pd.Series], config: Any) -> Dict[str, Any]:
+    def _detect_motifs(self, series_map: dict[str, pd.Series], config: Any) -> dict[str, Any]:
         """
         Detect recurring motifs using a vectorized Lite Matrix Profile approach.
         """
@@ -975,7 +975,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
                 
         return motifs_results
 
-    def _analyze_trend_coordination(self, series_map: Dict[str, pd.Series], config: Any) -> Dict[str, Any]:
+    def _analyze_trend_coordination(self, series_map: dict[str, pd.Series], config: Any) -> dict[str, Any]:
         """
         Detect simultaneous trend shifts or seasonal phase alignment across features.
         """

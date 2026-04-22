@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Tuple
+from collections.abc import Callable
 
 import numpy as np
 from scipy.special import logsumexp
@@ -94,12 +95,12 @@ class _ParamInfo:
     name: str
     typ: str  # 'float' | 'int' | 'choice'
     rng: Any
-    transform: Optional[str] = None
-    log_range: Optional[Tuple[float, float]] = None
-    condition_parent: Optional[str] = None
-    condition_values: Optional[set] = None
-    joint_group: Optional[str] = None
-    embedding: Optional[Dict[Any, np.ndarray]] = None
+    transform: str | None = None
+    log_range: tuple[float, float] | None = None
+    condition_parent: str | None = None
+    condition_values: set | None = None
+    joint_group: str | None = None
+    embedding: dict[Any, np.ndarray] | None = None
 
 
 @dataclass
@@ -138,7 +139,7 @@ class TPEConf:
     Use with `TPE.from_config(config_space, conf)`.
     """
 
-    gamma: Dict[str, Any] = field(
+    gamma: dict[str, Any] = field(
         default_factory=lambda: {
             "gamma": 0.15,
             "gamma_strategy": "sqrt",
@@ -148,7 +149,7 @@ class TPEConf:
             "exploit_candidate_frac": 0.7,
         }
     )
-    bandwidth: Dict[str, Any] = field(
+    bandwidth: dict[str, Any] = field(
         default_factory=lambda: {
             "bandwidth_factor": 0.8,
             "min_bandwidth": 1e-3,
@@ -161,7 +162,7 @@ class TPEConf:
             "local_bandwidth_k": 7,
         }
     )
-    prior: Dict[str, Any] = field(
+    prior: dict[str, Any] = field(
         default_factory=lambda: {
             "prior_weight": 0.1,
             "prior_mix_weight": 0.15,
@@ -170,7 +171,7 @@ class TPEConf:
             "consider_prior": True,
         }
     )
-    constraints: Dict[str, Any] = field(
+    constraints: dict[str, Any] = field(
         default_factory=lambda: {
             "hard_constraints": None,
             "soft_constraints": None,
@@ -183,7 +184,7 @@ class TPEConf:
             "constraint_logging": False,
         }
     )
-    batch: Dict[str, Any] = field(
+    batch: dict[str, Any] = field(
         default_factory=lambda: {
             "batch_strategy": "diversity",
             "penalization_power": 2.0,
@@ -201,7 +202,7 @@ class TPEConf:
             "q_fantasy_weight": 1.0,
         }
     )
-    trust_region: Dict[str, Any] = field(
+    trust_region: dict[str, Any] = field(
         default_factory=lambda: {
             "trust_region_enabled": True,
             "trust_region_init_length": 1.0,
@@ -214,10 +215,10 @@ class TPEConf:
             "trust_region_restart_center": "best",
         }
     )
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_kwargs(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
+    def to_kwargs(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
         out.update(dict(self.gamma))
         out.update(dict(self.bandwidth))
         out.update(dict(self.prior))
@@ -249,10 +250,10 @@ class TPE:
     @classmethod
     def from_config(
         cls,
-        config_space: Dict[str, Tuple],
+        config_space: dict[str, tuple],
         cfg: TPEConf,
         **overrides: Any,
-    ) -> "TPE":
+    ) -> TPE:
         if not overrides:
             return cls(config_space=config_space, conf=cfg)
         merged = TPEConf(
@@ -269,8 +270,8 @@ class TPE:
 
     def __init__(
         self,
-        config_space: Dict[str, Tuple],
-        conf: Optional[TPEConf] = None,
+        config_space: dict[str, tuple],
+        conf: TPEConf | None = None,
     ):
         cfg = TPEConf() if conf is None else conf
         opts = cfg.to_kwargs()
@@ -431,8 +432,8 @@ class TPE:
         self.cma_cov_adaptation = bool(cma_cov_adaptation)
         self.cma_cov_learning_rate = float(min(max(cma_cov_learning_rate, 1e-6), 1.0))
         self.cma_path_decay = float(min(max(cma_path_decay, 0.0), 0.9999))
-        self._cma_cov_state: Dict[
-            Tuple[str, Tuple[str, ...]], Dict[str, np.ndarray]
+        self._cma_cov_state: dict[
+            tuple[str, tuple[str, ...]], dict[str, np.ndarray]
         ] = {}
         self.local_bandwidth = bool(local_bandwidth)
         self.local_bandwidth_k = int(local_bandwidth_k)
@@ -443,7 +444,7 @@ class TPE:
         self.copula_joint = bool(copula_joint)
         self.max_bandwidth_factor = max_bandwidth_factor
         self.kde_cache_size = int(kde_cache_size)
-        self._kde_cache: "OrderedDict[Tuple[Any, ...], float]" = OrderedDict()
+        self._kde_cache: OrderedDict[Tuple[Any, ...], float] = OrderedDict()
         self.smooth_startup = bool(smooth_startup)
         self.use_ei = bool(use_ei)
         self.ei_k = int(ei_k)
@@ -514,7 +515,7 @@ class TPE:
         )
         self.verbose = bool(verbose)
         self.acq_cache_size = int(acq_cache_size)
-        self._acq_cache: Dict[str, float] = {}
+        self._acq_cache: dict[str, float] = {}
         self.acquisition_strategy: AcquisitionStrategy = LogRatioAcquisition(
             log_likelihood_fn=self._log_likelihood,
             soft_constraint_violation_fn=self._soft_constraint_violation,
@@ -551,10 +552,10 @@ class TPE:
         self.liar_strategy = str(liar_strategy or "mean").lower()
         self.liar_quantile = float(liar_quantile)
         self.categorical_distance_func = categorical_distance_func or {}
-        self._categorical_embeddings: Dict[str, Dict[Any, np.ndarray]] = {}
-        self._categorical_embedding_version: Dict[str, int] = defaultdict(int)
-        self._categorical_kernel_cache: Dict[
-            Tuple[Any, ...], Tuple[np.ndarray, np.ndarray]
+        self._categorical_embeddings: dict[str, dict[Any, np.ndarray]] = {}
+        self._categorical_embedding_version: dict[str, int] = defaultdict(int)
+        self._categorical_kernel_cache: dict[
+            tuple[Any, ...], tuple[np.ndarray, np.ndarray]
         ] = {}
         self.combinatorial_mode = bool(combinatorial_mode)
         self.combinatorial_min_obs = int(combinatorial_min_obs)
@@ -569,11 +570,11 @@ class TPE:
         self.liar_adaptive_strategy_small = str(
             liar_adaptive_strategy_small or "worst"
         ).lower()
-        self.observations: List[Tuple[Dict[str, Any], float, Optional[float]]] = []
+        self.observations: list[tuple[dict[str, Any], float, float | None]] = []
         self.param_names = list(config_space.keys())
-        self.param_info: Dict[str, _ParamInfo] = {}
+        self.param_info: dict[str, _ParamInfo] = {}
         self._best_loss: float = float("inf")
-        self._best_config: Optional[Dict[str, Any]] = None
+        self._best_config: dict[str, Any] | None = None
         self._trust_region_restart_count: int = 0
 
         for param, spec in config_space.items():
@@ -609,7 +610,7 @@ class TPE:
         self._tr_param_names = [
             p for p in self.param_names if self.param_info[p].typ in {"float", "int"}
         ]
-        self.trust_region: Optional[TrustRegion] = None
+        self.trust_region: TrustRegion | None = None
         if self.trust_region_enabled and self._tr_param_names:
             self.trust_region = TrustRegion(
                 center=np.zeros(len(self._tr_param_names), dtype=float),
@@ -646,7 +647,7 @@ class TPE:
         if self.atpe and self.verbose:
             print("DEBUG: ATPE enabled")
 
-    def _apply_blocked_params(self, cand: Dict[str, Any]) -> Dict[str, Any]:
+    def _apply_blocked_params(self, cand: dict[str, Any]) -> dict[str, Any]:
         if not (self.atpe and hasattr(self, "blocked_params") and self.blocked_params):
             return cand
         updated = dict(cand)
@@ -657,9 +658,9 @@ class TPE:
 
     def _generate_candidate(
         self,
-        sampler: Callable[[], Dict[str, Any]],
+        sampler: Callable[[], dict[str, Any]],
         attempts: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Helper to sample a candidate with constraints handling.
         """
@@ -688,7 +689,7 @@ class TPE:
                 cand = wrapped_sampler()
         return cand
 
-    def _numeric_bounds(self, param: str) -> Tuple[float, float]:
+    def _numeric_bounds(self, param: str) -> tuple[float, float]:
         info = self.param_info[param]
         if info.typ == "float":
             return self._float_bounds_in_model_space(param)
@@ -696,7 +697,7 @@ class TPE:
         return float(lo), float(hi)
 
     def _numeric_value_in_model_space(
-        self, config: Dict[str, Any], param: str
+        self, config: dict[str, Any], param: str
     ) -> float:
         info = self.param_info[param]
         if param in config:
@@ -706,7 +707,7 @@ class TPE:
         lo, hi = self._numeric_bounds(param)
         return 0.5 * (lo + hi)
 
-    def _numeric_center_from_config(self, config: Dict[str, Any]) -> np.ndarray:
+    def _numeric_center_from_config(self, config: dict[str, Any]) -> np.ndarray:
         center = np.zeros(len(self._tr_param_names), dtype=float)
         for i, p in enumerate(self._tr_param_names):
             center[i] = self._numeric_value_in_model_space(config, p)
@@ -732,7 +733,7 @@ class TPE:
         tr.failure_count = 0
         self._trust_region_restart_count += 1
 
-    def _update_trust_region(self, improved: bool, config: Dict[str, Any]) -> None:
+    def _update_trust_region(self, improved: bool, config: dict[str, Any]) -> None:
         if not self.trust_region_enabled or self.trust_region is None:
             return
         tr = self.trust_region
@@ -748,7 +749,7 @@ class TPE:
         if self.trust_region_restart_on_min_length and collapsed:
             self._restart_trust_region()
 
-    def _apply_trust_region(self, cand: Dict[str, Any]) -> Dict[str, Any]:
+    def _apply_trust_region(self, cand: dict[str, Any]) -> dict[str, Any]:
         if not self.trust_region_enabled or self.trust_region is None:
             return cand
         if not self._tr_param_names:
@@ -785,7 +786,7 @@ class TPE:
     # ────────────────────────────────────────────────────────────────────────────
 
     def observe(
-        self, config: Dict[str, Any], loss: float, budget: Optional[float] = None
+        self, config: dict[str, Any], loss: float, budget: float | None = None
     ) -> None:
         loss_f = float(loss)
         self.observations.append(
@@ -804,10 +805,10 @@ class TPE:
     def suggest(
         self,
         n_candidates: int = 1,
-        budget: Optional[float] = None,
-        pending_configs: Optional[List[Dict[str, Any]]] = None,
+        budget: float | None = None,
+        pending_configs: list[dict[str, Any]] | None = None,
         return_scores: bool | str = False,
-    ) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], np.ndarray]:
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], np.ndarray]:
         n_candidates = int(n_candidates)
         stat_before = dict(self.constraint_stats)
 
@@ -962,8 +963,8 @@ class TPE:
         prior_blend = self._startup_blend_weight(n_obs) if self.smooth_startup else 0.0
         attempts = self._constraint_attempts(pool_size)
 
-        candidates: List[Dict[str, Any]] = []
-        score_list: List[float] = []
+        candidates: list[dict[str, Any]] = []
+        score_list: list[float] = []
 
         # Strategy definitions: List of (n_samples, good_source, bad_source)
         # good_source: models dict OR None (implies prior)
@@ -1082,8 +1083,8 @@ class TPE:
 
     def _split_and_build_models(
         self,
-        obs: List[Tuple[Dict[str, Any], float, Optional[float]]],
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        obs: list[tuple[dict[str, Any], float, float | None]],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not obs:
             return {}, {}
         losses = np.asarray([o[1] for o in obs], dtype=float)
@@ -1108,10 +1109,10 @@ class TPE:
 
     def _predict_mu_sigma_from_obs(
         self,
-        config: Dict[str, Any],
-        obs: List[Tuple[Dict[str, Any], float, Optional[float]]],
+        config: dict[str, Any],
+        obs: list[tuple[dict[str, Any], float, float | None]],
         k: int = 10,
-    ) -> Tuple[float, float]:
+    ) -> tuple[float, float]:
         if not obs:
             return 0.0, 1.0
         dists = []
@@ -1133,7 +1134,7 @@ class TPE:
         sigma = math.sqrt(max(var, 1e-12))
         return mu, sigma
 
-    def _blocked_params(self, obs: List[Any]) -> Dict[str, Any]:
+    def _blocked_params(self, obs: list[Any]) -> dict[str, Any]:
         if not self.atpe:
             return {}
 
@@ -1219,8 +1220,8 @@ class TPE:
         return max(self.n_ei_candidates, min(scaled, 4096))
 
     def _sample_quasi_random(
-        self, n: int, attempts: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self, n: int, attempts: int | None = None
+    ) -> list[dict[str, Any]]:
         if attempts is None:
             attempts = self._constraint_attempts(n)
         if qmc is None or self.quasi_random_method != "lhs":
@@ -1231,7 +1232,7 @@ class TPE:
         d = len(self.param_names)
         sampler = qmc.LatinHypercube(d=d, seed=self._rng)
         u = sampler.random(n)
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for i in range(n):
             cfg = self._config_from_unit(u[i])
             if self.hard_constraints and not self._hard_constraints_satisfied(cfg):
@@ -1239,8 +1240,8 @@ class TPE:
             results.append(cfg)
         return results
 
-    def _config_from_unit(self, u: np.ndarray) -> Dict[str, Any]:
-        cfg: Dict[str, Any] = {}
+    def _config_from_unit(self, u: np.ndarray) -> dict[str, Any]:
+        cfg: dict[str, Any] = {}
         for i, param in enumerate(self.ancestral_order):
             info = self.param_info[param]
             ui = float(u[i]) if i < len(u) else float(self._rng.random())
@@ -1291,11 +1292,11 @@ class TPE:
 
     def _local_search_candidates(
         self,
-        candidates: List[Dict[str, Any]],
+        candidates: list[dict[str, Any]],
         scores: np.ndarray,
-        good_models: Dict[str, Any],
-        bad_models: Dict[str, Any],
-    ) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+        good_models: dict[str, Any],
+        bad_models: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], np.ndarray]:
         if minimize is None:
             return candidates, scores
         if len(candidates) == 0:
@@ -1356,7 +1357,7 @@ class TPE:
 
         return candidates, scores
 
-    def _gp_ucb_score(self, config: Dict[str, Any]) -> Optional[float]:
+    def _gp_ucb_score(self, config: dict[str, Any]) -> float | None:
         if GaussianProcessRegressor is None or RBF is None or WhiteKernel is None:
             return None
         n_obs = len(self.observations)
@@ -1407,15 +1408,15 @@ class TPE:
         return 0.0
 
     def _sample_startup_blend(
-        self, good_models: Dict[str, Any], prior_weight: float
-    ) -> Dict[str, Any]:
+        self, good_models: dict[str, Any], prior_weight: float
+    ) -> dict[str, Any]:
         if prior_weight <= 0:
             return self._sample_from_models(good_models)
         if self._rng.random() < prior_weight:
             return self._sample_prior()
         return self._sample_from_models(good_models)
 
-    def _liar_value(self, losses: List[float]) -> float:
+    def _liar_value(self, losses: list[float]) -> float:
         if not losses:
             return 1.0
         arr = np.asarray(losses, dtype=float)
@@ -1445,7 +1446,7 @@ class TPE:
     #   New helper: normalized config distance for diversity
     # ────────────────────────────────────────────────────────────────────────────
 
-    def _config_distance(self, c1: Dict, c2: Dict) -> float:
+    def _config_distance(self, c1: dict, c2: dict) -> float:
         vec1, vec2 = [], []
         for p in self.param_names:
             if p in c1 and p in c2:
@@ -1469,8 +1470,8 @@ class TPE:
 
     def _local_penalization_score(
         self,
-        candidate: Dict[str, Any],
-        selected_so_far: List[Dict[str, Any]],
+        candidate: dict[str, Any],
+        selected_so_far: list[dict[str, Any]],
         base_score: float,
     ) -> float:
         penalty = 1.0
@@ -1491,8 +1492,8 @@ class TPE:
         return GreedyDiversitySelector(self._config_distance)
 
     def _sample_with_constraints(
-        self, sampler: Callable[[], Dict[str, Any]], attempts: Optional[int] = None
-    ) -> Optional[Dict[str, Any]]:
+        self, sampler: Callable[[], dict[str, Any]], attempts: int | None = None
+    ) -> dict[str, Any] | None:
         if not self.hard_constraints:
             return sampler()
         if attempts is None:
@@ -1510,8 +1511,8 @@ class TPE:
         return None
 
     def _sample_with_constraints_ctpe(
-        self, sampler: Callable[[], Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        self, sampler: Callable[[], dict[str, Any]]
+    ) -> dict[str, Any]:
         if not self.hard_constraints and not self.soft_constraints:
             return sampler()
         max_attempts = max(1, int(self.constraint_rejection_max))
@@ -1531,14 +1532,14 @@ class TPE:
             print("[TPE] c-TPE constraints: falling back to prior")
         return self._sample_prior()
 
-    def _hard_constraints_satisfied(self, config: Dict[str, Any]) -> bool:
+    def _hard_constraints_satisfied(self, config: dict[str, Any]) -> bool:
         if not self.hard_constraints:
             return True
         return all(
             self._eval_constraint(fn, config) <= 0 for fn in self.hard_constraints
         )
 
-    def _soft_constraint_violation(self, config: Dict[str, Any]) -> float:
+    def _soft_constraint_violation(self, config: dict[str, Any]) -> float:
         if not self.soft_constraints:
             return 0.0
         return float(
@@ -1548,15 +1549,15 @@ class TPE:
             )
         )
 
-    def _eval_constraint(self, fn: Callable, config: Dict[str, Any]) -> float:
+    def _eval_constraint(self, fn: Callable, config: dict[str, Any]) -> float:
         try:
             return float(fn(config))
         except Exception:
             return float("inf")
 
     def _repair_candidate(
-        self, config: Dict[str, Any], attempts: int
-    ) -> Optional[Dict[str, Any]]:
+        self, config: dict[str, Any], attempts: int
+    ) -> dict[str, Any] | None:
         if attempts <= 0:
             return None
         cfg = dict(config)
@@ -1567,7 +1568,7 @@ class TPE:
                 return cfg
         return None
 
-    def _maybe_log_constraint_stats(self, stat_before: Dict[str, int]) -> None:
+    def _maybe_log_constraint_stats(self, stat_before: dict[str, int]) -> None:
         if not self.constraint_logging or not self.hard_constraints or not self.verbose:
             return
         attempts = self.constraint_stats["hard_attempts"] - stat_before.get(
@@ -1581,7 +1582,7 @@ class TPE:
         rate = rejects / max(attempts, 1)
         print(f"[TPE] hard-constraint rejects: {rejects}/{attempts} ({rate:.1%})")
 
-    def _constraint_attempts(self, pool_size: Optional[int]) -> int:
+    def _constraint_attempts(self, pool_size: int | None) -> int:
         base = max(1, int(self.constraint_max_attempts))
         if pool_size is None:
             return base
@@ -1592,9 +1593,9 @@ class TPE:
 
     def _compute_weights(
         self,
-        obs: List[Tuple[Dict[str, Any], float, Optional[float]]],
-        budget: Optional[float],
-    ) -> Optional[np.ndarray]:
+        obs: list[tuple[dict[str, Any], float, float | None]],
+        budget: float | None,
+    ) -> np.ndarray | None:
         if self.weights_func is not None:
             try:
                 w = np.asarray(self.weights_func(obs), dtype=float)
@@ -1645,7 +1646,7 @@ class TPE:
             return None
         return safe_normalize(base_w).astype(float)
 
-    def _apply_param_options(self, info: _ParamInfo, options: Dict[str, Any]) -> None:
+    def _apply_param_options(self, info: _ParamInfo, options: dict[str, Any]) -> None:
         condition = options.get("condition")
         parent = options.get("parent")
         values = options.get("values")
@@ -1673,9 +1674,9 @@ class TPE:
             else:
                 info.joint_group = f"{info.condition_parent}__joint"
 
-    def _topo_sort_params(self, params: List[str]) -> List[str]:
+    def _topo_sort_params(self, params: list[str]) -> list[str]:
         remaining = set(params)
-        ordered: List[str] = []
+        ordered: list[str] = []
         while remaining:
             progressed = False
             for p in list(remaining):
@@ -1689,7 +1690,7 @@ class TPE:
                 break
         return ordered
 
-    def _build_ancestral_order(self) -> List[str]:
+    def _build_ancestral_order(self) -> list[str]:
         params = list(self.param_names)
         graph = {p: [] for p in params}
         indegree = {p: 0 for p in params}
@@ -1699,7 +1700,7 @@ class TPE:
                 graph[parent].append(p)
                 indegree[p] += 1
 
-        order: List[str] = []
+        order: list[str] = []
         queue = [p for p in params if indegree[p] == 0]
         queue.sort(key=lambda x: params.index(x))
         while queue:
@@ -1716,8 +1717,8 @@ class TPE:
             order.extend(remaining)
         return order
 
-    def _collect_joint_groups(self) -> Dict[str, List[str]]:
-        groups: Dict[str, List[str]] = defaultdict(list)
+    def _collect_joint_groups(self) -> dict[str, list[str]]:
+        groups: dict[str, list[str]] = defaultdict(list)
         if not self.joint_conditional:
             return {}
         for name, info in self.param_info.items():
@@ -1748,7 +1749,7 @@ class TPE:
         w = base * decay
         return float(min(max(w, self.prior_mix_min), base))
 
-    def _condition_satisfied(self, config: Dict[str, Any], info: _ParamInfo) -> bool:
+    def _condition_satisfied(self, config: dict[str, Any], info: _ParamInfo) -> bool:
         if info.condition_parent is None:
             return True
         if info.condition_parent not in config:
@@ -1758,15 +1759,15 @@ class TPE:
             return True
         return parent_val in info.condition_values
 
-    def _is_param_active(self, config: Dict[str, Any], param: str) -> bool:
+    def _is_param_active(self, config: dict[str, Any], param: str) -> bool:
         return self._condition_satisfied(config, self.param_info[param])
 
     def _filter_configs(
         self,
-        configs: List[Dict[str, Any]],
-        weights: Optional[np.ndarray],
+        configs: list[dict[str, Any]],
+        weights: np.ndarray | None,
         param: str,
-    ) -> Tuple[List[Dict[str, Any]], Optional[np.ndarray]]:
+    ) -> tuple[list[dict[str, Any]], np.ndarray | None]:
         idxs = [
             i
             for i, c in enumerate(configs)
@@ -1836,7 +1837,7 @@ class TPE:
             return float(10.0 ** float(x))
         return float(x)
 
-    def _float_bounds_in_model_space(self, param: str) -> Tuple[float, float]:
+    def _float_bounds_in_model_space(self, param: str) -> tuple[float, float]:
         info = self.param_info[param]
         rng = info.rng
         if info.transform == "log":
@@ -1845,11 +1846,11 @@ class TPE:
         lo, hi = float(rng[0]), float(rng[1])
         return lo, hi
 
-    def _sample_prior(self) -> Dict[str, Any]:
+    def _sample_prior(self) -> dict[str, Any]:
         """
         Prior sampler for startup (uniform, log-uniform, categorical uniform).
         """
-        config: Dict[str, Any] = {}
+        config: dict[str, Any] = {}
         for param in self.param_names:
             info = self.param_info[param]
             if info.condition_parent is not None:
@@ -1867,10 +1868,10 @@ class TPE:
 
     def _build_models(
         self,
-        configs: List[Dict[str, Any]],
-        weights: Optional[np.ndarray],
+        configs: list[dict[str, Any]],
+        weights: np.ndarray | None,
         model_tag: str = "default",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Build per-parameter density models for TPE:
         - float: Gaussian mixture centered at observations (bandwidth shared)
@@ -1878,7 +1879,7 @@ class TPE:
         - int (large domain): treat like float in transformed space then round
         - choice: categorical smoothed
         """
-        models: Dict[str, Any] = {}
+        models: dict[str, Any] = {}
 
         for param in self.param_names:
             info = self.param_info[param]
@@ -1902,8 +1903,8 @@ class TPE:
 
     def _float_model_kwargs(
         self, param: str, prior_w: float, **overrides: Any
-    ) -> Dict[str, Any]:
-        kwargs: Dict[str, Any] = {
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
             "param": param,
             "prior_w": float(prior_w),
             "mu": None,
@@ -1927,8 +1928,8 @@ class TPE:
 
     def _int_model_kwargs(
         self, param: str, lo: int, hi: int, prior_w: float, **overrides: Any
-    ) -> Dict[str, Any]:
-        kwargs: Dict[str, Any] = {
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
             "param": param,
             "lo": int(lo),
             "hi": int(hi),
@@ -1951,8 +1952,8 @@ class TPE:
     def _build_float_model(
         self,
         param: str,
-        cfgs: List[Dict[str, Any]],
-        w: Optional[np.ndarray],
+        cfgs: list[dict[str, Any]],
+        w: np.ndarray | None,
         prior_w: float,
     ) -> FloatModel:
         vals = np.array(
@@ -1998,7 +1999,7 @@ class TPE:
         )
 
     def _build_choice_model(
-        self, param: str, cfgs: List[Dict[str, Any]], w: Optional[np.ndarray]
+        self, param: str, cfgs: list[dict[str, Any]], w: np.ndarray | None
     ) -> CatModel:
         info = self.param_info[param]
         probs = self._kernel_categorical_probs(
@@ -2009,8 +2010,8 @@ class TPE:
     def _build_int_model(
         self,
         param: str,
-        cfgs: List[Dict[str, Any]],
-        w: Optional[np.ndarray],
+        cfgs: list[dict[str, Any]],
+        w: np.ndarray | None,
         prior_w: float,
     ) -> IntModel:
         info = self.param_info[param]
@@ -2053,8 +2054,8 @@ class TPE:
         )
 
     def _smoothed_categorical_probs(
-        self, values: List[Any], support: List[Any], weights: Optional[np.ndarray]
-    ) -> Dict[Any, float]:
+        self, values: list[Any], support: list[Any], weights: np.ndarray | None
+    ) -> dict[Any, float]:
         counts = defaultdict(float)
         total = 0.0
         if weights is None:
@@ -2099,11 +2100,11 @@ class TPE:
 
     def _kernel_categorical_probs(
         self,
-        values: List[Any],
-        support: List[Any],
-        weights: Optional[np.ndarray],
+        values: list[Any],
+        support: list[Any],
+        weights: np.ndarray | None,
         param: str,
-    ) -> Dict[Any, float]:
+    ) -> dict[Any, float]:
         """
         Distance-aware categorical kernel smoothing using index distance.
         Kernel: exp(-|i-j| / bw), properly normalized per location.
@@ -2327,7 +2328,7 @@ class TPE:
         return probs
 
     def _learn_categorical_embedding(
-        self, param: str, observed_values: List[Any]
+        self, param: str, observed_values: list[Any]
     ) -> None:
         unique = list({v for v in observed_values if v is not None})
         if len(unique) < 2:
@@ -2376,10 +2377,10 @@ class TPE:
 
     def _build_joint_models(
         self,
-        configs: List[Dict[str, Any]],
-        weights: Optional[np.ndarray],
+        configs: list[dict[str, Any]],
+        weights: np.ndarray | None,
         model_tag: str = "default",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         multivariate_enabled = False
         if self.multivariate_arg == "auto":
             # Heuristic: enable if we have enough observations relative to dimensionality
@@ -2394,7 +2395,7 @@ class TPE:
         if not self.joint_conditional and not multivariate_enabled:
             return {}
 
-        joint_groups: Dict[str, Any] = {}
+        joint_groups: dict[str, Any] = {}
         joint_params: set = set()
 
         # ─── 1. Explicit conditional joint groups ───────────────────────────────
@@ -2495,7 +2496,7 @@ class TPE:
 
         return {"groups": joint_groups, "params": joint_params}
 
-    def _continuous_params(self) -> List[str]:
+    def _continuous_params(self) -> list[str]:
         return [
             p
             for p in self.param_names
@@ -2510,9 +2511,9 @@ class TPE:
         ]
 
     def _config_to_vector(
-        self, cfg: Dict[str, Any], cont_params: List[str]
-    ) -> Optional[List[float]]:
-        vec: List[float] = []
+        self, cfg: dict[str, Any], cont_params: list[str]
+    ) -> list[float] | None:
+        vec: list[float] = []
         for p in cont_params:
             if p not in cfg or not self._is_param_active(cfg, p):
                 return None
@@ -2525,12 +2526,12 @@ class TPE:
 
     def _collect_joint_vectors(
         self,
-        configs: List[Dict[str, Any]],
-        cont_params: List[str],
-        weights: Optional[np.ndarray],
-    ) -> Tuple[List[List[float]], Optional[List[float]]]:
-        vecs: List[List[float]] = []
-        vec_ws: List[float] = []
+        configs: list[dict[str, Any]],
+        cont_params: list[str],
+        weights: np.ndarray | None,
+    ) -> tuple[list[list[float]], list[float] | None]:
+        vecs: list[list[float]] = []
+        vec_ws: list[float] = []
         for idx, cfg in enumerate(configs):
             vec = self._config_to_vector(cfg, cont_params)
             if vec is None:
@@ -2542,14 +2543,14 @@ class TPE:
 
     def _collect_grouped_vectors(
         self,
-        configs: List[Dict[str, Any]],
-        cont_params: List[str],
+        configs: list[dict[str, Any]],
+        cont_params: list[str],
         parent: str,
-        weights: Optional[np.ndarray],
-    ) -> Dict[Any, Tuple[List[List[float]], Optional[List[float]]]]:
+        weights: np.ndarray | None,
+    ) -> dict[Any, tuple[list[list[float]], list[float] | None]]:
         # Helper for conditional groups (including nested conditionals).
-        by_val: Dict[Any, List[List[float]]] = defaultdict(list)
-        by_val_w: Dict[Any, List[float]] = defaultdict(list)
+        by_val: dict[Any, list[list[float]]] = defaultdict(list)
+        by_val_w: dict[Any, list[float]] = defaultdict(list)
         for idx, cfg in enumerate(configs):
             if parent not in cfg or not self._condition_satisfied(
                 cfg, self.param_info[cont_params[0]]
@@ -2562,14 +2563,14 @@ class TPE:
             if weights is not None:
                 by_val_w[cfg[parent]].append(float(weights[idx]))
 
-        grouped: Dict[Any, Tuple[List[List[float]], Optional[List[float]]]] = {}
+        grouped: dict[Any, tuple[list[list[float]], list[float] | None]] = {}
         for parent_val, vecs in by_val.items():
             vec_ws = by_val_w[parent_val] if weights is not None else None
             grouped[parent_val] = (vecs, vec_ws)
         return grouped
 
     @staticmethod
-    def _normalize_weights(weights: Optional[Any]) -> Optional[np.ndarray]:
+    def _normalize_weights(weights: Any | None) -> np.ndarray | None:
         if weights is None:
             return None
         w = np.asarray(weights, dtype=float)
@@ -2592,7 +2593,7 @@ class TPE:
         denom = float(np.median(dists)) if np.median(dists) > 0 else 1.0
         return float(base_bw * (knn_dist / denom + 0.1))
 
-    def _filter_bad_observations_atpe(self, bad_obs: List[Any]) -> List[Any]:
+    def _filter_bad_observations_atpe(self, bad_obs: list[Any]) -> list[Any]:
         if not bad_obs:
             return bad_obs
         if len(bad_obs) < 5:
@@ -2600,7 +2601,7 @@ class TPE:
 
         filter_type = str(self.atpe_params.get("bad_filter_type", "hybrid")).lower()
         threshold = float(self.atpe_params.get("bad_filter_threshold", 3.0))
-        filtered: List[Any] = list(bad_obs)
+        filtered: list[Any] = list(bad_obs)
 
         # Step 1: robust MAD-based clipping of pathological bad outliers.
         if filter_type in {"hybrid", "aggressive", "auto", "zscore", "mad", "mad_z"}:
@@ -2640,8 +2641,8 @@ class TPE:
             return (vals - mu) / sigma
         return 0.6745 * (vals - med) / mad
 
-    def _config_feature_vector(self, cfg: Dict[str, Any]) -> np.ndarray:
-        vec: List[float] = []
+    def _config_feature_vector(self, cfg: dict[str, Any]) -> np.ndarray:
+        vec: list[float] = []
         for p in self.param_names:
             info = self.param_info[p]
             if p not in cfg or not self._is_param_active(cfg, p):
@@ -2663,7 +2664,7 @@ class TPE:
                     vec.append(float(idx) / max(1.0, float(len(support) - 1)))
         return np.asarray(vec, dtype=float)
 
-    def _cluster_representatives(self, obs: List[Any]) -> List[Any]:
+    def _cluster_representatives(self, obs: list[Any]) -> list[Any]:
         if len(obs) < 6:
             return obs
         try:
@@ -2692,7 +2693,7 @@ class TPE:
         except Exception:
             return obs
 
-        representatives: List[Any] = []
+        representatives: list[Any] = []
         for c in range(k):
             idxs = np.where(labels == c)[0]
             if idxs.size == 0:
@@ -2705,7 +2706,7 @@ class TPE:
             return obs
         return sorted(representatives, key=lambda o: float(o[1]))
 
-    def _ei_proxy_for_config(self, cfg: Dict[str, Any], best_loss: float) -> float:
+    def _ei_proxy_for_config(self, cfg: dict[str, Any], best_loss: float) -> float:
         mu, sigma = self._predict_mu_sigma(cfg, k=self.ei_k)
         improvement = max(0.0, float(best_loss) - float(mu))
         if sigma <= 1e-12:
@@ -2713,7 +2714,7 @@ class TPE:
         z = improvement / sigma
         return float(improvement * norm.cdf(z) + sigma * norm.pdf(z))
 
-    def _age_ei_weighted_keep(self, obs: List[Any]) -> List[Any]:
+    def _age_ei_weighted_keep(self, obs: list[Any]) -> list[Any]:
         if len(obs) <= 5:
             return obs
 
@@ -2757,8 +2758,8 @@ class TPE:
         return sorted(kept, key=lambda o: float(o[1]))
 
     def _predict_mu_sigma(
-        self, config: Dict[str, Any], k: int = 10
-    ) -> Tuple[float, float]:
+        self, config: dict[str, Any], k: int = 10
+    ) -> tuple[float, float]:
         if not self.observations:
             return 0.0, 1.0
         dists = []
@@ -2782,10 +2783,10 @@ class TPE:
         return mu, sigma
 
     def _bounds_and_bandwidths(
-        self, arr: np.ndarray, cont_params: List[str]
-    ) -> Tuple[List[Tuple[float, float]], np.ndarray]:
-        bounds: List[Tuple[float, float]] = []
-        bws: List[float] = []
+        self, arr: np.ndarray, cont_params: list[str]
+    ) -> tuple[list[tuple[float, float]], np.ndarray]:
+        bounds: list[tuple[float, float]] = []
+        bws: list[float] = []
         for dim, p in enumerate(cont_params):
             lo, hi = (
                 self._float_bounds_in_model_space(p)
@@ -2797,7 +2798,7 @@ class TPE:
             bws.append(max(bw * self._get_bandwidth_factor(p), self.min_bandwidth))
         return bounds, np.asarray(bws)
 
-    def _get_max_bandwidth_factor(self, param: str) -> Optional[float]:
+    def _get_max_bandwidth_factor(self, param: str) -> float | None:
         bf = self.max_bandwidth_factor
         if bf is None:
             return None
@@ -2815,10 +2816,10 @@ class TPE:
 
     def _build_copula_joint(
         self,
-        cont_params: List[str],
-        vecs: List[List[float]],
-        vec_ws: Optional[List[float]],
-    ) -> Optional[Dict[str, Any]]:
+        cont_params: list[str],
+        vecs: list[list[float]],
+        vec_ws: list[float] | None,
+    ) -> dict[str, Any] | None:
         if not vecs or len(cont_params) < 2:
             return None
 
@@ -2858,7 +2859,7 @@ class TPE:
         x: float,
         centers: np.ndarray,
         bw: float,
-        weights: Optional[np.ndarray],
+        weights: np.ndarray | None,
     ) -> float:
         key = (
             "cdf",
@@ -2889,7 +2890,7 @@ class TPE:
         x: float,
         centers: np.ndarray,
         bw: float,
-        weights: Optional[np.ndarray],
+        weights: np.ndarray | None,
     ) -> float:
         key = (
             "pdf",
@@ -2927,7 +2928,7 @@ class TPE:
             return np.eye(mat.shape[0])
 
     def _weighted_quantile(
-        self, values: np.ndarray, q: float, weights: Optional[np.ndarray]
+        self, values: np.ndarray, q: float, weights: np.ndarray | None
     ) -> float:
         v = np.asarray(values, dtype=float)
         q = float(min(max(q, 0.0), 1.0))
@@ -2944,8 +2945,8 @@ class TPE:
         return float(np.interp(q, cdf, v))
 
     def _maximal_active_subspaces(
-        self, configs: List[Dict[str, Any]], params: List[str]
-    ) -> List[List[str]]:
+        self, configs: list[dict[str, Any]], params: list[str]
+    ) -> list[list[str]]:
         """
         Build maximal active subspaces based on observed configs.
         Each subspace is the set of continuous params that are active together.
@@ -2968,7 +2969,7 @@ class TPE:
 
         # Keep maximal sets (not strict subset of another)
         sorted_sets = sorted(active_sets, key=lambda s: (-len(s), sorted(s)))
-        maximal: List[frozenset] = []
+        maximal: list[frozenset] = []
         for s in sorted_sets:
             if any(s < m for m in maximal):
                 continue
@@ -2978,11 +2979,11 @@ class TPE:
 
     def _build_multivariate_model(
         self,
-        cont_params: List[str],
-        configs: List[Dict[str, Any]],
-        weights: Optional[np.ndarray],
-        cov_key: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        cont_params: list[str],
+        configs: list[dict[str, Any]],
+        weights: np.ndarray | None,
+        cov_key: str | None = None,
+    ) -> dict[str, Any] | None:
         vecs, vec_ws = self._collect_joint_vectors(configs, cont_params, weights)
         return self._build_multivariate_density(
             cont_params, vecs, vec_ws, cov_key=cov_key
@@ -2990,11 +2991,11 @@ class TPE:
 
     def _build_multivariate_density(
         self,
-        cont_params: List[str],
-        vecs: List[List[float]],
-        vec_ws: Optional[List[float]],
-        cov_key: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        cont_params: list[str],
+        vecs: list[list[float]],
+        vec_ws: list[float] | None,
+        cov_key: str | None = None,
+    ) -> dict[str, Any] | None:
         if not vecs:
             return None
 
@@ -3037,7 +3038,7 @@ class TPE:
 
     def _component_covariances(
         self, arr: np.ndarray, base_cov: np.ndarray, bw_vec: np.ndarray
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         n_obs, d = arr.shape
         if n_obs < 2:
             return None
@@ -3076,7 +3077,7 @@ class TPE:
         self,
         values: np.ndarray,
         param: str,
-        numeric_bounds: Optional[Tuple[float, float]] = None,
+        numeric_bounds: tuple[float, float] | None = None,
     ) -> float:
         v = np.asarray(values, dtype=float)
         n = int(v.size)
@@ -3140,8 +3141,8 @@ class TPE:
         arr: np.ndarray,
         bw_vec: np.ndarray,
         min_bw: float,
-        cov_key: Optional[str] = None,
-        cont_params: Optional[List[str]] = None,
+        cov_key: str | None = None,
+        cont_params: list[str] | None = None,
     ) -> np.ndarray:
         cov_emp = None
         if arr.shape[0] > 1:
@@ -3172,7 +3173,7 @@ class TPE:
         cov: np.ndarray,
         arr: np.ndarray,
         cov_key: str,
-        cont_params: Tuple[str, ...],
+        cont_params: tuple[str, ...],
     ) -> np.ndarray:
         n_obs, d = arr.shape
         if n_obs < 2 or d <= 0:
@@ -3244,12 +3245,12 @@ class TPE:
                 shrink = min(1.0, max(0.0, ((tr_s2 - (tr_s**2) / max(d, 1)) / tr_s2)))
         return (1.0 - shrink) * s + shrink * prior
 
-    def _sample_from_models(self, models: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    def _sample_from_models(self, models: dict[str, dict[str, Any]]) -> dict[str, Any]:
         """
         Sample one configuration from the product of parameter models (good / l(x)).
         Handles conditional joints plus global/grouped multivariate with proper topological order.
         """
-        config: Dict[str, Any] = {}
+        config: dict[str, Any] = {}
         joint = models.get("__joint__", {})
         joint_params = joint.get("params", set())
 
@@ -3369,10 +3370,10 @@ class TPE:
 
     def _topo_sort_groups(
         self,
-        dependencies: Dict[str, Optional[str]],
-        group_names: List[str],
-        groups_by_name: Optional[Dict[str, Any]] = None,
-    ) -> List[str]:
+        dependencies: dict[str, str | None],
+        group_names: list[str],
+        groups_by_name: dict[str, Any] | None = None,
+    ) -> list[str]:
         """
         Topological sort of joint groups based on parent parameter dependencies.
         Uses parameter topo order as tie-breaker / approximation.
@@ -3432,7 +3433,7 @@ class TPE:
         return order
 
     def _log_likelihood(
-        self, config: Dict[str, Any], models: Dict[str, Dict[str, Any]]
+        self, config: dict[str, Any], models: dict[str, dict[str, Any]]
     ) -> float:
         """
         Compute log p(x | good models) — product over parameters + joint groups.
@@ -3578,7 +3579,7 @@ class TPE:
 
         return float(lp)
 
-    def _sample_joint(self, model: Dict[str, Any]) -> np.ndarray:
+    def _sample_joint(self, model: dict[str, Any]) -> np.ndarray:
         if model["kind"] == "prior_only":
             return np.asarray(
                 [self._sample_prior_model_space(p) for p in model["params"]],
@@ -3629,7 +3630,7 @@ class TPE:
         return self._rng.multivariate_normal(mu, cov)
 
     def _sample_mixture_1d(
-        self, centers: np.ndarray, bw: float, weights: Optional[np.ndarray]
+        self, centers: np.ndarray, bw: float, weights: np.ndarray | None
     ) -> float:
         """
         Sample from mixture of Gaussians N(center_i, bw^2).
@@ -3650,9 +3651,9 @@ class TPE:
 
     def _acq_ratio(
         self,
-        config: Dict[str, Any],
-        good_models: Dict[str, Dict[str, Any]],
-        bad_models: Dict[str, Dict[str, Any]],
+        config: dict[str, Any],
+        good_models: dict[str, dict[str, Any]],
+        bad_models: dict[str, dict[str, Any]],
     ) -> float:
         """
         Acquisition score proportional to l(x) / g(x),
@@ -3680,9 +3681,9 @@ class TPE:
         # to capture more "good" structure.
         return max(current_n_good, int(0.2 * n_obs))
 
-    def diagnostics(self) -> Dict[str, Any]:
+    def diagnostics(self) -> dict[str, Any]:
         tr = self.trust_region
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "observations": len(self.observations),
             "trust_region_enabled": bool(self.trust_region_enabled),
             "trust_region_restart_count": int(self._trust_region_restart_count),
@@ -3698,7 +3699,7 @@ class TPE:
             )
         return out
 
-    def _atpe_filter_observations(self, obs: List[Any]) -> List[Any]:
+    def _atpe_filter_observations(self, obs: list[Any]) -> list[Any]:
         if not self.atpe:
             return obs
 
@@ -3788,7 +3789,7 @@ class TPE:
                 centroids, labels = kmeans2(data, k, minit="points")
 
                 # pick best (lowest loss) per cluster
-                best_by_cluster: Dict[int, Any] = {}
+                best_by_cluster: dict[int, Any] = {}
                 for i, label in enumerate(labels):
                     cur = keep_obs[i]
                     loss = cur[1]

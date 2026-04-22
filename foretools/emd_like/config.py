@@ -1,8 +1,6 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -15,13 +13,13 @@ class VMDParameters:
 
     # VMD
     tol: float = 1e-6
-    tol_omega: Optional[float] = None
+    tol_omega: float | None = None
     alpha_min: float = 500
     alpha_max: float = 5000
     tau: float = 0.0
     DC: int = 0
     init: int = 1
-    random_seed: Optional[int] = None
+    random_seed: int | None = None
     max_iter: int = 300
     # ADMM acceleration (over-relaxation; 1.0 disables)
     admm_over_relax: float = 1.6
@@ -31,11 +29,11 @@ class VMDParameters:
     if_hop_size: int = 128
     if_center_smooth: float = 0.85
     if_update_step: float = 1.0
-    vncmd_min_track_gap: Optional[float] = None
+    vncmd_min_track_gap: float | None = None
     vncmd_envelope_ridge_scale: float = 0.0
     # optional warm-start state (streaming / rolling windows)
-    warm_start_u_hat: Optional[np.ndarray] = None
-    warm_start_omega: Optional[np.ndarray] = None
+    warm_start_u_hat: np.ndarray | None = None
+    warm_start_omega: np.ndarray | None = None
     # omega update stabilization (frequency-center damping)
     omega_momentum: float = 0.0
     omega_shrinkage: float = 0.0
@@ -52,7 +50,7 @@ class VMDParameters:
     # boundary
     boundary_method: str = "mirror"
     use_soft_junction: bool = False
-    window_alpha: Optional[float] = None  # if None -> auto
+    window_alpha: float | None = None  # if None -> auto
     fft_backend: str = "fftw"  # "fftw" | "torch"
     fft_device: str = "auto"  # "auto" | "cpu" | "cuda"
 

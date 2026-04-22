@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,7 @@ class PatternDetector(AnalysisStrategy):
         return "patterns"
 
     # ------------------------------ Public API ------------------------------
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         return {
             "feature_types": self._classify_features(data, config),
             "relationships": self._analyze_relationships(data, config),
@@ -117,7 +117,7 @@ class PatternDetector(AnalysisStrategy):
             return False
 
     @staticmethod
-    def _mixture_bic_flags(x: pd.Series, rs: int) -> Dict[str, bool]:
+    def _mixture_bic_flags(x: pd.Series, rs: int) -> dict[str, bool]:
         """Compare 1 vs 2 components via BIC; also probe BayesianGMM."""
         from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
 
@@ -160,11 +160,11 @@ class PatternDetector(AnalysisStrategy):
             return False
 
     # ------------------------------ Feature classification ------------------------------
-    def _classify_features(self, data, config) -> Dict[str, List[str]]:
+    def _classify_features(self, data, config) -> dict[str, list[str]]:
         dist_summary = (
             DistributionAnalyzer().analyze(data, config).get("summary", pd.DataFrame())
         )
-        classification: Dict[str, List[str]] = {
+        classification: dict[str, list[str]] = {
             "gaussian": [],
             "log_normal_candidates": [],
             "bounded": [],
@@ -270,7 +270,7 @@ class PatternDetector(AnalysisStrategy):
 
         return classification
 
-    def _analyze_relationships(self, data: pd.DataFrame, config) -> Dict[str, Any]:
+    def _analyze_relationships(self, data: pd.DataFrame, config) -> dict[str, Any]:
         """
         Relationship analysis with SOTA dependence detection.
         Normalized to match print_detailed_insights expectations.
@@ -672,7 +672,7 @@ class PatternDetector(AnalysisStrategy):
         return patterns
 
     # ------------------------------ Distribution fitting ------------------------------
-    def _fit_distributions(self, data, config) -> Dict[str, Dict[str, Any]]:
+    def _fit_distributions(self, data, config) -> dict[str, dict[str, Any]]:
         import warnings
 
         from scipy import stats
@@ -695,7 +695,7 @@ class PatternDetector(AnalysisStrategy):
             ("rayleigh", stats.rayleigh),
         ]
 
-        fits: Dict[str, Dict[str, Any]] = {}
+        fits: dict[str, dict[str, Any]] = {}
         rs = int(getattr(config, "random_state", 42))
         numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
 
@@ -769,7 +769,7 @@ class PatternDetector(AnalysisStrategy):
 
         return fits
 
-    def _analyze_causality(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def _analyze_causality(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         """
         SOTA Directed Information Mining (Simplified Transfer Entropy).
         Detects directional influence using lagged Mutual Information.
@@ -827,7 +827,7 @@ class PatternDetector(AnalysisStrategy):
                 
         return results
 
-    def _analyze_anomalies(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def _analyze_anomalies(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         """
         Advanced Anomaly Mining using Reconstruction Error proxy.
         """
@@ -861,6 +861,6 @@ class PatternDetector(AnalysisStrategy):
                 
         return results
 
-    def _output_anomalies(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def _output_anomalies(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         """Wrapper for _analyze_anomalies to match public API names."""
         return self._analyze_anomalies(data, config)

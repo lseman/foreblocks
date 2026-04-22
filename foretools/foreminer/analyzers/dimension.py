@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -141,7 +141,7 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         return "dimensionality"
 
     # --------------------------- Public API ---------------------------
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         try:
             scaled_data, preprocessing_info = self._adaptive_preprocessing(data, config)
 
@@ -179,13 +179,13 @@ class DimensionalityAnalyzer(AnalysisStrategy):
     # --------------------------- Preprocessing ---------------------------
     def _adaptive_preprocessing(
         self, data: pd.DataFrame, config: AnalysisConfig
-    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         rng = _set_default_rng(config)
         numeric = data.select_dtypes(include=[np.number]).dropna()
         if numeric.empty or numeric.shape[1] < 2:
             raise ValueError("Insufficient numeric data for dimensionality reduction")
 
-        info: Dict[str, Any] = {}
+        info: dict[str, Any] = {}
 
         # 1) Low variance filter
         vt = VarianceThreshold(threshold=0.01)
@@ -215,7 +215,7 @@ class DimensionalityAnalyzer(AnalysisStrategy):
                         n_init=5,
                     )
                     clusters = km.fit_predict(Z)
-                    indices: List[int] = []
+                    indices: list[int] = []
                     for cid in np.unique(clusters):
                         idx = np.flatnonzero(clusters == cid)
                         n_take = max(1, int(sample_cap * len(idx) / len(X)))
@@ -270,9 +270,9 @@ class DimensionalityAnalyzer(AnalysisStrategy):
     # --------------------------- Pre-reduction + whitening ---------------------------
     def _prereduce_whiten(
         self, X: np.ndarray, config: AnalysisConfig
-    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         n, d = X.shape
-        info: Dict[str, Any] = {}
+        info: dict[str, Any] = {}
         # Target dim for nonlinear pre-space
         k_cap = int(getattr(config, "prereduce_cap", 64))
         k = min(_choose_rank(X), k_cap)
@@ -310,10 +310,10 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         self,
         scaled_data: np.ndarray,
         pre_X: np.ndarray,
-        pre_info: Dict[str, Any],
+        pre_info: dict[str, Any],
         config: AnalysisConfig,
-    ) -> Dict[str, Any]:
-        results: Dict[str, Any] = {}
+    ) -> dict[str, Any]:
+        results: dict[str, Any] = {}
         n_samples, n_features = scaled_data.shape
         rs = getattr(config, "random_state", 42)
         target_dim = 2
@@ -436,9 +436,9 @@ class DimensionalityAnalyzer(AnalysisStrategy):
 
         return results
 
-    def _umap_micro_sweep(self, pre_X: np.ndarray, rs: int) -> Dict[str, Any]:
+    def _umap_micro_sweep(self, pre_X: np.ndarray, rs: int) -> dict[str, Any]:
         """Very small sweep for (n_neighbors, min_dist) on a subsample, pick best by trustworthiness."""
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         if pre_X.shape[0] < 400 or not HAS_UMAP:
             return out
         try:
@@ -454,7 +454,7 @@ class DimensionalityAnalyzer(AnalysisStrategy):
                     em = UMAP(n_components=2, n_neighbors=nn, min_dist=md, random_state=rs).fit_transform(Xs)
                     sc = trustworthiness(Xs, em, n_neighbors=10)
                     if sc > best_score:
-                        best, best_score = ("umap_nn{}_md{}".format(nn, md), sc)
+                        best, best_score = (f"umap_nn{nn}_md{md}", sc)
                         out[best] = {"embedding": em, "method_type": "nonlinear", "note": "sweep_candidate"}
                 except Exception:
                     pass
@@ -465,16 +465,16 @@ class DimensionalityAnalyzer(AnalysisStrategy):
     # --------------------------- Evaluation ---------------------------
     def _evaluate_embeddings(
         self,
-        embeddings: Dict[str, Any],
+        embeddings: dict[str, Any],
         X_high: np.ndarray,
         pre_X: np.ndarray,
-    ) -> Dict[str, Any]:
-        evals: Dict[str, Any] = {}
+    ) -> dict[str, Any]:
+        evals: dict[str, Any] = {}
         rs = 42
 
         # Decide if we need sampling for expensive metrics
         n = pre_X.shape[0]
-        sample_idx: Optional[np.ndarray] = None
+        sample_idx: np.ndarray | None = None
         if n > 3000:
             rng = np.random.default_rng(rs)
             sample_idx = rng.choice(n, size=2000, replace=False)
@@ -490,7 +490,7 @@ class DimensionalityAnalyzer(AnalysisStrategy):
             # Align embedding samples if we sampled
             Y = emb if sample_idx is None else emb[sample_idx]
 
-            metrics: Dict[str, float] = {}
+            metrics: dict[str, float] = {}
 
             # Clustering quality (on Y)
             try:
@@ -532,11 +532,11 @@ class DimensionalityAnalyzer(AnalysisStrategy):
     # --------------------------- Recommendations ---------------------------
     def _generate_recommendations(
         self,
-        embeddings: Dict[str, Any],
-        evaluations: Dict[str, Any],
-        preprocessing_info: Dict[str, Any],
-    ) -> List[str]:
-        recs: List[str] = []
+        embeddings: dict[str, Any],
+        evaluations: dict[str, Any],
+        preprocessing_info: dict[str, Any],
+    ) -> list[str]:
+        recs: list[str] = []
         # more informative weighting
         weights = {
             "trustworthiness": 0.35,
@@ -547,7 +547,7 @@ class DimensionalityAnalyzer(AnalysisStrategy):
             "silhouette_score": 0.05,
         }
 
-        scores: Dict[str, float] = {}
+        scores: dict[str, float] = {}
         for name, mets in evaluations.items():
             score = 0.0
             for k, w in weights.items():

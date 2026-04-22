@@ -2,7 +2,8 @@ import warnings
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
+from collections.abc import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,7 +47,7 @@ class SHAPAnalyzer(AnalysisStrategy):
     def name(self) -> str:
         return "shap_explanation"
 
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         # This would require a fitted model to be passed in
         # For now, return placeholder
         return {"explanation": "SHAP analysis requires a fitted model"}
@@ -63,8 +64,8 @@ class DatasetAnalyzer:
     def __init__(
         self,
         df: pd.DataFrame,
-        time_col: Optional[str] = None,
-        config: Optional[AnalysisConfig] = None,
+        time_col: str | None = None,
+        config: AnalysisConfig | None = None,
         verbose: bool = True,
     ):
         self.df = df.copy()
@@ -75,8 +76,8 @@ class DatasetAnalyzer:
         # Initialize components
         self.hooks = AnalysisHooks()
         self.plot_helper = PlotHelper()
-        self._strategies: Dict[str, AnalysisStrategy] = {}
-        self._results_cache: Dict[str, Any] = {}
+        self._strategies: dict[str, AnalysisStrategy] = {}
+        self._results_cache: dict[str, Any] = {}
 
         # Cache frequently used data
         self._numeric_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
@@ -155,7 +156,7 @@ class DatasetAnalyzer:
         if self.verbose:
             print(f"🔍 {message}")
 
-    def _resolve_analysis_types(self, analysis_types: Optional[List[str]]) -> List[str]:
+    def _resolve_analysis_types(self, analysis_types: list[str] | None) -> list[str]:
         """Resolve requested analyses and skip unknown types."""
         requested = analysis_types or list(self._strategies.keys())
         resolved = []
@@ -169,8 +170,8 @@ class DatasetAnalyzer:
         return resolved
 
     def _build_hook_context(
-        self, analysis_type: str, result: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, analysis_type: str, result: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Create a consistent hook context payload."""
         context = {
             "data": self.df,
@@ -217,7 +218,7 @@ class DatasetAnalyzer:
         ax.set_ylabel(ylabel)
 
     def _get_analysis_result(
-        self, name: str, key: Optional[str] = None, default: Any = None
+        self, name: str, key: str | None = None, default: Any = None
     ) -> Any:
         """Get a cached analysis result, running it if needed."""
         if name not in self._results_cache:
@@ -242,7 +243,7 @@ class DatasetAnalyzer:
     # ========================================================================
     # PUBLIC API (Clean and comprehensive)
     # ========================================================================
-    def analyze(self, analysis_types: Optional[List[str]] = None) -> Dict[str, Any]:
+    def analyze(self, analysis_types: list[str] | None = None) -> dict[str, Any]:
         """Run specified analyses in parallel with pre/post hooks"""
         resolved_types = self._resolve_analysis_types(analysis_types)
         results = {}
@@ -280,7 +281,7 @@ class DatasetAnalyzer:
 
         return results
 
-    def plot(self, analysis_types: Optional[List[str]] = None):
+    def plot(self, analysis_types: list[str] | None = None):
         """Generate comprehensive plots for analysis results"""
         analysis_types = analysis_types or list(self._results_cache.keys())
 
@@ -294,7 +295,7 @@ class DatasetAnalyzer:
                     self.config,
                 )
 
-    def analyze_and_plot(self, analysis_types: Optional[List[str]] = None):
+    def analyze_and_plot(self, analysis_types: list[str] | None = None):
         """Run comprehensive analysis and generate all plots"""
         results = self.analyze(analysis_types)
         self.plot(analysis_types)
@@ -327,7 +328,7 @@ class DatasetAnalyzer:
     # SPECIALIZED METHODS (Preserved from original)
     # ========================================================================
 
-    def decompose_series(self, column: str, period: Optional[int] = None):
+    def decompose_series(self, column: str, period: int | None = None):
         """STL decomposition for time series"""
         series = self._get_numeric_series(
             column,
@@ -381,7 +382,7 @@ class DatasetAnalyzer:
         plt.show()
 
     def plot_correlation_network(
-        self, method: str = "pearson", threshold: Optional[float] = None
+        self, method: str = "pearson", threshold: float | None = None
     ):
         """Create correlation network graph"""
         if "correlations" not in self._results_cache:
@@ -393,7 +394,7 @@ class DatasetAnalyzer:
 
     @requires_library("shap")
     def explain_features(
-        self, model, X: Optional[pd.DataFrame] = None, max_display: int = 10
+        self, model, X: pd.DataFrame | None = None, max_display: int = 10
     ):
         """SHAP feature explanation"""
         import shap
@@ -962,14 +963,14 @@ class DatasetAnalyzer:
                     print(f"💡 {_rec}")
 
         # ----------------------- Time series -----------------------
-        ts: Dict[str, Any] = safe_get("timeseries") or {}
+        ts: dict[str, Any] = safe_get("timeseries") or {}
         if ts:
 
             section("TIME SERIES ANALYSIS", 1)
 
             stationarity_df: pd.DataFrame = ts.get("stationarity", pd.DataFrame())
-            readiness: Dict[str, Any] = ts.get("forecasting_readiness", {}) or {}
-            temporal: Dict[str, Any] = ts.get("temporal_patterns", {}) or {}
+            readiness: dict[str, Any] = ts.get("forecasting_readiness", {}) or {}
+            temporal: dict[str, Any] = ts.get("temporal_patterns", {}) or {}
 
             # ---------- Overview ----------
             if not stationarity_df.empty:
@@ -1053,7 +1054,7 @@ class DatasetAnalyzer:
                         metric(f, f"strength={s:.3f}", indent=1)
 
                 # ---------- Lag & Seasonality Suggestions (per-series + summary) ----------
-                lag_sugg: Dict[str, Any] = ts.get("lag_suggestions", {}) or {}
+                lag_sugg: dict[str, Any] = ts.get("lag_suggestions", {}) or {}
 
                 # Build compact per-series rows:
                 #   feature -> rec_lags, seasonal_lags, stl_period, stl_strength
@@ -1396,14 +1397,14 @@ class DatasetAnalyzer:
                         metric(f"{c1} ↔ {c2}", f"{v:.2f}", indent=1)
                     rec("Consider joint imputation for correlated missing patterns")
 
-        dim: Dict[str, Any] = safe_get("dimensionality") or {}
+        dim: dict[str, Any] = safe_get("dimensionality") or {}
         if dim:
             section("DIMENSIONALITY ANALYSIS", 1)
 
-            embeddings: Dict[str, Any] = dim.get("embeddings", {}) or {}
-            evals: Dict[str, Any] = dim.get("evaluation", {}) or {}
-            prep: Dict[str, Any] = dim.get("preprocessing_info", {}) or {}
-            chars: Dict[str, Any] = dim.get("data_characteristics", {}) or {}
+            embeddings: dict[str, Any] = dim.get("embeddings", {}) or {}
+            evals: dict[str, Any] = dim.get("evaluation", {}) or {}
+            prep: dict[str, Any] = dim.get("preprocessing_info", {}) or {}
+            chars: dict[str, Any] = dim.get("data_characteristics", {}) or {}
             recs: Any = dim.get("recommendations", []) or []
 
             # ---------- Overview ----------
@@ -2539,11 +2540,11 @@ class DatasetAnalyzer:
         """Register a custom plotter"""
         self.hooks.register_plotter(analysis_type, plotter)
 
-    def get_results(self, analysis_type: str) -> Optional[Dict[str, Any]]:
+    def get_results(self, analysis_type: str) -> dict[str, Any] | None:
         """Get cached results for an analysis type"""
         return self._results_cache.get(analysis_type)
 
-    def get_available_analyses(self) -> List[str]:
+    def get_available_analyses(self) -> list[str]:
         """Get list of available analysis types"""
         return list(self._strategies.keys())
 

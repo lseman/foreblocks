@@ -1,7 +1,5 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
 
 import numpy as np
 from scipy.interpolate import Akima1DInterpolator, PchipInterpolator, interp1d
@@ -17,7 +15,7 @@ class EMDVariants:
         sift_threshold: float = 0.05,
         energy_threshold: float = 1e-8,
         envelope_method: str = "akima",
-    ) -> List[np.ndarray]:
+    ) -> list[np.ndarray]:
         x = np.asarray(signal, dtype=np.float64)
         N = x.size
 
@@ -60,7 +58,7 @@ class EMDVariants:
         max_sifts: int = 100,
         threshold: float = 0.05,
         envelope_method: str = "akima",
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         h = signal.copy()
         N = len(h)
 
@@ -96,7 +94,7 @@ class EMDVariants:
     @staticmethod
     def _find_extrema(
         signal: np.ndarray, kind: str = "max"
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         x = signal
         N = len(x)
 
@@ -124,7 +122,7 @@ class EMDVariants:
         values: np.ndarray,
         N: int,
         method: str = "akima",
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         if len(idx) < 2:
             return None
 
@@ -180,13 +178,13 @@ class EMDVariants:
         n_ensembles: int,
         max_imfs: int,
         max_sifts_noise: int = 50,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         envelope_method: str = "akima",
-    ) -> Tuple[np.ndarray, List[List[np.ndarray]]]:
+    ) -> tuple[np.ndarray, list[list[np.ndarray]]]:
         rng = np.random.default_rng(seed)
         noises = rng.standard_normal((n_ensembles, N)).astype(np.float64, copy=False)
 
-        bank: List[List[np.ndarray]] = []
+        bank: list[list[np.ndarray]] = []
         for i in range(n_ensembles):
             imfs_i = EMDVariants.emd(
                 noises[i],
@@ -202,7 +200,7 @@ class EMDVariants:
 
     @staticmethod
     def _get_noise_component(
-        bank_i: List[np.ndarray], noise_fallback: np.ndarray, k: int
+        bank_i: list[np.ndarray], noise_fallback: np.ndarray, k: int
     ) -> np.ndarray:
         if k < len(bank_i):
             return bank_i[k]
@@ -217,12 +215,12 @@ class EMDVariants:
         n_ensembles: int = 100,
         max_imfs: int = 10,
         epsilon: float = 1e-6,
-        seed: Optional[int] = 0,
+        seed: int | None = 0,
         envelope_method: str = "akima",
         max_sifts_signal: int = 100,
         max_sifts_noise: int = 40,
         **emd_kwargs,
-    ) -> List[np.ndarray]:
+    ) -> list[np.ndarray]:
         x = np.asarray(signal, dtype=np.float64)
         N = x.size
         if N < 20:
@@ -244,7 +242,7 @@ class EMDVariants:
             envelope_method=envelope_method,
         )
 
-        imfs: List[np.ndarray] = []
+        imfs: list[np.ndarray] = []
         residual = x.copy()
 
         for k in range(max_imfs):
@@ -294,11 +292,11 @@ class EMDVariants:
         n_ensembles: int = 100,
         max_imfs: int = 10,
         epsilon: float = 1e-6,
-        seed: Optional[int] = 0,
+        seed: int | None = 0,
         envelope_method: str = "akima",
         max_sifts_noise: int = 40,
         **emd_kwargs,
-    ) -> List[np.ndarray]:
+    ) -> list[np.ndarray]:
         x = np.asarray(signal, dtype=np.float64)
         N = x.size
         if N < 20:
@@ -320,7 +318,7 @@ class EMDVariants:
             envelope_method=envelope_method,
         )
 
-        imfs: List[np.ndarray] = []
+        imfs: list[np.ndarray] = []
         residual = x.copy()
 
         for k in range(max_imfs):
@@ -367,7 +365,7 @@ class EMDVariants:
         return imfs
 
     @staticmethod
-    def compute_orthogonality_index(imfs: List[np.ndarray]) -> float:
+    def compute_orthogonality_index(imfs: list[np.ndarray]) -> float:
         if len(imfs) < 2:
             return 0.0
         n_imfs = len(imfs)
@@ -384,7 +382,7 @@ class EMDVariants:
     @staticmethod
     def compute_instantaneous_frequency(
         imf: np.ndarray, fs: float = 1.0
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         analytic = hilbert(imf)
         amplitude = np.abs(analytic)
         phase = np.unwrap(np.angle(analytic))

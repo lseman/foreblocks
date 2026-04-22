@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -65,7 +64,7 @@ class DistanceCorrelation:
 
     # ---------- Public API ----------
     def matrix(
-        self, df: pd.DataFrame, pearson_scr: Optional[pd.DataFrame] = None
+        self, df: pd.DataFrame, pearson_scr: pd.DataFrame | None = None
     ) -> pd.DataFrame:
         cols = list(df.columns)
         p = len(cols)
@@ -145,7 +144,7 @@ class DistanceCorrelation:
         return float(0.0 if denom == 0.0 else dcov_xy / denom)
 
     # ---------- Pass 1: row sums & grand mean ----------
-    def _row_sums_and_grand_mean_abs(self, v: np.ndarray) -> Tuple[np.ndarray, float]:
+    def _row_sums_and_grand_mean_abs(self, v: np.ndarray) -> tuple[np.ndarray, float]:
         """
         Computes per-row sums of |v_i - v_j| for all i (size n)
         and the grand mean (sum / n^2), without storing the full matrix.

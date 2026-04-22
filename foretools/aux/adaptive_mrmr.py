@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,7 +19,7 @@ class AdaptiveMRMR:
 
     def __init__(
         self,
-        scorer: Optional[AdaptiveMI] = None,
+        scorer: AdaptiveMI | None = None,
         *,
         criterion: str = "mid",
         candidate_pool: int = 128,
@@ -45,10 +44,10 @@ class AdaptiveMRMR:
         self.task = str(task).lower()
         self.random_state = int(random_state)
 
-        self.relevance_scores_: Optional[pd.Series] = None
-        self.selection_scores_: Optional[pd.Series] = None
-        self.selected_features_: List[str] = []
-        self.redundancy_matrix_: Optional[pd.DataFrame] = None
+        self.relevance_scores_: pd.Series | None = None
+        self.selection_scores_: pd.Series | None = None
+        self.selected_features_: list[str] = []
+        self.redundancy_matrix_: pd.DataFrame | None = None
 
         if self.criterion not in {"mid", "miq"}:
             raise ValueError(
@@ -61,10 +60,10 @@ class AdaptiveMRMR:
         y: pd.Series,
         *,
         min_features: int = 1,
-        max_features: Optional[int] = None,
+        max_features: int | None = None,
         mi_threshold: float = 0.01,
         min_samples: int = 10,
-    ) -> "AdaptiveMRMR":
+    ) -> AdaptiveMRMR:
         numerical_cols = X.select_dtypes(include=[np.number]).columns
         if len(numerical_cols) == 0:
             self.selected_features_ = []
@@ -119,7 +118,7 @@ class AdaptiveMRMR:
 
     def _prepare_data(
         self, X: pd.DataFrame, y: pd.Series
-    ) -> Tuple[pd.DataFrame, pd.Series]:
+    ) -> tuple[pd.DataFrame, pd.Series]:
         common_idx = X.index.intersection(y.index)
         X_aligned = X.loc[common_idx]
         y_aligned = y.loc[common_idx]
@@ -168,8 +167,8 @@ class AdaptiveMRMR:
             split_iter = splitter.split(X)
 
         names = list(X.columns)
-        fold_scores: Dict[str, List[float]] = {name: [] for name in names}
-        positive_freq: Dict[str, int] = {name: 0 for name in names}
+        fold_scores: dict[str, list[float]] = {name: [] for name in names}
+        positive_freq: dict[str, int] = {name: 0 for name in names}
 
         for train_idx, _ in split_iter:
             X_fold = X.iloc[train_idx]
@@ -225,9 +224,9 @@ class AdaptiveMRMR:
         relevance: pd.Series,
         redundancy: pd.DataFrame,
         target_count: int,
-    ) -> Tuple[List[str], Dict[str, float]]:
-        selected: List[str] = []
-        scores: Dict[str, float] = {}
+    ) -> tuple[list[str], dict[str, float]]:
+        selected: list[str] = []
+        scores: dict[str, float] = {}
         remaining = list(relevance.index)
 
         while remaining and len(selected) < target_count:
@@ -278,7 +277,7 @@ class AdaptiveMRMR:
         scores: pd.Series,
         *,
         min_features: int,
-        max_features: Optional[int],
+        max_features: int | None,
         mi_threshold: float,
     ) -> int:
         above_threshold = int((scores > mi_threshold).sum())

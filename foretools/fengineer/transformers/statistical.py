@@ -1,4 +1,3 @@
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -10,7 +9,7 @@ class StatisticalTransformer(BaseFeatureTransformer):
     """Creates statistical aggregation features across rows."""
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "StatisticalTransformer":
         self.numerical_cols_ = X.select_dtypes(include=[np.number]).columns.tolist()
         self.is_fitted = True

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -12,11 +11,11 @@ RouterOutput = tuple[
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
 ]
 
 class Router(nn.Module, ABC):

@@ -35,5 +35,5 @@ class PruningConfig:
     step_sigma_progress_slope: float = 1.0
     step_sigma_floor: float = 1.5
 
-    def copy_with(self, **overrides: Any) -> "PruningConfig":
+    def copy_with(self, **overrides: Any) -> PruningConfig:
         return replace(self, **overrides)

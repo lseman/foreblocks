@@ -17,8 +17,8 @@ class DLinearHeadCustom(nn.Module):
     Args
     ----
     pred_len: int             # horizon T
-    in_channels: Optional[int]
-    out_channels: Optional[int]  # set to enable a C_in->C_out 1x1 mixer
+    in_channels: int | None
+    out_channels: int | None  # set to enable a C_in->C_out 1x1 mixer
     individual: bool          # per-channel weights (classic) vs shared
     use_decomposition: bool   # moving-average trend + seasonal heads
     ma_kernel: int            # MA window

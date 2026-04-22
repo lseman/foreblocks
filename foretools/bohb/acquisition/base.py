@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any
 
 
 class AcquisitionStrategy(ABC):
     @abstractmethod
     def score(
         self,
-        config: Dict[str, Any],
-        good_models: Dict[str, Dict[str, Any]],
-        bad_models: Dict[str, Dict[str, Any]],
+        config: dict[str, Any],
+        good_models: dict[str, dict[str, Any]],
+        bad_models: dict[str, dict[str, Any]],
     ) -> float:
         pass
 

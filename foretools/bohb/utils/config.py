@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 
@@ -40,11 +40,11 @@ def _robust_scale_1d(values: np.ndarray) -> float:
     return float(max(s, 1e-12))
 
 
-def _canonical_config_key(config: Dict[str, Any], float_round: int = 12) -> str:
+def _canonical_config_key(config: dict[str, Any], float_round: int = 12) -> str:
     """
     Stable serialization for config hashing. Floats are rounded to reduce tiny drift.
     """
-    items: Dict[str, Any] = {}
+    items: dict[str, Any] = {}
     for k in sorted(config.keys()):
         v = config[k]
         if isinstance(v, float):

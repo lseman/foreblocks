@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict
+from typing import Any
 
 import networkx as nx
 import numpy as np
@@ -221,7 +221,7 @@ class GraphAnalyzer(AnalysisStrategy):
         return G
 
     # --------------------------- Network Analysis ---------------------------
-    def _analyze_network_topology(self, G: nx.Graph) -> Dict[str, Any]:
+    def _analyze_network_topology(self, G: nx.Graph) -> dict[str, Any]:
         """Comprehensive network topology analysis"""
         if G.number_of_nodes() == 0:
             return {"error": "Empty graph"}
@@ -295,7 +295,7 @@ class GraphAnalyzer(AnalysisStrategy):
         
         return topology
 
-    def _detect_communities(self, G: nx.Graph) -> Dict[str, Any]:
+    def _detect_communities(self, G: nx.Graph) -> dict[str, Any]:
         """Advanced community detection using multiple algorithms"""
         if G.number_of_nodes() < 3:
             return {"error": "Too few nodes for community detection"}
@@ -405,7 +405,7 @@ class GraphAnalyzer(AnalysisStrategy):
         
         return communities
 
-    def _centrality_analysis(self, G: nx.Graph) -> Dict[str, Any]:
+    def _centrality_analysis(self, G: nx.Graph) -> dict[str, Any]:
         """Comprehensive centrality analysis"""
         if G.number_of_nodes() == 0:
             return {"error": "Empty graph"}
@@ -491,7 +491,7 @@ class GraphAnalyzer(AnalysisStrategy):
         
         return centralities
 
-    def _network_embedding_analysis(self, G: nx.Graph) -> Dict[str, Any]:
+    def _network_embedding_analysis(self, G: nx.Graph) -> dict[str, Any]:
         """Advanced network embedding analysis"""
         embeddings = {}
         
@@ -571,7 +571,7 @@ class GraphAnalyzer(AnalysisStrategy):
 
     # --------------------------- Main Analysis Method ---------------------------
     def analyze(self, data: pd.DataFrame, config: AnalysisConfig, graph_type: str = "auto", 
-                target_col: str = None) -> Dict[str, Any]:
+                target_col: str = None) -> dict[str, Any]:
         """
         Comprehensive graph analysis of data relationships
         
@@ -657,7 +657,7 @@ class GraphAnalyzer(AnalysisStrategy):
                     analysis_results["graphs"][gtype] = {
                         "n_nodes": G.number_of_nodes(),
                         "n_edges": G.number_of_edges(),
-                        "edge_types": list(set([G[u][v].get('type', 'unknown') for u, v in G.edges()])),
+                        "edge_types": list({G[u][v].get('type', 'unknown') for u, v in G.edges()}),
                         "graph_object": G  # Store for potential further analysis
                     }
                     
@@ -693,7 +693,7 @@ class GraphAnalyzer(AnalysisStrategy):
                 "analysis_type": "graph_network_analysis"
             }
 
-    def _generate_graph_summary_and_recommendations(self, results: Dict[str, Any]) -> None:
+    def _generate_graph_summary_and_recommendations(self, results: dict[str, Any]) -> None:
         """Generate summary statistics and recommendations"""
         
         # Find best graph based on connectivity and structure
@@ -877,7 +877,7 @@ class GraphAnalyzer(AnalysisStrategy):
         
         results["recommendations"] = recommendations[:8]  # Limit to top recommendations
 
-    def get_network_visualization_data(self, results: Dict[str, Any], graph_type: str = None) -> Dict[str, Any]:
+    def get_network_visualization_data(self, results: dict[str, Any], graph_type: str = None) -> dict[str, Any]:
         """
         Extract data needed for network visualization
         

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Fast Optuna-Optimized VMD with FFT caching (CLEAN + FIXED) — FULL REFACTORED (NO DUPLICATED PIPELINES)
 ====================================================================================================
@@ -33,7 +32,6 @@ from __future__ import annotations
 import os
 import pickle
 import warnings
-from typing import List, Tuple
 
 import numpy as np
 import pyfftw
@@ -336,7 +334,7 @@ class FFTWManager:
 
     def resolve_backend(
         self, backend: str = "fftw", device: str = "auto"
-    ) -> Tuple[str, str]:
+    ) -> tuple[str, str]:
         name = str(backend).lower()
         dev = str(device).lower()
 
@@ -488,7 +486,7 @@ class BoundaryHandler:
     @staticmethod
     def extend_signal(
         signal: np.ndarray, method: str, extension_ratio: float
-    ) -> Tuple[np.ndarray, int, int]:
+    ) -> tuple[np.ndarray, int, int]:
         s = np.asarray(signal, dtype=np.float64)
         N = s.size
         ext_len = int(N * float(extension_ratio))
@@ -551,8 +549,8 @@ class BoundaryHandler:
 
     @staticmethod
     def taper_boundaries(
-        modes: List[np.ndarray], taper_length: int
-    ) -> List[np.ndarray]:
+        modes: list[np.ndarray], taper_length: int
+    ) -> list[np.ndarray]:
         out = []
         for m in modes:
             x = np.asarray(m, dtype=np.float64).copy()
@@ -737,13 +735,13 @@ class ModeProcessor:
 
     @staticmethod
     def merge_similar_modes(
-        modes: List[np.ndarray], fs: float, freq_tol: float
-    ) -> List[np.ndarray]:
+        modes: list[np.ndarray], fs: float, freq_tol: float
+    ) -> list[np.ndarray]:
         if len(modes) <= 1:
             return modes
         dom = [ModeProcessor.dominant_frequency(m, fs) for m in modes]
         used = np.zeros(len(modes), dtype=bool)
-        merged: List[np.ndarray] = []
+        merged: list[np.ndarray] = []
         for i in range(len(modes)):
             if used[i]:
                 continue
@@ -762,8 +760,8 @@ class ModeProcessor:
 
     @staticmethod
     def sort_modes_by_frequency(
-        modes: List[np.ndarray], fs: float, low_to_high: bool = True
-    ) -> Tuple[List[np.ndarray], List[float]]:
+        modes: list[np.ndarray], fs: float, low_to_high: bool = True
+    ) -> tuple[list[np.ndarray], list[float]]:
         dom = [ModeProcessor.dominant_frequency(m, fs) for m in modes]
         order = np.argsort(dom)
         if not low_to_high:
@@ -771,7 +769,7 @@ class ModeProcessor:
         return [modes[i] for i in order], [float(dom[i]) for i in order]
 
     @staticmethod
-    def cost_signal(modes: List[np.ndarray], signal: np.ndarray, fs: float) -> float:
+    def cost_signal(modes: list[np.ndarray], signal: np.ndarray, fs: float) -> float:
         if len(modes) == 0:
             return 10.0
         x = np.asarray(signal, dtype=np.float64)

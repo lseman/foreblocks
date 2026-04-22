@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -24,12 +24,12 @@ class CategoricalTransformer(BaseFeatureTransformer):
     def __init__(
         self,
         config,
-        strategies: Tuple[str, ...] = ("auto",),
-        rare_threshold: Optional[
+        strategies: tuple[str, ...] = ("auto",),
+        rare_threshold: None | (
             float
-        ] = None,  # fraction (0..1); falls back to config.rare_threshold
+        ) = None,  # fraction (0..1); falls back to config.rare_threshold
         min_count: int = 1,  # absolute count for rare categories
-        top_k: Optional[int] = None,  # keep top_k most frequent; others -> OTHER
+        top_k: int | None = None,  # keep top_k most frequent; others -> OTHER
         hashing_dim: int = 64,
         n_splits: int = 5,
         target_min_samples: int = 100,  # only consider target encoding if enough data
@@ -58,8 +58,8 @@ class CategoricalTransformer(BaseFeatureTransformer):
         self.group_key = getattr(config, "cat_group_key", None)
         self.time_col = getattr(config, "cat_time_col", None)
 
-        self.categorical_cols_: List[str] = []
-        self.col_info_: Dict[str, Dict[str, Any]] = {}  # per-col strategy+artifacts
+        self.categorical_cols_: list[str] = []
+        self.col_info_: dict[str, dict[str, Any]] = {}  # per-col strategy+artifacts
         self.is_fitted = False
 
     # -------------------------- utils --------------------------
@@ -86,7 +86,7 @@ class CategoricalTransformer(BaseFeatureTransformer):
         y_codes = y_codes.where(y_codes >= 0, np.nan)
         return y_codes
 
-    def _apply_rare_policy(self, s: pd.Series) -> Tuple[pd.Series, List[str]]:
+    def _apply_rare_policy(self, s: pd.Series) -> tuple[pd.Series, list[str]]:
         vc = s.value_counts(dropna=False)
         freq = vc / vc.sum()
         rare = set()
@@ -108,7 +108,7 @@ class CategoricalTransformer(BaseFeatureTransformer):
 
         return s, sorted(map(str, rare))
 
-    def _choose_auto_strategy(self, s: pd.Series, y: Optional[pd.Series]) -> str:
+    def _choose_auto_strategy(self, s: pd.Series, y: pd.Series | None) -> str:
         k = s.nunique(dropna=False)
         n = len(s)
         te_threshold = int(getattr(self.config, "target_encode_threshold", 10))
@@ -265,7 +265,7 @@ class CategoricalTransformer(BaseFeatureTransformer):
 
     # -------------------------- fit --------------------------
 
-    def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None):
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None):
         cats = X.select_dtypes(include=["object", "category"]).columns.tolist()
         self.categorical_cols_ = cats
         self.col_info_.clear()
@@ -364,8 +364,8 @@ class CategoricalTransformer(BaseFeatureTransformer):
         self,
         X: pd.DataFrame,
         s: pd.Series,
-        y: Optional[pd.Series],
-        info: Dict[str, Any],
+        y: pd.Series | None,
+        info: dict[str, Any],
         index: pd.Index,
     ):
         # If y is provided at transform (train), do KFold out-of-fold encoding.
@@ -425,8 +425,8 @@ class CategoricalTransformer(BaseFeatureTransformer):
     def _loo_transform(
         self,
         s: pd.Series,
-        y: Optional[pd.Series],
-        info: Dict[str, Any],
+        y: pd.Series | None,
+        info: dict[str, Any],
         index: pd.Index,
     ):
         """Leave-One-Out encoding: (TargetSum - CurrentY) / (Count - 1)"""
@@ -462,8 +462,8 @@ class CategoricalTransformer(BaseFeatureTransformer):
     def _james_stein_transform(
         self,
         s: pd.Series,
-        y: Optional[pd.Series],
-        info: Dict[str, Any],
+        y: pd.Series | None,
+        info: dict[str, Any],
         index: pd.Index,
     ):
         """James-Stein encoder: Shrinkage toward the global mean."""
@@ -499,7 +499,7 @@ class CategoricalTransformer(BaseFeatureTransformer):
             cat_mean = info["cat_mean"]
             return pd.DataFrame({name: s.map(cat_mean).fillna(prior).values}, index=index)
 
-    def transform(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> pd.DataFrame:
+    def transform(self, X: pd.DataFrame, y: pd.Series | None = None) -> pd.DataFrame:
         if not self.categorical_cols_:
             return pd.DataFrame(index=X.index)
 

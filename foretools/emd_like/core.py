@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 VMDCore — Variational Mode Decomposition (SOTA-optimized)
 
@@ -21,7 +20,7 @@ Improvements over baseline
 from __future__ import annotations
 
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import optuna
@@ -166,7 +165,7 @@ class AndersonMixer:
     def __init__(self, m: int = 5, beta: float = 1.0):
         self.m = max(1, int(m))
         self.beta = float(beta)
-        self._hist: List[Tuple[np.ndarray, np.ndarray]] = []  # (x_r, g_r) pairs
+        self._hist: list[tuple[np.ndarray, np.ndarray]] = []  # (x_r, g_r) pairs
 
     def reset(self) -> None:
         self._hist.clear()
@@ -244,10 +243,10 @@ class VMDCore:
         signal: np.ndarray,
         boundary_method: str,
         use_soft_junction: bool,
-        window_alpha: Optional[float],
+        window_alpha: float | None,
         fft_backend: str = "fftw",
         fft_device: str = "auto",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Canonical prepare stage: trim, extend, optional soft-junction & Tukey
         window, compute fft-shifted analytic spectrum and frequency grid.
@@ -334,10 +333,10 @@ class VMDCore:
         signal: np.ndarray,
         boundary_method: str = "mirror",
         use_soft_junction: bool = False,
-        window_alpha: Optional[float] = None,
+        window_alpha: float | None = None,
         fft_backend: str = "fftw",
         fft_device: str = "auto",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return self._prepare_signal(
             signal,
             boundary_method,
@@ -382,7 +381,7 @@ class VMDCore:
         else:
             peaks = np.empty(0, dtype=np.int64)
 
-        selected: List[int] = []
+        selected: list[int] = []
         if peaks.size > 0:
             top = peaks[np.argsort(work[peaks])[-min(K, peaks.size) :]]
             selected.extend(int(i) for i in top.tolist())
@@ -600,11 +599,11 @@ class VMDCore:
         tol: float,
         max_iter: int,
         fs: float = 1.0,
-        precomputed_fft: Optional[Dict[str, Any]] = None,
+        precomputed_fft: dict[str, Any] | None = None,
         boundary_method: str = "reflect",
         use_soft_junction: bool = False,
-        window_alpha: Optional[float] = None,
-        trial: Optional[Any] = None,
+        window_alpha: float | None = None,
+        trial: Any | None = None,
         enforce_uncorrelated: bool = False,
         corr_rho: float = 0.1,
         corr_update_every: int = 20,
@@ -625,11 +624,11 @@ class VMDCore:
         anderson_m: int = 5,
         gram_schmidt_every: int = 0,  # 0 = disabled; N → apply every N iters
         omega_tol: float = 1e-8,  # secondary convergence gate on max|Δω|
-        warm_start_state: Optional[Dict[str, Any]] = None,  # used when init=5
-        random_seed: Optional[int] = None,
+        warm_start_state: dict[str, Any] | None = None,  # used when init=5
+        random_seed: int | None = None,
         fft_backend: str = "fftw",
         fft_device: str = "auto",
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         VMD decomposition with ADMM over-relaxation, optional Anderson mixing,
         optional Gram-Schmidt orthogonalisation, dual convergence criterion,
@@ -855,7 +854,7 @@ class VMDCore:
         u_hat_full: np.ndarray,
         omega: np.ndarray,
         T: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Package the output of a previous ``decompose`` call for use as a warm
         start in the next call (pass as ``warm_start_state``, set ``init=5``).
@@ -953,7 +952,7 @@ class VMDCore:
         signal: np.ndarray,
         K: int,
         init: int,
-        random_seed: Optional[int],
+        random_seed: int | None,
     ) -> np.ndarray:
         """Initial centre frequencies used to seed VNCMD IF tracks."""
         s = np.asarray(signal, dtype=np.float64)
@@ -982,8 +981,8 @@ class VMDCore:
         if_center_smooth: float,
         min_track_gap: float,
         DC: int,
-        random_seed: Optional[int],
-        init_if_tracks: Optional[np.ndarray] = None,
+        random_seed: int | None,
+        init_if_tracks: np.ndarray | None = None,
     ) -> np.ndarray:
         """Initialise IF tracks from STFT ridges with smooth fallback centres."""
         s = np.asarray(signal, dtype=np.float64)
@@ -1130,7 +1129,7 @@ class VMDCore:
         env_penalty: float,
         HtH: csc_matrix,
         amp_ridge_scale: float = 0.0,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Solve the NCMD/VNCMD quadrature-envelope subproblem:
             min ||x - A(if) z||^2 + lambda ||D z||^2
@@ -1149,8 +1148,8 @@ class VMDCore:
         smooth_block = float(max(env_penalty, 0.0)) * HtH + (
             max(1e-9, amp_ridge) * eye(N, format="csc", dtype=np.float64)
         )
-        block_rows: List[List[csc_matrix]] = []
-        rhs_parts: List[np.ndarray] = []
+        block_rows: list[list[csc_matrix]] = []
+        rhs_parts: list[np.ndarray] = []
 
         for k in range(K):
             ck = cos_terms[k]
@@ -1161,8 +1160,8 @@ class VMDCore:
         for k in range(K):
             ck = cos_terms[k]
             sk = sin_terms[k]
-            row_cos: List[csc_matrix] = []
-            row_sin: List[csc_matrix] = []
+            row_cos: list[csc_matrix] = []
+            row_sin: list[csc_matrix] = []
             for j in range(K):
                 cj = cos_terms[j]
                 sj = sin_terms[j]
@@ -1237,7 +1236,7 @@ class VMDCore:
         init: int,
         tol: float,
         max_iter: int,
-        max_chirp_outer: Optional[int] = None,
+        max_chirp_outer: int | None = None,
         chirp_tol: float = 1e-4,
         fs: float = 1.0,
         if_window_size: int = 256,
@@ -1247,16 +1246,16 @@ class VMDCore:
         admm_over_relax: float = 1.6,
         boundary_method: str = "mirror",
         use_soft_junction: bool = False,
-        window_alpha: Optional[float] = None,
+        window_alpha: float | None = None,
         use_anderson: bool = True,
         omega_tol: float = 1e-8,
-        random_seed: Optional[int] = None,
-        trial: Optional[Any] = None,
-        init_if_tracks: Optional[np.ndarray] = None,
+        random_seed: int | None = None,
+        trial: Any | None = None,
+        init_if_tracks: np.ndarray | None = None,
         fft_backend: str = "fftw",
         fft_device: str = "auto",
         **kwargs: Any,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Full single-channel VNCMD solver for AM-FM / nonlinear-IF signals.
 
@@ -1435,7 +1434,7 @@ class VMDCore:
         init: int,
         tol: float,
         max_iter: int,
-        max_chirp_outer: Optional[int] = None,
+        max_chirp_outer: int | None = None,
         chirp_tol: float = 1e-4,
         fs: float = 1.0,
         if_window_size: int = 256,
@@ -1445,16 +1444,16 @@ class VMDCore:
         admm_over_relax: float = 1.6,
         boundary_method: str = "mirror",
         use_soft_junction: bool = False,
-        window_alpha: Optional[float] = None,
+        window_alpha: float | None = None,
         use_anderson: bool = True,
         omega_tol: float = 1e-8,
         fft_backend: str = "fftw",
         fft_device: str = "auto",
-        random_seed: Optional[int] = None,
-        trial: Optional[Any] = None,
-        init_if_tracks: Optional[np.ndarray] = None,
+        random_seed: int | None = None,
+        trial: Any | None = None,
+        init_if_tracks: np.ndarray | None = None,
         **kwargs: Any,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Backward-compatible alias for ``decompose_vncmd``."""
         return self.decompose_vncmd(
             signal=signal,
@@ -1490,7 +1489,7 @@ class VMDCore:
         self,
         *args: Any,
         **kwargs: Any,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Alias for ``decompose_vncmd`` for callers using NCMD terminology."""
         return self.decompose_vncmd(*args, **kwargs)
 
@@ -1510,7 +1509,7 @@ class VMDCore:
         max_iter: int,
         boundary_method: str,
         use_soft_junction: bool,
-        window_alpha: Optional[float],
+        window_alpha: float | None,
         fs: float,
         admm_over_relax: float = 1.6,
         omega_momentum: float = 0.0,
@@ -1522,8 +1521,8 @@ class VMDCore:
         anderson_m: int = 5,
         fft_backend: str = "fftw",
         fft_device: str = "auto",
-        random_seed: Optional[int] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        random_seed: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Joint MVMD (Rehman & Aftab 2019 style).
 
@@ -1960,8 +1959,8 @@ class VMDCore:
         C_est: np.ndarray,
         rho: float,
         ema: float,
-        C_ema_prev: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        C_ema_prev: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """EMA-smoothed correlation estimate → dual-ascent Gamma update."""
         C_ema = C_est if C_ema_prev is None else ema * C_ema_prev + (1.0 - ema) * C_est
         Gamma = Gamma + rho * C_ema
@@ -2332,7 +2331,7 @@ def refine_modes_nn(
     epochs: int = 50,
     lr: float = 1e-3,
     use_gpu: bool = True,
-    target_modes: Optional[np.ndarray] = None,
+    target_modes: np.ndarray | None = None,
     noise_std: float = 0.05,
     smoothness_weight: float = 1e-3,
 ) -> np.ndarray:
@@ -2387,7 +2386,7 @@ def refine_modes_cross_nn(
     epochs: int = 100,
     lr: float = 5e-4,
     use_gpu: bool = True,
-    target_modes: Optional[np.ndarray] = None,
+    target_modes: np.ndarray | None = None,
     noise_std: float = 0.05,
     smoothness_weight: float = 1e-3,
 ) -> np.ndarray:

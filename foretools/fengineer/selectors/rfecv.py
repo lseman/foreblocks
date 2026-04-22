@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,11 +18,11 @@ from sklearn.preprocessing import LabelEncoder
 class RFECVConfig:
     """Configuration for RFECV parameters."""
 
-    step: Union[int, float] = 0.1  # Features to remove each iteration
+    step: int | float = 0.1  # Features to remove each iteration
     cv: int = 5  # Cross-validation folds
     scoring: str = "auto"  # Scoring metric
     min_features_to_select: int = 1  # Minimum features to keep
-    max_features_to_select: Optional[int] = None  # Maximum features (None = no limit)
+    max_features_to_select: int | None = None  # Maximum features (None = no limit)
     n_jobs: int = -1  # Parallel jobs
     verbose: int = 1  # Verbosity level
     random_state: int = 42
@@ -37,7 +37,7 @@ class RFECVConfig:
 
     # Ensemble options
     use_ensemble: bool = True  # Use multiple estimators
-    estimator_weights: Optional[Dict[str, float]] = None  # Weights for ensemble voting
+    estimator_weights: dict[str, float] | None = None  # Weights for ensemble voting
 
 
 class AdvancedRFECV(BaseEstimator, TransformerMixin):
@@ -53,7 +53,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
     - Detailed performance analytics
     """
 
-    def __init__(self, estimator=None, config: Optional[RFECVConfig] = None, **kwargs):
+    def __init__(self, estimator=None, config: RFECVConfig | None = None, **kwargs):
         self.estimator = estimator
         self.config = config or RFECVConfig(**kwargs)
 
@@ -86,7 +86,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
         else:
             return "regression"
 
-    def _get_default_estimators(self, task_type: str) -> Dict[str, Any]:
+    def _get_default_estimators(self, task_type: str) -> dict[str, Any]:
         """Get default estimators based on task type."""
         if task_type == "classification":
             return {
@@ -188,7 +188,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
 
     def _ensemble_feature_importance(
         self,
-        estimators: Dict[str, Any],
+        estimators: dict[str, Any],
         X: np.ndarray,
         y: np.ndarray,
         feature_mask: np.ndarray,
@@ -222,12 +222,12 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
 
     def _stability_selection_step(
         self,
-        estimators: Dict[str, Any],
+        estimators: dict[str, Any],
         X: np.ndarray,
         y: np.ndarray,
         feature_mask: np.ndarray,
         cv_splitter,
-    ) -> Tuple[np.ndarray, float]:
+    ) -> tuple[np.ndarray, float]:
         """Perform stability selection across CV folds."""
         n_features = np.sum(feature_mask)
         stability_scores = np.zeros(len(feature_mask))
@@ -289,7 +289,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
         return stability_scores, np.mean(cv_scores)
 
     def fit(
-        self, X: Union[pd.DataFrame, np.ndarray], y: Union[pd.Series, np.ndarray]
+        self, X: pd.DataFrame | np.ndarray, y: pd.Series | np.ndarray
     ) -> "AdvancedRFECV":
         """
         Fit RFECV with advanced features.
@@ -530,8 +530,8 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
         return self
 
     def transform(
-        self, X: Union[pd.DataFrame, np.ndarray]
-    ) -> Union[pd.DataFrame, np.ndarray]:
+        self, X: pd.DataFrame | np.ndarray
+    ) -> pd.DataFrame | np.ndarray:
         """Transform data by selecting only the chosen features."""
         if not self._is_fitted:
             raise ValueError("RFECV must be fitted before transform.")
@@ -542,12 +542,12 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
             return X[:, self.support_]
 
     def fit_transform(
-        self, X: Union[pd.DataFrame, np.ndarray], y: Union[pd.Series, np.ndarray]
-    ) -> Union[pd.DataFrame, np.ndarray]:
+        self, X: pd.DataFrame | np.ndarray, y: pd.Series | np.ndarray
+    ) -> pd.DataFrame | np.ndarray:
         """Fit RFECV and transform data in one step."""
         return self.fit(X, y).transform(X)
 
-    def get_selected_features(self) -> List[str]:
+    def get_selected_features(self) -> list[str]:
         """Get list of selected feature names."""
         if not self._is_fitted:
             raise ValueError("RFECV must be fitted first.")
@@ -574,7 +574,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
 
         return df.sort_values("ranking")
 
-    def plot_cv_scores(self, figsize: Tuple[int, int] = (12, 6)):
+    def plot_cv_scores(self, figsize: tuple[int, int] = (12, 6)):
         """Plot cross-validation scores vs number of features."""
         if not self._is_fitted:
             raise ValueError("RFECV must be fitted first.")
@@ -641,7 +641,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
         plt.tight_layout()
         plt.show()
 
-    def get_performance_summary(self) -> Dict[str, Any]:
+    def get_performance_summary(self) -> dict[str, Any]:
         """Get comprehensive performance summary."""
         if not self._is_fitted:
             raise ValueError("RFECV must be fitted first.")

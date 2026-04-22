@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Literal, Optional, Tuple, Union
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -335,7 +335,7 @@ def _top_eigs_randomized(Kc: np.ndarray, q: int = 64, oversample: int = 16, n_it
     w = np.maximum(w, 0.0)
     return np.sort(w)[::-1]
 
-def _spectrum_based_moments(K: np.ndarray, L: np.ndarray) -> Tuple[float, float, float, float]:
+def _spectrum_based_moments(K: np.ndarray, L: np.ndarray) -> tuple[float, float, float, float]:
     n = K.shape[0]
     Kc = K.copy(); Lc = L.copy()
     _center_numpy_inplace(Kc); _center_numpy_inplace(Lc)
@@ -401,8 +401,8 @@ class HSIC:
         self,
         kernel_x: KernelType = "rbf",
         kernel_y: KernelType = "rbf",
-        sigma_x: Optional[float] = None,
-        sigma_y: Optional[float] = None,
+        sigma_x: float | None = None,
+        sigma_y: float | None = None,
         bandwidth_method: BandwidthType = "iqr",
         estimator: EstimatorType = "biased",
         normalize: bool = True,
@@ -410,7 +410,7 @@ class HSIC:
         rff_features: int = 512,      # for RFF
         prefer_float32: bool = False,
         use_numba: bool = True,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
         block_size: int = 1024,       # for block estimator
     ):
         self.kernel_x = kernel_x
@@ -427,10 +427,10 @@ class HSIC:
         self.random_state = random_state
         self.block_size = int(block_size)
         # diagnostics
-        self._last_sigma_x: Optional[float] = None
-        self._last_sigma_y: Optional[float] = None
-        self._cat_mask_x: Optional[np.ndarray] = None
-        self._cat_mask_y: Optional[np.ndarray] = None
+        self._last_sigma_x: float | None = None
+        self._last_sigma_y: float | None = None
+        self._cat_mask_x: np.ndarray | None = None
+        self._cat_mask_y: np.ndarray | None = None
 
         self.rng = np.random.default_rng(random_state)
 
@@ -442,7 +442,7 @@ class HSIC:
         self._cat_mask_y = np.array(categorical_mask, dtype=bool, copy=False)
 
     # ------------- Main score -------------
-    def score(self, x: np.ndarray, y: np.ndarray, return_components: bool = False) -> Union[float, Tuple[float, dict]]:
+    def score(self, x: np.ndarray, y: np.ndarray, return_components: bool = False) -> float | tuple[float, dict]:
         X, Y = _nan_filter_two(x, y)
         X = _as_dtype(X, self.prefer_float32)
         Y = _as_dtype(Y, self.prefer_float32)
@@ -495,8 +495,8 @@ class HSIC:
         return (val, comps) if return_components else val
 
     # ------------- P-value -------------
-    def pvalue(self, x: np.ndarray, y: np.ndarray, B: int = 200, subsample: Optional[int] = None,
-               method: str = "auto", use_corrections: bool = True) -> Tuple[float, float, dict]:
+    def pvalue(self, x: np.ndarray, y: np.ndarray, B: int = 200, subsample: int | None = None,
+               method: str = "auto", use_corrections: bool = True) -> tuple[float, float, dict]:
         rng = self.rng
         X, Y = _nan_filter_two(x, y)
         X = _as_dtype(X, self.prefer_float32)
@@ -655,7 +655,7 @@ class HSIC:
         return pd.DataFrame(M, index=cols, columns=cols)
 
     # ------------- Building blocks -------------
-    def _gram_and_center(self, A: np.ndarray, which: Literal["x", "y"]) -> Tuple[np.ndarray, np.ndarray, float]:
+    def _gram_and_center(self, A: np.ndarray, which: Literal["x", "y"]) -> tuple[np.ndarray, np.ndarray, float]:
         kernel = self.kernel_x if which == "x" else self.kernel_y
         sigma  = self.sigma_x  if which == "x" else self.sigma_y
         cat_mask = self._cat_mask_x if which == "x" else self._cat_mask_y
@@ -733,7 +733,7 @@ class HSIC:
         xx = _trace_prod(Kc, Kc) / ((n - 1.0) ** 2)
         return K, Kc, float(xx)
 
-    def _mixed_kernel(self, A: np.ndarray, sigma: Optional[float], cat_mask: Optional[np.ndarray]) -> np.ndarray:
+    def _mixed_kernel(self, A: np.ndarray, sigma: float | None, cat_mask: np.ndarray | None) -> np.ndarray:
         if cat_mask is None:
             return self._rbf_kernel(A, sigma)
         cat_mask = np.array(cat_mask, dtype=bool, copy=False)
@@ -757,7 +757,7 @@ class HSIC:
             return Kn
         return 0.5 * (Kn + Kc)
 
-    def _rbf_kernel(self, A: np.ndarray, sigma: Optional[float]) -> np.ndarray:
+    def _rbf_kernel(self, A: np.ndarray, sigma: float | None) -> np.ndarray:
         if self.use_numba:
             D2 = _pairwise_sq_dists_sym_nd(A.astype(np.float64))
         else:
@@ -989,7 +989,7 @@ class ConditionalHSIC:
         bandwidth_method: BandwidthType = "iqr",
         prefer_float32: bool = False,
         use_numba: bool = True,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
         regularization: float = 1e-3,
         projection_method: str = "standard",  # "standard" or "centering"
     ):
@@ -1008,7 +1008,7 @@ class ConditionalHSIC:
         self._last_sigma_y = None
         self._last_sigma_z = None
 
-    def _gram_centered(self, A: np.ndarray, kernel: str, sigma: Optional[float] = None):
+    def _gram_centered(self, A: np.ndarray, kernel: str, sigma: float | None = None):
         """Compute kernel Gram matrix and center it. Reuses HSIC optimizations."""
         A = _as_dtype(_ensure_1d_or_2d(A), self.prefer_float32)
         n, d = A.shape
@@ -1178,7 +1178,7 @@ class ConditionalHSIC:
             raise ValueError("Numerical instability in conditional HSIC computation")
 
     def pvalue(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, 
-              B: int = 200, method: str = "permutation") -> Tuple[float, float]:
+              B: int = 200, method: str = "permutation") -> tuple[float, float]:
         """
         Compute p-value for conditional independence test.
         

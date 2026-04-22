@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         return "feature_engineering"
 
     # -------------------- Public API --------------------
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         cfg = self._get_cfg(config)
 
         # Partition columns, excluding time/target from candidates
@@ -32,8 +32,8 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             if c in categorical_cols:
                 categorical_cols.remove(c)
 
-        suggestions: Dict[str, Any] = {}
-        detailed: Dict[str, Any] = {
+        suggestions: dict[str, Any] = {}
+        detailed: dict[str, Any] = {
             "transformations": {},
             "interactions": [],
             "encodings": {},
@@ -84,8 +84,8 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
     # -------------------- Config & Utilities --------------------
     class _Cfg:
         def __init__(self, **kw):
-            self.time_col: Optional[str] = kw.get("time_col")
-            self.target_col: Optional[str] = kw.get("target")
+            self.time_col: str | None = kw.get("time_col")
+            self.target_col: str | None = kw.get("target")
             self.random_state: int = int(kw.get("random_state", 42))
             self.max_numeric_transforms: int = int(kw.get("max_numeric_transforms", 8))
             self.top_rank_for_interactions: int = int(
@@ -96,8 +96,8 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             self.mi_gate: float = float(kw.get("interaction_mi_gate", 0.0))
             self.use_stl: bool = bool(kw.get("use_stl", True))
             self.stl_season_len: int = int(kw.get("stl_season_len", 13))
-            self.lag_list: List[int] = list(kw.get("lags", [1, 7]))
-            self.roll_windows: List[int] = list(kw.get("roll_windows", [3, 7]))
+            self.lag_list: list[int] = list(kw.get("lags", [1, 7]))
+            self.roll_windows: list[int] = list(kw.get("roll_windows", [3, 7]))
             self.limit_ts_cols: int = int(kw.get("limit_ts_cols", 5))
             self.enable_shap: bool = bool(kw.get("enable_shap", False))
             self.shap_max_n: int = int(kw.get("shap_max_n", 1000))
@@ -108,8 +108,8 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         )
 
     def _suggest_numeric_transforms(
-        self, data: pd.DataFrame, numeric_cols: List[str], cfg: "_Cfg"
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        self, data: pd.DataFrame, numeric_cols: list[str], cfg: "_Cfg"
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """
         Suggest numeric transforms per column with robust scoring.
         Returns (suggestions, details) where suggestions[col] is a short list (<=4)
@@ -148,7 +148,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             idx = rng.choice(n, size=cap, replace=False)
             return a[idx]
 
-        def _winsor_limits_from_iqr(a: np.ndarray, k: float = 3.0) -> Tuple[float, float]:
+        def _winsor_limits_from_iqr(a: np.ndarray, k: float = 3.0) -> tuple[float, float]:
             q1, q3 = np.percentile(a, [25, 75])
             iqr = q3 - q1
             return float(q1 - k * iqr), float(q3 + k * iqr)
@@ -180,8 +180,8 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             return np.arcsinh(v)
 
         # Build transform catalog per column with safe guards; each item: (name_key, callable, string_repr)
-        def _catalog_for(col: str, a: np.ndarray) -> List[Tuple[str, callable, str]]:
-            out: List[Tuple[str, callable, str]] = []
+        def _catalog_for(col: str, a: np.ndarray) -> list[tuple[str, callable, str]]:
+            out: list[tuple[str, callable, str]] = []
             n = a.size
             med = float(np.median(a))
             mad = _mad(a, med)
@@ -263,7 +263,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             return uniq
 
         # scoring: combine distribution-fixing + optional HSIC-to-target
-        def _score_transform(vec: np.ndarray, yvec: np.ndarray | None) -> Tuple[float, Dict[str, float]]:
+        def _score_transform(vec: np.ndarray, yvec: np.ndarray | None) -> tuple[float, dict[str, float]]:
             v = vec[np.isfinite(vec)]
             if v.size < 50:
                 return -np.inf, {"jb_p": np.nan, "skew": np.nan, "kurt": np.nan, "hsic": np.nan}
@@ -293,8 +293,8 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
                             hs = np.nan
             return score, {"jb_p": jb, "skew": sk, "kurt": ku, "hsic": (hs if y_present else np.nan)}
 
-        suggestions: Dict[str, Any] = {}
-        details: Dict[str, Any] = {}
+        suggestions: dict[str, Any] = {}
+        details: dict[str, Any] = {}
 
         y_arr_full = y_series.to_numpy() if y_present else None
 
@@ -314,7 +314,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
 
             # build and evaluate catalog
             cats = _catalog_for(col, a)
-            scored: List[Tuple[str, float, Dict[str, float]]] = []
+            scored: list[tuple[str, float, dict[str, float]]] = []
 
             # target vector aligned for this column (once)
             y_aligned = None
@@ -362,8 +362,8 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         return suggestions, details
         
     def _rank_features(
-        self, data: pd.DataFrame, numeric_cols: List[str], cfg: "_Cfg"
-    ) -> Dict[str, float]:
+        self, data: pd.DataFrame, numeric_cols: list[str], cfg: "_Cfg"
+    ) -> dict[str, float]:
         import numpy as np
         import pandas as pd
         from sklearn.ensemble import (
@@ -621,10 +621,10 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
     def _suggest_interactions(
         self,
         data: pd.DataFrame,
-        numeric_cols: List[str],
-        detailed: Dict[str, Any],
+        numeric_cols: list[str],
+        detailed: dict[str, Any],
         cfg: "_Cfg",
-    ) -> List[str]:
+    ) -> list[str]:
         """
         SOTA interaction proposer:
         - HSIC-based pair screening (nonlinear, kernelized)
@@ -810,7 +810,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             return Zm, m
 
         # ---------- Expression generator ----------
-        def _generate_expressions(a: str, b: str) -> List[str]:
+        def _generate_expressions(a: str, b: str) -> list[str]:
             exprs = []
             if allow_basic:
                 exprs += [f"{a}*{b}", f"{a}/({b}+1e-8)", f"{b}/({a}+1e-8)",
@@ -971,22 +971,22 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
 
     # -------------------- (4) Cat encodings --------------------
     def _suggest_encodings(
-        self, data: pd.DataFrame, categorical_cols: List[str], cfg: "_Cfg"
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        self, data: pd.DataFrame, categorical_cols: list[str], cfg: "_Cfg"
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """
         Heuristic, target-aware encoder suggestions.
         Returns:
         suggestions[col]: short list (<=3)
         details[col]: stats + full ranked strategy list + reason
         """
-        suggestions: Dict[str, Any] = {}
-        details: Dict[str, Any] = {}
+        suggestions: dict[str, Any] = {}
+        details: dict[str, Any] = {}
 
         # ---- config / task ----
-        target_col: Optional[str] = getattr(cfg, "target_col", None)
+        target_col: str | None = getattr(cfg, "target_col", None)
         task: str = getattr(cfg, "task", "auto")  # "regression" | "binary" | "multiclass" | "auto"
-        time_col: Optional[str] = getattr(cfg, "time_col", None)     # for leakage-safe encoders
-        group_col: Optional[str] = getattr(cfg, "group_col", None)   # group-aware CV, leakage guard
+        time_col: str | None = getattr(cfg, "time_col", None)     # for leakage-safe encoders
+        group_col: str | None = getattr(cfg, "group_col", None)   # group-aware CV, leakage guard
         rs = getattr(cfg, "random_state", 42)
 
         y = None
@@ -1037,8 +1037,8 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             dom = _dominance(s)
             bucket = _card_bucket(nunique)
 
-            enc: List[str] = []
-            notes: List[str] = []
+            enc: list[str] = []
+            notes: list[str] = []
 
             # Always: suggest handling for missing/unseen
             if null_pct > 0:
@@ -1150,7 +1150,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
 
 
     # -------------------- (5) VIF --------------------
-    def _vif_screen(self, data: pd.DataFrame, numeric_cols: List[str]) -> List[str]:
+    def _vif_screen(self, data: pd.DataFrame, numeric_cols: list[str]) -> list[str]:
         if not (1 < len(numeric_cols) < 80):
             return []
         try:
@@ -1159,7 +1159,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
             Xv = data[numeric_cols].copy().fillna(data[numeric_cols].median())
             V = [variance_inflation_factor(Xv.values, i) for i in range(Xv.shape[1])]
             high_vif = [c for c, v in zip(numeric_cols, V) if v > 10]
-            notes: List[str] = []
+            notes: list[str] = []
             if high_vif:
                 notes.append(f"High VIF (>10): {high_vif}")
                 notes.append("Consider PCA or dropping one per collinear group.")

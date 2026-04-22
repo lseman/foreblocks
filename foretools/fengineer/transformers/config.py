@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import List, Optional, Union
 
 import torch
 
@@ -79,22 +78,22 @@ class FeatureConfig:
 
     # RFECV parameters
     use_rfecv: bool = False
-    rfecv_step: Union[int, float] = 0.1
+    rfecv_step: int | float = 0.1
     rfecv_cv: int = 5
-    rfecv_min_features: Optional[int] = None
-    rfecv_max_features: Optional[int] = None
+    rfecv_min_features: int | None = None
+    rfecv_max_features: int | None = None
     rfecv_patience: int = 5
     rfecv_use_ensemble: bool = True
     rfecv_stability_selection: bool = True
 
     # Categorical settings
     target_encode_threshold: int = 10
-    cat_top_k: Optional[int] = None
+    cat_top_k: int | None = None
     cat_use_stratified_kfold: bool = True
     cat_target_noise_std: float = 0.0
     cat_fold_strategy: str = "auto"  # "auto" | "kfold" | "group" | "time"
-    cat_group_key: Optional[str] = None
-    cat_time_col: Optional[str] = None
+    cat_group_key: str | None = None
+    cat_time_col: str | None = None
     cat_tree_onehot_max_categories: int = 8
     cat_tree_ordinal_max_categories: int = 255
 
@@ -102,11 +101,11 @@ class FeatureConfig:
     datetime_include_cyclical: bool = True
     datetime_include_flags: bool = True
     datetime_include_elapsed: bool = True
-    datetime_group_key: Optional[str] = None
-    datetime_country_holidays: Optional[str] = None
+    datetime_group_key: str | None = None
+    datetime_country_holidays: str | None = None
 
     # Binning settings
-    binning_strategies: Optional[List[str]] = None
+    binning_strategies: list[str] | None = None
     binning_auto_supervised: bool = True
     binning_min_bin_fraction: float = 0.01
 
@@ -156,13 +155,13 @@ class FeatureConfig:
 
     # Random Fourier Features settings
     rff_n_components: int = 100
-    rff_gamma: Union[float, str] = "auto"
+    rff_gamma: float | str = "auto"
     rff_kernel: str = "rbf"
     rff_max_features: int = 50
     rff_handle_missing_features: str = "impute"  # "error" | "ignore" | "impute"
 
     # Clustering settings
-    clustering_strategies: Optional[List[str]] = None
+    clustering_strategies: list[str] | None = None
     clustering_max_features: int = 20
 
     # Fourier settings

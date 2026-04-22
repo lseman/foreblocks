@@ -1,5 +1,5 @@
 from collections import Counter
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -39,7 +39,7 @@ class ClusterAnalyzer(AnalysisStrategy):
 
     def _robust_preprocessing(
         self, data: pd.DataFrame, config: AnalysisConfig
-    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         """Modern preprocessing pipeline with adaptive scaling"""
         numeric = get_numeric_frame(data)
         if numeric.empty:
@@ -116,7 +116,7 @@ class ClusterAnalyzer(AnalysisStrategy):
         info["final_shape"] = X.shape
         return X, info
 
-    def _modern_optimal_k(self, X: np.ndarray, max_k: int = 15) -> Dict[str, Any]:
+    def _modern_optimal_k(self, X: np.ndarray, max_k: int = 15) -> dict[str, Any]:
         """Streamlined optimal k estimation using only SOTA methods"""
         n_samples = X.shape[0]
         max_k = min(max_k, max(2, n_samples // 10))
@@ -231,7 +231,7 @@ class ClusterAnalyzer(AnalysisStrategy):
         
         return np.argmax(distances)
 
-    def _advanced_kmeans(self, X: np.ndarray, config: AnalysisConfig, optimal_k: int) -> Dict[str, Any]:
+    def _advanced_kmeans(self, X: np.ndarray, config: AnalysisConfig, optimal_k: int) -> dict[str, Any]:
         """Advanced K-means with multiple initialization strategies and validation"""
         n_samples = X.shape[0]
         rng = self._rng(config)
@@ -324,7 +324,7 @@ class ClusterAnalyzer(AnalysisStrategy):
         
         return best_result
 
-    def _modern_spectral_clustering(self, X: np.ndarray, config: AnalysisConfig, optimal_k: int) -> Dict[str, Any]:
+    def _modern_spectral_clustering(self, X: np.ndarray, config: AnalysisConfig, optimal_k: int) -> dict[str, Any]:
         """Advanced spectral clustering with adaptive affinity"""
         n_samples = X.shape[0]
         
@@ -389,7 +389,7 @@ class ClusterAnalyzer(AnalysisStrategy):
         except Exception:
             return {}
 
-    def _modern_density_clustering(self, X: np.ndarray, config: AnalysisConfig) -> Dict[str, Any]:
+    def _modern_density_clustering(self, X: np.ndarray, config: AnalysisConfig) -> dict[str, Any]:
         """Advanced density-based clustering with parameter optimization"""
         results = {}
         n_samples, n_features = X.shape
@@ -500,7 +500,7 @@ class ClusterAnalyzer(AnalysisStrategy):
             
         return results
 
-    def _gaussian_mixture_clustering(self, X: np.ndarray, config: AnalysisConfig, optimal_k: int) -> Dict[str, Any]:
+    def _gaussian_mixture_clustering(self, X: np.ndarray, config: AnalysisConfig, optimal_k: int) -> dict[str, Any]:
         """Advanced Gaussian Mixture Model clustering with model selection"""
         results = {}
         n_samples, n_features = X.shape
@@ -586,7 +586,7 @@ class ClusterAnalyzer(AnalysisStrategy):
             
         return results
 
-    def _ensemble_clustering(self, all_results: Dict[str, Any], X: np.ndarray) -> Dict[str, Any]:
+    def _ensemble_clustering(self, all_results: dict[str, Any], X: np.ndarray) -> dict[str, Any]:
         """Modern ensemble clustering with consensus optimization"""
         if len(all_results) < 2:
             return {}
@@ -681,7 +681,7 @@ class ClusterAnalyzer(AnalysisStrategy):
             # Fallback to majority voting
             return self._majority_vote_ensemble(valid_results, X)
 
-    def _majority_vote_ensemble(self, valid_results: Dict[str, np.ndarray], X: np.ndarray) -> Dict[str, Any]:
+    def _majority_vote_ensemble(self, valid_results: dict[str, np.ndarray], X: np.ndarray) -> dict[str, Any]:
         """Fallback ensemble method using majority voting with label alignment"""
         if len(valid_results) < 2:
             return {}
@@ -778,7 +778,7 @@ class ClusterAnalyzer(AnalysisStrategy):
             
         return aligned
 
-    def _evaluate_clustering(self, all_results: Dict[str, Any], X: np.ndarray) -> Dict[str, Any]:
+    def _evaluate_clustering(self, all_results: dict[str, Any], X: np.ndarray) -> dict[str, Any]:
         """Comprehensive evaluation of all clustering results"""
         evaluations = {}
         
@@ -845,10 +845,10 @@ class ClusterAnalyzer(AnalysisStrategy):
         return evaluations
 
     def _generate_recommendations(self, 
-                                 all_results: Dict[str, Any], 
-                                 evaluations: Dict[str, Any],
-                                 optimal_k_info: Dict[str, Any],
-                                 preprocessing_info: Dict[str, Any]) -> List[str]:
+                                 all_results: dict[str, Any], 
+                                 evaluations: dict[str, Any],
+                                 optimal_k_info: dict[str, Any],
+                                 preprocessing_info: dict[str, Any]) -> list[str]:
         """Generate intelligent recommendations based on results"""
         recommendations = []
         
@@ -934,7 +934,7 @@ class ClusterAnalyzer(AnalysisStrategy):
             
         return recommendations[:6]  # Limit to most important recommendations
 
-    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
         """Main analysis pipeline with modern clustering methods"""
         try:
             # Preprocessing
@@ -946,7 +946,7 @@ class ClusterAnalyzer(AnalysisStrategy):
             optimal_k = optimal_k_info["optimal_k"]
             
             clustering_results = {}
-            method_errors: Dict[str, str] = {}
+            method_errors: dict[str, str] = {}
             
             # Core method: Advanced K-means (always run)
             kmeans_result, err = safe_call(self._advanced_kmeans, X, config, optimal_k)

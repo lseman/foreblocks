@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Any
 
 class TrialPruned(Exception):
     """Exception raised when a trial should be pruned."""
@@ -9,11 +9,11 @@ class Trial:
     A trial object passed to the objective function, allowing it to report
     intermediate results and be pruned early if it performs poorly.
     """
-    def __init__(self, config: Dict[str, Any], budget: float, bohb_instance):
+    def __init__(self, config: dict[str, Any], budget: float, bohb_instance):
         self.config = config
         self.budget = float(budget)
         self.bohb = bohb_instance
-        self.reports: Dict[int, float] = {}
+        self.reports: dict[int, float] = {}
         self._is_pruned = False
 
     def report(self, step: int, loss: float) -> None:

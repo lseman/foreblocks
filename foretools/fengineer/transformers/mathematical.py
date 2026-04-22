@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -45,10 +45,10 @@ class MathematicalTransformer(BaseFeatureTransformer):
         )
 
         # Fitted artifacts
-        self.power_transformers_: Dict[str, PowerTransformer] = {}  # per-col PT
-        self.valid_transforms_: Dict[str, List[str]] = {}  # kept basic transforms
-        self.valid_cols_power_: List[str] = []  # cols with PT kept
-        self.col_medians_: Dict[str, float] = {}  # for imputation (no leakage)
+        self.power_transformers_: dict[str, PowerTransformer] = {}  # per-col PT
+        self.valid_transforms_: dict[str, list[str]] = {}  # kept basic transforms
+        self.valid_cols_power_: list[str] = []  # cols with PT kept
+        self.col_medians_: dict[str, float] = {}  # for imputation (no leakage)
 
         self.is_fitted = False
 
@@ -65,7 +65,7 @@ class MathematicalTransformer(BaseFeatureTransformer):
         return float(abs(sk) + 0.5 * abs(ku))
 
     @staticmethod
-    def _prepare_target(y: Optional[pd.Series]) -> Optional[np.ndarray]:
+    def _prepare_target(y: pd.Series | None) -> np.ndarray | None:
         if y is None:
             return None
         ys = pd.Series(y)
@@ -80,7 +80,7 @@ class MathematicalTransformer(BaseFeatureTransformer):
         codes[codes < 0] = np.nan
         return codes
 
-    def _target_score(self, arr: np.ndarray, y_arr: Optional[np.ndarray]) -> float:
+    def _target_score(self, arr: np.ndarray, y_arr: np.ndarray | None) -> float:
         if y_arr is None:
             return 0.0
         m = np.isfinite(arr) & np.isfinite(y_arr)
@@ -159,7 +159,7 @@ class MathematicalTransformer(BaseFeatureTransformer):
         # arcsinh: similar to signed log for large |x|, linear near 0
         return np.arcsinh(a)
 
-    def _candidate_basic(self, col: str, data: pd.Series) -> Dict[str, np.ndarray]:
+    def _candidate_basic(self, col: str, data: pd.Series) -> dict[str, np.ndarray]:
         """Return dict of candidate basic transforms (raw arrays, not standardized)."""
         a = self._safe_arr(data)
         a = self._winsorize(a)
@@ -181,7 +181,7 @@ class MathematicalTransformer(BaseFeatureTransformer):
     # Fit
     # -------------------------
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "MathematicalTransformer":
         if not getattr(self.config, "create_math_features", True):
             self.is_fitted = True
@@ -215,7 +215,7 @@ class MathematicalTransformer(BaseFeatureTransformer):
             base_score = self._normality_score(cands["identity"])
             base_target = self._target_score(cands["identity"], y_arr)
 
-            ranked: List[tuple] = []
+            ranked: list[tuple] = []
             for name, arr in cands.items():
                 if name == "identity":
                     continue
@@ -279,7 +279,7 @@ class MathematicalTransformer(BaseFeatureTransformer):
         if not getattr(self.config, "create_math_features", True):
             return pd.DataFrame(index=X.index)
 
-        out: Dict[str, np.ndarray] = {}
+        out: dict[str, np.ndarray] = {}
 
         # apply basic transforms
         for col, names in self.valid_transforms_.items():

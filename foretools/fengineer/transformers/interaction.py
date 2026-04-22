@@ -1,5 +1,5 @@
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -35,15 +35,15 @@ class InteractionTransformer(BaseFeatureTransformer):
         super().__init__(config)
 
         # discovered during fit
-        self.numerical_cols_: List[str] = []
-        self.col_means_: Dict[str, float] = {}
+        self.numerical_cols_: list[str] = []
+        self.col_means_: dict[str, float] = {}
 
         # recipes
-        self.selected_interactions_: List[Tuple[str, str, str]] = []  # (col1, op, col2)
-        self.selected_polynomials_: List[Tuple[str, Union[float, str]]] = (
+        self.selected_interactions_: list[tuple[str, str, str]] = []  # (col1, op, col2)
+        self.selected_polynomials_: list[tuple[str, float | str]] = (
             []
         )  # (col, power)
-        self.feature_scores_: Dict[str, float] = {}
+        self.feature_scores_: dict[str, float] = {}
 
         # speed/quality knobs
         self.max_interactions = getattr(config, "max_interactions", 100)
@@ -160,7 +160,7 @@ class InteractionTransformer(BaseFeatureTransformer):
         a[finite] = np.clip(a[finite], lo, hi)
         return a
 
-    def _clean(self, arr: np.ndarray) -> Optional[np.ndarray]:
+    def _clean(self, arr: np.ndarray) -> np.ndarray | None:
         arr = np.asarray(arr, dtype=np.float32)
         # sanitize
         arr[~np.isfinite(arr)] = np.nan
@@ -175,7 +175,7 @@ class InteractionTransformer(BaseFeatureTransformer):
             return None
         return arr
 
-    def _poly(self, arr: np.ndarray, power: Union[float, str]) -> np.ndarray:
+    def _poly(self, arr: np.ndarray, power: float | str) -> np.ndarray:
         with np.errstate(all="ignore"):
             if power == 0.5:
                 out = np.where(arr >= 0, np.sqrt(arr), np.nan)
@@ -192,7 +192,7 @@ class InteractionTransformer(BaseFeatureTransformer):
                 out = np.power(arr, power)
         return np.clip(out, -1e10, 1e10)
 
-    def _score(self, arr: np.ndarray, y: Optional[np.ndarray]) -> float:
+    def _score(self, arr: np.ndarray, y: np.ndarray | None) -> float:
         vals = arr[np.isfinite(arr)]
         if vals.size < 20:
             return 0.0
@@ -273,7 +273,7 @@ class InteractionTransformer(BaseFeatureTransformer):
             return 0.0
         return abs(c)
 
-    def _prescreen_columns(self, X: pd.DataFrame, y: Optional[pd.Series]) -> List[str]:
+    def _prescreen_columns(self, X: pd.DataFrame, y: pd.Series | None) -> list[str]:
         cols = X.select_dtypes(include=[np.number]).columns.tolist()
         if not cols:
             return []
@@ -282,7 +282,7 @@ class InteractionTransformer(BaseFeatureTransformer):
             if not cols:
                 return []
         # cheap variance-based prescreen
-        scores: Dict[str, float] = {}
+        scores: dict[str, float] = {}
         for c in cols:
             vals = pd.to_numeric(X[c], errors="coerce").to_numpy(dtype=float)
             scores[c] = float(np.nanvar(vals))
@@ -323,7 +323,7 @@ class InteractionTransformer(BaseFeatureTransformer):
 
     # --------- candidate generation (fit-only, with subsample) ---------
 
-    def _canonical_pair(self, c1: str, c2: str, op_name: str) -> Tuple[str, str, str]:
+    def _canonical_pair(self, c1: str, c2: str, op_name: str) -> tuple[str, str, str]:
         """For commutative ops, sort column names so A∘B == B∘A."""
         if op_name in self._commutative_ops:
             if c2 < c1:
@@ -332,10 +332,10 @@ class InteractionTransformer(BaseFeatureTransformer):
 
     def _screen_pairs(
         self,
-        pair_cols: List[str],
-        cache: Dict[str, np.ndarray],
-        y_arr: Optional[np.ndarray] = None,
-    ) -> List[Tuple[str, str]]:
+        pair_cols: list[str],
+        cache: dict[str, np.ndarray],
+        y_arr: np.ndarray | None = None,
+    ) -> list[tuple[str, str]]:
         """Rank pairs using the heuristic and keep up to max_pairs."""
         if len(pair_cols) < 2:
             return []
@@ -377,10 +377,10 @@ class InteractionTransformer(BaseFeatureTransformer):
 
     def _generate_interactions_fit(
         self,
-        pair_cols: List[str],
-        cache: Dict[str, np.ndarray],
-        y_arr: Optional[np.ndarray] = None,
-    ) -> Dict[str, np.ndarray]:
+        pair_cols: list[str],
+        cache: dict[str, np.ndarray],
+        y_arr: np.ndarray | None = None,
+    ) -> dict[str, np.ndarray]:
         out = {}
         if len(pair_cols) < 2:
             return out
@@ -412,8 +412,8 @@ class InteractionTransformer(BaseFeatureTransformer):
         return out
 
     def _generate_polynomials_fit(
-        self, cols: List[str], cache: Dict[str, np.ndarray]
-    ) -> Dict[str, np.ndarray]:
+        self, cols: list[str], cache: dict[str, np.ndarray]
+    ) -> dict[str, np.ndarray]:
         out = {}
         for c in cols:
             arr = cache[c]
@@ -430,8 +430,8 @@ class InteractionTransformer(BaseFeatureTransformer):
     # ---------------- scoring ----------------
 
     def _score_dict(
-        self, feats: Dict[str, np.ndarray], y_arr: Optional[np.ndarray]
-    ) -> Dict[str, float]:
+        self, feats: dict[str, np.ndarray], y_arr: np.ndarray | None
+    ) -> dict[str, float]:
         names = list(feats.keys())
         arrays = [feats[n] for n in names]
         if _HAVE_JOBLIB and (self.n_jobs is not None) and (self.n_jobs != 0):
@@ -444,8 +444,8 @@ class InteractionTransformer(BaseFeatureTransformer):
         return {n: s for n, s in zip(names, scores)}
 
     def _select_topk(
-        self, feats: Dict[str, np.ndarray], y_arr: Optional[np.ndarray], k: int
-    ) -> List[str]:
+        self, feats: dict[str, np.ndarray], y_arr: np.ndarray | None, k: int
+    ) -> list[str]:
         if not feats or k <= 0:
             return []
         scores = self._score_dict(feats, y_arr)
@@ -457,7 +457,7 @@ class InteractionTransformer(BaseFeatureTransformer):
         ]
         return ordered[:k]
 
-    def _aggregate_stability_score(self, values: List[float]) -> float:
+    def _aggregate_stability_score(self, values: list[float]) -> float:
         if not values:
             return 0.0
         mode = str(getattr(self.config, "importance_agg", "median")).lower()
@@ -469,8 +469,8 @@ class InteractionTransformer(BaseFeatureTransformer):
         return float(np.median(arr))
 
     def _stable_select_topk(
-        self, feats: Dict[str, np.ndarray], y_arr: Optional[np.ndarray], k: int
-    ) -> List[str]:
+        self, feats: dict[str, np.ndarray], y_arr: np.ndarray | None, k: int
+    ) -> list[str]:
         """Stability selection across folds for robust interaction ranking."""
         if (not feats) or (k <= 0):
             return []
@@ -510,7 +510,7 @@ class InteractionTransformer(BaseFeatureTransformer):
 
         names = list(feats.keys())
         freq = {n: 0 for n in names}
-        fold_scores: Dict[str, List[float]] = {n: [] for n in names}
+        fold_scores: dict[str, list[float]] = {n: [] for n in names}
         per_fold_topk = int(max(1, getattr(self.config, "min_selected_per_fold", 20)))
 
         # Build split iterator with finite targets only.
@@ -560,7 +560,7 @@ class InteractionTransformer(BaseFeatureTransformer):
     # ---------------- sklearn API ----------------
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> "InteractionTransformer":
         self.numerical_cols_ = X.select_dtypes(include=[np.number]).columns.tolist()
         if not self.numerical_cols_:
@@ -572,7 +572,7 @@ class InteractionTransformer(BaseFeatureTransformer):
         X_sub = X.iloc[idx, :]
 
         # cache numeric columns as float arrays (subsampled)
-        cache: Dict[str, np.ndarray] = {}
+        cache: dict[str, np.ndarray] = {}
         for c in self.numerical_cols_:
             cache[c] = pd.to_numeric(X_sub[c], errors="coerce").to_numpy(
                 dtype=np.float32
@@ -632,8 +632,8 @@ class InteractionTransformer(BaseFeatureTransformer):
 
     # faster streaming redundancy prune (Spearman-ish via Pearson on ranks; stop early)
     def _fast_redundancy_prune(
-        self, feats: Dict[str, np.ndarray]
-    ) -> Dict[str, np.ndarray]:
+        self, feats: dict[str, np.ndarray]
+    ) -> dict[str, np.ndarray]:
         if not feats:
             return feats
         names = list(feats.keys())
@@ -673,7 +673,7 @@ class InteractionTransformer(BaseFeatureTransformer):
 
     def _compute_interaction(
         self, X: pd.DataFrame, c1: str, op_name: str, c2: str
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         # canonicalize at transform too, to match recipe naming
         if op_name in self._commutative_ops and c2 < c1:
             c1, c2 = c2, c1
@@ -691,8 +691,8 @@ class InteractionTransformer(BaseFeatureTransformer):
         return self._clean(feat)
 
     def _compute_polynomial(
-        self, X: pd.DataFrame, col: str, power: Union[float, str]
-    ) -> Optional[np.ndarray]:
+        self, X: pd.DataFrame, col: str, power: float | str
+    ) -> np.ndarray | None:
         arr = pd.to_numeric(X[col], errors="coerce").to_numpy(dtype=np.float32)
         return self._clean(self._poly(arr, power))
 
@@ -700,7 +700,7 @@ class InteractionTransformer(BaseFeatureTransformer):
         if not self.is_fitted:
             return pd.DataFrame(index=X.index)
 
-        feats: Dict[str, np.ndarray] = {}
+        feats: dict[str, np.ndarray] = {}
 
         for c1, op_name, c2 in self.selected_interactions_:
             if c1 in X.columns and c2 in X.columns:

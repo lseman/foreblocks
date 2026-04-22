@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal
 
 import torch
 import torch.nn as nn
 
-BaseHeadLike = Union[nn.Module]
+BaseHeadLike = nn.Module
 
 CombineMode = Literal["invert", "add", "none", "lora_residual"]
 AlphaMode = Literal["off", "gate", "soft", "gumbel"]
 AlphaMixStyle = Literal["blend", "residual", "lora"]
-AlphaWeights = tuple[Optional[torch.Tensor], Optional[torch.Tensor]]
+AlphaWeights = tuple[torch.Tensor | None, torch.Tensor | None]
 
 ComposerMode = Literal["serial", "parallel", "hybrid"]
 ParallelCombine = Literal[
@@ -72,13 +72,13 @@ class SerialNoneState(BaseRunState):
     serial_none_time_aligned: bool = False
 
 
-RunStateEntry = Union[
-    ParallelNoneState,
-    SerialInvertState,
-    SerialAddState,
-    SerialNoneState,
-    BaseRunState,
-]
+RunStateEntry = (
+    ParallelNoneState
+    | SerialInvertState
+    | SerialAddState
+    | SerialNoneState
+    | BaseRunState
+)
 RunStateList = list[RunStateEntry]
 
 

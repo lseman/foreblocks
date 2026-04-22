@@ -1,6 +1,6 @@
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,7 @@ class DistributionAnalyzer:
     def name(self) -> str:
         return "distributions"
 
-    def analyze(self, data: pd.DataFrame, config) -> Dict[str, Any]:
+    def analyze(self, data: pd.DataFrame, config) -> dict[str, Any]:
         numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
         
         # Pre-filter columns with sufficient data
@@ -40,7 +40,7 @@ class DistributionAnalyzer:
         rows = self._batch_compute_stats(data[valid_cols], config)
         return {"summary": pd.DataFrame(rows)}
 
-    def _batch_compute_stats(self, data: pd.DataFrame, cfg) -> List[Dict[str, Any]]:
+    def _batch_compute_stats(self, data: pd.DataFrame, cfg) -> list[dict[str, Any]]:
         """Parallel batch compute statistics for all columns."""
         results = []
         with ThreadPoolExecutor() as ex:
@@ -49,7 +49,7 @@ class DistributionAnalyzer:
                 results.append(fut.result())
         return results
 
-    def _compute_one_col(self, series: pd.Series, col: str, cfg) -> Dict[str, Any]:
+    def _compute_one_col(self, series: pd.Series, col: str, cfg) -> dict[str, Any]:
         """Compute stats for a single column."""
         x = series.dropna()
         n = len(x)
@@ -141,7 +141,7 @@ class DistributionAnalyzer:
             return np.nan
 
     @staticmethod
-    def _fast_normality_tests(x: np.ndarray, sample: np.ndarray) -> Dict[str, float]:
+    def _fast_normality_tests(x: np.ndarray, sample: np.ndarray) -> dict[str, float]:
         """Optimized normality tests with better error handling."""
         results = {}
         tests = {

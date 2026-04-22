@@ -1,12 +1,13 @@
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import pandas as pd
 
 
 def get_numeric_columns(
-    data: pd.DataFrame, exclude_cols: Optional[Iterable[str]] = None
-) -> List[str]:
+    data: pd.DataFrame, exclude_cols: Iterable[str] | None = None
+) -> list[str]:
     """Return numeric columns excluding any provided names."""
     cols = data.select_dtypes(include=[np.number]).columns.tolist()
     if not exclude_cols:
@@ -17,7 +18,7 @@ def get_numeric_columns(
 
 def get_numeric_frame(
     data: pd.DataFrame,
-    exclude_cols: Optional[Iterable[str]] = None,
+    exclude_cols: Iterable[str] | None = None,
     *,
     replace_inf: bool = True,
 ) -> pd.DataFrame:
@@ -31,9 +32,9 @@ def get_numeric_frame(
 
 def drop_constant_numeric(
     numeric: pd.DataFrame, tol: float = 1e-12
-) -> Tuple[pd.DataFrame, List[str]]:
+) -> tuple[pd.DataFrame, list[str]]:
     """Drop constant/near-constant columns from a numeric dataframe."""
-    keep_cols: List[str] = []
+    keep_cols: list[str] = []
     for col in numeric.columns:
         arr = numeric[col].to_numpy()
         finite = arr[np.isfinite(arr)]
@@ -46,14 +47,14 @@ def drop_constant_numeric(
 
 def build_series_map(
     data: pd.DataFrame,
-    columns: List[str],
+    columns: list[str],
     *,
     min_length: int = 10,
-    max_count: Optional[int] = None,
-) -> Dict[str, pd.Series]:
+    max_count: int | None = None,
+) -> dict[str, pd.Series]:
     """Create a cleaned series map for columns meeting minimum length."""
     selected = columns if max_count is None else columns[:max_count]
-    series_map: Dict[str, pd.Series] = {}
+    series_map: dict[str, pd.Series] = {}
     for col in selected:
         clean_series = data[col].dropna()
         if len(clean_series) >= min_length:
@@ -63,7 +64,7 @@ def build_series_map(
 
 def safe_call(
     fn: Callable[..., Any], *args: Any, default: Any = None, **kwargs: Any
-) -> Tuple[Any, Optional[str]]:
+) -> tuple[Any, str | None]:
     """Execute a callable and return (result, error_message)."""
     try:
         return fn(*args, **kwargs), None

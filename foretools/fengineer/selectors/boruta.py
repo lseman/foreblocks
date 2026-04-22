@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from typing import List, Optional
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.base import BaseEstimator, TransformerMixin
 
@@ -13,7 +12,7 @@ class BorutaSelector(BaseEstimator, TransformerMixin):
 
     def __init__(
         self,
-        estimator: Optional[BaseEstimator] = None,
+        estimator: BaseEstimator | None = None,
         max_iter: int = 20,
         perc: float = 100,
         alpha: float = 0.05,
@@ -93,6 +92,6 @@ class BorutaSelector(BaseEstimator, TransformerMixin):
             raise ValueError("BorutaSelector not fitted.")
         return X.iloc[:, self.support_]
 
-    def get_selected_features(self) -> List[str]:
+    def get_selected_features(self) -> list[str]:
         if not self._feature_names: return []
         return [self._feature_names[i] for i, s in enumerate(self.support_) if s]
