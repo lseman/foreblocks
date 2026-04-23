@@ -13,7 +13,9 @@ then samples a transformation using Gumbel-Softmax (Section 3.4).
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .transformations import TRANSFORMATIONS, NUM_TRANSFORMS
+
+from .transformations import NUM_TRANSFORMS
+from .transformations import TRANSFORMATIONS
 
 
 class AugmentationLayer(nn.Module):

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Transformer with Toggleable GateSkip + Hybrid Attention (+ PatchTST-style OPTIONAL patching)
 # Adds: Kimi linear attention as a selectable option:
 #   attention_mode ∈ {"standard","linear","hybrid","kimi","hybrid_kimi","kimi_3to1"}
@@ -24,46 +25,45 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
+from abc import abstractmethod
 from dataclasses import dataclass
+from typing import Callable
+from typing import List
 from typing import Literal
-from collections.abc import Callable
+from typing import Optional
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 
-from .attention.utils.residuals import (
-    AttentionResidual,
-    normalize_attention_residual_mode,
-)
-from .embeddings import (
-    LearnablePositionalEncoding,
-    PositionalEncoding,
-)
+from .attention.utils.residuals import AttentionResidual
+from .attention.utils.residuals import normalize_attention_residual_mode
+from .embeddings import LearnablePositionalEncoding
+from .embeddings import PositionalEncoding
 from .ff import FeedForwardBlock
-from .fusions import (
-    fused_dropout_add,  # fused helpers
-    fused_dropout_add_norm,
-    fused_dropout_gateskip_norm,
-    get_dropout_p,
-)
-from .mhc import (
-    MHCHyperConnection,
-    mhc_apply_norm_streamwise,
-    mhc_collapse_streams,
-    mhc_init_streams,
-)
-from .norms import RMSNorm, create_norm_layer
-from .patching import PatchDetokenizer, PatchTokenizer, patchify_padding_mask
-from .skip.gateskip import BudgetScheduler, ResidualGate, apply_skip_to_kv
-from .skip.mod import (
-    MoDBudgetScheduler,
-    MoDRouter,
-    mod_capacity,
-    mod_routed_indices,
-    mod_router_aux_loss,
-    mod_topk_mask,
-)
+from .fusions import fused_dropout_add  # fused helpers
+from .fusions import fused_dropout_add_norm
+from .fusions import fused_dropout_gateskip_norm
+from .fusions import get_dropout_p
+from .mhc import MHCHyperConnection
+from .mhc import mhc_apply_norm_streamwise
+from .mhc import mhc_collapse_streams
+from .mhc import mhc_init_streams
+from .norms import RMSNorm
+from .norms import create_norm_layer
+from .patching import PatchDetokenizer
+from .patching import PatchTokenizer
+from .patching import patchify_padding_mask
+from .skip.gateskip import BudgetScheduler
+from .skip.gateskip import ResidualGate
+from .skip.gateskip import apply_skip_to_kv
+from .skip.mod import MoDBudgetScheduler
+from .skip.mod import MoDRouter
+from .skip.mod import mod_capacity
+from .skip.mod import mod_routed_indices
+from .skip.mod import mod_router_aux_loss
+from .skip.mod import mod_topk_mask
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ class NormWrapper(nn.Module):
 @dataclass(frozen=True)
 class ResidualRunCfg:
     use_gateskip: bool
-    gate_budget: float | None
+    gate_budget: Optional[float]
     gate_lambda: float
     training: bool
 
@@ -134,15 +134,15 @@ class ResidualBlockMixin:
         update: torch.Tensor,
         normw: NormWrapper,
         p: float,
-        gate: ResidualGate,
+        gate: "ResidualGate",
         cfg: ResidualRunCfg,
-        aux_l2_terms: list[torch.Tensor],
+        aux_l2_terms: List[torch.Tensor],
         # decoder-only KV handling
-        updated_kv: dict | None = None,
-        prev_layer_state: dict | None = None,
-        kv_key: str | None = None,
-        active_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, dict | None, torch.Tensor | None]:
+        updated_kv: Optional[dict] = None,
+        prev_layer_state: Optional[dict] = None,
+        kv_key: Optional[str] = None,
+        active_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[dict], Optional[torch.Tensor]]:
         """
         Returns:
           x_out,
@@ -188,15 +188,15 @@ class ResidualBlockMixin:
         self,
         x: torch.Tensor,
         normw: NormWrapper,
-        core_fn: Callable[[torch.Tensor], tuple[torch.Tensor, dict | None]],
-        gate: ResidualGate,
+        core_fn: Callable[[torch.Tensor], Tuple[torch.Tensor, Optional[dict]]],
+        gate: "ResidualGate",
         cfg: ResidualRunCfg,
-        aux_l2_terms: list[torch.Tensor],
+        aux_l2_terms: List[torch.Tensor],
         # KV skip support (decoder)
-        prev_layer_state: dict | None = None,
-        kv_key: str | None = None,
-        active_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, dict | None, torch.Tensor | None]:
+        prev_layer_state: Optional[dict] = None,
+        kv_key: Optional[str] = None,
+        active_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[dict], Optional[torch.Tensor]]:
         """
         core_fn(x_in) -> (update, updated_kv_or_none)
         Returns: (x_out, updated_kv, skip_mask)
@@ -234,7 +234,7 @@ class MHCBlockMixin:
         self,
         streams: torch.Tensor,  # [B,N,T,D]
         normw: NormWrapper,
-        hyper_conn: MHCHyperConnection,
+        hyper_conn: "MHCHyperConnection",
         core_fn: Callable[[torch.Tensor], torch.Tensor],  # x_in -> upd
     ) -> torch.Tensor:
         x_in, maps = hyper_conn.pre_aggregate(streams)
@@ -265,7 +265,7 @@ def _init_attention_residual_state(x: torch.Tensor, mode: str, block_size: int) 
 
 
 def _attention_residual_input(
-    carrier: torch.Tensor, state: dict | None, module: nn.Module | None
+    carrier: torch.Tensor, state: Optional[dict], module: Optional[nn.Module]
 ) -> torch.Tensor:
     if state is None or module is None:
         return carrier
@@ -274,7 +274,9 @@ def _attention_residual_input(
     return module(state["blocks"], state["partial"])
 
 
-def _append_attention_residual_update(state: dict | None, update: torch.Tensor) -> None:
+def _append_attention_residual_update(
+    state: Optional[dict], update: torch.Tensor
+) -> None:
     if state is None:
         return
 
@@ -294,7 +296,7 @@ def _append_attention_residual_update(state: dict | None, update: torch.Tensor) 
     state["current"] = partial
 
 
-def _attention_residual_values(state: dict) -> list[torch.Tensor]:
+def _attention_residual_values(state: dict) -> List[torch.Tensor]:
     if state["mode"] == "full":
         return list(state["history"])
 
@@ -305,21 +307,21 @@ def _attention_residual_values(state: dict) -> list[torch.Tensor]:
 
 
 def _gateskip_active_mask_from_padding(
-    padding_mask: torch.Tensor | None,
-) -> torch.Tensor | None:
+    padding_mask: Optional[torch.Tensor],
+) -> Optional[torch.Tensor]:
     if padding_mask is None:
         return None
     return ~padding_mask.to(dtype=torch.bool)
 
 
 def _patchify_gateskip_active_mask(
-    active_mask: torch.Tensor | None,
+    active_mask: Optional[torch.Tensor],
     *,
     T: int,
     patch_len: int,
     stride: int,
     pad_end: bool,
-) -> torch.Tensor | None:
+) -> Optional[torch.Tensor]:
     if active_mask is None:
         return None
     pad_mask = ~active_mask.to(dtype=torch.bool)
@@ -345,7 +347,7 @@ def _gather_sequence_tokens(x: torch.Tensor, indices: torch.Tensor) -> torch.Ten
 
 
 def _gather_padding_mask(
-    mask: torch.Tensor | None,
+    mask: Optional[torch.Tensor],
     indices: torch.Tensor,
     slot_mask: torch.Tensor,
 ) -> torch.Tensor:
@@ -358,9 +360,9 @@ def _gather_padding_mask(
 
 
 def _gather_square_mask(
-    mask: torch.Tensor | None,
+    mask: Optional[torch.Tensor],
     indices: torch.Tensor,
-) -> torch.Tensor | None:
+) -> Optional[torch.Tensor]:
     if mask is None:
         return None
     if indices.numel() == 0:
@@ -405,9 +407,9 @@ def _gather_square_mask(
 
 
 def _gather_query_mask(
-    mask: torch.Tensor | None,
+    mask: Optional[torch.Tensor],
     indices: torch.Tensor,
-) -> torch.Tensor | None:
+) -> Optional[torch.Tensor]:
     if mask is None:
         return None
     if indices.numel() == 0:
@@ -473,26 +475,27 @@ def _scatter_mixture_of_depths_output(
 
 @dataclass
 class _LayerExecutionStrategy:
-    owner: BaseTransformerLayer
+    owner: "BaseTransformerLayer"
     use_mhc: bool
-    x: torch.Tensor | None = None
-    streams: torch.Tensor | None = None
+    x: Optional[torch.Tensor] = None
+    streams: Optional[torch.Tensor] = None
 
     def run_block(
         self,
         *,
         normw: NormWrapper,
-        gate: ResidualGate,
+        gate: "ResidualGate",
         cfg: ResidualRunCfg,
-        aux_l2_terms: list[torch.Tensor],
-        core_fn: None
-        | (Callable[[torch.Tensor], tuple[torch.Tensor, dict | None]]) = None,
-        mhc_core: Callable[[torch.Tensor], torch.Tensor] | None = None,
-        hyper_conn: nn.Module | None = None,
-        prev_layer_state: dict | None = None,
-        kv_key: str | None = None,
-        active_mask: torch.Tensor | None = None,
-    ) -> tuple[dict | None, torch.Tensor | None]:
+        aux_l2_terms: List[torch.Tensor],
+        core_fn: Optional[
+            Callable[[torch.Tensor], Tuple[torch.Tensor, Optional[dict]]]
+        ] = None,
+        mhc_core: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+        hyper_conn: Optional[nn.Module] = None,
+        prev_layer_state: Optional[dict] = None,
+        kv_key: Optional[str] = None,
+        active_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[Optional[dict], Optional[torch.Tensor]]:
         if not self.use_mhc:
             if self.x is None or core_fn is None:
                 raise RuntimeError(
@@ -523,7 +526,7 @@ class _LayerExecutionStrategy:
         )
         return None, None
 
-    def collapse(self, mode: str) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def collapse(self, mode: str) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         if not self.use_mhc:
             if self.x is None:
                 raise RuntimeError("Non-mHC strategy has no tensor to return.")
@@ -535,7 +538,7 @@ class _LayerExecutionStrategy:
 
 @dataclass(frozen=True)
 class _ModelLayerInvokeStrategy:
-    owner: BaseTransformer
+    owner: "BaseTransformer"
     use_checkpoint: bool
 
     def run_encoder_layer(
@@ -543,13 +546,13 @@ class _ModelLayerInvokeStrategy:
         *,
         layer: nn.Module,
         x: torch.Tensor,
-        src_mask: torch.Tensor | None,
-        src_key_padding_mask: torch.Tensor | None,
-        budget: float | None,
-        streams: torch.Tensor | None,
-        attention_residual_state: dict | None,
-        gateskip_active_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        src_mask: Optional[torch.Tensor],
+        src_key_padding_mask: Optional[torch.Tensor],
+        budget: Optional[float],
+        streams: Optional[torch.Tensor],
+        attention_residual_state: Optional[dict],
+        gateskip_active_mask: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         if self.use_checkpoint:
 
             def ckpt_fn(_x, layer_mod=layer, b=budget):
@@ -594,18 +597,18 @@ class _ModelLayerInvokeStrategy:
         layer: nn.Module,
         x: torch.Tensor,
         memory: torch.Tensor,
-        tgt_mask: torch.Tensor | None,
-        memory_mask: torch.Tensor | None,
-        tgt_key_padding_mask: torch.Tensor | None,
-        memory_key_padding_mask: torch.Tensor | None,
-        layer_state: dict | None,
-        prev_state: dict | None,
-        budget: float | None,
-        streams: torch.Tensor | None,
-        mtp_targets: torch.Tensor | None,
-        attention_residual_state: dict | None,
-        gateskip_active_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, dict | None, torch.Tensor | None]:
+        tgt_mask: Optional[torch.Tensor],
+        memory_mask: Optional[torch.Tensor],
+        tgt_key_padding_mask: Optional[torch.Tensor],
+        memory_key_padding_mask: Optional[torch.Tensor],
+        layer_state: Optional[dict],
+        prev_state: Optional[dict],
+        budget: Optional[float],
+        streams: Optional[torch.Tensor],
+        mtp_targets: Optional[torch.Tensor],
+        attention_residual_state: Optional[dict],
+        gateskip_active_mask: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Optional[dict], Optional[torch.Tensor]]:
         if self.use_checkpoint:
 
             def ckpt_fn(_x, layer_mod=layer, b=budget, ps=prev_state, ls=layer_state):
@@ -676,7 +679,7 @@ class BaseTransformerLayer(nn.Module):
         num_experts: int = 8,
         top_k: int = 2,
         use_gateskip: bool = False,
-        gate_budget: float | None = None,
+        gate_budget: Optional[float] = None,
         gate_lambda: float = 0.1,
         # mHC
         use_mhc: bool = False,
@@ -684,8 +687,8 @@ class BaseTransformerLayer(nn.Module):
         mhc_sinkhorn_iters: int = 20,
         mhc_collapse: str = "first",
         moe_use_latent: bool = False,
-        moe_latent_dim: int | None = None,
-        moe_latent_d_ff: int | None = None,
+        moe_latent_dim: Optional[int] = None,
+        moe_latent_d_ff: Optional[int] = None,
         use_attention_matching_compaction: bool = False,
         attention_matching_keep_ratio: float = 0.25,
         attention_matching_trigger_len: int = 512,
@@ -735,7 +738,7 @@ class BaseTransformerLayer(nn.Module):
         self,
         *,
         x: torch.Tensor,
-        streams: torch.Tensor | None,
+        streams: Optional[torch.Tensor],
     ) -> _LayerExecutionStrategy:
         if not self.use_mhc:
             return _LayerExecutionStrategy(owner=self, use_mhc=False, x=x)
@@ -767,10 +770,10 @@ class BaseTransformerLayer(nn.Module):
     def _apply_runtime_mhc_overrides(
         self,
         *,
-        use_mhc: bool | None,
-        mhc_n_streams: int | None,
-        mhc_sinkhorn_iters: int | None,
-        mhc_collapse: str | None,
+        use_mhc: Optional[bool],
+        mhc_n_streams: Optional[int],
+        mhc_sinkhorn_iters: Optional[int],
+        mhc_collapse: Optional[str],
     ) -> None:
         """Apply per-call mHC overrides (for backward compatibility)."""
         if use_mhc is not None:
@@ -785,9 +788,9 @@ class BaseTransformerLayer(nn.Module):
     def _build_residual_cfg(
         self,
         *,
-        use_gateskip: bool | None,
-        gate_budget: float | None,
-        gate_lambda: float | None,
+        use_gateskip: Optional[bool],
+        gate_budget: Optional[float],
+        gate_lambda: Optional[float],
         training: bool,
     ) -> ResidualRunCfg:
         """Resolve runtime GateSkip knobs into a single config object."""
@@ -804,14 +807,14 @@ class BaseTransformerLayer(nn.Module):
     def _finalize_gateskip_aux(
         self,
         cfg: ResidualRunCfg,
-        aux_l2_terms: list[torch.Tensor],
+        aux_l2_terms: List[torch.Tensor],
     ) -> None:
         """Accumulate GateSkip regularization term once per layer forward."""
         if cfg.use_gateskip and cfg.gate_lambda > 0 and aux_l2_terms:
             self._update_aux_loss(cfg.gate_lambda * torch.stack(aux_l2_terms).mean())
 
     def _ff_forward_with_aux(
-        self, x: torch.Tensor, mtp_targets: torch.Tensor | None = None
+        self, x: torch.Tensor, mtp_targets: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Shared FFN / MoE forward with auxiliary loss accounting."""
         if self.use_moe:
@@ -826,8 +829,8 @@ class BaseTransformerLayer(nn.Module):
         self,
         x: torch.Tensor,
         normw: NormWrapper,
-        core_fn: Callable[[torch.Tensor], tuple[torch.Tensor, dict | None]],
-    ) -> tuple[torch.Tensor, dict | None]:
+        core_fn: Callable[[torch.Tensor], Tuple[torch.Tensor, Optional[dict]]],
+    ) -> Tuple[torch.Tensor, Optional[dict]]:
         x_in = normw.norm(x) if normw.strategy in ("pre_norm", "sandwich_norm") else x
         out, updated = core_fn(x_in)
         out = normw.dropout(out)
@@ -869,7 +872,7 @@ class BaseTransformer(nn.Module, ABC):
         layer_norm_eps: float = 1e-5,
         max_seq_len: int = 5000,
         pos_encoding_scale: float = 1.0,
-        pos_encoder: nn.Module | None = None,
+        pos_encoder: Optional[nn.Module] = None,
         use_gradient_checkpointing: bool = False,
         share_layers: bool = False,
         use_final_norm: bool = True,
@@ -880,7 +883,7 @@ class BaseTransformer(nn.Module, ABC):
         top_k: int = 2,
         # GateSkip toggles
         use_gateskip: bool = False,
-        gate_budget: float | None = None,
+        gate_budget: Optional[float] = None,
         gate_lambda: float = 0.1,
         # Attention mode
         attention_mode: Literal[
@@ -910,7 +913,7 @@ class BaseTransformer(nn.Module, ABC):
         use_mod: bool = False,
         mod_mode: Literal["token", "seq"] = "token",
         mod_lambda: float = 0.05,
-        mod_budget_scheduler: MoDBudgetScheduler | None = None,
+        mod_budget_scheduler: Optional[MoDBudgetScheduler] = None,
         # Global scaling for MoE aux loss (FIX)
         moe_aux_lambda: float = 1.0,
         use_attention_residual: bool = False,
@@ -939,7 +942,7 @@ class BaseTransformer(nn.Module, ABC):
             attention_mode = att_type
         self.attention_mode = attention_mode
         self.att_type = att_type
-        self.budget_scheduler: BudgetScheduler | None = None
+        self.budget_scheduler: Optional[BudgetScheduler] = None
 
         # MoE aux scaling (FIX)
         self.moe_aux_lambda = float(moe_aux_lambda)
@@ -1234,7 +1237,7 @@ class BaseTransformer(nn.Module, ABC):
             layer = self._get_layer(i)
             self._set_layer_gateskip_attrs(layer)
 
-    def set_gate_budget(self, budget: float | None) -> None:
+    def set_gate_budget(self, budget: Optional[float]) -> None:
         self.gate_budget = budget
         for i in range(self.num_layers):
             layer = self._get_layer(i)
@@ -1270,9 +1273,9 @@ class BaseTransformer(nn.Module, ABC):
 
     def set_mhc_params(
         self,
-        n_streams: int | None = None,
-        sinkhorn_iters: int | None = None,
-        collapse: str | None = None,
+        n_streams: Optional[int] = None,
+        sinkhorn_iters: Optional[int] = None,
+        collapse: Optional[str] = None,
     ) -> None:
         if n_streams is not None:
             self.mhc_n_streams = int(n_streams)
@@ -1353,7 +1356,7 @@ class BaseTransformer(nn.Module, ABC):
         )
 
     # FIX: aggregate aux loss over executed layer indices (supports skipping)
-    def _aggregate_aux_loss(self, used_indices: list[int]) -> None:
+    def _aggregate_aux_loss(self, used_indices: List[int]) -> None:
         total_aux = self.aux_loss.new_zeros(())
         for i in used_indices:
             layer = self._get_layer(i)
@@ -1370,7 +1373,7 @@ class BaseTransformer(nn.Module, ABC):
             return fn(*inputs)
         return torch.utils.checkpoint.checkpoint(fn, *inputs, use_reentrant=False)
 
-    def _get_runtime_budget(self) -> float | None:
+    def _get_runtime_budget(self) -> Optional[float]:
         if self.training and (self.budget_scheduler is not None):
             return self.budget_scheduler.get_budget()
         return self.gate_budget
@@ -1392,7 +1395,7 @@ class BaseTransformer(nn.Module, ABC):
                 "Paper-style Attention Residuals are not wired for Mixture-of-Depths."
             )
 
-    def _init_attention_residual_state(self, x: torch.Tensor) -> dict | None:
+    def _init_attention_residual_state(self, x: torch.Tensor) -> Optional[dict]:
         if not self.use_attention_residual:
             return None
         return _init_attention_residual_state(
@@ -1400,7 +1403,7 @@ class BaseTransformer(nn.Module, ABC):
         )
 
     def _finalize_attention_residual_output(
-        self, state: dict | None, fallback: torch.Tensor
+        self, state: Optional[dict], fallback: torch.Tensor
     ) -> torch.Tensor:
         if not self.use_attention_residual or state is None:
             return fallback
@@ -1439,13 +1442,13 @@ class BaseTransformer(nn.Module, ABC):
         self,
         layer_idx: int,
         x: torch.Tensor,
-        active_mask: torch.Tensor | None,
-    ) -> tuple[
+        active_mask: Optional[torch.Tensor],
+    ) -> Tuple[
         nn.Module,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
     ]:
         layer = self._resolve_layer(layer_idx)
         if not self.use_mod:
@@ -1473,7 +1476,7 @@ class BaseTransformer(nn.Module, ABC):
         indices, slot_mask = mod_routed_indices(keep_mask, capacity=capacity)
         return layer, router_logits, keep_mask, indices, slot_mask
 
-    def _finalize_layer_stack(self, used_indices: list[int]) -> None:
+    def _finalize_layer_stack(self, used_indices: List[int]) -> None:
         self._aggregate_aux_loss(used_indices)
         if self.training and self.budget_scheduler is not None:
             self.budget_scheduler.step()

@@ -4,7 +4,7 @@ This page summarizes the main configuration objects exposed through the current 
 
 The canonical configuration definitions live in:
 
-- `foreblocks/aux/config.py` for `ModelConfig` and `TrainingConfig`
+- `foreblocks/config.py` for `ModelConfig` and `TrainingConfig`
 
 ## `ModelConfig`
 

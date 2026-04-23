@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-from collections.abc import Iterator
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .head_types import ActiveHead, AlphaWeights, HeadSpec
+from .head_types import ActiveHead
+from .head_types import AlphaWeights
+from .head_types import HeadSpec
 
 
 class HeadStateManager(nn.Module):

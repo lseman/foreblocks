@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 if TYPE_CHECKING:
     from .experts.moe_logging import MoELogger

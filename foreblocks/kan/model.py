@@ -3,10 +3,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
+from torch import nn
 
-from .backbone import Backbone, FlattenHead
-from .poly import PolyFamily, PolyLayerConfig
+from .backbone import Backbone
+from .backbone import FlattenHead
+from .poly import PolyFamily
+from .poly import PolyLayerConfig
 from .router import RouterConfig
 
 

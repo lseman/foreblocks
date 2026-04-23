@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import pickle
 import warnings
+from collections.abc import Callable
+from collections.abc import Sequence
 from typing import Literal
-from collections.abc import Callable, Sequence
 
 import numpy as np
 import torch
 import torch.nn as nn
+
 
 # ============================================================
 # Helpers

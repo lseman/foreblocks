@@ -5,16 +5,23 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from sklearn.cluster import DBSCAN
-from sklearn.covariance import EllipticEnvelope, MinCovDet
+from sklearn.covariance import EllipticEnvelope
+from sklearn.covariance import MinCovDet
 from sklearn.decomposition import PCA
 from sklearn.ensemble import IsolationForest
-from sklearn.neighbors import LocalOutlierFactor, NearestNeighbors
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.neighbors import NearestNeighbors
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import PowerTransformer, RobustScaler, StandardScaler
+from sklearn.preprocessing import PowerTransformer
+from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
 
-from .analyzer_utils import drop_constant_numeric, get_numeric_frame, safe_call
-from ..core import AnalysisConfig, AnalysisStrategy
+from ..core import AnalysisConfig
+from ..core import AnalysisStrategy
+from .analyzer_utils import drop_constant_numeric
+from .analyzer_utils import get_numeric_frame
+from .analyzer_utils import safe_call
 
 
 # ---------------------- small utils ----------------------

@@ -2,6 +2,7 @@ from .base import AcquisitionStrategy
 from .factory import build_acquisition_strategy
 from .log_ratio import LogRatioAcquisition
 
+
 __all__ = [
     "AcquisitionStrategy",
     "LogRatioAcquisition",

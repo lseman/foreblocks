@@ -10,9 +10,9 @@ Each transformation takes:
 and returns the augmented tensor of the same shape.
 """
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
 
 
 def _to_batch_intensity(intensity: torch.Tensor, batch_size: int, device, dtype):

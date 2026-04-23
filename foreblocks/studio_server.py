@@ -7,8 +7,10 @@ import socket
 import sys
 import webbrowser
 from http import HTTPStatus
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+
 
 LOCAL_BROWSER_HOSTS = {"127.0.0.1", "localhost"}
 

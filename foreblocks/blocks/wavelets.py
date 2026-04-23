@@ -11,7 +11,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.special import eval_legendre
-from sympy import Poly, Symbol, legendre
+from sympy import Poly
+from sympy import Symbol
+from sympy import legendre
 
 
 def legendre_der(k: int, x: np.ndarray) -> np.ndarray:
@@ -178,13 +180,18 @@ class SparseKernelFT1d(nn.Module):
         x = x.permute(0, 2, 1)  # [B, c*k, N]
         x_ft = torch.fft.rfft(x, dim=-1, norm="ortho")
 
-        l = min(self.modes, x_ft.shape[-1])
+        num_modes = min(self.modes, x_ft.shape[-1])
         out_ft = torch.zeros(
             B, self.c_k, x_ft.shape[-1], dtype=torch.cfloat, device=x.device
         )
 
-        w = torch.complex(self.weight_real[:, :, :l], self.weight_imag[:, :, :l])
-        out_ft[:, :, :l] = torch.einsum("bix,iox->box", x_ft[:, :, :l], w)
+        w = torch.complex(
+            self.weight_real[:, :, :num_modes],
+            self.weight_imag[:, :, :num_modes],
+        )
+        out_ft[:, :, :num_modes] = torch.einsum(
+            "bix,iox->box", x_ft[:, :, :num_modes], w
+        )
 
         x_out = torch.fft.irfft(out_ft, n=N, dim=-1, norm="ortho")
         return x_out.permute(0, 2, 1)  # [B, N, c*k]

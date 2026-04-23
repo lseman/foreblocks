@@ -3,17 +3,17 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.stats import (
-    anderson,
-    chi2_contingency,
-    fisher_exact,
-    kruskal,
-    levene,
-    mannwhitneyu,
-    ttest_ind,
-)
+from scipy.stats import anderson
+from scipy.stats import chi2_contingency
+from scipy.stats import fisher_exact
+from scipy.stats import kruskal
+from scipy.stats import levene
+from scipy.stats import mannwhitneyu
+from scipy.stats import ttest_ind
 
-from ..core import AnalysisConfig, AnalysisStrategy
+from ..core import AnalysisConfig
+from ..core import AnalysisStrategy
+
 
 # Modern scipy features with fallbacks
 try:

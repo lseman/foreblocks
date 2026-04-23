@@ -1,6 +1,6 @@
 # ForeBlocks Custom Blocks Guide
 
-This guide covers the current `ForecastingModel` customization points for feature preprocessing, normalization, graph blocks, and output post-processing.
+This guide covers the current `ForecastingModel` customization points for feature preprocessing, normalization, and output post-processing.
 
 Related docs:
 - [Documentation Overview](overview.md)
@@ -98,27 +98,6 @@ Inspect with:
 ```python
 print(model.list_heads())
 ```
-
----
-
-## Graph block injection
-
-Register graph modules at these stages:
-
-- `pre_encoder`
-- `post_encoder`
-- `post_decoder`
-
-```python
-model.add_graph_block(graph_block=my_graph_layer, where="pre_encoder")
-```
-
-Expected graph block interface:
-- inputs: `(x, adj)`
-- `x` shape: `[B, T, N, F]` or `[B, N, F]`
-- `adj` shape: `[N, N]` or `[B, N, N]`
-
----
 
 ## Minimal custom preprocessor example
 

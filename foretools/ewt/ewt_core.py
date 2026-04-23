@@ -12,7 +12,9 @@
 # - Minor cleanups for clarity & micro-speed
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import numpy as np
+
 
 try:
     from scipy.ndimage import gaussian_filter

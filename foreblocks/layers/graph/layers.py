@@ -6,6 +6,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .common import ActivationType
+from .common import AggType
+from .common import Tensor
+from .common import add_self_loops
+from .common import dtype_neg_inf
+from .common import ensure_adj
+from .common import is_batched_adj
+from .common import normalize_gcn
+from .common import normalize_row
+from .common import xavier_zero_bias
+from .norms import make_activation
+from .norms import make_norm_pair
+
+
 try:
     from torch_scatter import scatter_add as torch_scatter_add
     from torch_scatter import scatter_max as torch_scatter_max
@@ -13,19 +27,6 @@ except ImportError:
     torch_scatter_add = None
     torch_scatter_max = None
 
-from .common import (
-    ActivationType,
-    AggType,
-    Tensor,
-    add_self_loops,
-    dtype_neg_inf,
-    ensure_adj,
-    is_batched_adj,
-    normalize_gcn,
-    normalize_row,
-    xavier_zero_bias,
-)
-from .norms import make_activation, make_norm_pair
 
 
 def _check_edge_index(edge_index: Tensor, num_nodes: int) -> None:
@@ -41,6 +42,32 @@ def _dense_message_passing(x: Tensor, adj: Tensor) -> Tensor:
     if is_batched_adj(adj):
         return torch.einsum("btjf,bij->btif", x, adj)
     return torch.einsum("btjf,ij->btif", x, adj)
+
+
+def _attention_bias_from_adj(
+    adj: Tensor,
+    *,
+    batch_size: int,
+    steps: int,
+    dtype: torch.dtype,
+) -> Tensor:
+    if adj.dim() not in (2, 3):
+        raise ValueError("adj must have shape [N, N] or [B, N, N]")
+
+    valid = adj > 0
+    safe_adj = torch.where(valid, adj, torch.ones_like(adj))
+    bias = torch.log(safe_adj).to(dtype=dtype)
+    bias.masked_fill_(~valid, dtype_neg_inf(dtype))
+
+    if is_batched_adj(adj):
+        return (
+            bias.unsqueeze(1)
+            .expand(batch_size, steps, adj.size(-2), adj.size(-1))
+            .reshape(batch_size * steps, 1, adj.size(-2), adj.size(-1))
+        )
+    return bias.view(1, 1, adj.size(-2), adj.size(-1)).expand(
+        batch_size * steps, 1, adj.size(-2), adj.size(-1)
+    )
 
 
 def _edge_weight_view(
@@ -502,7 +529,7 @@ class GATConv(MessagePassing):
             adj,
             edge_index,
             N,
-            None,
+            edge_weight,
             batch_size=(B if (adj is None and edge_index is not None) else None),
             dtype=x.dtype,
             device=x.device,
@@ -514,19 +541,12 @@ class GATConv(MessagePassing):
         k = k.permute(0, 1, 3, 2, 4).reshape(B * T, self.H, N, self.Dh)
         v = v.permute(0, 1, 3, 2, 4).reshape(B * T, self.H, N, self.Dh)
 
-        if is_batched_adj(A):
-            attn_mask = (A > 0).unsqueeze(1).expand(B, T, N, N).reshape(B * T, 1, N, N)
-        else:
-            attn_mask = (A > 0).view(1, 1, N, N).expand(B * T, 1, N, N)
-        attn_bias = torch.zeros(
-            B * T,
-            1,
-            N,
-            N,
-            device=x.device,
+        attn_bias = _attention_bias_from_adj(
+            A,
+            batch_size=B,
+            steps=T,
             dtype=x.dtype,
         )
-        attn_bias.masked_fill_(~attn_mask, dtype_neg_inf(x.dtype))
         out = F.scaled_dot_product_attention(
             q,
             k,

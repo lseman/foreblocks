@@ -9,11 +9,13 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+
 # ----------------------------
 # Optional Numba
 # ----------------------------
 try:
-    from numba import njit, prange
+    from numba import njit
+    from numba import prange
     NUMBA_AVAILABLE = True
 except Exception:
     NUMBA_AVAILABLE = False
@@ -26,7 +28,8 @@ except Exception:
 # Optional Joblib (matrix parallel)
 # ----------------------------
 try:
-    from joblib import Parallel, delayed
+    from joblib import Parallel
+    from joblib import delayed
     _JOBLIB = True
 except Exception:
     _JOBLIB = False

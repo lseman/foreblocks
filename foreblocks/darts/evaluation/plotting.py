@@ -7,12 +7,12 @@ as arguments rather than accessing a trainer instance.
 
 from __future__ import annotations
 
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.amp import autocast
+
 
 # ---------------------------------------------------------------------------
 # Training-curve plot

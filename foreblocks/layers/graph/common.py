@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import math
 from typing import Literal
 
 import torch
 import torch.nn as nn
+
 
 Tensor = torch.Tensor
 AggType = Literal["add", "mean", "max"]

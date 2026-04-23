@@ -274,7 +274,8 @@ class AutoformerHeadCustom(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None: nn.init.zeros_(m.bias)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     # ---------- helper: build decoder inputs per Autoformer ----------
     def _build_decoder_inputs(self, s_enc: torch.Tensor, t_enc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

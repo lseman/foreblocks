@@ -14,10 +14,10 @@ Goals:
 
 from __future__ import annotations
 
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 try:
     import triton
@@ -40,7 +40,8 @@ __all__ = [
 
 # Optional GateSkip import
 try:
-    from .skip.gateskip import ResidualGate, gateskip_apply  # type: ignore
+    from .skip.gateskip import ResidualGate  # type: ignore
+    from .skip.gateskip import gateskip_apply
 
     _HAS_GATESKIP = True
 except Exception:  # pragma: no cover
@@ -49,21 +50,19 @@ except Exception:  # pragma: no cover
 
 # Optional Triton norm backend import
 try:
-    from .norms.layer_norm import AdaptiveLayerNorm, FastLayerNorm  # type: ignore
-    from .norms.rms_norm import AdaptiveRMSNorm, RMSNorm  # type: ignore
+    from .norms.layer_norm import AdaptiveLayerNorm  # type: ignore
+    from .norms.layer_norm import FastLayerNorm
+    from .norms.rms_norm import AdaptiveRMSNorm  # type: ignore
+    from .norms.rms_norm import RMSNorm
     from .norms.triton_backend import (
-        TRITON_AVAILABLE as _NORM_TRITON_AVAILABLE,
+        TRITON_AVAILABLE as _NORM_TRITON_AVAILABLE,  # type: ignore
     )
-    from .norms.triton_backend import (  # type: ignore
-        FusedAddRMSNormFunction,
-        LayerNormTritonFunction,
-        RMSNormTritonFunction,
-        triton_fused_rmsnorm_scale_bias,
-        triton_scale_bias,
-    )
-    from .norms.triton_backend import (
-        _should_use_triton as _norm_should_use_triton,
-    )
+    from .norms.triton_backend import FusedAddRMSNormFunction
+    from .norms.triton_backend import LayerNormTritonFunction
+    from .norms.triton_backend import RMSNormTritonFunction
+    from .norms.triton_backend import _should_use_triton as _norm_should_use_triton
+    from .norms.triton_backend import triton_fused_rmsnorm_scale_bias
+    from .norms.triton_backend import triton_scale_bias
 
     _HAS_TRITON_NORM_BACKEND = True
 except Exception:  # pragma: no cover

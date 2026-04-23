@@ -76,7 +76,9 @@ class BlockAttentionResidual(nn.Module):
         if partial is not None:
             values.append(partial)
         if not values:
-            raise ValueError("BlockAttentionResidual requires at least one value tensor.")
+            raise ValueError(
+                "BlockAttentionResidual requires at least one value tensor."
+            )
 
         V = torch.stack(values, dim=0)
         K = self.norm(V)

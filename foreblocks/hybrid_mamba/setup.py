@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from setuptools import setup
 import torch
 import torch.utils.cpp_extension as cpp_extension
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+from setuptools import setup
+from torch.utils.cpp_extension import BuildExtension
+from torch.utils.cpp_extension import CUDAExtension
 
 
 ROOT = Path(__file__).resolve().parent

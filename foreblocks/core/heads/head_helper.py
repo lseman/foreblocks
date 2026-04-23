@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-from collections.abc import Iterator
 
 import torch
 import torch.nn as nn
@@ -12,22 +12,20 @@ from torch.nn.utils import spectral_norm
 from foreblocks.ui.node_spec import node
 
 from .head_state import HeadStateManager
-from .head_types import (
-    ActiveHead,
-    AlphaWeights,
-    BaseRunState,
-    ComposerMode,
-    HeadSpec,
-    ParallelAlignMode,
-    ParallelCombine,
-    ParallelNoneState,
-    ParallelStructuredOutputs,
-    RunStateList,
-    SerialAddState,
-    SerialInvertState,
-    SerialNoneMerge,
-    SerialNoneState,
-)
+from .head_types import ActiveHead
+from .head_types import AlphaWeights
+from .head_types import BaseRunState
+from .head_types import ComposerMode
+from .head_types import HeadSpec
+from .head_types import ParallelAlignMode
+from .head_types import ParallelCombine
+from .head_types import ParallelNoneState
+from .head_types import ParallelStructuredOutputs
+from .head_types import RunStateList
+from .head_types import SerialAddState
+from .head_types import SerialInvertState
+from .head_types import SerialNoneMerge
+from .head_types import SerialNoneState
 from .projection_registry import ProjectionRegistry
 
 

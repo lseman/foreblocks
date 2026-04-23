@@ -1,20 +1,20 @@
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import (
-    anderson,
-    entropy,
-    jarque_bera,
-    kurtosis,
-    normaltest,
-    shapiro,
-    skew,
-)
+from scipy.stats import anderson
+from scipy.stats import entropy
+from scipy.stats import jarque_bera
+from scipy.stats import kurtosis
+from scipy.stats import normaltest
+from scipy.stats import shapiro
+from scipy.stats import skew
 from sklearn.exceptions import ConvergenceWarning
 from statsmodels.tools.sm_exceptions import ValueWarning
+
 
 # Suppress warnings
 for cat in (RuntimeWarning, FutureWarning, UserWarning, ConvergenceWarning, ValueWarning):

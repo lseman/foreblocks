@@ -8,6 +8,7 @@ import torch
 import torch.utils.cpp_extension as cpp_extension
 from torch.utils.cpp_extension import load
 
+
 EXTENSION_NAME = "hybrid_mamba_selective_scan"
 PACKAGE_ROOT = Path(__file__).resolve().parent
 CSRC_DIR = PACKAGE_ROOT / "csrc"

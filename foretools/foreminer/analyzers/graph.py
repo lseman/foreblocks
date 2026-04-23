@@ -5,10 +5,13 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from sklearn.cluster import SpectralClustering
-from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import euclidean_distances
 from sklearn.preprocessing import StandardScaler
 
-from ..core import AnalysisConfig, AnalysisStrategy
+from ..core import AnalysisConfig
+from ..core import AnalysisStrategy
+
 
 # Try to import advanced graph libraries
 try:

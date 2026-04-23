@@ -46,7 +46,7 @@ For any meaningful user-facing change, update:
 - avoid promising workflows that have not been validated in the repository
 - link across pages so documentation behaves like a wiki, not isolated files
 - prefer fenced code blocks with an explicit language like `python` or `bash`
-- keep configuration docs aligned with `foreblocks/aux/config.py`
+- keep configuration docs aligned with `foreblocks/config.py`
 
 ## Local preview
 

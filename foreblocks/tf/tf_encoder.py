@@ -13,32 +13,29 @@ from .attention.modules.gated_delta import GatedDeltaNet
 from .attention.modules.kimi_att import KimiAttention
 from .attention.modules.lin_att import LinearAttention
 from .attention.multi_att import MultiAttention
-from .attention.utils.residuals import (
-    AttentionResidual,
-    BlockAttentionResidual,
-    normalize_attention_residual_mode,
-)
+from .attention.utils.residuals import AttentionResidual
+from .attention.utils.residuals import BlockAttentionResidual
+from .attention.utils.residuals import normalize_attention_residual_mode
 from .embeddings import InformerTimeEmbedding
 from .mhc import mhc_init_streams
-from .patching import PatchInfo, patchify_padding_mask
+from .patching import PatchInfo
+from .patching import patchify_padding_mask
 from .skip.gateskip import ResidualGate
-from .tf_base import (
-    BaseTransformer,
-    BaseTransformerLayer,
-    MHCBlockMixin,
-    NormWrapper,
-    ResidualBlockMixin,
-    _append_attention_residual_update,
-    _attention_residual_input,
-    _gateskip_active_mask_from_padding,
-    _gather_padding_mask,
-    _gather_sequence_tokens,
-    _gather_square_mask,
-    _init_attention_residual_state,
-    _ModelLayerInvokeStrategy,
-    _patchify_gateskip_active_mask,
-    _scatter_mixture_of_depths_output,
-)
+from .tf_base import BaseTransformer
+from .tf_base import BaseTransformerLayer
+from .tf_base import MHCBlockMixin
+from .tf_base import NormWrapper
+from .tf_base import ResidualBlockMixin
+from .tf_base import _append_attention_residual_update
+from .tf_base import _attention_residual_input
+from .tf_base import _gateskip_active_mask_from_padding
+from .tf_base import _gather_padding_mask
+from .tf_base import _gather_sequence_tokens
+from .tf_base import _gather_square_mask
+from .tf_base import _init_attention_residual_state
+from .tf_base import _ModelLayerInvokeStrategy
+from .tf_base import _patchify_gateskip_active_mask
+from .tf_base import _scatter_mixture_of_depths_output
 
 
 class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformerLayer):

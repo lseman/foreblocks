@@ -5,7 +5,9 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-from .common import ActivationType, Tensor
+from .common import ActivationType
+from .common import Tensor
+
 
 NormStrategy = Literal["pre_norm", "post_norm", "sandwich_norm", "none"]
 

@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from foreblocks.ui.node_spec import node
+
 
 def causal_padding(
     x: torch.Tensor, kernel_size: int, dilation: int = 1
@@ -12,7 +14,6 @@ def causal_padding(
     return F.pad(x, (pad, 0)) if pad > 0 else x
 
 
-from foreblocks.ui.node_spec import node
 
 
 class CausalTCNBlock(nn.Module):

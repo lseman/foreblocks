@@ -6,17 +6,20 @@
 
 
 import torch
+from einops import rearrange
+from einops import reduce
+
 
 try:
     import triton
     import triton.language as tl
-    from triton.language import exp, log
+    from triton.language import exp
+    from triton.language import log
 except Exception as _e:
     raise ImportError(
         f"flash_softpick_attn requires the 'triton' package. Original error: {_e}"
     ) from _e
 
-from einops import rearrange, reduce
 
 
 def prepare_lens(offsets: torch.LongTensor) -> torch.LongTensor:

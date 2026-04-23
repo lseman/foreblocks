@@ -11,18 +11,21 @@ import numpy as np
 import optuna
 from numba import njit
 from scipy.signal import decimate
+from scipy.stats import kurtosis
 
-from .common import (
-    BoundaryHandler,
-    FFTWManager,
-    ModeProcessor,
-    SignalAnalyzer,
-    _energy,
-    box_counting_dimension,
-)
-from .config import HierarchicalParameters, VMDParameters
-from .core import VMDCore, refine_modes_cross_nn, refine_modes_nn
+from .common import BoundaryHandler
+from .common import FFTWManager
+from .common import ModeProcessor
+from .common import SignalAnalyzer
+from .common import _energy
+from .common import box_counting_dimension
+from .config import HierarchicalParameters
+from .config import VMDParameters
+from .core import VMDCore
+from .core import refine_modes_cross_nn
+from .core import refine_modes_nn
 from .emd import EMDVariants
+
 
 # Notebook detection (Optuna progress bar can be annoying in some envs)
 try:
@@ -31,7 +34,6 @@ try:
     IS_NOTEBOOK = get_ipython() is not None
 except Exception:
     IS_NOTEBOOK = False
-from scipy.stats import kurtosis
 
 
 @njit(cache=True)

@@ -114,11 +114,11 @@ class TemporalNorm(nn.Module):
         idx = torch.arange(T, device=x.device)
 
         if self.causal:
-            l = (idx - W + 1).clamp_min(0)
+            left_idx = (idx - W + 1).clamp_min(0)
             r = idx
         else:
             half = W // 2
-            l = (idx - half).clamp_min(0)
+            left_idx = (idx - half).clamp_min(0)
             r = (idx + (W - half - 1)).clamp_max(T - 1)
 
         if self.mode == "standard":
@@ -135,7 +135,7 @@ class TemporalNorm(nn.Module):
                 pad = cum.new_zeros(B, 1, D)
                 cum_pad = torch.cat([pad, cum], dim=1)
                 r1 = cum_pad.gather(1, (r + 1)[None, :, None].expand(B, -1, D))
-                l0 = cum_pad.gather(1, l[None, :, None].expand(B, -1, D))
+                l0 = cum_pad.gather(1, left_idx[None, :, None].expand(B, -1, D))
                 return r1 - l0
 
             win_m = window_sum(mcum)

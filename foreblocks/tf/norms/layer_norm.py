@@ -3,12 +3,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .triton_backend import (
-    TRITON_AVAILABLE,
-    LayerNormTritonFunction,
-    _should_use_triton,
-    triton_scale_bias,
-)
+from .triton_backend import TRITON_AVAILABLE
+from .triton_backend import LayerNormTritonFunction
+from .triton_backend import _should_use_triton
+from .triton_backend import triton_scale_bias
 
 
 class FastLayerNorm(nn.Module):

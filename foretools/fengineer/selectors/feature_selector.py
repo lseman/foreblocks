@@ -3,12 +3,15 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 
 from foretools.aux.adaptive_mi import AdaptiveMI
 from foretools.aux.adaptive_mrmr import AdaptiveMRMR
-from .rfecv import AdvancedRFECV, RFECVConfig
+
+from .rfecv import AdvancedRFECV
+from .rfecv import RFECVConfig
 
 
 class FeatureSelector:
@@ -174,7 +177,7 @@ class FeatureSelector:
         """Fit Boruta selector."""
         try:
             from foretools.fengineer.selectors.boruta import BorutaSelector
-            
+
             # Prepare data (Boruta needs numerical and no NaNs)
             numerical_cols = X.select_dtypes(include=[np.number]).columns
             if len(numerical_cols) < 2: return False

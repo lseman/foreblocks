@@ -301,12 +301,12 @@ class sLSTMEncoder(EncoderBase):
         self.layers = nn.ModuleList(
             [
                 sLSTMLayer(
-                    input_size if l == 0 else hidden_size,
+                    input_size if layer_idx == 0 else hidden_size,
                     hidden_size,
                     bias=True,
                     forget_as_exp=forget_as_exp,
                 )
-                for l in range(num_layers)
+                for layer_idx in range(num_layers)
             ]
         )
         self.dropout_layer = (
@@ -342,11 +342,11 @@ class sLSTMEncoder(EncoderBase):
 
         if hidden is not None:
             h0, c0, n0, m0 = hidden
-            for l in range(self.num_layers):
-                layer_h[l].copy_(h0[l])
-                layer_c[l].copy_(c0[l])
-                layer_n[l].copy_(n0[l])
-                layer_m[l].copy_(m0[l])
+            for layer_idx in range(self.num_layers):
+                layer_h[layer_idx].copy_(h0[layer_idx])
+                layer_c[layer_idx].copy_(c0[layer_idx])
+                layer_n[layer_idx].copy_(n0[layer_idx])
+                layer_m[layer_idx].copy_(m0[layer_idx])
 
         outputs = torch.zeros(B, T, self.hidden_size, device=device)
         last_layer_h_list = [None] * self.num_layers
@@ -355,16 +355,22 @@ class sLSTMEncoder(EncoderBase):
             xt = x[:, t, :]
             prev_h = None
             tmp_h_per_layer = []
-            for l in range(self.num_layers):
-                inp = xt if l == 0 else prev_h
-                h_new, (h_new_full, c_new, n_new, m_new) = self.layers[l](
-                    inp, (layer_h[l], layer_c[l], layer_n[l], layer_m[l])
+            for layer_idx in range(self.num_layers):
+                inp = xt if layer_idx == 0 else prev_h
+                h_new, (h_new_full, c_new, n_new, m_new) = self.layers[layer_idx](
+                    inp,
+                    (
+                        layer_h[layer_idx],
+                        layer_c[layer_idx],
+                        layer_n[layer_idx],
+                        layer_m[layer_idx],
+                    ),
                 )
                 # Update
-                layer_h[l] = h_new_full
-                layer_c[l] = c_new
-                layer_n[l] = n_new
-                layer_m[l] = m_new
+                layer_h[layer_idx] = h_new_full
+                layer_c[layer_idx] = c_new
+                layer_n[layer_idx] = n_new
+                layer_m[layer_idx] = m_new
                 prev_h = h_new
                 tmp_h_per_layer.append(h_new)
 
@@ -406,12 +412,12 @@ class sLSTMDecoder(DecoderBase):
         self.layers = nn.ModuleList(
             [
                 sLSTMLayer(
-                    input_size if l == 0 else hidden_size,
+                    input_size if layer_idx == 0 else hidden_size,
                     hidden_size,
                     bias=True,
                     forget_as_exp=forget_as_exp,
                 )
-                for l in range(num_layers)
+                for layer_idx in range(num_layers)
             ]
         )
         self.dropout_layer = (
@@ -452,26 +458,32 @@ class sLSTMDecoder(DecoderBase):
 
         if hidden is not None:
             h0, c0, n0, m0 = hidden
-            for l in range(self.num_layers):
-                layer_h[l].copy_(h0[l])
-                layer_c[l].copy_(c0[l])
-                layer_n[l].copy_(n0[l])
-                layer_m[l].copy_(m0[l])
+            for layer_idx in range(self.num_layers):
+                layer_h[layer_idx].copy_(h0[layer_idx])
+                layer_c[layer_idx].copy_(c0[layer_idx])
+                layer_n[layer_idx].copy_(n0[layer_idx])
+                layer_m[layer_idx].copy_(m0[layer_idx])
 
         last_layer_h_list = [None] * self.num_layers
         for t in range(T):
             xt = x[:, t, :]
             prev_h = None
             tmp_h_per_layer = []
-            for l in range(self.num_layers):
-                inp = xt if l == 0 else prev_h
-                h_new, (h_new_full, c_new, n_new, m_new) = self.layers[l](
-                    inp, (layer_h[l], layer_c[l], layer_n[l], layer_m[l])
+            for layer_idx in range(self.num_layers):
+                inp = xt if layer_idx == 0 else prev_h
+                h_new, (h_new_full, c_new, n_new, m_new) = self.layers[layer_idx](
+                    inp,
+                    (
+                        layer_h[layer_idx],
+                        layer_c[layer_idx],
+                        layer_n[layer_idx],
+                        layer_m[layer_idx],
+                    ),
                 )
-                layer_h[l] = h_new_full
-                layer_c[l] = c_new
-                layer_n[l] = n_new
-                layer_m[l] = m_new
+                layer_h[layer_idx] = h_new_full
+                layer_c[layer_idx] = c_new
+                layer_n[layer_idx] = n_new
+                layer_m[layer_idx] = m_new
                 prev_h = h_new
                 tmp_h_per_layer.append(h_new)
             _ = self.dropout_layer(prev_h)
@@ -523,11 +535,11 @@ class mLSTMEncoder(EncoderBase):
         self.layers = nn.ModuleList(
             [
                 mLSTMLayer(
-                    input_size if l == 0 else hidden_size,
+                    input_size if layer_idx == 0 else hidden_size,
                     hidden_size,
                     num_heads=num_heads,
                 )
-                for l in range(num_layers)
+                for layer_idx in range(num_layers)
             ]
         )
         self.dropout_layer = (
@@ -560,22 +572,31 @@ class mLSTMEncoder(EncoderBase):
 
         if hidden is not None:
             h0, c0, n0, m0 = hidden
-            for l in range(self.num_layers):
-                layer_c[l].copy_(c0[l])
-                layer_n[l].copy_(n0[l])
-                layer_m[l].copy_(m0[l])
+            for layer_idx in range(self.num_layers):
+                layer_c[layer_idx].copy_(c0[layer_idx])
+                layer_n[layer_idx].copy_(n0[layer_idx])
+                layer_m[layer_idx].copy_(m0[layer_idx])
 
         outputs = torch.zeros(B, T, self.hidden_size, device=device)
         for t in range(T):
             xt = x[:, t, :]
             prev_h = None
             tmp_h = []
-            for l in range(self.num_layers):
-                inp = xt if l == 0 else prev_h
-                h_new, (c_new, n_new, m_new) = self.layers[l](
-                    inp, (layer_c[l], layer_n[l], layer_m[l])
+            for layer_idx in range(self.num_layers):
+                inp = xt if layer_idx == 0 else prev_h
+                h_new, (c_new, n_new, m_new) = self.layers[layer_idx](
+                    inp,
+                    (
+                        layer_c[layer_idx],
+                        layer_n[layer_idx],
+                        layer_m[layer_idx],
+                    ),
                 )
-                layer_c[l], layer_n[l], layer_m[l] = c_new, n_new, m_new
+                layer_c[layer_idx], layer_n[layer_idx], layer_m[layer_idx] = (
+                    c_new,
+                    n_new,
+                    m_new,
+                )
                 prev_h = h_new
                 tmp_h.append(h_new)
             outputs[:, t, :] = self.dropout_layer(prev_h)
@@ -619,11 +640,11 @@ class mLSTMDecoder(DecoderBase):
         self.layers = nn.ModuleList(
             [
                 mLSTMLayer(
-                    input_size if l == 0 else hidden_size,
+                    input_size if layer_idx == 0 else hidden_size,
                     hidden_size,
                     num_heads=num_heads,
                 )
-                for l in range(num_layers)
+                for layer_idx in range(num_layers)
             ]
         )
         self.dropout_layer = (
@@ -661,21 +682,30 @@ class mLSTMDecoder(DecoderBase):
 
         if hidden is not None:
             h0, c0, n0, m0 = hidden
-            for l in range(self.num_layers):
-                layer_c[l].copy_(c0[l])
-                layer_n[l].copy_(n0[l])
-                layer_m[l].copy_(m0[l])
+            for layer_idx in range(self.num_layers):
+                layer_c[layer_idx].copy_(c0[layer_idx])
+                layer_n[layer_idx].copy_(n0[layer_idx])
+                layer_m[layer_idx].copy_(m0[layer_idx])
 
         for t in range(T):
             xt = x[:, t, :]
             prev_h = None
             tmp_h = []
-            for l in range(self.num_layers):
-                inp = xt if l == 0 else prev_h
-                h_new, (c_new, n_new, m_new) = self.layers[l](
-                    inp, (layer_c[l], layer_n[l], layer_m[l])
+            for layer_idx in range(self.num_layers):
+                inp = xt if layer_idx == 0 else prev_h
+                h_new, (c_new, n_new, m_new) = self.layers[layer_idx](
+                    inp,
+                    (
+                        layer_c[layer_idx],
+                        layer_n[layer_idx],
+                        layer_m[layer_idx],
+                    ),
                 )
-                layer_c[l], layer_n[l], layer_m[l] = c_new, n_new, m_new
+                layer_c[layer_idx], layer_n[layer_idx], layer_m[layer_idx] = (
+                    c_new,
+                    n_new,
+                    m_new,
+                )
                 prev_h = h_new
                 tmp_h.append(h_new)
             _ = self.dropout_layer(prev_h)

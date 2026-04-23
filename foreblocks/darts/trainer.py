@@ -23,48 +23,42 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp import GradScaler, autocast
+from torch.amp import GradScaler
+from torch.amp import autocast
 from tqdm import tqdm
 
 # ── Architecture ──────────────────────────────────────────────────────────
-from .architecture import *
 from .architecture.finalization import (
     derive_final_architecture as derive_fixed_architecture,
 )
-from .config import (
-    DEFAULT_ARCH_MODES,
-    DEFAULT_ATTENTION_VARIANTS,
-    DEFAULT_FFN_VARIANTS,
-    DEFAULT_OP_FAMILIES,
-    DEFAULT_OPS as SEARCH_DEFAULT_OPS,
-)
+from .architecture.core_blocks import TimeSeriesDARTS
+from .config import DEFAULT_ARCH_MODES
+from .config import DEFAULT_ATTENTION_VARIANTS
+from .config import DEFAULT_FFN_VARIANTS
+from .config import DEFAULT_OP_FAMILIES
+from .config import DEFAULT_OPS as SEARCH_DEFAULT_OPS
 from .evaluation import plotting as _plot_mod
+
+# ── Sub-module delegates ──────────────────────────────────────────────────
 from .search import ablation as _abl_mod
 from .search import multi_fidelity as _mf_mod
 from .search import robust_pool as _rp_mod
-
-# ── Sub-module delegates ──────────────────────────────────────────────────
 from .search import zero_cost as _zc_mod
 
 # ── Metrics & Config ──────────────────────────────────────────────────────
 # ── Search utilities ─────────────────────────────────────────────────────
-from .search.orchestrator import (
-    evaluate_search_candidate,
-    make_default_search_candidate_config,
-    run_parallel_candidate_collection,
-    select_top_candidates,
-)
+from .search.orchestrator import evaluate_search_candidate
+from .search.orchestrator import make_default_search_candidate_config
+from .search.orchestrator import run_parallel_candidate_collection
+from .search.orchestrator import select_top_candidates
 from .training import darts_loop as _dl_mod
 from .training import final_trainer as _ft_mod
-from .utils.training import unpack_forecasting_batch
 
 # ── Training helpers ─────────────────────────────────────────────────────
-from .training.helpers import (
-    AlphaTracker,
-)
-from .training.helpers import (
-    default_as_probability_vector as _as_probability_vector,
-)
+from .training.helpers import AlphaTracker
+from .training.helpers import default_as_probability_vector as _as_probability_vector
+from .utils.training import unpack_forecasting_batch
+
 
 _DEFAULT_OPS = list(SEARCH_DEFAULT_OPS)
 
@@ -799,9 +793,9 @@ class DARTSTrainer:
         moe_balance_weight: float = 5e-3,
         transformer_exploration_weight: float = 1e-2,
         # silently absorbed legacy-only kwargs
-        temperature: float = 1.0,  # noqa: superseded by temperature_schedule
-        pruning_hard_epoch: int | None = None,  # noqa: not used in new loop
-        log_arch_gradients: bool = False,  # noqa: controlled via verbose
+        temperature: float = 1.0,  # noqa: ARG002
+        pruning_hard_epoch: int | None = None,  # noqa: ARG002
+        log_arch_gradients: bool = False,  # noqa: ARG002
         use_gdas: bool = False,
     ) -> dict[str, Any]:
         """

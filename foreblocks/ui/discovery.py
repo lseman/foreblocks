@@ -9,13 +9,13 @@ from collections.abc import Iterable
 # NEW: use the unified spec builder (handles inputs/outputs/config + py)
 from foreblocks.ui.auto_spec import build_node_spec
 
+
 ALLOWED_PACKAGES = [
     "foreblocks.blocks",
     "foreblocks.blocks.enc_dec",
     "foreblocks.core",
     "foreblocks.core.heads",
     "foreblocks.data",
-    "foreblocks.aux.utils",
     "foreblocks.tf.transformer",
     "foreblocks.training",
 ]

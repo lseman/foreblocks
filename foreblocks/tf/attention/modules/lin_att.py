@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class LinearAttention(nn.Module):
     """
     State-of-the-art linear attention using positive kernel approximation (ELU+1 feature map).

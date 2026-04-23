@@ -15,6 +15,7 @@ from scipy.stats import norm
 from sklearn.neighbors import NearestNeighbors
 from sklearn.utils import check_random_state
 
+
 try:
     # Often fastest for 2D Chebyshev queries
     from scipy.spatial import cKDTree as _KDTree

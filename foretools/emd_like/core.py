@@ -25,14 +25,24 @@ from typing import Any
 import numpy as np
 import optuna
 from numba import njit
-from scipy.signal import find_peaks, hilbert, spectrogram, welch
-from scipy.sparse import bmat, csc_matrix, diags, eye
-from scipy.sparse.linalg import factorized, spsolve
+from scipy.signal import find_peaks
+from scipy.signal import hilbert
+from scipy.signal import spectrogram
+from scipy.signal import welch
+from scipy.sparse import bmat
+from scipy.sparse import csc_matrix
+from scipy.sparse import diags
+from scipy.sparse import eye
+from scipy.sparse.linalg import factorized
+from scipy.sparse.linalg import spsolve
+
 
 try:
-    from .common import BoundaryHandler, FFTWManager
+    from .common import BoundaryHandler
+    from .common import FFTWManager
 except Exception:
-    from vmd_common import BoundaryHandler, FFTWManager
+    from vmd_common import BoundaryHandler
+    from vmd_common import FFTWManager
 
 try:
     import torch
@@ -47,7 +57,7 @@ except Exception:
     Adam = None
 
 try:
-    from mamba_ssm import Mamba as _Mamba  # pip install mamba-ssm
+    from mamba_ssm import Mamba as _Mamba
 
     MAMBA_AVAILABLE = True
 except Exception:

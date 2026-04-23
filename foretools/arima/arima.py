@@ -28,6 +28,7 @@ from typing import Any
 
 import numpy as np
 
+
 try:
     from scipy.fft import next_fast_len  # PERF: optimal FFT padding
 except ImportError:

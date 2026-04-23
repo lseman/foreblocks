@@ -33,10 +33,10 @@ Fixes vs previous version
 
 from __future__ import annotations
 
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 # Optional Triton — inference-only kernels
 try:
@@ -569,7 +569,7 @@ class _KDA_Fast(nn.Module):
             O_intra[i]      = Σ_j A[i,j] · v_j
         """
         BH, C, Dk = Q_c.shape
-        device, dtype = Q_c.device, Q_c.dtype
+        device = Q_c.device
 
         # ── inter-chunk ──────────────────────────────────────────────────────
         # [BH, C, Dk] × [BH, Dk, Dv] → [BH, C, Dv]
@@ -682,7 +682,7 @@ class _KDA_Fast(nn.Module):
                 out[:, t, :] = o_t
 
         # ── Output head: per-head RMSNorm + sigmoid gate + projection ─────
-        O = out.reshape(B, self.h, T, self.dv)
+        output_heads = out.reshape(B, self.h, T, self.dv)
         # gate: [B, H, T, 1]
         gate = (
             torch.sigmoid(self.out_gate_up(F.silu(self.out_gate_down(x))))
@@ -690,8 +690,12 @@ class _KDA_Fast(nn.Module):
             .unsqueeze(-1)
         )  # [B, H, T, 1]
 
-        O = self.h_rms(O) * gate
-        y = O.permute(0, 2, 1, 3).contiguous().reshape(B, T, self.h * self.dv)
+        output_heads = self.h_rms(output_heads) * gate
+        y = (
+            output_heads.permute(0, 2, 1, 3)
+            .contiguous()
+            .reshape(B, T, self.h * self.dv)
+        )
         y = self.drop(self.o_proj(y))
 
         next_state = S.reshape(B, self.h, self.dk, self.dv)

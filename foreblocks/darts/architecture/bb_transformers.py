@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from .bb_attention import AttentionBridge, SelfAttention
+from .bb_attention import AttentionBridge
+from .bb_attention import SelfAttention
 from .bb_moe import DARTSFeedForward
 from .bb_primitives import RMSNorm
+
 
 __all__ = [
     "LightweightTransformerEncoder",

@@ -2,8 +2,9 @@
 import torch
 import torch.nn as nn
 
+
 try:
-    from torchdiffeq import odeint, odeint_adjoint
+    from torchdiffeq import odeint_adjoint
 
     HAS_TORCHDIFFEQ = True
 except ImportError:

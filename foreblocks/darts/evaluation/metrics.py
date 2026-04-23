@@ -15,6 +15,7 @@ import torch.nn as nn
 
 from ..utils.training import unpack_forecasting_batch
 
+
 if TYPE_CHECKING:
     pass
 

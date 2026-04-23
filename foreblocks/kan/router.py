@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
+from torch import Tensor
+from torch import nn
 
 
 @dataclass(frozen=True)

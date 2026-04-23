@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+
 try:
     from .common import FFTWManager
     from .core import VMDCore

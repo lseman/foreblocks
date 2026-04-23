@@ -42,8 +42,8 @@ Usage
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -52,13 +52,15 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from PyEMD import CEEMDAN, EMD
+from PyEMD import CEEMDAN
+from PyEMD import EMD
 from scipy import signal
 from scipy.ndimage import gaussian_filter1d
 from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 from statsmodels.tsa.filters.hp_filter import hpfilter
 from statsmodels.tsa.holtwinters import SimpleExpSmoothing
 from vmdpy import VMD
+
 
 __all__ = [
     "auto_filter",

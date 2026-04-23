@@ -3,14 +3,18 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin, clone
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.metrics import (
-    accuracy_score,
-    mean_squared_error,
-)
-from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
+from sklearn.base import BaseEstimator
+from sklearn.base import TransformerMixin
+from sklearn.base import clone
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import Ridge
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import LabelEncoder
 
 

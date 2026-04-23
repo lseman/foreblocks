@@ -1,6 +1,18 @@
 from typing import TYPE_CHECKING
 
-__all__ = ["Trainer"]
+from .history import TrainingHistory
+from .losses import LossComputer
+from .nas import NASHelper
+from .nas import plot_alpha_evolution
+
+
+__all__ = [
+    "LossComputer",
+    "NASHelper",
+    "Trainer",
+    "TrainingHistory",
+    "plot_alpha_evolution",
+]
 
 if TYPE_CHECKING:
     from .trainer import Trainer

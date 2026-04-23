@@ -1,5 +1,6 @@
 from typing import Any
 
+
 class TrialPruned(Exception):
     """Exception raised when a trial should be pruned."""
     pass

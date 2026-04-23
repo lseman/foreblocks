@@ -9,6 +9,7 @@ from pathlib import Path
 
 from foreblocks.mltracker import MLTracker
 
+
 DEFAULT_TRACKING_URI = str(Path(__file__).resolve().parent / "mltracker_data")
 
 
@@ -91,17 +92,17 @@ def _fetch_metric_history(
 
 def create_app(tracking_uri: str = DEFAULT_TRACKING_URI):
     try:
-        from textual.app import App, ComposeResult
-        from textual.containers import Horizontal, Vertical
-        from textual.widgets import (
-            DataTable,
-            Footer,
-            Header,
-            Input,
-            Static,
-            TabbedContent,
-            TabPane,
-        )
+        from textual.app import App
+        from textual.app import ComposeResult
+        from textual.containers import Horizontal
+        from textual.containers import Vertical
+        from textual.widgets import DataTable
+        from textual.widgets import Footer
+        from textual.widgets import Header
+        from textual.widgets import Input
+        from textual.widgets import Static
+        from textual.widgets import TabbedContent
+        from textual.widgets import TabPane
     except Exception as exc:
         raise RuntimeError(
             "Textual is required for the MLTracker TUI. Install with: pip install textual"

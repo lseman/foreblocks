@@ -1,11 +1,9 @@
 import torch
 import torch.nn as nn
 
-from .triton_backend import (
-    TRITON_AVAILABLE,
-    RMSNormTritonFunction,
-    _should_use_triton,
-)
+from .triton_backend import TRITON_AVAILABLE
+from .triton_backend import RMSNormTritonFunction
+from .triton_backend import _should_use_triton
 
 
 class RMSNorm(nn.Module):

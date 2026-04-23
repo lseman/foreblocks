@@ -1,79 +1,10 @@
-from typing import Any
 from collections.abc import Callable
+from typing import Any
 
 import torch
 import torch.nn as nn
 
 from foreblocks.ui.node_spec import node
-
-# =============================================================================
-# Graph utilities
-# =============================================================================
-
-
-def _ensure_batch_adj(adj: torch.Tensor | None, B: int) -> torch.Tensor | None:
-    """
-    Normalize adjacency to [B, N, N] or return None.
-
-    Accepts:
-      - None
-      - [N, N]
-      - [1, N, N]  (broadcasted to B)
-      - [B, N, N]
-
-    Raises:
-      ValueError if the shape is inconsistent or non-square.
-    """
-    if adj is None:
-        return None
-
-    if adj.dim() == 2:
-        # [N, N] -> [B, N, N]
-        N = adj.size(0)
-        if adj.size(1) != N:
-            raise ValueError(f"adj must be square, got [{N}, {adj.size(1)}]")
-        return adj.unsqueeze(0).expand(B, N, N).contiguous()
-
-    if adj.dim() == 3:
-        b_adj, n1, n2 = adj.shape
-        if n1 != n2:
-            raise ValueError(f"adj must be square on last dims, got [{n1}, {n2}]")
-        if b_adj == 1 and B > 1:
-            # Broadcast [1, N, N] -> [B, N, N]
-            return adj.expand(B, n1, n2).contiguous()
-        if b_adj != B:
-            raise ValueError(
-                f"Batch mismatch for adj: got batch={b_adj}, expected B={B}"
-            )
-        return adj
-
-    raise ValueError(
-        f"adj must be shape [N, N] or [B, N, N] (or None), got {tuple(adj.shape)}"
-    )
-
-
-class TimewiseGraph(nn.Module):
-    """
-    Adapter: lift any graph block that consumes [B, N, F] (+ adj)
-    to work on [B, T, N, F] by applying it independently per time step.
-    If x is already [B, N, F], just forwards.
-    """
-
-    def __init__(self, gblock: nn.Module):
-        super().__init__()
-        self.gblock = gblock
-        # mark capability to avoid re-wrapping
-        self._accepts_time_dim = True
-
-    def forward(self, x: torch.Tensor, adj: torch.Tensor | None = None) -> torch.Tensor:
-        if x.dim() == 3:  # [B, N, F]
-            return self.gblock(x, adj)
-        assert x.dim() == 4, "TimewiseGraph expects [B, N, F] or [B, T, N, F]"
-        B = x.shape[0]
-        A = _ensure_batch_adj(adj, B)
-        # loop over time with unbind (slightly cheaper indexing)
-        ys = [self.gblock(xt, A).unsqueeze(1) for xt in x.unbind(dim=1)]
-        return torch.cat(ys, dim=1)  # [B, T, N, F']
 
 
 # =============================================================================
@@ -155,7 +86,6 @@ class ForecastingModel(nn.Module):
       • No multi-encoder/decoder path.
       • No VAE handling.
       • For 'direct' strategy, uses self.head (not decoder).
-      • Keeps 4D graph dispatch [B, T, N, F] -> per-node temporal processing.
     """
 
     VALID_STRATEGIES = ["seq2seq", "autoregressive", "direct", "transformer_seq2seq"]
@@ -294,9 +224,6 @@ class ForecastingModel(nn.Module):
         # === Output layers (seq2seq paths) ===
         self._setup_output_layers()
 
-        # === Optional graph blocks registry ===
-        self._graph_blocks: dict[str, nn.Module] = {}
-
         # === Validate configuration ===
         self._validate_configuration()
 
@@ -426,29 +353,6 @@ class ForecastingModel(nn.Module):
         if hasattr(self, "head"):
             heads["head"] = type(self.head).__name__
         return heads
-
-    def add_graph_block(self, graph_block: nn.Module, where: str = "pre_encoder"):
-        """
-        Register a graph block; where ∈ {"pre_encoder","post_encoder","post_decoder"}.
-        The block should accept (x, adj) with shapes:
-          x: [B, T, N, F] or [B, N, F]
-          adj: [N, N] or [B, N, N]
-        """
-        valid_positions = {"pre_encoder", "post_encoder", "post_decoder"}
-        if where not in valid_positions:
-            raise ValueError(
-                f"Invalid position '{where}'. Must be one of {valid_positions}"
-            )
-
-        # Wrap once to operate timewise if needed
-        if not getattr(graph_block, "_accepts_time_dim", False):
-            graph_block = TimewiseGraph(graph_block)
-
-        # Move to the same device/dtype as the model
-        self._to_model_device_dtype(graph_block)
-
-        self._graph_blocks[where] = graph_block
-        return self
 
     def get_aux_loss(self) -> torch.Tensor:
         """Aggregate auxiliary losses from all components."""
@@ -627,18 +531,6 @@ class ForecastingModel(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, out_dim),
         )
-
-    def _apply_graph_block(
-        self, x: torch.Tensor, adj: torch.Tensor | None, block_name: str
-    ) -> torch.Tensor:
-        """Apply registered graph block by name."""
-        block = self._graph_blocks.get(block_name)
-        if block is None:
-            return x
-        A = _ensure_batch_adj(adj, x.size(0))
-        if A is not None:
-            A = A.to(device=x.device, dtype=x.dtype)
-        return block(x, A)
 
     # -------------------------------------------------------------------------
     # Core helpers
@@ -893,7 +785,7 @@ class ForecastingModel(nn.Module):
         Main forward pass. Returns finalized predictions.
 
         Args:
-            src: Input tensor [B, T, F] or [B, T, N, F]
+            src: Input tensor [B, T, F]
             targets: Target tensor (for teacher forcing)
             time_features: Time-related features
             epoch: Current epoch (for scheduled sampling)
@@ -901,14 +793,11 @@ class ForecastingModel(nn.Module):
         Returns:
             Finalized predictions with same shape structure as targets.
         """
-        # 4D path delegates composer internally after per-node flattening
-        if src.dim() == 4:
-            raw = self._forward_graph_4d(
-                src, targets=targets, time_features=time_features, epoch=epoch
+        if src.dim() != 3:
+            raise ValueError(
+                f"ForecastingModel expects src with shape [B, T, F], got {tuple(src.shape)}"
             )
-            return self._finalize_output(raw)
 
-        # 3D path
         if self.head_composer is not None:
             # Composer owns preprocessing; avoid legacy double-processing
             x_enc, comp_state = self.head_composer.forward_pre(src)  # [B, T, F’]
@@ -924,81 +813,6 @@ class ForecastingModel(nn.Module):
             raw = self.head_composer.inverse_post(raw, comp_state)
 
         return self._finalize_output(raw)
-
-    # -------------------------------------------------------------------------
-    # 4D Graph Forward — returns RAW predictions
-    # -------------------------------------------------------------------------
-    def _forward_graph_4d(
-        self,
-        src: torch.Tensor,  # [B, T, N, F]
-        targets: torch.Tensor | None = None,  # [B, L, N, D_out]
-        time_features: torch.Tensor | None = None,  # [B, T, N, Ft]
-        epoch: int | None = None,
-        *,
-        adj: torch.Tensor | None = None,
-        mode: str = "temporal_per_node",
-    ) -> torch.Tensor:
-        """
-        Forward pass for 4D spatiotemporal data.
-        Returns RAW predictions (finalization happens in forward()).
-        Composer is applied per node-stream after flattening to [B·N, T, F].
-        """
-        assert src.dim() == 4, "Expected [B, T, N, F]"
-        B, T, N, F = src.shape
-        if targets is not None and targets.dim() == 3:
-            targets = targets.unsqueeze(-1)  # [B, L, N, 1]
-
-        # Graph block BEFORE encoder
-        src = self._apply_graph_block(src, adj, "pre_encoder")
-
-        # Graph block POST encoder (kept to match original ordering)
-        src = self._apply_graph_block(src, adj, "post_encoder")
-
-        if mode != "temporal_per_node":
-            raise NotImplementedError(
-                f"mode={mode} not implemented. Use 'temporal_per_node'."
-            )
-
-        # Flatten nodes to batch
-        src_3d = src.permute(0, 2, 1, 3).reshape(B * N, T, F)  # [B·N, T, F]
-
-        # Targets/time features flattened the same way
-        if targets is not None:
-            L = targets.size(1)
-            D_out = targets.size(-1)
-            targets_3d = targets.permute(0, 2, 1, 3).reshape(B * N, L, D_out)
-        else:
-            targets_3d = None
-
-        if time_features is not None:
-            Ft = time_features.size(-1)
-            time_3d = time_features.permute(0, 2, 1, 3).reshape(B * N, T, Ft)
-        else:
-            time_3d = None
-
-        # Composer (if present) owns preprocessing here
-        if self.head_composer is not None:
-            x_enc, comp_state = self.head_composer.forward_pre(src_3d)  # [B·N, T, F’]
-        else:
-            x_enc = self._preprocess_input(src_3d)
-            comp_state = None
-
-        # Temporal strategy on flattened streams (RAW)
-        out_3d = self._run_strategy(x_enc, targets_3d, time_3d, epoch)
-
-        # Composer inverse (if present) BEFORE reshaping back
-        if self.head_composer is not None:
-            out_3d = self.head_composer.inverse_post(out_3d, comp_state)
-
-        # Back to [B, L, N, D_out]
-        L = out_3d.size(1)
-        D_out = out_3d.size(-1)
-        out_4d = out_3d.reshape(B, N, L, D_out).permute(0, 2, 1, 3).contiguous()
-
-        # Graph block AFTER decoder
-        out_4d = self._apply_graph_block(out_4d, adj, "post_decoder")
-
-        return out_4d  # RAW — finalized once in forward()
 
     # -------------------------------------------------------------------------
     # Forward strategies — all return RAW predictions (no finalize inside)

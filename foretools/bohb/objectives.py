@@ -5,6 +5,9 @@ from typing import Any
 
 import numpy as np
 
+from .utils import safe_log
+
+
 try:
     import torch
     import torch.nn as nn
@@ -14,7 +17,6 @@ except Exception:  # pragma: no cover - optional dependency
     nn = None
     optim = None
 
-from .utils import safe_log
 
 
 def realistic_nn_objective(config: dict[str, Any], budget: float) -> float:

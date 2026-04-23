@@ -20,18 +20,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .scoring import score_from_metrics
-from .weight_schemes import (
-    build_weight_schemes,
-)
-from .weight_schemes import (
-    ranks_desc as _ranks_desc,
-)
-from .weight_schemes import (
-    spearman_from_scores as _spearman,
-)
-from .weight_schemes import (
-    topk_overlap_from_scores as _topk_overlap,
-)
+from .weight_schemes import build_weight_schemes
+from .weight_schemes import ranks_desc as _ranks_desc
+from .weight_schemes import spearman_from_scores as _spearman
+from .weight_schemes import topk_overlap_from_scores as _topk_overlap
+
 
 # ---------------------------------------------------------------------------
 # Public entry-point
@@ -89,7 +82,6 @@ def ablation_weight_search(
     import pandas as pd
 
     os.makedirs(save_dir, exist_ok=True)
-    rng = np.random.default_rng(seed)
 
     print("Weight ablation search (zero-cost weighting).")
     print(

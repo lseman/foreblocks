@@ -24,42 +24,49 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass
+from dataclasses import field
+from typing import Any
+from typing import Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from joblib import Parallel, delayed
-from scipy.signal import find_peaks, welch
-from scipy.stats import entropy, jarque_bera, kurtosis, skew
+from joblib import Parallel
+from joblib import delayed
+from scipy.signal import find_peaks
+from scipy.signal import welch
+from scipy.stats import entropy
+from scipy.stats import jarque_bera
+from scipy.stats import kurtosis
+from scipy.stats import skew
 from sklearn.impute import KNNImputer
-from sklearn.preprocessing import (
-    PowerTransformer,
-    QuantileTransformer,
-    RobustScaler,
-    StandardScaler,
-)
+from sklearn.preprocessing import PowerTransformer
+from sklearn.preprocessing import QuantileTransformer
+from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.diagnostic import acorr_ljungbox
-from statsmodels.tsa.stattools import acf, adfuller, pacf
+from statsmodels.tsa.stattools import acf
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.stattools import pacf
 from tabulate import tabulate
 from tqdm import tqdm
 
 from .ewt import apply_ewt_and_detrend_parallel
 
 # ---- local deps (explicit) ---------------------------------------------------
-from .filters import (
-    adaptive_savgol_filter,
-    emd_filter,
-    kalman_filter,
-    lowess_filter,
-    ssa_filter,
-    stl_filter,
-    wiener_filter,
-)
+from .filters import adaptive_savgol_filter
+from .filters import emd_filter
+from .filters import kalman_filter
+from .filters import lowess_filter
+from .filters import ssa_filter
+from .filters import stl_filter
+from .filters import wiener_filter
 from .impute import SAITSImputer
-from .outlier import _remove_outliers, _remove_outliers_parallel
+from .outlier import _remove_outliers
+from .outlier import _remove_outliers_parallel
+
 
 Mode = Literal["fit", "transform"]
 
@@ -459,8 +466,7 @@ def _get_iterative_imputer_class() -> Any | None:
         return IterativeImputer
     except ImportError:
         try:
-            from sklearn.ensemble import HistGradientBoostingRegressor
-            from sklearn.experimental import enable_iterative_imputer
+            import sklearn.experimental.enable_iterative_imputer  # noqa: F401
             from sklearn.impute import IterativeImputer
 
             return IterativeImputer

@@ -41,6 +41,7 @@ import scipy.stats
 from .config import VMDParameters
 from .emd import EMDVariants
 
+
 # -----------------------------------------------------------------------------
 # Optional torch refinement
 # -----------------------------------------------------------------------------

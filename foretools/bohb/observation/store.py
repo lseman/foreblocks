@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Optional
 from collections.abc import Callable
-
+from dataclasses import dataclass
+from typing import Any
+from typing import Optional
 
 
 Observation = tuple[dict[str, Any], float, Optional[float]]

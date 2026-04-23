@@ -1,19 +1,24 @@
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from .aux import ModelConfig, TimeSeriesDataset, TrainingConfig, create_dataloaders
-from .blocks.enc_dec import (
-    GRUDecoder,
-    GRUEncoder,
-    LSTMDecoder,
-    LSTMEncoder,
-)
-from .core import ForecastingModel
+from .blocks.enc_dec import GRUDecoder
+from .blocks.enc_dec import GRUEncoder
+from .blocks.enc_dec import LSTMDecoder
+from .blocks.enc_dec import LSTMEncoder
+from .config import ModelConfig
+from .config import TrainingConfig
 from .core.att import AttentionLayer
-from .tf.transformer import TransformerDecoder, TransformerEncoder
+from .data import TimeSeriesDataset
+from .data import create_dataloaders
+from .models import ForecastingModel
+from .models import GraphForecastingModel
+from .tf.transformer import TransformerDecoder
+from .tf.transformer import TransformerEncoder
 
 # from .pipeline import TimeSeriesSeq2Seq
-from .tf.transformer_tuner import ModernTransformerTuner, TransformerTuner
+from .tf.transformer_tuner import ModernTransformerTuner
+from .tf.transformer_tuner import TransformerTuner
+
 
 if TYPE_CHECKING:
     from .evaluation import ModelEvaluator
@@ -23,6 +28,7 @@ if TYPE_CHECKING:
 # Stable top-level public API
 __all__ = [
     "ForecastingModel",
+    "GraphForecastingModel",
     "Trainer",
     "ModelEvaluator",
     # "TimeSeriesSeq2Seq",

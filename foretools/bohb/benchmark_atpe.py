@@ -3,6 +3,7 @@ import time
 from .bohb import BOHB
 from .objectives import torch_mlp_objective
 
+
 def benchmark():
     config_space = {
         "lr": ("float", (1e-5, 1e-1, "log")),

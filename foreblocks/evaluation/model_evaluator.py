@@ -3,16 +3,23 @@
 # ============================================================================
 
 from __future__ import annotations
-import torch
+
 import contextlib
-from torch.amp import autocast
 from typing import Any
+from typing import TYPE_CHECKING
+
 import numpy as np
+import torch
+from torch.amp import autocast
+
 
 try:
     import matplotlib.pyplot as plt
 except ImportError:
     plt = None
+
+if TYPE_CHECKING:
+    from foreblocks.training.trainer import Trainer
 
 
 def _require_matplotlib() -> None:
@@ -29,7 +36,13 @@ class ModelEvaluator:
         self.device = trainer.device
 
     @torch.no_grad()
-    def predict(self, X: torch.Tensor, batch_size: int = 256, use_amp: bool = True) -> torch.Tensor:
+    def predict(
+        self,
+        X: torch.Tensor,
+        batch_size: int = 256,
+        use_amp: bool = True,
+        graph_kwargs: dict[str, Any] | None = None,
+    ) -> torch.Tensor:
         self.model.eval()
         X = X.to(self.device)
         predictions = []
@@ -37,12 +50,44 @@ class ModelEvaluator:
 
         for i in range(0, len(X), batch_size):
             batch = X[i : i + batch_size]
+            batch_graph_kwargs = self._batch_graph_kwargs(
+                graph_kwargs,
+                start=i,
+                stop=i + batch.size(0),
+                total=len(X),
+            )
             with amp_ctx:
-                output = self.model(batch)
+                output = self.model(batch, **batch_graph_kwargs)
                 output = output[0] if isinstance(output, tuple) else output
                 predictions.append(output.cpu())
 
         return torch.cat(predictions, dim=0)
+
+    def _batch_graph_kwargs(
+        self,
+        graph_kwargs: dict[str, Any] | None,
+        *,
+        start: int,
+        stop: int,
+        total: int,
+    ) -> dict[str, Any]:
+        out = {}
+        for key, value in (graph_kwargs or {}).items():
+            if torch.is_tensor(value):
+                tensor = value.to(self.device)
+                if (
+                    (key == "adj" and tensor.dim() == 3 and tensor.size(0) == total)
+                    or (
+                        key == "edge_weight"
+                        and tensor.dim() == 2
+                        and tensor.size(0) == total
+                    )
+                ):
+                    tensor = tensor[start:stop]
+                out[key] = tensor
+            else:
+                out[key] = value
+        return out
 
     def cross_validation(
         self,
@@ -51,7 +96,8 @@ class ModelEvaluator:
         n_windows: int,
         horizon: int,
         step_size: int | None = None,
-        batch_size: int = 256
+        batch_size: int = 256,
+        graph_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if step_size is None:
             step_size = horizon
@@ -72,7 +118,7 @@ class ModelEvaluator:
             X_window = X[start_idx:end_idx]
             y_window = y[start_idx:end_idx]
 
-            preds = self.predict(X_window, batch_size)
+            preds = self.predict(X_window, batch_size, graph_kwargs=graph_kwargs)
 
             all_predictions.append(preds)
             all_targets.append(y_window)
@@ -101,6 +147,11 @@ class ModelEvaluator:
 
     def _compute_window_metrics(self, predictions: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
         targets = targets.to(predictions.device)
+        if predictions.ndim == 4 and targets.ndim == 3:
+            targets = targets.unsqueeze(-1)
+        if predictions.ndim > 3:
+            predictions = predictions.reshape(predictions.size(0), predictions.size(1), -1)
+            targets = targets.reshape(targets.size(0), targets.size(1), -1)
         diff = (predictions - targets).float()
 
         mse = (diff**2).mean().item()
@@ -116,8 +167,14 @@ class ModelEvaluator:
             'mape': mape
         }
 
-    def compute_metrics(self, X: torch.Tensor, y: torch.Tensor, batch_size: int = 256) -> dict[str, float]:
-        predictions = self.predict(X, batch_size)
+    def compute_metrics(
+        self,
+        X: torch.Tensor,
+        y: torch.Tensor,
+        batch_size: int = 256,
+        graph_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, float]:
+        predictions = self.predict(X, batch_size, graph_kwargs=graph_kwargs)
         return self._compute_window_metrics(predictions, y)
 
     def plot_cv_results(self, cv_results: dict[str, Any], figsize: tuple[int, int] = (15, 8)):

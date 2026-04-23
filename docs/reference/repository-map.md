@@ -19,9 +19,13 @@ This page gives a quick path through the repository for contributors and power u
 | Path | Purpose |
 | --- | --- |
 | [`foreblocks/__init__.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/__init__.py) | Top-level public exports |
-| `foreblocks/core/` | `ForecastingModel`, heads, conformal tools |
+| [`foreblocks/config.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/config.py) | Public configuration dataclasses (`ModelConfig`, `TrainingConfig`) |
+| `foreblocks/models/` | Model-level composition APIs (`ForecastingModel`, `GraphForecastingModel`) |
+| `foreblocks/layers/` | Reusable layer families, including graph convolutions and graph construction |
+| `foreblocks/core/` | Core forecasting internals and heads |
 | `foreblocks/training/` | Trainer and training support |
 | `foreblocks/evaluation/` | Evaluation and metrics |
+| `foreblocks/data/` | Dataset and dataloader helpers |
 | `foreblocks/ts_handler/` | Preprocessing and sequence construction |
 | `foreblocks/tf/` | Transformer stack and advanced attention |
 | `foreblocks/darts/` | Neural architecture search |
@@ -46,7 +50,10 @@ This page gives a quick path through the repository for contributors and power u
 | Task | Entry point |
 | --- | --- |
 | Training a baseline model | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md), [Getting Started](../getting-started.md) |
-| Understanding architecture composition | [`foreblocks/core/model.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/core/model.py) |
+| Understanding architecture composition | [`foreblocks/models/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/models) |
+| Working with graph forecasting | [`foreblocks/models/graph_forecasting.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/models/graph_forecasting.py), [`foreblocks/layers/graph/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/layers/graph) |
+| Configuring runs | [`foreblocks/config.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/config.py) |
+| Building dataloaders | [`foreblocks/data/dataset.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/data/dataset.py) |
 | Adding preprocessing logic | [`foreblocks/ts_handler/preprocessing.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/ts_handler/preprocessing.py) |
 | Exploring transformer internals | [`foreblocks/tf/transformer.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/tf/transformer.py) |
 | Working on architecture search | [`foreblocks/darts/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/darts) |

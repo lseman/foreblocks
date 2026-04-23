@@ -13,14 +13,17 @@ Usage:
     trainer.fit(train_loader, val_loader, epochs=50)
 """
 
-import torch
-import torch.nn as nn
 from typing import Any
 
-from .features import extract_features, FEATURE_DIM
+import torch
+import torch.nn as nn
+
+from .features import FEATURE_DIM
+from .features import extract_features
 from .layers import StackedAugmentationLayers
 from .losses import CompositeLoss
-from .transformations import NUM_TRANSFORMS, TRANSFORM_NAMES
+from .transformations import NUM_TRANSFORMS
+from .transformations import TRANSFORM_NAMES
 
 
 class AutoDATimeseries(nn.Module):

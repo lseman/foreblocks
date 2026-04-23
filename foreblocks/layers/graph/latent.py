@@ -7,7 +7,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .common import Tensor, safe_eye, xavier_zero_bias
+from .common import Tensor
+from .common import safe_eye
+from .common import xavier_zero_bias
 from .norms import GraphNorm
 
 

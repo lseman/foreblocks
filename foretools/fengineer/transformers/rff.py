@@ -6,7 +6,8 @@ import pandas as pd
 from scipy import fft
 from scipy.spatial.distance import pdist
 from sklearn.cluster import KMeans
-from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.feature_selection import SelectKBest
+from sklearn.feature_selection import f_regression
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import StandardScaler

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-
 import torch
 import torch.fft as fft
 import torch.nn as nn
 
 from foreblocks.core.model import BaseHead
+
 
 class FFTTopK(nn.Module):
     """

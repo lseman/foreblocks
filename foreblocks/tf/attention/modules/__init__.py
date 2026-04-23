@@ -1,9 +1,11 @@
-from .autocor_att import AutoCorrelation, AutoCorrelationLayer
+from .autocor_att import AutoCorrelation
+from .autocor_att import AutoCorrelationLayer
 from .dwt_att import DWTAttention
 from .frequency_att import FrequencyAttention
-from .gated_delta import *
+from .gated_delta import *  # noqa: F403
 from .kimi_att import KimiAttention
 from .lin_att import LinearAttention
+
 
 __all__ = [
     "AutoCorrelation",

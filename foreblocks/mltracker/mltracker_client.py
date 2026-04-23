@@ -4,11 +4,11 @@ from __future__ import annotations
 import io
 import math
 import pickle
+from collections.abc import Mapping
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any
-from collections.abc import Mapping
 
 import requests
 

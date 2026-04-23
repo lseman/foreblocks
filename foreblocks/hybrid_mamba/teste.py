@@ -5,6 +5,16 @@ import sys
 from pathlib import Path
 
 import torch
+from hybrid_mamba import HybridMambaBlock  # noqa: E402
+from hybrid_mamba import TinyHybridMambaLM
+from hybrid_mamba import benchmark_block
+from hybrid_mamba import benchmark_causal_conv
+from hybrid_mamba import check_backward
+from hybrid_mamba import check_causal_conv_backward
+from hybrid_mamba import check_causal_conv_close
+from hybrid_mamba import check_forward_close
+from hybrid_mamba import compare_against_official
+from hybrid_mamba import precompile_selective_scan_extension
 
 
 def _ensure_import_path() -> None:
@@ -18,18 +28,6 @@ def _ensure_import_path() -> None:
 
 _ensure_import_path()
 
-from hybrid_mamba import (  # noqa: E402
-    HybridMambaBlock,
-    TinyHybridMambaLM,
-    benchmark_block,
-    benchmark_causal_conv,
-    check_causal_conv_backward,
-    check_causal_conv_close,
-    check_backward,
-    check_forward_close,
-    compare_against_official,
-    precompile_selective_scan_extension,
-)
 
 
 def _resolve_device(device: str) -> str:

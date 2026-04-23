@@ -20,11 +20,14 @@ import shutil
 import sqlite3
 import sys
 import time
+from collections.abc import Iterable
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
-from collections.abc import Iterable, Mapping
+from typing import Any
+from typing import Literal
+
 
 try:
     import getpass
@@ -659,7 +662,7 @@ class MLTracker:
                         hash=name_hash,
                     )
 
-                run_id = self.start_run(experiment, resolved_name)
+                self.start_run(experiment, resolved_name)
 
                 # baseline tags
                 if capture_system:

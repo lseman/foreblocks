@@ -1,9 +1,10 @@
 import warnings
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 from functools import lru_cache
 from typing import Any
-from collections.abc import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,7 +12,8 @@ import pandas as pd
 from sklearn.exceptions import ConvergenceWarning
 from statsmodels.tools.sm_exceptions import ValueWarning
 from statsmodels.tsa.seasonal import STL
-from statsmodels.tsa.stattools import acf, pacf
+from statsmodels.tsa.stattools import acf
+from statsmodels.tsa.stattools import pacf
 
 from .analyzers.cluster import ClusterAnalyzer
 from .analyzers.correlation import CorrelationAnalyzer
@@ -27,6 +29,7 @@ from .analyzers.ts import TimeSeriesAnalyzer
 from .core import *
 from .core import _run_analysis_worker
 from .report import DatasetReportPrinter
+
 
 # Suppress known noise warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)

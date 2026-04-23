@@ -6,12 +6,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from numba import njit, prange
+from numba import njit
+from numba import prange
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
-from sklearn.preprocessing import MinMaxScaler, RobustScaler, StandardScaler
-from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader
+from torch.utils.data import TensorDataset
 from tqdm import tqdm
+
 
 # Optional imports
 try:

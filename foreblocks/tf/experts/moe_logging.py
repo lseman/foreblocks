@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
-from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+
 
 # ╔═════════════════════════════════════════════════════════════════════════╗
 # ║                         LOGGING: TRAIN/EVAL SIDE                        ║
@@ -107,8 +109,10 @@ class MoELogger:
         self._append("router_entropy", router_entropy)
         self._append("expert_util", util.tolist())
         self._append("tokens_dropped", int(capacity_dropped))
-        if aux_loss is not None: self._append("aux_loss", float(aux_loss))
-        if latency_ms is not None: self._append("latency_ms", float(latency_ms))
+        if aux_loss is not None:
+            self._append("aux_loss", float(aux_loss))
+        if latency_ms is not None:
+            self._append("latency_ms", float(latency_ms))
 
         # Optionally store raw routing for later specialization plots (keep light)
         # We store downsampled snapshots to limit memory (customize as needed)
@@ -226,7 +230,8 @@ def plot_load_imbalance_cv(log: dict[str, list[Any]], title="Expert Load Imbalan
     cv = util.std(axis=1) / mean
     fig, ax = plt.subplots(figsize=(7, 3))
     ax.plot(steps, cv)
-    ax.set_xlabel("Step"); ax.set_ylabel("CV ↓")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("CV ↓")
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
     return fig
@@ -242,8 +247,10 @@ def plot_entropy_and_aux(log: dict[str, list[Any]]):
         ax.plot(steps[:len(ent)], ent, label="Router Entropy")
     if len(aux) > 0:
         ax.plot(steps[:len(aux)], aux, label="Aux Loss")
-    ax.set_xlabel("Step"); ax.set_title("Router Entropy / Aux Loss")
-    ax.grid(True, alpha=0.3); ax.legend()
+    ax.set_xlabel("Step")
+    ax.set_title("Router Entropy / Aux Loss")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
     return fig
 
 # ——— 4) Tokens Dropped (Capacity Pressure) ————————————————————
@@ -255,7 +262,8 @@ def plot_tokens_dropped(log: dict[str, list[Any]]):
         return None
     fig, ax = plt.subplots(figsize=(7, 3))
     ax.plot(steps[:len(dropped)], dropped)
-    ax.set_xlabel("Step"); ax.set_ylabel("# Tokens")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("# Tokens")
     ax.set_title("Tokens Dropped (capacity overflow)")
     ax.grid(True, alpha=0.3)
     return fig
@@ -274,13 +282,15 @@ def heatmap_expert_by_condition(
         topk = np.asarray(topk).reshape(-1)      # use primary expert only
         cond = np.asarray(cond).reshape(-1)
         m = min(len(topk), len(cond))
-        if m <= 0: continue
+        if m <= 0:
+            continue
         for e, c in zip(topk[:m], cond[:m]):
             if 0 <= e < E and 0 <= c < C:
                 counts[e, c] += 1
     fig, ax = plt.subplots(figsize=(10, 4))
-    im = ax.imshow(counts, aspect='auto', origin='lower')
-    ax.set_ylabel("Expert"); ax.set_xlabel("Condition bin")
+    im = ax.imshow(counts, aspect="auto", origin="lower")
+    ax.set_ylabel("Expert")
+    ax.set_xlabel("Condition bin")
     ax.set_title(title)
     fig.colorbar(im, ax=ax, shrink=0.9)
     return fig, counts
@@ -296,7 +306,6 @@ def reliability_diagram(
     conf = np.asarray(conf).astype(float)
     correctness = np.asarray(correctness).astype(float)
     edges = np.linspace(0, 1, bins + 1)
-    mids = 0.5 * (edges[:-1] + edges[1:])
     out_conf, out_acc = [], []
     for i in range(bins):
         m = (conf >= edges[i]) & (conf < edges[i + 1])
@@ -307,10 +316,12 @@ def reliability_diagram(
             out_conf.append(np.nan)
             out_acc.append(np.nan)
     fig, ax = plt.subplots(figsize=(4.2, 4.2))
-    ax.plot([0, 1], [0, 1], '--', alpha=0.5)
-    ax.plot(out_conf, out_acc, marker='o')
-    ax.set_xlabel("Confidence"); ax.set_ylabel("Observed accuracy (proxy)")
-    ax.set_title(title); ax.grid(True, alpha=0.3)
+    ax.plot([0, 1], [0, 1], "--", alpha=0.5)
+    ax.plot(out_conf, out_acc, marker="o")
+    ax.set_xlabel("Confidence")
+    ax.set_ylabel("Observed accuracy (proxy)")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
     return fig
 
 # ——— 7) Expert Ablation (Δ metric per expert) ————————————————
@@ -320,8 +331,9 @@ def bar_ablation_delta(metric_full: float, metric_without_expert: Sequence[float
     delta = metric_without_expert - metric_full
     fig, ax = plt.subplots(figsize=(7, 3))
     ax.bar(np.arange(len(delta)), delta)
-    ax.axhline(0, lw=1, color='k')
-    ax.set_xlabel("Expert"); ax.set_ylabel("Δ Metric (↑ worse)")
+    ax.axhline(0, lw=1, color="k")
+    ax.set_xlabel("Expert")
+    ax.set_ylabel("Δ Metric (↑ worse)")
     ax.set_title(title)
     return fig
 
@@ -334,8 +346,11 @@ def plot_horizon_wise_error(err_moe: Sequence[float], err_dense: Sequence[float]
     fig, ax = plt.subplots(figsize=(8, 3))
     ax.plot(H, err_moe, label="MoE")
     ax.plot(H, err_dense, label="Dense")
-    ax.set_xlabel("Horizon τ"); ax.set_ylabel("Error"); ax.set_title(title)
-    ax.grid(True, alpha=0.3); ax.legend()
+    ax.set_xlabel("Horizon τ")
+    ax.set_ylabel("Error")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
     return fig
 
 # ——— 9) Accuracy–Latency Pareto ——————————————————————————————
@@ -349,8 +364,15 @@ def pareto_accuracy_latency(points: list[dict[str, float]], title="Accuracy–La
     for p in points:
         size = 20 + 2 * float(p.get("size_m", 10))
         ax.scatter(p["latency_ms"], p["metric"], s=size)
-        ax.annotate(p["name"], (p["latency_ms"], p["metric"]), xytext=(4, 4), textcoords="offset points")
-    ax.set_xlabel("Latency (ms) ↓"); ax.set_ylabel("Validation Error ↓"); ax.set_title(title)
+        ax.annotate(
+            p["name"],
+            (p["latency_ms"], p["metric"]),
+            xytext=(4, 4),
+            textcoords="offset points",
+        )
+    ax.set_xlabel("Latency (ms) ↓")
+    ax.set_ylabel("Validation Error ↓")
+    ax.set_title(title)
     ax.grid(True, alpha=0.3)
     return fig
 
@@ -367,8 +389,10 @@ def plot_attn_entropy_by_expert(attn_entropy_per_token: np.ndarray, primary_expe
     means = [float(v.mean()) if v.size > 0 else np.nan for v in vals]
     fig, ax = plt.subplots(figsize=(8, 3))
     ax.bar(np.arange(E), means)
-    ax.set_xlabel("Expert"); ax.set_ylabel("Mean attention entropy")
-    ax.set_title(title); ax.grid(True, axis='y', alpha=0.2)
+    ax.set_xlabel("Expert")
+    ax.set_ylabel("Mean attention entropy")
+    ax.set_title(title)
+    ax.grid(True, axis="y", alpha=0.2)
     return fig
 
 
@@ -609,7 +633,8 @@ if __name__ == "__main__":
 
         # snapshots
         N = 200
-        probs = rng.random((N, E)); probs = probs / probs.sum(-1, keepdims=True)
+        probs = rng.random((N, E))
+        probs = probs / probs.sum(-1, keepdims=True)
         topk = np.argsort(-probs, axis=-1)[:, :K]
         log["snap_topk"].append(topk)
         log["snap_top1_conf"].append(probs[np.arange(N), topk[:, 0]])

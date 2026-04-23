@@ -1,9 +1,12 @@
-import pandas as pd
-import numpy as np
-from typing import Any
-from foreblocks.ui.node_spec import node
-from foreblocks.ui.auto_spec import PortOutBundle
 from typing import Annotated
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from foreblocks.ui.auto_spec import PortOutBundle
+from foreblocks.ui.node_spec import node
+
 
 @node(
     type_id="csv_source",

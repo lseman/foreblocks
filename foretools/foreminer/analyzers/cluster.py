@@ -5,20 +5,25 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import pdist
-from sklearn.cluster import DBSCAN, KMeans, SpectralClustering
+from sklearn.cluster import DBSCAN
+from sklearn.cluster import KMeans
+from sklearn.cluster import SpectralClustering
 from sklearn.decomposition import PCA
-from sklearn.metrics import (
-    adjusted_rand_score,
-    calinski_harabasz_score,
-    davies_bouldin_score,
-    silhouette_score,
-)
+from sklearn.metrics import adjusted_rand_score
+from sklearn.metrics import calinski_harabasz_score
+from sklearn.metrics import davies_bouldin_score
+from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
-from sklearn.neighbors import NearestNeighbors, kneighbors_graph
-from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.neighbors import NearestNeighbors
+from sklearn.neighbors import kneighbors_graph
+from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import StandardScaler
 
-from .analyzer_utils import drop_constant_numeric, get_numeric_frame, safe_call
-from ..core import AnalysisConfig, AnalysisStrategy
+from ..core import AnalysisConfig
+from ..core import AnalysisStrategy
+from .analyzer_utils import drop_constant_numeric
+from .analyzer_utils import get_numeric_frame
+from .analyzer_utils import safe_call
 
 
 class ClusterAnalyzer(AnalysisStrategy):

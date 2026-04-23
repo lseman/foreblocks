@@ -3,7 +3,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
 
 from foretools.aux.adaptive_mi import AdaptiveMI
 
@@ -12,7 +13,8 @@ from .base import BaseFeatureTransformer
 
 # Optional parallelism
 try:
-    from joblib import Parallel, delayed
+    from joblib import Parallel
+    from joblib import delayed
 
     _HAVE_JOBLIB = True
 except Exception:

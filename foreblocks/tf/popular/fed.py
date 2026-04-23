@@ -8,6 +8,7 @@ from .transformer_aux import (
     create_norm_layer,  # your helper (rms/layer/batch norm etc.)
 )
 
+
 # ---------------------------
 # 1) Series decomposition
 # ---------------------------
@@ -112,17 +113,16 @@ class FourierBlock(nn.Module):
         B, T, C = x.shape
         # FFT (one-sided real-to-complex): shape [B, F, C, 2]
         Xf = torch.view_as_real(torch.fft.rfft(x, dim=1))  # [B, F, C, 2]
-        Fh = Xf.size(1)
 
-        Xf_sel, idx = self.selector(Xf)                    # [B, K, C, 2], [B, K]
+        Xf_sel, idx = self.selector(Xf)  # [B, K, C, 2], [B, K]
         K = Xf_sel.size(1)
 
         # Slice learnable weights to K (first K rows)
-        W = self.weight[:K, :, :]                          # [K, C, 2]
-        W = W.unsqueeze(0).expand(B, K, C, 2)              # [B, K, C, 2]
+        W = self.weight[:K, :, :]  # [K, C, 2]
+        W = W.unsqueeze(0).expand(B, K, C, 2)  # [B, K, C, 2]
 
         # Complex multiply selected modes
-        Yf_sel = _complex_mul(Xf_sel, W)                   # [B, K, C, 2]
+        Yf_sel = _complex_mul(Xf_sel, W)  # [B, K, C, 2]
         # Scatter back into full spectrum buffer
         Yf = torch.zeros_like(Xf)
         Yf.scatter_(1, idx[:, :, None, None].expand(B, K, C, 2), Yf_sel)
@@ -307,8 +307,9 @@ class FEDformerHeadCustom(nn.Module):
     def _reset(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight) 
-                if m.bias is not None: nn.init.zeros_(m.bias)
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
         nn.init.normal_(self.query_pos, std=0.02)
 
     # -------- helper: build decoder seasonal queries --------

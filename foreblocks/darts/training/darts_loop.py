@@ -17,21 +17,18 @@ import torch.nn.functional as F
 from torch.amp import GradScaler
 
 from ..evaluation.metrics import compute_final_metrics
-from ..training.helpers import (
-    ArchitectureRegularizer,
-    BilevelOptimizer,
-    RegularizationType,
-    TemperatureScheduler,
-)
-from ..utils.training import (
-    autocast_ctx,
-    build_arch_param_groups,
-    capture_progressive_state,
-    create_progress_bar,
-    restore_progressive_state,
-    split_arch_and_model_params,
-    unpack_forecasting_batch,
-)
+from ..training.helpers import ArchitectureRegularizer
+from ..training.helpers import BilevelOptimizer
+from ..training.helpers import RegularizationType
+from ..training.helpers import TemperatureScheduler
+from ..utils.training import autocast_ctx
+from ..utils.training import build_arch_param_groups
+from ..utils.training import capture_progressive_state
+from ..utils.training import create_progress_bar
+from ..utils.training import restore_progressive_state
+from ..utils.training import split_arch_and_model_params
+from ..utils.training import unpack_forecasting_batch
+
 
 # ---------------------------------------------------------------------------
 # Public entry-point
@@ -234,8 +231,6 @@ def train_darts_model(
     prev_edge_probs: dict = {}
     last_edge_entropy = float("nan")
     last_edge_sharpen_weight = 0.0
-    last_moe_balance_loss = float("nan")
-    last_transformer_exploration_bonus = float("nan")
 
     if verbose:
         print(f"Training DARTS for {epochs} epochs")
@@ -430,8 +425,6 @@ def train_darts_model(
                             total_arch_loss
                             + float(moe_balance_weight) * moe_balance_loss
                         )
-                    last_moe_balance_loss = float(moe_balance_loss.detach().item())
-
                     transformer_exploration_bonus = torch.tensor(0.0, device=device)
                     if transformer_exploration_weight > 0.0:
                         entropy_terms: list[torch.Tensor] = []
@@ -467,10 +460,6 @@ def train_darts_model(
                                 * early_phase_scale
                                 * transformer_exploration_bonus
                             )
-                    last_transformer_exploration_bonus = float(
-                        transformer_exploration_bonus.detach().item()
-                    )
-
                     # Late-phase edge-entropy sharpening
                     total_arch_loss, edge_entropy, edge_sharpen_weight = (
                         _add_edge_sharpening(

@@ -5,9 +5,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import torch
 import torch.nn.functional as F
 from matplotlib.gridspec import GridSpec
 from scipy import stats
+
 
 warnings.filterwarnings("ignore")
 
@@ -631,7 +633,7 @@ class StreamlinedDARTSAnalyzer:
         x = np.arange(len(encoders))
         width = 0.25
 
-        bars1 = ax.bar(
+        ax.bar(
             x - width,
             overall_counts,
             width,
@@ -639,10 +641,10 @@ class StreamlinedDARTSAnalyzer:
             alpha=0.8,
             color="skyblue",
         )
-        bars2 = ax.bar(
+        ax.bar(
             x, top_counts, width, label="Top Candidates", alpha=0.8, color="orange"
         )
-        bars3 = ax.bar(
+        ax.bar(
             x + width,
             trained_counts,
             width,
@@ -692,7 +694,7 @@ class StreamlinedDARTSAnalyzer:
         x = np.arange(len(decoders))
         width = 0.25
 
-        bars1 = ax.bar(
+        ax.bar(
             x - width,
             overall_counts,
             width,
@@ -700,10 +702,10 @@ class StreamlinedDARTSAnalyzer:
             alpha=0.8,
             color="lightcoral",
         )
-        bars2 = ax.bar(
+        ax.bar(
             x, top_counts, width, label="Top Candidates", alpha=0.8, color="gold"
         )
-        bars3 = ax.bar(
+        ax.bar(
             x + width,
             trained_counts,
             width,
@@ -806,7 +808,7 @@ class StreamlinedDARTSAnalyzer:
         encoder_counts = list(encoders.values())
         [encoder_weights.get(name, 0) for name in encoder_names]
 
-        bars = ax.bar(
+        ax.bar(
             range(len(encoder_names)), encoder_counts, alpha=0.8, color="lightblue"
         )
 
@@ -946,7 +948,7 @@ class StreamlinedDARTSAnalyzer:
         x = np.arange(len(operations))
         width = 0.35
 
-        bars1 = ax.bar(
+        ax.bar(
             x - width / 2,
             overall_freq,
             width,
@@ -954,7 +956,7 @@ class StreamlinedDARTSAnalyzer:
             alpha=0.7,
             color="lightblue",
         )
-        bars2 = ax.bar(
+        ax.bar(
             x + width / 2,
             trained_freq,
             width,
@@ -1001,7 +1003,7 @@ class StreamlinedDARTSAnalyzer:
         # Color bars by significance
         colors = ["red" if p < 0.05 else "lightblue" for p in p_values]
 
-        bars = ax.bar(range(len(operations)), impacts, color=colors, alpha=0.7)
+        ax.bar(range(len(operations)), impacts, color=colors, alpha=0.7)
         ax.axhline(y=0, color="black", linestyle="-", alpha=0.3)
 
         ax.set_title("Operation Performance Impact\n(Red = Significant, p < 0.05)")

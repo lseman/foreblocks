@@ -9,31 +9,47 @@ Reusable NumPy → NeuralForecast Benchmark
 """
 
 from __future__ import annotations
+
 import time
 import warnings
-from dataclasses import dataclass, field
 from collections.abc import Sequence
+from dataclasses import dataclass
+from dataclasses import field
 
 import numpy as np
 import pandas as pd
 
-# Metric helpers
-from sklearn.metrics import (
-    mean_absolute_error,
-    mean_squared_error,
-    mean_absolute_percentage_error,
-)
-
 # NeuralForecast
 from neuralforecast import NeuralForecast
-from neuralforecast.models import (
-    TFT, NHITS, TCN, LSTM, NBEATS, NBEATSx, GRU, Informer, TiDE,
-    PatchTST, FEDformer, TimesNet, DeepAR, BiTCN,
-)
+from neuralforecast.models import GRU
+from neuralforecast.models import LSTM
+from neuralforecast.models import NBEATS
+from neuralforecast.models import NHITS
+from neuralforecast.models import TCN
+from neuralforecast.models import TFT
+from neuralforecast.models import BiTCN
+from neuralforecast.models import DeepAR
+from neuralforecast.models import FEDformer
+from neuralforecast.models import Informer
+from neuralforecast.models import NBEATSx
+from neuralforecast.models import PatchTST
+from neuralforecast.models import TiDE
+from neuralforecast.models import TimesNet
+
+# Metric helpers
+from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_percentage_error
+from sklearn.metrics import mean_squared_error
+
 
 # Try newer models if available in your install
 try:
-    from neuralforecast.models import Autoformer, VanillaTransformer, iTransformer, TimeMixer, TimeXer, StemGNN
+    from neuralforecast.models import Autoformer
+    from neuralforecast.models import StemGNN
+    from neuralforecast.models import TimeMixer
+    from neuralforecast.models import TimeXer
+    from neuralforecast.models import VanillaTransformer
+    from neuralforecast.models import iTransformer
     _NEW_MODELS = [Autoformer, VanillaTransformer, iTransformer, TimeMixer, TimeXer, StemGNN]
 except Exception:
     _NEW_MODELS = []

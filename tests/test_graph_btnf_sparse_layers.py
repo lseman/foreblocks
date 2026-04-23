@@ -1,7 +1,10 @@
 import torch
+import pytest
 
-from foreblocks.blocks.graph_btnf.layers import GATConv, GCNConv, SAGEConv
-from foreblocks.blocks.graph_btnf.network import LatentGraphNetwork
+from foreblocks.config import TrainingConfig
+from foreblocks.layers.graph.layers import GATConv, GCNConv, SAGEConv
+from foreblocks.models import GraphForecastingModel
+from foreblocks.training.trainer import Trainer
 
 
 def _dense_adj_from_edge_index(
@@ -65,6 +68,22 @@ def test_gat_sparse_matches_dense_mask() -> None:
     torch.testing.assert_close(dense_out, sparse_out, atol=1e-6, rtol=1e-6)
 
 
+def test_gat_sparse_matches_dense_weighted() -> None:
+    torch.manual_seed(11)
+    x = torch.randn(2, 3, 4, 8)
+    edge_index = torch.tensor([[0, 1, 2, 2, 3], [1, 2, 0, 3, 1]])
+    edge_weight = torch.tensor([0.2, 1.5, 0.7, 2.0, 0.4], dtype=torch.float32)
+    adj = _dense_adj_from_edge_index(edge_index, num_nodes=4, edge_weight=edge_weight)
+
+    layer = GATConv(8, 8, heads=2, dropout=0.0)
+    layer.eval()
+
+    dense_out = layer(x, adj=adj)
+    sparse_out = layer(x, edge_index=edge_index, edge_weight=edge_weight)
+
+    torch.testing.assert_close(dense_out, sparse_out, atol=1e-6, rtol=1e-6)
+
+
 def test_gcn_norm_strategy_matches_legacy_pre_norm_flag() -> None:
     torch.manual_seed(3)
     x = torch.randn(2, 2, 4, 6)
@@ -88,7 +107,7 @@ def test_gcn_norm_strategy_matches_legacy_pre_norm_flag() -> None:
 def test_network_accepts_sandwich_norm_strategy() -> None:
     torch.manual_seed(5)
     x = torch.randn(2, 3, 4, 6)
-    model = LatentGraphNetwork(
+    model = GraphForecastingModel(
         num_nodes=4,
         feat_dim=6,
         out_feat_dim=6,
@@ -98,3 +117,128 @@ def test_network_accepts_sandwich_norm_strategy() -> None:
     )
     y = model(x)
     assert y.shape == x.shape
+
+
+def test_graph_forecasting_model_supports_mixed_convs_and_jk() -> None:
+    torch.manual_seed(6)
+    x = torch.randn(2, 5, 4, 3)
+    model = GraphForecastingModel(
+        num_nodes=4,
+        feat_dim=3,
+        out_feat_dim=5,
+        conv=["gcn", "sage", "gat"],
+        gat_heads=1,
+        jk="concat",
+    )
+
+    y, adj = model(x, return_graph=True)
+
+    assert y.shape == (2, 5, 4, 5)
+    assert adj is not None
+    assert adj.shape == (4, 4)
+
+
+def test_graph_forecasting_model_static_graph_horizon() -> None:
+    torch.manual_seed(7)
+    x = torch.randn(2, 6, 4, 3)
+    model = GraphForecastingModel(
+        num_nodes=4,
+        feat_dim=3,
+        out_feat_dim=2,
+        graph_source="static",
+        static_adjacency=torch.eye(4),
+        conv="gcn",
+        seq_len=6,
+        horizon=2,
+    )
+
+    y = model(x)
+
+    assert y.shape == (2, 2, 4, 2)
+
+
+def test_graph_forecasting_model_flatten_nodes_readout() -> None:
+    torch.manual_seed(8)
+    x = torch.randn(2, 5, 3, 2)
+    model = GraphForecastingModel(
+        num_nodes=3,
+        feat_dim=2,
+        out_feat_dim=4,
+        passes=1,
+        layer="gcn",
+        output_mode="flatten_nodes",
+    )
+
+    y = model(x)
+
+    assert y.shape == (2, 5, 12)
+    assert model.input_size == 6
+    assert model.output_size == 12
+
+
+def test_trainer_accepts_graph_forecasting_dict_batches() -> None:
+    torch.manual_seed(9)
+    x = torch.randn(4, 5, 3, 2)
+    y = torch.randn(4, 2, 3, 1)
+    edge_index = torch.tensor([[0, 1, 2], [1, 2, 0]])
+    model = GraphForecastingModel(
+        num_nodes=3,
+        feat_dim=2,
+        out_feat_dim=1,
+        graph_source="external",
+        conv="gcn",
+        seq_len=5,
+        horizon=2,
+    )
+    trainer = Trainer(
+        model,
+        config=TrainingConfig(num_epochs=1, use_amp=False, batch_size=4),
+        auto_track=False,
+    )
+
+    loss, components = trainer.train_epoch(
+        [{"X": x, "y": y, "edge_index": edge_index}]
+    )
+
+    assert loss > 0
+    assert "task_loss" in components
+
+
+def test_trainer_graph_metrics_and_plot_prediction() -> None:
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+
+    torch.manual_seed(10)
+    x = torch.randn(5, 6, 3, 2)
+    y = torch.randn(5, 2, 3, 2)
+    edge_index = torch.tensor([[0, 1, 2], [1, 2, 0]])
+    model = GraphForecastingModel(
+        num_nodes=3,
+        feat_dim=2,
+        out_feat_dim=2,
+        graph_source="external",
+        conv="gcn",
+        seq_len=6,
+        horizon=2,
+    )
+    trainer = Trainer(
+        model,
+        config=TrainingConfig(num_epochs=1, use_amp=False, batch_size=5),
+        auto_track=False,
+    )
+    graph_kwargs = {"edge_index": edge_index}
+
+    metrics = trainer.metrics(x, y, batch_size=2, graph_kwargs=graph_kwargs)
+    fig = trainer.plot_prediction(
+        x,
+        y,
+        graph_kwargs=graph_kwargs,
+        show=False,
+        names=["n0", "n1", "n2"],
+    )
+
+    assert {"mse", "rmse", "mae", "mape"} <= set(metrics)
+    assert fig is not None
+    assert len(fig.axes) == 6
+    assert fig.axes[0].get_title().startswith("node 0 feature 0")
+    assert fig.axes[-1].get_title().startswith("node 2 feature 1")

@@ -1,26 +1,28 @@
 # foreblocks/auto_spec.py
 from __future__ import annotations
 
+import collections.abc as cabc
+import enum
+import inspect
+from collections.abc import Mapping
+from collections.abc import Sequence
+from dataclasses import fields
+from dataclasses import is_dataclass
+from typing import Annotated
+from typing import Any
+from typing import Literal
+from typing import Union
+from typing import get_args
+from typing import get_origin
+from typing import get_type_hints
+
+
 """
 Auto-spec utilities for node discovery:
 - Infers inputs/outputs/config from class annotations, dataclasses, pydantic, or __init__.
 - Builds a generic 'py' codegen spec when not explicitly provided by the node author.
 """
 
-import collections.abc as cabc
-import enum
-import inspect
-from dataclasses import fields, is_dataclass
-from typing import (
-    Annotated,
-    Any,
-    Literal,
-    Union,
-    get_args,
-    get_origin,
-    get_type_hints,
-)
-from collections.abc import Mapping, Sequence
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Port markers used in type annotations
@@ -230,7 +232,7 @@ def infer_config(cls, extra_sources: list[type] | None = None) -> dict[str, Any]
             except Exception:
                 pass
             try:
-                from pydantic import BaseModel as _BM  # type: ignore
+                from pydantic import BaseModel as _BM
                 if isinstance(Config, type) and issubclass(Config, _BM):
                     return _collect_config_from_pydantic(Config)
             except Exception:
@@ -250,7 +252,7 @@ def infer_config(cls, extra_sources: list[type] | None = None) -> dict[str, Any]
         except Exception:
             pass
         try:
-            from pydantic import BaseModel as _BM  # type: ignore
+            from pydantic import BaseModel as _BM
             if isinstance(Config, type) and issubclass(Config, _BM):
                 merged.update(_collect_config_from_pydantic(Config))
                 return merged

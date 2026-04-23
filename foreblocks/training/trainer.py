@@ -8,15 +8,26 @@ import contextlib
 import copy
 import datetime
 import warnings
+from collections.abc import Callable
+from collections.abc import Sequence
 from typing import Any
-from collections.abc import Callable, Sequence
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler, autocast
-from torch.utils.data import DataLoader, TensorDataset
+from torch.amp import GradScaler
+from torch.amp import autocast
+from torch.utils.data import DataLoader
+from torch.utils.data import TensorDataset
 from tqdm import tqdm
+
+from foreblocks.config import TrainingConfig
+from foreblocks.evaluation.model_evaluator import ModelEvaluator
+from foreblocks.training.history import TrainingHistory
+from foreblocks.training.losses import LossComputer
+from foreblocks.training.nas import NASHelper
+from foreblocks.ui.node_spec import node
+
 
 try:
     import matplotlib.pyplot as plt
@@ -25,16 +36,13 @@ except ImportError:
     plt = None
     ListedColormap = None
 
-from foreblocks.ui.node_spec import node
 
 # Optional: import your MoE classes and HeadComposer
 try:
     from foreblocks.tf.experts.moe import MoEFeedForwardDMoE
-    from foreblocks.tf.experts.moe_logging import (
-        MoELogger,
-        ReportInputs,
-        build_moe_report,
-    )
+    from foreblocks.tf.experts.moe_logging import MoELogger
+    from foreblocks.tf.experts.moe_logging import ReportInputs
+    from foreblocks.tf.experts.moe_logging import build_moe_report
     from foreblocks.tf.ff import FeedForwardBlock
 except Exception:
     MoELogger = None
@@ -44,13 +52,6 @@ except Exception:
         raise RuntimeError("MoE logging not available")
 
 
-from foreblocks.aux.utils import (
-    LossComputer,
-    NASHelper,
-    TrainingConfig,
-    TrainingHistory,
-)
-from foreblocks.evaluation.model_evaluator import ModelEvaluator
 
 
 def _require_matplotlib() -> None:
@@ -59,6 +60,7 @@ def _require_matplotlib() -> None:
             "Matplotlib is required for Trainer plotting utilities. "
             "Install with: pip install foreblocks[plotting]"
         )
+
 
 # ============================================================
 # Conformal helpers (Trainer-side only)
@@ -144,7 +146,8 @@ class Trainer:
         device: str | None = None,
         use_wandb: bool = False,
         wandb_config: dict[str, Any] | None = None,
-        moe_meta_builder: None | (
+        moe_meta_builder: None
+        | (
             Callable[
                 [
                     torch.Tensor,
@@ -158,9 +161,8 @@ class Trainer:
         ) = None,
         alpha_optimizer: torch.optim.Optimizer | None = None,
         mltracker: Any | None = None,  # Pass an existing MLTracker instance
-        mltracker_uri: None | (
-            str
-        ) = None,  # DB directory; defaults to <project_root>/mltracker_data
+        mltracker_uri: None
+        | (str) = None,  # DB directory; defaults to <project_root>/mltracker_data
         auto_track: bool = True,  # Auto-create MLTracker when none is supplied
     ):
 
@@ -287,7 +289,7 @@ class Trainer:
     # =====================================================================
     def _create_conformal_engine(self):
         """Create conformal engine with all method-specific parameters from config."""
-        from foreblocks.core.conformal import ConformalPredictionEngine
+        from foreblocks.training.conformal import ConformalPredictionEngine
 
         return ConformalPredictionEngine(
             method=getattr(self.config, "conformal_method", "split"),
@@ -413,26 +415,61 @@ class Trainer:
     @staticmethod
     def _unpack_batch(
         batch: Any,
-    ) -> tuple[Any, Any | None, Any | None]:
-        """Normalize batch formats to (X, y, time_feat)."""
+    ) -> tuple[Any, Any | None, Any | None, dict[str, Any]]:
+        """Normalize batch formats to (X, y, time_feat, graph_kwargs)."""
+        graph_keys = {"adj", "edge_index", "edge_weight"}
+
+        if isinstance(batch, dict):
+            X = batch.get("X", batch.get("x", batch.get("src", batch.get("input"))))
+            y = batch.get("y", batch.get("target", batch.get("targets")))
+            time_feat = batch.get(
+                "time_feat",
+                batch.get("time_features", batch.get("time_feature")),
+            )
+            graph_kwargs = {key: batch[key] for key in graph_keys if key in batch}
+            if X is None:
+                raise ValueError(
+                    "Batch dict must include one of: 'X', 'x', 'src', or 'input'."
+                )
+            return X, y, time_feat, graph_kwargs
+
         if isinstance(batch, (list, tuple)):
+            graph_kwargs = {}
+            if batch and isinstance(batch[-1], dict):
+                maybe_graph = {
+                    key: value for key, value in batch[-1].items() if key in graph_keys
+                }
+                if maybe_graph:
+                    graph_kwargs = maybe_graph
+                    batch = batch[:-1]
             if len(batch) == 3:
-                return batch[0], batch[1], batch[2]
+                third = batch[2]
+                if isinstance(third, dict):
+                    graph_kwargs.update(
+                        {
+                            key: value
+                            for key, value in third.items()
+                            if key in graph_keys
+                        }
+                    )
+                    return batch[0], batch[1], None, graph_kwargs
+                return batch[0], batch[1], third, graph_kwargs
             if len(batch) == 2:
-                return batch[0], batch[1], None
+                return batch[0], batch[1], None, graph_kwargs
             if len(batch) >= 1:
                 y = batch[1] if len(batch) > 1 else None
                 time_feat = batch[2] if len(batch) > 2 else None
-                return batch[0], y, time_feat
-            return batch, None, None
-        return batch, None, None
+                return batch[0], y, time_feat, graph_kwargs
+            return batch, None, None, graph_kwargs
+        return batch, None, None, {}
 
     def _move_batch_to_device(
         self,
         X: Any,
         y: Any | None,
         time_feat: Any | None = None,
-    ) -> tuple[Any, Any | None, Any | None]:
+        graph_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[Any, Any | None, Any | None, dict[str, Any]]:
         """Move available tensors in a batch to the trainer device."""
         if torch.is_tensor(X):
             X = X.to(self.device)
@@ -440,7 +477,12 @@ class Trainer:
             y = y.to(self.device)
         if torch.is_tensor(time_feat):
             time_feat = time_feat.to(self.device)
-        return X, y, time_feat
+        moved_graph_kwargs = {}
+        for key, value in (graph_kwargs or {}).items():
+            moved_graph_kwargs[key] = (
+                value.to(self.device) if torch.is_tensor(value) else value
+            )
+        return X, y, time_feat, moved_graph_kwargs
 
     def _forward_pass(
         self,
@@ -448,8 +490,10 @@ class Trainer:
         y: torch.Tensor,
         time_feat: torch.Tensor | None = None,
         batch_idx: int = 0,
+        graph_kwargs: dict[str, Any] | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         aux = {}
+        graph_kwargs = graph_kwargs or {}
         meta = (
             self.moe_meta_builder(X, y, time_feat, self.current_epoch, batch_idx)
             if self.moe_log is not None
@@ -477,6 +521,11 @@ class Trainer:
                 else:
                     outputs = result[0] if isinstance(result, tuple) else result
                 return outputs, aux
+
+        if graph_kwargs:
+            result = self.model(X, **graph_kwargs)
+            outputs = result[0] if isinstance(result, tuple) else result
+            return outputs, aux
 
         try:
             result = self.model(X, y, time_feat, self.current_epoch, meta=meta)
@@ -553,12 +602,23 @@ class Trainer:
                     dataloader_iter = iter(dataloader)
                     batch = next(dataloader_iter)
 
-                X, y, time_feat = self._unpack_batch(batch)
-                X, y, time_feat = self._move_batch_to_device(X, y, time_feat)
+                X, y, time_feat, graph_kwargs = self._unpack_batch(batch)
+                X, y, time_feat, graph_kwargs = self._move_batch_to_device(
+                    X,
+                    y,
+                    time_feat,
+                    graph_kwargs,
+                )
 
                 with torch.set_grad_enabled(True):
                     with self._amp_context():
-                        outputs, aux = self._forward_pass(X, y, time_feat, 0)
+                        outputs, aux = self._forward_pass(
+                            X,
+                            y,
+                            time_feat,
+                            0,
+                            graph_kwargs,
+                        )
 
                         if y is None:
                             target = outputs.detach().clone()
@@ -654,11 +714,22 @@ class Trainer:
 
         try:
             for batch_idx, batch in enumerate(train_loader):
-                X, y, time_feat = self._unpack_batch(batch)
-                X, y, time_feat = self._move_batch_to_device(X, y, time_feat)
+                X, y, time_feat, graph_kwargs = self._unpack_batch(batch)
+                X, y, time_feat, graph_kwargs = self._move_batch_to_device(
+                    X,
+                    y,
+                    time_feat,
+                    graph_kwargs,
+                )
 
                 with self._amp_context():
-                    outputs, aux = self._forward_pass(X, y, time_feat, batch_idx)
+                    outputs, aux = self._forward_pass(
+                        X,
+                        y,
+                        time_feat,
+                        batch_idx,
+                        graph_kwargs,
+                    )
                     if y is not None and outputs.ndim == 4 and y.ndim == 3:
                         y = y.unsqueeze(-1)
                     target = y if y is not None else outputs.detach() * 0
@@ -687,18 +758,27 @@ class Trainer:
         n = 0
 
         for batch in dataloader:
-            X, y, _ = self._unpack_batch(batch)
-            X, y, _ = self._move_batch_to_device(X, y, None)
+            X, y, time_feat, graph_kwargs = self._unpack_batch(batch)
+            X, y, time_feat, graph_kwargs = self._move_batch_to_device(
+                X,
+                y,
+                time_feat,
+                graph_kwargs,
+            )
 
             with self._amp_context():
-                try:
-                    result = self.model(X)
-                except TypeError:
-                    result = self.model(X, y, None, self.current_epoch)
-                outputs = result[0] if isinstance(result, tuple) else result
+                outputs, _ = self._forward_pass(
+                    X,
+                    y,
+                    time_feat,
+                    0,
+                    graph_kwargs,
+                )
 
                 if y is None:
                     continue
+                if outputs.ndim == 4 and y.ndim == 3:
+                    y = y.unsqueeze(-1)
                 loss = nn.MSELoss()(outputs, y)
                 bs = X.size(0)
                 total_loss += float(loss) * bs
@@ -794,7 +874,8 @@ class Trainer:
             print(f"[MLTracker] Warning: Failed to log model info: {e}")
         # System + git tags (best-effort)
         try:
-            from foreblocks.mltracker.mltracker import _maybe_git_info, _sys_info
+            from foreblocks.mltracker.mltracker import _maybe_git_info
+            from foreblocks.mltracker.mltracker import _sys_info
 
             self.mltracker.set_tags({f"sys:{k}": v for k, v in _sys_info().items()})
             git = _maybe_git_info()
@@ -1150,9 +1231,7 @@ class Trainer:
             "joint_coverage": float(joint_covered.mean()),
             "target_coverage": float(self.conformal_engine.q),
             "coverage_gap": float(covered.mean() - self.conformal_engine.q),
-            "joint_coverage_gap": float(
-                joint_covered.mean() - self.conformal_engine.q
-            ),
+            "joint_coverage_gap": float(joint_covered.mean() - self.conformal_engine.q),
             "mean_interval_width": float(widths.mean()),
             "std_interval_width": float(widths.std()),
             "min_interval_width": float(widths.min()),
@@ -1217,6 +1296,61 @@ class Trainer:
                     pass
         return None
 
+    @staticmethod
+    def _flatten_forecast_array(values: torch.Tensor | np.ndarray) -> np.ndarray:
+        arr = values.detach().cpu().numpy() if torch.is_tensor(values) else np.asarray(values)
+        if arr.ndim == 2:
+            return arr[:, :, None]
+        if arr.ndim == 3:
+            return arr
+        if arr.ndim > 3:
+            return arr.reshape(arr.shape[0], arr.shape[1], -1)
+        raise ValueError(f"Expected forecast array with at least 2 dims, got {arr.shape}.")
+
+    @staticmethod
+    def _forecast_channel_names(
+        values: torch.Tensor | np.ndarray,
+        names: str | list | None,
+    ) -> list[str]:
+        arr = values.detach().cpu().numpy() if torch.is_tensor(values) else np.asarray(values)
+        if arr.ndim <= 3:
+            channels = 1 if arr.ndim == 2 else arr.shape[-1]
+            if isinstance(names, str):
+                return [names]
+            if names is not None and len(names) == channels:
+                return list(names)
+            return [f"Feature {idx}" for idx in range(channels)]
+
+        nodes = arr.shape[2]
+        features = int(np.prod(arr.shape[3:]))
+        channels = nodes * features
+        if isinstance(names, str):
+            names = [names]
+        if names is not None and len(names) == nodes:
+            return [
+                f"{names[node]} feature {feat}"
+                for node in range(nodes)
+                for feat in range(features)
+            ]
+        if names is not None and len(names) == channels:
+            return list(names)
+        return [
+            f"node {node} feature {feat}"
+            for node in range(nodes)
+            for feat in range(features)
+        ]
+
+    @staticmethod
+    def _flatten_series_array(
+        values: torch.Tensor | np.ndarray,
+    ) -> np.ndarray:
+        arr = values.detach().cpu().numpy() if torch.is_tensor(values) else np.asarray(values)
+        if arr.ndim == 1:
+            return arr[:, None]
+        if arr.ndim == 2:
+            return arr
+        return arr.reshape(arr.shape[0], -1)
+
     # =====================================================================
     # Visualization
     # =====================================================================
@@ -1224,6 +1358,7 @@ class Trainer:
         self,
         X_val: torch.Tensor,
         y_val: torch.Tensor,
+        graph_kwargs: dict[str, Any] | None = None,
         full_series: torch.Tensor | None = None,
         offset: int = 0,
         stride: int = 1,
@@ -1236,21 +1371,19 @@ class Trainer:
     ) -> plt.Figure:
         _require_matplotlib()
         evaluator = ModelEvaluator(self)
-        predictions = evaluator.predict(X_val)
-        N, H = predictions.shape[0], predictions.shape[1]
-        D = predictions.shape[2] if predictions.ndim >= 3 else 1
+        predictions = evaluator.predict(X_val, graph_kwargs=graph_kwargs)
+        pred_np = self._flatten_forecast_array(predictions)
+        y_np = self._flatten_forecast_array(y_val)
+        N, H = pred_np.shape[0], pred_np.shape[1]
+        D = pred_np.shape[2] if pred_np.ndim >= 3 else 1
+        channel_names = self._forecast_channel_names(predictions, names)
 
         if full_series is not None:
-            series = (
-                full_series.detach().cpu().numpy()
-                if isinstance(full_series, torch.Tensor)
-                else full_series
-            )
-            if series.ndim == 1:
-                series = series[:, None]
+            series = self._flatten_series_array(full_series)
             T, S_dim = series.shape
             D_plot = S_dim
-            names = names or [f"Feature {i}" for i in range(D_plot)]
+            if len(channel_names) != D_plot:
+                channel_names = [f"Feature {i}" for i in range(D_plot)]
             seq_len = X_val.shape[1]
             starts = offset + seq_len + np.arange(N) * stride
             coverage_end = min(T, int(starts[-1] + H)) if N > 0 else 0
@@ -1259,12 +1392,6 @@ class Trainer:
                 D_plot, 1, figsize=(figsize[0], figsize[1] * D_plot), sharex=True
             )
             axes = np.atleast_1d(axes)
-            pred_np = (
-                predictions.detach().cpu().numpy()
-                if isinstance(predictions, torch.Tensor)
-                else predictions
-            )
-
             for j in range(D_plot):
                 ax = axes[j]
                 acc = np.zeros(T)
@@ -1282,12 +1409,16 @@ class Trainer:
                 mean_pred = np.zeros(T)
                 mean_pred[have] = acc[have] / cnt[have]
                 x = np.arange(coverage_end)
-                ax.plot(series[:coverage_end, j], label=f"Actual {names[j]}", alpha=0.8)
+                ax.plot(
+                    series[:coverage_end, j],
+                    label=f"Actual {channel_names[j]}",
+                    alpha=0.8,
+                )
                 if have[:coverage_end].any():
                     ax.plot(
                         x[have[:coverage_end]],
                         mean_pred[:coverage_end][have[:coverage_end]],
-                        label=f"Predicted {names[j]}",
+                        label=f"Predicted {channel_names[j]}",
                         linestyle="--",
                         color=pred_color,
                     )
@@ -1298,7 +1429,7 @@ class Trainer:
                     alpha=0.5,
                     label="First forecast",
                 )
-                ax.set_title(f"{names[j]}: Prediction vs Actual")
+                ax.set_title(f"{channel_names[j]}: Prediction vs Actual")
                 ax.legend(loc="upper left")
                 ax.grid(True, alpha=0.3)
 
@@ -1328,21 +1459,14 @@ class Trainer:
                     pass  # artifact logging is best-effort
             return fig
 
-        pred_np = (
-            predictions.detach().cpu().numpy()
-            if isinstance(predictions, torch.Tensor)
-            else predictions
-        )
-        y_np = (
-            y_val.detach().cpu().numpy() if isinstance(y_val, torch.Tensor) else y_val
-        )
         pred_mean = pred_np.mean(axis=0)
         y_mean = y_np.mean(axis=0)
         if pred_mean.ndim == 1:
             pred_mean = pred_mean[:, None]
             y_mean = y_mean[:, None]
         D_plot = pred_mean.shape[1]
-        names = names or [f"Feature {i}" for i in range(D_plot)]
+        if len(channel_names) != D_plot:
+            channel_names = [f"Feature {i}" for i in range(D_plot)]
 
         fig, axes = plt.subplots(
             D_plot, 1, figsize=(figsize[0], figsize[1] * D_plot), sharex=True
@@ -1352,17 +1476,21 @@ class Trainer:
             ax = axes[j]
             horizon = np.arange(len(pred_mean))
             ax.plot(
-                horizon, y_mean[:, j], label=f"Actual {names[j]}", marker="o", alpha=0.7
+                horizon,
+                y_mean[:, j],
+                label=f"Actual {channel_names[j]}",
+                marker="o",
+                alpha=0.7,
             )
             ax.plot(
                 horizon,
                 pred_mean[:, j],
-                label=f"Predicted {names[j]}",
+                label=f"Predicted {channel_names[j]}",
                 marker="s",
                 linestyle="--",
                 alpha=0.7,
             )
-            ax.set_title(f"{names[j]}: Average Forecast")
+            ax.set_title(f"{channel_names[j]}: Average Forecast")
             ax.legend()
             ax.grid(True, alpha=0.3)
         axes[-1].set_xlabel("Forecast Horizon")
@@ -1388,10 +1516,19 @@ class Trainer:
         return fig
 
     def metrics(
-        self, X_val: torch.Tensor, y_val: torch.Tensor, batch_size: int = 256
+        self,
+        X_val: torch.Tensor,
+        y_val: torch.Tensor,
+        batch_size: int = 256,
+        graph_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, float]:
         evaluator = ModelEvaluator(self)
-        result = evaluator.compute_metrics(X_val, y_val, batch_size)
+        result = evaluator.compute_metrics(
+            X_val,
+            y_val,
+            batch_size,
+            graph_kwargs=graph_kwargs,
+        )
         # Log each metric back to the last training run (prefixed with "eval/")
         self._log_to_last_run(result, prefix="eval/")
         return result
@@ -1404,10 +1541,17 @@ class Trainer:
         horizon: int,
         step_size: int | None = None,
         batch_size: int = 256,
+        graph_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         evaluator = ModelEvaluator(self)
         return evaluator.cross_validation(
-            X, y, n_windows, horizon, step_size, batch_size
+            X,
+            y,
+            n_windows,
+            horizon,
+            step_size,
+            batch_size,
+            graph_kwargs=graph_kwargs,
         )
 
     def plot_intervals(
@@ -1824,9 +1968,7 @@ class Trainer:
             "joint_coverage": float(joint_covered.mean()),
             "target_coverage": float(self.conformal_engine.q),
             "coverage_gap": float(covered.mean() - self.conformal_engine.q),
-            "joint_coverage_gap": float(
-                joint_covered.mean() - self.conformal_engine.q
-            ),
+            "joint_coverage_gap": float(joint_covered.mean() - self.conformal_engine.q),
             "per_horizon_coverage": covered.mean(axis=(0, 2)),
             "per_feature_coverage": covered.mean(axis=(0, 1)),
             "per_feature_joint_coverage": per_feature_joint_coverage,

@@ -3,7 +3,8 @@
 
 import torch
 from torch import Tensor
-from torch.optim.optimizer import Optimizer, required
+from torch.optim.optimizer import Optimizer
+from torch.optim.optimizer import required
 
 
 class VSGD(Optimizer):

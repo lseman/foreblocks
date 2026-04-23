@@ -12,43 +12,45 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 from collections.abc import Callable
+from typing import Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch._tensor import Tensor
 
-from .expert_blocks import MTPHead, MoE_FFNExpert, MoE_SwiGLUExpert
+from .dispatchers import DroplessPackedDispatcher
+from .dispatchers import ExpertChoiceDispatcher
+from .expert_blocks import MoE_FFNExpert
+from .expert_blocks import MoE_SwiGLUExpert
+from .expert_blocks import MTPHead
+from .moe_utils import autocast_bf16_enabled as _autocast_bf16_enabled
+from .moe_utils import eager_topk_routing
+from .moe_utils import maybe_compile
+from .moe_utils import optimized_topk_routing
+from .moe_utils import should_fallback_router_topk as _should_fallback_router_topk
+from .moe_utils import supports_grouped_prepacked as _supports_grouped_prepacked
+from .routers import AdaptiveNoisyTopKRouter
+from .routers import ContinuousTopKRouter
+from .routers import HashTopKRouter
+from .routers import LinearRouter
+from .routers import NoisyTopKRouter
+from .routers import Router
+from .routers import StraightThroughTopKRouter
+
+
 # Optional import: adjust to your package path
 try:
     from .moe_logging import MoELogger  # type: ignore
 except Exception:
     MoELogger = None  # type: ignore
-from .dispatchers import DroplessPackedDispatcher, ExpertChoiceDispatcher
-from .routers import (
-    AdaptiveNoisyTopKRouter,
-    ContinuousTopKRouter,
-    HashTopKRouter,
-    LinearRouter,
-    NoisyTopKRouter,
-    Router,
-    StraightThroughTopKRouter,
-)
-from .moe_utils import (
-    autocast_bf16_enabled as _autocast_bf16_enabled,
-    eager_topk_routing,
-    maybe_compile,
-    optimized_topk_routing,
-    should_fallback_router_topk as _should_fallback_router_topk,
-    supports_grouped_prepacked as _supports_grouped_prepacked,
-)
 
 # Optional grouped kernel path (can accept prepacked B* if your wrapper supports)
 try:
     # Prefer a wrapper that accepts B12_cat_prepacked / B3_cat_prepacked
-    from ..compute.kernels import fused_router_topk, grouped_mlp_swiglu  # type: ignore
+    from ..compute.kernels import fused_router_topk  # type: ignore
+    from ..compute.kernels import grouped_mlp_swiglu
 except Exception:
     grouped_mlp_swiglu = None  # fallback uses Python loop
     fused_router_topk = None  # type: ignore

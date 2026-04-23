@@ -7,7 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_blocks import ArchitectureConverter
-from .bb_transformers import LightweightTransformerDecoder, LightweightTransformerEncoder
+from .bb_transformers import LightweightTransformerDecoder
+from .bb_transformers import LightweightTransformerEncoder
 from .operation_blocks import FixedOp
 
 
@@ -607,7 +608,6 @@ def derive_final_architecture(
 
     device = next(new_model.parameters()).device
     arch_mode = str(getattr(new_model, "arch_mode", "unknown"))
-    tie_enc_dec = bool(getattr(new_model, "tie_encoder_decoder_arch", False))
     printed_encoder_fix = False
     printed_decoder_fix = False
     printed_attention_fix = False
@@ -659,9 +659,6 @@ def derive_final_architecture(
                 raise ValueError("Could not locate forecast decoder transformer")
 
             print(f"   → Fixing Forecast Decoder: {type(top_decoder).__name__}")
-            decoder_is_transformer = isinstance(
-                top_decoder, LightweightTransformerDecoder
-            )
             if isinstance(top_decoder, LightweightTransformerDecoder):
                 print(
                     "   → Decoder Self-Attention: "

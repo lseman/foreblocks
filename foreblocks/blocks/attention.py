@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from foreblocks.tf.embeddings import PositionalEncoding
 from foreblocks.ui.node_spec import node
 
 

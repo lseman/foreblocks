@@ -23,6 +23,7 @@ from .candidate_scoring import candidate_signature
 from .scoring import score_from_metrics
 from .weight_schemes import build_weight_schemes
 
+
 # module-level alias kept for readability
 _sig_from_cfg = candidate_signature
 

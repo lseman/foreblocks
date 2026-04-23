@@ -1,5 +1,6 @@
+from collections.abc import Callable
+from collections.abc import Iterable
 from typing import Any
-from collections.abc import Callable, Iterable
 
 import numpy as np
 import pandas as pd

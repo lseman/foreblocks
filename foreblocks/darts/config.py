@@ -7,7 +7,9 @@ single object instead of long keyword-argument lists.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
+
 
 # ---------------------------------------------------------------------------
 # Architecture / Search-space

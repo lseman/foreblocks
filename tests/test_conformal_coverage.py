@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 matplotlib.use("Agg")
 
-from foreblocks.aux.config import TrainingConfig
+from foreblocks.config import TrainingConfig
 from foreblocks.core.conformal import ConformalPredictionEngine
 from foreblocks.training.trainer import Trainer
 

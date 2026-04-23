@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import torch
 import torch.fft as fft
 import torch.nn as nn
@@ -8,6 +7,7 @@ import torch.nn.functional as F
 
 from foreblocks.core.model import BaseHead
 from foreblocks.ui.node_spec import node
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Multi-Scale Pyramid + (optional) Frequency-Domain Filtering + Hierarchical Fuse

@@ -4,11 +4,10 @@ import torch
 import torch.nn as nn
 
 from .embeddings import PositionalEncoding
-from .transformer import (
-    TransformerDecoder,
-    TransformerEncoder,
-)
+from .transformer import TransformerDecoder
+from .transformer import TransformerEncoder
 from .transformer_aux import create_norm_layer
+
 
 # ---------------------------
 # Core TFT building blocks

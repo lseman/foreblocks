@@ -11,27 +11,26 @@ import torch.nn.functional as F
 
 from foreblocks.tf.norms import RevIN
 
-from .base_blocks import MixedDecoder, MixedEncoder
+from .base_blocks import MixedDecoder
+from .base_blocks import MixedEncoder
 from .bb_moe import DARTSFeedForward
-from .operation_blocks import (
-    ConvMixerOp,
-    DLinearOp,
-    FourierOp,
-    GRNOp,
-    IdentityOp,
-    InvertedAttentionOp,
-    MLPMixerOp,
-    MultiScaleConvOp,
-    NBeatsOp,
-    PatchEmbedOp,
-    PyramidConvOp,
-    ResidualMLPOp,
-    RMSNorm,
-    TCNOp,
-    TimeConvOp,
-    TimesNetOp,
-    WaveletOp,
-)
+from .operation_blocks import ConvMixerOp
+from .operation_blocks import DLinearOp
+from .operation_blocks import FourierOp
+from .operation_blocks import GRNOp
+from .operation_blocks import IdentityOp
+from .operation_blocks import InvertedAttentionOp
+from .operation_blocks import MLPMixerOp
+from .operation_blocks import MultiScaleConvOp
+from .operation_blocks import NBeatsOp
+from .operation_blocks import PatchEmbedOp
+from .operation_blocks import PyramidConvOp
+from .operation_blocks import ResidualMLPOp
+from .operation_blocks import RMSNorm
+from .operation_blocks import TCNOp
+from .operation_blocks import TimeConvOp
+from .operation_blocks import TimesNetOp
+from .operation_blocks import WaveletOp
 
 
 # --- Searchable Normalization ---
@@ -1797,16 +1796,6 @@ class TimeSeriesDARTS(nn.Module):
 
         # ── encoder_decoder (original path) ──────────────────────────────
         h_enc, context, encoder_state = self.forecast_encoder(final_features)
-
-        forced_decoder_output_idx = None
-        forced_decoder_layer_idx = None
-        if self.tie_encoder_decoder_arch and self.arch_mode == "encoder_decoder":
-            forced_decoder_output_idx = getattr(
-                self.forecast_encoder, "last_selected_output_idx", None
-            )
-            forced_decoder_layer_idx = getattr(
-                self.forecast_encoder, "last_selected_layer_idx", None
-            )
 
         decoder_hidden = encoder_state
 

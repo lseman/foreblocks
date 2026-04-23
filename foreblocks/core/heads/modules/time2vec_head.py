@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from foreblocks.core.model import BaseHead
 
+
 class Time2Vec(nn.Module):
     """
     Time2Vec-style periodic features per timestep, projected back to feature_dim.

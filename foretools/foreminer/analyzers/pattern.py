@@ -4,10 +4,13 @@ import numpy as np
 import pandas as pd
 import scipy.stats as sps
 
-from ...aux.adaptive_mi import AdaptiveMI, _mi_to_coeff, _spearman_fast
+from ...aux.adaptive_mi import AdaptiveMI
+from ...aux.adaptive_mi import _mi_to_coeff
+from ...aux.adaptive_mi import _spearman_fast
 from ...aux.distance_correlation import DistanceCorrelation
+from ..core import AnalysisConfig
+from ..core import AnalysisStrategy
 from .distribution import DistributionAnalyzer
-from ..core import AnalysisConfig, AnalysisStrategy
 
 
 class PatternDetector(AnalysisStrategy):
@@ -48,7 +51,9 @@ class PatternDetector(AnalysisStrategy):
 
     @staticmethod
     def _try_normality(series: pd.Series, rs: int) -> bool:
-        from scipy.stats import anderson, jarque_bera, shapiro
+        from scipy.stats import anderson
+        from scipy.stats import jarque_bera
+        from scipy.stats import shapiro
 
         x = series.dropna()
         if len(x) < 10:
@@ -119,7 +124,8 @@ class PatternDetector(AnalysisStrategy):
     @staticmethod
     def _mixture_bic_flags(x: pd.Series, rs: int) -> dict[str, bool]:
         """Compare 1 vs 2 components via BIC; also probe BayesianGMM."""
-        from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
+        from sklearn.mixture import BayesianGaussianMixture
+        from sklearn.mixture import GaussianMixture
 
         out = {"mixture_model": False, "bimodal": False}
         x = x.dropna().values.reshape(-1, 1)
@@ -286,7 +292,9 @@ class PatternDetector(AnalysisStrategy):
         # ---------- Imports ----------
         import numpy as np
         from scipy.optimize import curve_fit
-        from scipy.stats import kendalltau, rankdata, spearmanr
+        from scipy.stats import kendalltau
+        from scipy.stats import rankdata
+        from scipy.stats import spearmanr
         from sklearn.linear_model import LinearRegression
         from sklearn.tree import DecisionTreeRegressor
 

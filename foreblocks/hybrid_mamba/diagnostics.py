@@ -7,17 +7,17 @@ from collections.abc import Callable
 import torch
 import torch.nn.functional as F
 
-from .cuda import load_selective_scan_extension, precompile_selective_scan_extension
-from .layers import HybridMambaBlock, TinyHybridMambaLM
-from .ops import (
-    CAUSAL_CONV1D_TRITON_AVAILABLE,
-    TRITON_AVAILABLE,
-    causal_depthwise_conv1d,
-    causal_depthwise_conv1d_reference,
-    dt_prep,
-    selective_scan,
-    selective_scan_reference,
-)
+from .cuda import load_selective_scan_extension
+from .cuda import precompile_selective_scan_extension
+from .layers import HybridMambaBlock
+from .layers import TinyHybridMambaLM
+from .ops import CAUSAL_CONV1D_TRITON_AVAILABLE
+from .ops import TRITON_AVAILABLE
+from .ops import causal_depthwise_conv1d
+from .ops import causal_depthwise_conv1d_reference
+from .ops import dt_prep
+from .ops import selective_scan
+from .ops import selective_scan_reference
 
 
 def _sync_if_cuda(device: str) -> None:
@@ -211,6 +211,8 @@ def compare_against_official(
     try:
         from mamba_ssm.ops.selective_scan_interface import (
             selective_scan_fn as official_selective_scan_fn,
+        )
+        from mamba_ssm.ops.selective_scan_interface import (
             selective_scan_ref as official_selective_scan_ref,
         )
     except Exception as exc:

@@ -1,8 +1,10 @@
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PatchTST-style patching helpers
@@ -45,7 +47,6 @@ def patchify_padding_mask(
     if kpm.dim() != 2 or kpm.shape[1] != T:
         raise ValueError(f"Expected kpm [B,T={T}], got {tuple(kpm.shape)}")
 
-    B = kpm.shape[0]
     P, S = int(patch_len), int(stride)
     pad = _compute_patch_pad(T, P, S) if pad_end else 0
 

@@ -31,14 +31,18 @@ import inspect
 import json
 import math
 import threading
-from typing import Any
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
+
 from .pruning import PruningConfig
-from .tpe import TPE, TPEConf
+from .tpe import TPE
+from .tpe import TPEConf
+from .trial import Trial
+from .trial import TrialPruned
 from .utils import _canonical_config_key
-from .trial import Trial, TrialPruned
+
 
 # -----------------------------------------------------------------------------
 # BOHB (Hyperband + TPE proposer)

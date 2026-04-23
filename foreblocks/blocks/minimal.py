@@ -65,11 +65,11 @@ class ChebConv(nn.Module):
     def _norm_laplacian(A: torch.Tensor) -> torch.Tensor:
         # A:[B,N,N] -> normalized Laplacian L = I - D^{-1/2} A D^{-1/2}
         B, N, _ = A.shape
-        I = torch.eye(N, device=A.device, dtype=A.dtype).unsqueeze(0).expand(B, N, N)
+        eye = torch.eye(N, device=A.device, dtype=A.dtype).unsqueeze(0).expand(B, N, N)
         deg = A.sum(-1) + 1e-6
         Dm12 = deg.pow(-0.5).unsqueeze(-1)
         An = Dm12 * A * Dm12.transpose(1, 2)
-        return I - An
+        return eye - An
 
     def forward(self, x, A):
         # x:[B,N,F], A:[B,N,N] or None
@@ -82,10 +82,10 @@ class ChebConv(nn.Module):
             A = self._cosine_adj(x, topk=self.topk)
 
         L = self._norm_laplacian(A)
-        I = torch.eye(N, device=x.device, dtype=x.dtype).unsqueeze(0).expand(B, N, N)
+        eye = torch.eye(N, device=x.device, dtype=x.dtype).unsqueeze(0).expand(B, N, N)
 
         # Chebyshev on (I - 2L) (affine scaling of spectrum) — simple stable variant
-        G = I - 2 * L
+        G = eye - 2 * L
 
         T0 = x
         T = [T0]
@@ -294,14 +294,14 @@ class AdaptiveChebBlock(nn.Module):
 
         # add self-loops
         B, N, _ = A.shape
-        I = torch.eye(N, device=A.device, dtype=A.dtype).unsqueeze(0).expand(B, N, N)
-        return A + I
+        eye = torch.eye(N, device=A.device, dtype=A.dtype).unsqueeze(0).expand(B, N, N)
+        return A + eye
 
     def _normalized(self, A):
         # symmetric normalization + teleport toward I
         B, N, _ = A.shape
-        I = torch.eye(N, device=A.device, dtype=A.dtype).unsqueeze(0).expand(B, N, N)
-        A = (1 - self.teleport) * A + self.teleport * I
+        eye = torch.eye(N, device=A.device, dtype=A.dtype).unsqueeze(0).expand(B, N, N)
+        A = (1 - self.teleport) * A + self.teleport * eye
 
         deg = A.sum(-1).clamp_min(1e-6)
         Dm12 = deg.pow(-0.5).unsqueeze(-1)
@@ -325,9 +325,10 @@ class AdaptiveChebBlock(nn.Module):
         T0 = x
         outs = [T0]
         if self.K > 1:
-            T1 = torch.bmm(Ahat, T0); outs.append(T1)
+            T1 = torch.bmm(Ahat, T0)
+            outs.append(T1)
         for _ in range(2, self.K):
-            T_next = 2*torch.bmm(Ahat, outs[-1]) - outs[-2]
+            T_next = 2 * torch.bmm(Ahat, outs[-1]) - outs[-2]
             outs.append(T_next)
 
         h = torch.cat(outs, dim=-1)  # [B,N,H*K]

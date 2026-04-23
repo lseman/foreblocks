@@ -5,10 +5,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from foreblocks.tf.attention.multi_att import MultiAttention
 
 # Use your project modules
 from foreblocks.tf.embeddings import PositionalEncoding
-from foreblocks.tf.attention.multi_att import MultiAttention
 from foreblocks.tf.norms import create_norm_layer
 
 

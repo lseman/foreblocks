@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 
+
 try:
     import dcor as _dcor_pkg
 
@@ -10,7 +11,8 @@ except Exception:
     HAS_DCOR = False
 
 try:
-    from numba import njit, prange
+    from numba import njit
+    from numba import prange
 
     HAS_NUMBA = True
 except Exception:

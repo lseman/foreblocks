@@ -6,8 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.tf.embeddings import PositionalEncoding
-from foreblocks.tf.transformer_att import MultiAttention
 from foreblocks.tf.norms import create_norm_layer
+from foreblocks.tf.transformer_att import MultiAttention
 
 
 class _TemporalCompressor(nn.Module):

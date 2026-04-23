@@ -3,8 +3,10 @@ import importlib
 import math
 import time
 import warnings
-from dataclasses import dataclass, field
-from typing import Any, cast
+from dataclasses import dataclass
+from dataclasses import field
+from typing import Any
+from typing import cast
 
 import numpy as np
 import torch
@@ -12,12 +14,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from .scoring import (
-    normalize_metric_value as _normalize_metric_value_shared,
-)
-from .scoring import (
-    score_from_metrics as _score_from_metrics_shared,
-)
+from .scoring import normalize_metric_value as _normalize_metric_value_shared
+from .scoring import score_from_metrics as _score_from_metrics_shared
+
 
 warnings.filterwarnings("ignore", category=UserWarning)
 

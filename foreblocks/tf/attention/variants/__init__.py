@@ -6,6 +6,7 @@ from .softpick import SoftpickAttentionImpl
 from .spectral import SpectralAttentionImpl
 from .standard import StandardAttentionImpl
 
+
 __all__ = [
     "AttentionImpl",
     "StandardAttentionImpl",
