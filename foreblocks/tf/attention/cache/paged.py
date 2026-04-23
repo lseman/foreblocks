@@ -1,4 +1,3 @@
-
 import torch
 from torch import Tensor
 
@@ -173,7 +172,9 @@ class PagedKVCache:
         beta_ht: Tensor | None = None,
     ) -> None:
         if self.use_latent_cache:
-            raise RuntimeError("Dense append with metadata is unavailable in latent mode.")
+            raise RuntimeError(
+                "Dense append with metadata is unavailable in latent mode."
+            )
         self._check_batch_index(b)
         if k_htd.ndim == 2:
             k_htd = k_htd.unsqueeze(1)
@@ -234,7 +235,9 @@ class PagedKVCache:
         b: int,
     ) -> None:
         if not self.use_latent_cache:
-            raise RuntimeError("Latent append with positions requires latent cache mode.")
+            raise RuntimeError(
+                "Latent append with positions requires latent cache mode."
+            )
         self._check_batch_index(b)
         if latent_tl.ndim == 1:
             latent_tl = latent_tl.unsqueeze(0)

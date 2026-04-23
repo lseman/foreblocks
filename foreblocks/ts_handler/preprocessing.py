@@ -338,9 +338,7 @@ def detect_stationarity(data: np.ndarray, D: int) -> list[float]:
     return pvals
 
 
-def detect_seasonality(
-    data: np.ndarray, D: int
-) -> tuple[list[bool], list[int | None]]:
+def detect_seasonality(data: np.ndarray, D: int) -> tuple[list[bool], list[int | None]]:
     seasonal_flags: list[bool] = []
     detected_periods: list[int | None] = []
 

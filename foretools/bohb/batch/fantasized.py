@@ -124,4 +124,3 @@ class FantasizedBatchSelector(BatchSelector):
             temp_obs.append((dict(candidates[best_idx]), float(loss_f), b))
 
         return selected
-

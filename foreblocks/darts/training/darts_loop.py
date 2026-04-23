@@ -428,7 +428,9 @@ def train_darts_model(
                     transformer_exploration_bonus = torch.tensor(0.0, device=device)
                     if transformer_exploration_weight > 0.0:
                         entropy_terms: list[torch.Tensor] = []
-                        for source in trainer.alpha_tracker.component_alpha_sources(model):
+                        for source in trainer.alpha_tracker.component_alpha_sources(
+                            model
+                        ):
                             name = str(source.get("name", ""))
                             if not (
                                 name.startswith("encoder_")
@@ -437,7 +439,10 @@ def train_darts_model(
                             ):
                                 continue
                             alpha = source.get("alpha")
-                            if not isinstance(alpha, torch.Tensor) or alpha.numel() <= 1:
+                            if (
+                                not isinstance(alpha, torch.Tensor)
+                                or alpha.numel() <= 1
+                            ):
                                 continue
                             probs = F.softmax(alpha, dim=0)
                             entropy_terms.append(
@@ -448,9 +453,9 @@ def train_darts_model(
                                 entropy_terms
                             ).mean()
                             if epochs > warmup_epochs:
-                                progress = float(
-                                    max(epoch - warmup_epochs, 0)
-                                ) / float(max(epochs - warmup_epochs, 1))
+                                progress = float(max(epoch - warmup_epochs, 0)) / float(
+                                    max(epochs - warmup_epochs, 1)
+                                )
                             else:
                                 progress = float(epoch) / float(max(epochs, 1))
                             early_phase_scale = max(0.0, 1.0 - progress)

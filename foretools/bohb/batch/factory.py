@@ -20,9 +20,10 @@ def build_batch_selector(
         return ThompsonSamplingSelector()
     if key in {"local_penalization", "lp"}:
         if distance_fn is None:
-            raise ValueError("distance_fn is required for local_penalization batch strategy")
+            raise ValueError(
+                "distance_fn is required for local_penalization batch strategy"
+            )
         return LocalPenalizationSelector(distance_fn, penalization_power)
     if distance_fn is None:
         raise ValueError("distance_fn is required for diversity batch strategy")
     return GreedyDiversitySelector(distance_fn)
-

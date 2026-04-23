@@ -67,8 +67,16 @@ def check_causal_conv_backward(
 
     def _make_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = torch.randn(B, D, T, device=device, dtype=dtype, requires_grad=True)
-        weight = (torch.randn(D, K, device=device, dtype=dtype) * 0.1).detach().requires_grad_(True)
-        bias = (torch.randn(D, device=device, dtype=dtype) * 0.1).detach().requires_grad_(True)
+        weight = (
+            (torch.randn(D, K, device=device, dtype=dtype) * 0.1)
+            .detach()
+            .requires_grad_(True)
+        )
+        bias = (
+            (torch.randn(D, device=device, dtype=dtype) * 0.1)
+            .detach()
+            .requires_grad_(True)
+        )
         return x, weight, bias
 
     x_fast, w_fast, b_fast = _make_inputs()
@@ -85,17 +93,37 @@ def check_causal_conv_backward(
     ref_loss.backward()
 
     failures: list[str] = []
-    if _print_compare_metric("causal_conv forward", y_fast.detach(), y_ref.detach(), forward_tol) > forward_tol:
+    if (
+        _print_compare_metric(
+            "causal_conv forward", y_fast.detach(), y_ref.detach(), forward_tol
+        )
+        > forward_tol
+    ):
         failures.append("forward")
-    if _print_compare_metric("causal_conv grad[x]", x_fast.grad, x_ref.grad, grad_tol) > grad_tol:
+    if (
+        _print_compare_metric("causal_conv grad[x]", x_fast.grad, x_ref.grad, grad_tol)
+        > grad_tol
+    ):
         failures.append("grad[x]")
-    if _print_compare_metric("causal_conv grad[weight]", w_fast.grad, w_ref.grad, grad_tol) > grad_tol:
+    if (
+        _print_compare_metric(
+            "causal_conv grad[weight]", w_fast.grad, w_ref.grad, grad_tol
+        )
+        > grad_tol
+    ):
         failures.append("grad[weight]")
-    if _print_compare_metric("causal_conv grad[bias]", b_fast.grad, b_ref.grad, grad_tol) > grad_tol:
+    if (
+        _print_compare_metric(
+            "causal_conv grad[bias]", b_fast.grad, b_ref.grad, grad_tol
+        )
+        > grad_tol
+    ):
         failures.append("grad[bias]")
 
     if failures:
-        raise AssertionError("causal conv backward comparison failed for: " + ", ".join(failures))
+        raise AssertionError(
+            "causal conv backward comparison failed for: " + ", ".join(failures)
+        )
 
     print("[causal conv backward] ok")
 
@@ -170,10 +198,14 @@ def _error_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:
     return float(diff.max().item()), float(diff.mean().item())
 
 
-def _print_compare_metric(label: str, lhs: torch.Tensor, rhs: torch.Tensor, tol: float) -> float:
+def _print_compare_metric(
+    label: str, lhs: torch.Tensor, rhs: torch.Tensor, tol: float
+) -> float:
     max_abs, mean_abs = _error_stats(lhs, rhs)
     status = "ok" if max_abs <= tol else "FAIL"
-    print(f"[compare] {label}: max_abs={max_abs:.6e}, mean_abs={mean_abs:.6e}, tol={tol:.6e} [{status}]")
+    print(
+        f"[compare] {label}: max_abs={max_abs:.6e}, mean_abs={mean_abs:.6e}, tol={tol:.6e} [{status}]"
+    )
     return max_abs
 
 
@@ -225,10 +257,18 @@ def compare_against_official(
 
     inputs = {
         "u": torch.randn(B, T, D, device=device, dtype=dtype, requires_grad=True),
-        "dt": (torch.rand(B, T, D, device=device, dtype=dtype) * 0.1 + 1e-3).detach().requires_grad_(True),
-        "A": (-torch.exp(torch.randn(D, N, device=device, dtype=dtype))).detach().requires_grad_(True),
-        "Bpar": (torch.randn(B, T, D, N, device=device, dtype=dtype) * 0.1).detach().requires_grad_(True),
-        "Cpar": (torch.randn(B, T, D, N, device=device, dtype=dtype) * 0.1).detach().requires_grad_(True),
+        "dt": (torch.rand(B, T, D, device=device, dtype=dtype) * 0.1 + 1e-3)
+        .detach()
+        .requires_grad_(True),
+        "A": (-torch.exp(torch.randn(D, N, device=device, dtype=dtype)))
+        .detach()
+        .requires_grad_(True),
+        "Bpar": (torch.randn(B, T, D, N, device=device, dtype=dtype) * 0.1)
+        .detach()
+        .requires_grad_(True),
+        "Cpar": (torch.randn(B, T, D, N, device=device, dtype=dtype) * 0.1)
+        .detach()
+        .requires_grad_(True),
         "Dskip": torch.randn(D, device=device, dtype=dtype, requires_grad=True),
     }
 
@@ -266,45 +306,105 @@ def compare_against_official(
 
     failures: list[str] = []
 
-    if _print_compare_metric("custom_ref vs official_ref forward", custom_ref_out, official_ref_out, forward_tol) > forward_tol:
+    if (
+        _print_compare_metric(
+            "custom_ref vs official_ref forward",
+            custom_ref_out,
+            official_ref_out,
+            forward_tol,
+        )
+        > forward_tol
+    ):
         failures.append("custom_ref forward")
     for name in inputs:
         grad = custom_ref_grads[name]
         ref_grad = official_ref_grads[name]
         if grad is None or ref_grad is None:
             continue
-        if _print_compare_metric(f"custom_ref vs official_ref grad[{name}]", grad, ref_grad, grad_tol) > grad_tol:
+        if (
+            _print_compare_metric(
+                f"custom_ref vs official_ref grad[{name}]", grad, ref_grad, grad_tol
+            )
+            > grad_tol
+        ):
             failures.append(f"custom_ref grad[{name}]")
 
     custom_scan_out, custom_scan_grads = _run_impl(run_custom_scan, inputs)
-    if _print_compare_metric("custom_scan vs official_ref forward", custom_scan_out, official_ref_out, forward_tol) > forward_tol:
+    if (
+        _print_compare_metric(
+            "custom_scan vs official_ref forward",
+            custom_scan_out,
+            official_ref_out,
+            forward_tol,
+        )
+        > forward_tol
+    ):
         failures.append("custom_scan forward")
     for name in inputs:
         grad = custom_scan_grads[name]
         ref_grad = official_ref_grads[name]
         if grad is None or ref_grad is None:
             continue
-        if _print_compare_metric(f"custom_scan vs official_ref grad[{name}]", grad, ref_grad, grad_tol) > grad_tol:
+        if (
+            _print_compare_metric(
+                f"custom_scan vs official_ref grad[{name}]", grad, ref_grad, grad_tol
+            )
+            > grad_tol
+        ):
             failures.append(f"custom_scan grad[{name}]")
 
     if device == "cuda":
         try:
-            official_fast_out, official_fast_grads = _run_impl(run_official_fast, inputs)
-            if _print_compare_metric("official_fast vs official_ref forward", official_fast_out, official_ref_out, forward_tol) > forward_tol:
+            official_fast_out, official_fast_grads = _run_impl(
+                run_official_fast, inputs
+            )
+            if (
+                _print_compare_metric(
+                    "official_fast vs official_ref forward",
+                    official_fast_out,
+                    official_ref_out,
+                    forward_tol,
+                )
+                > forward_tol
+            ):
                 failures.append("official_fast forward")
-            if _print_compare_metric("custom_scan vs official_fast forward", custom_scan_out, official_fast_out, forward_tol) > forward_tol:
+            if (
+                _print_compare_metric(
+                    "custom_scan vs official_fast forward",
+                    custom_scan_out,
+                    official_fast_out,
+                    forward_tol,
+                )
+                > forward_tol
+            ):
                 failures.append("custom_scan vs official_fast forward")
             for name in inputs:
                 grad = official_fast_grads[name]
                 ref_grad = official_ref_grads[name]
                 if grad is None or ref_grad is None:
                     continue
-                if _print_compare_metric(f"official_fast vs official_ref grad[{name}]", grad, ref_grad, grad_tol) > grad_tol:
+                if (
+                    _print_compare_metric(
+                        f"official_fast vs official_ref grad[{name}]",
+                        grad,
+                        ref_grad,
+                        grad_tol,
+                    )
+                    > grad_tol
+                ):
                     failures.append(f"official_fast grad[{name}]")
                 custom_grad = custom_scan_grads[name]
                 if custom_grad is None:
                     continue
-                if _print_compare_metric(f"custom_scan vs official_fast grad[{name}]", custom_grad, grad, grad_tol) > grad_tol:
+                if (
+                    _print_compare_metric(
+                        f"custom_scan vs official_fast grad[{name}]",
+                        custom_grad,
+                        grad,
+                        grad_tol,
+                    )
+                    > grad_tol
+                ):
                     failures.append(f"custom_scan vs official_fast grad[{name}]")
         except Exception as exc:
             print(f"[compare] official fast CUDA path skipped: {exc}")
@@ -368,7 +468,10 @@ def benchmark_causal_conv(
     weight = torch.randn(D, K, device=device, dtype=dtype) * 0.1
     bias = torch.randn(D, device=device, dtype=dtype) * 0.1
 
-    def _run(fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor], label: str) -> float:
+    def _run(
+        fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+        label: str,
+    ) -> float:
         for _ in range(warmup):
             _ = fn(x, weight, bias)
         _sync_if_cuda(device)
@@ -436,32 +539,61 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Hybrid Mamba utilities")
     subparsers = parser.add_subparsers(dest="command")
 
-    precompile_parser = subparsers.add_parser("precompile", help="Precompile the CUDA extension")
-    precompile_parser.add_argument("--verbose", action="store_true", help="Enable verbose extension build logs")
-    precompile_parser.add_argument("--force", action="store_true", help="Force a fresh extension load")
-    precompile_parser.add_argument("--build-dir", type=str, default=None, help="Optional custom build cache directory")
+    precompile_parser = subparsers.add_parser(
+        "precompile", help="Precompile the CUDA extension"
+    )
+    precompile_parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose extension build logs"
+    )
+    precompile_parser.add_argument(
+        "--force", action="store_true", help="Force a fresh extension load"
+    )
+    precompile_parser.add_argument(
+        "--build-dir",
+        type=str,
+        default=None,
+        help="Optional custom build cache directory",
+    )
 
-    subparsers.add_parser("diagnostics", help="Run the original smoke tests and benchmark")
-    compare_parser = subparsers.add_parser("compare-official", help="Compare selective scan against mamba_ssm")
+    subparsers.add_parser(
+        "diagnostics", help="Run the original smoke tests and benchmark"
+    )
+    compare_parser = subparsers.add_parser(
+        "compare-official", help="Compare selective scan against mamba_ssm"
+    )
     compare_parser.add_argument("--batch", type=int, default=2)
     compare_parser.add_argument("--seqlen", type=int, default=16)
     compare_parser.add_argument("--d-model", type=int, default=32)
     compare_parser.add_argument("--d-state", type=int, default=8)
     compare_parser.add_argument("--seed", type=int, default=0)
-    compare_parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32")
-    compare_parser.add_argument("--no-assert", action="store_true", help="Print metrics without failing on tolerance")
-    causal_backward_parser = subparsers.add_parser("check-causal-backward", help="Compare causal-conv forward and gradients")
+    compare_parser.add_argument(
+        "--dtype", choices=["float32", "float16", "bfloat16"], default="float32"
+    )
+    compare_parser.add_argument(
+        "--no-assert",
+        action="store_true",
+        help="Print metrics without failing on tolerance",
+    )
+    causal_backward_parser = subparsers.add_parser(
+        "check-causal-backward", help="Compare causal-conv forward and gradients"
+    )
     causal_backward_parser.add_argument("--batch", type=int, default=2)
     causal_backward_parser.add_argument("--seqlen", type=int, default=32)
     causal_backward_parser.add_argument("--d-model", type=int, default=64)
-    causal_backward_parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32")
-    bench_causal_parser = subparsers.add_parser("bench-causal", help="Benchmark causal conv reference vs fast path")
+    causal_backward_parser.add_argument(
+        "--dtype", choices=["float32", "float16", "bfloat16"], default="float32"
+    )
+    bench_causal_parser = subparsers.add_parser(
+        "bench-causal", help="Benchmark causal conv reference vs fast path"
+    )
     bench_causal_parser.add_argument("--batch", type=int, default=8)
     bench_causal_parser.add_argument("--seqlen", type=int, default=512)
     bench_causal_parser.add_argument("--d-model", type=int, default=256)
     bench_causal_parser.add_argument("--iters", type=int, default=100)
     bench_causal_parser.add_argument("--warmup", type=int, default=20)
-    bench_block_parser = subparsers.add_parser("bench-block", help="Benchmark the HybridMamba block")
+    bench_block_parser = subparsers.add_parser(
+        "bench-block", help="Benchmark the HybridMamba block"
+    )
     bench_block_parser.add_argument("--batch", type=int, default=8)
     bench_block_parser.add_argument("--seqlen", type=int, default=256)
     bench_block_parser.add_argument("--d-model", type=int, default=128)

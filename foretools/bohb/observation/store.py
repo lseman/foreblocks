@@ -36,7 +36,9 @@ class ObservationStore:
             ):
                 return loss
             budget_frac = float(max(0.0, min(1.0, b / self.max_budget)))
-            corr = self.split_budget_correction * float(loss_scale) * (1.0 - budget_frac)
+            corr = (
+                self.split_budget_correction * float(loss_scale) * (1.0 - budget_frac)
+            )
             return float(loss + corr)
 
         return sorted(obs, key=split_score)

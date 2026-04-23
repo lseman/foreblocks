@@ -97,20 +97,30 @@ class _Chronos2EmbedderModule(nn.Module):
         self.make_dates = make_dates
 
         # Resolve model + hook target
-        self._model = getattr(pipeline, "model", None) or getattr(pipeline, "inner_model", None)
+        self._model = getattr(pipeline, "model", None) or getattr(
+            pipeline, "inner_model", None
+        )
         if self._model is None:
             raise RuntimeError("Chronos2EmbedHead: could not locate Chronos2Model.")
         if self.hook_layer == "encoder":
-            if not hasattr(self._model, "encoder") or not hasattr(self._model.encoder, "final_layer_norm"):
-                raise RuntimeError("Chronos2EmbedHead: encoder.final_layer_norm not found.")
+            if not hasattr(self._model, "encoder") or not hasattr(
+                self._model.encoder, "final_layer_norm"
+            ):
+                raise RuntimeError(
+                    "Chronos2EmbedHead: encoder.final_layer_norm not found."
+                )
             self._hook_module = self._model.encoder.final_layer_norm
         else:
             if not hasattr(self._model, "input_patch_embedding"):
-                raise RuntimeError("Chronos2EmbedHead: input_patch_embedding not found.")
+                raise RuntimeError(
+                    "Chronos2EmbedHead: input_patch_embedding not found."
+                )
             self._hook_module = self._model.input_patch_embedding
 
         # Lazy init for projector (Chronos D -> input F)
-        self._proj: nn.Linear | None = None  # created on first forward once we know D and F
+        self._proj: nn.Linear | None = (
+            None  # created on first forward once we know D and F
+        )
 
     @torch.no_grad()
     def _get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
@@ -121,8 +131,10 @@ class _Chronos2EmbedderModule(nn.Module):
 
         # Build minimal DF
         if self.make_dates is None:
+
             def _mk_dates(n):  # daily
                 return pd.date_range("2000-01-01", periods=n, freq="D")
+
             make_dates = _mk_dates
         else:
             make_dates = self.make_dates
@@ -136,15 +148,16 @@ class _Chronos2EmbedderModule(nn.Module):
             stamps.extend(make_dates(T))
             tgts.extend(vals[b].tolist())
 
-        context_df = (
-            pd.DataFrame({"id": ids, "timestamp": stamps, "target": tgts})
-            .sort_values(["id", "timestamp"])
-        )
+        context_df = pd.DataFrame(
+            {"id": ids, "timestamp": stamps, "target": tgts}
+        ).sort_values(["id", "timestamp"])
 
         collected: list[torch.Tensor] = []
 
         def _hook(_, __, out):
-            collected.append(out.detach().to("cpu") if self.offload_cpu else out.detach())
+            collected.append(
+                out.detach().to("cpu") if self.offload_cpu else out.detach()
+            )
 
         h = self._hook_module.register_forward_hook(_hook)
         try:
@@ -176,8 +189,14 @@ class _Chronos2EmbedderModule(nn.Module):
 
         return emb  # cpu or gpu depending on offload
 
-    def _ensure_proj(self, D: int, Fout: int, device: torch.device, dtype: torch.dtype) -> nn.Linear:
-        if (self._proj is None) or (self._proj.in_features != D) or (self._proj.out_features != Fout):
+    def _ensure_proj(
+        self, D: int, Fout: int, device: torch.device, dtype: torch.dtype
+    ) -> nn.Linear:
+        if (
+            (self._proj is None)
+            or (self._proj.in_features != D)
+            or (self._proj.out_features != Fout)
+        ):
             self._proj = nn.Linear(D, Fout, bias=True).to(device=device, dtype=dtype)
         else:
             self._proj.to(device=device, dtype=dtype)
@@ -207,11 +226,11 @@ class _Chronos2EmbedderModule(nn.Module):
 
         if self.attach == "feature":
             rep = emb.unsqueeze(1).repeat(1, T, 1)  # [B,T,D]
-            return torch.cat([x, rep], dim=-1)      # [B,T,Fin+D]
+            return torch.cat([x, rep], dim=-1)  # [B,T,Fin+D]
 
         if self.attach == "time_token":
             if self.proj_to_input_dim:
-                tok = proj_emb.unsqueeze(1)        # [B,1,Fin]
+                tok = proj_emb.unsqueeze(1)  # [B,1,Fin]
             else:
                 if D == Fin:
                     tok = emb.unsqueeze(1)
@@ -220,11 +239,11 @@ class _Chronos2EmbedderModule(nn.Module):
                 else:
                     pad = torch.zeros(B, Fin - D, device=device, dtype=dtype)
                     tok = torch.cat([emb, pad], dim=-1).unsqueeze(1)
-            return torch.cat([x, tok], dim=1)       # [B,T+1,Fin]
+            return torch.cat([x, tok], dim=1)  # [B,T+1,Fin]
 
         # attach == "replace"
         base = proj_emb if (self.proj_to_input_dim and proj_emb is not None) else emb
-        return base.unsqueeze(1).repeat(1, T, 1)    # [B,T,Fin or D]
+        return base.unsqueeze(1).repeat(1, T, 1)  # [B,T,Fin or D]
 
 
 # ──────────────────────────────────────────────────────────────────────────────

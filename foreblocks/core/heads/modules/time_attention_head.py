@@ -86,7 +86,10 @@ class TimeAttention(nn.Module):
         )
 
         self.attn = nn.MultiheadAttention(
-            embed_dim=d_model, num_heads=n_heads, dropout=float(dropout), batch_first=True
+            embed_dim=d_model,
+            num_heads=n_heads,
+            dropout=float(dropout),
+            batch_first=True,
         )
 
         self.norm1 = nn.LayerNorm(d_model)
@@ -109,7 +112,9 @@ class TimeAttention(nn.Module):
         head_dim = d_model // n_heads
         self.rope = _RoPE1D(head_dim) if self.use_rope else None
 
-    def _attn_mask(self, T: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor | None:
+    def _attn_mask(
+        self, T: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor | None:
         if (not self.causal) and (self.window is None):
             return None
 
@@ -117,7 +122,10 @@ class TimeAttention(nn.Module):
         mask = torch.zeros((T, T), device=device, dtype=dtype)
 
         if self.causal:
-            mask = mask + torch.triu(torch.full((T, T), float("-inf"), device=device, dtype=dtype), diagonal=1)
+            mask = mask + torch.triu(
+                torch.full((T, T), float("-inf"), device=device, dtype=dtype),
+                diagonal=1,
+            )
 
         if self.window is not None:
             idx = torch.arange(T, device=device)
@@ -127,7 +135,9 @@ class TimeAttention(nn.Module):
 
         return mask
 
-    def _apply_rope_qk(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _apply_rope_qk(
+        self, q: torch.Tensor, k: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.rope is None:
             return q, k
         # q,k: [N, T, d_model] -> [N, T, n_heads, head_dim]
@@ -157,12 +167,18 @@ class TimeAttention(nn.Module):
 
         B, T, F_ = x.shape
         if F_ != self.feature_dim:
-            raise RuntimeError(f"Input F={F_} != configured feature_dim={self.feature_dim}")
+            raise RuntimeError(
+                f"Input F={F_} != configured feature_dim={self.feature_dim}"
+            )
 
         # Build per-feature streams: [B,F,T] -> lift -> [B, F*d_model, T]
-        xt = x.permute(0, 2, 1).contiguous()                 # [B,F,T]
-        lifted = self.lift(xt)                               # [B, F*d_model, T]
-        lifted = lifted.view(B, self.feature_dim, self.d_model, T).permute(0, 1, 3, 2).contiguous()
+        xt = x.permute(0, 2, 1).contiguous()  # [B,F,T]
+        lifted = self.lift(xt)  # [B, F*d_model, T]
+        lifted = (
+            lifted.view(B, self.feature_dim, self.d_model, T)
+            .permute(0, 1, 3, 2)
+            .contiguous()
+        )
         # lifted: [B, F, T, d_model] -> merge B*F
         h = lifted.view(B * self.feature_dim, T, self.d_model)
 
@@ -170,7 +186,9 @@ class TimeAttention(nn.Module):
         q = k = v = h1
         q, k = self._apply_rope_qk(q, k)
 
-        attn_mask = self._attn_mask(T, device=x.device, dtype=torch.float32)  # keep float32 for stability
+        attn_mask = self._attn_mask(
+            T, device=x.device, dtype=torch.float32
+        )  # keep float32 for stability
         y, _ = self.attn(q, k, v, attn_mask=attn_mask)
 
         h2 = h + self.drop(y)
@@ -178,7 +196,7 @@ class TimeAttention(nn.Module):
         h4 = h2 + self.ffn(h3)
 
         # back to scalar per timestep per feature
-        s = self.to_scalar(h4).squeeze(-1)                   # [B*F, T]
+        s = self.to_scalar(h4).squeeze(-1)  # [B*F, T]
         s = s.view(B, self.feature_dim, T).permute(0, 2, 1).contiguous()  # [B,T,F]
 
         return x + s  # residual

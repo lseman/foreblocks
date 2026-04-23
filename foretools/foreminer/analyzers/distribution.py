@@ -17,7 +17,13 @@ from statsmodels.tools.sm_exceptions import ValueWarning
 
 
 # Suppress warnings
-for cat in (RuntimeWarning, FutureWarning, UserWarning, ConvergenceWarning, ValueWarning):
+for cat in (
+    RuntimeWarning,
+    FutureWarning,
+    UserWarning,
+    ConvergenceWarning,
+    ValueWarning,
+):
     warnings.filterwarnings("ignore", category=cat)
 
 
@@ -30,12 +36,12 @@ class DistributionAnalyzer:
 
     def analyze(self, data: pd.DataFrame, config) -> dict[str, Any]:
         numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
-        
+
         # Pre-filter columns with sufficient data
         valid_cols = [c for c in numeric_cols if data[c].count() >= 8]
         if not valid_cols:
             return {"summary": pd.DataFrame()}
-        
+
         # Parallel compute stats
         rows = self._batch_compute_stats(data[valid_cols], config)
         return {"summary": pd.DataFrame(rows)}
@@ -44,7 +50,10 @@ class DistributionAnalyzer:
         """Parallel batch compute statistics for all columns."""
         results = []
         with ThreadPoolExecutor() as ex:
-            futures = {ex.submit(self._compute_one_col, data[col], col, cfg): col for col in data.columns}
+            futures = {
+                ex.submit(self._compute_one_col, data[col], col, cfg): col
+                for col in data.columns
+            }
             for fut in as_completed(futures):
                 results.append(fut.result())
         return results
@@ -85,7 +94,9 @@ class DistributionAnalyzer:
         # Normality tests (sample if needed)
         sample_size = min(n, 5000)
         if sample_size < n:
-            sample_idx = np.random.RandomState(cfg.random_state).choice(n, sample_size, replace=False)
+            sample_idx = np.random.RandomState(cfg.random_state).choice(
+                n, sample_size, replace=False
+            )
             sample = x_values[sample_idx]
         else:
             sample = x_values
@@ -93,8 +104,8 @@ class DistributionAnalyzer:
 
         # Flags
         is_gaussian = (
-            norm_tests["normaltest_p"] > getattr(cfg, 'confidence_level', 0.05) and 
-            abs(skew_val) < 1
+            norm_tests["normaltest_p"] > getattr(cfg, "confidence_level", 0.05)
+            and abs(skew_val) < 1
         )
         is_skewed = abs(skew_val) > 1
         is_heavy_tailed = kurt_val > 3
@@ -158,7 +169,9 @@ class DistributionAnalyzer:
         return results
 
     @staticmethod
-    def _fast_z_outlier_pct(x: np.ndarray, mean: float, std: float, thr: float = 3.0) -> float:
+    def _fast_z_outlier_pct(
+        x: np.ndarray, mean: float, std: float, thr: float = 3.0
+    ) -> float:
         """Vectorized outlier percentage calculation."""
         if not np.isfinite(std) or std == 0:
             return 0.0

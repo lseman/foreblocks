@@ -8,6 +8,7 @@ class LinearAttention(nn.Module):
     State-of-the-art linear attention using positive kernel approximation (ELU+1 feature map).
     O(L * d^2) complexity; drop-in for MultiAttention.
     """
+
     def __init__(
         self,
         d_model: int,
@@ -27,7 +28,7 @@ class LinearAttention(nn.Module):
         self.feature_map = feature_map
         self.num_features = num_features or self.d_head
         self.cross_attention = cross_attention  # For future incremental tweaks
-        self.scale = self.d_head ** -0.5
+        self.scale = self.d_head**-0.5
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
@@ -38,8 +39,9 @@ class LinearAttention(nn.Module):
         if self.feature_map == "rff":
             # Random projection for unbiased softmax approx (Performer-style)
             self.omega = nn.Parameter(
-                torch.randn(n_heads, self.d_head, self.num_features) * (1.0 / self.num_features ** 0.5),
-                requires_grad=False
+                torch.randn(n_heads, self.d_head, self.num_features)
+                * (1.0 / self.num_features**0.5),
+                requires_grad=False,
             )
 
     def _feature_map(self, x: torch.Tensor) -> torch.Tensor:
@@ -51,7 +53,7 @@ class LinearAttention(nn.Module):
         elif self.feature_map == "rff":
             # Simplified RFF: cos(proj) * exp(-||x||^2 / 2); project first
             proj = torch.einsum("b h l d, h d f -> b h l f", x, self.omega)
-            norm_sq = torch.sum(x ** 2, dim=-1, keepdim=True)
+            norm_sq = torch.sum(x**2, dim=-1, keepdim=True)
             return torch.exp(-0.5 * norm_sq) * torch.cos(proj)
         else:
             raise ValueError(f"Unknown feature_map: {self.feature_map}")
@@ -70,9 +72,15 @@ class LinearAttention(nn.Module):
         Lk = key.shape[1]
 
         # Linear projections + reshape/transpose
-        q = self.q_proj(query).view(B, Lq, self.n_heads, self.d_head).transpose(1, 2)  # B H Lq Dh
-        k = self.k_proj(key).view(B, Lk, self.n_heads, self.d_head).transpose(1, 2)  # B H Lk Dh
-        v = self.v_proj(value).view(B, Lk, self.n_heads, self.d_head).transpose(1, 2)  # B H Lk Dh
+        q = (
+            self.q_proj(query).view(B, Lq, self.n_heads, self.d_head).transpose(1, 2)
+        )  # B H Lq Dh
+        k = (
+            self.k_proj(key).view(B, Lk, self.n_heads, self.d_head).transpose(1, 2)
+        )  # B H Lk Dh
+        v = (
+            self.v_proj(value).view(B, Lk, self.n_heads, self.d_head).transpose(1, 2)
+        )  # B H Lk Dh
 
         q = q * self.scale
         k = k * self.scale
@@ -97,7 +105,9 @@ class LinearAttention(nn.Module):
             # Dot products: denom = q_prime * k_cum sum over F
             denom = torch.sum(q_prime * k_cum, dim=-1, keepdim=True)  # B H L 1
             # Matmul: numer = q_prime @ kv_cum (over F)
-            numer = torch.matmul(q_prime, kv_cum)  # B H L Dh  (matmul handles last two dims)
+            numer = torch.matmul(
+                q_prime, kv_cum
+            )  # B H L Dh  (matmul handles last two dims)
             out_heads = numer / (denom + 1e-6)
         else:
             # Non-causal: global sums over keys/values

@@ -53,7 +53,9 @@ class BOHB:
     def __init__(
         self,
         config_space: dict[str, tuple],
-        evaluate_fn: Callable[..., float],  # Can be (config, budget) or (config, budget, trial)
+        evaluate_fn: Callable[
+            ..., float
+        ],  # Can be (config, budget) or (config, budget, trial)
         min_budget: float = 1.0,
         max_budget: float = 81.0,
         eta: int = 3,
@@ -299,7 +301,12 @@ class BOHB:
                     for idx, config, cache_key in pending
                 }
                 completed: list[
-                    tuple[int, dict[str, Any], tuple[float, float, float] | None, tuple[str, float]]
+                    tuple[
+                        int,
+                        dict[str, Any],
+                        tuple[float, float, float] | None,
+                        tuple[str, float],
+                    ]
                 ] = []
                 for future in concurrent.futures.as_completed(future_to_payload):
                     idx, config, cache_key = future_to_payload[future]

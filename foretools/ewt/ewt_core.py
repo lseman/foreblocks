@@ -44,7 +44,7 @@ def EWT1D(
     boundaries : (nbounds,) ndarray in radians [0, pi]
                  with the same quirky mapping as reference
     """
-    f = np.asarray(f, dtype=float).flatten()   # ensure 1D, float64
+    f = np.asarray(f, dtype=float).flatten()  # ensure 1D, float64
     n = len(f)
     if n < 2:
         raise ValueError("Input signal must have length >= 2.")
@@ -74,7 +74,7 @@ def EWT1D(
 
     # 4. Mirror extension (exact reference)
     ltemp = (n + 1) // 2
-    fMirr = np.r_[f[ltemp-1 :: -1], f, f[-2 : -ltemp-1 : -1]]
+    fMirr = np.r_[f[ltemp - 1 :: -1], f, f[-2 : -ltemp - 1 : -1]]
     ffMirr = np.fft.fft(fMirr)
 
     # 5. Meyer filter bank
@@ -85,7 +85,7 @@ def EWT1D(
     ewt_full = np.fft.ifft(Y, axis=0).real
 
     # Crop back to original length (exact reference slicing)
-    ewt = ewt_full[ltemp-1 : ltemp-1 + n, :]
+    ewt = ewt_full[ltemp - 1 : ltemp - 1 + n, :]
 
     return ewt, mfb, boundaries
 
@@ -102,7 +102,7 @@ def EWT_Boundaries_Detect(
     ff = np.asarray(ff, dtype=float).flatten()
 
     if log == 1:
-        ff_log = np.log(ff + 1e-100)   # avoid -inf, close to reference
+        ff_log = np.log(ff + 1e-100)  # avoid -inf, close to reference
         presig_input = ff_log
     else:
         presig_input = ff
@@ -111,7 +111,7 @@ def EWT_Boundaries_Detect(
     if reg == "average":
         if lengthFilter > 1:
             kernel = np.ones(lengthFilter, dtype=float) / lengthFilter
-            presig = fftconvolve(presig_input, kernel, mode='same')
+            presig = fftconvolve(presig_input, kernel, mode="same")
         else:
             presig = presig_input
     elif reg == "gaussian":
@@ -128,7 +128,7 @@ def EWT_Boundaries_Detect(
     else:
         raise ValueError("detect must be: 'locmax', 'locmaxmin', 'locmaxminf'")
 
-    return bounds + 1.0   # the famous +1 shift from reference
+    return bounds + 1.0  # the famous +1 shift from reference
 
 
 def LocalMax(ff: np.ndarray, N: int) -> np.ndarray:
@@ -193,7 +193,7 @@ def LocalMaxMin(f: np.ndarray, N: int, fm: np.ndarray | None = None) -> np.ndarr
     prev = 0
 
     for i, peak in enumerate(Imax):
-        a = 1 if i == 0 else Imax[i-1] + 1
+        a = 1 if i == 0 else Imax[i - 1] + 1
         b = peak + 1
 
         seg = locmin[a:b]
@@ -247,12 +247,12 @@ def EWT_Meyer_FilterBank(boundaries: np.ndarray, Nsig: int) -> np.ndarray:
         gamma = min(gamma, r)
     r_last = (np.pi - boundaries[-1]) / (np.pi + boundaries[-1])
     gamma = min(gamma, r_last)
-    gamma *= (1.0 - 1.0 / Nsig)
+    gamma *= 1.0 - 1.0 / Nsig
 
     mfb = np.zeros((Nsig, Npic + 1), dtype=float)
 
     # Frequency grid (exact reference style)
-    w = np.fft.fftshift(np.linspace(0, 2 * np.pi * (1 - 1/Nsig), Nsig))
+    w = np.fft.fftshift(np.linspace(0, 2 * np.pi * (1 - 1 / Nsig), Nsig))
     Mi = Nsig // 2
     w[:Mi] -= 2 * np.pi
     aw = np.abs(w)
@@ -262,14 +262,19 @@ def EWT_Meyer_FilterBank(boundaries: np.ndarray, Nsig: int) -> np.ndarray:
     pbn = (1 + gamma) * boundaries[0]
     mbn = (1 - gamma) * boundaries[0]
 
-    yms = np.where(aw <= mbn, 1.0,
-           np.where(aw <= pbn, np.cos(np.pi/2 * EWT_beta(an * (aw - mbn))), 0.0))
+    yms = np.where(
+        aw <= mbn,
+        1.0,
+        np.where(aw <= pbn, np.cos(np.pi / 2 * EWT_beta(an * (aw - mbn))), 0.0),
+    )
 
     mfb[:, 0] = np.fft.ifftshift(yms)
 
     # Wavelets
     for k in range(Npic - 1):
-        mfb[:, k + 1] = EWT_Meyer_Wavelet(boundaries[k], boundaries[k + 1], gamma, Nsig, aw, w)
+        mfb[:, k + 1] = EWT_Meyer_Wavelet(
+            boundaries[k], boundaries[k + 1], gamma, Nsig, aw, w
+        )
     mfb[:, Npic] = EWT_Meyer_Wavelet(boundaries[-1], np.pi, gamma, Nsig, aw, w)
 
     return mfb
@@ -289,7 +294,9 @@ def EWT_beta(x: float | np.ndarray) -> float | np.ndarray:
     return y
 
 
-def EWT_Meyer_Wavelet(wn: float, wm: float, gamma: float, Nsig: int, aw: np.ndarray, w: np.ndarray) -> np.ndarray:
+def EWT_Meyer_Wavelet(
+    wn: float, wm: float, gamma: float, Nsig: int, aw: np.ndarray, w: np.ndarray
+) -> np.ndarray:
     """Precompute aw & w outside if calling many times (but usually called few times)"""
     an = 1.0 / (2.0 * gamma * wn)
     am = 1.0 / (2.0 * gamma * wm)

@@ -14,4 +14,3 @@ class AcquisitionStrategy(ABC):
         bad_models: dict[str, dict[str, Any]],
     ) -> float:
         pass
-

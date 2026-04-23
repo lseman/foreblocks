@@ -106,9 +106,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 FourierTransformer(self.config),
             ),
             "mathematical": (
-                self._is_transformer_enabled(
-                    "mathematical", "create_math_features"
-                ),
+                self._is_transformer_enabled("mathematical", "create_math_features"),
                 MathematicalTransformer(self.config),
             ),
             "binning": (
@@ -186,15 +184,12 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             else:
                 self.feature_stats_[name] = 0
 
-
         # Apply correlation filtering
         print("🔍 Applying correlation filtering...")
         self.correlation_filter_ = CorrelationFilter(
             threshold=self.config.corr_threshold,
             method=getattr(self.config, "corr_filter_method", "variance"),
-            dependence_metric=getattr(
-                self.config, "corr_dependence_metric", "pearson"
-            ),
+            dependence_metric=getattr(self.config, "corr_dependence_metric", "pearson"),
             random_state=getattr(self.config, "random_state", 42),
             mi_subsample=min(getattr(self.config, "max_rows_score", 2000), 2000),
             mi_min_overlap=getattr(self.config, "mi_min_overlap", 50),
@@ -260,7 +255,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         if self.selector_ is not None:
             selected_features = self.selector_.get_selected_features()
             if selected_features:
-                missing_selected = [c for c in selected_features if c not in current_X.columns]
+                missing_selected = [
+                    c for c in selected_features if c not in current_X.columns
+                ]
                 if missing_selected:
                     current_X = current_X.copy()
                     for col in missing_selected:
@@ -269,7 +266,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
         # Enforce fitted output schema/order for robust inference on small/unseen batches.
         if self.output_features_:
-            missing_output = [c for c in self.output_features_ if c not in current_X.columns]
+            missing_output = [
+                c for c in self.output_features_ if c not in current_X.columns
+            ]
             if missing_output:
                 current_X = current_X.copy()
                 for col in missing_output:
@@ -284,9 +283,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         # Apply final scaling
         if self.final_scaler_ is not None and not current_X.empty:
             X_scaled = self.final_scaler_.transform(current_X)
-            return pd.DataFrame(
-                X_scaled, columns=current_X.columns, index=X.index
-            )
+            return pd.DataFrame(X_scaled, columns=current_X.columns, index=X.index)
 
         return current_X if not current_X.empty else pd.DataFrame(index=X.index)
 
@@ -308,9 +305,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         if self.selector_:
             selected = len(self.selector_.get_selected_features())
             print(f"{'Final Selected':<15}: {selected:>4} features")
-            
+
             # Show selection method used if RFECV was used
-            if hasattr(self.selector_, 'selection_method_'):
+            if hasattr(self.selector_, "selection_method_"):
                 print(f"{'Selection Method':<15}: {self.selector_.selection_method_}")
         print()
 
@@ -380,8 +377,14 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         }
 
         # Add RFECV-specific info if available
-        if self.selector_ and hasattr(self.selector_, 'rfecv_selector_') and self.selector_.rfecv_selector_:
-            report["rfecv_results"] = self.selector_.rfecv_selector_.get_performance_summary()
+        if (
+            self.selector_
+            and hasattr(self.selector_, "rfecv_selector_")
+            and self.selector_.rfecv_selector_
+        ):
+            report["rfecv_results"] = (
+                self.selector_.rfecv_selector_.get_performance_summary()
+            )
 
         if self.selector_ and hasattr(self.selector_, "get_feature_scores"):
             scores = self.selector_.get_feature_scores()
@@ -394,9 +397,11 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
     def plot_rfecv_results(self, **kwargs):
         """Plot RFECV results if RFECV was used."""
-        if (self.selector_ and 
-            hasattr(self.selector_, 'rfecv_selector_') and 
-            self.selector_.rfecv_selector_ is not None):
+        if (
+            self.selector_
+            and hasattr(self.selector_, "rfecv_selector_")
+            and self.selector_.rfecv_selector_ is not None
+        ):
             self.selector_.rfecv_selector_.plot_cv_scores(**kwargs)
         else:
             print("RFECV was not used or is not available for plotting.")

@@ -29,13 +29,15 @@ class HaarWaveletTopK(nn.Module):
 
         x_even = x[:, 0::2, :]
         x_odd = x[:, 1::2, :]
-        x_low = (x_even + x_odd) / math.sqrt(2.0)   # [B,T/2,F]
+        x_low = (x_even + x_odd) / math.sqrt(2.0)  # [B,T/2,F]
         x_high = (x_even - x_odd) / math.sqrt(2.0)  # [B,T/2,F]
 
         k = min(self.topk, x_high.size(1))
         if k > 0:
             mag = x_high.abs()
-            idx = torch.topk(mag, k=k, dim=1, largest=True, sorted=False).indices  # [B,k,F]
+            idx = torch.topk(
+                mag, k=k, dim=1, largest=True, sorted=False
+            ).indices  # [B,k,F]
             mask = torch.zeros_like(mag, dtype=torch.bool)
             mask.scatter_(1, idx, True)
             xh_sparse = torch.where(mask, x_high, torch.zeros_like(x_high))

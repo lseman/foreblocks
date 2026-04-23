@@ -14,4 +14,3 @@ class ThompsonSamplingSelector(BatchSelector):
         if n <= 0:
             return []
         return list(np.argsort(scores)[-n:][::-1])
-

@@ -41,7 +41,9 @@ class OptimizationPlotter:
         self.style = style or PlotStyle()
 
     @classmethod
-    def from_bohb(cls, bohb: Any, style: PlotStyle | None = None) -> OptimizationPlotter:
+    def from_bohb(
+        cls, bohb: Any, style: PlotStyle | None = None
+    ) -> OptimizationPlotter:
         return cls(bohb.get_optimization_history(), bohb.config_space, style=style)
 
     # ------------------------------------------------------------------
@@ -67,7 +69,13 @@ class OptimizationPlotter:
 
         if show_best and losses:
             best = np.minimum.accumulate(np.asarray(losses, dtype=float))
-            ax.plot(xs, best, color=self.style.best_color, linewidth=2.0, label="best so far")
+            ax.plot(
+                xs,
+                best,
+                color=self.style.best_color,
+                linewidth=2.0,
+                label="best so far",
+            )
             ax.legend(loc="best")
 
         ax.set_title(title)
@@ -174,7 +182,10 @@ class OptimizationPlotter:
         else:
             # categorical: boxplot by category
             cats = sorted(set(xs))
-            data = [np.asarray([y for x, y in zip(xs, ys) if x == c], dtype=float) for c in cats]
+            data = [
+                np.asarray([y for x, y in zip(xs, ys) if x == c], dtype=float)
+                for c in cats
+            ]
             ax.boxplot(data, labels=[str(c) for c in cats], showfliers=False)
             ax.set_xlabel(param)
             ax.set_ylabel("Loss")

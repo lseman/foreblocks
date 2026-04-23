@@ -206,9 +206,7 @@ class JacobiPolynomials(nn.Module):
             nf = float(n)
             A = 2.0 * nf * (nf + a + b) * (2.0 * nf + a + b - 2.0)
             Bc = (
-                (2.0 * nf + a + b - 1.0)
-                * (2.0 * nf + a + b)
-                * (2.0 * nf + a + b - 2.0)
+                (2.0 * nf + a + b - 1.0) * (2.0 * nf + a + b) * (2.0 * nf + a + b - 2.0)
             )
             C = (2.0 * nf + a + b - 1.0) * (a * a - b * b)
             D = 2.0 * (nf + a - 1.0) * (nf + b - 1.0) * (2.0 * nf + a + b)

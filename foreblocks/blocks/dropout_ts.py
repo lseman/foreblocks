@@ -32,19 +32,19 @@ def _ols_detrend(x: Tensor, eps: float = 1e-8) -> tuple[Tensor, Tensor]:
     dtype = x.dtype
 
     t = torch.arange(L, device=device, dtype=dtype).view(1, L, 1)  # [1,L,1]
-    t_mean = t.mean(dim=1, keepdim=True)                           # [1,1,1]
-    x_mean = x.mean(dim=1, keepdim=True)                           # [B,1,C]
+    t_mean = t.mean(dim=1, keepdim=True)  # [1,1,1]
+    x_mean = x.mean(dim=1, keepdim=True)  # [B,1,C]
 
-    t_centered = t - t_mean                                        # [1,L,1]
-    x_centered = x - x_mean                                        # [B,L,C]
+    t_centered = t - t_mean  # [1,L,1]
+    x_centered = x - x_mean  # [B,L,C]
 
     # w = cov(t,x)/var(t) per channel
-    var_t = (t_centered * t_centered).mean(dim=1, keepdim=True)    # [1,1,1]
-    cov_tx = (t_centered * x_centered).mean(dim=1, keepdim=True)   # [B,1,C]
-    w = cov_tx / (var_t + eps)                                     # [B,1,C]
-    b = x_mean - w * t_mean                                        # [B,1,C]
+    var_t = (t_centered * t_centered).mean(dim=1, keepdim=True)  # [1,1,1]
+    cov_tx = (t_centered * x_centered).mean(dim=1, keepdim=True)  # [B,1,C]
+    w = cov_tx / (var_t + eps)  # [B,1,C]
+    b = x_mean - w * t_mean  # [B,1,C]
 
-    xtrend = w * t + b                                             # [B,L,C]
+    xtrend = w * t + b  # [B,L,C]
     xdetrend = x - xtrend
     return xdetrend, xtrend
 
@@ -56,9 +56,9 @@ def _spectral_flatness(a: Tensor, eps: float = 1e-8) -> Tensor:
     Returns: [B, C]
     """
     a = a.clamp_min(eps)
-    geo = torch.exp(torch.mean(torch.log(a), dim=1))        # [B,C]
-    arith = torch.mean(a, dim=1).clamp_min(eps)             # [B,C]
-    return (geo / arith).clamp(0.0, 10.0)                   # keep sane
+    geo = torch.exp(torch.mean(torch.log(a), dim=1))  # [B,C]
+    arith = torch.mean(a, dim=1).clamp_min(eps)  # [B,C]
+    return (geo / arith).clamp(0.0, 10.0)  # keep sane
 
 
 # ----------------------------
@@ -74,8 +74,8 @@ class SpectralNoiseScorer(nn.Module):
     def __init__(
         self,
         alpha_init: float = 10.0,  # mask sharpness (softplus(alpha))
-        ws_init: float = 1.0,      # affine weight for SFM->threshold
-        bs_init: float = 0.0,      # affine bias  for SFM->threshold
+        ws_init: float = 1.0,  # affine weight for SFM->threshold
+        bs_init: float = 0.0,  # affine bias  for SFM->threshold
         eps: float = 1e-8,
     ):
         super().__init__()
@@ -99,30 +99,30 @@ class SpectralNoiseScorer(nn.Module):
         xdetrend, xtrend = _ols_detrend(x, eps=self.eps)
 
         # (2) FFT + amplitude (Eq. 3) :contentReference[oaicite:10]{index=10}
-        Z = torch.fft.rfft(xdetrend, dim=1)     # [B, F, C], F = L//2 + 1
-        A = torch.abs(Z)                       # [B, F, C]
+        Z = torch.fft.rfft(xdetrend, dim=1)  # [B, F, C], F = L//2 + 1
+        A = torch.abs(Z)  # [B, F, C]
 
         # (3) Log-scale + instance min-max (Eq. 4) :contentReference[oaicite:11]{index=11}
-        Lspec = torch.log1p(A)                 # log(1 + A)
+        Lspec = torch.log1p(A)  # log(1 + A)
         Ahat = _safe_minmax(Lspec, dim=1, eps=self.eps)  # [B,F,C] in [0,1]
 
         # (4) SFM anchor + dynamic threshold tau (Eq. 5) :contentReference[oaicite:12]{index=12}
-        sfm = _spectral_flatness(A, eps=self.eps)         # [B,C]
-        tau = torch.sigmoid(self.ws * sfm + self.bs)      # [B,C]
-        tau = tau.unsqueeze(1)                             # [B,1,C] broadcast to [B,F,C]
+        sfm = _spectral_flatness(A, eps=self.eps)  # [B,C]
+        tau = torch.sigmoid(self.ws * sfm + self.bs)  # [B,C]
+        tau = tau.unsqueeze(1)  # [B,1,C] broadcast to [B,F,C]
 
         # Soft mask (Eq. 6) :contentReference[oaicite:13]{index=13}
-        sharp = F.softplus(self.alpha)                    # positive
-        M = torch.sigmoid(sharp * (Ahat - tau))           # [B,F,C]
+        sharp = F.softplus(self.alpha)  # positive
+        M = torch.sigmoid(sharp * (Ahat - tau))  # [B,F,C]
 
         # (5) Reconstruct: iFFT of masked spectrum + add trend back (Sec 4.1) :contentReference[oaicite:14]{index=14}
-        xd_rec = torch.fft.irfft(Z * M, n=L, dim=1)        # [B,L,C]
-        x_rec = xd_rec + xtrend                             # [B,L,C]
+        xd_rec = torch.fft.irfft(Z * M, n=L, dim=1)  # [B,L,C]
+        x_rec = xd_rec + xtrend  # [B,L,C]
 
         # (6) Residual MAE as noise score s (Eq. 7) :contentReference[oaicite:15]{index=15}
-        s = (x - x_rec).abs().mean(dim=(1, 2))             # [B]
+        s = (x - x_rec).abs().mean(dim=(1, 2))  # [B]
         # Provide a small extra tensor for debugging/monitoring if desired
-        debug = Ahat.mean(dim=(1, 2))                      # [B]
+        debug = Ahat.mean(dim=(1, 2))  # [B]
         return s, debug
 
 
@@ -161,7 +161,7 @@ class SampleAdaptiveDropout(nn.Module):
         # Batch min-max (Sec 4.2) :contentReference[oaicite:17]{index=17}
         s_min = s.min()
         s_max = s.max()
-        shat = (s - s_min) / (s_max - s_min + self.eps)    # [B] in [0,1]
+        shat = (s - s_min) / (s_max - s_min + self.eps)  # [B] in [0,1]
 
         # Sensitivity curve (Eq. 8) :contentReference[oaicite:18]{index=18}
         sens = F.softplus(self.gamma)
@@ -190,7 +190,7 @@ class SampleAdaptiveDropout(nn.Module):
         keep = (1.0 - p_view).clamp_min(self.eps)
 
         # Bernoulli sampling (discrete) + STE (Eq. 10) :contentReference[oaicite:20]{index=20}
-        b = torch.bernoulli(keep)                           # [B,...] broadcasted
+        b = torch.bernoulli(keep)  # [B,...] broadcasted
         mdrop = b + (keep - keep.detach())
 
         # Rescale (Eq. 11) :contentReference[oaicite:21]{index=21}
@@ -203,9 +203,9 @@ class SampleAdaptiveDropout(nn.Module):
 @dataclass
 class DropoutTSOutput:
     y: Tensor
-    p: Tensor           # [B] dropout probabilities used
-    s: Tensor           # [B] noise scores
-    debug: Tensor       # [B] optional
+    p: Tensor  # [B] dropout probabilities used
+    s: Tensor  # [B] noise scores
+    debug: Tensor  # [B] optional
 
 
 class DropoutTS(nn.Module):
@@ -269,7 +269,9 @@ class ExampleBackboneWithDropoutTS(nn.Module):
       - pass p to each dropout site
     """
 
-    def __init__(self, in_channels: int, hidden: int, out_horizon: int, p_min=0.05, p_max=0.5):
+    def __init__(
+        self, in_channels: int, hidden: int, out_horizon: int, p_min=0.05, p_max=0.5
+    ):
         super().__init__()
         self.dt = DropoutTS(p_min=p_min, p_max=p_max, gamma_init=1.0)
         self.proj1 = nn.Linear(in_channels, hidden)
@@ -287,16 +289,16 @@ class ExampleBackboneWithDropoutTS(nn.Module):
         p, s, debug = self.dt(x)  # p per sample from spectral scorer
 
         # A toy "encoder": per-time linear -> mean pool
-        h = self.proj1(x)         # [B,L,Hid]
+        h = self.proj1(x)  # [B,L,Hid]
         h = F.gelu(h)
-        h = self.dt.apply(h, p)   # adaptive dropout site 1
+        h = self.dt.apply(h, p)  # adaptive dropout site 1
 
         h = self.proj2(h)
         h = F.gelu(h)
-        h = self.dt.apply(h, p)   # adaptive dropout site 2
+        h = self.dt.apply(h, p)  # adaptive dropout site 2
 
-        h = h.mean(dim=1)         # [B,Hid]
-        h = self.dt.apply(h, p)   # adaptive dropout site 3 (works for any [B,...])
+        h = h.mean(dim=1)  # [B,Hid]
+        h = self.dt.apply(h, p)  # adaptive dropout site 3 (works for any [B,...])
 
         y = self.head(h).view(B, self.out_horizon, self.in_channels)
         return DropoutTSOutput(y=y, p=p, s=s, debug=debug)

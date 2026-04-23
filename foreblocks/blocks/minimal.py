@@ -257,8 +257,18 @@ class AdaptiveChebBlock(nn.Module):
     - residual gating (learnable scalar)
     - light bottleneck MLP
     """
-    def __init__(self, in_dim, hidden=None, out_dim=None, K=2, topk=16,
-                 tau_init=0.5, teleport=0.1, gate_init=0.2):
+
+    def __init__(
+        self,
+        in_dim,
+        hidden=None,
+        out_dim=None,
+        K=2,
+        topk=16,
+        tau_init=0.5,
+        teleport=0.1,
+        gate_init=0.2,
+    ):
         super().__init__()
         self.K = K
         self.topk = topk
@@ -269,11 +279,9 @@ class AdaptiveChebBlock(nn.Module):
 
         # feature bottleneck → graph mix → expand
         self.pre = nn.Sequential(
-            nn.LayerNorm(in_dim),
-            nn.Linear(in_dim, hidden),
-            nn.GELU()
+            nn.LayerNorm(in_dim), nn.Linear(in_dim, hidden), nn.GELU()
         )
-        self.lin = nn.Linear(hidden*K, out_dim)
+        self.lin = nn.Linear(hidden * K, out_dim)
 
         # learnable temperature for cosine sim
         self.log_tau = nn.Parameter(torch.log(torch.tensor(tau_init)))
@@ -332,7 +340,7 @@ class AdaptiveChebBlock(nn.Module):
             outs.append(T_next)
 
         h = torch.cat(outs, dim=-1)  # [B,N,H*K]
-        y = self.lin(h)              # [B,N,out_dim]
+        y = self.lin(h)  # [B,N,out_dim]
 
         # gated residual
         return residual + self.gate.tanh() * y

@@ -47,7 +47,9 @@ def grouped_ssd_scan_reference(
     if delta_gate is not None and delta_gate.shape != (batch_size, seqlen, num_heads):
         raise ValueError("delta_gate must have shape [B, T, H]")
 
-    state = torch.zeros(batch_size, num_heads, head_dim, d_state, device=u.device, dtype=torch.float32)
+    state = torch.zeros(
+        batch_size, num_heads, head_dim, d_state, device=u.device, dtype=torch.float32
+    )
     ys = []
     A32 = A.float()
     D32 = Dskip.float()
@@ -75,6 +77,7 @@ def grouped_ssd_scan_reference(
 
 
 if GROUPED_SSD_TRITON_AVAILABLE:
+
     @triton.jit
     def _grouped_ssd_scan_kernel(
         u_ptr,
@@ -119,8 +122,12 @@ if GROUPED_SSD_TRITON_AVAILABLE:
             u_vals = tl.load(u_ptrs, mask=p_mask, other=0.0).to(tl.float32)
 
             dt_val = tl.load(dt_ptr + base_bth).to(tl.float32)
-            b_vals = tl.load(B_ptr + base_bth * N + n_offs, mask=n_mask, other=0.0).to(tl.float32)
-            c_vals = tl.load(C_ptr + base_bth * N + n_offs, mask=n_mask, other=0.0).to(tl.float32)
+            b_vals = tl.load(B_ptr + base_bth * N + n_offs, mask=n_mask, other=0.0).to(
+                tl.float32
+            )
+            c_vals = tl.load(C_ptr + base_bth * N + n_offs, mask=n_mask, other=0.0).to(
+                tl.float32
+            )
 
             decay = tl.exp(dt_val * a_vals)
             decayed_state = state * decay[None, :]
@@ -149,7 +156,14 @@ def grouped_ssd_scan_triton(
 ) -> torch.Tensor:
     if not GROUPED_SSD_TRITON_AVAILABLE:
         raise RuntimeError("grouped_ssd_scan_triton called but Triton is not available")
-    if not (u.is_cuda and dt.is_cuda and A.is_cuda and Bpar.is_cuda and Cpar.is_cuda and Dskip.is_cuda):
+    if not (
+        u.is_cuda
+        and dt.is_cuda
+        and A.is_cuda
+        and Bpar.is_cuda
+        and Cpar.is_cuda
+        and Dskip.is_cuda
+    ):
         raise ValueError("grouped_ssd_scan_triton expects CUDA tensors")
     if delta_gate is not None and not delta_gate.is_cuda:
         raise ValueError("delta_gate must be CUDA when provided")
@@ -200,11 +214,17 @@ class _GroupedSSDScanFn(torch.autograd.Function):
         ctx.use_triton = use_triton
 
         if use_triton:
-            y = grouped_ssd_scan_triton(u, dt, A, Bpar, Cpar, Dskip, delta_gate=delta_gate)
+            y = grouped_ssd_scan_triton(
+                u, dt, A, Bpar, Cpar, Dskip, delta_gate=delta_gate
+            )
         else:
-            y = grouped_ssd_scan_reference(u, dt, A, Bpar, Cpar, Dskip, delta_gate=delta_gate)
+            y = grouped_ssd_scan_reference(
+                u, dt, A, Bpar, Cpar, Dskip, delta_gate=delta_gate
+            )
 
-        gate_tensor = delta_gate if has_gate else torch.tensor([], device=u.device, dtype=u.dtype)
+        gate_tensor = (
+            delta_gate if has_gate else torch.tensor([], device=u.device, dtype=u.dtype)
+        )
         ctx.save_for_backward(u, dt, A, Bpar, Cpar, Dskip, gate_tensor)
         return y
 
@@ -235,7 +255,9 @@ class _GroupedSSDScanFn(torch.autograd.Function):
                 delta_gate=gate_,
             )
             all_inputs = (u_, dt_, A_, B_, C_, D_, gate_)
-            grad_inputs = tuple(t for t in all_inputs if t is not None and t.requires_grad)
+            grad_inputs = tuple(
+                t for t in all_inputs if t is not None and t.requires_grad
+            )
             grads_required = torch.autograd.grad(
                 outputs=y_ref,
                 inputs=grad_inputs,
@@ -276,4 +298,6 @@ def grouped_ssd_scan(
         and (delta_gate is None or delta_gate.is_cuda)
         and A.shape[1] <= 128
     )
-    return _GroupedSSDScanFn.apply(u, dt, A, Bpar, Cpar, Dskip, delta_gate, can_use_triton)
+    return _GroupedSSDScanFn.apply(
+        u, dt, A, Bpar, Cpar, Dskip, delta_gate, can_use_triton
+    )

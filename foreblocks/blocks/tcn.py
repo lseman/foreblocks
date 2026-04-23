@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,8 +11,6 @@ def causal_padding(
     """Left-pad only (causal)."""
     pad = (kernel_size - 1) * dilation
     return F.pad(x, (pad, 0)) if pad > 0 else x
-
-
 
 
 class CausalTCNBlock(nn.Module):

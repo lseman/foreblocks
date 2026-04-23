@@ -15,15 +15,11 @@ class LogRatioAcquisition(AcquisitionStrategy):
     def __init__(
         self,
         *,
-        log_likelihood_fn: Callable[
-            [dict[str, Any], dict[str, dict[str, Any]]], float
-        ],
+        log_likelihood_fn: Callable[[dict[str, Any], dict[str, dict[str, Any]]], float],
         soft_constraint_violation_fn: Callable[[dict[str, Any]], float],
         predict_mu_sigma_fn: Callable[[dict[str, Any], int], tuple[float, float]],
         gp_ucb_score_fn: Callable[[dict[str, Any]], float | None],
-        observations_fn: Callable[
-            [], list[tuple[dict[str, Any], float, float | None]]
-        ],
+        observations_fn: Callable[[], list[tuple[dict[str, Any], float, float | None]]],
         soft_constraints_enabled: bool,
         ctpe_constraints: bool,
         constraint_violation_penalty: float | None,
@@ -119,4 +115,3 @@ class LogRatioAcquisition(AcquisitionStrategy):
             if ucb is not None:
                 score += float(self.ucb_kappa) * float(ucb)
         return score
-

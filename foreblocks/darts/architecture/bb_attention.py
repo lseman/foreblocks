@@ -36,7 +36,8 @@ def _sinusoidal_features(
     half = max(1, dim // 2)
     position = torch.arange(seq_len, device=device, dtype=dtype).unsqueeze(1)
     div_term = torch.exp(
-        torch.arange(0, half, device=device, dtype=dtype) * -(torch.log(torch.tensor(base, device=device, dtype=dtype)) / max(half, 1))
+        torch.arange(0, half, device=device, dtype=dtype)
+        * -(torch.log(torch.tensor(base, device=device, dtype=dtype)) / max(half, 1))
     )
     angles = position * div_term.unsqueeze(0)
     feats = torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)
@@ -57,8 +58,14 @@ def _seasonal_relative_bias(
     k_pos = torch.arange(key_len, device=device, dtype=dtype).unsqueeze(0)
     rel = q_pos - k_pos
     periods = torch.tensor([4.0, 8.0, 16.0, 24.0, 48.0], device=device, dtype=dtype)
-    bias = torch.stack([torch.cos(2.0 * torch.pi * rel / p) for p in periods], dim=0).mean(dim=0)
-    slopes = _make_alibi_slopes(num_heads).to(device=device, dtype=dtype).view(1, num_heads, 1, 1)
+    bias = torch.stack(
+        [torch.cos(2.0 * torch.pi * rel / p) for p in periods], dim=0
+    ).mean(dim=0)
+    slopes = (
+        _make_alibi_slopes(num_heads)
+        .to(device=device, dtype=dtype)
+        .view(1, num_heads, 1, 1)
+    )
     return 0.1 * slopes * bias.view(1, 1, query_len, key_len)
 
 
@@ -164,7 +171,9 @@ class SelfAttention(nn.Module):
             return F.softmax(self.position_alphas.detach(), dim=0)
         ref = next(self.parameters())
         probs = ref.new_zeros(len(self.POSITION_MODES))
-        resolved = self.position_mode if self.position_mode in self.POSITION_MODES else "rope"
+        resolved = (
+            self.position_mode if self.position_mode in self.POSITION_MODES else "rope"
+        )
         probs[self.POSITION_MODES.index(resolved)] = 1.0
         return probs
 
@@ -191,7 +200,9 @@ class SelfAttention(nn.Module):
             q_pos = torch.arange(query_len, device=device, dtype=dtype).unsqueeze(1)
             k_pos = torch.arange(key_len, device=device, dtype=dtype).unsqueeze(0)
             rel = (q_pos - k_pos).abs()
-            slopes = self.alibi_slopes.to(device=device, dtype=dtype).view(1, self.heads, 1, 1)
+            slopes = self.alibi_slopes.to(device=device, dtype=dtype).view(
+                1, self.heads, 1, 1
+            )
             return -slopes * rel.view(1, 1, query_len, key_len)
         if position_mode == "seasonal":
             return _seasonal_relative_bias(
@@ -223,9 +234,13 @@ class SelfAttention(nn.Module):
             scale = self.positional_scale.to(dtype=q.dtype)
             q = q + scale * pos_q
             k = k + scale * pos_k
-            bias = self._build_relative_bias(position_mode, query_len, key_len, q.device, q.dtype)
+            bias = self._build_relative_bias(
+                position_mode, query_len, key_len, q.device, q.dtype
+            )
             return q, k, bias
-        bias = self._build_relative_bias(position_mode, query_len, key_len, q.device, q.dtype)
+        bias = self._build_relative_bias(
+            position_mode, query_len, key_len, q.device, q.dtype
+        )
         return q, k, bias
 
     def forward(self, x):
@@ -251,7 +266,9 @@ class SelfAttention(nn.Module):
                         is_causal=self.causal,
                         scale=self.scale,
                     )
-                scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale + position_bias
+                scores = (
+                    torch.matmul(q, k.transpose(-2, -1)) * self.scale + position_bias
+                )
                 if self.causal:
                     mask = torch.triu(
                         torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1
@@ -296,7 +313,9 @@ class SelfAttention(nn.Module):
                     mask = torch.triu(
                         torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1
                     )
-                    scores = scores.masked_fill(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+                    scores = scores.masked_fill(
+                        mask.unsqueeze(0).unsqueeze(0), float("-inf")
+                    )
                 attn = F.softmax(scores, dim=-1)
                 if dropout_p > 0:
                     attn = F.dropout(attn, p=dropout_p)
@@ -368,7 +387,9 @@ class SelfAttention(nn.Module):
                 weights = F.gumbel_softmax(self.attn_alphas, tau=tau, hard=False, dim=0)
             else:
                 weights = F.softmax(self.attn_alphas, dim=0)
-            out = sum(weights[i] * _apply(self.MODES[i]) for i in range(len(self.MODES)))
+            out = sum(
+                weights[i] * _apply(self.MODES[i]) for i in range(len(self.MODES))
+            )
         else:
             out = _apply(self.attention_type)
 
@@ -451,7 +472,9 @@ class AttentionBridge(nn.Module):
                 "position_alphas",
                 nn.Parameter(0.01 * torch.randn(len(self.POSITION_MODES))),
             )
-        self.rotary_emb = RotaryPositionalEncoding(self.head_dim, max_seq_len=1024, base=500000.0)
+        self.rotary_emb = RotaryPositionalEncoding(
+            self.head_dim, max_seq_len=1024, base=500000.0
+        )
         self.register_buffer(
             "alibi_slopes",
             _make_alibi_slopes(self.num_heads),
@@ -501,7 +524,9 @@ class AttentionBridge(nn.Module):
             return F.softmax(self.position_alphas.detach(), dim=0)
         ref = next(self.parameters())
         probs = ref.new_zeros(len(self.POSITION_MODES))
-        resolved = self.position_mode if self.position_mode in self.POSITION_MODES else "rope"
+        resolved = (
+            self.position_mode if self.position_mode in self.POSITION_MODES else "rope"
+        )
         probs[self.POSITION_MODES.index(resolved)] = 1.0
         return probs
 
@@ -528,7 +553,9 @@ class AttentionBridge(nn.Module):
             q_pos = torch.arange(query_len, device=device, dtype=dtype).unsqueeze(1)
             k_pos = torch.arange(key_len, device=device, dtype=dtype).unsqueeze(0)
             rel = (q_pos - k_pos).abs()
-            slopes = self.alibi_slopes.to(device=device, dtype=dtype).view(1, self.num_heads, 1, 1)
+            slopes = self.alibi_slopes.to(device=device, dtype=dtype).view(
+                1, self.num_heads, 1, 1
+            )
             return -slopes * rel.view(1, 1, query_len, key_len)
         if position_mode == "seasonal":
             return _seasonal_relative_bias(
@@ -541,7 +568,12 @@ class AttentionBridge(nn.Module):
         return None
 
     def _apply_position_mode(
-        self, q: torch.Tensor, k: torch.Tensor, position_mode: str, q_len: int, k_len: int
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        position_mode: str,
+        q_len: int,
+        k_len: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         if position_mode == "rope":
             return (*self._apply_rotary_pair(q, k, q_len, k_len), None)
@@ -557,8 +589,18 @@ class AttentionBridge(nn.Module):
             scale = self.positional_scale.to(dtype=q.dtype)
             q = q + scale * pos_q
             k = k + scale * pos_k
-            return q, k, self._build_relative_bias(position_mode, q_len, k_len, q.device, q.dtype)
-        return q, k, self._build_relative_bias(position_mode, q_len, k_len, q.device, q.dtype)
+            return (
+                q,
+                k,
+                self._build_relative_bias(
+                    position_mode, q_len, k_len, q.device, q.dtype
+                ),
+            )
+        return (
+            q,
+            k,
+            self._build_relative_bias(position_mode, q_len, k_len, q.device, q.dtype),
+        )
 
     # ---- vanilla SDP --------------------------------------------------
 

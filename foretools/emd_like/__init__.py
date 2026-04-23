@@ -1,6 +1,5 @@
 """EMD-like decomposition package API."""
 
-
 from .common import BoundaryHandler
 from .common import FFTWManager
 from .common import FractalDimension

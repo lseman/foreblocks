@@ -407,7 +407,11 @@ def run_multi_fidelity_search(
         )
 
         if rung_idx < len(rung_epochs) - 1 and len(asha_states) > 1:
-            keep = max(1, (len(asha_states) + phase3_reduction_factor - 1) // phase3_reduction_factor)
+            keep = max(
+                1,
+                (len(asha_states) + phase3_reduction_factor - 1)
+                // phase3_reduction_factor,
+            )
             promoted_ids = [
                 s["candidate"].get("candidate_id", -1) for s in asha_states[:keep]
             ]
@@ -669,9 +673,9 @@ def run_multi_fidelity_search(
                         "MODES",
                         ("sdp", "linear", "probsparse", "cosine", "local"),
                     )
-                    if isinstance(attn_alphas, torch.Tensor) and attn_alphas.numel() == len(
-                        modes
-                    ):
+                    if isinstance(
+                        attn_alphas, torch.Tensor
+                    ) and attn_alphas.numel() == len(modes):
                         probs = torch.softmax(attn_alphas.detach(), dim=0)
                         top_idx = int(torch.argmax(probs).item())
                         if 0 <= top_idx < len(modes):
@@ -742,7 +746,11 @@ def run_multi_fidelity_search(
             return direct
         logits = getattr(attn, "position_alphas", None)
         modes = getattr(attn, "POSITION_MODES", ())
-        if isinstance(logits, torch.Tensor) and logits.numel() == len(modes) and len(modes) > 0:
+        if (
+            isinstance(logits, torch.Tensor)
+            and logits.numel() == len(modes)
+            and len(modes) > 0
+        ):
             probs = torch.softmax(logits.detach(), dim=0)
             return str(modes[int(torch.argmax(probs).item())])
         return "unknown"
@@ -778,7 +786,11 @@ def run_multi_fidelity_search(
             return direct
         logits = getattr(model_obj, "decoder_query_alphas", None)
         names = getattr(model_obj, "decoder_query_mode_names", ())
-        if isinstance(logits, torch.Tensor) and logits.numel() == len(names) and len(names) > 0:
+        if (
+            isinstance(logits, torch.Tensor)
+            and logits.numel() == len(names)
+            and len(names) > 0
+        ):
             probs = torch.softmax(logits.detach(), dim=0)
             return str(names[int(torch.argmax(probs).item())])
         resolver = getattr(model_obj, "resolve_decoder_query_mode", None)
@@ -813,7 +825,10 @@ def run_multi_fidelity_search(
                         cross_attn = first_layer.get("cross_attn")
                     elif hasattr(first_layer, "get"):
                         cross_attn = first_layer.get("cross_attn")
-                    elif hasattr(first_layer, "__contains__") and "cross_attn" in first_layer:
+                    elif (
+                        hasattr(first_layer, "__contains__")
+                        and "cross_attn" in first_layer
+                    ):
                         cross_attn = first_layer["cross_attn"]
                     if cross_attn is not None:
                         value = getattr(cross_attn, "attention_type", None)
@@ -862,7 +877,11 @@ def run_multi_fidelity_search(
             return direct
         logits = getattr(cross_attn, "position_alphas", None)
         modes = getattr(cross_attn, "POSITION_MODES", ())
-        if isinstance(logits, torch.Tensor) and logits.numel() == len(modes) and len(modes) > 0:
+        if (
+            isinstance(logits, torch.Tensor)
+            and logits.numel() == len(modes)
+            and len(modes) > 0
+        ):
             probs = torch.softmax(logits.detach(), dim=0)
             return str(modes[int(torch.argmax(probs).item())])
         return "unknown"
@@ -894,7 +913,11 @@ def run_multi_fidelity_search(
             return direct
         logits = getattr(ffn, "ffn_alphas", None)
         modes = getattr(ffn, "MODE_NAMES", ())
-        if isinstance(logits, torch.Tensor) and logits.numel() == len(modes) and len(modes) > 0:
+        if (
+            isinstance(logits, torch.Tensor)
+            and logits.numel() == len(modes)
+            and len(modes) > 0
+        ):
             probs = torch.softmax(logits.detach(), dim=0)
             return str(modes[int(torch.argmax(probs).item())])
         return "unknown"
@@ -902,7 +925,9 @@ def run_multi_fidelity_search(
     def _transformer_summary(model_obj, sel_cfg: dict[str, Any]) -> str:
         enc_choice = _enc_dec_choice(model_obj, "encoder").lower()
         dec_choice = _enc_dec_choice(model_obj, "decoder").lower()
-        uses_transformer = ("transformer" in enc_choice) or ("transformer" in dec_choice)
+        uses_transformer = ("transformer" in enc_choice) or (
+            "transformer" in dec_choice
+        )
         if not uses_transformer:
             return "not active"
         attn_type = _self_attention_choice(model_obj, "encoder")
@@ -944,12 +969,18 @@ def run_multi_fidelity_search(
     dec_sa = _self_attention_choice(final_model, "decoder")
     if enc_sa not in {"not used", "not applicable"}:
         p5_lines.append(f"[P5]   encoder_self_attention={enc_sa}")
-        p5_lines.append(f"[P5]   encoder_attention_position={_self_attention_position_choice(final_model, 'encoder')}")
-        p5_lines.append(f"[P5]   encoder_tokenizer={_encoder_patch_choice(final_model)}")
+        p5_lines.append(
+            f"[P5]   encoder_attention_position={_self_attention_position_choice(final_model, 'encoder')}"
+        )
+        p5_lines.append(
+            f"[P5]   encoder_tokenizer={_encoder_patch_choice(final_model)}"
+        )
         p5_lines.append(f"[P5]   encoder_ffn={_ffn_choice(final_model, 'encoder')}")
     if dec_sa not in {"not used", "not applicable"}:
         p5_lines.append(f"[P5]   decoder_self_attention={dec_sa}")
-        p5_lines.append(f"[P5]   decoder_attention_position={_self_attention_position_choice(final_model, 'decoder')}")
+        p5_lines.append(
+            f"[P5]   decoder_attention_position={_self_attention_position_choice(final_model, 'decoder')}"
+        )
         p5_lines.append(f"[P5]   decoder_ffn={_ffn_choice(final_model, 'decoder')}")
     for cell_line in _cell_ops_summary(final_model):
         p5_lines.append(f"[P5]   {cell_line}")

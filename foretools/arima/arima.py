@@ -108,9 +108,7 @@ def difference(y: np.ndarray, d: int, D: int, s: int) -> np.ndarray:
     return out
 
 
-def difference_exog(
-    X: np.ndarray | None, d: int, D: int, s: int
-) -> np.ndarray | None:
+def difference_exog(X: np.ndarray | None, d: int, D: int, s: int) -> np.ndarray | None:
     if X is None:
         return None
     out = np.asarray(X, dtype=float)

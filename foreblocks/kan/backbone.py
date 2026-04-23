@@ -42,14 +42,10 @@ def resolve_poly_config(
         "jacobi_beta": cfg.jacobi_beta if jacobi_beta is None else jacobi_beta,
         "wavelet_num": cfg.wavelet_num if wavelet_num is None else wavelet_num,
         "wavelet_base_freq": (
-            cfg.wavelet_base_freq
-            if wavelet_base_freq is None
-            else wavelet_base_freq
+            cfg.wavelet_base_freq if wavelet_base_freq is None else wavelet_base_freq
         ),
         "wavelet_learn_freq": (
-            cfg.wavelet_learn_freq
-            if wavelet_learn_freq is None
-            else wavelet_learn_freq
+            cfg.wavelet_learn_freq if wavelet_learn_freq is None else wavelet_learn_freq
         ),
         "wavelet_learn_scale": (
             cfg.wavelet_learn_scale
@@ -62,14 +58,10 @@ def resolve_poly_config(
             else wavelet_learn_shift
         ),
         "fourier_base_freq": (
-            cfg.fourier_base_freq
-            if fourier_base_freq is None
-            else fourier_base_freq
+            cfg.fourier_base_freq if fourier_base_freq is None else fourier_base_freq
         ),
         "fourier_learn_freq": (
-            cfg.fourier_learn_freq
-            if fourier_learn_freq is None
-            else fourier_learn_freq
+            cfg.fourier_learn_freq if fourier_learn_freq is None else fourier_learn_freq
         ),
     }
     return cfg.with_updates(**updates)

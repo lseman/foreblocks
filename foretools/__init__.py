@@ -1,7 +1,13 @@
 from importlib import import_module
 
 
-__all__ = ["FeatureEngineer", "AdaptiveMI", "AdaptiveMRMR", "DistanceCorrelation", "HSIC"]
+__all__ = [
+    "FeatureEngineer",
+    "AdaptiveMI",
+    "AdaptiveMRMR",
+    "DistanceCorrelation",
+    "HSIC",
+]
 
 
 def __getattr__(name):

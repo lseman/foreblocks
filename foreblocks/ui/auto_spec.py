@@ -28,12 +28,16 @@ Auto-spec utilities for node discovery:
 # Port markers used in type annotations
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class PortIn:
     """Marker for input ports in forward(...) annotations via Annotated[..., PortIn]."""
+
     ...
+
 
 class PortOutBundle:
     """Marker to declare multiple output port names in the return type via Annotated[..., PortOutBundle('a','b',...)]"""
+
     def __init__(self, *names: str) -> None:
         self.names = names
 
@@ -42,14 +46,17 @@ class PortOutBundle:
 # Helpers for type inspection
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _is_annotated_port(tp, marker) -> bool:
     return get_origin(tp) is Annotated and any(
         isinstance(a, marker) or a is marker for a in get_args(tp)[1:]
     )
 
+
 def _typed_dict_keys(tp) -> list[str] | None:
     anns = getattr(tp, "__annotations__", None)
     return list(anns.keys()) if isinstance(anns, dict) else None
+
 
 def _unwrap_annotated(tp):
     origin = get_origin(tp)
@@ -58,13 +65,16 @@ def _unwrap_annotated(tp):
         return args[0] if args else tp
     return tp
 
+
 def _ann_is_optional(tp) -> bool:
     return get_origin(tp) is Union and any(a is type(None) for a in get_args(tp))
+
 
 def _ann_is_callable(tp) -> bool:
     base = _unwrap_annotated(tp)
     origin = get_origin(base)
     return base is cabc.Callable or origin is cabc.Callable
+
 
 def _ann_is_module_like(tp) -> bool:
     """
@@ -99,6 +109,7 @@ def _ann_is_module_like(tp) -> bool:
     # Exact nn.Module type (not subclass)
     try:
         import torch.nn as nn2
+
         if base is nn2.Module:
             return True
     except Exception:
@@ -111,6 +122,7 @@ def _ann_is_module_like(tp) -> bool:
 # Safe defaults for required __init__ params
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _safe_default_for_annotation(ann):
     """
     Produce a JSON-safe default based on a typing annotation.
@@ -121,7 +133,7 @@ def _safe_default_for_annotation(ann):
 
     ann = _unwrap_annotated(ann)
     origin = get_origin(ann)
-    args   = get_args(ann)
+    args = get_args(ann)
 
     # Optional/Union[..., None]
     if origin is Union and any(a is type(None) for a in args):
@@ -160,6 +172,7 @@ def _safe_default_for_annotation(ann):
     # Unknown -> None
     return None
 
+
 def _safe_default_for_param(p: inspect.Parameter) -> Any:
     """Decide a safe default for a required __init__ parameter."""
     return _safe_default_for_annotation(p.annotation)
@@ -169,15 +182,18 @@ def _safe_default_for_param(p: inspect.Parameter) -> Any:
 # Config inference
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _collect_config_from_dataclass(cfg_cls) -> dict[str, Any]:
     # requires default values
     inst = cfg_cls()
     return {f.name: getattr(inst, f.name) for f in fields(cfg_cls)}
 
+
 def _collect_config_from_pydantic(cfg_cls) -> dict[str, Any]:
     # pydantic v2
     inst = cfg_cls()
     return inst.model_dump()
+
 
 def _collect_config_from_signature(sig: inspect.Signature) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
@@ -215,6 +231,7 @@ def _collect_config_from_init(cls) -> dict[str, Any]:
         cfg.update(_collect_config_from_signature(sig))
     return cfg
 
+
 def infer_config(cls, extra_sources: list[type] | None = None) -> dict[str, Any]:
     """
     Order:
@@ -233,6 +250,7 @@ def infer_config(cls, extra_sources: list[type] | None = None) -> dict[str, Any]
                 pass
             try:
                 from pydantic import BaseModel as _BM
+
                 if isinstance(Config, type) and issubclass(Config, _BM):
                     return _collect_config_from_pydantic(Config)
             except Exception:
@@ -253,6 +271,7 @@ def infer_config(cls, extra_sources: list[type] | None = None) -> dict[str, Any]
             pass
         try:
             from pydantic import BaseModel as _BM
+
             if isinstance(Config, type) and issubclass(Config, _BM):
                 merged.update(_collect_config_from_pydantic(Config))
                 return merged
@@ -270,18 +289,26 @@ def infer_config(cls, extra_sources: list[type] | None = None) -> dict[str, Any]
 # regardless of exact annotation (useful when hints are missing/Any)
 _WHITELIST_INIT_INPUTS: set[str] = {
     # core
-    "encoder", "decoder", "head",
+    "encoder",
+    "decoder",
+    "head",
     # processing / pre/post
-    "input_preprocessor", "output_postprocessor",
-    "input_normalization", "output_normalization",
-    "output_block", "input_skip_connection_module",
+    "input_preprocessor",
+    "output_postprocessor",
+    "input_normalization",
+    "output_normalization",
+    "output_block",
+    "input_skip_connection_module",
     # attention & scheduling
-    "attention_module", "scheduled_sampling_fn",
+    "attention_module",
+    "scheduled_sampling_fn",
     # time features
-    "time_feature_embedding_enc", "time_feature_embedding_dec",
+    "time_feature_embedding_enc",
+    "time_feature_embedding_dec",
     # head composer
     "head_composer",
 }
+
 
 def _looks_like_init_input(name: str, ann) -> bool:
     """
@@ -304,6 +331,7 @@ def _looks_like_init_input(name: str, ann) -> bool:
         if inner and _ann_is_callable(inner[0]):
             return True
     return False
+
 
 def infer_inputs(cls) -> list[str]:
     """
@@ -406,7 +434,7 @@ def infer_outputs(cls) -> list[str]:
     probe = getattr(cls, "example_io", None)
     if callable(probe):
         try:
-            inst = cls()                 # requires defaults to instantiate
+            inst = cls()  # requires defaults to instantiate
             example = inst.example_io()  # dict of inputs
             out = inst.forward(**example)
             if isinstance(out, dict):
@@ -423,7 +451,10 @@ def infer_outputs(cls) -> list[str]:
 # Generic code-gen spec inference (NEW)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _infer_ctor_and_bindings(cls: type, inputs: list[str], cfg: dict[str, Any]) -> dict[str, Any]:
+
+def _infer_ctor_and_bindings(
+    cls: type, inputs: list[str], cfg: dict[str, Any]
+) -> dict[str, Any]:
     """
     Heuristic for building a default 'py' spec when authors don't provide one.
 
@@ -479,22 +510,26 @@ def build_node_spec(cls: type, options: dict[str, Any]) -> dict[str, Any]:
     do_infer = options.get("infer", True)
 
     extra_config_sources = [
-        source for source in (ov.get("config_sources") or []) if isinstance(source, type)
+        source
+        for source in (ov.get("config_sources") or [])
+        if isinstance(source, type)
     ]
 
-    inferred_cfg = infer_config(cls, extra_sources=extra_config_sources) if do_infer else {}
-    inferred_in  = infer_inputs(cls) if do_infer else []
+    inferred_cfg = (
+        infer_config(cls, extra_sources=extra_config_sources) if do_infer else {}
+    )
+    inferred_in = infer_inputs(cls) if do_infer else []
     inferred_out = infer_outputs(cls) if do_infer else []
 
-    inputs  = ov.get("inputs")  or inferred_in
+    inputs = ov.get("inputs") or inferred_in
     outputs = ov.get("outputs") or inferred_out
     override_cfg = ov.get("config") or {}
     config = {**inferred_cfg, **override_cfg}
 
     # 2) Resolve 'py' spec
-    explicit_py    = options.get("py")
-    class_py       = getattr(cls, "__py__", None)
-    class_py_spec  = getattr(cls, "py_spec", None)
+    explicit_py = options.get("py")
+    class_py = getattr(cls, "__py__", None)
+    class_py_spec = getattr(cls, "py_spec", None)
 
     if explicit_py is not None:
         py = explicit_py
@@ -510,13 +545,14 @@ def build_node_spec(cls: type, options: dict[str, Any]) -> dict[str, Any]:
 
     # 3) Final normalized spec
     type_id = options.get("type_id") or cls.__name__
-    name    = options.get("name") or cls.__name__
+    name = options.get("name") or cls.__name__
 
     return {
         "type_id": type_id,
         "name": name,
         "category": options.get("category") or "Misc",
-        "color": options.get("color") or "bg-gradient-to-br from-slate-700 to-slate-800",
+        "color": options.get("color")
+        or "bg-gradient-to-br from-slate-700 to-slate-800",
         "subtypes": list(options.get("subtypes") or []),
         "inputs": list(inputs or []),
         "outputs": list(outputs or []),

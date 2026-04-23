@@ -161,9 +161,7 @@ class AdaptiveMRMR:
             )
             split_iter = splitter.split(X, y)
         else:
-            splitter = KFold(
-                n_splits=cv, shuffle=True, random_state=self.random_state
-            )
+            splitter = KFold(n_splits=cv, shuffle=True, random_state=self.random_state)
             split_iter = splitter.split(X)
 
         names = list(X.columns)
@@ -282,6 +280,8 @@ class AdaptiveMRMR:
     ) -> int:
         above_threshold = int((scores > mi_threshold).sum())
         min_count = max(1, int(min_features))
-        max_count = len(scores) if max_features is None else max(min_count, int(max_features))
+        max_count = (
+            len(scores) if max_features is None else max(min_count, int(max_features))
+        )
         target = above_threshold if above_threshold > 0 else min_count
         return int(np.clip(target, min_count, min(max_count, len(scores))))

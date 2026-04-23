@@ -42,9 +42,7 @@ class InteractionTransformer(BaseFeatureTransformer):
 
         # recipes
         self.selected_interactions_: list[tuple[str, str, str]] = []  # (col1, op, col2)
-        self.selected_polynomials_: list[tuple[str, float | str]] = (
-            []
-        )  # (col, power)
+        self.selected_polynomials_: list[tuple[str, float | str]] = []  # (col, power)
         self.feature_scores_: dict[str, float] = {}
 
         # speed/quality knobs
@@ -100,22 +98,22 @@ class InteractionTransformer(BaseFeatureTransformer):
             ),
             "norm_ratio": (
                 getattr(config, "include_norm_ratio", True),
-                lambda a, b, meta=None: (a - b)
-                / (np.abs(a) + np.abs(b) + self.eps),
+                lambda a, b, meta=None: (a - b) / (np.abs(a) + np.abs(b) + self.eps),
             ),
             "min": (getattr(config, "include_minmax", True), np.minimum),
             "max": (getattr(config, "include_minmax", True), np.maximum),
             "zdiff": (
                 getattr(config, "include_zdiff", True),
                 lambda a, b, meta=None: (
-                    a - (meta["a_mean"] if meta else np.nanmean(a))
-                )
-                - (b - (meta["b_mean"] if meta else np.nanmean(b))),
+                    (a - (meta["a_mean"] if meta else np.nanmean(a)))
+                    - (b - (meta["b_mean"] if meta else np.nanmean(b)))
+                ),
             ),
             "log_ratio": (
                 getattr(config, "include_logratio", True),
-                lambda a, b, meta=None: np.log1p(np.abs(a) + self.eps)
-                - np.log1p(np.abs(b) + self.eps),
+                lambda a, b, meta=None: (
+                    np.log1p(np.abs(a) + self.eps) - np.log1p(np.abs(b) + self.eps)
+                ),
             ),
             "root_prod": (
                 getattr(config, "include_rootprod", True),
@@ -364,7 +362,9 @@ class InteractionTransformer(BaseFeatureTransformer):
 
         redundancy_cap = float(getattr(self.config, "corr_avoid_redundancy", 0.995))
         for c1, c2 in combinations(pair_cols, 2):
-            if (allowed_pairs is not None) and (tuple(sorted((c1, c2))) not in allowed_pairs):
+            if (allowed_pairs is not None) and (
+                tuple(sorted((c1, c2))) not in allowed_pairs
+            ):
                 continue
             a, b = cache[c1], cache[c2]
             ab_corr = self._safe_abs_corr(a, b)
@@ -612,9 +612,7 @@ class InteractionTransformer(BaseFeatureTransformer):
             sel_inter_names = self._select_topk(
                 cand_inter, y_arr, self.max_interactions
             )
-            sel_poly_names = self._select_topk(
-                cand_poly, y_arr, self.max_polynomials
-            )
+            sel_poly_names = self._select_topk(cand_poly, y_arr, self.max_polynomials)
 
         # to recipes
         self.selected_interactions_ = []

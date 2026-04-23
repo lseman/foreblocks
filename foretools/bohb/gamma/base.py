@@ -8,4 +8,3 @@ class GammaStrategy(ABC):
     @abstractmethod
     def n_good(self, n_obs: int) -> int:
         pass
-

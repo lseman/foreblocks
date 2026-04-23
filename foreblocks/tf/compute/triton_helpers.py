@@ -83,11 +83,19 @@ if HAS_TRITON:
             y = torch.empty_like(a)
             BLOCK = triton.next_power_of_2(Dh)
             _swiglu_gate_forward[(B, T)](
-                a, b, y, None,
-                a.stride(0), a.stride(1), a.stride(2),
-                b.stride(0), b.stride(1), b.stride(2),
+                a,
+                b,
+                y,
+                None,
+                a.stride(0),
+                a.stride(1),
+                a.stride(2),
+                b.stride(0),
+                b.stride(1),
+                b.stride(2),
                 y.stride(1),
-                Dh, BLOCK=BLOCK,
+                Dh,
+                BLOCK=BLOCK,
             )
             ctx.save_for_backward(a, b)
             return y
@@ -95,9 +103,12 @@ if HAS_TRITON:
         @staticmethod
         def backward(ctx, dy):
             a, b = ctx.saved_tensors
-            if not (HAS_TRITON and a.is_cuda
-                    and a.dtype in (torch.float16, torch.bfloat16, torch.float32)
-                    and not torch.jit.is_scripting()):
+            if not (
+                HAS_TRITON
+                and a.is_cuda
+                and a.dtype in (torch.float16, torch.bfloat16, torch.float32)
+                and not torch.jit.is_scripting()
+            ):
                 with torch.amp.autocast("cuda", enabled=False):
                     a32, b32, dy32 = a.float(), b.float(), dy.float()
                     sig = torch.sigmoid(a32)
@@ -111,9 +122,16 @@ if HAS_TRITON:
             db = torch.empty_like(b)
             BLOCK = triton.next_power_of_2(Dh)
             _swiglu_gate_backward[(B, T)](
-                da, db, a, b, dy.contiguous(),
-                a.stride(0), a.stride(1), a.stride(2),
-                Dh, BLOCK=BLOCK,
+                da,
+                db,
+                a,
+                b,
+                dy.contiguous(),
+                a.stride(0),
+                a.stride(1),
+                a.stride(2),
+                Dh,
+                BLOCK=BLOCK,
             )
             return da, db
 

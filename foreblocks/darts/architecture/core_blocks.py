@@ -663,7 +663,9 @@ class MixedOp(nn.Module):
                 finite_ok = torch.isfinite(out).all()
                 if finite_ok:
                     out_det = out.detach()
-                    grad_norm = 2.0 * out_det.norm(p=2) / max(float(out_det.numel()), 1.0)
+                    grad_norm = (
+                        2.0 * out_det.norm(p=2) / max(float(out_det.numel()), 1.0)
+                    )
                     score = 1.0 / (float(grad_norm.item()) + 1e-6)
                     self.performance_tracker[op_global_idx].mul_(
                         self.performance_ema_decay
@@ -1908,7 +1910,9 @@ class TimeSeriesDARTS(nn.Module):
             return probs
 
         direct = getattr(self, "decoder_query_mode", None)
-        if isinstance(direct, str) and direct in getattr(self, "decoder_query_mode_names", ()):
+        if isinstance(direct, str) and direct in getattr(
+            self, "decoder_query_mode_names", ()
+        ):
             ref = self.norm_alpha
             weights = ref.new_zeros(len(self.decoder_query_mode_names))
             weights[self.decoder_query_mode_names.index(direct)] = 1.0
@@ -1995,7 +1999,9 @@ class TimeSeriesDARTS(nn.Module):
         }
 
         mode_weights = self._get_decoder_query_mode_weights()
-        if mode_weights is None or mode_weights.numel() != len(self.decoder_query_mode_names):
+        if mode_weights is None or mode_weights.numel() != len(
+            self.decoder_query_mode_names
+        ):
             return self._ensure_dtype(repeated)
 
         active_indices = [
@@ -2004,7 +2010,9 @@ class TimeSeriesDARTS(nn.Module):
         mixed = None
         for idx in active_indices:
             name = self.decoder_query_mode_names[idx]
-            contrib = mode_weights[idx] * self._ensure_dtype(candidates[name][:, :horizon, :])
+            contrib = mode_weights[idx] * self._ensure_dtype(
+                candidates[name][:, :horizon, :]
+            )
             mixed = contrib if mixed is None else mixed + contrib
         future_block = self._ensure_dtype(mixed if mixed is not None else repeated)
         return self._ensure_dtype(torch.cat([history_prefix, future_block], dim=1))
@@ -2159,7 +2167,11 @@ class TimeSeriesDARTS(nn.Module):
                 self_attn = first.get("self_attn")
             elif hasattr(first, "__contains__") and "self_attn" in first:
                 self_attn = first["self_attn"]
-            logits = getattr(self_attn, "attn_alphas", None) if self_attn is not None else None
+            logits = (
+                getattr(self_attn, "attn_alphas", None)
+                if self_attn is not None
+                else None
+            )
             if logits is None:
                 return None
             return F.softmax(logits, dim=0)
@@ -2183,7 +2195,11 @@ class TimeSeriesDARTS(nn.Module):
                 cross_attn = first.get("cross_attn")
             elif hasattr(first, "__contains__") and "cross_attn" in first:
                 cross_attn = first["cross_attn"]
-            logits = getattr(cross_attn, "attn_alphas", None) if cross_attn is not None else None
+            logits = (
+                getattr(cross_attn, "attn_alphas", None)
+                if cross_attn is not None
+                else None
+            )
             if logits is None:
                 return None
             return F.softmax(logits, dim=0)
@@ -2207,7 +2223,9 @@ class TimeSeriesDARTS(nn.Module):
                 attn = first.get(key)
             elif hasattr(first, "__contains__") and key in first:
                 attn = first[key]
-            logits = getattr(attn, "position_alphas", None) if attn is not None else None
+            logits = (
+                getattr(attn, "position_alphas", None) if attn is not None else None
+            )
             if logits is None:
                 return None
             return F.softmax(logits, dim=0)
@@ -2258,7 +2276,9 @@ class TimeSeriesDARTS(nn.Module):
             enc_attn = _extract_self_attn_probs(self.forecast_encoder)
             if enc_attn is not None:
                 alphas["encoder_self_attention"] = enc_attn
-            enc_pos = _extract_attention_position_probs(self.forecast_encoder, "self_attn")
+            enc_pos = _extract_attention_position_probs(
+                self.forecast_encoder, "self_attn"
+            )
             if enc_pos is not None:
                 alphas["encoder_attention_position"] = enc_pos
             enc_ffn = _extract_ffn_probs(self.forecast_encoder)
@@ -2369,8 +2389,12 @@ class TimeSeriesDARTS(nn.Module):
                         except Exception:
                             continue
 
-        weights["encoder"] = {"transformer": 1.0} if self.forecast_encoder is not None else {}
-        weights["decoder"] = {"transformer": 1.0} if self.forecast_decoder is not None else {}
+        weights["encoder"] = (
+            {"transformer": 1.0} if self.forecast_encoder is not None else {}
+        )
+        weights["decoder"] = (
+            {"transformer": 1.0} if self.forecast_decoder is not None else {}
+        )
 
         if self.forecast_encoder is not None:
             patch_alpha = getattr(
@@ -2403,8 +2427,14 @@ class TimeSeriesDARTS(nn.Module):
                         self_attn = first.get("self_attn")
                     elif hasattr(first, "__contains__") and "self_attn" in first:
                         self_attn = first["self_attn"]
-                    logits = getattr(self_attn, "attn_alphas", None) if self_attn is not None else None
-                    modes = getattr(self_attn, "MODES", ()) if self_attn is not None else ()
+                    logits = (
+                        getattr(self_attn, "attn_alphas", None)
+                        if self_attn is not None
+                        else None
+                    )
+                    modes = (
+                        getattr(self_attn, "MODES", ()) if self_attn is not None else ()
+                    )
                     if logits is not None and modes:
                         probs = F.softmax(logits, dim=0)
                         weights["encoder_self_attention"] = {
@@ -2434,8 +2464,12 @@ class TimeSeriesDARTS(nn.Module):
                         ffn = first.get("ffn")
                     elif hasattr(first, "__contains__") and "ffn" in first:
                         ffn = first["ffn"]
-                    ffn_logits = getattr(ffn, "ffn_alphas", None) if ffn is not None else None
-                    ffn_modes = getattr(ffn, "MODE_NAMES", ()) if ffn is not None else ()
+                    ffn_logits = (
+                        getattr(ffn, "ffn_alphas", None) if ffn is not None else None
+                    )
+                    ffn_modes = (
+                        getattr(ffn, "MODE_NAMES", ()) if ffn is not None else ()
+                    )
                     if ffn_logits is not None and ffn_modes:
                         probs = F.softmax(ffn_logits, dim=0)
                         weights["encoder_ffn"] = {
@@ -2486,8 +2520,14 @@ class TimeSeriesDARTS(nn.Module):
                         self_attn = first["self_attn"]
                         if "cross_attn" in first:
                             cross_attn = first["cross_attn"]
-                    logits = getattr(self_attn, "attn_alphas", None) if self_attn is not None else None
-                    modes = getattr(self_attn, "MODES", ()) if self_attn is not None else ()
+                    logits = (
+                        getattr(self_attn, "attn_alphas", None)
+                        if self_attn is not None
+                        else None
+                    )
+                    modes = (
+                        getattr(self_attn, "MODES", ()) if self_attn is not None else ()
+                    )
                     if logits is not None and modes:
                         probs = F.softmax(logits, dim=0)
                         weights["decoder_self_attention"] = {
@@ -2549,8 +2589,12 @@ class TimeSeriesDARTS(nn.Module):
                         ffn = first.get("ffn")
                     elif hasattr(first, "__contains__") and "ffn" in first:
                         ffn = first["ffn"]
-                    ffn_logits = getattr(ffn, "ffn_alphas", None) if ffn is not None else None
-                    ffn_modes = getattr(ffn, "MODE_NAMES", ()) if ffn is not None else ()
+                    ffn_logits = (
+                        getattr(ffn, "ffn_alphas", None) if ffn is not None else None
+                    )
+                    ffn_modes = (
+                        getattr(ffn, "MODE_NAMES", ()) if ffn is not None else ()
+                    )
                     if ffn_logits is not None and ffn_modes:
                         probs = F.softmax(ffn_logits, dim=0)
                         weights["decoder_ffn"] = {
@@ -2568,7 +2612,8 @@ class TimeSeriesDARTS(nn.Module):
                 weights["decoder_memory_queries"] = {
                     str(name): float(weight.item())
                     for name, weight in zip(
-                        getattr(self.forecast_decoder, "memory_query_options", []), probs
+                        getattr(self.forecast_decoder, "memory_query_options", []),
+                        probs,
                     )
                 }
 
@@ -2577,7 +2622,9 @@ class TimeSeriesDARTS(nn.Module):
     def get_moe_balance_loss(self) -> torch.Tensor:
         losses: list[torch.Tensor] = []
         for module in self.modules():
-            if isinstance(module, DARTSFeedForward) and getattr(module, "supports_moe", False):
+            if isinstance(module, DARTSFeedForward) and getattr(
+                module, "supports_moe", False
+            ):
                 losses.append(module.get_balance_loss())
         if not losses:
             ref = next(self.parameters(), None)

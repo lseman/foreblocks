@@ -22,7 +22,7 @@ class MoDRouter(nn.Module):
         self,
         d_model: int,
         mode: str = "token",  # "token" | "seq"
-        hidden: int = 0,      # 0 => linear
+        hidden: int = 0,  # 0 => linear
         use_norm: bool = False,
         init_bias: float = 0.0,
     ):

@@ -43,6 +43,7 @@ warnings.filterwarnings("ignore", category=ValueWarning)
 # COMPREHENSIVE ANALYSIS STRATEGIES
 # ============================================================================
 
+
 class SHAPAnalyzer(AnalysisStrategy):
     """SHAP-based feature explanation"""
 
@@ -545,9 +546,16 @@ class DatasetAnalyzer:
                         "extras": lambda r: [
                             f"Complexity: {r.get('complexity', 'moderate')}",
                             (
-                                f"Alternatives: {', '.join([f'{k}({v:.2f})'
-                                                            for k, v in r.get('all_forms', {}).items()
-                                                            if k != r['functional_form'] and v > r['r2_score'] - 0.1][:2])}"
+                                f"Alternatives: {
+                                    ', '.join(
+                                        [
+                                            f'{k}({v:.2f})'
+                                            for k, v in r.get('all_forms', {}).items()
+                                            if k != r['functional_form']
+                                            and v > r['r2_score'] - 0.1
+                                        ][:2]
+                                    )
+                                }"
                             ),
                         ],
                         "rec": "Use detected functional forms for feature engineering or model selection",
@@ -638,7 +646,10 @@ class DatasetAnalyzer:
                     print(f"\n{spec['label']}:")
                     for r in rel[ptype][:3]:
                         # Main metric
-                        f1, f2 = r.get("feature1") or r.get("f1"), r.get("feature2") or r.get("f2")
+                        f1, f2 = (
+                            r.get("feature1") or r.get("f1"),
+                            r.get("feature2") or r.get("f2"),
+                        )
 
                         for field, label, prec in spec["fields"]:
                             if field in r:
@@ -754,7 +765,7 @@ class DatasetAnalyzer:
         section("OUTLIER DETECTION ANALYSIS", 1)
         if not out or "error" in out:
             print(
-                f"⚠️ {out.get('error','No outlier results') if isinstance(out, dict) else 'No outlier results'}"
+                f"⚠️ {out.get('error', 'No outlier results') if isinstance(out, dict) else 'No outlier results'}"
             )
         else:
             # Summary
@@ -775,14 +786,14 @@ class DatasetAnalyzer:
             chars = out.get("data_characteristics", {})
             if chars:
                 section("Analysis Scope", 3)
-                metric("Total Samples", f"{chars.get('total_samples',0):,}")
-                metric("Analyzed Samples", f"{chars.get('analyzed_samples',0):,}")
+                metric("Total Samples", f"{chars.get('total_samples', 0):,}")
+                metric("Analyzed Samples", f"{chars.get('analyzed_samples', 0):,}")
                 metric("Features Analyzed", chars.get("n_features", "N/A"))
                 ms = chars.get("missing_samples", 0)
                 if ms:
                     metric(
                         "Missing Data",
-                        f"{ms:,} ({(ms/(chars.get('total_samples',1)))*100:.1f}%)",
+                        f"{ms:,} ({(ms / (chars.get('total_samples', 1))) * 100:.1f}%)",
                     )
 
             prep = out.get("preprocessing_info", {})
@@ -802,7 +813,9 @@ class DatasetAnalyzer:
                     desc = (
                         "Highly skewed"
                         if skew > 3
-                        else "Moderately skewed" if skew > 1.5 else "Low skewness"
+                        else "Moderately skewed"
+                        if skew > 1.5
+                        else "Low skewness"
                     )
                     metric("Data Skewness", f"{skew:.2f} ({desc})", status=status)
 
@@ -812,7 +825,7 @@ class DatasetAnalyzer:
             if methods:
                 section("Detailed Method Results", 2)
                 for mname, res in methods.items():
-                    print(f"\n   🔹 {mname.replace('_',' ').title()}:")
+                    print(f"\n   🔹 {mname.replace('_', ' ').title()}:")
                     cnt, pct_val = res.get("count", 0), res.get("percentage", 0.0)
                     rate_status = (
                         "warning"
@@ -820,7 +833,9 @@ class DatasetAnalyzer:
                         else (
                             "fair"
                             if pct_val > 5
-                            else "good" if pct_val > 1 else "excellent"
+                            else "good"
+                            if pct_val > 1
+                            else "excellent"
                         )
                     )
                     metric(
@@ -835,7 +850,9 @@ class DatasetAnalyzer:
                         st = (
                             "excellent"
                             if sep > 1.0
-                            else "good" if sep > 0.5 else "fair"
+                            else "good"
+                            if sep > 0.5
+                            else "fair"
                         )
                         metric("Separation Quality", f"{sep:.3f}", status=st, indent=1)
                     if "isolation_score" in ev:
@@ -873,7 +890,7 @@ class DatasetAnalyzer:
 
         if not cl or "error" in cl:
             print(
-                f"⚠️ {cl.get('error','No clustering results') if isinstance(cl, dict) else 'No clustering results'}"
+                f"⚠️ {cl.get('error', 'No clustering results') if isinstance(cl, dict) else 'No clustering results'}"
             )
         else:
             # --- Summary ---
@@ -923,7 +940,9 @@ class DatasetAnalyzer:
                         st = (
                             "excellent"
                             if balance > 0.7
-                            else "good" if balance > 0.5 else "fair"
+                            else "good"
+                            if balance > 0.5
+                            else "fair"
                         )
                         metric("Balance Ratio", f"{balance:.2f}", status=st, indent=1)
                     else:
@@ -941,7 +960,9 @@ class DatasetAnalyzer:
                             st = (
                                 "excellent"
                                 if sil > TH["sil_excellent"]
-                                else "good" if sil > TH["sil_good"] else "fair"
+                                else "good"
+                                if sil > TH["sil_good"]
+                                else "fair"
                             )
                             metric(
                                 "Silhouette Score", f"{sil:.3f}", status=st, indent=1
@@ -968,7 +989,6 @@ class DatasetAnalyzer:
         # ----------------------- Time series -----------------------
         ts: dict[str, Any] = safe_get("timeseries") or {}
         if ts:
-
             section("TIME SERIES ANALYSIS", 1)
 
             stationarity_df: pd.DataFrame = ts.get("stationarity", pd.DataFrame())
@@ -1008,7 +1028,7 @@ class DatasetAnalyzer:
                             f, f"ADF p={row.get('adf_pvalue', np.nan):.4f}", indent=1
                         )
                     if len(st_feats) > 3:
-                        print(f"   ... and {len(st_feats)-3} more")
+                        print(f"   ... and {len(st_feats) - 3} more")
 
                 if not non_st.empty:
                     print(f"\n⚠️ Non-Stationary ({len(non_st)}):")
@@ -1251,11 +1271,11 @@ class DatasetAnalyzer:
                         issues = []
                         st = d.get("stats", {})
                         if abs(st.get("skewness", 0)) > 2:
-                            issues.append(f"skew={st.get('skewness',0):.2f}")
+                            issues.append(f"skew={st.get('skewness', 0):.2f}")
                         if st.get("kurtosis", 0) > 3:
-                            issues.append(f"kurtosis={st.get('kurtosis',0):.2f}")
+                            issues.append(f"kurtosis={st.get('kurtosis', 0):.2f}")
                         if st.get("outliers_pct", 0) > 5:
-                            issues.append(f"outliers={st.get('outliers_pct',0):.1f}%")
+                            issues.append(f"outliers={st.get('outliers_pct', 0):.1f}%")
                         print(f"   📌 {f}")
                         if issues:
                             print(f"      Issues: {', '.join(issues)}")
@@ -1269,9 +1289,9 @@ class DatasetAnalyzer:
                         st = d.get("stats", {})
                         issues = []
                         if abs(st.get("skewness", 0)) > 1:
-                            issues.append(f"skew={st.get('skewness',0):.2f}")
+                            issues.append(f"skew={st.get('skewness', 0):.2f}")
                         if st.get("outliers_pct", 0) > 5:
-                            issues.append(f"outliers={st.get('outliers_pct',0):.1f}%")
+                            issues.append(f"outliers={st.get('outliers_pct', 0):.1f}%")
                         first = (d.get("recommended") or ["Standard scaling"])[0]
                         metric(f, f"{', '.join(issues)} → {first}", indent=1)
 
@@ -1314,7 +1334,7 @@ class DatasetAnalyzer:
                     for f, c, s, n in simple[:3]:
                         metric(
                             f,
-                            f"{c} cats{', ' + f'{n:.1f}% null' if n>0 else ''} → {s}",
+                            f"{c} cats{', ' + f'{n:.1f}% null' if n > 0 else ''} → {s}",
                             indent=1,
                         )
                 if complex_:
@@ -1322,7 +1342,7 @@ class DatasetAnalyzer:
                     for f, c, s, n in complex_[:3]:
                         metric(
                             f,
-                            f"{c} cats{', ' + f'{n:.1f}% null' if n>0 else ''} → {s}",
+                            f"{c} cats{', ' + f'{n:.1f}% null' if n > 0 else ''} → {s}",
                             indent=1,
                         )
                 if high:
@@ -1339,7 +1359,7 @@ class DatasetAnalyzer:
             if inter:
                 section("Interaction Features", 3)
                 metric("Total Candidates", len(inter))
-                rec(f"Start with top {min(10,len(inter))} interactions")
+                rec(f"Start with top {min(10, len(inter))} interactions")
                 # Print first 10
                 for expr in inter[:10]:
                     print(f"   • {expr}")
@@ -1360,7 +1380,11 @@ class DatasetAnalyzer:
                     st = (
                         "poor"
                         if r > 0.5
-                        else "fair" if r > 0.2 else "good" if r > 0.05 else "excellent"
+                        else "fair"
+                        if r > 0.2
+                        else "good"
+                        if r > 0.05
+                        else "excellent"
                     )
                     metric(col, f"{r:.1%}", status=st)
                 if hi:
@@ -1376,13 +1400,13 @@ class DatasetAnalyzer:
                     if "ttest_p" in st:
                         metric(
                             f"{col} (numeric)",
-                            f"t-test p={st['ttest_p']:.4f}, AUC={st.get('auc',0):.2f}",
+                            f"t-test p={st['ttest_p']:.4f}, AUC={st.get('auc', 0):.2f}",
                             indent=1,
                         )
                     elif "chi2_p" in st:
                         metric(
                             f"{col} (categorical)",
-                            f"Chi² p={st['chi2_p']:.4f}, Cramér's V={st.get('cramers_v',0):.2f}",
+                            f"Chi² p={st['chi2_p']:.4f}, Cramér's V={st.get('cramers_v', 0):.2f}",
                             indent=1,
                         )
                     print("     ⚠️ Likely MNAR")
@@ -1544,7 +1568,7 @@ class DatasetAnalyzer:
                 for r in recs[:6]:
                     rec(str(r))
                 if len(recs) > 6:
-                    print(f"   ... and {len(recs)-6} more")
+                    print(f"   ... and {len(recs) - 6} more")
 
         # ----------------------- Categorical Group Analysis -----------------------
         group_results = safe_get("categorical_groups") or {}
@@ -1679,7 +1703,9 @@ class DatasetAnalyzer:
                         status = (
                             "excellent"
                             if significant and p_value < 0.01
-                            else "good" if significant else "fair"
+                            else "good"
+                            if significant
+                            else "fair"
                         )
                         metric("Best Test", method_name, status=status, indent=1)
                         metric("P-value", f"{p_value:.6f}", status=status, indent=2)
@@ -1738,7 +1764,9 @@ class DatasetAnalyzer:
                         status = (
                             "excellent"
                             if significant and p_value < 0.01
-                            else "good" if significant else "fair"
+                            else "good"
+                            if significant
+                            else "fair"
                         )
                         metric(
                             "Chi-square p-value",
@@ -1774,7 +1802,7 @@ class DatasetAnalyzer:
                 for var_results in variable_analyses.values():
                     # Updated to use the new structure
                     all_tests = var_results.get("statistical_tests", {})
-                    
+
                     for test_name, test_result in all_tests.items():
                         if isinstance(test_result, dict) and "error" not in test_result:
                             method_name = test_result.get("method", test_name)
@@ -1785,7 +1813,7 @@ class DatasetAnalyzer:
                                 method_significant[method_name] = (
                                     method_significant.get(method_name, 0) + 1
                                 )
-                
+
                 print("📊 Method Usage and Success Rates:")
                 for method, count in sorted(
                     method_counts.items(), key=lambda x: x[1], reverse=True
@@ -1832,7 +1860,9 @@ class DatasetAnalyzer:
                 norm_status = (
                     "excellent"
                     if norm_pct > 80
-                    else "good" if norm_pct > 60 else "warning"
+                    else "good"
+                    if norm_pct > 60
+                    else "warning"
                 )
                 metric(
                     "Variables with Normal Distributions",
@@ -1849,7 +1879,9 @@ class DatasetAnalyzer:
                 var_status = (
                     "excellent"
                     if var_pct > 80
-                    else "good" if var_pct > 60 else "warning"
+                    else "good"
+                    if var_pct > 60
+                    else "warning"
                 )
                 metric(
                     "Variables with Equal Variances",
@@ -1968,7 +2000,9 @@ class DatasetAnalyzer:
                 success_status = (
                     "excellent"
                     if success_rate == 100
-                    else "good" if success_rate >= 80 else "warning"
+                    else "good"
+                    if success_rate >= 80
+                    else "warning"
                 )
                 metric(
                     "Graph Construction Success",
@@ -1998,7 +2032,9 @@ class DatasetAnalyzer:
                     density_status = (
                         "excellent"
                         if 0.1 <= best_density <= 0.7
-                        else "good" if best_density > 0 else "warning"
+                        else "good"
+                        if best_density > 0
+                        else "warning"
                     )
                     metric(
                         "Network Density",
@@ -2018,7 +2054,9 @@ class DatasetAnalyzer:
                     clustering_status = (
                         "excellent"
                         if best_clustering > 0.5
-                        else "good" if best_clustering > 0.3 else "fair"
+                        else "good"
+                        if best_clustering > 0.3
+                        else "fair"
                     )
                     metric(
                         "Clustering Coefficient",
@@ -2034,7 +2072,6 @@ class DatasetAnalyzer:
 
                 topology = topology_results[best_graph]
                 if "error" not in topology:
-
                     # Connectivity Details
                     print("🔗 Connectivity Analysis:")
                     if topology.get("is_connected", False):
@@ -2146,7 +2183,9 @@ class DatasetAnalyzer:
                         modularity_status = (
                             "excellent"
                             if best_modularity > 0.5
-                            else "good" if best_modularity > 0.3 else "fair"
+                            else "good"
+                            if best_modularity > 0.3
+                            else "fair"
                         )
                         metric(
                             "Modularity Score",
@@ -2432,7 +2471,7 @@ class DatasetAnalyzer:
             )
         )
         print(
-            f"   {'🟢' if overall>90 else '🟡' if overall>80 else '🟠' if overall>70 else '🔴'} {label}"
+            f"   {'🟢' if overall > 90 else '🟡' if overall > 80 else '🟠' if overall > 70 else '🔴'} {label}"
         )
 
         # ----------------------- Executive recommendations -----------------------
@@ -2516,7 +2555,7 @@ class DatasetAnalyzer:
             f"\n📊 Dataset Shape: {self.df.shape[0]:,} rows × {self.df.shape[1]} columns"
         )
         print(
-            f"💾 Memory Usage: {self.df.memory_usage(deep=True).sum()/(1024**2):.2f} MB"
+            f"💾 Memory Usage: {self.df.memory_usage(deep=True).sum() / (1024**2):.2f} MB"
         )
         print(f"🎯 Overall Quality: {overall:.1f}% ({label.split(' - ')[0]})")
 
@@ -2557,36 +2596,44 @@ class DatasetAnalyzer:
         """
         self._log("🧠 Generating intelligent SOTA summary...")
         results = self.analyze()
-        
+
         summary_lines = []
-        summary_lines.append(f"ForeMiner SOTA Intelligence Report for Dataset ({self.df.shape[0]} rows)")
+        summary_lines.append(
+            f"ForeMiner SOTA Intelligence Report for Dataset ({self.df.shape[0]} rows)"
+        )
         summary_lines.append("=" * 60)
-        
+
         # Pull key facts
         ts = results.get("timeseries", {})
         patt = results.get("patterns", {})
-        
+
         # 1. Seasonality & Motifs
         motifs = ts.get("motif_discovery", {})
         if motifs:
             cols = list(motifs.keys())
-            summary_lines.append(f"• Motifs: Found recurring sub-patterns in {len(cols)} features: {', '.join(cols[:3])}")
-            
+            summary_lines.append(
+                f"• Motifs: Found recurring sub-patterns in {len(cols)} features: {', '.join(cols[:3])}"
+            )
+
         # 2. Causality
         causality = patt.get("causality", {})
         infl = causality.get("directed_influence", [])
         if infl:
-            top = sorted(infl, key=lambda x: x['strength'], reverse=True)[0]
-            summary_lines.append(f"• Causality: Strongest directed influence detected: {top['source']} -> {top['target']}")
-            
+            top = sorted(infl, key=lambda x: x["strength"], reverse=True)[0]
+            summary_lines.append(
+                f"• Causality: Strongest directed influence detected: {top['source']} -> {top['target']}"
+            )
+
         # 3. Anomalies
         anomalies = patt.get("anomalies", {})
         global_count = len(anomalies.get("global_anomalies", []))
         if global_count > 0:
-            summary_lines.append(f"• Anomalies: {global_count} global anomaly points identified by Isolation Forest.")
-            
+            summary_lines.append(
+                f"• Anomalies: {global_count} global anomaly points identified by Isolation Forest."
+            )
+
         final_summary = "\n".join(summary_lines)
         if self.verbose:
             print(final_summary)
-            
+
         return final_summary

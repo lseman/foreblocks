@@ -6,4 +6,3 @@ from .log_ratio import LogRatioAcquisition
 
 def build_acquisition_strategy(*args, **kwargs) -> AcquisitionStrategy:
     return LogRatioAcquisition(*args, **kwargs)
-

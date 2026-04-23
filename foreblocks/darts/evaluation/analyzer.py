@@ -154,10 +154,16 @@ class StreamlinedDARTSAnalyzer:
         """Extract attention mechanism information"""
         try:
             decoder = getattr(model, "forecast_decoder", None)
-            transformer = getattr(decoder, "transformer", None) if decoder is not None else None
+            transformer = (
+                getattr(decoder, "transformer", None) if decoder is not None else None
+            )
             if transformer is None and decoder is not None:
                 transformer = getattr(decoder, "rnn", None)
-            layers = getattr(transformer, "layers", None) if transformer is not None else None
+            layers = (
+                getattr(transformer, "layers", None)
+                if transformer is not None
+                else None
+            )
             first_layer = layers[0] if layers else None
             cross_attn = None
             if isinstance(first_layer, dict):
@@ -168,7 +174,9 @@ class StreamlinedDARTSAnalyzer:
                 cross_attn = first_layer["cross_attn"]
             attention_alphas = getattr(cross_attn, "attn_alphas", None)
             attention_mode = getattr(cross_attn, "attention_type", None)
-            if decoder is None or (attention_alphas is None and not isinstance(attention_mode, str)):
+            if decoder is None or (
+                attention_alphas is None and not isinstance(attention_mode, str)
+            ):
                 row["uses_attention"] = 0
                 return
 
@@ -179,7 +187,9 @@ class StreamlinedDARTSAnalyzer:
             else:
                 resolved = str(attention_mode).lower()
                 max_attention_idx = (
-                    attention_modes.index(resolved) if resolved in attention_modes else -1
+                    attention_modes.index(resolved)
+                    if resolved in attention_modes
+                    else -1
                 )
                 attention_weights = torch.zeros(
                     len(attention_modes), device=next(cross_attn.parameters()).device
@@ -272,7 +282,9 @@ class StreamlinedDARTSAnalyzer:
         component = getattr(model, component_attr, None)
         if component is None:
             return
-        selected_component = str(getattr(component, "rnn_type", type(component).__name__))
+        selected_component = str(
+            getattr(component, "rnn_type", type(component).__name__)
+        )
         row[f"final_{component_type}"] = selected_component
         row[f"final_{component_type}_weight"] = 1.0
         row[f"final_{component_type}_clean"] = selected_component
@@ -282,10 +294,14 @@ class StreamlinedDARTSAnalyzer:
     def _extract_final_attention_choice(self, model, row: dict):
         """Extract final attention choice from trained model"""
         decoder = getattr(model, "forecast_decoder", None)
-        transformer = getattr(decoder, "transformer", None) if decoder is not None else None
+        transformer = (
+            getattr(decoder, "transformer", None) if decoder is not None else None
+        )
         if transformer is None and decoder is not None:
             transformer = getattr(decoder, "rnn", None)
-        layers = getattr(transformer, "layers", None) if transformer is not None else None
+        layers = (
+            getattr(transformer, "layers", None) if transformer is not None else None
+        )
         first_layer = layers[0] if layers else None
         cross_attn = None
         if isinstance(first_layer, dict):
@@ -296,7 +312,9 @@ class StreamlinedDARTSAnalyzer:
             cross_attn = first_layer["cross_attn"]
         attention_alphas = getattr(cross_attn, "attn_alphas", None)
         attention_mode = getattr(cross_attn, "attention_type", None)
-        if decoder is None or (attention_alphas is None and not isinstance(attention_mode, str)):
+        if decoder is None or (
+            attention_alphas is None and not isinstance(attention_mode, str)
+        ):
             return
 
         attention_modes = tuple(getattr(cross_attn, "MODES", ()))
@@ -305,7 +323,9 @@ class StreamlinedDARTSAnalyzer:
             selected_idx = attention_weights.argmax().item()
         else:
             resolved = str(attention_mode).lower()
-            selected_idx = attention_modes.index(resolved) if resolved in attention_modes else -1
+            selected_idx = (
+                attention_modes.index(resolved) if resolved in attention_modes else -1
+            )
             attention_weights = torch.zeros(
                 len(attention_modes), device=next(cross_attn.parameters()).device
             )
@@ -641,9 +661,7 @@ class StreamlinedDARTSAnalyzer:
             alpha=0.8,
             color="skyblue",
         )
-        ax.bar(
-            x, top_counts, width, label="Top Candidates", alpha=0.8, color="orange"
-        )
+        ax.bar(x, top_counts, width, label="Top Candidates", alpha=0.8, color="orange")
         ax.bar(
             x + width,
             trained_counts,
@@ -702,9 +720,7 @@ class StreamlinedDARTSAnalyzer:
             alpha=0.8,
             color="lightcoral",
         )
-        ax.bar(
-            x, top_counts, width, label="Top Candidates", alpha=0.8, color="gold"
-        )
+        ax.bar(x, top_counts, width, label="Top Candidates", alpha=0.8, color="gold")
         ax.bar(
             x + width,
             trained_counts,
@@ -808,9 +824,7 @@ class StreamlinedDARTSAnalyzer:
         encoder_counts = list(encoders.values())
         [encoder_weights.get(name, 0) for name in encoder_names]
 
-        ax.bar(
-            range(len(encoder_names)), encoder_counts, alpha=0.8, color="lightblue"
-        )
+        ax.bar(range(len(encoder_names)), encoder_counts, alpha=0.8, color="lightblue")
 
         # Add weight information
         # for i, (bar, weight, name) in enumerate(zip(bars, weights, encoder_names)):

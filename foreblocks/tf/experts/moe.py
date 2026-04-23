@@ -55,6 +55,7 @@ except Exception:
     grouped_mlp_swiglu = None  # fallback uses Python loop
     fused_router_topk = None  # type: ignore
 
+
 # -----------------------------------------------------------------------------
 # dMoE FFN (fast path)
 # -----------------------------------------------------------------------------
@@ -183,7 +184,9 @@ class MoEFeedForwardDMoE(nn.Module):
                 else max(1, int(d_model // 4))
             )
             if latent_dim < 1:
-                raise ValueError("moe_latent_dim must be >= 1 when latent MoE is enabled")
+                raise ValueError(
+                    "moe_latent_dim must be >= 1 when latent MoE is enabled"
+                )
             if latent_dim >= int(d_model):
                 raise ValueError(
                     "moe_latent_dim must be < d_model when latent MoE is enabled"
@@ -191,7 +194,9 @@ class MoEFeedForwardDMoE(nn.Module):
             latent_d_ff = (
                 int(moe_latent_d_ff)
                 if moe_latent_d_ff is not None
-                else max(1, int(round(float(d_ff) * float(latent_dim) / float(d_model))))
+                else max(
+                    1, int(round(float(d_ff) * float(latent_dim) / float(d_model)))
+                )
             )
             if latent_d_ff < 1:
                 raise ValueError(
@@ -756,7 +761,9 @@ class MoEFeedForwardDMoE(nn.Module):
             if packed_x.numel() == 0:
                 out_flat = x_flat.new_zeros((Toks, self.d_model))
                 if self.shared_combine == "concat" and shared_cat is not None:
-                    out_flat = self.shared_proj(torch.cat([out_flat, shared_cat], dim=-1))
+                    out_flat = self.shared_proj(
+                        torch.cat([out_flat, shared_cat], dim=-1)
+                    )
                 elif shared_out is not None:
                     out_flat = out_flat + shared_out
                 out = out_flat.reshape_as(x_norm)

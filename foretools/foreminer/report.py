@@ -43,7 +43,7 @@ class DatasetReportPrinter:
         )
         report_metric(
             "Memory Usage",
-            f"{self.analyzer.df.memory_usage(deep=True).sum()/(1024**2):.2f} MB",
+            f"{self.analyzer.df.memory_usage(deep=True).sum() / (1024**2):.2f} MB",
         )
         report_metric("Numeric Features", len(self.analyzer._numeric_cols))
         report_metric("Categorical Features", len(self.analyzer._categorical_cols))
@@ -59,7 +59,9 @@ class DatasetReportPrinter:
             else (
                 "good"
                 if miss_pct < missing_thresholds[1]
-                else "fair" if miss_pct < missing_thresholds[2] else "poor"
+                else "fair"
+                if miss_pct < missing_thresholds[2]
+                else "poor"
             )
         )
         report_metric("Missing Values", f"{miss_pct:.2f}%", status=miss_status)
@@ -102,7 +104,9 @@ class DatasetReportPrinter:
             print(f"   {top_list(feats)}")
             report_recommendation("Safe for parametric methods and linear models")
 
-        hi_skew = dist_summary.loc[dist_summary["skewness"].abs() > thresholds["skew_hi"]]
+        hi_skew = dist_summary.loc[
+            dist_summary["skewness"].abs() > thresholds["skew_hi"]
+        ]
         if not hi_skew.empty:
             print(f"\n⚠️ Highly Skewed Features ({len(hi_skew)}):")
             for _, row in hi_skew.head(3).iterrows():
@@ -126,7 +130,8 @@ class DatasetReportPrinter:
             report_recommendation("Apply robust scaling or outlier treatment", "high")
 
         bi = dist_summary.loc[
-            dist_summary.get("bimodality_coeff", 0) > thresholds["bimodal_bc"], "feature"
+            dist_summary.get("bimodality_coeff", 0) > thresholds["bimodal_bc"],
+            "feature",
         ]
         if not bi.empty:
             print(f"\n🔀 Potential Bimodal Distributions ({len(bi)}):")
@@ -152,7 +157,9 @@ class DatasetReportPrinter:
         """Print correlation analysis findings."""
         corrs = self.safe_get("correlations") or {}
         if not (
-            isinstance(corrs, dict) and "pearson" in corrs and corrs["pearson"] is not None
+            isinstance(corrs, dict)
+            and "pearson" in corrs
+            and corrs["pearson"] is not None
         ):
             return
 
@@ -194,7 +201,7 @@ class DatasetReportPrinter:
     def print_sota_insights(self) -> None:
         """Print SOTA-specific insights (Motifs, Causality, Anomalies)."""
         report_section("INTELLIGENT FACT DISCOVERY (SOTA)", 1)
-        
+
         # 1. Motifs
         ts_results = self.safe_get("timeseries") or {}
         motifs = ts_results.get("motif_discovery", {})
@@ -203,8 +210,12 @@ class DatasetReportPrinter:
             for col, info in motifs.items():
                 m_list = info.get("top_motifs", [])
                 if m_list:
-                    print(f"   • {col}: Found {len(m_list)} recurring patterns (Window={info['window_size']})")
-                    report_recommendation(f"Pattern periodicity in {col} suggests predictable cyclicality.")
+                    print(
+                        f"   • {col}: Found {len(m_list)} recurring patterns (Window={info['window_size']})"
+                    )
+                    report_recommendation(
+                        f"Pattern periodicity in {col} suggests predictable cyclicality."
+                    )
 
         # 2. Directed Influence (Causality)
         patt_results = self.safe_get("patterns") or {}
@@ -213,20 +224,31 @@ class DatasetReportPrinter:
         if infl:
             report_section("Directed Influence & Causality", 3)
             # Sort by strength
-            infl = sorted(infl, key=lambda x: x['strength'], reverse=True)
+            infl = sorted(infl, key=lambda x: x["strength"], reverse=True)
             for item in infl[:5]:
                 conf = item.get("confidence", "low").upper()
-                report_metric(f"{item['source']} → {item['target']}", f"Strength: {item['strength']:.3f} ({conf})")
-                if item['strength'] > 0.1:
-                    report_recommendation(f"{item['source']} is a potential leading indicator for {item['target']}.", "medium")
+                report_metric(
+                    f"{item['source']} → {item['target']}",
+                    f"Strength: {item['strength']:.3f} ({conf})",
+                )
+                if item["strength"] > 0.1:
+                    report_recommendation(
+                        f"{item['source']} is a potential leading indicator for {item['target']}.",
+                        "medium",
+                    )
 
         # 3. Anomaly Mining
         anomalies = patt_results.get("anomalies", {})
         global_anom = anomalies.get("global_anomalies", [])
         if global_anom:
             report_section("Multi-variate Anomaly Clusters", 3)
-            print(f"   • Detected {len(global_anom)} global anomaly points using Isolation Forest.")
-            report_recommendation(f"Inspect indices: {top_list([str(i) for i in global_anom[:5]])}", "high")
+            print(
+                f"   • Detected {len(global_anom)} global anomaly points using Isolation Forest."
+            )
+            report_recommendation(
+                f"Inspect indices: {top_list([str(i) for i in global_anom[:5]])}",
+                "high",
+            )
 
         # 4. Trend Coordination
         coordination = ts_results.get("trend_coordination", {})
@@ -234,4 +256,7 @@ class DatasetReportPrinter:
         if alignments:
             report_section("Trend & Phase Coordination", 3)
             for al in alignments[:3]:
-                report_metric(f"{al['pair'][0]} ↔ {al['pair'][1]}", f"Lag: {al['lag']} ({al['interpretation']})")
+                report_metric(
+                    f"{al['pair'][0]} ↔ {al['pair'][1]}",
+                    f"Lag: {al['lag']} ({al['interpretation']})",
+                )

@@ -393,9 +393,7 @@ class TemporalFusionTransformerHead(nn.Module):
         z_dec, w_dec = self.vsn_dec(X)  # [B, L_out, d_model], [B, L_out, V_dec]
         return z_dec, w_dec
 
-    def _static_context(
-        self, x_static: torch.Tensor | None
-    ) -> torch.Tensor | None:
+    def _static_context(self, x_static: torch.Tensor | None) -> torch.Tensor | None:
         """
         x_static: [B, V_static, D_s] -> context c [B, 1, d_model]
         """

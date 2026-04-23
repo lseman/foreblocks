@@ -166,9 +166,9 @@ class mLSTMLayer(nn.Module):
         self, input_size: int, hidden_size: int, num_heads: int = 4, bias: bool = True
     ):
         super().__init__()
-        assert (
-            hidden_size % num_heads == 0
-        ), "hidden_size must be divisible by num_heads"
+        assert hidden_size % num_heads == 0, (
+            "hidden_size must be divisible by num_heads"
+        )
 
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -250,9 +250,7 @@ class mLSTMLayer(nn.Module):
         denom = torch.maximum(nq.abs(), torch.ones_like(nq))  # [B, NH]
         h_tilde_h = torch.matmul(c_new, q_h.unsqueeze(-1)).squeeze(
             -1
-        ) / denom.unsqueeze(
-            -1
-        )  # [B,NH,Dh]
+        ) / denom.unsqueeze(-1)  # [B,NH,Dh]
 
         # Output gate and merge heads
         o = torch.sigmoid(self.o_proj(x))  # [B, H]

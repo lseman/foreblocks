@@ -37,8 +37,7 @@ class PositionalEncoding(nn.Module):
     ):
         pos = torch.arange(T, dtype=dtype, device=device).unsqueeze(1)
         div = torch.exp(
-            torch.arange(0, D, 2, dtype=dtype, device=device)
-            * (-math.log(10000.0) / D)
+            torch.arange(0, D, 2, dtype=dtype, device=device) * (-math.log(10000.0) / D)
         )
         pe = torch.empty(T, D, dtype=dtype, device=device)
         ang = pos * div

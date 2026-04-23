@@ -16,6 +16,7 @@ except Exception:
 
 
 if CAUSAL_CONV1D_TRITON_AVAILABLE:
+
     @triton.jit
     def _causal_depthwise_conv1d_kernel(
         x_ptr,
@@ -83,7 +84,9 @@ def causal_depthwise_conv1d_triton(
     bias: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if not CAUSAL_CONV1D_TRITON_AVAILABLE:
-        raise RuntimeError("causal_depthwise_conv1d_triton called but Triton is not available")
+        raise RuntimeError(
+            "causal_depthwise_conv1d_triton called but Triton is not available"
+        )
     if x.ndim != 3:
         raise ValueError("x must have shape [B, D, T]")
     if weight.ndim != 2:
@@ -120,7 +123,13 @@ def causal_depthwise_conv1d_triton(
 class _CausalDepthwiseConv1dFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, bias):
-        ctx.save_for_backward(x, weight, bias if bias is not None else torch.tensor([], device=x.device, dtype=x.dtype))
+        ctx.save_for_backward(
+            x,
+            weight,
+            bias
+            if bias is not None
+            else torch.tensor([], device=x.device, dtype=x.dtype),
+        )
         ctx.has_bias = bias is not None
         return causal_depthwise_conv1d_triton(x, weight, bias=bias)
 
@@ -162,6 +171,11 @@ def causal_depthwise_conv1d(
     weight: torch.Tensor,
     bias: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    if CAUSAL_CONV1D_TRITON_AVAILABLE and x.is_cuda and weight.is_cuda and (bias is None or bias.is_cuda):
+    if (
+        CAUSAL_CONV1D_TRITON_AVAILABLE
+        and x.is_cuda
+        and weight.is_cuda
+        and (bias is None or bias.is_cuda)
+    ):
         return _CausalDepthwiseConv1dFn.apply(x, weight, bias)
     return causal_depthwise_conv1d_reference(x, weight, bias=bias)

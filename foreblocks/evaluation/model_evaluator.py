@@ -29,6 +29,7 @@ def _require_matplotlib() -> None:
             "Install with: pip install foreblocks[plotting]"
         )
 
+
 class ModelEvaluator:
     def __init__(self, trainer: Trainer):
         self.trainer = trainer
@@ -46,7 +47,11 @@ class ModelEvaluator:
         self.model.eval()
         X = X.to(self.device)
         predictions = []
-        amp_ctx = (autocast("cuda") if use_amp and self.device == "cuda" else contextlib.nullcontext())
+        amp_ctx = (
+            autocast("cuda")
+            if use_amp and self.device == "cuda"
+            else contextlib.nullcontext()
+        )
 
         for i in range(0, len(X), batch_size):
             batch = X[i : i + batch_size]
@@ -75,13 +80,10 @@ class ModelEvaluator:
         for key, value in (graph_kwargs or {}).items():
             if torch.is_tensor(value):
                 tensor = value.to(self.device)
-                if (
-                    (key == "adj" and tensor.dim() == 3 and tensor.size(0) == total)
-                    or (
-                        key == "edge_weight"
-                        and tensor.dim() == 2
-                        and tensor.size(0) == total
-                    )
+                if (key == "adj" and tensor.dim() == 3 and tensor.size(0) == total) or (
+                    key == "edge_weight"
+                    and tensor.dim() == 2
+                    and tensor.size(0) == total
                 ):
                     tensor = tensor[start:stop]
                 out[key] = tensor
@@ -102,7 +104,9 @@ class ModelEvaluator:
         if step_size is None:
             step_size = horizon
 
-        print(f"Cross-validation: {n_windows} windows, horizon={horizon}, step_size={step_size}")
+        print(
+            f"Cross-validation: {n_windows} windows, horizon={horizon}, step_size={step_size}"
+        )
 
         window_metrics = []
         all_predictions = []
@@ -124,12 +128,14 @@ class ModelEvaluator:
             all_targets.append(y_window)
 
             metrics = self._compute_window_metrics(preds, y_window)
-            metrics['window'] = i
-            metrics['start_idx'] = start_idx
-            metrics['end_idx'] = end_idx
+            metrics["window"] = i
+            metrics["start_idx"] = start_idx
+            metrics["end_idx"] = end_idx
             window_metrics.append(metrics)
 
-            print(f"  Window {i+1}/{n_windows}: MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}")
+            print(
+                f"  Window {i + 1}/{n_windows}: MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}"
+            )
 
         all_preds_cat = torch.cat(all_predictions, dim=0)
         all_targets_cat = torch.cat(all_targets, dim=0)
@@ -137,20 +143,24 @@ class ModelEvaluator:
         overall_metrics = self._compute_window_metrics(all_preds_cat, all_targets_cat)
 
         return {
-            'window_metrics': window_metrics,
-            'overall': overall_metrics,
-            'predictions': all_preds_cat,
-            'targets': all_targets_cat,
-            'n_windows': len(window_metrics),
-            'total_points': len(all_preds_cat)
+            "window_metrics": window_metrics,
+            "overall": overall_metrics,
+            "predictions": all_preds_cat,
+            "targets": all_targets_cat,
+            "n_windows": len(window_metrics),
+            "total_points": len(all_preds_cat),
         }
 
-    def _compute_window_metrics(self, predictions: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
+    def _compute_window_metrics(
+        self, predictions: torch.Tensor, targets: torch.Tensor
+    ) -> dict[str, float]:
         targets = targets.to(predictions.device)
         if predictions.ndim == 4 and targets.ndim == 3:
             targets = targets.unsqueeze(-1)
         if predictions.ndim > 3:
-            predictions = predictions.reshape(predictions.size(0), predictions.size(1), -1)
+            predictions = predictions.reshape(
+                predictions.size(0), predictions.size(1), -1
+            )
             targets = targets.reshape(targets.size(0), targets.size(1), -1)
         diff = (predictions - targets).float()
 
@@ -160,12 +170,7 @@ class ModelEvaluator:
 
         mape = (diff.abs() / (targets.abs() + 1e-8)).mean().item() * 100
 
-        return {
-            'mse': mse,
-            'rmse': rmse,
-            'mae': mae,
-            'mape': mape
-        }
+        return {"mse": mse, "rmse": rmse, "mae": mae, "mape": mape}
 
     def compute_metrics(
         self,
@@ -177,43 +182,50 @@ class ModelEvaluator:
         predictions = self.predict(X, batch_size, graph_kwargs=graph_kwargs)
         return self._compute_window_metrics(predictions, y)
 
-    def plot_cv_results(self, cv_results: dict[str, Any], figsize: tuple[int, int] = (15, 8)):
+    def plot_cv_results(
+        self, cv_results: dict[str, Any], figsize: tuple[int, int] = (15, 8)
+    ):
         _require_matplotlib()
         fig, axes = plt.subplots(2, 2, figsize=figsize)
 
-        window_metrics = cv_results['window_metrics']
-        windows = [m['window'] for m in window_metrics]
+        window_metrics = cv_results["window_metrics"]
+        windows = [m["window"] for m in window_metrics]
 
-        metrics_to_plot = ['mae', 'rmse', 'mape']
+        metrics_to_plot = ["mae", "rmse", "mape"]
         for idx, metric in enumerate(metrics_to_plot):
             row, col = idx // 2, idx % 2
             values = [m[metric] for m in window_metrics]
-            axes[row, col].plot(windows, values, 'o-', label=f'Per-window {metric.upper()}')
-            axes[row, col].axhline(cv_results['overall'][metric],
-                                  color='r', linestyle='--',
-                                  label=f'Overall {metric.upper()}')
-            axes[row, col].set_xlabel('Window')
+            axes[row, col].plot(
+                windows, values, "o-", label=f"Per-window {metric.upper()}"
+            )
+            axes[row, col].axhline(
+                cv_results["overall"][metric],
+                color="r",
+                linestyle="--",
+                label=f"Overall {metric.upper()}",
+            )
+            axes[row, col].set_xlabel("Window")
             axes[row, col].set_ylabel(metric.upper())
-            axes[row, col].set_title(f'{metric.upper()} across windows')
+            axes[row, col].set_title(f"{metric.upper()} across windows")
             axes[row, col].legend()
             axes[row, col].grid(True)
 
-        axes[1, 1].axis('off')
+        axes[1, 1].axis("off")
         summary = f"""Cross-Validation Summary
 
-Total Windows: {cv_results['n_windows']}
-Total Points: {cv_results['total_points']}
+Total Windows: {cv_results["n_windows"]}
+Total Points: {cv_results["total_points"]}
 
 Overall Metrics:
-  MAE:  {cv_results['overall']['mae']:.4f}
-  RMSE: {cv_results['overall']['rmse']:.4f}
-  MAPE: {cv_results['overall']['mape']:.2f}%
+  MAE:  {cv_results["overall"]["mae"]:.4f}
+  RMSE: {cv_results["overall"]["rmse"]:.4f}
+  MAPE: {cv_results["overall"]["mape"]:.2f}%
 
 Per-Window Stats:
-  MAE:  {np.mean([m['mae'] for m in window_metrics]):.4f} ± {np.std([m['mae'] for m in window_metrics]):.4f}
-  RMSE: {np.mean([m['rmse'] for m in window_metrics]):.4f} ± {np.std([m['rmse'] for m in window_metrics]):.4f}
+  MAE:  {np.mean([m["mae"] for m in window_metrics]):.4f} ± {np.std([m["mae"] for m in window_metrics]):.4f}
+  RMSE: {np.mean([m["rmse"] for m in window_metrics]):.4f} ± {np.std([m["rmse"] for m in window_metrics]):.4f}
         """
-        axes[1, 1].text(0.1, 0.5, summary, fontsize=10, family='monospace', va='center')
+        axes[1, 1].text(0.1, 0.5, summary, fontsize=10, family="monospace", va="center")
 
         plt.tight_layout()
         return fig

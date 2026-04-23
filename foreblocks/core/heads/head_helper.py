@@ -1176,7 +1176,8 @@ class HeadComposer(nn.Module):
             dtype=x.dtype,
         )
         gate_scores = torch.stack(
-            [torch.sigmoid(gate_net(branch.mean(dim=1))) for _, branch in aligned], dim=1
+            [torch.sigmoid(gate_net(branch.mean(dim=1))) for _, branch in aligned],
+            dim=1,
         )
         gate_norm = gate_scores / gate_scores.sum(dim=1, keepdim=True).clamp_min(
             self._EPS

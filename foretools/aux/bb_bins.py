@@ -170,7 +170,9 @@ class RegularEvents(FitnessFunc):
     def fitness(self, T_k: np.ndarray, N_k: np.ndarray) -> np.ndarray:
         M_k = T_k / self.dt
         with np.errstate(divide="ignore", invalid="ignore"):
-            rate = np.divide(N_k, M_k, out=np.zeros_like(N_k, dtype=float), where=M_k > 0)
+            rate = np.divide(
+                N_k, M_k, out=np.zeros_like(N_k, dtype=float), where=M_k > 0
+            )
 
         eps = 1e-8
         if np.any(rate > 1 + eps):

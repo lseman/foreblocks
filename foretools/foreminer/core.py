@@ -44,7 +44,8 @@ def _run_analysis_worker(strategy_name, strategy, df, config):
     except Exception as e:
         tb = traceback.format_exc()
         return strategy_name, None, f"{e}\n{tb}"
-    
+
+
 # Optional imports with graceful fallbacks
 OPTIONAL_IMPORTS = {}
 for lib_name, import_stmt in [
@@ -115,7 +116,7 @@ def report_metric(
     tag = status_tag.get(status, "")
     spacer = " " * (12 - len(tag)) if tag else " " * 12
     value_text = f"{value}{unit}"
-    print(f"{'   '*indent}{tag}{spacer}{label:<34} : {value_text}")
+    print(f"{'   ' * indent}{tag}{spacer}{label:<34} : {value_text}")
 
 
 def report_recommendation(text: str, priority: str = "normal", indent: int = 0) -> None:
@@ -126,18 +127,18 @@ def report_recommendation(text: str, priority: str = "normal", indent: int = 0) 
         "normal": "[NOTE]",
     }
     tag = priority_tag.get(priority, "[NOTE]")
-    print(f"{'   '*indent}{tag:<8} {text}")
+    print(f"{'   ' * indent}{tag:<8} {text}")
 
 
 def report_pct(num: float, den: float, zeros_as: str = "0.0%") -> str:
     if not den:
         return zeros_as
-    return f"{(num/den)*100:.1f}%"
+    return f"{(num / den) * 100:.1f}%"
 
 
 def top_list(items: list[str], n: int = 5) -> str:
     return ", ".join(items[:n]) + (
-        f" ... and {len(items)-n} more" if len(items) > n else ""
+        f" ... and {len(items) - n} more" if len(items) > n else ""
     )
 
 
@@ -145,7 +146,11 @@ def quality_band(value: float) -> str:
     return (
         "excellent"
         if value > 95
-        else "good" if value > 85 else "fair" if value > 70 else "poor"
+        else "good"
+        if value > 85
+        else "fair"
+        if value > 70
+        else "poor"
     )
 
 
@@ -173,28 +178,29 @@ HAS_OPENTSNE = _import_available("import openTSNE")
 HAS_TRIMAP = _import_available("import trimap")
 HAS_MULTICORE_TSNE = _import_available("from MulticoreTSNE import MulticoreTSNE")
 
+
 # Optional: Print available libraries for debugging
 def print_available_libraries():
     """Print which optional libraries are available."""
     libraries = {
-        'PyOD (Outlier Detection)': HAS_PYOD,
-        'HDBSCAN': HAS_HDBSCAN,
-        'K-medoids': f"{HAS_KMEDOIDS} ({KMEDOIDS_SOURCE})" if HAS_KMEDOIDS else False,
-        'PyClustering': HAS_PYCLUSTERING,
-        'UMAP': HAS_UMAP,
-        'OpenTSNE': HAS_OPENTSNE,
-        'TriMap': HAS_TRIMAP,
-        'MulticoreTSNE': HAS_MULTICORE_TSNE,
+        "PyOD (Outlier Detection)": HAS_PYOD,
+        "HDBSCAN": HAS_HDBSCAN,
+        "K-medoids": f"{HAS_KMEDOIDS} ({KMEDOIDS_SOURCE})" if HAS_KMEDOIDS else False,
+        "PyClustering": HAS_PYCLUSTERING,
+        "UMAP": HAS_UMAP,
+        "OpenTSNE": HAS_OPENTSNE,
+        "TriMap": HAS_TRIMAP,
+        "MulticoreTSNE": HAS_MULTICORE_TSNE,
     }
-    
+
     print("Available optional libraries:")
     for lib, status in libraries.items():
         status_str = "✓" if status else "✗"
         print(f"  {status_str} {lib}: {status}")
 
+
 if __name__ == "__main__":
     print_available_libraries()
-
 
 
 # ============================================================================
@@ -285,6 +291,7 @@ class AnalysisStrategy(ABC):
 # COMPREHENSIVE PLOTTING HELPERS
 # ============================================================================
 
+
 class PlotHelper:
     """Comprehensive plotting utilities for all analysis types"""
 
@@ -371,7 +378,7 @@ class PlotHelper:
 
         plt.tight_layout()
         plt.show()
-        
+
     @staticmethod
     def plot_outliers_pca(
         data: dict[str, Any], original_df: pd.DataFrame, config: AnalysisConfig
@@ -428,8 +435,24 @@ class PlotHelper:
         plt.title(f"Outlier Detection: {method.replace('_', ' ').title()}")
 
         handles = [
-            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="blue", markersize=8, label="Normal"),
-            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="red", markersize=8, label="Outlier"),
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor="blue",
+                markersize=8,
+                label="Normal",
+            ),
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor="red",
+                markersize=8,
+                label="Outlier",
+            ),
         ]
         plt.legend(handles=handles)
         plt.grid(True, alpha=0.3)
@@ -481,8 +504,7 @@ class PlotHelper:
 
         for i, (method, res, labels, X2m) in enumerate(usable):
             scatter = axes[i].scatter(
-                X2m[:, 0], X2m[:, 1],
-                c=labels, cmap="viridis", alpha=0.7, s=50
+                X2m[:, 0], X2m[:, 1], c=labels, cmap="viridis", alpha=0.7, s=50
             )
 
             # Compute cluster count if not present
@@ -494,7 +516,7 @@ class PlotHelper:
                 u = np.unique(labels)
                 ncl = int(len(u) - (1 if -1 in u else 0))
 
-            title = f"{method.replace('_',' ').title()} • clusters={ncl}"
+            title = f"{method.replace('_', ' ').title()} • clusters={ncl}"
             if "silhouette" in res and isinstance(res["silhouette"], (int, float)):
                 title += f"\nSilhouette: {res['silhouette']:.3f}"
 
@@ -524,7 +546,11 @@ class PlotHelper:
         # Collect available embeddings
         candidates = []
         for name in ["pca", "umap", "tsne"]:
-            if name in data and isinstance(data[name], dict) and "embedding" in data[name]:
+            if (
+                name in data
+                and isinstance(data[name], dict)
+                and "embedding" in data[name]
+            ):
                 X = np.asarray(data[name]["embedding"])
                 if X.size == 0:
                     continue
@@ -581,12 +607,19 @@ class PlotHelper:
                     if len(uniq) <= 10:
                         handles = []
                         for i, u in enumerate(uniq[:10]):
-                            handles.append(plt.Line2D([0], [0], marker="o", linestyle="",
-                                                      label=str(u)))
-                        ax.legend(handles=handles, title="labels", loc="best", fontsize=8)
+                            handles.append(
+                                plt.Line2D(
+                                    [0], [0], marker="o", linestyle="", label=str(u)
+                                )
+                            )
+                        ax.legend(
+                            handles=handles, title="labels", loc="best", fontsize=8
+                        )
 
             ax.set_title(title)
-            ax.set_xlabel("dim-1"); ax.set_ylabel("dim-2"); ax.grid(True, alpha=0.2)
+            ax.set_xlabel("dim-1")
+            ax.set_ylabel("dim-2")
+            ax.grid(True, alpha=0.2)
 
         for i, (name, X, meta) in enumerate(candidates):
             ax = axes[i]

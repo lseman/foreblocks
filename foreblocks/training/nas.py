@@ -51,9 +51,7 @@ class NASHelper:
         return [p for p in self.model.parameters() if id(p) not in alpha_ids]
 
     def collect_alpha_report(self) -> dict[str, Any]:
-        return {
-            name: composer.alpha_report() for name, composer in self.composers
-        }
+        return {name: composer.alpha_report() for name, composer in self.composers}
 
     def discretize_all(self, threshold: float | None = None):
         thresh = threshold or self.config.nas_discretize_threshold

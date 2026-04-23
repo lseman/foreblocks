@@ -296,9 +296,7 @@ def capture_progressive_state(model: nn.Module) -> dict[str, Any] | None:
     }
 
 
-def restore_progressive_state(
-    model: nn.Module, state: dict[str, Any] | None
-) -> None:
+def restore_progressive_state(model: nn.Module, state: dict[str, Any] | None) -> None:
     """
     Restore the ``progressive_stage`` snapshot captured by
     :func:`capture_progressive_state`.

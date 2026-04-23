@@ -29,7 +29,6 @@ def _ensure_import_path() -> None:
 _ensure_import_path()
 
 
-
 def _resolve_device(device: str) -> str:
     if device == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
@@ -123,7 +122,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--d-state", type=int, default=8)
     parser.add_argument("--n-layers", type=int, default=2)
     parser.add_argument("--vocab-size", type=int, default=2048)
-    parser.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default="float32", choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument("--iters", type=int, default=50)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--verbose-build", action="store_true")

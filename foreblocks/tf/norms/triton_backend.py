@@ -202,8 +202,12 @@ if TRITON_AVAILABLE:
         col = tl.arange(0, BLOCK_SIZE)
         mask = col < n_cols
 
-        r = tl.load(Residual + row_idx * stride_row + col, mask=mask, other=0.0).to(tl.float32)
-        u = tl.load(Update + row_idx * stride_row + col, mask=mask, other=0.0).to(tl.float32)
+        r = tl.load(Residual + row_idx * stride_row + col, mask=mask, other=0.0).to(
+            tl.float32
+        )
+        u = tl.load(Update + row_idx * stride_row + col, mask=mask, other=0.0).to(
+            tl.float32
+        )
         x = r + u
 
         ms = tl.sum(x * x, axis=0) / n_cols

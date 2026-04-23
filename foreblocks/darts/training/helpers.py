@@ -348,9 +348,12 @@ class TemperatureScheduler:
         anneal_span = max(total_epochs - self.warmup_epochs, 1)
         progress = (epoch - self.warmup_epochs) / anneal_span
         progress = min(max(progress, 0.0), 1.0)
-        return self.final_drnas_concentration + (
-            self.initial_drnas_concentration - self.final_drnas_concentration
-        ) * (1.0 + np.cos(np.pi * progress)) / 2.0
+        return (
+            self.final_drnas_concentration
+            + (self.initial_drnas_concentration - self.final_drnas_concentration)
+            * (1.0 + np.cos(np.pi * progress))
+            / 2.0
+        )
 
 
 class BilevelOptimizer:
@@ -561,7 +564,14 @@ class AlphaTracker:
                         getattr(
                             transformer,
                             "patch_mode_names",
-                            ["direct", "patch_8", "patch_16", "patch_32", "multi_scale_patch", "variate_tokens"],
+                            [
+                                "direct",
+                                "patch_8",
+                                "patch_16",
+                                "patch_32",
+                                "multi_scale_patch",
+                                "variate_tokens",
+                            ],
                         )
                     ),
                 }
@@ -739,7 +749,9 @@ class AlphaTracker:
                     "choices": [
                         str(q)
                         for q in getattr(
-                            forecast_decoder, "memory_query_options", range(memory_alpha.numel())
+                            forecast_decoder,
+                            "memory_query_options",
+                            range(memory_alpha.numel()),
                         )
                     ],
                 }
@@ -868,7 +880,9 @@ class AlphaTracker:
                 }
                 print(
                     "   [Arch Update] decoder_query_probs: "
-                    + ", ".join(f"{name}={weight:.4f}" for name, weight in named_probs.items())
+                    + ", ".join(
+                        f"{name}={weight:.4f}" for name, weight in named_probs.items()
+                    )
                     + f", selected={choice_name}"
                 )
             if comp_key in {"encoder_ffn", "decoder_ffn"}:
@@ -878,7 +892,9 @@ class AlphaTracker:
                 }
                 print(
                     f"   [Arch Update] {comp_key}_probs: "
-                    + ", ".join(f"{name}={weight:.4f}" for name, weight in named_probs.items())
+                    + ", ".join(
+                        f"{name}={weight:.4f}" for name, weight in named_probs.items()
+                    )
                     + f", selected={choice_name}"
                 )
             prev_component_probs[comp_key] = probs.clone()

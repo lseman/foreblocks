@@ -38,9 +38,8 @@ def _default_as_probability_vector(
 
 def derive_final_architecture(
     model: nn.Module,
-    as_probability_vector_fn: None | (
-        Callable[[torch.Tensor, float], torch.Tensor]
-    ) = None,
+    as_probability_vector_fn: None
+    | (Callable[[torch.Tensor, float], torch.Tensor]) = None,
 ) -> nn.Module:
     """Create optimized model with fixed operations based on search results."""
     prob_fn = as_probability_vector_fn or _default_as_probability_vector
@@ -176,7 +175,9 @@ def derive_final_architecture(
         components = _collect_layer_components(module_obj, "self_attn")
         if not components:
             return "unknown"
-        modes = getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal"))
+        modes = getattr(
+            components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")
+        )
         probs = _mean_mode_probs(
             components,
             direct_attr="position_mode",
@@ -249,7 +250,9 @@ def derive_final_architecture(
         if not components:
             return "unknown"
         modes = getattr(
-            components[0], "MODES", ("none", "sdp", "linear", "probsparse", "cosine", "local")
+            components[0],
+            "MODES",
+            ("none", "sdp", "linear", "probsparse", "cosine", "local"),
         )
         probs = _mean_mode_probs(
             components,
@@ -275,7 +278,9 @@ def derive_final_architecture(
         components = _collect_layer_components(submodule, "cross_attn")
         if not components:
             return "unknown"
-        modes = getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal"))
+        modes = getattr(
+            components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")
+        )
         probs = _mean_mode_probs(
             components,
             direct_attr="position_mode",
@@ -612,7 +617,10 @@ def derive_final_architecture(
     printed_decoder_fix = False
     printed_attention_fix = False
 
-    if hasattr(new_model, "forecast_encoder") and new_model.forecast_encoder is not None:
+    if (
+        hasattr(new_model, "forecast_encoder")
+        and new_model.forecast_encoder is not None
+    ):
         try:
             top_encoder = getattr(new_model.forecast_encoder, "transformer", None)
             if top_encoder is None:
@@ -634,10 +642,7 @@ def derive_final_architecture(
                     "   → Encoder Tokenizer: "
                     f"{_extract_encoder_patch_mode(top_encoder)}"
                 )
-                print(
-                    "   → Encoder FFN: "
-                    f"{_extract_ffn_mode(top_encoder)}"
-                )
+                print(f"   → Encoder FFN: {_extract_ffn_mode(top_encoder)}")
             printed_encoder_fix = True
 
             new_model.forecast_encoder = ArchitectureConverter.create_fixed_encoder(
@@ -650,7 +655,10 @@ def derive_final_architecture(
             ArchitectureConverter.fix_mixed_weights(new_model.forecast_encoder)
             printed_encoder_fix = True
 
-    if hasattr(new_model, "forecast_decoder") and new_model.forecast_decoder is not None:
+    if (
+        hasattr(new_model, "forecast_decoder")
+        and new_model.forecast_decoder is not None
+    ):
         try:
             top_decoder = getattr(new_model.forecast_decoder, "transformer", None)
             if top_decoder is None:
@@ -676,10 +684,7 @@ def derive_final_architecture(
                     "   → Decoder Cross Position: "
                     f"{_extract_cross_attention_position(new_model.forecast_decoder)}"
                 )
-                print(
-                    "   → Decoder FFN: "
-                    f"{_extract_ffn_mode(top_decoder)}"
-                )
+                print(f"   → Decoder FFN: {_extract_ffn_mode(top_decoder)}")
             print(
                 "   → Decoder Style: "
                 f"{_extract_decoder_style(new_model.forecast_decoder)}"
@@ -693,10 +698,7 @@ def derive_final_architecture(
             cross_attention_type = _extract_cross_attention_type(
                 new_model.forecast_decoder
             )
-            print(
-                "   → Fixing Decoder Cross-Attention: "
-                f"{cross_attention_type}"
-            )
+            print(f"   → Fixing Decoder Cross-Attention: {cross_attention_type}")
             printed_attention_fix = True
 
             new_model.forecast_decoder = ArchitectureConverter.create_fixed_decoder(
@@ -736,9 +738,7 @@ def derive_final_architecture(
                 f"   → Fixing Decoder Cross-Attention: not used in arch_mode={arch_mode}"
             )
         else:
-            print(
-                "   → Fixing Decoder Cross-Attention: selection unavailable"
-            )
+            print("   → Fixing Decoder Cross-Attention: selection unavailable")
 
     if hasattr(new_model, "freeze_decoder_query_mode"):
         try:

@@ -16,6 +16,7 @@ except Exception:
 
 
 if TRITON_AVAILABLE:
+
     @triton.jit
     def _dt_prep_kernel(
         x_ptr,
@@ -149,7 +150,9 @@ class _FusedOutFn(torch.autograd.Function):
             y_ = y.detach().requires_grad_(y.requires_grad)
             z_ = z.detach().requires_grad_(z.requires_grad)
             residual_ = residual.detach().requires_grad_(residual.requires_grad)
-            norm_weight_ = norm_weight.detach().requires_grad_(norm_weight.requires_grad)
+            norm_weight_ = norm_weight.detach().requires_grad_(
+                norm_weight.requires_grad
+            )
             out = fused_out_fallback(
                 y_,
                 z_,
@@ -260,6 +263,12 @@ def fused_out(
     norm_weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    if TRITON_AVAILABLE and y.is_cuda and z.is_cuda and residual.is_cuda and norm_weight.is_cuda:
+    if (
+        TRITON_AVAILABLE
+        and y.is_cuda
+        and z.is_cuda
+        and residual.is_cuda
+        and norm_weight.is_cuda
+    ):
         return _FusedOutFn.apply(y, z, residual, norm_weight, eps)
     return fused_out_fallback(y, z, residual, norm_weight, eps=eps)

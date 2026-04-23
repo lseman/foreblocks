@@ -45,30 +45,30 @@ def inv_yeojohnson(x: float | np.ndarray, lmbda: float) -> float | np.ndarray:
     """
     x = np.asarray(x)
     out = np.zeros_like(x, dtype=float)
-    
+
     # Case 1: x >= 0
     mask_pos = x >= 0
     if np.any(mask_pos):
         x_pos = x[mask_pos]
         if abs(lmbda) < 1e-9:
-             out[mask_pos] = np.exp(x_pos) - 1.0
+            out[mask_pos] = np.exp(x_pos) - 1.0
         else:
-             val = x_pos * lmbda + 1.0
-             # Avoid invalid pow
-             val = np.maximum(0.0, val)
-             out[mask_pos] = np.power(val, 1.0 / lmbda) - 1.0
-             
+            val = x_pos * lmbda + 1.0
+            # Avoid invalid pow
+            val = np.maximum(0.0, val)
+            out[mask_pos] = np.power(val, 1.0 / lmbda) - 1.0
+
     # Case 2: x < 0
     mask_neg = ~mask_pos
     if np.any(mask_neg):
         x_neg = x[mask_neg]
         if abs(lmbda - 2.0) < 1e-9:
-             out[mask_neg] = 1.0 - np.exp(-x_neg)
+            out[mask_neg] = 1.0 - np.exp(-x_neg)
         else:
-             val = 1.0 - x_neg * (2.0 - lmbda)
-             val = np.maximum(0.0, val)
-             out[mask_neg] = 1.0 - np.power(val, 1.0 / (2.0 - lmbda))
-             
+            val = 1.0 - x_neg * (2.0 - lmbda)
+            val = np.maximum(0.0, val)
+            out[mask_neg] = 1.0 - np.power(val, 1.0 / (2.0 - lmbda))
+
     if out.ndim == 0:
         return float(out)
     return out
@@ -80,7 +80,7 @@ def yeojohnson_forward(x: float | np.ndarray, lmbda: float) -> float | np.ndarra
     """
     x = np.asarray(x, dtype=float)
     out = np.zeros_like(x, dtype=float)
-    
+
     # Case 1: x >= 0
     mask_pos = x >= 0
     if np.any(mask_pos):
@@ -89,7 +89,7 @@ def yeojohnson_forward(x: float | np.ndarray, lmbda: float) -> float | np.ndarra
             out[mask_pos] = np.log1p(x_pos)
         else:
             out[mask_pos] = (np.power(x_pos + 1.0, lmbda) - 1.0) / lmbda
-            
+
     # Case 2: x < 0
     mask_neg = ~mask_pos
     if np.any(mask_neg):
@@ -97,8 +97,10 @@ def yeojohnson_forward(x: float | np.ndarray, lmbda: float) -> float | np.ndarra
         if abs(lmbda - 2.0) < 1e-9:
             out[mask_neg] = -np.log1p(-x_neg)
         else:
-            out[mask_neg] = -((np.power(-x_neg + 1.0, 2.0 - lmbda) - 1.0) / (2.0 - lmbda))
-            
+            out[mask_neg] = -(
+                (np.power(-x_neg + 1.0, 2.0 - lmbda) - 1.0) / (2.0 - lmbda)
+            )
+
     if out.ndim == 0:
         return float(out)
     return out
@@ -110,11 +112,11 @@ def yeojohnson_log_jacobian(x: float | np.ndarray, lmbda: float) -> float | np.n
     """
     x = np.asarray(x, dtype=float)
     out = np.zeros_like(x, dtype=float)
-    
+
     mask_pos = x >= 0
     if np.any(mask_pos):
         out[mask_pos] = (lmbda - 1.0) * np.log1p(x[mask_pos])
-        
+
     mask_neg = ~mask_pos
     if np.any(mask_neg):
         out[mask_neg] = (1.0 - lmbda) * np.log1p(-x[mask_neg])

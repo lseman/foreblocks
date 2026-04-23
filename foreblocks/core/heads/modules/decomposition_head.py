@@ -33,7 +33,9 @@ class DecompositionHead(nn.Module):
             raise ValueError("feature_dim must be provided (e.g., 32)")
 
         self.feature_dim = int(feature_dim)
-        self.hidden_dim = int(hidden_dim) if hidden_dim is not None else self.feature_dim
+        self.hidden_dim = (
+            int(hidden_dim) if hidden_dim is not None else self.feature_dim
+        )
         self.kernel_size = int(kernel_size)
         if self.kernel_size < 1:
             raise ValueError(f"kernel_size must be >= 1, got {self.kernel_size}")
@@ -66,9 +68,7 @@ class DecompositionHead(nn.Module):
         # average over time and over channels within each group.
         with torch.no_grad():
             channels_per_group = self.feature_dim // self.groups
-            self.decomp.weight.fill_(
-                1.0 / float(self.kernel_size * channels_per_group)
-            )
+            self.decomp.weight.fill_(1.0 / float(self.kernel_size * channels_per_group))
 
         self.post_proj = (
             nn.Linear(self.feature_dim, self.hidden_dim)

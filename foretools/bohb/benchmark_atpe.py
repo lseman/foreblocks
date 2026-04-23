@@ -14,13 +14,13 @@ def benchmark():
 
     print("Starting benchmark (ATPE enabled with blocking)...")
     start_time = time.time()
-    
+
     # Run a short BOHB run with ATPE enabled + params
     bohb = BOHB(
         config_space=config_space,
         evaluate_fn=torch_mlp_objective,
         min_budget=1,
-        max_budget=27, 
+        max_budget=27,
         eta=3,
         n_iterations=2,
         verbose=False,
@@ -37,18 +37,18 @@ def benchmark():
 
     best_cfg, best_loss = bohb.run()
     end_time = time.time()
-    
+
     print(f"Benchmark finished in {end_time - start_time:.2f} seconds")
     print(f"Best Loss: {best_loss}")
     print(f"Best Config: {best_cfg}")
-    
+
     print("\nStarting parallel benchmark (parallel_jobs=4)...")
     start_time_par = time.time()
     bohb_par = BOHB(
         config_space=config_space,
         evaluate_fn=torch_mlp_objective,
         min_budget=1,
-        max_budget=27, 
+        max_budget=27,
         eta=3,
         n_iterations=2,
         verbose=False,
@@ -61,15 +61,16 @@ def benchmark():
             "atpe": True,
             "atpe_params": {"filter_type": "zscore", "filter_threshold": 2.0},
             "blocking_threshold": 0.7,
-        }
+        },
     )
     best_cfg_par, best_loss_par = bohb_par.run()
     end_time_par = time.time()
-    
+
     print(f"Parallel Benchmark finished in {end_time_par - start_time_par:.2f} seconds")
     print(f"Parallel Best Loss: {best_loss_par}")
-    
+
     return best_loss, end_time - start_time
+
 
 if __name__ == "__main__":
     benchmark()

@@ -423,9 +423,7 @@ class FourierTransformer(BaseFeatureTransformer):
         ranking.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [col for _, _, col in ranking[: max(1, min(max_cols, len(ranking)))]]
 
-    def fit(
-        self, X: pd.DataFrame, y: pd.Series | None = None
-    ) -> "FourierTransformer":
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "FourierTransformer":
         self.numerical_cols_ = self._select_source_columns(X)
         self.fourier_configs_ = {}
 
@@ -530,7 +528,9 @@ class ClusteringTransformer(BaseFeatureTransformer):
         Xnum = Xnum.fillna(self.fill_values_)
         self.cluster_features_ = (
             Xnum.var()
-            .nlargest(min(getattr(self.config, "clustering_max_features", 20), len(num_cols)))
+            .nlargest(
+                min(getattr(self.config, "clustering_max_features", 20), len(num_cols))
+            )
             .index.tolist()
         )
         if len(self.cluster_features_) < 2:
@@ -604,7 +604,9 @@ class ClusteringTransformer(BaseFeatureTransformer):
                 Xnum[col] = pd.to_numeric(X[col], errors="coerce")
             else:
                 Xnum[col] = self.fill_values_.get(col, 0.0)
-        Xnum = Xnum.fillna(self.fill_values_.reindex(self.cluster_features_).fillna(0.0))
+        Xnum = Xnum.fillna(
+            self.fill_values_.reindex(self.cluster_features_).fillna(0.0)
+        )
         X_scaled = self.scaler_.transform(Xnum[self.cluster_features_])
 
         feats = {}

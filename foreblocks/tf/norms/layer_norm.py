@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,7 +35,7 @@ class FastLayerNorm(nn.Module):
         if input.shape[-len(self.normalized_shape) :] != self.normalized_shape:
             raise ValueError(
                 f"Expected last dimensions to be {self.normalized_shape}, "
-                f"got {input.shape[-len(self.normalized_shape):]}"
+                f"got {input.shape[-len(self.normalized_shape) :]}"
             )
 
         if (
@@ -44,7 +43,9 @@ class FastLayerNorm(nn.Module):
             and _should_use_triton(input, min_numel=4096)
             and TRITON_AVAILABLE
         ):
-            return LayerNormTritonFunction.apply(input, self.weight, self.bias, self.eps)
+            return LayerNormTritonFunction.apply(
+                input, self.weight, self.bias, self.eps
+            )
         return F.layer_norm(
             input,
             self.normalized_shape,

@@ -30,5 +30,3 @@ class BaseFeatureTransformer(ABC):
     ) -> pd.DataFrame:
         """Fit and transform in one step."""
         return self.fit(X, y).transform(X)
-
-

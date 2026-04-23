@@ -31,6 +31,7 @@ from ..core import AnalysisStrategy
 
 # --------------------------- Small utilities ---------------------------
 
+
 def _as_float32_if_big(X: np.ndarray, thr_bytes: int = 200_000_000) -> np.ndarray:
     """Cast to float32 when matrix is big to save time/memory."""
     if X.dtype == np.float32:
@@ -38,8 +39,10 @@ def _as_float32_if_big(X: np.ndarray, thr_bytes: int = 200_000_000) -> np.ndarra
     bytes_ = X.size * 8
     return X.astype(np.float32, copy=False) if bytes_ > thr_bytes else X
 
+
 def _set_default_rng(config) -> np.random.Generator:
     return np.random.default_rng(getattr(config, "random_state", 42))
+
 
 def _gd_optimal_components(X: np.ndarray) -> int:
     """Gavish–Donoho optimal hard threshold for white noise; returns suggested rank."""
@@ -54,6 +57,7 @@ def _gd_optimal_components(X: np.ndarray) -> int:
     k = int(np.sum(s >= med * omega))
     return max(2, min(k, min(m, n)))
 
+
 def _parallel_analysis_rank(X: np.ndarray, trials: int = 5, rs: int = 0) -> int:
     """Very light parallel analysis: compare eigenvalues to white-noise null."""
     r = min(X.shape)
@@ -64,10 +68,15 @@ def _parallel_analysis_rank(X: np.ndarray, trials: int = 5, rs: int = 0) -> int:
     null_eigs = []
     for _ in range(trials):
         Z = rng.standard_normal(X.shape).astype(X.dtype, copy=False)
-        e = PCA(n_components=len(eig), svd_solver="randomized", random_state=rs).fit(Z).explained_variance_
+        e = (
+            PCA(n_components=len(eig), svd_solver="randomized", random_state=rs)
+            .fit(Z)
+            .explained_variance_
+        )
         null_eigs.append(e)
     thr = np.mean(null_eigs, axis=0)
     return int(np.sum(eig > thr[: len(eig)])) or 2
+
 
 def _choose_rank(X: np.ndarray, cap: int = 64) -> int:
     # Blend of GD threshold and Parallel Analysis, with caps
@@ -75,6 +84,7 @@ def _choose_rank(X: np.ndarray, cap: int = 64) -> int:
     k2 = _parallel_analysis_rank(X)
     k = int(np.clip(round(0.5 * (k1 + k2)), 2, min(cap, min(X.shape) - 1)))
     return k
+
 
 def _kcenter_greedy(X: np.ndarray, k: int, rs: int = 42) -> np.ndarray:
     """Fast approximate coreset sampling (k-center greedy on Euclidean)."""
@@ -85,16 +95,20 @@ def _kcenter_greedy(X: np.ndarray, k: int, rs: int = 42) -> np.ndarray:
     # Start with a random point
     centers = [rng.integers(0, n)]
     # Maintain min distance to any center
-    d2 = np.sum((X - X[centers[0]])**2, axis=1)
+    d2 = np.sum((X - X[centers[0]]) ** 2, axis=1)
     for _ in range(1, k):
         i = int(np.argmax(d2))
         centers.append(i)
-        d2 = np.minimum(d2, np.sum((X - X[i])**2, axis=1))
+        d2 = np.minimum(d2, np.sum((X - X[i]) ** 2, axis=1))
     return np.array(centers, dtype=int)
 
-def _procrustes_stability(emb: np.ndarray, boot: int = 3, frac: float = 0.7, rs: int = 42) -> float:
+
+def _procrustes_stability(
+    emb: np.ndarray, boot: int = 3, frac: float = 0.7, rs: int = 42
+) -> float:
     """Rough stability estimate via Procrustes distance over bootstraps."""
     from scipy.spatial import procrustes
+
     rng = np.random.default_rng(rs)
     n = emb.shape[0]
     ref_idx = rng.choice(n, size=max(20, int(frac * n)), replace=False)
@@ -109,7 +123,10 @@ def _procrustes_stability(emb: np.ndarray, boot: int = 3, frac: float = 0.7, rs:
         dists.append(d)
     return float(1.0 / (1.0 + np.mean(dists)))
 
-def _qnx_knn_preservation(X_high: np.ndarray, X_low: np.ndarray, n_neighbors: int = 10) -> float:
+
+def _qnx_knn_preservation(
+    X_high: np.ndarray, X_low: np.ndarray, n_neighbors: int = 10
+) -> float:
     """Fraction of preserved neighbors (Qnx)."""
     nbrs_h = NearestNeighbors(n_neighbors=n_neighbors + 1, n_jobs=-1).fit(X_high)
     nbrs_l = NearestNeighbors(n_neighbors=n_neighbors + 1, n_jobs=-1).fit(X_low)
@@ -119,10 +136,15 @@ def _qnx_knn_preservation(X_high: np.ndarray, X_low: np.ndarray, n_neighbors: in
     inter = [len(set(H[i]).intersection(L[i])) / n_neighbors for i in range(len(H))]
     return float(np.mean(inter))
 
+
 def _mrre(X_high: np.ndarray, X_low: np.ndarray, n_neighbors: int = 10) -> float:
     """Mean Relative Rank Error (MRRE): lower is better; we invert for convenience."""
-    nbrs_h = NearestNeighbors(n_neighbors=min(n_neighbors * 3 + 1, len(X_high)), n_jobs=-1).fit(X_high)
-    nbrs_l = NearestNeighbors(n_neighbors=min(n_neighbors * 3 + 1, len(X_low)), n_jobs=-1).fit(X_low)
+    nbrs_h = NearestNeighbors(
+        n_neighbors=min(n_neighbors * 3 + 1, len(X_high)), n_jobs=-1
+    ).fit(X_high)
+    nbrs_l = NearestNeighbors(
+        n_neighbors=min(n_neighbors * 3 + 1, len(X_low)), n_jobs=-1
+    ).fit(X_low)
     H = nbrs_h.kneighbors(return_distance=False)[:, 1:]
     L = nbrs_l.kneighbors(return_distance=False)[:, 1:]
     inv_index_L = {}
@@ -130,7 +152,7 @@ def _mrre(X_high: np.ndarray, X_low: np.ndarray, n_neighbors: int = 10) -> float
         inv = np.empty(L.shape[1], dtype=int)
         rank = {j: r for r, j in enumerate(L[i])}
         for r, j in enumerate(H[i]):
-            inv[r] = rank.get(j, L.shape[1]-1)
+            inv[r] = rank.get(j, L.shape[1] - 1)
         inv_index_L[i] = inv
     errs = []
     for i in range(len(H)):
@@ -140,7 +162,9 @@ def _mrre(X_high: np.ndarray, X_low: np.ndarray, n_neighbors: int = 10) -> float
     mrre = float(np.mean(errs))
     return float(1.0 - mrre)  # higher is better now
 
+
 # --------------------------- Main class ---------------------------
+
 
 class DimensionalityAnalyzer(AnalysisStrategy):
     """SOTA-ish dimensionality analysis with shared kNN graph, robust metrics, and fast backends."""
@@ -156,11 +180,15 @@ class DimensionalityAnalyzer(AnalysisStrategy):
 
             # Pre-reduce + whiten before nonlinear methods for speed/stability
             pre_X, pre_info = self._prereduce_whiten(scaled_data, config)
-            embeddings = self._dimensionality_reduction(scaled_data, pre_X, pre_info, config)
+            embeddings = self._dimensionality_reduction(
+                scaled_data, pre_X, pre_info, config
+            )
             if not embeddings:
                 return {"error": "All dimensionality reduction methods failed"}
 
-            evaluation_results = self._evaluate_embeddings(embeddings, scaled_data, pre_X)
+            evaluation_results = self._evaluate_embeddings(
+                embeddings, scaled_data, pre_X
+            )
 
             # Stable condition number
             u, s, _ = np.linalg.svd(scaled_data, full_matrices=False)
@@ -210,7 +238,9 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         if len(X) > sample_cap:
             try:
                 Z = StandardScaler(with_mean=True, with_std=True).fit_transform(X)
-                idx = _kcenter_greedy(Z, k=sample_cap, rs=getattr(config, "random_state", 42))
+                idx = _kcenter_greedy(
+                    Z, k=sample_cap, rs=getattr(config, "random_state", 42)
+                )
                 X = X.iloc[idx]
                 info["sampling_method"] = "kcenter_coreset"
             except Exception:
@@ -243,7 +273,10 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         outlier_frac = ((X - X.mean()).abs() > 3 * X.std(ddof=0)).sum().sum() / X.size
         if (skewness > 2) or (outlier_frac > 0.10):
             scalers = [
-                ("power_transform", PowerTransformer(method="yeo-johnson", standardize=True)),
+                (
+                    "power_transform",
+                    PowerTransformer(method="yeo-johnson", standardize=True),
+                ),
                 ("robust", RobustScaler()),
                 ("standard", StandardScaler()),
             ]
@@ -254,7 +287,9 @@ class DimensionalityAnalyzer(AnalysisStrategy):
             u, s, _ = np.linalg.svd(arr, full_matrices=False)
             cond = s.max() / max(s.min(), 1e-12)
             v = np.var(arr, axis=0)
-            return -np.log(cond + 1e-12) - np.log((v.max() / max(v.min(), 1e-12)) + 1e-12)
+            return -np.log(cond + 1e-12) - np.log(
+                (v.max() / max(v.min(), 1e-12)) + 1e-12
+            )
 
         best_name, best_scaler, best_score = None, None, -np.inf
         for name, scaler in scalers:
@@ -292,19 +327,27 @@ class DimensionalityAnalyzer(AnalysisStrategy):
 
         if d > 1000 and n < d:
             # very wide -> TruncatedSVD is great
-            svd = TruncatedSVD(n_components=k, random_state=getattr(config, "random_state", 42))
+            svd = TruncatedSVD(
+                n_components=k, random_state=getattr(config, "random_state", 42)
+            )
             Z = svd.fit_transform(X)
             comps = svd.components_
             var = svd.explained_variance_
         else:
-            pca = PCA(n_components=k, svd_solver="randomized", whiten=True,
-                      random_state=getattr(config, "random_state", 42))
+            pca = PCA(
+                n_components=k,
+                svd_solver="randomized",
+                whiten=True,
+                random_state=getattr(config, "random_state", 42),
+            )
             Z = pca.fit_transform(X)
             comps = pca.components_
             var = pca.explained_variance_
 
-        info["prereduce_method"] = "pca_whiten" if 'pca' in locals() else "tsvd"
-        info["prereduce_total_variance"] = float(np.sum(var)) if var is not None else None
+        info["prereduce_method"] = "pca_whiten" if "pca" in locals() else "tsvd"
+        info["prereduce_total_variance"] = (
+            float(np.sum(var)) if var is not None else None
+        )
         Z = _as_float32_if_big(Z)
         return Z, info
 
@@ -331,18 +374,33 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         n_comp = min(_choose_rank(scaled_data), 64)
         linear_methods = {
             "pca": PCA(n_components=n_comp, random_state=rs, svd_solver="randomized"),
-            "ica": FastICA(n_components=min(n_comp, n_features-1), random_state=rs, max_iter=500, tol=1e-3),
-            "factor_analysis": FactorAnalysis(n_components=min(n_comp, n_features-1), random_state=rs),
+            "ica": FastICA(
+                n_components=min(n_comp, n_features - 1),
+                random_state=rs,
+                max_iter=500,
+                tol=1e-3,
+            ),
+            "factor_analysis": FactorAnalysis(
+                n_components=min(n_comp, n_features - 1), random_state=rs
+            ),
         }
         if np.all(scaled_data >= 0):
-            linear_methods["nmf"] = NMF(n_components=min(n_comp, n_features-1), random_state=rs, max_iter=500)
+            linear_methods["nmf"] = NMF(
+                n_components=min(n_comp, n_features - 1), random_state=rs, max_iter=500
+            )
         if n_features > 100:
-            linear_methods["truncated_svd"] = TruncatedSVD(n_components=n_comp, random_state=rs)
+            linear_methods["truncated_svd"] = TruncatedSVD(
+                n_components=n_comp, random_state=rs
+            )
 
         for name, method in linear_methods.items():
             try:
                 emb = method.fit_transform(scaled_data)
-                entry = {"embedding": emb, "method_type": "linear", "n_components": int(n_comp)}
+                entry = {
+                    "embedding": emb,
+                    "method_type": "linear",
+                    "n_components": int(n_comp),
+                }
                 if hasattr(method, "explained_variance_ratio_"):
                     evr = method.explained_variance_ratio_
                     entry["explained_variance_ratio"] = evr
@@ -360,11 +418,19 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         try:
             if HAS_OPENTSNE:
                 from openTSNE import TSNE as OTSNE
+
                 ot = OTSNE(
-                    n_components=target_dim, perplexity=min(30, max(5, pre_X.shape[0] // 100)),
-                    negative_gradient_method="fft", n_jobs=-1, random_state=rs, initialization="pca",
+                    n_components=target_dim,
+                    perplexity=min(30, max(5, pre_X.shape[0] // 100)),
+                    negative_gradient_method="fft",
+                    n_jobs=-1,
+                    random_state=rs,
+                    initialization="pca",
                 )
-                results["tsne_opentsne"] = {"embedding": ot.fit(pre_X), "method_type": "nonlinear"}
+                results["tsne_opentsne"] = {
+                    "embedding": ot.fit(pre_X),
+                    "method_type": "nonlinear",
+                }
                 tsne_done = True
         except Exception as e:
             print(f"openTSNE failed: {e}")
@@ -372,10 +438,18 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         if not tsne_done:
             try:
                 from MulticoreTSNE import MulticoreTSNE as MTSNE
-                mt = MTSNE(
-                    n_components=target_dim, perplexity=min(30, max(5, pre_X.shape[0] // 100))),
+
+                mt = (
+                    MTSNE(
+                        n_components=target_dim,
+                        perplexity=min(30, max(5, pre_X.shape[0] // 100)),
+                    ),
+                )
                 emb = mt.fit_transform(pre_X)
-                results["tsne_multicore"] = {"embedding": emb, "method_type": "nonlinear"}
+                results["tsne_multicore"] = {
+                    "embedding": emb,
+                    "method_type": "nonlinear",
+                }
                 tsne_done = True
             except Exception:
                 pass
@@ -383,11 +457,16 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         if not tsne_done:
             try:
                 tsne = TSNE(
-                    n_components=target_dim, random_state=rs,
+                    n_components=target_dim,
+                    random_state=rs,
                     perplexity=min(30, max(5, pre_X.shape[0] // 100)),
-                    init="pca", learning_rate="auto",
+                    init="pca",
+                    learning_rate="auto",
                 )
-                results["tsne"] = {"embedding": tsne.fit_transform(pre_X), "method_type": "nonlinear"}
+                results["tsne"] = {
+                    "embedding": tsne.fit_transform(pre_X),
+                    "method_type": "nonlinear",
+                }
             except Exception as e:
                 print(f"t-SNE failed: {e}")
 
@@ -395,46 +474,74 @@ class DimensionalityAnalyzer(AnalysisStrategy):
         if HAS_UMAP:
             try:
                 from umap import UMAP
+
                 umap_reducer = UMAP(
-                    n_components=target_dim, random_state=rs,
-                    n_neighbors=n_neighbors, min_dist=0.1, metric="euclidean",
+                    n_components=target_dim,
+                    random_state=rs,
+                    n_neighbors=n_neighbors,
+                    min_dist=0.1,
+                    metric="euclidean",
                 )
-                results["umap"] = {"embedding": umap_reducer.fit_transform(pre_X), "method_type": "nonlinear"}
+                results["umap"] = {
+                    "embedding": umap_reducer.fit_transform(pre_X),
+                    "method_type": "nonlinear",
+                }
                 # small hyperparam sweep on a subsample for trustworthiness
                 results.update(self._umap_micro_sweep(pre_X, rs))
             except Exception as e:
                 print(f"UMAP failed: {e}")
             try:
                 from umap import UMAP as _UMAP
+
                 umap_dens = _UMAP(
-                    n_components=target_dim, random_state=rs, densmap=True,
-                    n_neighbors=n_neighbors, min_dist=0.1
+                    n_components=target_dim,
+                    random_state=rs,
+                    densmap=True,
+                    n_neighbors=n_neighbors,
+                    min_dist=0.1,
                 )
-                results["densmap"] = {"embedding": umap_dens.fit_transform(pre_X), "method_type": "nonlinear"}
+                results["densmap"] = {
+                    "embedding": umap_dens.fit_transform(pre_X),
+                    "method_type": "nonlinear",
+                }
             except Exception:
                 pass
 
         # --- PaCMAP
         try:
             import pacmap
-            pac = pacmap.PaCMAP(n_components=target_dim, n_neighbors=n_neighbors, random_state=rs)
-            results["pacmap"] = {"embedding": pac.fit_transform(pre_X), "method_type": "nonlinear"}
+
+            pac = pacmap.PaCMAP(
+                n_components=target_dim, n_neighbors=n_neighbors, random_state=rs
+            )
+            results["pacmap"] = {
+                "embedding": pac.fit_transform(pre_X),
+                "method_type": "nonlinear",
+            }
         except Exception:
             pass
 
         # --- PHATE
         try:
             import phate
+
             ph = phate.PHATE(n_components=target_dim, random_state=rs)
-            results["phate"] = {"embedding": ph.fit_transform(pre_X), "method_type": "nonlinear"}
+            results["phate"] = {
+                "embedding": ph.fit_transform(pre_X),
+                "method_type": "nonlinear",
+            }
         except Exception:
             pass
 
         # --- Manifold learners using shared kNN
         manifold = {
             "isomap": Isomap(n_components=target_dim, n_neighbors=n_neighbors),
-            "lle": LocallyLinearEmbedding(n_components=target_dim, n_neighbors=n_neighbors, random_state=rs),
-            "spectral": SpectralEmbedding(n_components=target_dim, n_neighbors=n_neighbors, random_state=rs),
+            "lle": LocallyLinearEmbedding(
+                n_components=target_dim, n_neighbors=n_neighbors, random_state=rs
+            ),
+            "spectral": SpectralEmbedding(
+                n_components=target_dim, n_neighbors=n_neighbors, random_state=rs
+            ),
         }
         for name, method in manifold.items():
             try:
@@ -452,6 +559,7 @@ class DimensionalityAnalyzer(AnalysisStrategy):
             return out
         try:
             from umap import UMAP
+
             rng = np.random.default_rng(rs)
             idx = rng.choice(pre_X.shape[0], size=400, replace=False)
             Xs = pre_X[idx]
@@ -460,11 +568,17 @@ class DimensionalityAnalyzer(AnalysisStrategy):
             best_score = -np.inf
             for nn, md in candidates:
                 try:
-                    em = UMAP(n_components=2, n_neighbors=nn, min_dist=md, random_state=rs).fit_transform(Xs)
+                    em = UMAP(
+                        n_components=2, n_neighbors=nn, min_dist=md, random_state=rs
+                    ).fit_transform(Xs)
                     sc = trustworthiness(Xs, em, n_neighbors=10)
                     if sc > best_score:
                         best, best_score = (f"umap_nn{nn}_md{md}", sc)
-                        out[best] = {"embedding": em, "method_type": "nonlinear", "note": "sweep_candidate"}
+                        out[best] = {
+                            "embedding": em,
+                            "method_type": "nonlinear",
+                            "note": "sweep_candidate",
+                        }
                 except Exception:
                     pass
             return out
@@ -513,14 +627,20 @@ class DimensionalityAnalyzer(AnalysisStrategy):
 
             # Trustworthiness / Continuity
             try:
-                metrics["trustworthiness"] = float(trustworthiness(X_eval, Y, n_neighbors=10))
-                metrics["continuity"] = float(trustworthiness(Y, X_eval, n_neighbors=10))
+                metrics["trustworthiness"] = float(
+                    trustworthiness(X_eval, Y, n_neighbors=10)
+                )
+                metrics["continuity"] = float(
+                    trustworthiness(Y, X_eval, n_neighbors=10)
+                )
             except Exception:
                 pass
 
             # Neighborhood preservation (Qnx) & MRRE
             try:
-                metrics["knn_preservation_qnx"] = _qnx_knn_preservation(X_eval, Y, n_neighbors=10)
+                metrics["knn_preservation_qnx"] = _qnx_knn_preservation(
+                    X_eval, Y, n_neighbors=10
+                )
             except Exception:
                 pass
             try:
@@ -530,7 +650,9 @@ class DimensionalityAnalyzer(AnalysisStrategy):
 
             # Stability via Procrustes bootstraps
             try:
-                metrics["embedding_stability"] = _procrustes_stability(Y, boot=3, frac=0.7, rs=rs)
+                metrics["embedding_stability"] = _procrustes_stability(
+                    Y, boot=3, frac=0.7, rs=rs
+                )
             except Exception:
                 pass
 
@@ -569,21 +691,35 @@ class DimensionalityAnalyzer(AnalysisStrategy):
             best = max(scores, key=scores.get)
             recs.append(f"Best performing method: {best}")
             if "umap" in best or "densmap" in best:
-                recs.append("UMAP/densMAP preserved local neighborhoods well; consider these for clustering/visualization.")
+                recs.append(
+                    "UMAP/densMAP preserved local neighborhoods well; consider these for clustering/visualization."
+                )
             elif "tsne" in best:
-                recs.append("t-SNE highlighted local clusters; use for cluster separation visuals.")
+                recs.append(
+                    "t-SNE highlighted local clusters; use for cluster separation visuals."
+                )
             elif "pacmap" in best:
-                recs.append("PaCMAP balanced local/global structure; good general-purpose map.")
+                recs.append(
+                    "PaCMAP balanced local/global structure; good general-purpose map."
+                )
             elif "phate" in best:
-                recs.append("PHATE captured continuous trajectories; useful for temporal/trajectory data.")
+                recs.append(
+                    "PHATE captured continuous trajectories; useful for temporal/trajectory data."
+                )
             elif best == "pca":
-                recs.append("PCA dominance suggests largely linear structure; consider linear models or ICA for interpretability.")
+                recs.append(
+                    "PCA dominance suggests largely linear structure; consider linear models or ICA for interpretability."
+                )
 
         if preprocessing_info.get("features_removed", 0) > 0:
-            recs.append(f"Removed {preprocessing_info['features_removed']} low-variance features.")
+            recs.append(
+                f"Removed {preprocessing_info['features_removed']} low-variance features."
+            )
         if preprocessing_info.get("scaling_method") == "power_transform":
             recs.append("Applied power transformation due to skewness/outliers.")
         if preprocessing_info.get("prereduce_method") in ("pca_whiten", "tsvd"):
-            recs.append(f"Pre-reduced to {preprocessing_info.get('prereduce_dim')} dims for stability and speed.")
+            recs.append(
+                f"Pre-reduced to {preprocessing_info.get('prereduce_dim')} dims for stability and speed."
+            )
 
         return recs

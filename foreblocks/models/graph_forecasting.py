@@ -144,7 +144,9 @@ class GraphForecastingModel(nn.Module):
                             pre_norm=pre_norm,
                             norm_strategy=norm_strategy,
                         ),
-                        "sd": StochasticDepth(stochastic_depth * idx / len(self.conv_types))
+                        "sd": StochasticDepth(
+                            stochastic_depth * idx / len(self.conv_types)
+                        )
                         if stochastic_depth > 0
                         else nn.Identity(),
                     }
@@ -201,7 +203,9 @@ class GraphForecastingModel(nn.Module):
         valid = {"gcn", "sage", "gat", "edge_cond", "graph_wavenet"}
         unknown = set(convs) - valid
         if unknown:
-            raise ValueError(f"Unsupported graph convolution type(s): {sorted(unknown)}")
+            raise ValueError(
+                f"Unsupported graph convolution type(s): {sorted(unknown)}"
+            )
         return convs
 
     def _build_block_conv(
@@ -314,7 +318,9 @@ class GraphForecastingModel(nn.Module):
         if self.horizon is None:
             return x
         if x.size(1) != self.seq_len:
-            raise ValueError(f"Expected sequence length {self.seq_len}, got {x.size(1)}.")
+            raise ValueError(
+                f"Expected sequence length {self.seq_len}, got {x.size(1)}."
+            )
         x = x.permute(0, 2, 3, 1)
         x = self.time_head(x)
         return x.permute(0, 3, 1, 2).contiguous()
@@ -340,7 +346,9 @@ class GraphForecastingModel(nn.Module):
         return_graph: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor | None]:
         if x.dim() != 4:
-            raise ValueError(f"Expected x with shape [B, T, N, F], got {tuple(x.shape)}")
+            raise ValueError(
+                f"Expected x with shape [B, T, N, F], got {tuple(x.shape)}"
+            )
         if x.size(2) != self.num_nodes:
             raise ValueError(f"Expected {self.num_nodes} nodes, got {x.size(2)}.")
         if x.size(3) != self.feat_dim:

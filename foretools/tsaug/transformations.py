@@ -101,9 +101,11 @@ def time_warp(x: torch.Tensor, intensity: torch.Tensor) -> torch.Tensor:
     steps = steps.clamp(min=0.1)
     warp_path = torch.cumsum(steps, dim=1)
     # Normalize to [0, L-1]
-    warp_path = (warp_path - warp_path[:, :1]) / (
-        warp_path[:, -1:] - warp_path[:, :1] + 1e-8
-    ) * (L - 1)
+    warp_path = (
+        (warp_path - warp_path[:, :1])
+        / (warp_path[:, -1:] - warp_path[:, :1] + 1e-8)
+        * (L - 1)
+    )
 
     # Interpolate using the warped indices
     # x: (B, L, C) -> gather along time dim
@@ -213,20 +215,27 @@ def drift(x: torch.Tensor, intensity: torch.Tensor) -> torch.Tensor:
 
 # Registry mapping indices to transformation functions
 TRANSFORMATIONS = [
-    raw,         # T1: Raw (index 0)
-    jittering,   # T2: Jittering
-    scaling,     # T3: Scaling
-    resample,    # T4: Resample
-    time_warp,   # T5: TimeWarp
-    freq_warp,   # T6: FreqWarp
-    mag_warp,    # T7: MagWarp
-    time_mask,   # T8: TimeMask
-    drift,       # T9: Drift
+    raw,  # T1: Raw (index 0)
+    jittering,  # T2: Jittering
+    scaling,  # T3: Scaling
+    resample,  # T4: Resample
+    time_warp,  # T5: TimeWarp
+    freq_warp,  # T6: FreqWarp
+    mag_warp,  # T7: MagWarp
+    time_mask,  # T8: TimeMask
+    drift,  # T9: Drift
 ]
 
 TRANSFORM_NAMES = [
-    "Raw", "Jittering", "Scaling", "Resample",
-    "TimeWarp", "FreqWarp", "MagWarp", "TimeMask", "Drift",
+    "Raw",
+    "Jittering",
+    "Scaling",
+    "Resample",
+    "TimeWarp",
+    "FreqWarp",
+    "MagWarp",
+    "TimeMask",
+    "Drift",
 ]
 
 NUM_TRANSFORMS = len(TRANSFORMATIONS)

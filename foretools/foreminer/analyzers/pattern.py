@@ -284,7 +284,6 @@ class PatternDetector(AnalysisStrategy):
 
         # ---------- Optional deps ----------
         try:
-
             DCOR_AVAILABLE = True
         except Exception:
             DCOR_AVAILABLE = False
@@ -777,21 +776,23 @@ class PatternDetector(AnalysisStrategy):
 
         return fits
 
-    def _analyze_causality(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
+    def _analyze_causality(
+        self, data: pd.DataFrame, config: AnalysisConfig
+    ) -> dict[str, Any]:
         """
         SOTA Directed Information Mining (Simplified Transfer Entropy).
         Detects directional influence using lagged Mutual Information.
         """
         results = {"directed_influence": [], "potential_causes": {}}
-        
+
         numeric = data.select_dtypes(include=[np.number])
         if numeric.shape[1] < 2:
             return results
-            
+
         # Sample for performance if needed
         max_cols = 15
         cols = numeric.columns.tolist()[:max_cols]
-        
+
         # Analyze top correlated pairs for directionality
         pearson = numeric[cols].corr().abs()
         pairs = []
@@ -799,65 +800,72 @@ class PatternDetector(AnalysisStrategy):
             for j in range(i + 1, len(cols)):
                 if pearson.iloc[i, j] > 0.3:
                     pairs.append((cols[i], cols[j]))
-        
+
         # Limit pairs for directed info mining
         pairs = pairs[:20]
-        
+
         # Prepare AMI instance
         from ...aux.adaptive_mi import AdaptiveMI
-        ami = AdaptiveMI(subsample=1000, random_state=int(getattr(config, "random_state", 42)))
-        
+
+        ami = AdaptiveMI(
+            subsample=1000, random_state=int(getattr(config, "random_state", 42))
+        )
+
         for c1, c2 in pairs:
             # Shift analysis: Does C1_prev predict C2 better than C2_prev predicts C1?
             s1 = data[c1].values
             s2 = data[c2].values
-            
+
             # Using the same logic as _analyze_relationships but on shifted data
-            mi_1_2 = ami._mi_ksg1_avg(s1[:-1], s2[1:], [3]) # Fast 1-k KSG
+            mi_1_2 = ami._mi_ksg1_avg(s1[:-1], s2[1:], [3])  # Fast 1-k KSG
             mi_2_1 = ami._mi_ksg1_avg(s2[:-1], s1[1:], [3])
-            
+
             diff = mi_1_2 - mi_2_1
-            
+
             if abs(diff) > 0.05:
                 source, target = (c1, c2) if diff > 0 else (c2, c1)
                 strength = abs(diff)
-                
-                results["directed_influence"].append({
-                    "source": source,
-                    "target": target,
-                    "strength": strength,
-                    "confidence": "high" if strength > 0.15 else "medium"
-                })
-                
+
+                results["directed_influence"].append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "strength": strength,
+                        "confidence": "high" if strength > 0.15 else "medium",
+                    }
+                )
+
                 if target not in results["potential_causes"]:
                     results["potential_causes"][target] = []
                 results["potential_causes"][target].append(source)
-                
+
         return results
 
-    def _analyze_anomalies(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
+    def _analyze_anomalies(
+        self, data: pd.DataFrame, config: AnalysisConfig
+    ) -> dict[str, Any]:
         """
         Advanced Anomaly Mining using Reconstruction Error proxy.
         """
         from sklearn.ensemble import IsolationForest
         from sklearn.preprocessing import StandardScaler
-        
+
         results = {"global_anomalies": [], "feature_anomalies": {}}
-        
+
         numeric = data.select_dtypes(include=[np.number]).dropna()
         if len(numeric) < 50:
             return results
-            
+
         # 1. Global Isolation Forest
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(numeric)
-        
+
         iso = IsolationForest(contamination=0.01, random_state=42)
         preds = iso.fit_predict(X_scaled)
-        
+
         anomaly_indices = np.where(preds == -1)[0]
         results["global_anomalies"] = [int(idx) for idx in anomaly_indices[:20]]
-        
+
         # 2. Local Outlier Factor / Univariate checks
         for col in numeric.columns[:10]:
             x = numeric[col].values
@@ -866,9 +874,11 @@ class PatternDetector(AnalysisStrategy):
             outliers = np.where((x < q1 - 3 * iqr) | (x > q3 + 3 * iqr))[0]
             if len(outliers) > 0:
                 results["feature_anomalies"][col] = [int(idx) for idx in outliers[:10]]
-                
+
         return results
 
-    def _output_anomalies(self, data: pd.DataFrame, config: AnalysisConfig) -> dict[str, Any]:
+    def _output_anomalies(
+        self, data: pd.DataFrame, config: AnalysisConfig
+    ) -> dict[str, Any]:
         """Wrapper for _analyze_anomalies to match public API names."""
         return self._analyze_anomalies(data, config)

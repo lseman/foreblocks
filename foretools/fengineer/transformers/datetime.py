@@ -57,9 +57,7 @@ class DateTimeTransformer(BaseFeatureTransformer):
     def _looks_datetime_like(self, s: pd.Series) -> bool:
         if pd.api.types.is_datetime64_any_dtype(s):
             return True
-        if not (
-            pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)
-        ):
+        if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
             return False
 
         sample = s.dropna()
@@ -81,9 +79,7 @@ class DateTimeTransformer(BaseFeatureTransformer):
         success_ratio = float(parsed.notna().mean())
         return success_count >= min(3, len(sample)) and success_ratio >= 0.6
 
-    def fit(
-        self, X: pd.DataFrame, y: pd.Series | None = None
-    ) -> "DateTimeTransformer":
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "DateTimeTransformer":
         # detect datetime columns, including tz-aware
         self.datetime_cols_ = [c for c in X.columns if self._looks_datetime_like(X[c])]
         self._anchors_global_.clear()
@@ -229,4 +225,3 @@ class DateTimeTransformer(BaseFeatureTransformer):
         r"|(?:\d{8})"
         r"|(?:T\d{2}:\d{2})"
     )
-

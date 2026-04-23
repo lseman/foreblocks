@@ -65,9 +65,7 @@ class CorrelationFilter:
             return self.ami_scorer_.matrix(X_corr).fillna(0.0)
         return X_corr.corr().fillna(0.0)
 
-    def _score_against_target(
-        self, feature: pd.Series, y: pd.Series
-    ) -> float:
+    def _score_against_target(self, feature: pd.Series, y: pd.Series) -> float:
         if self.dependence_metric == "adaptive_mi":
             return float(
                 self.ami_scorer_.score(
@@ -78,9 +76,7 @@ class CorrelationFilter:
 
         return abs(float(feature.corr(y)))
 
-    def fit(
-        self, X: pd.DataFrame, y: pd.Series | None = None
-    ) -> "CorrelationFilter":
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "CorrelationFilter":
         """Fit correlation filter."""
         numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
 
@@ -153,9 +149,7 @@ class CorrelationFilter:
                     keep_col = col1 if drop_col == col2 else col2
 
                 # Track drop scores (higher score = more likely to drop)
-                feature_drop_scores[drop_col] = (
-                    feature_drop_scores.get(drop_col, 0) + 1
-                )
+                feature_drop_scores[drop_col] = feature_drop_scores.get(drop_col, 0) + 1
 
             # Sort features by drop frequency and select final drops
             candidate_drops = sorted(

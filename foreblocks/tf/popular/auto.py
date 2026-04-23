@@ -30,6 +30,7 @@ class SeriesDecomp(nn.Module):
         s = x - t
         return s, t
 
+
 # =========================================================
 # 2) Auto-Correlation (multi-head) per Autoformer
 #    Efficient FFT-based correlation + top-k delays.
@@ -49,6 +50,7 @@ def _topk_delays(corr: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor
     w = (vals / (vals.sum(dim=-1, keepdim=True) + 1e-12)).detach()
     return idx, w
 
+
 class AutoCorrelation(nn.Module):
     """
     Auto-Correlation attention:
@@ -56,7 +58,10 @@ class AutoCorrelation(nn.Module):
       - aggregate V shifted by top-k delays weighted by correlation
     Shapes use standard MH projections with head dim dh = d_model // n_heads.
     """
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0, k_delays: int = 8):
+
+    def __init__(
+        self, d_model: int, n_heads: int, dropout: float = 0.0, k_delays: int = 8
+    ):
         super().__init__()
         assert d_model % n_heads == 0
         self.d_model = d_model
@@ -78,13 +83,15 @@ class AutoCorrelation(nn.Module):
         # zero-mean along time to stabilize
         qz = q - q.mean(dim=2, keepdim=True)
         kz = k - k.mean(dim=2, keepdim=True)
-        Qf = torch.fft.rfft(qz, dim=2)             # [B,Hh,F,dh]
+        Qf = torch.fft.rfft(qz, dim=2)  # [B,Hh,F,dh]
         Kf = torch.fft.rfft(kz, dim=2)
         # IFFT of elementwise product with conjugate
-        S = Qf * torch.conj(Kf)                    # [B,Hh,F,dh]
-        corr = torch.fft.irfft(S, n=L, dim=2).real # [B,Hh,L,dh] correlation over lags 0..L-1 per feature
+        S = Qf * torch.conj(Kf)  # [B,Hh,F,dh]
+        corr = torch.fft.irfft(
+            S, n=L, dim=2
+        ).real  # [B,Hh,L,dh] correlation over lags 0..L-1 per feature
         # aggregate over feature dim to get scalar correlation map per head
-        corr = corr.mean(dim=-1)                   # [B,Hh,L]
+        corr = corr.mean(dim=-1)  # [B,Hh,L]
         # Build [B,Hh,Lq,Lk] by broadcasting over queries (use same L)
         return corr[:, :, None, :].expand(B, Hh, L, L)
 
@@ -106,22 +113,27 @@ class AutoCorrelation(nn.Module):
         v = self.v_proj(x_kv).view(B, L, Hh, Dh).permute(0, 2, 1, 3)
 
         # FFT-based correlation over delays
-        corr = self._fft_corr(q, k)                  # [B,Hh,L,L]
-        idx, w = _topk_delays(corr, self.k_delays)   # [B,Hh,K], [B,Hh,K]
+        corr = self._fft_corr(q, k)  # [B,Hh,L,L]
+        idx, w = _topk_delays(corr, self.k_delays)  # [B,Hh,K], [B,Hh,K]
 
         # time-delay aggregation: sum_k w_k * shift(v, delay_k)
         out = 0.0
         for j in range(idx.size(-1)):
-            delay = idx[:, :, j]                     # [B,Hh]
+            delay = idx[:, :, j]  # [B,Hh]
             # shift per (B,Hh): vectorized by looping heads; light loop (K up to ~8)
             v_shift = []
             for h in range(Hh):
-                v_shift.append(self._shift(v[:, h:h+1, :, :], delay[:, h].view(B, 1, 1, 1).item()))
-            v_shift = torch.cat(v_shift, dim=1)      # [B,Hh,L,Dh]
+                v_shift.append(
+                    self._shift(
+                        v[:, h : h + 1, :, :], delay[:, h].view(B, 1, 1, 1).item()
+                    )
+                )
+            v_shift = torch.cat(v_shift, dim=1)  # [B,Hh,L,Dh]
             out = out + v_shift * w[:, :, j].view(B, Hh, 1, 1)
 
         out = out.permute(0, 2, 1, 3).contiguous().view(B, L, D)
         return self.o_proj(self.drop(out))
+
 
 # =========================================================
 # 3) Autoformer encoder/decoder layers (with decomposition)
@@ -157,10 +169,11 @@ class AutoformerEncoderLayer(nn.Module):
         x: [B, L, D]
         returns: seasonal_out, trend_residual
         """
-        s, t = self.decomp(x)                 # [B,L,D] each
+        s, t = self.decomp(x)  # [B,L,D] each
         s = s + self.drop(self.attn(self.norm1(s), self.norm1(s)))
         s = s + self.drop(self.ff(self.norm2(s)))
         return s, t
+
 
 class AutoformerDecoderLayer(nn.Module):
     def __init__(
@@ -190,7 +203,9 @@ class AutoformerDecoderLayer(nn.Module):
         )
         self.norm3 = create_norm_layer(norm_type, d_model, eps=eps)
 
-    def forward(self, x: torch.Tensor, mem: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, mem: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         x:   seasonal input [B, Ld, D]
         mem: encoder seasonal memory [B, Le, D]
@@ -201,6 +216,7 @@ class AutoformerDecoderLayer(nn.Module):
         s = s + self.drop(self.cross_attn(self.norm2(s), self.norm2(mem)))
         s = s + self.drop(self.ff(self.norm3(s)))
         return s, t
+
 
 # =========================================================
 # 4) Full Autoformer Head
@@ -219,6 +235,7 @@ class AutoformerHeadCustom(nn.Module):
     Output:
       y: [B, pred_len, C_out]  (or C_out * Q if quantiles)
     """
+
     def __init__(
         self,
         pred_len: int,
@@ -233,7 +250,7 @@ class AutoformerHeadCustom(nn.Module):
         dropout: float = 0.1,
         k_delays: int = 8,
         kernel_size: int = 25,
-        norm_type: str = "rms",     # try "temporal" or "revin" too
+        norm_type: str = "rms",  # try "temporal" or "revin" too
         eps: float = 1e-5,
         activation: str = "gelu",
         quantiles: tuple[float, ...] | None = None,
@@ -250,18 +267,38 @@ class AutoformerHeadCustom(nn.Module):
         self.dec_in = nn.Linear(in_channels, d_model)
 
         # encoder/decoder stacks (seasonal path)
-        self.encoder = nn.ModuleList([
-            AutoformerEncoderLayer(
-                d_model=d_model, n_heads=n_heads, dim_ff=dim_ff, dropout=dropout,
-                k_delays=k_delays, norm_type=norm_type, eps=eps, activation=activation, kernel_size=kernel_size
-            ) for _ in range(n_layers_enc)
-        ])
-        self.decoder = nn.ModuleList([
-            AutoformerDecoderLayer(
-                d_model=d_model, n_heads=n_heads, dim_ff=dim_ff, dropout=dropout,
-                k_delays=k_delays, norm_type=norm_type, eps=eps, activation=activation, kernel_size=kernel_size
-            ) for _ in range(n_layers_dec)
-        ])
+        self.encoder = nn.ModuleList(
+            [
+                AutoformerEncoderLayer(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    dim_ff=dim_ff,
+                    dropout=dropout,
+                    k_delays=k_delays,
+                    norm_type=norm_type,
+                    eps=eps,
+                    activation=activation,
+                    kernel_size=kernel_size,
+                )
+                for _ in range(n_layers_enc)
+            ]
+        )
+        self.decoder = nn.ModuleList(
+            [
+                AutoformerDecoderLayer(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    dim_ff=dim_ff,
+                    dropout=dropout,
+                    k_delays=k_delays,
+                    norm_type=norm_type,
+                    eps=eps,
+                    activation=activation,
+                    kernel_size=kernel_size,
+                )
+                for _ in range(n_layers_dec)
+            ]
+        )
 
         # trend linear head (applied to trend decoder input)
         d_out = out_channels if quantiles is None else out_channels * len(quantiles)
@@ -278,7 +315,9 @@ class AutoformerHeadCustom(nn.Module):
                     nn.init.zeros_(m.bias)
 
     # ---------- helper: build decoder inputs per Autoformer ----------
-    def _build_decoder_inputs(self, s_enc: torch.Tensor, t_enc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _build_decoder_inputs(
+        self, s_enc: torch.Tensor, t_enc: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         s_enc, t_enc: [B, L_in, D]
         Returns:
@@ -291,10 +330,10 @@ class AutoformerHeadCustom(nn.Module):
         t_label = t_enc[:, -Lc:, :]
 
         s_pred0 = s_enc.new_zeros(B, self.pred_len, D)
-        s_dec = torch.cat([s_label, s_pred0], dim=1)   # [B, Lc+H, D]
+        s_dec = torch.cat([s_label, s_pred0], dim=1)  # [B, Lc+H, D]
 
         last_tr = t_enc[:, -1:, :].expand(B, self.pred_len, D)
-        t_dec = torch.cat([t_label, last_tr], dim=1)   # [B, Lc+H, D]
+        t_dec = torch.cat([t_label, last_tr], dim=1)  # [B, Lc+H, D]
         return s_dec, t_dec
 
     # ---------------- forward ----------------
@@ -303,10 +342,12 @@ class AutoformerHeadCustom(nn.Module):
         x: [B, L_in, C_in] -> y: [B, H, C_out]
         """
         if x.dim() != 3 or x.size(-1) != self.in_channels:
-            raise ValueError(f"Expected x [B, L, C_in={self.in_channels}], got {tuple(x.shape)}")
+            raise ValueError(
+                f"Expected x [B, L, C_in={self.in_channels}], got {tuple(x.shape)}"
+            )
         B, L, Cin = x.shape
 
-        z = self.enc_in(x)                 # [B,L,D]
+        z = self.enc_in(x)  # [B,L,D]
 
         # initial decomp
         s, t = SeriesDecomp(kernel_size=3)(z)  # light pre-smoothing before layers
@@ -316,7 +357,7 @@ class AutoformerHeadCustom(nn.Module):
             s, t_res = layer(s)
             t = t + t_res
 
-        mem = s                              # encoder seasonal memory
+        mem = s  # encoder seasonal memory
 
         # build decoder inputs per Autoformer
         s_dec, t_dec = self._build_decoder_inputs(s, t)  # [B, Lc+H, D] each
@@ -328,8 +369,8 @@ class AutoformerHeadCustom(nn.Module):
             t_cur = t_cur + t_res
 
         # take only the prediction tail
-        s_out = s_cur[:, -self.pred_len:, :]
-        t_out = t_cur[:, -self.pred_len:, :]
+        s_out = s_cur[:, -self.pred_len :, :]
+        t_out = t_cur[:, -self.pred_len :, :]
 
         y = self.seasonal_proj(s_out) + self.trend_proj(t_out)  # [B,H,C_out*(Q?)]
 

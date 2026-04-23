@@ -321,7 +321,9 @@ def fused_dropout_add_norm(
     Works with NormWrapper or plain norm modules.
     Fast path: single-kernel fused add+RMSNorm when p==0, CUDA, D<=2048.
     """
-    if (p == 0.0 or not training) and _can_fused_add_rmsnorm(residual, update, norm_layer):
+    if (p == 0.0 or not training) and _can_fused_add_rmsnorm(
+        residual, update, norm_layer
+    ):
         mod = _resolve_norm_module(norm_layer)
         return FusedAddRMSNormFunction.apply(residual, update, mod.weight, mod.eps)
 

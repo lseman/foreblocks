@@ -30,10 +30,9 @@ class CompositeLoss(nn.Module):
         self.eps = eps
 
         # Learnable weights w_z (we store w_z directly, use w_z^2 in formula)
-        self.log_w = nn.ParameterList([
-            nn.Parameter(torch.tensor(float(w)).log())
-            for w in init_weights
-        ])
+        self.log_w = nn.ParameterList(
+            [nn.Parameter(torch.tensor(float(w)).log()) for w in init_weights]
+        )
 
     def forward(
         self,
@@ -66,8 +65,8 @@ class CompositeLoss(nn.Module):
             w_z_sq = log_w_z.exp() ** 2
             weighted = 0.5 / w_z_sq * loss_z + torch.log(1.0 + w_z_sq)
             total = total + weighted
-            loss_details[f"L{z+1}"] = loss_z.item()
-            loss_details[f"w{z+1}"] = w_z_sq.sqrt().item()
+            loss_details[f"L{z + 1}"] = loss_z.item()
+            loss_details[f"w{z + 1}"] = w_z_sq.sqrt().item()
 
         loss_details["total"] = total.item()
         loss_details["intra_entropy"] = intra_diversity.item()

@@ -77,7 +77,9 @@ class AutoDATimeseries(nn.Module):
         self,
         x: torch.Tensor,
         precomputed_features: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+    ) -> tuple[
+        torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]
+    ]:
         """Generate augmented time series with adaptive policy.
 
         Args:
@@ -101,9 +103,7 @@ class AutoDATimeseries(nn.Module):
         features = self.feature_proj(features)  # (B, feature_dim)
 
         # Apply stacked augmentation layers
-        x_aug, all_probs, all_intensities, all_selected = self.aug_layers(
-            x, features
-        )
+        x_aug, all_probs, all_intensities, all_selected = self.aug_layers(x, features)
 
         return x_aug, all_probs, all_intensities, all_selected
 
@@ -190,11 +190,17 @@ class AutoDATrainer:
 
         # Optimizer with separate param groups
         aug_lr = aug_lr or lr
-        self.optimizer = torch.optim.Adam([
-            {"params": self.downstream_model.parameters(), "lr": lr, "weight_decay": weight_decay},
-            {"params": self.autoda.parameters(), "lr": aug_lr},
-            {"params": self.composite_loss.parameters(), "lr": aug_lr},
-        ])
+        self.optimizer = torch.optim.Adam(
+            [
+                {
+                    "params": self.downstream_model.parameters(),
+                    "lr": lr,
+                    "weight_decay": weight_decay,
+                },
+                {"params": self.autoda.parameters(), "lr": aug_lr},
+                {"params": self.composite_loss.parameters(), "lr": aug_lr},
+            ]
+        )
 
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=100, eta_min=1e-6
@@ -242,9 +248,9 @@ class AutoDATrainer:
         self.optimizer.zero_grad()
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(
-            list(self.autoda.parameters()) +
-            list(self.downstream_model.parameters()) +
-            list(self.composite_loss.parameters()),
+            list(self.autoda.parameters())
+            + list(self.downstream_model.parameters())
+            + list(self.composite_loss.parameters()),
             max_norm=1.0,
         )
         self.optimizer.step()
@@ -336,7 +342,7 @@ class AutoDATrainer:
 
             # Logging
             if (epoch + 1) % log_interval == 0 or epoch == 0:
-                msg = f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f}"
+                msg = f"Epoch {epoch + 1}/{epochs} | Train Loss: {avg_train_loss:.4f}"
                 if val_loader is not None:
                     msg += f" | Val Loss: {val_results['eval_loss']:.4f}"
                     if "accuracy" in val_results:
@@ -346,7 +352,10 @@ class AutoDATrainer:
                 policy = self.autoda.get_policy_summary(
                     *self._get_sample_policy(train_loader)
                 )
-                temps = [policy[f"layer_{k}"]["temperature"] for k in range(self.autoda.num_layers)]
+                temps = [
+                    policy[f"layer_{k}"]["temperature"]
+                    for k in range(self.autoda.num_layers)
+                ]
                 msg += f" | Temps: {[f'{t:.3f}' for t in temps]}"
                 print(msg)
 

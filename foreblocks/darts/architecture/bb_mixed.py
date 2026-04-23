@@ -141,13 +141,17 @@ def _freeze_transformer_self_attention(module_obj, attention_type: str) -> None:
                 pass
 
 
-def _resolve_searchable_self_attention_position(module_obj, fallback: str = "rope") -> str:
+def _resolve_searchable_self_attention_position(
+    module_obj, fallback: str = "rope"
+) -> str:
     if module_obj is None:
         return fallback
     components = _collect_layer_components(module_obj, "self_attn")
     if not components:
         return fallback
-    modes = getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal"))
+    modes = getattr(
+        components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")
+    )
     probs = _mean_component_mode_probs(
         components,
         direct_attr="position_mode",
@@ -245,13 +249,17 @@ def _freeze_transformer_cross_attention(module_obj, attention_type: str) -> None
                 pass
 
 
-def _resolve_searchable_cross_attention_position(module_obj, fallback: str = "rope") -> str:
+def _resolve_searchable_cross_attention_position(
+    module_obj, fallback: str = "rope"
+) -> str:
     if module_obj is None:
         return fallback
     components = _collect_layer_components(module_obj, "cross_attn")
     if not components:
         return fallback
-    modes = getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal"))
+    modes = getattr(
+        components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")
+    )
     probs = _mean_component_mode_probs(
         components,
         direct_attr="position_mode",
@@ -265,7 +273,9 @@ def _resolve_searchable_cross_attention_position(module_obj, fallback: str = "ro
     return fallback
 
 
-def _freeze_transformer_cross_attention_position(module_obj, position_mode: str) -> None:
+def _freeze_transformer_cross_attention_position(
+    module_obj, position_mode: str
+) -> None:
     if module_obj is None:
         return
     layers = getattr(module_obj, "layers", None)
@@ -373,7 +383,14 @@ def _freeze_transformer_patch_mode(module_obj, patch_mode: str) -> None:
         getattr(
             module_obj,
             "patch_mode_names",
-            ("direct", "patch_8", "patch_16", "patch_32", "multi_scale_patch", "variate_tokens"),
+            (
+                "direct",
+                "patch_8",
+                "patch_16",
+                "patch_32",
+                "multi_scale_patch",
+                "variate_tokens",
+            ),
         )
     )
     if resolved not in valid_modes:
@@ -395,7 +412,9 @@ def _freeze_transformer_patch_mode(module_obj, patch_mode: str) -> None:
             pass
 
 
-def _resolve_searchable_decoder_style(module_obj, fallback: str = "autoregressive") -> str:
+def _resolve_searchable_decoder_style(
+    module_obj, fallback: str = "autoregressive"
+) -> str:
     if module_obj is None:
         return fallback
 
@@ -831,7 +850,9 @@ class MixedDecoder(nn.Module):
                 else torch.zeros_like(tgt[:, :1, :])
             )
         )
-        trans_out, trans_new_state = self.transformer(tgt, transformer_memory, trans_state)
+        trans_out, trans_new_state = self.transformer(
+            tgt, transformer_memory, trans_state
+        )
         output = self.normalizer.normalize_output(trans_out, "transformer")
         state = self.normalizer.normalize_state(trans_new_state, "transformer")
 
@@ -1141,7 +1162,9 @@ class FixedEncoder(BaseFixedSequenceBlock):
         patching_mode: str | None = None,
     ):
         self.self_attention_type = (
-            str(self_attention_type).lower() if self_attention_type is not None else None
+            str(self_attention_type).lower()
+            if self_attention_type is not None
+            else None
         )
         self.self_attention_position_mode = (
             str(self_attention_position_mode).lower()
@@ -1160,16 +1183,18 @@ class FixedEncoder(BaseFixedSequenceBlock):
             num_layers=num_layers,
             dropout=dropout,
             transformer_factory=(
-                lambda input_dim, latent_dim, num_layers, dropout: LightweightTransformerEncoder(
-                    input_dim=input_dim,
-                    latent_dim=latent_dim,
-                    num_layers=num_layers,
-                    dropout=dropout,
-                    self_attention_type=self.self_attention_type or "sdp",
-                    self_attention_position_mode=self.self_attention_position_mode,
-                    ffn_variant=self.ffn_mode,
-                    patching_mode=self.patching_mode or "direct",
-                    enable_patch_search=False,
+                lambda input_dim, latent_dim, num_layers, dropout: (
+                    LightweightTransformerEncoder(
+                        input_dim=input_dim,
+                        latent_dim=latent_dim,
+                        num_layers=num_layers,
+                        dropout=dropout,
+                        self_attention_type=self.self_attention_type or "sdp",
+                        self_attention_position_mode=self.self_attention_position_mode,
+                        ffn_variant=self.ffn_mode,
+                        patching_mode=self.patching_mode or "direct",
+                        enable_patch_search=False,
+                    )
                 )
             ),
         )
@@ -1234,7 +1259,9 @@ class FixedDecoder(BaseFixedSequenceBlock):
         decode_style: str | None = None,
     ):
         self.self_attention_type = (
-            str(self_attention_type).lower() if self_attention_type is not None else None
+            str(self_attention_type).lower()
+            if self_attention_type is not None
+            else None
         )
         self.self_attention_position_mode = (
             str(self_attention_position_mode).lower()
@@ -1265,16 +1292,18 @@ class FixedDecoder(BaseFixedSequenceBlock):
             num_layers=num_layers,
             dropout=dropout,
             transformer_factory=(
-                lambda input_dim, latent_dim, num_layers, dropout: LightweightTransformerDecoder(
-                    input_dim=input_dim,
-                    latent_dim=latent_dim,
-                    num_layers=num_layers,
-                    dropout=dropout,
-                    self_attention_type=self.self_attention_type or "sdp",
-                    self_attention_position_mode=self.self_attention_position_mode,
-                    cross_attention_type=self.cross_attention_type,
-                    cross_attention_position_mode=self.cross_attention_position_mode,
-                    ffn_variant=self.ffn_mode,
+                lambda input_dim, latent_dim, num_layers, dropout: (
+                    LightweightTransformerDecoder(
+                        input_dim=input_dim,
+                        latent_dim=latent_dim,
+                        num_layers=num_layers,
+                        dropout=dropout,
+                        self_attention_type=self.self_attention_type or "sdp",
+                        self_attention_position_mode=self.self_attention_position_mode,
+                        cross_attention_type=self.cross_attention_type,
+                        cross_attention_position_mode=self.cross_attention_position_mode,
+                        ffn_variant=self.ffn_mode,
+                    )
                 )
             ),
         )

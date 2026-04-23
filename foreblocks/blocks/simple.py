@@ -6,10 +6,12 @@ import torch.nn as nn
 
 class RMSNorm(nn.Module):
     """Lite RMSNorm over last dim."""
+
     def __init__(self, d: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(d))
+
     def forward(self, x):
         scale = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return x * scale * self.weight
@@ -56,10 +58,10 @@ class GRN(nn.Module):
         dropout: float = 0.0,
         context_size: int | None = None,
         *,
-        activation: str = "silu",      # "silu" | "gelu" | "elu"
-        norm: str = "layer",           # "layer" | "rms" | "none"
-        residual_scale: float = 1.0,   # scale residual before adding
-        bias: bool = True,             # biases in linear layers
+        activation: str = "silu",  # "silu" | "gelu" | "elu"
+        norm: str = "layer",  # "layer" | "rms" | "none"
+        residual_scale: float = 1.0,  # scale residual before adding
+        bias: bool = True,  # biases in linear layers
     ):
         super().__init__()
 
@@ -89,7 +91,11 @@ class GRN(nn.Module):
         self.out = nn.Linear(hidden_size, output_size, bias=bias)
 
         # Residual path projection if needed
-        self.skip = nn.Linear(input_size, output_size, bias=False) if input_size != output_size else nn.Identity()
+        self.skip = (
+            nn.Linear(input_size, output_size, bias=False)
+            if input_size != output_size
+            else nn.Identity()
+        )
 
         # Regularization & norms
         self.drop = nn.Dropout(dropout)
@@ -122,7 +128,9 @@ class GRN(nn.Module):
         if self.ctx is not None:
             nn.init.xavier_uniform_(self.ctx.weight)
 
-    def forward(self, x: torch.Tensor, context: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, context: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         x: [..., input_size]
         context (optional): broadcastable to x, last dim == context_size
@@ -150,12 +158,14 @@ class GRN(nn.Module):
             h = h + ctx_proj  # broadcast add
 
         h = self.act(h)
-        h = self.glu(self.fc2(h))   # [..., H]
+        h = self.glu(self.fc2(h))  # [..., H]
         h = self.drop(h)
-        h = self.out(h)             # [..., O]
+        h = self.out(h)  # [..., O]
 
         # Residual + norm
-        res = self.skip(residual) if not isinstance(self.skip, nn.Identity) else residual
+        res = (
+            self.skip(residual) if not isinstance(self.skip, nn.Identity) else residual
+        )
         y = h + self.residual_scale * res
         y = self.norm(y)
         return y

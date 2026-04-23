@@ -30,8 +30,12 @@ class LearnablePositionalEncoding(nn.Module):
         if low_rank_dim is None:
             self.pe = nn.Parameter(self._init_pe(initialization, (max_len, d_model)))
         else:
-            self.U = nn.Parameter(self._init_pe(initialization, (max_len, low_rank_dim)))
-            self.V = nn.Parameter(self._init_pe(initialization, (low_rank_dim, d_model)))
+            self.U = nn.Parameter(
+                self._init_pe(initialization, (max_len, low_rank_dim))
+            )
+            self.V = nn.Parameter(
+                self._init_pe(initialization, (low_rank_dim, d_model))
+            )
 
         if scale_strategy == "learnable":
             init_scale = scale_value or math.sqrt(d_model)
@@ -47,7 +51,9 @@ class LearnablePositionalEncoding(nn.Module):
         self.layer_norm = nn.LayerNorm(d_model) if use_layer_norm else None
         self.dropout = nn.Dropout(dropout) if dropout > 0 else None
 
-        self.per_head_scale = nn.Parameter(torch.ones(d_model)) if per_head_scale else None
+        self.per_head_scale = (
+            nn.Parameter(torch.ones(d_model)) if per_head_scale else None
+        )
         self._cache: dict[int, torch.Tensor] = {}
 
     def _init_pe(self, mode: str, shape: tuple) -> torch.Tensor:
@@ -60,7 +66,9 @@ class LearnablePositionalEncoding(nn.Module):
             return torch.zeros(shape)
         return torch.randn(shape) * 0.02
 
-    def forward(self, x: torch.Tensor, positions: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, positions: torch.Tensor | None = None
+    ) -> torch.Tensor:
         B, T, _ = x.shape
         device, dtype = x.device, x.dtype
 
@@ -75,7 +83,9 @@ class LearnablePositionalEncoding(nn.Module):
             if positions is None:
                 pe = (self.U[:T] @ self.V).unsqueeze(0).expand(B, -1, -1)
             else:
-                Usel = F.embedding(positions.to(device=device, dtype=torch.long), self.U)
+                Usel = F.embedding(
+                    positions.to(device=device, dtype=torch.long), self.U
+                )
                 pe = torch.bmm(Usel, self.V.unsqueeze(0).expand(B, -1, -1))
 
         pe = pe.to(dtype)

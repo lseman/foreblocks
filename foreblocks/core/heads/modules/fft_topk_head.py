@@ -27,7 +27,9 @@ class FFTTopK(nn.Module):
             seasonal = torch.zeros_like(x)
             return x, seasonal
 
-        topk_idx = torch.topk(mag, k=k, dim=1, largest=True, sorted=False).indices  # [B,k,F]
+        topk_idx = torch.topk(
+            mag, k=k, dim=1, largest=True, sorted=False
+        ).indices  # [B,k,F]
         mask = torch.zeros_like(mag, dtype=torch.bool)
         mask.scatter_(dim=1, index=topk_idx, value=True)
 

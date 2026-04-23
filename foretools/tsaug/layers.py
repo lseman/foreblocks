@@ -163,7 +163,7 @@ class AugmentationLayer(nn.Module):
         x_aug = torch.zeros_like(x)
 
         for j, transform_fn in enumerate(TRANSFORMATIONS):
-            mask = (selected_idx == j)
+            mask = selected_idx == j
             if mask.any():
                 x_j = transform_fn(x[mask], selected_intensity[mask])
                 x_aug[mask] = x_j
@@ -199,15 +199,17 @@ class StackedAugmentationLayers(nn.Module):
         self.num_transforms = num_transforms
         self.raw_bias = raw_bias
 
-        self.layers = nn.ModuleList([
-            AugmentationLayer(
-                feature_dim=feature_dim,
-                num_transforms=num_transforms,
-                hidden_dim=hidden_dim,
-                init_temperature=init_temperature,
-            )
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                AugmentationLayer(
+                    feature_dim=feature_dim,
+                    num_transforms=num_transforms,
+                    hidden_dim=hidden_dim,
+                    init_temperature=init_temperature,
+                )
+                for _ in range(num_layers)
+            ]
+        )
 
     def forward(self, x: torch.Tensor, features: torch.Tensor):
         """Forward pass through all K augmentation layers.
@@ -237,9 +239,7 @@ class StackedAugmentationLayers(nn.Module):
                 # For samples that get raw bias, skip augmentation
                 x_before = x_current.clone()
 
-            x_aug, prob, intensity, selected_idx = layer(
-                x_current, prev_prob, features
-            )
+            x_aug, prob, intensity, selected_idx = layer(x_current, prev_prob, features)
 
             # Apply raw transform bias
             if self.training and self.raw_bias > 0:

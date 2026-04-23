@@ -19,7 +19,7 @@ class CSVSource:
     """
     Loads data from a CSV file and automatically detects dimensions.
     """
-    
+
     def __init__(
         self,
         file_path: str = "",
@@ -37,7 +37,7 @@ class CSVSource:
         self.sep = sep
         self.header = header
         self.index_col = index_col
-        
+
         self._df = None
         self._input_size = 0
         self._output_size = 0
@@ -48,28 +48,28 @@ class CSVSource:
         """
         if not self.file_path:
             return {"error": "No file path provided"}
-        
+
         try:
             self._df = pd.read_csv(
-                self.file_path, 
-                sep=self.sep, 
-                header=self.header, 
-                index_col=self.index_col
+                self.file_path,
+                sep=self.sep,
+                header=self.header,
+                index_col=self.index_col,
             )
-            
+
             all_cols = self._df.columns.tolist()
-            
+
             # Auto-detect target if not set (assume last column)
             target = self.target_column or all_cols[-1]
-            
+
             # Features = all columns except target and time
             features = self.feature_columns or [
                 c for c in all_cols if c != target and c != self.time_column
             ]
-            
+
             self._input_size = len(features)
-            self._output_size = 1 # Multivariate targets support can be added later
-            
+            self._output_size = 1  # Multivariate targets support can be added later
+
             return {
                 "columns": all_cols,
                 "input_size": self._input_size,
@@ -78,12 +78,17 @@ class CSVSource:
                 "features": features,
                 "target": target,
                 "time": self.time_column,
-                "dtypes": self._df.dtypes.apply(lambda x: str(x)).to_dict()
+                "dtypes": self._df.dtypes.apply(lambda x: str(x)).to_dict(),
             }
         except Exception as e:
             return {"error": str(e)}
 
-    def forward(self) -> Annotated[tuple[np.ndarray, np.ndarray, np.ndarray | None], PortOutBundle("X", "y", "time_features")]:
+    def forward(
+        self,
+    ) -> Annotated[
+        tuple[np.ndarray, np.ndarray, np.ndarray | None],
+        PortOutBundle("X", "y", "time_features"),
+    ]:
         """
         Returns the processed arrays.
         """
@@ -91,23 +96,27 @@ class CSVSource:
             res = self.load_and_analyze()
             if "error" in res:
                 raise RuntimeError(f"CSV loading failed: {res['error']}")
-        
+
         target = self.target_column or self._df.columns[-1]
         features = self.feature_columns or [
             c for c in self._df.columns if c != target and c != self.time_column
         ]
-        
+
         X = self._df[features].values.astype(np.float32)
         y = self._df[[target]].values.astype(np.float32)
-        
+
         time_features = None
         if self.time_column and self.time_column in self._df.columns:
             # Simple conversion to timestamps or ordinal if it's datetime
             if pd.api.types.is_datetime64_any_dtype(self._df[self.time_column]):
-                time_features = self._df[self.time_column].astype(np.int64).values.astype(np.float32)
+                time_features = (
+                    self._df[self.time_column]
+                    .astype(np.int64)
+                    .values.astype(np.float32)
+                )
             else:
                 time_features = self._df[self.time_column].values
-                
+
         return X, y, time_features
 
     def py_spec(self):
@@ -123,5 +132,5 @@ class CSVSource:
                     "time_column": "@config:time_column",
                     "sep": "@config:sep",
                 }
-            }
+            },
         }

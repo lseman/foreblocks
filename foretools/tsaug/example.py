@@ -24,10 +24,10 @@ from torch.utils.data import TensorDataset
 sys.path.insert(0, "/home/claude")
 
 
-
 # ──────────────────────────────────────────────────────────────────────
 # 1. Synthetic Data Generation
 # ──────────────────────────────────────────────────────────────────────
+
 
 def make_classification_data(
     n_samples: int = 500,
@@ -77,7 +77,7 @@ def make_forecasting_data(
             s[0] = np.random.randn()
             s[1] = np.random.randn()
             for t in range(2, total_len):
-                s[t] = 0.6 * s[t-1] - 0.3 * s[t-2] + 0.1 * np.random.randn()
+                s[t] = 0.6 * s[t - 1] - 0.3 * s[t - 2] + 0.1 * np.random.randn()
             # Add seasonality
             t_axis = np.arange(total_len)
             s += 0.5 * np.sin(2 * np.pi * t_axis / 12)
@@ -95,6 +95,7 @@ def make_forecasting_data(
 # ──────────────────────────────────────────────────────────────────────
 # 2. Simple Downstream Models
 # ──────────────────────────────────────────────────────────────────────
+
 
 class SimpleTCN(nn.Module):
     """Minimal TCN-like classifier for demonstration."""
@@ -139,6 +140,7 @@ class SimpleRNN(nn.Module):
 # 3. Run Experiments
 # ──────────────────────────────────────────────────────────────────────
 
+
 def run_classification_experiment():
     """Classification experiment with AutoDA-Timeseries."""
     print("=" * 70)
@@ -147,10 +149,16 @@ def run_classification_experiment():
 
     # Generate data
     n_classes = 4
-    X_train, Y_train = make_classification_data(400, seq_len=64, n_channels=3, n_classes=n_classes)
-    X_val, Y_val = make_classification_data(100, seq_len=64, n_channels=3, n_classes=n_classes)
+    X_train, Y_train = make_classification_data(
+        400, seq_len=64, n_channels=3, n_classes=n_classes
+    )
+    X_val, Y_val = make_classification_data(
+        100, seq_len=64, n_channels=3, n_classes=n_classes
+    )
 
-    train_loader = DataLoader(TensorDataset(X_train, Y_train), batch_size=32, shuffle=True)
+    train_loader = DataLoader(
+        TensorDataset(X_train, Y_train), batch_size=32, shuffle=True
+    )
     val_loader = DataLoader(TensorDataset(X_val, Y_val), batch_size=32)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -202,8 +210,10 @@ def run_classification_experiment():
     )
 
     history = trainer.fit(
-        train_loader, val_loader,
-        epochs=30, log_interval=10,
+        train_loader,
+        val_loader,
+        epochs=30,
+        log_interval=10,
     )
 
     final_acc = history.get("val_accuracy", [0])[-1]
@@ -213,9 +223,7 @@ def run_classification_experiment():
 
     # Print final augmentation policy
     print("\n  Final Augmentation Policy:")
-    policy = autoda.get_policy_summary(
-        *trainer._get_sample_policy(train_loader)
-    )
+    policy = autoda.get_policy_summary(*trainer._get_sample_policy(train_loader))
     for layer_name, info in policy.items():
         print(f"    {layer_name} (temp={info['temperature']:.3f}):")
         probs = info["avg_probabilities"]
@@ -236,7 +244,9 @@ def run_forecasting_experiment():
     X_train, Y_train = make_forecasting_data(400, input_len, pred_len, n_channels=1)
     X_val, Y_val = make_forecasting_data(100, input_len, pred_len, n_channels=1)
 
-    train_loader = DataLoader(TensorDataset(X_train, Y_train), batch_size=32, shuffle=True)
+    train_loader = DataLoader(
+        TensorDataset(X_train, Y_train), batch_size=32, shuffle=True
+    )
     val_loader = DataLoader(TensorDataset(X_val, Y_val), batch_size=32)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -287,8 +297,10 @@ def run_forecasting_experiment():
     )
 
     history = trainer.fit(
-        train_loader, val_loader,
-        epochs=30, log_interval=10,
+        train_loader,
+        val_loader,
+        epochs=30,
+        log_interval=10,
     )
 
     final_mse = history["val_loss"][-1]
@@ -331,17 +343,21 @@ def demonstrate_features():
 
     # Create different types of time series
     t = torch.linspace(0, 4 * np.pi, 200)
-    sine = torch.sin(t).unsqueeze(0).unsqueeze(-1)         # (1, 200, 1)
+    sine = torch.sin(t).unsqueeze(0).unsqueeze(-1)  # (1, 200, 1)
     noisy = (torch.sin(t) + 0.5 * torch.randn(200)).unsqueeze(0).unsqueeze(-1)
     trend = (0.01 * t + torch.sin(t)).unsqueeze(0).unsqueeze(-1)
 
     for name, x in [("Sine", sine), ("Noisy Sine", noisy), ("Trend + Sine", trend)]:
         features = extract_features(x)
         print(f"\n  {name} -> feature shape: {features.shape}")
-        print(f"    Mean: {features[0, 0]:.4f}, Std: {features[0, 1]:.4f}, "
-              f"Skew: {features[0, 2]:.4f}, Kurt: {features[0, 3]:.4f}")
-        print(f"    AC1: {features[0, 8]:.4f}, AC2: {features[0, 9]:.4f}, "
-              f"SpectralEnt: {features[0, 17]:.4f}")
+        print(
+            f"    Mean: {features[0, 0]:.4f}, Std: {features[0, 1]:.4f}, "
+            f"Skew: {features[0, 2]:.4f}, Kurt: {features[0, 3]:.4f}"
+        )
+        print(
+            f"    AC1: {features[0, 8]:.4f}, AC2: {features[0, 9]:.4f}, "
+            f"SpectralEnt: {features[0, 17]:.4f}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────

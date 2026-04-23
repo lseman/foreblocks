@@ -49,8 +49,12 @@ class BinningTransformer(BaseFeatureTransformer):
             # Safe default when config explicitly sets None
             self.strategies = ["auto"]
 
-        self.auto_supervised = bool(getattr(self.config, "binning_auto_supervised", True))
-        self.min_bin_fraction = float(getattr(self.config, "binning_min_bin_fraction", 0.01))
+        self.auto_supervised = bool(
+            getattr(self.config, "binning_auto_supervised", True)
+        )
+        self.min_bin_fraction = float(
+            getattr(self.config, "binning_min_bin_fraction", 0.01)
+        )
 
         self.binning_transformers_: dict[str, dict[str, Any]] = {}
         self.numerical_cols_: list[str] = []
@@ -66,9 +70,7 @@ class BinningTransformer(BaseFeatureTransformer):
             "subsample": subsample,
         }
         try:
-            return KBinsDiscretizer(
-                **params, quantile_method="averaged_inverted_cdf"
-            )
+            return KBinsDiscretizer(**params, quantile_method="averaged_inverted_cdf")
         except TypeError:
             return KBinsDiscretizer(**params)
 
@@ -155,7 +157,7 @@ class BinningTransformer(BaseFeatureTransformer):
             # For classification-like targets, prefer supervised MDLP.
             y_s = pd.Series(y_col)
             if self._is_classification_target(y_s):
-                if getattr(self.config, 'use_woe', False) and len(y_s.unique()) == 2:
+                if getattr(self.config, "use_woe", False) and len(y_s.unique()) == 2:
                     out.append("woe")
                 else:
                     out.append("mdlp")
@@ -379,40 +381,40 @@ class BinningTransformer(BaseFeatureTransformer):
         )
         return full_edges
 
-    def _compute_woe_iv(self, x: np.ndarray, y: np.ndarray, edges: np.ndarray) -> tuple[dict[int, float], float]:
+    def _compute_woe_iv(
+        self, x: np.ndarray, y: np.ndarray, edges: np.ndarray
+    ) -> tuple[dict[int, float], float]:
         """Compute Weight of Evidence and Information Value for a binned feature."""
         # Only for binary classification targets (0/1)
         binned = self._digitize_edges(x, edges)
-        df = pd.DataFrame({'bin': binned, 'target': y})
-        
+        df = pd.DataFrame({"bin": binned, "target": y})
+
         # Calculate event/non-event counts
-        total_events = df['target'].sum()
+        total_events = df["target"].sum()
         total_non_events = len(df) - total_events
-        
+
         if total_events == 0 or total_non_events == 0:
-            return {i: 0.0 for i in range(len(edges)-1)}, 0.0
-            
-        stats = df.groupby('bin')['target'].agg(['sum', 'count'])
-        stats['non_sum'] = stats['count'] - stats['sum']
-        
+            return {i: 0.0 for i in range(len(edges) - 1)}, 0.0
+
+        stats = df.groupby("bin")["target"].agg(["sum", "count"])
+        stats["non_sum"] = stats["count"] - stats["sum"]
+
         # Avoid division by zero with small smoothing
         eps = 1e-6
-        stats['dist_event'] = (stats['sum'] + eps) / (total_events + eps)
-        stats['dist_non_event'] = (stats['non_sum'] + eps) / (total_non_events + eps)
-        
+        stats["dist_event"] = (stats["sum"] + eps) / (total_events + eps)
+        stats["dist_non_event"] = (stats["non_sum"] + eps) / (total_non_events + eps)
+
         # WoE = ln(dist_event / dist_non_event)
-        stats['woe'] = np.log(stats['dist_event'] / stats['dist_non_event'])
-        
+        stats["woe"] = np.log(stats["dist_event"] / stats["dist_non_event"])
+
         # IV = sum((dist_event - dist_non_event) * WoE)
-        iv = ((stats['dist_event'] - stats['dist_non_event']) * stats['woe']).sum()
-        
-        return stats['woe'].to_dict(), float(iv)
+        iv = ((stats["dist_event"] - stats["dist_non_event"]) * stats["woe"]).sum()
+
+        return stats["woe"].to_dict(), float(iv)
 
     # ---------- fit/transform ----------
 
-    def fit(
-        self, X: pd.DataFrame, y: pd.Series | None = None
-    ) -> "BinningTransformer":
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "BinningTransformer":
         if not getattr(self.config, "create_binning", True):
             self.is_fitted = True
             return self
@@ -440,14 +442,20 @@ class BinningTransformer(BaseFeatureTransformer):
             dynamic_max_bins = int(
                 np.clip(min(self.max_bins, n_cap, n_unique), 2, self.max_bins)
             )
-            min_count = max(self.min_samples_per_bin, int(np.ceil(n * self.min_bin_fraction)))
+            min_count = max(
+                self.min_samples_per_bin, int(np.ceil(n * self.min_bin_fraction))
+            )
 
             self.binning_transformers_.setdefault(col, {})
-            self.fill_values_[col] = float(pd.to_numeric(X[col], errors="coerce").median())
+            self.fill_values_[col] = float(
+                pd.to_numeric(X[col], errors="coerce").median()
+            )
 
             y_col = None
             if y is not None:
-                y_col = pd.to_numeric(pd.Series(y).reindex(data.index), errors="coerce").values
+                y_col = pd.to_numeric(
+                    pd.Series(y).reindex(data.index), errors="coerce"
+                ).values
             col_strategies = self._resolve_strategies_for_col(col_values, y_col)
 
             for strategy in col_strategies:
@@ -496,7 +504,9 @@ class BinningTransformer(BaseFeatureTransformer):
                         k = max(2, self._fd_bins(col_values))
                         k = int(np.clip(k, 2, dynamic_max_bins))
                         edges = self._equal_width_edges(col_values, k)
-                        edges = self._enforce_min_support_edges(col_values, edges, min_count)
+                        edges = self._enforce_min_support_edges(
+                            col_values, edges, min_count
+                        )
                         self.binning_transformers_[col][strategy] = {
                             "edges": edges,
                             "n_bins": len(edges) - 1,
@@ -506,7 +516,9 @@ class BinningTransformer(BaseFeatureTransformer):
                         k = max(2, self._doane_bins(col_values))
                         k = int(np.clip(k, 2, dynamic_max_bins))
                         edges = self._equal_width_edges(col_values, k)
-                        edges = self._enforce_min_support_edges(col_values, edges, min_count)
+                        edges = self._enforce_min_support_edges(
+                            col_values, edges, min_count
+                        )
                         self.binning_transformers_[col][strategy] = {
                             "edges": edges,
                             "n_bins": len(edges) - 1,
@@ -518,7 +530,9 @@ class BinningTransformer(BaseFeatureTransformer):
                         )
                         k = int(np.clip(k, 2, dynamic_max_bins))
                         edges = self._equal_width_edges(col_values, k)
-                        edges = self._enforce_min_support_edges(col_values, edges, min_count)
+                        edges = self._enforce_min_support_edges(
+                            col_values, edges, min_count
+                        )
                         self.binning_transformers_[col][strategy] = {
                             "edges": edges,
                             "n_bins": len(edges) - 1,
@@ -533,7 +547,9 @@ class BinningTransformer(BaseFeatureTransformer):
                             )
                         )
                         edges = self._kmeans_edges(col_values, k)
-                        edges = self._enforce_min_support_edges(col_values, edges, min_count)
+                        edges = self._enforce_min_support_edges(
+                            col_values, edges, min_count
+                        )
                         self.binning_transformers_[col][strategy] = {
                             "edges": edges,
                             "n_bins": len(edges) - 1,
@@ -546,7 +562,9 @@ class BinningTransformer(BaseFeatureTransformer):
                         edges = self._mdlp_edges(
                             col_values, y_arr, max_bins=dynamic_max_bins
                         )
-                        edges = self._enforce_min_support_edges(col_values, edges, min_count)
+                        edges = self._enforce_min_support_edges(
+                            col_values, edges, min_count
+                        )
                         self.binning_transformers_[col][strategy] = {
                             "edges": edges,
                             "n_bins": len(edges) - 1,
@@ -559,12 +577,16 @@ class BinningTransformer(BaseFeatureTransformer):
                         # For binary classification only
                         if len(np.unique(y_arr)) != 2:
                             continue
-                        
+
                         # Use MDLP edges as base
-                        edges = self._mdlp_edges(col_values, y_arr, max_bins=dynamic_max_bins)
-                        edges = self._enforce_min_support_edges(col_values, edges, min_count)
+                        edges = self._mdlp_edges(
+                            col_values, y_arr, max_bins=dynamic_max_bins
+                        )
+                        edges = self._enforce_min_support_edges(
+                            col_values, edges, min_count
+                        )
                         woe_map, iv = self._compute_woe_iv(col_values, y_arr, edges)
-                        
+
                         self.binning_transformers_[col][strategy] = {
                             "edges": edges,
                             "woe_map": woe_map,
@@ -608,7 +630,7 @@ class BinningTransformer(BaseFeatureTransformer):
                         edges = info["edges"]
                         binned = np.digitize(col_data.values, edges) - 1
                         binned = np.clip(binned, 0, len(edges) - 2)
-                        
+
                         # If WoE map is available, replace bin index with WoE
                         if "woe_map" in info:
                             binned_vals = pd.Series(binned).map(info["woe_map"]).values

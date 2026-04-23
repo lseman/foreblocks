@@ -13,6 +13,7 @@ from torch import Tensor
 # Basic rotary helpers
 # ---------------------------------------------------------------------------
 
+
 def rotate_half(x: Tensor, interleaved: bool = False) -> Tensor:
     if not interleaved:
         x1, x2 = x.chunk(2, dim=-1)
@@ -57,6 +58,7 @@ def apply_rotary_emb_torch(
 # ---------------------------------------------------------------------------
 # Core rotary application used by custom autograd Functions
 # ---------------------------------------------------------------------------
+
 
 def apply_rotary(
     x: Tensor,
@@ -143,7 +145,9 @@ def _prepare_cos_sin_batch(
         if seqlen_offsets is not None:
             # (batch, seqlen) offsets → per-position indices
             positions = torch.arange(seqlen, device=device)  # (seqlen,)
-            indices = seqlen_offsets.unsqueeze(1) + positions.unsqueeze(0)  # (batch, seqlen)
+            indices = seqlen_offsets.unsqueeze(1) + positions.unsqueeze(
+                0
+            )  # (batch, seqlen)
             cos = cos[indices]  # (batch, seqlen, d/2)
             sin = sin[indices]
         else:
@@ -196,11 +200,7 @@ def _apply_rotary_batch(
     device = x.device
 
     # Fast path: no offset, cos/sin 2D, same for all batch
-    if (
-        isinstance(seqlen_offsets, int)
-        and seqlen_offsets == 0
-        and cos.dim() == 2
-    ):
+    if isinstance(seqlen_offsets, int) and seqlen_offsets == 0 and cos.dim() == 2:
         if conjugate:
             sin = -sin
 
@@ -305,8 +305,7 @@ def _apply_rotary_cu_seqlens(
     # Build flat indices for each (batch,pos)
     positions = torch.cat(
         [
-            torch.arange(seq_lens[b].item(), device=device)
-            + seqlen_offsets[b].item()
+            torch.arange(seq_lens[b].item(), device=device) + seqlen_offsets[b].item()
             for b in range(batch)
         ],
         dim=0,
@@ -361,6 +360,7 @@ def _apply_rotary_cu_seqlens(
 # ---------------------------------------------------------------------------
 # Autograd wrappers for rotary on x and qkv
 # ---------------------------------------------------------------------------
+
 
 class ApplyRotaryEmb(torch.autograd.Function):
     @staticmethod
@@ -682,6 +682,7 @@ def apply_rotary_emb_kv_(
 # RotaryEmbedding module with caching (RoPE / XPos)
 # ---------------------------------------------------------------------------
 
+
 class RotaryEmbedding(torch.nn.Module):
     """
     Rotary position embeddings (RoFormer / GPT-NeoX) with optional XPos scaling.
@@ -723,7 +724,10 @@ class RotaryEmbedding(torch.nn.Module):
     def _compute_inv_freq(self, device=None) -> Tensor:
         return 1.0 / (
             self.base
-            ** (torch.arange(0, self.dim, 2, device=device, dtype=torch.float32) / self.dim)
+            ** (
+                torch.arange(0, self.dim, 2, device=device, dtype=torch.float32)
+                / self.dim
+            )
         )
 
     def _update_cos_sin_cache(
@@ -856,4 +860,3 @@ class RotaryEmbedding(torch.nn.Module):
                 seqlen_offsets=seqlen_offset,
             )
             return q, kv
-

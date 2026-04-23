@@ -20,6 +20,7 @@ ALLOWED_PACKAGES = [
     "foreblocks.training",
 ]
 
+
 def _iter_modules(package_name: str) -> Iterable[str]:
     """Yield module names under a package or just the module itself if not a package."""
     pkg = importlib.import_module(package_name)
@@ -28,6 +29,7 @@ def _iter_modules(package_name: str) -> Iterable[str]:
             yield mod.name
     else:
         yield pkg.__name__
+
 
 def _all_candidate_classes() -> Iterable[type]:
     """Yield all classes found under allowed packages/modules."""
@@ -40,6 +42,7 @@ def _all_candidate_classes() -> Iterable[type]:
             for _, obj in inspect.getmembers(mod, inspect.isclass):
                 if obj.__module__ == mod.__name__:
                     yield obj
+
 
 def _discover_node_specs() -> dict[str, dict]:
     """
@@ -76,6 +79,7 @@ def _discover_node_specs() -> dict[str, dict]:
         out[type_id] = spec
     return out
 
+
 def categories_map(nodes: dict[str, dict]) -> dict[str, list[str]]:
     cats: dict[str, list[str]] = {}
     for t, spec in nodes.items():
@@ -83,6 +87,7 @@ def categories_map(nodes: dict[str, dict]) -> dict[str, list[str]]:
     for k in cats:
         cats[k].sort()
     return cats
+
 
 # ── Back-compat function: preserve original signature if other code expects it
 def discover_nodes() -> dict[str, dict]:
@@ -106,6 +111,7 @@ def discover_nodes() -> dict[str, dict]:
         }
     return simplified
 
+
 # ── Preferred endpoint payload for /nodes
 def discover_nodes_payload() -> dict[str, dict]:
     """
@@ -123,7 +129,7 @@ def discover_nodes_payload() -> dict[str, dict]:
             "inputs": s.get("inputs", []),
             "outputs": s.get("outputs", []),
             "config": s.get("config", {}),
-            "py": s.get("py", {}),   # <── include codegen metadata
+            "py": s.get("py", {}),  # <── include codegen metadata
         }
         for tid, s in specs.items()
     }

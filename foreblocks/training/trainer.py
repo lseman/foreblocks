@@ -52,8 +52,6 @@ except Exception:
         raise RuntimeError("MoE logging not available")
 
 
-
-
 def _require_matplotlib() -> None:
     if plt is None or ListedColormap is None:
         raise RuntimeError(
@@ -1298,21 +1296,31 @@ class Trainer:
 
     @staticmethod
     def _flatten_forecast_array(values: torch.Tensor | np.ndarray) -> np.ndarray:
-        arr = values.detach().cpu().numpy() if torch.is_tensor(values) else np.asarray(values)
+        arr = (
+            values.detach().cpu().numpy()
+            if torch.is_tensor(values)
+            else np.asarray(values)
+        )
         if arr.ndim == 2:
             return arr[:, :, None]
         if arr.ndim == 3:
             return arr
         if arr.ndim > 3:
             return arr.reshape(arr.shape[0], arr.shape[1], -1)
-        raise ValueError(f"Expected forecast array with at least 2 dims, got {arr.shape}.")
+        raise ValueError(
+            f"Expected forecast array with at least 2 dims, got {arr.shape}."
+        )
 
     @staticmethod
     def _forecast_channel_names(
         values: torch.Tensor | np.ndarray,
         names: str | list | None,
     ) -> list[str]:
-        arr = values.detach().cpu().numpy() if torch.is_tensor(values) else np.asarray(values)
+        arr = (
+            values.detach().cpu().numpy()
+            if torch.is_tensor(values)
+            else np.asarray(values)
+        )
         if arr.ndim <= 3:
             channels = 1 if arr.ndim == 2 else arr.shape[-1]
             if isinstance(names, str):
@@ -1344,7 +1352,11 @@ class Trainer:
     def _flatten_series_array(
         values: torch.Tensor | np.ndarray,
     ) -> np.ndarray:
-        arr = values.detach().cpu().numpy() if torch.is_tensor(values) else np.asarray(values)
+        arr = (
+            values.detach().cpu().numpy()
+            if torch.is_tensor(values)
+            else np.asarray(values)
+        )
         if arr.ndim == 1:
             return arr[:, None]
         if arr.ndim == 2:

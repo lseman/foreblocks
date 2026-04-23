@@ -23,7 +23,13 @@ def _get_version() -> str:
 
 
 def _should_force_cuda_version() -> bool:
-    return os.environ.get(FORCE_ENV_VAR, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    return os.environ.get(FORCE_ENV_VAR, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
 
 
 def _ensure_cuda_arch_list() -> None:

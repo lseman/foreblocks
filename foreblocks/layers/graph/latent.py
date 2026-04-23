@@ -107,9 +107,7 @@ class LatentCorrelationLearner(nn.Module):
             self.ln_out = nn.LayerNorm(out_feat_dim, eps=cfg.eps)
 
         self.A_drop = (
-            nn.Dropout(cfg.dropout_graph)
-            if cfg.dropout_graph > 0
-            else nn.Identity()
+            nn.Dropout(cfg.dropout_graph) if cfg.dropout_graph > 0 else nn.Identity()
         )
 
         self.multi_scale = cfg.multi_scale
@@ -138,9 +136,7 @@ class LatentCorrelationLearner(nn.Module):
 
         self.adaptive_sparse = cfg.adaptive_sparse
         if self.adaptive_sparse:
-            self.sparsifier = AdaptiveEdgeSparsifier(
-                cfg.sparsity_ratio, learnable=True
-            )
+            self.sparsifier = AdaptiveEdgeSparsifier(cfg.sparsity_ratio, learnable=True)
 
         self._reset()
 
@@ -211,7 +207,9 @@ class LatentCorrelationLearner(nn.Module):
         L = safe_eye(A.size(0), A) - Dis @ A @ Dis
         return L.clamp(-1.5, 1.5)
 
-    def _cheb_filter_single_scale(self, x: Tensor, L: Tensor, weights: Tensor) -> Tensor:
+    def _cheb_filter_single_scale(
+        self, x: Tensor, L: Tensor, weights: Tensor
+    ) -> Tensor:
         T0 = x
         if self.cheb_k == 1:
             return weights[0] * T0

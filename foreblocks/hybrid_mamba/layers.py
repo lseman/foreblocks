@@ -17,6 +17,7 @@ from .ops import selective_scan
 # Primitives
 # ---------------------------------------------------------------------------
 
+
 class CausalDepthwiseConv1d(nn.Module):
     def __init__(self, d_inner: int, kernel_size: int):
         super().__init__()
@@ -52,6 +53,7 @@ class RMSNormWeightOnly(nn.Module):
 # Rotary Position Embedding (RoPE)
 # ---------------------------------------------------------------------------
 
+
 class RotaryEmbedding(nn.Module):
     """Rotary Position Embedding (Su et al. 2021, RoFormer).
 
@@ -81,10 +83,12 @@ class RotaryEmbedding(nn.Module):
         if seq_len <= self._seq_len_cached:
             return
         self._seq_len_cached = seq_len
-        t = torch.arange(seq_len, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
+        t = torch.arange(
+            seq_len, device=self.inv_freq.device, dtype=self.inv_freq.dtype
+        )
         freqs = torch.outer(t, self.inv_freq)
         emb = torch.cat([freqs, freqs], dim=-1)
-        self._cos_cached = emb.cos()[None, None]   # (1, 1, T, head_dim)
+        self._cos_cached = emb.cos()[None, None]  # (1, 1, T, head_dim)
         self._sin_cached = emb.sin()[None, None]
 
     @staticmethod
@@ -122,6 +126,7 @@ class RotaryEmbedding(nn.Module):
 # ---------------------------------------------------------------------------
 # Sliding-Window Attention with RoPE + GQA + attention sink
 # ---------------------------------------------------------------------------
+
 
 class SlidingWindowAttention(nn.Module):
     """Causal sliding-window self-attention with RoPE, optional GQA, and optional
@@ -181,7 +186,9 @@ class SlidingWindowAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, kv_dim, bias=bias)
         self.out_proj = nn.Linear(d_model, d_model, bias=bias)
 
-        self.rope = RotaryEmbedding(self.head_dim, base=rope_base, max_seq_len=max_seq_len)
+        self.rope = RotaryEmbedding(
+            self.head_dim, base=rope_base, max_seq_len=max_seq_len
+        )
 
     def _sliding_mask(
         self, seqlen: int, device: torch.device, dtype: torch.dtype
@@ -212,7 +219,9 @@ class SlidingWindowAttention(nn.Module):
 
         attn_mask = self._sliding_mask(T, x.device, q.dtype)
         y = F.scaled_dot_product_attention(
-            q, k, v,
+            q,
+            k,
+            v,
             attn_mask=attn_mask,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=False,
@@ -224,6 +233,7 @@ class SlidingWindowAttention(nn.Module):
 # ---------------------------------------------------------------------------
 # FeedForward block (SwiGLU)
 # ---------------------------------------------------------------------------
+
 
 class FeedForward(nn.Module):
     """Position-wise SwiGLU feed-forward block with pre-norm.
@@ -255,6 +265,7 @@ class FeedForward(nn.Module):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _auto_dt_rank(d_model: int) -> int:
     return max(4, math.ceil(d_model / 16))
@@ -304,6 +315,7 @@ def _conv_step(
 # ---------------------------------------------------------------------------
 # HybridMambaBlock — pure SSM block with optional pre-norm
 # ---------------------------------------------------------------------------
+
 
 class HybridMambaBlock(nn.Module):
     """Mamba-style SSM block (selective scan, dense per-feature A/D matrices).
@@ -370,11 +382,17 @@ class HybridMambaBlock(nn.Module):
         if isinstance(self.residual_proj, nn.Linear):
             nn.init.xavier_uniform_(self.residual_proj.weight)
         with torch.no_grad():
-            base = torch.arange(1, self.d_state + 1, device=self.A_log.device, dtype=self.A_log.dtype)
+            base = torch.arange(
+                1, self.d_state + 1, device=self.A_log.device, dtype=self.A_log.dtype
+            )
             self.A_log.copy_(base.log().unsqueeze(0).expand(self.d_inner, -1))
             self.Dskip.fill_(1.0)
-            dt = torch.rand(self.d_inner, device=self.dt_bias.device, dtype=self.dt_bias.dtype)
-            dt = dt * (math.log(self.dt_max) - math.log(self.dt_min)) + math.log(self.dt_min)
+            dt = torch.rand(
+                self.d_inner, device=self.dt_bias.device, dtype=self.dt_bias.dtype
+            )
+            dt = dt * (math.log(self.dt_max) - math.log(self.dt_min)) + math.log(
+                self.dt_min
+            )
             self.dt_bias.copy_(_inverse_softplus(dt.exp()))
 
     def _split_proj(self, p: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -400,8 +418,13 @@ class HybridMambaBlock(nn.Module):
         A = -torch.exp(self.A_log)
 
         y = selective_scan(
-            u=u, dt=dt, A=A, Bpar=Bpar, Cpar=Cpar,
-            Dskip=self.Dskip, use_cuda_kernel=self.use_cuda_scan,
+            u=u,
+            dt=dt,
+            A=A,
+            Bpar=Bpar,
+            Cpar=Cpar,
+            Dskip=self.Dskip,
+            use_cuda_kernel=self.use_cuda_scan,
         )
 
         residual_inner = self.residual_proj(residual)
@@ -412,11 +435,17 @@ class HybridMambaBlock(nn.Module):
     # Recurrent inference
     # ------------------------------------------------------------------
 
-    def make_state(self, batch: int, device=None, dtype=None) -> dict[str, torch.Tensor]:
+    def make_state(
+        self, batch: int, device=None, dtype=None
+    ) -> dict[str, torch.Tensor]:
         """Return a fresh recurrent state for *batch* sequences."""
         return {
-            "conv": torch.zeros(batch, self.d_inner, self.d_conv - 1, device=device, dtype=dtype),
-            "ssm":  torch.zeros(batch, self.d_inner, self.d_state,    device=device, dtype=dtype),
+            "conv": torch.zeros(
+                batch, self.d_inner, self.d_conv - 1, device=device, dtype=dtype
+            ),
+            "ssm": torch.zeros(
+                batch, self.d_inner, self.d_state, device=device, dtype=dtype
+            ),
         }
 
     def step(self, x: torch.Tensor, state: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -432,7 +461,7 @@ class HybridMambaBlock(nn.Module):
         B = x.shape[0]
         D, N = self.d_inner, self.d_state
 
-        p = self.in_proj(self.pre_norm(x))                          # (B, total_out)
+        p = self.in_proj(self.pre_norm(x))  # (B, total_out)
         z, u_raw, dt_hidden, Bflat, Cflat = torch.split(
             p, [D, D, self.dt_rank, D * N, D * N], dim=-1
         )
@@ -442,15 +471,15 @@ class HybridMambaBlock(nn.Module):
         weight = self.conv.conv.weight.view(D, self.d_conv)
         u, state["conv"] = _conv_step(u_raw, state["conv"], weight, self.conv.conv.bias)
 
-        dt_raw = self.dt_proj(dt_hidden)                            # (B, D)
+        dt_raw = self.dt_proj(dt_hidden)  # (B, D)
         dt = F.softplus(dt_raw + self.dt_bias).clamp(self.dt_min, self.dt_max)
 
-        A = -torch.exp(self.A_log)                                  # (D, N)
-        A_disc = torch.exp(dt.unsqueeze(-1) * A.unsqueeze(0))       # (B, D, N)
+        A = -torch.exp(self.A_log)  # (D, N)
+        A_disc = torch.exp(dt.unsqueeze(-1) * A.unsqueeze(0))  # (B, D, N)
 
         h = state["ssm"].to(dtype=A_disc.dtype)
         h = A_disc * h + dt.unsqueeze(-1) * Bpar * u.unsqueeze(-1)  # (B, D, N)
-        y = (Cpar * h).sum(-1) + self.Dskip * u                     # (B, D)
+        y = (Cpar * h).sum(-1) + self.Dskip * u  # (B, D)
         state["ssm"] = h.detach()
 
         residual_inner = self.residual_proj(x)
@@ -461,6 +490,7 @@ class HybridMambaBlock(nn.Module):
 # ---------------------------------------------------------------------------
 # StructuredStateSpaceDualityBranch — multi-head SSD (Mamba-2 style)
 # ---------------------------------------------------------------------------
+
 
 class StructuredStateSpaceDualityBranch(nn.Module):
     """Multi-head Structured State Space Duality (SSD) branch.
@@ -508,7 +538,9 @@ class StructuredStateSpaceDualityBranch(nn.Module):
 
         self.head_dim = self.d_inner // self.num_heads
         extra = self.num_heads if use_gated_delta else 0
-        total_out = 2 * self.d_inner + self.dt_rank + 2 * self.num_heads * self.d_state + extra
+        total_out = (
+            2 * self.d_inner + self.dt_rank + 2 * self.num_heads * self.d_state + extra
+        )
         self.in_proj = nn.Linear(d_model, total_out, bias=False)
         self.dt_proj = nn.Linear(self.dt_rank, self.num_heads, bias=False)
         self.conv = CausalDepthwiseConv1d(self.d_inner, kernel_size=d_conv)
@@ -534,11 +566,17 @@ class StructuredStateSpaceDualityBranch(nn.Module):
         if isinstance(self.residual_proj, nn.Linear):
             nn.init.xavier_uniform_(self.residual_proj.weight)
         with torch.no_grad():
-            base = torch.arange(1, self.d_state + 1, device=self.A_log.device, dtype=self.A_log.dtype)
+            base = torch.arange(
+                1, self.d_state + 1, device=self.A_log.device, dtype=self.A_log.dtype
+            )
             self.A_log.copy_(base.log().unsqueeze(0).expand(self.num_heads, -1))
             self.Dskip.fill_(1.0)
-            dt = torch.rand(self.num_heads, device=self.dt_bias.device, dtype=self.dt_bias.dtype)
-            dt = dt * (math.log(self.dt_max) - math.log(self.dt_min)) + math.log(self.dt_min)
+            dt = torch.rand(
+                self.num_heads, device=self.dt_bias.device, dtype=self.dt_bias.dtype
+            )
+            dt = dt * (math.log(self.dt_max) - math.log(self.dt_min)) + math.log(
+                self.dt_min
+            )
             self.dt_bias.copy_(_inverse_softplus(dt.exp()))
 
     def _split_proj(self, p: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -569,8 +607,13 @@ class StructuredStateSpaceDualityBranch(nn.Module):
 
         u_heads = u.reshape(batch_size, seqlen, self.num_heads, self.head_dim)
         y = grouped_ssd_scan(
-            u=u_heads, dt=dt, A=A, Bpar=Bpar, Cpar=Cpar,
-            Dskip=self.Dskip, delta_gate=delta_gate,
+            u=u_heads,
+            dt=dt,
+            A=A,
+            Bpar=Bpar,
+            Cpar=Cpar,
+            Dskip=self.Dskip,
+            delta_gate=delta_gate,
         ).reshape(batch_size, seqlen, self.d_inner)
 
         residual_inner = self.residual_proj(residual)
@@ -581,11 +624,22 @@ class StructuredStateSpaceDualityBranch(nn.Module):
     # Recurrent inference
     # ------------------------------------------------------------------
 
-    def make_state(self, batch: int, device=None, dtype=None) -> dict[str, torch.Tensor]:
+    def make_state(
+        self, batch: int, device=None, dtype=None
+    ) -> dict[str, torch.Tensor]:
         """Return a fresh recurrent state for *batch* sequences."""
         return {
-            "conv": torch.zeros(batch, self.d_inner, self.d_conv - 1, device=device, dtype=dtype),
-            "ssm":  torch.zeros(batch, self.num_heads, self.head_dim, self.d_state, device=device, dtype=dtype),
+            "conv": torch.zeros(
+                batch, self.d_inner, self.d_conv - 1, device=device, dtype=dtype
+            ),
+            "ssm": torch.zeros(
+                batch,
+                self.num_heads,
+                self.head_dim,
+                self.d_state,
+                device=device,
+                dtype=dtype,
+            ),
         }
 
     def step(self, x: torch.Tensor, state: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -615,18 +669,20 @@ class StructuredStateSpaceDualityBranch(nn.Module):
         weight = self.conv.conv.weight.view(D, self.d_conv)
         u, state["conv"] = _conv_step(u_raw, state["conv"], weight, self.conv.conv.bias)
 
-        dt_raw = self.dt_proj(dt_hidden)                             # (B, H)
+        dt_raw = self.dt_proj(dt_hidden)  # (B, H)
         dt = F.softplus(dt_raw + self.dt_bias).clamp(self.dt_min, self.dt_max)
 
-        A = -torch.exp(self.A_log)                                   # (H, N)
-        h = state["ssm"].to(dtype=dt.dtype)                          # (B, H, P, N)
+        A = -torch.exp(self.A_log)  # (H, N)
+        h = state["ssm"].to(dtype=dt.dtype)  # (B, H, P, N)
 
-        decay = torch.exp(dt.unsqueeze(-1) * A.unsqueeze(0))         # (B, H, N)
-        decayed = decay.unsqueeze(-2) * h                            # (B, H, P, N)
+        decay = torch.exp(dt.unsqueeze(-1) * A.unsqueeze(0))  # (B, H, N)
+        decayed = decay.unsqueeze(-2) * h  # (B, H, P, N)
 
         u_heads = u.reshape(B, H, P)
         # outer product → (B, H, P, N)
-        delta = dt.unsqueeze(-1).unsqueeze(-1) * Bpar.unsqueeze(-2) * u_heads.unsqueeze(-1)
+        delta = (
+            dt.unsqueeze(-1).unsqueeze(-1) * Bpar.unsqueeze(-2) * u_heads.unsqueeze(-1)
+        )
 
         if delta_gate_raw is not None:
             gate = torch.sigmoid(delta_gate_raw).unsqueeze(-1).unsqueeze(-1)
@@ -634,7 +690,9 @@ class StructuredStateSpaceDualityBranch(nn.Module):
         else:
             h_new = decayed + delta
 
-        y_heads = (Cpar.unsqueeze(-2) * h_new).sum(-1) + self.Dskip.unsqueeze(0) * u_heads
+        y_heads = (Cpar.unsqueeze(-2) * h_new).sum(-1) + self.Dskip.unsqueeze(
+            0
+        ) * u_heads
         y = y_heads.reshape(B, D)
         state["ssm"] = h_new.detach()
 
@@ -646,6 +704,7 @@ class StructuredStateSpaceDualityBranch(nn.Module):
 # ---------------------------------------------------------------------------
 # HybridMamba2Block — SSD branch + sliding-window attention, learned gate
 # ---------------------------------------------------------------------------
+
 
 class HybridMamba2Block(nn.Module):
     """Hybrid block that fuses an SSD (Mamba-2) branch with sliding-window
@@ -749,12 +808,12 @@ class HybridMamba2Block(nn.Module):
         """
         state = self.ssm.make_state(batch, device=device, dtype=dtype)
         nkv = self.attn.n_kv_heads
-        ws  = self.attn.window_size
-        hd  = self.attn.head_dim
-        state["kv_k"]   = torch.zeros(batch, nkv, ws, hd, device=device, dtype=dtype)
-        state["kv_v"]   = torch.zeros(batch, nkv, ws, hd, device=device, dtype=dtype)
-        state["kv_pos"] = 0   # next write slot in circular buffer
-        state["kv_len"] = 0   # valid entries (capped at window_size)
+        ws = self.attn.window_size
+        hd = self.attn.head_dim
+        state["kv_k"] = torch.zeros(batch, nkv, ws, hd, device=device, dtype=dtype)
+        state["kv_v"] = torch.zeros(batch, nkv, ws, hd, device=device, dtype=dtype)
+        state["kv_pos"] = 0  # next write slot in circular buffer
+        state["kv_len"] = 0  # valid entries (capped at window_size)
         state["abs_pos"] = 0  # absolute position counter for RoPE
         return state
 
@@ -762,7 +821,7 @@ class HybridMamba2Block(nn.Module):
         B = x.shape[0]
         attn = self.attn
 
-        q = attn.q_proj(x).reshape(B, attn.num_heads,  attn.head_dim)
+        q = attn.q_proj(x).reshape(B, attn.num_heads, attn.head_dim)
         k = attn.k_proj(x).reshape(B, attn.n_kv_heads, attn.head_dim)
         v = attn.v_proj(x).reshape(B, attn.n_kv_heads, attn.head_dim)
 
@@ -776,8 +835,12 @@ class HybridMamba2Block(nn.Module):
         state["kv_len"] = min(state["kv_len"] + 1, attn.window_size)
 
         valid = state["kv_len"]
-        k_ctx = state["kv_k"] if valid == attn.window_size else state["kv_k"][:, :, :valid]
-        v_ctx = state["kv_v"] if valid == attn.window_size else state["kv_v"][:, :, :valid]
+        k_ctx = (
+            state["kv_k"] if valid == attn.window_size else state["kv_k"][:, :, :valid]
+        )
+        v_ctx = (
+            state["kv_v"] if valid == attn.window_size else state["kv_v"][:, :, :valid]
+        )
 
         if attn.n_rep > 1:
             k_ctx = k_ctx.repeat_interleave(attn.n_rep, dim=1)
@@ -799,16 +862,17 @@ class HybridMamba2Block(nn.Module):
         Returns:
             ``(B, d_model)``
         """
-        ssm_out  = self.ssm.step(self.ssm_norm(x), state)
+        ssm_out = self.ssm.step(self.ssm_norm(x), state)
         attn_out = self._attn_step(self.attn_norm(x), state)
-        gate     = torch.sigmoid(self.mix_gate(self.mix_norm(x)))
-        mixed    = gate * ssm_out + (1.0 - gate) * attn_out
+        gate = torch.sigmoid(self.mix_gate(self.mix_norm(x)))
+        mixed = gate * ssm_out + (1.0 - gate) * attn_out
         return self.out_proj(self.out_norm(mixed))
 
 
 # ---------------------------------------------------------------------------
 # Tiny language model wrappers
 # ---------------------------------------------------------------------------
+
 
 class TinyHybridMambaLM(nn.Module):
     """Small language model built from stacked ``HybridMambaBlock`` layers."""
@@ -844,12 +908,12 @@ class TinyHybridMambaLM(nn.Module):
             ]
         )
         self._has_ffn: list[bool] = [
-            mlp_every_n > 0 and (i + 1) % mlp_every_n == 0
-            for i in range(n_layers)
+            mlp_every_n > 0 and (i + 1) % mlp_every_n == 0 for i in range(n_layers)
         ]
         self.ffns = nn.ModuleList(
             FeedForward(d_model, expansion=ffn_expansion, dropout=ffn_dropout)
-            if has else nn.Identity()
+            if has
+            else nn.Identity()
             for has in self._has_ffn
         )
         self.final_norm = nn.LayerNorm(d_model)
@@ -868,7 +932,9 @@ class TinyHybridMambaLM(nn.Module):
 
     def make_states(self, batch: int, device=None, dtype=None) -> list[dict]:
         """Return per-block recurrent states for token-by-token inference."""
-        return [blk.make_state(batch, device=device, dtype=dtype) for blk in self.blocks]
+        return [
+            blk.make_state(batch, device=device, dtype=dtype) for blk in self.blocks
+        ]
 
     @torch.no_grad()
     def generate(
@@ -896,7 +962,9 @@ class TinyHybridMambaLM(nn.Module):
 
         def _step(tok: torch.Tensor) -> torch.Tensor:
             x = self.embed(tok)
-            for i, (blk, ffn, has_ffn) in enumerate(zip(self.blocks, self.ffns, self._has_ffn)):
+            for i, (blk, ffn, has_ffn) in enumerate(
+                zip(self.blocks, self.ffns, self._has_ffn)
+            ):
                 x = x + blk.step(x, states[i])
                 if has_ffn:
                     x = x + ffn(x)
@@ -914,8 +982,12 @@ class TinyHybridMambaLM(nn.Module):
                 scaled = logits / temperature
                 if top_k > 0:
                     topk_vals, _ = scaled.topk(top_k, dim=-1)
-                    scaled = scaled.masked_fill(scaled < topk_vals[:, -1:], float("-inf"))
-                next_tok = torch.multinomial(torch.softmax(scaled, dim=-1), 1).squeeze(1)
+                    scaled = scaled.masked_fill(
+                        scaled < topk_vals[:, -1:], float("-inf")
+                    )
+                next_tok = torch.multinomial(torch.softmax(scaled, dim=-1), 1).squeeze(
+                    1
+                )
             generated.append(next_tok)
             logits = self.lm_head(_step(next_tok))
 
@@ -1014,12 +1086,12 @@ class TinyHybridMamba2LM(nn.Module):
 
         self.blocks = nn.ModuleList(blocks)
         self._has_ffn: list[bool] = [
-            mlp_every_n > 0 and (i + 1) % mlp_every_n == 0
-            for i in range(n_layers)
+            mlp_every_n > 0 and (i + 1) % mlp_every_n == 0 for i in range(n_layers)
         ]
         self.ffns = nn.ModuleList(
             FeedForward(d_model, expansion=ffn_expansion, dropout=ffn_dropout)
-            if has else nn.Identity()
+            if has
+            else nn.Identity()
             for has in self._has_ffn
         )
         self.final_norm = nn.LayerNorm(d_model)
@@ -1038,7 +1110,9 @@ class TinyHybridMamba2LM(nn.Module):
 
     def make_states(self, batch: int, device=None, dtype=None) -> list[dict]:
         """Return per-block recurrent states for token-by-token inference."""
-        return [blk.make_state(batch, device=device, dtype=dtype) for blk in self.blocks]
+        return [
+            blk.make_state(batch, device=device, dtype=dtype) for blk in self.blocks
+        ]
 
     @torch.no_grad()
     def generate(
@@ -1066,7 +1140,9 @@ class TinyHybridMamba2LM(nn.Module):
 
         def _step(tok: torch.Tensor) -> torch.Tensor:
             x = self.embed(tok)
-            for i, (blk, ffn, has_ffn) in enumerate(zip(self.blocks, self.ffns, self._has_ffn)):
+            for i, (blk, ffn, has_ffn) in enumerate(
+                zip(self.blocks, self.ffns, self._has_ffn)
+            ):
                 x = x + blk.step(x, states[i])
                 if has_ffn:
                     x = x + ffn(x)
@@ -1084,8 +1160,12 @@ class TinyHybridMamba2LM(nn.Module):
                 scaled = logits / temperature
                 if top_k > 0:
                     topk_vals, _ = scaled.topk(top_k, dim=-1)
-                    scaled = scaled.masked_fill(scaled < topk_vals[:, -1:], float("-inf"))
-                next_tok = torch.multinomial(torch.softmax(scaled, dim=-1), 1).squeeze(1)
+                    scaled = scaled.masked_fill(
+                        scaled < topk_vals[:, -1:], float("-inf")
+                    )
+                next_tok = torch.multinomial(torch.softmax(scaled, dim=-1), 1).squeeze(
+                    1
+                )
             generated.append(next_tok)
             logits = self.lm_head(_step(next_tok))
 

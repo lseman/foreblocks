@@ -72,7 +72,9 @@ class HeadStateManager(nn.Module):
             head.alpha_param = p
 
     def alpha_weights_for_head(self, head: ActiveHead) -> AlphaWeights:
-        return self._alpha_weights_for_head(head, sample=head.spec.alpha_mode == "gumbel")
+        return self._alpha_weights_for_head(
+            head, sample=head.spec.alpha_mode == "gumbel"
+        )
 
     def deterministic_alpha_weights_for_head(self, head: ActiveHead) -> AlphaWeights:
         return self._alpha_weights_for_head(head, sample=False)

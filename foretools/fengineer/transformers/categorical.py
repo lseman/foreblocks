@@ -30,9 +30,8 @@ class CategoricalTransformer(BaseFeatureTransformer):
         self,
         config,
         strategies: tuple[str, ...] = ("auto",),
-        rare_threshold: None | (
-            float
-        ) = None,  # fraction (0..1); falls back to config.rare_threshold
+        rare_threshold: None
+        | (float) = None,  # fraction (0..1); falls back to config.rare_threshold
         min_count: int = 1,  # absolute count for rare categories
         top_k: int | None = None,  # keep top_k most frequent; others -> OTHER
         hashing_dim: int = 64,
@@ -118,9 +117,7 @@ class CategoricalTransformer(BaseFeatureTransformer):
         n = len(s)
         te_threshold = int(getattr(self.config, "target_encode_threshold", 10))
         backend = str(getattr(self.config, "backend", "auto")).lower()
-        tree_onehot_max = int(
-            getattr(self.config, "cat_tree_onehot_max_categories", 8)
-        )
+        tree_onehot_max = int(getattr(self.config, "cat_tree_onehot_max_categories", 8))
         tree_ordinal_max = int(
             getattr(self.config, "cat_tree_ordinal_max_categories", 255)
         )
@@ -156,9 +153,9 @@ class CategoricalTransformer(BaseFeatureTransformer):
                     Xc = oe.fit_transform(s.to_frame())
                     score = f_regression(Xc, y_fill.values)[0].mean()
                 if np.isfinite(score) and score > 0:
-                    if getattr(self.config, 'use_loo', False):
+                    if getattr(self.config, "use_loo", False):
                         return "loo"
-                    if getattr(self.config, 'use_james_stein', False):
+                    if getattr(self.config, "use_james_stein", False):
                         return "james-stein"
                     return "target_kfold"
             except Exception:
@@ -336,18 +333,18 @@ class CategoricalTransformer(BaseFeatureTransformer):
                 grp = pd.DataFrame({"cat": s, "y": y_series}).groupby("cat")["y"]
                 cat_mean = grp.mean().to_dict()
                 cat_count = grp.size().to_dict()
-                
+
                 feat_suffix = {
                     "target_kfold": "te",
                     "loo": "loo",
-                    "james-stein": "js"
+                    "james-stein": "js",
                 }.get(strategy, "enc")
-                
+
                 info.update(
                     global_mean=global_mean,
-                    cat_mean=cat_mean, 
-                    cat_count=cat_count, 
-                    feature_names=[f"{col}_{feat_suffix}"]
+                    cat_mean=cat_mean,
+                    cat_count=cat_count,
+                    feature_names=[f"{col}_{feat_suffix}"],
                 )
                 info["is_classification_target"] = self._is_classification_target(
                     pd.Series(y)
@@ -409,7 +406,9 @@ class CategoricalTransformer(BaseFeatureTransformer):
                 )
                 enc_map = smoothed.to_dict()
                 te_index = pd.Index(te_keys)
-                out.loc[te_index] = s_valid.loc[te_index].map(enc_map).fillna(prior).values
+                out.loc[te_index] = (
+                    s_valid.loc[te_index].map(enc_map).fillna(prior).values
+                )
             if self.target_noise_std > 0:
                 rng = np.random.RandomState(self.random_state)
                 noise = rng.normal(0.0, self.target_noise_std, size=len(out))
@@ -437,32 +436,38 @@ class CategoricalTransformer(BaseFeatureTransformer):
         """Leave-One-Out encoding: (TargetSum - CurrentY) / (Count - 1)"""
         name = info["feature_names"][0]
         prior = info["global_mean"]
-        
+
         if y is not None:
             y_series = self._to_numeric_target(pd.Series(y).reindex(index))
             # Calculate counts and sums per category
-            cat_stats = pd.DataFrame({'cat': s, 'y': y_series}).groupby('cat')['y'].agg(['sum', 'count'])
-            
+            cat_stats = (
+                pd.DataFrame({"cat": s, "y": y_series})
+                .groupby("cat")["y"]
+                .agg(["sum", "count"])
+            )
+
             # Map stats back to rows
-            row_sum = s.map(cat_stats['sum']).fillna(0)
-            row_count = s.map(cat_stats['count']).fillna(0)
-            
+            row_sum = s.map(cat_stats["sum"]).fillna(0)
+            row_count = s.map(cat_stats["count"]).fillna(0)
+
             # (TotalSum - SelfY) / (TotalCount - 1)
             # Avoid division by zero
             loo = (row_sum - y_series.fillna(0)) / (row_count - 1).replace(0, 1)
             # Fill cases where count was 1 with prior
             loo = loo.where(row_count > 1, prior)
-            
+
             # Add noise for regularization
             if self.target_noise_std > 0:
                 rng = np.random.RandomState(self.random_state)
                 loo += rng.normal(0, self.target_noise_std, size=len(loo))
-            
+
             return pd.DataFrame({name: loo.values}, index=index)
         else:
             # Inference: use pre-calculated means
             cat_mean = info["cat_mean"]
-            return pd.DataFrame({name: s.map(cat_mean).fillna(prior).values}, index=index)
+            return pd.DataFrame(
+                {name: s.map(cat_mean).fillna(prior).values}, index=index
+            )
 
     def _james_stein_transform(
         self,
@@ -474,35 +479,41 @@ class CategoricalTransformer(BaseFeatureTransformer):
         """James-Stein encoder: Shrinkage toward the global mean."""
         name = info["feature_names"][0]
         prior = info["global_mean"]
-        
+
         # Calculate stats
         if y is not None:
             y_series = self._to_numeric_target(pd.Series(y).reindex(index))
             global_var = y_series.var()
             if global_var == 0 or np.isnan(global_var):
-                return pd.DataFrame({name: [prior]*len(index)}, index=index)
-                
-            stats = pd.DataFrame({'cat': s, 'y': y_series}).groupby('cat')['y'].agg(['mean', 'var', 'count'])
-            
+                return pd.DataFrame({name: [prior] * len(index)}, index=index)
+
+            stats = (
+                pd.DataFrame({"cat": s, "y": y_series})
+                .groupby("cat")["y"]
+                .agg(["mean", "var", "count"])
+            )
+
             # Weight = 1 - (var_within / (var_within + var_between))
             # Simplified JS: Weight = 1 - (pooled_var / (pooled_var + category_var * count))
             # We use a common version: B = VarAcrossCategories / (VarAcrossCategories + VarWithinCategory / Count)
-            
+
             # Map means and counts to rows
-            row_mean = s.map(stats['mean']).fillna(prior)
-            row_var = s.map(stats['var']).fillna(0)
-            row_count = s.map(stats['count']).fillna(0)
-            
+            row_mean = s.map(stats["mean"]).fillna(prior)
+            row_var = s.map(stats["var"]).fillna(0)
+            row_count = s.map(stats["count"]).fillna(0)
+
             # Shrinkage factor
             B = global_var / (global_var + (row_var / row_count.replace(0, 1)))
-            B = B.clip(0, 1) # Ensure weight is between 0 and 1
-            
+            B = B.clip(0, 1)  # Ensure weight is between 0 and 1
+
             js = (1 - B) * prior + B * row_mean
             return pd.DataFrame({name: js.values}, index=index)
         else:
             # Simplified inference for JS
             cat_mean = info["cat_mean"]
-            return pd.DataFrame({name: s.map(cat_mean).fillna(prior).values}, index=index)
+            return pd.DataFrame(
+                {name: s.map(cat_mean).fillna(prior).values}, index=index
+            )
 
     def transform(self, X: pd.DataFrame, y: pd.Series | None = None) -> pd.DataFrame:
         if not self.categorical_cols_:

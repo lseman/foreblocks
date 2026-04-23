@@ -44,9 +44,7 @@ def _sparkline(values: list[float], width: int = 80) -> str:
     return "".join(out)
 
 
-def _fetch_runs(
-    tracker: MLTracker, experiment_name: str | None = None
-) -> list[dict]:
+def _fetch_runs(tracker: MLTracker, experiment_name: str | None = None) -> list[dict]:
     return tracker.search_runs(experiment_name=experiment_name)
 
 

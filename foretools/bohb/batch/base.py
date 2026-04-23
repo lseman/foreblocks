@@ -13,4 +13,3 @@ class BatchSelector(ABC):
         self, candidates: list[dict[str, Any]], scores: np.ndarray, n: int
     ) -> list[int]:
         pass
-

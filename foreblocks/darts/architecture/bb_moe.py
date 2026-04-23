@@ -116,7 +116,9 @@ class DARTSMoEFeedForward(nn.Module):
                 mixed[mask] = mixed[mask] + weight_k[mask].unsqueeze(-1) * out_e
 
         if self.shared_experts:
-            shared = torch.stack([expert(x_flat) for expert in self.shared_experts], dim=0)
+            shared = torch.stack(
+                [expert(x_flat) for expert in self.shared_experts], dim=0
+            )
             mixed = mixed + shared.mean(dim=0)
 
         mixed = self.out_dropout(mixed)
@@ -174,7 +176,9 @@ class DARTSFeedForward(nn.Module):
         self.expand = int(max(1, expand))
         self.dim_ff = int(self.d_model * self.expand)
         resolved_ffn_mode = (
-            str(ffn_mode).lower() if ffn_mode is not None else ("moe" if use_moe else "swiglu")
+            str(ffn_mode).lower()
+            if ffn_mode is not None
+            else ("moe" if use_moe else "swiglu")
         )
         if resolved_ffn_mode not in {*self.MODE_NAMES, "auto"}:
             resolved_ffn_mode = "swiglu"

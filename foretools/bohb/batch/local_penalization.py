@@ -45,4 +45,3 @@ class LocalPenalizationSelector(BatchSelector):
             if len(selected) >= n:
                 break
         return selected[:n]
-

@@ -6,10 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .common import Tensor
-from .common import ensure_adj
-from .common import is_batched_adj
-from .common import xavier_zero_bias
+from .common import Tensor, ensure_adj, is_batched_adj, xavier_zero_bias
 from .norms import make_feature_norm
 
 
@@ -21,7 +18,9 @@ def _crop_residual_to_match(x: Tensor, ref: Tensor) -> Tensor:
     if x.size(1) == ref.size(1):
         return x
     if x.size(1) < ref.size(1):
-        raise ValueError("Residual input is shorter than the temporal reference tensor.")
+        raise ValueError(
+            "Residual input is shorter than the temporal reference tensor."
+        )
     return x[:, -ref.size(1) :, :, :]
 
 
@@ -130,7 +129,9 @@ class MTGNNGraphConstructor(nn.Module):
         nodevec1 = torch.tanh(self.alpha * self.lin1(nodevec1))
         nodevec2 = torch.tanh(self.alpha * self.lin2(nodevec2))
 
-        score = nodevec1 @ nodevec2.transpose(0, 1) - nodevec2 @ nodevec1.transpose(0, 1)
+        score = nodevec1 @ nodevec2.transpose(0, 1) - nodevec2 @ nodevec1.transpose(
+            0, 1
+        )
         return F.relu(torch.tanh(self.alpha * score))
 
     def forward(self, node_idx: torch.Tensor | None = None) -> Tensor:
@@ -383,7 +384,9 @@ class MTGNNBlock(nn.Module):
 
         self.norm = make_feature_norm(self.channels, use_graph_norm=use_graph_norm)
 
-    def forward(self, x: Tensor, adj: Tensor | None = None) -> tuple[Tensor, Tensor | None]:
+    def forward(
+        self, x: Tensor, adj: Tensor | None = None
+    ) -> tuple[Tensor, Tensor | None]:
         z = self.temporal(x)
         skip = self.skip_proj(z) if self.skip_proj is not None else None
 
@@ -497,12 +500,16 @@ class GraphWaveNetBlock(nn.Module):
                 edge_index=edge_index,
                 num_nodes=x.size(2),
                 edge_weight=edge_weight,
-                batch_size=x.size(0) if adj is None and edge_index is not None else None,
+                batch_size=x.size(0)
+                if adj is None and edge_index is not None
+                else None,
                 dtype=x.dtype,
                 device=x.device,
             )
         if self.graph_constructor is None:
-            raise ValueError("adj or edge_index is required when adaptive graph is disabled.")
+            raise ValueError(
+                "adj or edge_index is required when adaptive graph is disabled."
+            )
         return self.graph_constructor().to(device=x.device, dtype=x.dtype)
 
     def forward(

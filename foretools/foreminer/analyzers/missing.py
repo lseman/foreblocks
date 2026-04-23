@@ -20,7 +20,9 @@ class MissingnessAnalyzer(AnalysisStrategy):
 
         # 1) Basic missing rate
         missing_rate = self._missing_rate(data)
-        results["missing_rate"] = missing_rate[missing_rate > 0].sort_values(ascending=False)
+        results["missing_rate"] = missing_rate[missing_rate > 0].sort_values(
+            ascending=False
+        )
 
         # 2) Missing mask
         missing_mask = data.isna().astype(np.int8)
@@ -62,12 +64,16 @@ class MissingnessAnalyzer(AnalysisStrategy):
         union = sums.values[:, None] + sums.values[None, :] - inter.values
 
         with np.errstate(invalid="ignore", divide="ignore"):
-            jacc = np.divide(inter.values, union, out=np.zeros_like(inter.values), where=union > 0)
+            jacc = np.divide(
+                inter.values, union, out=np.zeros_like(inter.values), where=union > 0
+            )
 
         diag = (sums.values > 0).astype(float)
         np.fill_diagonal(jacc, diag)
 
-        return pd.DataFrame(jacc, index=missing_mask.columns, columns=missing_mask.columns)
+        return pd.DataFrame(
+            jacc, index=missing_mask.columns, columns=missing_mask.columns
+        )
 
     @staticmethod
     def _cluster_missingness(missing_mask: pd.DataFrame) -> dict[str, int]:
@@ -98,7 +104,9 @@ class MissingnessAnalyzer(AnalysisStrategy):
             return {}
 
     # --------------- MNAR diagnostics ---------------
-    def _analyze_mnar(self, data: pd.DataFrame, target_col: str, config: AnalysisConfig) -> dict[str, Any]:
+    def _analyze_mnar(
+        self, data: pd.DataFrame, target_col: str, config: AnalysisConfig
+    ) -> dict[str, Any]:
         from scipy.stats import chi2_contingency
         from scipy.stats import ks_2samp
         from scipy.stats import ttest_ind
@@ -138,42 +146,64 @@ class MissingnessAnalyzer(AnalysisStrategy):
                                 lr = LogisticRegression(solver="liblinear")
                                 x = target_arr.reshape(-1, 1)
                                 lr.fit(x, miss_indicator)
-                                auc = roc_auc_score(miss_indicator, lr.predict_proba(x)[:, 1])
+                                auc = roc_auc_score(
+                                    miss_indicator, lr.predict_proba(x)[:, 1]
+                                )
                             except Exception:
                                 pass
                         result["auc"] = auc
 
-                        if (p_t < 0.05) or (p_ks < 0.05) or (np.isfinite(auc) and auc > 0.70):
+                        if (
+                            (p_t < 0.05)
+                            or (p_ks < 0.05)
+                            or (np.isfinite(auc) and auc > 0.70)
+                        ):
                             result["suggested_mnar"] = True
                             reasons = []
-                            if p_t < 0.05: reasons.append("ttest")
-                            if p_ks < 0.05: reasons.append("ks")
-                            if np.isfinite(auc) and auc > 0.70: reasons.append("auc")
+                            if p_t < 0.05:
+                                reasons.append("ttest")
+                            if p_ks < 0.05:
+                                reasons.append("ks")
+                            if np.isfinite(auc) and auc > 0.70:
+                                reasons.append("auc")
                             result["suggested_mnar_reason"] = ", ".join(reasons)
 
                 # Categorical / low-cardinality target
-                elif target.dtype.name == "category" or target.nunique(dropna=True) < 15:
+                elif (
+                    target.dtype.name == "category" or target.nunique(dropna=True) < 15
+                ):
                     contingency = pd.crosstab(miss_indicator, target)
                     if contingency.shape[0] == 2:
                         chi2, p_chi2, _, _ = chi2_contingency(contingency)
                         n = contingency.to_numpy().sum()
                         r, c = contingency.shape
                         denom = n * (min(r - 1, c - 1) if min(r, c) > 1 else 1)
-                        cramers_v = float(np.sqrt(chi2 / denom)) if denom > 0 else np.nan
+                        cramers_v = (
+                            float(np.sqrt(chi2 / denom)) if denom > 0 else np.nan
+                        )
                         mi = float(mutual_info_score(miss_indicator, target))
 
-                        result.update({
-                            "chi2_p": p_chi2,
-                            "cramers_v": cramers_v,
-                            "mutual_info": mi,
-                        })
+                        result.update(
+                            {
+                                "chi2_p": p_chi2,
+                                "cramers_v": cramers_v,
+                                "mutual_info": mi,
+                            }
+                        )
 
-                        if (p_chi2 < 0.05) or (np.isfinite(cramers_v) and cramers_v > 0.10) or (mi > 0.05):
+                        if (
+                            (p_chi2 < 0.05)
+                            or (np.isfinite(cramers_v) and cramers_v > 0.10)
+                            or (mi > 0.05)
+                        ):
                             result["suggested_mnar"] = True
                             reasons = []
-                            if p_chi2 < 0.05: reasons.append("chi2")
-                            if np.isfinite(cramers_v) and cramers_v > 0.10: reasons.append("cramers_v")
-                            if mi > 0.05: reasons.append("mutual_info")
+                            if p_chi2 < 0.05:
+                                reasons.append("chi2")
+                            if np.isfinite(cramers_v) and cramers_v > 0.10:
+                                reasons.append("cramers_v")
+                            if mi > 0.05:
+                                reasons.append("mutual_info")
                             result["suggested_mnar_reason"] = ", ".join(reasons)
 
                 if len(result) > 2:  # record if meaningful

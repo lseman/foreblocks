@@ -9,7 +9,9 @@ from .triton_backend import _should_use_triton
 class RMSNorm(nn.Module):
     """High-performance RMSNorm with Triton acceleration."""
 
-    def __init__(self, d_model: int, eps: float = 1e-5, elementwise_affine: bool = True):
+    def __init__(
+        self, d_model: int, eps: float = 1e-5, elementwise_affine: bool = True
+    ):
         super().__init__()
         self.d_model = d_model
         self.eps = eps

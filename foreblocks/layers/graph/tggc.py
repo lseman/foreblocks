@@ -192,7 +192,9 @@ class GraphGegenbauerConv(nn.Module):
         self.order = int(order)
         self.alpha = float(alpha)
 
-        self.theta = nn.Parameter(torch.empty(self.order + 1, in_channels, out_channels))
+        self.theta = nn.Parameter(
+            torch.empty(self.order + 1, in_channels, out_channels)
+        )
         nn.init.xavier_uniform_(self.theta)
         self.bias = nn.Parameter(torch.zeros(out_channels)) if bias else None
 
@@ -216,8 +218,7 @@ class GraphGegenbauerConv(nn.Module):
         for k in range(2, self.order + 1):
             ap = self._graph_matmul(adj_norm, pkm1)
             pk = (
-                2.0 * (k + self.alpha - 1.0) * ap
-                - (k + 2.0 * self.alpha - 2.0) * pkm2
+                2.0 * (k + self.alpha - 1.0) * ap - (k + 2.0 * self.alpha - 2.0) * pkm2
             ) / float(k)
             out = out + torch.einsum("btnc,co->btno", pk, self.theta[k])
             pkm2, pkm1 = pkm1, pk
@@ -280,7 +281,9 @@ class TemporalSpectralFilter(nn.Module):
             channels,
             per_channel=per_channel,
         )
-        self.register_buffer("mode_idx", torch.empty(0, dtype=torch.long), persistent=False)
+        self.register_buffer(
+            "mode_idx", torch.empty(0, dtype=torch.long), persistent=False
+        )
 
     def _indices(self, device: torch.device) -> Tensor:
         if self.mode_idx.numel() != self.num_modes or self.mode_idx.device != device:
@@ -295,7 +298,9 @@ class TemporalSpectralFilter(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         bsz, steps, _, channels = x.shape
         if steps != self.seq_len:
-            raise ValueError(f"Expected sequence length {self.seq_len}, received {steps}.")
+            raise ValueError(
+                f"Expected sequence length {self.seq_len}, received {steps}."
+            )
         if channels != self.channels:
             raise ValueError(f"Expected {self.channels} channels, received {channels}.")
 
@@ -497,7 +502,9 @@ class TGGCModern(nn.Module):
         adj_learned = self.latent_corr(x)
         if static_adjacency is not None:
             if static_adjacency.shape != adj_learned.shape:
-                raise ValueError("static_adjacency must match learned adjacency shape [N, N].")
+                raise ValueError(
+                    "static_adjacency must match learned adjacency shape [N, N]."
+                )
             if self.cfg.static_adjacency_weight > 0:
                 w = float(self.cfg.static_adjacency_weight)
                 adj = (1.0 - w) * adj_learned + w * static_adjacency.to(adj_learned)
@@ -535,7 +542,9 @@ class TGGCModern(nn.Module):
                 f"Expected {self.cfg.in_channels} channels, received {x.size(3)}."
             )
 
-        adj_learned, adj_norm = self._compute_graph(x, static_adjacency=static_adjacency)
+        adj_learned, adj_norm = self._compute_graph(
+            x, static_adjacency=static_adjacency
+        )
         z = self.input_proj(x)
         for block in self.blocks:
             z = block(z, adj_norm)

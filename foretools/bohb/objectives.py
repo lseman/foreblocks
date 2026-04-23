@@ -18,7 +18,6 @@ except Exception:  # pragma: no cover - optional dependency
     optim = None
 
 
-
 def realistic_nn_objective(config: dict[str, Any], budget: float) -> float:
     """
     Simulate training dynamics:

@@ -3,13 +3,16 @@ from typing import Any
 
 class TrialPruned(Exception):
     """Exception raised when a trial should be pruned."""
+
     pass
+
 
 class Trial:
     """
     A trial object passed to the objective function, allowing it to report
     intermediate results and be pruned early if it performs poorly.
     """
+
     def __init__(self, config: dict[str, Any], budget: float, bohb_instance):
         self.config = config
         self.budget = float(budget)

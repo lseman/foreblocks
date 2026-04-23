@@ -21,7 +21,6 @@ except Exception as _e:
     ) from _e
 
 
-
 def prepare_lens(offsets: torch.LongTensor) -> torch.LongTensor:
     return offsets[1:] - offsets[:-1]
 

@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 
@@ -33,9 +32,9 @@ class RevIN(nn.Module):
             return x_norm
 
         if mode == "denorm":
-            assert hasattr(self, "mean") and hasattr(
-                self, "std"
-            ), "Must call norm() before denorm()"
+            assert hasattr(self, "mean") and hasattr(self, "std"), (
+                "Must call norm() before denorm()"
+            )
             mean = stats.get("mean", self.mean) if stats else self.mean
             std = stats.get("std", self.std) if stats else self.std
             if self.affine:

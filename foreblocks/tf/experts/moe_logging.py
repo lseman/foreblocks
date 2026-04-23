@@ -22,6 +22,7 @@ import torch
 # ║                         LOGGING: TRAIN/EVAL SIDE                        ║
 # ╚═════════════════════════════════════════════════════════════════════════╝
 
+
 class MoELogger:
     """
     Collects per-step router statistics for later reporting.
@@ -86,11 +87,12 @@ class MoELogger:
         self,
         step: int | float,
         gate_logits: np.ndarray | torch.Tensor,  # [N, E]
-        topk_idx: np.ndarray | torch.Tensor,     # [N, K]
+        topk_idx: np.ndarray | torch.Tensor,  # [N, K]
         capacity_dropped: int = 0,
         aux_loss: float | None = None,
         latency_ms: float | None = None,
-        meta: dict[str, np.ndarray | torch.Tensor | Sequence[int] | Sequence[float]] | None = None,
+        meta: dict[str, np.ndarray | torch.Tensor | Sequence[int] | Sequence[float]]
+        | None = None,
     ) -> None:
         # convert to numpy
         gate_logits = _to_numpy(gate_logits)
@@ -119,7 +121,9 @@ class MoELogger:
         if len(self.buff.get("snap_topk", [])) < 64:
             self._append("snap_topk", topk_idx[:4096].copy())  # snapshot
             # also store top-1 confidence for calibration plots
-            top1 = np.take_along_axis(probs, topk_idx[:, :1], axis=-1).squeeze(-1)  # [N]
+            top1 = np.take_along_axis(probs, topk_idx[:, :1], axis=-1).squeeze(
+                -1
+            )  # [N]
             self._append("snap_top1_conf", top1[:4096].copy())
 
         # Handle meta (any conditioning like hour, node_id, horizon, feature_id)
@@ -162,7 +166,7 @@ def attach_router_hook(module, moe_logger: MoELogger, step_getter):
             capacity_dropped=tokens_dropped,
             aux_loss=aux_loss,
             latency_ms=float(getattr(mod, "last_latency_ms", 0.0)),
-            meta=getattr(mod, "last_meta", None)
+            meta=getattr(mod, "last_meta", None),
         )
 
     return module.register_forward_hook(_hook)
@@ -174,29 +178,36 @@ def attach_router_hook(module, moe_logger: MoELogger, step_getter):
 
 # ——— Utilities ————————————————————————————————————————————————
 
+
 def _to_numpy(x) -> np.ndarray:
     try:
         import torch
+
         if isinstance(x, torch.Tensor):
             return x.detach().cpu().numpy()
     except Exception:
         pass
     return np.asarray(x)
 
+
 def _softmax(x: np.ndarray, axis=-1) -> np.ndarray:
     x = x - np.max(x, axis=axis, keepdims=True)
     e = np.exp(x)
     return e / (np.sum(e, axis=axis, keepdims=True) + 1e-12)
 
+
 def _entropy(p: np.ndarray, axis=-1) -> np.ndarray:
     p = np.clip(p, 1e-12, 1.0)
     return -np.sum(p * np.log(p), axis=axis)
 
+
 def _steps(d: dict[str, list[Any]]) -> np.ndarray:
     return np.asarray(d.get("step", []), dtype=float)
 
+
 def _stack_list_of_lists(x: list[list[float]]) -> np.ndarray:
     return np.asarray(x, dtype=float) if len(x) > 0 else np.zeros((0,))
+
 
 def _maybe_save(fig, outdir: str | None, name: str):
     if outdir:
@@ -206,22 +217,29 @@ def _maybe_save(fig, outdir: str | None, name: str):
 
 # ——— 1) Expert Utilization over Time ————————————————————————————
 
-def plot_expert_utilization_over_time(log: dict[str, list[Any]], title="Expert Utilization"):
+
+def plot_expert_utilization_over_time(
+    log: dict[str, list[Any]], title="Expert Utilization"
+):
     steps = _steps(log)
-    util = np.asarray(log.get("expert_util", []), dtype=float)   # [S, E]
+    util = np.asarray(log.get("expert_util", []), dtype=float)  # [S, E]
     if util.ndim != 2 or util.shape[0] == 0:
         return None
     fig, ax = plt.subplots(figsize=(9, 4))
-    ax.stackplot(steps, util.T, step='mid')
+    ax.stackplot(steps, util.T, step="mid")
     ax.set_xlabel("Step")
     ax.set_ylabel("Fraction of routed tokens")
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
     return fig
 
+
 # ——— 2) Load Imbalance CV ——————————————————————————————————————
 
-def plot_load_imbalance_cv(log: dict[str, list[Any]], title="Expert Load Imbalance (CV)"):
+
+def plot_load_imbalance_cv(
+    log: dict[str, list[Any]], title="Expert Load Imbalance (CV)"
+):
     util = np.asarray(log.get("expert_util", []), dtype=float)  # [S, E]
     steps = _steps(log)
     if util.ndim != 2 or util.shape[0] == 0:
@@ -236,7 +254,9 @@ def plot_load_imbalance_cv(log: dict[str, list[Any]], title="Expert Load Imbalan
     ax.grid(True, alpha=0.3)
     return fig
 
+
 # ——— 3) Router Entropy & Aux Loss ——————————————————————————————
+
 
 def plot_entropy_and_aux(log: dict[str, list[Any]]):
     steps = _steps(log)
@@ -244,16 +264,18 @@ def plot_entropy_and_aux(log: dict[str, list[Any]]):
     aux = _stack_list_of_lists(log.get("aux_loss", []))
     fig, ax = plt.subplots(figsize=(9, 3))
     if len(ent) > 0:
-        ax.plot(steps[:len(ent)], ent, label="Router Entropy")
+        ax.plot(steps[: len(ent)], ent, label="Router Entropy")
     if len(aux) > 0:
-        ax.plot(steps[:len(aux)], aux, label="Aux Loss")
+        ax.plot(steps[: len(aux)], aux, label="Aux Loss")
     ax.set_xlabel("Step")
     ax.set_title("Router Entropy / Aux Loss")
     ax.grid(True, alpha=0.3)
     ax.legend()
     return fig
 
+
 # ——— 4) Tokens Dropped (Capacity Pressure) ————————————————————
+
 
 def plot_tokens_dropped(log: dict[str, list[Any]]):
     steps = _steps(log)
@@ -261,25 +283,27 @@ def plot_tokens_dropped(log: dict[str, list[Any]]):
     if dropped.size == 0:
         return None
     fig, ax = plt.subplots(figsize=(7, 3))
-    ax.plot(steps[:len(dropped)], dropped)
+    ax.plot(steps[: len(dropped)], dropped)
     ax.set_xlabel("Step")
     ax.set_ylabel("# Tokens")
     ax.set_title("Tokens Dropped (capacity overflow)")
     ax.grid(True, alpha=0.3)
     return fig
 
+
 # ——— 5) Specialization Heatmap (expert × condition) ———————————
 
+
 def heatmap_expert_by_condition(
-    topk_snapshots: list[np.ndarray],   # a few [N,K] arrays
-    cond_snapshots: list[np.ndarray],   # a few [N] arrays in [0,C)
+    topk_snapshots: list[np.ndarray],  # a few [N,K] arrays
+    cond_snapshots: list[np.ndarray],  # a few [N] arrays in [0,C)
     E: int,
     C: int,
-    title: str = "Expert × Condition usage"
+    title: str = "Expert × Condition usage",
 ):
     counts = np.zeros((E, C), dtype=np.int64)
     for topk, cond in zip(topk_snapshots, cond_snapshots):
-        topk = np.asarray(topk).reshape(-1)      # use primary expert only
+        topk = np.asarray(topk).reshape(-1)  # use primary expert only
         cond = np.asarray(cond).reshape(-1)
         m = min(len(topk), len(cond))
         if m <= 0:
@@ -295,13 +319,15 @@ def heatmap_expert_by_condition(
     fig.colorbar(im, ax=ax, shrink=0.9)
     return fig, counts
 
+
 # ——— 6) Router Reliability Diagram (Calibration proxy) —————————
+
 
 def reliability_diagram(
     conf: np.ndarray,
     correctness: np.ndarray,
     bins: int = 10,
-    title: str = "Router Reliability"
+    title: str = "Router Reliability",
 ):
     conf = np.asarray(conf).astype(float)
     correctness = np.asarray(correctness).astype(float)
@@ -324,9 +350,15 @@ def reliability_diagram(
     ax.grid(True, alpha=0.3)
     return fig
 
+
 # ——— 7) Expert Ablation (Δ metric per expert) ————————————————
 
-def bar_ablation_delta(metric_full: float, metric_without_expert: Sequence[float], title="Per-Expert Importance (Ablation)"):
+
+def bar_ablation_delta(
+    metric_full: float,
+    metric_without_expert: Sequence[float],
+    title="Per-Expert Importance (Ablation)",
+):
     metric_without_expert = np.asarray(metric_without_expert, dtype=float)
     delta = metric_without_expert - metric_full
     fig, ax = plt.subplots(figsize=(7, 3))
@@ -337,9 +369,13 @@ def bar_ablation_delta(metric_full: float, metric_without_expert: Sequence[float
     ax.set_title(title)
     return fig
 
+
 # ——— 8) Horizon-wise Error (MoE vs Dense) ————————————————
 
-def plot_horizon_wise_error(err_moe: Sequence[float], err_dense: Sequence[float], title="Horizon-wise Error"):
+
+def plot_horizon_wise_error(
+    err_moe: Sequence[float], err_dense: Sequence[float], title="Horizon-wise Error"
+):
     err_moe = np.asarray(err_moe, dtype=float)
     err_dense = np.asarray(err_dense, dtype=float)
     H = np.arange(len(err_moe))
@@ -353,9 +389,13 @@ def plot_horizon_wise_error(err_moe: Sequence[float], err_dense: Sequence[float]
     ax.legend()
     return fig
 
+
 # ——— 9) Accuracy–Latency Pareto ——————————————————————————————
 
-def pareto_accuracy_latency(points: list[dict[str, float]], title="Accuracy–Latency Pareto"):
+
+def pareto_accuracy_latency(
+    points: list[dict[str, float]], title="Accuracy–Latency Pareto"
+):
     """
     points: [{"name": "MoE", "metric": 0.13, "latency_ms": 7.5, "size_m": 120}, ...]
     Lower metric is better (e.g., sMAPE, MASE, RMSE).
@@ -376,9 +416,16 @@ def pareto_accuracy_latency(points: list[dict[str, float]], title="Accuracy–La
     ax.grid(True, alpha=0.3)
     return fig
 
+
 # ——— 10) Attention × Expert Interaction ———————————————————————
 
-def plot_attn_entropy_by_expert(attn_entropy_per_token: np.ndarray, primary_expert_per_token: np.ndarray, E: int, title="Attention Entropy by Expert"):
+
+def plot_attn_entropy_by_expert(
+    attn_entropy_per_token: np.ndarray,
+    primary_expert_per_token: np.ndarray,
+    E: int,
+    title="Attention Entropy by Expert",
+):
     """
     attn_entropy_per_token: [N] entropy values computed per token from your attention maps
     primary_expert_per_token: [N] expert index for that token
@@ -399,6 +446,7 @@ def plot_attn_entropy_by_expert(attn_entropy_per_token: np.ndarray, primary_expe
 # ╔═════════════════════════════════════════════════════════════════════════╗
 # ║                         REPORT / EXPORT CONVENIENCE                     ║
 # ╚═════════════════════════════════════════════════════════════════════════╝
+
 
 @dataclass
 class ReportInputs:
@@ -423,6 +471,7 @@ class ReportInputs:
     attn_entropy_per_token: np.ndarray | None = None
     primary_expert_per_token: np.ndarray | None = None
 
+
 def _maybe_save(fig, outdir: str | None, name: str, close: bool = True) -> str | None:
     """
     Save a matplotlib Figure if it's not None.
@@ -439,6 +488,7 @@ def _maybe_save(fig, outdir: str | None, name: str, close: bool = True) -> str |
         return path
     # If no outdir, we still return a synthetic name to indicate it was created
     return name
+
 
 def build_moe_report(
     ri: ReportInputs,
@@ -480,14 +530,17 @@ def build_moe_report(
             fig, _ = heatmap_expert_by_condition(
                 topk_snapshots=[_to_numpy(x) for x in topk_snaps],
                 cond_snapshots=[_to_numpy(x) for x in cond_snaps],
-                E=ri.E, C=ri.condition_cardinality,
-                title=f"Expert × {ri.condition_name}"
+                E=ri.E,
+                C=ri.condition_cardinality,
+                title=f"Expert × {ri.condition_name}",
             )
             figs["heatmap_specialization"] = fig
             p = _maybe_save(fig, outdir, f"5_heatmap_expert_by_{ri.condition_name}.png")
             manifest["heatmap_specialization"] = p or "skipped (unexpected)"
         else:
-            manifest["heatmap_specialization"] = "skipped (missing snap_topk or snap_meta)"
+            manifest["heatmap_specialization"] = (
+                "skipped (missing snap_topk or snap_meta)"
+            )
     else:
         manifest["heatmap_specialization"] = "skipped (E/condition not provided)"
 
@@ -506,8 +559,7 @@ def build_moe_report(
     figs["ablation"] = None
     if ri.full_metric is not None and ri.metric_without_expert is not None:
         figs["ablation"] = bar_ablation_delta(
-            metric_full=ri.full_metric,
-            metric_without_expert=ri.metric_without_expert
+            metric_full=ri.full_metric, metric_without_expert=ri.metric_without_expert
         )
         p = _maybe_save(figs["ablation"], outdir, "7_expert_ablation.png")
         manifest["ablation"] = p or "skipped (unexpected)"
@@ -536,11 +588,17 @@ def build_moe_report(
 
     # 10 Attention × Expert
     figs["attn_by_expert"] = None
-    if ri.attn_entropy_per_token is not None and ri.primary_expert_per_token is not None and ri.E is not None:
+    if (
+        ri.attn_entropy_per_token is not None
+        and ri.primary_expert_per_token is not None
+        and ri.E is not None
+    ):
         figs["attn_by_expert"] = plot_attn_entropy_by_expert(
             ri.attn_entropy_per_token, ri.primary_expert_per_token, E=ri.E
         )
-        p = _maybe_save(figs["attn_by_expert"], outdir, "10_attention_entropy_by_expert.png")
+        p = _maybe_save(
+            figs["attn_by_expert"], outdir, "10_attention_entropy_by_expert.png"
+        )
         manifest["attn_by_expert"] = p or "skipped (unexpected)"
     else:
         manifest["attn_by_expert"] = "skipped (no attention/primary expert inputs)"
@@ -553,13 +611,15 @@ def build_moe_report(
 
     return figs
 
+
 # ╔═════════════════════════════════════════════════════════════════════════╗
 # ║                    EVALUATION-TIME HELPER (ABLATION)                    ║
 # ╚═════════════════════════════════════════════════════════════════════════╝
 
+
 def run_per_expert_ablation(
-    eval_fn_disable_expert,   # callable: (e:int) -> metric_value (lower is better)
-    E: int
+    eval_fn_disable_expert,  # callable: (e:int) -> metric_value (lower is better)
+    E: int,
 ) -> list[float]:
     """
     Convenience wrapper to measure metric when each expert is disabled.
@@ -578,10 +638,11 @@ def run_per_expert_ablation(
 # ║                     RELIABILITY PROXY CONSTRUCTION IDEA                 ║
 # ╚═════════════════════════════════════════════════════════════════════════╝
 
+
 def make_reliability_proxy_from_contrib(
     top1_conf_list: list[np.ndarray],
     delta_improvement_list: list[np.ndarray],
-    threshold: float = 0.0
+    threshold: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Build (confidence, correctness) arrays for reliability_diagram:
@@ -592,7 +653,9 @@ def make_reliability_proxy_from_contrib(
     Returns flat arrays (conf, correctness).
     """
     conf = np.concatenate([np.asarray(c).reshape(-1) for c in top1_conf_list], axis=0)
-    imp = np.concatenate([np.asarray(d).reshape(-1) for d in delta_improvement_list], axis=0)
+    imp = np.concatenate(
+        [np.asarray(d).reshape(-1) for d in delta_improvement_list], axis=0
+    )
     corr = (imp >= threshold).astype(float)
     return conf, corr
 
@@ -616,7 +679,7 @@ if __name__ == "__main__":
         "latency_ms": [],
         "snap_topk": [],
         "snap_top1_conf": [],
-        "snap_meta_hour": [],   # pretend our condition is 'hour'
+        "snap_meta_hour": [],  # pretend our condition is 'hour'
     }
 
     for s in range(S):
@@ -643,8 +706,10 @@ if __name__ == "__main__":
     # Reliability proxy
     conf, corr = make_reliability_proxy_from_contrib(
         top1_conf_list=log["snap_top1_conf"],
-        delta_improvement_list=[rng.normal(0.05, 0.1, size=len(x)) for x in log["snap_top1_conf"]],
-        threshold=0.0
+        delta_improvement_list=[
+            rng.normal(0.05, 0.1, size=len(x)) for x in log["snap_top1_conf"]
+        ],
+        threshold=0.0,
     )
 
     # Build report
@@ -665,7 +730,7 @@ if __name__ == "__main__":
             {"name": "MoE-6e", "metric": 0.120, "latency_ms": 7.2, "size_m": 120},
         ],
         attn_entropy_per_token=np.abs(rng.normal(1.0, 0.25, size=(500,))),
-        primary_expert_per_token=rng.integers(0, E, size=(500,))
+        primary_expert_per_token=rng.integers(0, E, size=(500,)),
     )
 
     figs = build_moe_report(ri, outdir="moe_report_example")

@@ -24,22 +24,22 @@ class FeatureSelector:
 
         # Selector integration
         self.selector_method = str(getattr(config, "selector_method", "mi")).lower()
-        self.use_rfecv = getattr(config, 'use_rfecv', True)
+        self.use_rfecv = getattr(config, "use_rfecv", True)
         self.rfecv_selector_ = None
         self.mrmr_selector_ = None
         self.selection_method_ = "mi"  # Default to MI
-        
+
         # RFECV parameters from config
         self.rfecv_params = {
-            'step': getattr(config, 'rfecv_step', 0.1),
-            'cv': getattr(config, 'rfecv_cv', 5),
-            'min_features_to_select': getattr(config, 'rfecv_min_features', None),
-            'max_features_to_select': getattr(config, 'rfecv_max_features', None),
-            'patience': getattr(config, 'rfecv_patience', 5),
-            'use_ensemble': getattr(config, 'rfecv_use_ensemble', True),
-            'stability_selection': getattr(config, 'rfecv_stability_selection', True),
-            'verbose': 0,
-            'random_state': getattr(config, 'random_state', 42)
+            "step": getattr(config, "rfecv_step", 0.1),
+            "cv": getattr(config, "rfecv_cv", 5),
+            "min_features_to_select": getattr(config, "rfecv_min_features", None),
+            "max_features_to_select": getattr(config, "rfecv_max_features", None),
+            "patience": getattr(config, "rfecv_patience", 5),
+            "use_ensemble": getattr(config, "rfecv_use_ensemble", True),
+            "stability_selection": getattr(config, "rfecv_stability_selection", True),
+            "verbose": 0,
+            "random_state": getattr(config, "random_state", 42),
         }
 
         self.ami_scorer = AdaptiveMI(
@@ -71,9 +71,7 @@ class FeatureSelector:
         )
         self.mrmr_criterion = str(getattr(config, "mrmr_criterion", "mid")).lower()
         self.mrmr_use_raw_mi = bool(getattr(config, "mrmr_use_raw_mi", False))
-        self.mrmr_redundancy_eps = float(
-            getattr(config, "mrmr_redundancy_eps", 1e-8)
-        )
+        self.mrmr_redundancy_eps = float(getattr(config, "mrmr_redundancy_eps", 1e-8))
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "FeatureSelector":
         """Fit feature selector with configurable method selection."""
@@ -180,57 +178,60 @@ class FeatureSelector:
 
             # Prepare data (Boruta needs numerical and no NaNs)
             numerical_cols = X.select_dtypes(include=[np.number]).columns
-            if len(numerical_cols) < 2: return False
-            
+            if len(numerical_cols) < 2:
+                return False
+
             X_numeric = X[numerical_cols].fillna(X[numerical_cols].median())
-            y_clean = y.fillna(y.mode()[0] if self._is_classification_target(y) else y.median())
-            
+            y_clean = y.fillna(
+                y.mode()[0] if self._is_classification_target(y) else y.median()
+            )
+
             common_idx = X_numeric.index.intersection(y_clean.index)
             X_final = X_numeric.loc[common_idx]
             y_final = y_clean.loc[common_idx]
-            
+
             selector = BorutaSelector(
-                max_iter=getattr(self.config, 'boruta_max_iter', 20),
-                random_state=getattr(self.config, 'random_state', 42),
-                verbose=0
+                max_iter=getattr(self.config, "boruta_max_iter", 20),
+                random_state=getattr(self.config, "random_state", 42),
+                verbose=0,
             )
             selector.fit(X_final, y_final)
             self.selected_features_ = selector.get_selected_features()
             self.boruta_selector_ = selector
-            
+
             print(f"   ✅ Boruta selected {len(self.selected_features_)} features")
             return True
         except Exception as e:
             warnings.warn(f"Boruta selection failed: {e}")
             return False
-  
+
     def _fit_rfecv(self, X: pd.DataFrame, y: pd.Series) -> bool:
         """Fit RFECV selector."""
         try:
             # Auto-calculate parameters if not specified
             n_features = X.shape[1]
-            if self.rfecv_params['min_features_to_select'] is None:
-                self.rfecv_params['min_features_to_select'] = max(1, n_features // 20)
-            if self.rfecv_params['max_features_to_select'] is None:
-                self.rfecv_params['max_features_to_select'] = min(100, n_features)
-            
+            if self.rfecv_params["min_features_to_select"] is None:
+                self.rfecv_params["min_features_to_select"] = max(1, n_features // 20)
+            if self.rfecv_params["max_features_to_select"] is None:
+                self.rfecv_params["max_features_to_select"] = min(100, n_features)
+
             # Create RFECV config
             rfecv_config = RFECVConfig(**self.rfecv_params)
-            
+
             # Initialize and fit RFECV
             self.rfecv_selector_ = AdvancedRFECV(config=rfecv_config)
-            
+
             # Use only numerical features for RFECV
             numerical_cols = X.select_dtypes(include=[np.number]).columns
             if len(numerical_cols) < 2:
                 return False
-                
+
             X_numeric = X[numerical_cols].copy()
             X_filled = X_numeric.fillna(X_numeric.median())
-            
+
             # Clean target variable - handle NaN values
             y_clean = y.copy()
-            
+
             # Handle missing values in target
             if y_clean.isna().any():
                 if getattr(self.config, "task", "regression") == "classification":
@@ -253,43 +254,43 @@ class FeatureSelector:
                         valid_mask = y_clean.notna()
                         y_clean = y_clean[valid_mask]
                         X_filled = X_filled.loc[valid_mask]
-            
+
             # Ensure we have enough data after cleaning
             if len(X_filled) < 10 or len(y_clean) < 10:
                 return False
-            
+
             # Align indices
             common_idx = X_filled.index.intersection(y_clean.index)
             if len(common_idx) < 10:
                 return False
-                
+
             X_final = X_filled.loc[common_idx]
             y_final = y_clean.loc[common_idx]
-            
+
             # Final check for any remaining NaN values
             if X_final.isna().any().any() or y_final.isna().any():
                 # Drop any remaining NaN rows
                 combined_df = pd.concat([X_final, y_final], axis=1)
                 combined_clean = combined_df.dropna()
-                
+
                 if len(combined_clean) < 10:
                     return False
-                    
+
                 X_final = combined_clean.iloc[:, :-1]
                 y_final = combined_clean.iloc[:, -1]
-            
+
             self.rfecv_selector_.fit(X_final, y_final)
-            
+
             # Get selected features
             self.selected_features_ = self.rfecv_selector_.get_selected_features()
-            
+
             print(f"   ✅ RFECV selected {len(self.selected_features_)} features")
             return True
-            
+
         except Exception as e:
             warnings.warn(f"RFECV selection failed: {e}")
             return False
-    
+
     def _fit_mi(self, X: pd.DataFrame, y: pd.Series) -> "FeatureSelector":
         """Fit MI selector (original implementation)."""
         # Get numerical columns once
@@ -422,12 +423,16 @@ class FeatureSelector:
 
         if self._is_classification_target(y):
             splitter = StratifiedKFold(
-                n_splits=cv, shuffle=True, random_state=getattr(self.config, "random_state", 42)
+                n_splits=cv,
+                shuffle=True,
+                random_state=getattr(self.config, "random_state", 42),
             )
             split_iter = splitter.split(X, y)
         else:
             splitter = KFold(
-                n_splits=cv, shuffle=True, random_state=getattr(self.config, "random_state", 42)
+                n_splits=cv,
+                shuffle=True,
+                random_state=getattr(self.config, "random_state", 42),
             )
             split_iter = splitter.split(X)
 
@@ -461,9 +466,13 @@ class FeatureSelector:
         return mi_scores.sort_values(ascending=False)
 
     def _resolve_target_feature_count(self, scores: pd.Series) -> int:
-        above_threshold = int((scores > getattr(self.config, "mi_threshold", 0.01)).sum())
+        above_threshold = int(
+            (scores > getattr(self.config, "mi_threshold", 0.01)).sum()
+        )
         min_features = max(1, int(getattr(self.config, "min_features", 1)))
-        max_features = max(min_features, int(getattr(self.config, "max_features", len(scores))))
+        max_features = max(
+            min_features, int(getattr(self.config, "max_features", len(scores)))
+        )
         target = above_threshold if above_threshold > 0 else min_features
         return int(np.clip(target, min_features, min(max_features, len(scores))))
 
@@ -500,23 +509,24 @@ class FeatureSelector:
         """Get feature importance scores from the selection method used."""
         if self.selection_method_ == "rfecv" and self.rfecv_selector_ is not None:
             # Get importance scores from RFECV
-            if hasattr(self.rfecv_selector_, 'feature_importances_'):
+            if hasattr(self.rfecv_selector_, "feature_importances_"):
                 # Get the features that were actually used in RFECV
                 numerical_cols = self.rfecv_selector_._feature_names
-                if numerical_cols and len(self.rfecv_selector_.feature_importances_) == len(numerical_cols):
+                if numerical_cols and len(
+                    self.rfecv_selector_.feature_importances_
+                ) == len(numerical_cols):
                     scores = pd.Series(
-                        self.rfecv_selector_.feature_importances_, 
-                        index=numerical_cols
+                        self.rfecv_selector_.feature_importances_, index=numerical_cols
                     )
                     return scores.sort_values(ascending=False)
 
         if self.selection_method_ == "mrmr" and self.mrmr_scores_ is not None:
             return self.mrmr_scores_
-        
+
         # Fallback to MI scores
-        if hasattr(self, 'mi_scores_') and self.mi_scores_ is not None:
+        if hasattr(self, "mi_scores_") and self.mi_scores_ is not None:
             return self.mi_scores_
-        
+
         return None
 
     def get_top_features(self, n: int = 10) -> list[str]:

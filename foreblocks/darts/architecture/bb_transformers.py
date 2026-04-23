@@ -78,7 +78,9 @@ class LightweightTransformerEncoder(nn.Module):
         self.causal = causal
         self.self_attention_type = resolved_self_attention_type
         resolved_ffn_variant = (
-            str(ffn_variant).lower() if ffn_variant is not None else ("moe" if use_moe else "swiglu")
+            str(ffn_variant).lower()
+            if ffn_variant is not None
+            else ("moe" if use_moe else "swiglu")
         )
         self.ffn_variant = resolved_ffn_variant
         self.use_moe = resolved_ffn_variant == "moe"
@@ -111,7 +113,10 @@ class LightweightTransformerEncoder(nn.Module):
 
         self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
         self.patch_projs = nn.ModuleDict(
-            {str(size): nn.Linear(size, latent_dim, bias=False) for size in self.patch_sizes}
+            {
+                str(size): nn.Linear(size, latent_dim, bias=False)
+                for size in self.patch_sizes
+            }
         )
         self.patch_pos_embeds = nn.ParameterDict(
             {
@@ -157,7 +162,9 @@ class LightweightTransformerEncoder(nn.Module):
                         ),
                         "norm1": RMSNorm(latent_dim),
                         "norm2": RMSNorm(latent_dim),
-                        "patch_mix": nn.Parameter(torch.randn(len(self.patch_sizes))) if self.patching_mode == "hierarchical" else None,
+                        "patch_mix": nn.Parameter(torch.randn(len(self.patch_sizes)))
+                        if self.patching_mode == "hierarchical"
+                        else None,
                     }
                 )
                 for _ in range(num_layers)
@@ -179,7 +186,11 @@ class LightweightTransformerEncoder(nn.Module):
         self, temperature: float = 1.0, single_path: bool = False
     ) -> torch.Tensor:
         if not self.enable_patch_search or self.patching_mode != "auto":
-            mode = self.patching_mode if self.patching_mode in self.patch_mode_names else "direct"
+            mode = (
+                self.patching_mode
+                if self.patching_mode in self.patch_mode_names
+                else "direct"
+            )
             ref = next(self.parameters())
             weights = ref.new_zeros(len(self.patch_mode_names))
             weights[self.patch_mode_names.index(mode)] = 1.0
@@ -208,9 +219,7 @@ class LightweightTransformerEncoder(nn.Module):
         resolved = str(patch_mode).lower()
         if resolved == "patch":
             resolved = "patch_16"
-        self.patching_mode = (
-            resolved if resolved in self.patch_mode_names else "direct"
-        )
+        self.patching_mode = resolved if resolved in self.patch_mode_names else "direct"
         if hasattr(self, "patch_alpha_logits"):
             self._parameters.pop("patch_alpha_logits", None)
             try:
@@ -341,11 +350,16 @@ class LightweightTransformerEncoder(nn.Module):
             ]
             if mix_logits:
                 mix_weights = torch.stack(
-                    [F.softmax(logits / self.temperature, dim=0) for logits in mix_logits],
+                    [
+                        F.softmax(logits / self.temperature, dim=0)
+                        for logits in mix_logits
+                    ],
                     dim=0,
                 ).mean(dim=0)
             else:
-                mix_weights = x.new_full((len(self.patch_sizes),), 1.0 / len(self.patch_sizes))
+                mix_weights = x.new_full(
+                    (len(self.patch_sizes),), 1.0 / len(self.patch_sizes)
+                )
             out = sum(
                 mix_weights[idx] * outputs[size][0]
                 for idx, size in enumerate(self.patch_sizes)
@@ -393,7 +407,9 @@ class LightweightTransformerEncoder(nn.Module):
         outputs = []
         for idx in active_indices:
             mode = self.patch_mode_names[idx]
-            outputs.append((tokenizer_weights[idx], self._encode_mode(x, mode, output_len=T)))
+            outputs.append(
+                (tokenizer_weights[idx], self._encode_mode(x, mode, output_len=T))
+            )
 
         if len(outputs) == 1:
             _, (out, ctx, state) = outputs[0]
@@ -440,7 +456,9 @@ class LightweightTransformerDecoder(nn.Module):
         self.self_attention_type = resolved_self_attention_type
         self.cross_attention_type = resolved_cross_attention_type
         resolved_ffn_variant = (
-            str(ffn_variant).lower() if ffn_variant is not None else ("moe" if use_moe else "swiglu")
+            str(ffn_variant).lower()
+            if ffn_variant is not None
+            else ("moe" if use_moe else "swiglu")
         )
         self.ffn_variant = resolved_ffn_variant
         self.use_moe = resolved_ffn_variant == "moe"

@@ -130,7 +130,9 @@ class DARTSTrainer:
             in {"auto", "sdp", "linear", "probsparse", "cosine", "local"}
         ] or list(DEFAULT_ATTENTION_VARIANTS)
         raw_ffn_variants = (
-            list(ffn_variants) if ffn_variants is not None else list(DEFAULT_FFN_VARIANTS)
+            list(ffn_variants)
+            if ffn_variants is not None
+            else list(DEFAULT_FFN_VARIANTS)
         )
         self.ffn_variants = [
             str(v).lower()
@@ -242,9 +244,7 @@ class DARTSTrainer:
             ]
         }
 
-    def _restore_progressive_state(
-        self, model: nn.Module, state: dict | None
-    ) -> None:
+    def _restore_progressive_state(self, model: nn.Module, state: dict | None) -> None:
         if state is None or not hasattr(model, "cells"):
             return
         cells = getattr(model, "cells", [])
@@ -434,7 +434,9 @@ class DARTSTrainer:
         family_choices: dict[str, list[str]] = {}
 
         for family_name in op_families:
-            family_pool = [op for op in family_space.get(family_name, []) if op != "Identity"]
+            family_pool = [
+                op for op in family_space.get(family_name, []) if op != "Identity"
+            ]
             if not family_pool:
                 family_pool = list(family_space.get(family_name, []))
             if not family_pool:
@@ -467,7 +469,9 @@ class DARTSTrainer:
         n_ops = rng.randint(min_ops_local, max_ops_local)
         non_identity_target = max(0, n_ops - (1 if require_identity else 0))
         extra_pool = [op for op in ops_no_id if op not in guaranteed_ops]
-        extra_count = min(len(extra_pool), max(0, non_identity_target - len(guaranteed_ops)))
+        extra_count = min(
+            len(extra_pool), max(0, non_identity_target - len(guaranteed_ops))
+        )
         extra_ops = rng.sample(extra_pool, k=extra_count) if extra_count > 0 else []
         selected_non_identity = guaranteed_ops + extra_ops
 
@@ -475,7 +479,9 @@ class DARTSTrainer:
             selected_non_identity = [rng.choice(ops_no_id)]
 
         selected_ops = (
-            ["Identity"] + selected_non_identity if require_identity else selected_non_identity
+            ["Identity"] + selected_non_identity
+            if require_identity
+            else selected_non_identity
         )
         return selected_ops, family_choices
 
@@ -540,7 +546,9 @@ class DARTSTrainer:
             rng.choice(self.attention_variants) if self.attention_variants else "auto"
         )
         transformer_ffn_variant = (
-            rng.choice(self.ffn_variants) if "attention" in selected_families else "auto"
+            rng.choice(self.ffn_variants)
+            if "attention" in selected_families
+            else "auto"
         )
         family_choices = dict(family_choices)
         if "attention" in selected_families:

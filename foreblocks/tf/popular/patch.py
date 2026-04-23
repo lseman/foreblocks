@@ -34,6 +34,7 @@ class PatchTokenEncoder(nn.Module):
 
     Expects inputs: [B, N, D] (tokens).
     """
+
     def __init__(
         self,
         d_model: int,
@@ -74,7 +75,9 @@ class PatchTokenEncoder(nn.Module):
             top_k=top_k,
             moe_capacity_factor=moe_capacity_factor,
         )
-        self.layers = nn.ModuleList([_EncLayer(**layer_kwargs) for _ in range(n_layers)])
+        self.layers = nn.ModuleList(
+            [_EncLayer(**layer_kwargs) for _ in range(n_layers)]
+        )
         self.final_norm = (
             create_norm_layer(custom_norm, d_model, layer_norm_eps)
             if use_final_norm
@@ -154,10 +157,14 @@ class PatchTSTHeadCustom(nn.Module):
         self.patch_embed = nn.Linear(patch_len, d_model)
 
         # Optional [CLS] token
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model)) if self.use_cls else None
+        self.cls_token = (
+            nn.Parameter(torch.zeros(1, 1, d_model)) if self.use_cls else None
+        )
 
         # Positional encoding for tokens
-        self.pos_enc = PositionalEncoding(d_model=d_model, max_len=max_patches + (1 if self.use_cls else 0))
+        self.pos_enc = PositionalEncoding(
+            d_model=d_model, max_len=max_patches + (1 if self.use_cls else 0)
+        )
 
         # Token encoder stack using your custom layers
         self.encoder = PatchTokenEncoder(
@@ -182,7 +189,9 @@ class PatchTSTHeadCustom(nn.Module):
 
         # ---- Output mixing heads ----
         if output_mode == "pooled":
-            self.horizon_proj = self._make_horizon_mlp(d_model, pred_len, head_hidden, dropout)
+            self.horizon_proj = self._make_horizon_mlp(
+                d_model, pred_len, head_hidden, dropout
+            )
             self.token_to_horizon = None
             self.horizon_queries = None
             self.horizon_attn = None
@@ -216,7 +225,11 @@ class PatchTSTHeadCustom(nn.Module):
 
         # Optional channel mixer (C_in -> C_out)
         self.channel_mixer = None
-        if in_channels is not None and out_channels is not None and out_channels != in_channels:
+        if (
+            in_channels is not None
+            and out_channels is not None
+            and out_channels != in_channels
+        ):
             self.channel_mixer = nn.Linear(in_channels, out_channels, bias=True)
 
         self.dropout = nn.Dropout(dropout)
@@ -225,10 +238,14 @@ class PatchTSTHeadCustom(nn.Module):
     # ---------- builders & init ----------
 
     @staticmethod
-    def _make_horizon_mlp(d_in: int, pred_len: int, hidden: int, dropout: float) -> nn.Sequential:
+    def _make_horizon_mlp(
+        d_in: int, pred_len: int, hidden: int, dropout: float
+    ) -> nn.Sequential:
         if hidden and hidden > 0:
             return nn.Sequential(
-                nn.Linear(d_in, hidden), nn.GELU(), nn.Dropout(dropout),
+                nn.Linear(d_in, hidden),
+                nn.GELU(),
+                nn.Dropout(dropout),
                 nn.Linear(hidden, pred_len),
             )
         return nn.Sequential(nn.Linear(d_in, pred_len))
@@ -238,7 +255,9 @@ class PatchTSTHeadCustom(nn.Module):
         # D -> 1 with optional hidden
         if hidden and hidden > 0:
             return nn.Sequential(
-                nn.Linear(d_in, hidden), nn.GELU(), nn.Dropout(dropout),
+                nn.Linear(d_in, hidden),
+                nn.GELU(),
+                nn.Dropout(dropout),
                 nn.Linear(hidden, 1),
             )
         return nn.Sequential(nn.Linear(d_in, 1))
@@ -252,7 +271,9 @@ class PatchTSTHeadCustom(nn.Module):
         if self.cls_token is not None:
             nn.init.normal_(self.cls_token, mean=0.0, std=0.02)
 
-    def _init_token_to_horizon(self, n_eff: int, device: torch.device, dtype: torch.dtype):
+    def _init_token_to_horizon(
+        self, n_eff: int, device: torch.device, dtype: torch.dtype
+    ):
         """Initialize the learnable token-to-horizon projection matrix."""
         A = torch.empty(self.pred_len, n_eff, device=device, dtype=dtype)
         nn.init.xavier_uniform_(A)
@@ -312,7 +333,7 @@ class PatchTSTHeadCustom(nn.Module):
             # Lazy initialization of token_to_horizon if needed
             if self.token_to_horizon is None or self._n_eff_cache != N_eff:
                 self._init_token_to_horizon(N_eff, device, dtype)
-            
+
             H = torch.einsum("tn,bnd->btd", self.token_to_horizon, tok)  # [B*C, T, D]
             H = self.dropout(H)
             y_bc = self.horizon_scalar(H).squeeze(-1)  # [B*C, T]
@@ -323,7 +344,9 @@ class PatchTSTHeadCustom(nn.Module):
             if self.horizon_queries is None:
                 self._init_horizon_queries(device, dtype)
 
-            Q = self.horizon_queries.unsqueeze(0).expand(tok.size(0), -1, -1)  # [B*C, T, D]
+            Q = self.horizon_queries.unsqueeze(0).expand(
+                tok.size(0), -1, -1
+            )  # [B*C, T, D]
             H, _, _ = self.horizon_attn(Q, tok, tok)  # [B*C, T, D]
             H = self.dropout(H)
             y_bc = self.horizon_scalar(H).squeeze(-1)  # [B*C, T]

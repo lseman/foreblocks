@@ -28,10 +28,11 @@ except ImportError:
     torch_scatter_max = None
 
 
-
 def _check_edge_index(edge_index: Tensor, num_nodes: int) -> None:
     if edge_index.dim() != 2 or edge_index.size(0) != 2:
-        raise ValueError(f"edge_index must be shaped [2, E], got {tuple(edge_index.shape)}")
+        raise ValueError(
+            f"edge_index must be shaped [2, E], got {tuple(edge_index.shape)}"
+        )
     if edge_index.numel() == 0:
         return
     if edge_index.min().item() < 0 or edge_index.max().item() >= num_nodes:
@@ -118,7 +119,9 @@ def _scatter_max(src: Tensor, index: Tensor, dim_size: int) -> Tensor:
     return fill
 
 
-def _scatter_aggregate(src: Tensor, index: Tensor, dim_size: int, reduce: AggType) -> Tensor:
+def _scatter_aggregate(
+    src: Tensor, index: Tensor, dim_size: int, reduce: AggType
+) -> Tensor:
     if reduce == "add":
         return _scatter_add(src, index, dim_size)
     if reduce == "mean":
@@ -168,7 +171,9 @@ def _add_self_loops_edge_index(
     if edge_weight.dim() == 1:
         loop_weight = torch.ones(num_nodes, device=device, dtype=dtype)
     elif edge_weight.dim() == 2:
-        loop_weight = torch.ones(edge_weight.size(0), num_nodes, device=device, dtype=dtype)
+        loop_weight = torch.ones(
+            edge_weight.size(0), num_nodes, device=device, dtype=dtype
+        )
     else:
         raise ValueError("edge_weight must have shape [E] or [B, E]")
     return full_edge_index, torch.cat([edge_weight, loop_weight], dim=-1)
@@ -681,7 +686,9 @@ class JumpKnowledge(nn.Module):
         base = xs[0].shape[:-1]
         for idx, t in enumerate(xs[1:], 1):
             if t.shape[:-1] != base:
-                raise ValueError(f"JK shape mismatch at {idx}: {t.shape} vs {xs[0].shape}")
+                raise ValueError(
+                    f"JK shape mismatch at {idx}: {t.shape} vs {xs[0].shape}"
+                )
 
         if self.mode in ("none", "last"):
             return xs[-1]

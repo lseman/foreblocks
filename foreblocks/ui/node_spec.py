@@ -26,22 +26,28 @@ def node(
     Decorate a class to participate in node discovery.
     Only decorated classes are considered. Inference is run unless you override.
     """
+
     def wrap(cls: type) -> type:
         setattr(cls, "__is_node__", True)  # <- discovery gate
-        setattr(cls, "__node_options__", {
-            "type_id": type_id,
-            "name": name,
-            "category": category,
-            "color": color,
-            "subtypes": subtypes or [],
-            "overrides": {
-                "inputs": inputs,
-                "outputs": outputs,
-                "config": config,
-                "config_sources": config_sources or [],
+        setattr(
+            cls,
+            "__node_options__",
+            {
+                "type_id": type_id,
+                "name": name,
+                "category": category,
+                "color": color,
+                "subtypes": subtypes or [],
+                "overrides": {
+                    "inputs": inputs,
+                    "outputs": outputs,
+                    "config": config,
+                    "config_sources": config_sources or [],
+                },
+                "py": py,  # <── NEW: optional explicit codegen metadata
+                "infer": infer,
             },
-            "py": py,     # <── NEW: optional explicit codegen metadata
-            "infer": infer,
-        })
+        )
         return cls
+
     return wrap

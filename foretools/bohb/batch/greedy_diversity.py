@@ -31,4 +31,3 @@ class GreedyDiversitySelector(BatchSelector):
                 break
             selected.append(cand_idx)
         return selected[:n]
-

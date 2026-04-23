@@ -180,9 +180,8 @@ class SAITS(nn.Module):
         self.MIT = MIT
         self.mit_mode = mit_mode
         self.holdout_rate = holdout_rate
-        
+
         self.use_layer_scale = use_layer_scale
-        
 
         actual_input_size = input_size * 2 if input_with_mask else input_size
 
@@ -321,6 +320,7 @@ class SAITS(nn.Module):
             "imputation_MAE": imput_mae,
         }
 
+
 class SaitsDataset(Dataset):
     def __init__(self, X, mask, mit_mode=False, holdout_rate=0.15):
         self.X = X.contiguous()
@@ -338,6 +338,7 @@ class SaitsDataset(Dataset):
             self.X_holdout[holdout_mask] = 0.0  # Or NaN depending on preference
             self.indicating_mask[holdout_mask] = 1.0
             self.mask[holdout_mask] = 0.0  # Hide them from training
+
     def __getitem__(self, idx):
         return {
             "X": self.X[idx],
@@ -518,7 +519,9 @@ class SAITSImputer:
         mask = torch.tensor(masks, dtype=torch.float32)
 
         # Optimized dataset
-        dataset = SaitsDataset(X, mask, mit_mode=self.mit_mode, holdout_rate=self.holdout_rate)
+        dataset = SaitsDataset(
+            X, mask, mit_mode=self.mit_mode, holdout_rate=self.holdout_rate
+        )
 
         # Optimized dataloader
         dataloader = DataLoader(
@@ -582,7 +585,7 @@ class SAITSImputer:
                     {
                         "Loss": f"{loss:.4f}",
                         "Best": f"{best_loss:.4f}",
-                        "LR": f'{optimizer.param_groups[0]["lr"]:.2e}',
+                        "LR": f"{optimizer.param_groups[0]['lr']:.2e}",
                     }
                 )
 
@@ -626,4 +629,3 @@ class SAITSImputer:
 
         # Return imputed values only where original data was missing
         return np.where(np.isnan(series), imputed, series)
-

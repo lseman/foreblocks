@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 
@@ -41,5 +40,3 @@ class StatisticalTransformer(BaseFeatureTransformer):
         features["row_null_ratio"] = null_mask.sum(axis=1) / len(available_cols)
 
         return pd.DataFrame(features, index=X.index)
-
-

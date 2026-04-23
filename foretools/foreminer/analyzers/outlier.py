@@ -490,7 +490,9 @@ class OutlierAnalyzer(AnalysisStrategy):
                     method_errors[name] = err
 
             if self.use_legacy:
-                legacy_res, legacy_err = safe_call(self._legacy_methods, X, config, default={})
+                legacy_res, legacy_err = safe_call(
+                    self._legacy_methods, X, config, default={}
+                )
                 methods.update(legacy_res or {})
                 if legacy_err:
                     method_errors["legacy_methods"] = legacy_err

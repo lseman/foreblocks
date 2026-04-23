@@ -16,13 +16,20 @@ from scipy import stats
 try:
     from numba import njit
     from numba import prange
+
     NUMBA_AVAILABLE = True
 except Exception:
     NUMBA_AVAILABLE = False
+
     def njit(*args, **kwargs):
-        def deco(fn): return fn
+        def deco(fn):
+            return fn
+
         return deco
-    def prange(x): return range(x)
+
+    def prange(x):
+        return range(x)
+
 
 # ----------------------------
 # Optional Joblib (matrix parallel)
@@ -30,6 +37,7 @@ except Exception:
 try:
     from joblib import Parallel
     from joblib import delayed
+
     _JOBLIB = True
 except Exception:
     _JOBLIB = False
@@ -39,6 +47,7 @@ EPS = 1e-12
 # =========================================================
 # Numba kernels (hot paths)
 # =========================================================
+
 
 @njit(cache=True, fastmath=True, parallel=True)
 def _pairwise_sq_dists_sym_nd(X: np.ndarray) -> np.ndarray:
@@ -55,6 +64,7 @@ def _pairwise_sq_dists_sym_nd(X: np.ndarray) -> np.ndarray:
             out[j, i] = s
     return out
 
+
 @njit(cache=True, fastmath=True, parallel=True)
 def _rbf_from_sq_dists_sym(D2: np.ndarray, sigma: float) -> np.ndarray:
     n = D2.shape[0]
@@ -67,6 +77,7 @@ def _rbf_from_sq_dists_sym(D2: np.ndarray, sigma: float) -> np.ndarray:
             out[i, j] = v
             out[j, i] = v
     return out
+
 
 @njit(cache=True, fastmath=True, parallel=True)
 def _rbf_ard_from_sq_dists_sym(X: np.ndarray, sigma_vec: np.ndarray) -> np.ndarray:
@@ -87,6 +98,7 @@ def _rbf_ard_from_sq_dists_sym(X: np.ndarray, sigma_vec: np.ndarray) -> np.ndarr
             out[j, i] = v
     return out
 
+
 @njit(cache=True, fastmath=True, parallel=True)
 def _linear_gram_sym(X: np.ndarray) -> np.ndarray:
     n, d = X.shape
@@ -104,6 +116,7 @@ def _linear_gram_sym(X: np.ndarray) -> np.ndarray:
             out[j, i] = s
     return out
 
+
 @njit(cache=True, fastmath=True, parallel=True)
 def _delta_gram_sym_1d(x: np.ndarray) -> np.ndarray:
     n = x.shape[0]
@@ -115,6 +128,7 @@ def _delta_gram_sym_1d(x: np.ndarray) -> np.ndarray:
             out[i, j] = v
             out[j, i] = v
     return out
+
 
 @njit(cache=True, fastmath=True)
 def _center_inplace(K: np.ndarray) -> None:
@@ -140,6 +154,7 @@ def _center_inplace(K: np.ndarray) -> None:
         for j in range(n):
             K[i, j] = K[i, j] - row_mean[i] - col_mean[j] + g
 
+
 @njit(cache=True, fastmath=True)
 def _trace_prod(A: np.ndarray, B: np.ndarray) -> float:
     n = A.shape[0]
@@ -148,6 +163,7 @@ def _trace_prod(A: np.ndarray, B: np.ndarray) -> float:
         for j in range(n):
             s += A[i, j] * B[j, i]
     return s
+
 
 @njit(cache=True, fastmath=True)
 def _hsic_unbiased_from_grams_numba(K: np.ndarray, L: np.ndarray) -> float:
@@ -179,10 +195,15 @@ def _hsic_unbiased_from_grams_numba(K: np.ndarray, L: np.ndarray) -> float:
     if n3 <= 0:
         return np.nan
     val = (term1 + (S_K * S_L) / (n1 * n2) - 2.0 * term3 / n2) / (n * n3)
-    return val if val > 0.0 and np.isfinite(val) else (0.0 if np.isfinite(val) else np.nan)
+    return (
+        val if val > 0.0 and np.isfinite(val) else (0.0 if np.isfinite(val) else np.nan)
+    )
+
 
 @njit(cache=True, fastmath=True)
-def _hsic_biased_from_centered_perm(Kc: np.ndarray, Lc: np.ndarray, perm: np.ndarray) -> float:
+def _hsic_biased_from_centered_perm(
+    Kc: np.ndarray, Lc: np.ndarray, perm: np.ndarray
+) -> float:
     n = Kc.shape[0]
     s = 0.0
     for i in range(n):
@@ -192,8 +213,11 @@ def _hsic_biased_from_centered_perm(Kc: np.ndarray, Lc: np.ndarray, perm: np.nda
             s += Kc[i, j] * Lc[pi, pj]
     return s / ((n - 1.0) ** 2)
 
+
 @njit(cache=True, fastmath=True)
-def _hsic_unbiased_from_grams_perm_numba(K: np.ndarray, L: np.ndarray, perm: np.ndarray) -> float:
+def _hsic_unbiased_from_grams_perm_numba(
+    K: np.ndarray, L: np.ndarray, perm: np.ndarray
+) -> float:
     """
     Unbiased HSIC under permutation, without materializing L[perm][:, perm].
     """
@@ -243,11 +267,15 @@ def _hsic_unbiased_from_grams_perm_numba(K: np.ndarray, L: np.ndarray, perm: np.
     if n3 <= 0:
         return np.nan
     val = (term1 + (S_K * S_L) / (n1 * n2) - 2.0 * term3 / n2) / (n * n3)
-    return val if val > 0.0 and np.isfinite(val) else (0.0 if np.isfinite(val) else np.nan)
+    return (
+        val if val > 0.0 and np.isfinite(val) else (0.0 if np.isfinite(val) else np.nan)
+    )
+
 
 # =========================================================
 # Utilities (NumPy/compat)
 # =========================================================
+
 
 def _as_dtype(x: np.ndarray, prefer_float32: bool) -> np.ndarray:
     x = np.asarray(x)
@@ -255,6 +283,7 @@ def _as_dtype(x: np.ndarray, prefer_float32: bool) -> np.ndarray:
         x = x.reshape(-1, 1)
     # Use np.array(..., copy=False) for NumPy <=1.23 compat
     return np.array(x, dtype=(np.float32 if prefer_float32 else np.float64), copy=False)
+
 
 def _ensure_1d_or_2d(a: np.ndarray) -> np.ndarray:
     a = np.asarray(a)
@@ -264,6 +293,7 @@ def _ensure_1d_or_2d(a: np.ndarray) -> np.ndarray:
         return a
     return a.reshape(a.shape[0], -1)
 
+
 def _nan_filter_two(X: np.ndarray, Y: np.ndarray, warn: bool = True):
     X = _ensure_1d_or_2d(np.asarray(X))
     Y = _ensure_1d_or_2d(np.asarray(Y))
@@ -271,6 +301,7 @@ def _nan_filter_two(X: np.ndarray, Y: np.ndarray, warn: bool = True):
     if warn and mask.sum() < len(mask):
         warnings.warn(f"Removed {len(mask) - int(mask.sum())} rows with NaN/inf.")
     return X[mask], Y[mask]
+
 
 def _center_numpy_inplace(K: np.ndarray) -> None:
     # stable centering: Kc = K - row_mean - col_mean + g
@@ -280,6 +311,7 @@ def _center_numpy_inplace(K: np.ndarray) -> None:
     K -= row_mean
     K -= col_mean
     K += g
+
 
 def _adaptive_sigma_selection(D2: np.ndarray, method: str = "median") -> float:
     positive = D2[D2 > 0]
@@ -301,6 +333,7 @@ def _adaptive_sigma_selection(D2: np.ndarray, method: str = "median") -> float:
     p95 = np.percentile(np.sqrt(D2.ravel()), 95) if np.any(D2 > 0) else 1.0
     return float(min(sigma, p95 if p95 > EPS else 1.0))
 
+
 def _ard_sigma(X: np.ndarray, method: str = "iqr") -> np.ndarray:
     X = _ensure_1d_or_2d(np.asarray(X))
     d = X.shape[1]
@@ -320,11 +353,15 @@ def _ard_sigma(X: np.ndarray, method: str = "iqr") -> np.ndarray:
     s[~np.isfinite(s)] = 1.0
     return s
 
+
 # =========================================================
 # Null distribution helpers (moment matching)
 # =========================================================
 
-def _top_eigs_randomized(Kc: np.ndarray, q: int = 64, oversample: int = 16, n_iter: int = 2) -> np.ndarray:
+
+def _top_eigs_randomized(
+    Kc: np.ndarray, q: int = 64, oversample: int = 16, n_iter: int = 2
+) -> np.ndarray:
     n = Kc.shape[0]
     l = min(q + oversample, n)
     rng = np.random.default_rng(0)
@@ -338,10 +375,15 @@ def _top_eigs_randomized(Kc: np.ndarray, q: int = 64, oversample: int = 16, n_it
     w = np.maximum(w, 0.0)
     return np.sort(w)[::-1]
 
-def _spectrum_based_moments(K: np.ndarray, L: np.ndarray) -> tuple[float, float, float, float]:
+
+def _spectrum_based_moments(
+    K: np.ndarray, L: np.ndarray
+) -> tuple[float, float, float, float]:
     n = K.shape[0]
-    Kc = K.copy(); Lc = L.copy()
-    _center_numpy_inplace(Kc); _center_numpy_inplace(Lc)
+    Kc = K.copy()
+    Lc = L.copy()
+    _center_numpy_inplace(Kc)
+    _center_numpy_inplace(Lc)
     Kc_scaled = Kc / n
     Lc_scaled = Lc / n
     try:
@@ -360,26 +402,31 @@ def _spectrum_based_moments(K: np.ndarray, L: np.ndarray) -> tuple[float, float,
         mu3 = float(8.0 * np.sum(kron**3))
         mu4 = float(48.0 * np.sum(kron**4))
     except (np.linalg.LinAlgError, ValueError):
-        tr_K = float(np.trace(Kc_scaled)); tr_L = float(np.trace(Lc_scaled))
+        tr_K = float(np.trace(Kc_scaled))
+        tr_L = float(np.trace(Lc_scaled))
         mu1 = tr_K * tr_L
-        K_f = float(np.sum(Kc_scaled * Kc_scaled)); L_f = float(np.sum(Lc_scaled * Lc_scaled))
+        K_f = float(np.sum(Kc_scaled * Kc_scaled))
+        L_f = float(np.sum(Lc_scaled * Lc_scaled))
         mu2 = 2.0 * K_f * L_f
         mu3 = 8.0 * mu1**1.5
         mu4 = 48.0 * mu1**2
     return mu1, max(mu2, 1e-15), max(mu3, 1e-15), max(mu4, 1e-15)
 
+
 def _cornish_fisher_correction(z: float, skew: float, kurt: float) -> float:
     if abs(skew) < 1e-2 and abs(kurt - 3) < 1e-2:
         return z
-    cf2 = (z*z - 1.0) * skew / 6.0
-    cf3 = (z*z*z - 3.0*z) * (kurt - 3.0) / 24.0
-    cf4 = (2.0*z*z*z - 5.0*z) * (skew*skew) / 36.0
+    cf2 = (z * z - 1.0) * skew / 6.0
+    cf3 = (z * z * z - 3.0 * z) * (kurt - 3.0) / 24.0
+    cf4 = (2.0 * z * z * z - 5.0 * z) * (skew * skew) / 36.0
     return float(np.clip(z + cf2 + cf3 - cf4, -10.0, 10.0))
+
 
 def _adaptive_null_method(n: int, eig_K: np.ndarray, eig_L: np.ndarray) -> str:
     if n < 100:
         return "permutation"
-    eig_K_pos = eig_K[eig_K > 1e-10]; eig_L_pos = eig_L[eig_L > 1e-10]
+    eig_K_pos = eig_K[eig_K > 1e-10]
+    eig_L_pos = eig_L[eig_L > 1e-10]
     if eig_K_pos.size == 0 or eig_L_pos.size == 0:
         return "permutation"
     min_eff_rank = min(eig_K_pos.size, eig_L_pos.size)
@@ -391,13 +438,15 @@ def _adaptive_null_method(n: int, eig_K: np.ndarray, eig_L: np.ndarray) -> str:
         return "gaussian"
     return "gamma"
 
+
 # =========================================================
 # Public API
 # =========================================================
 
-KernelType   = Literal["auto", "rbf", "linear", "delta", "mixed", "precomputed"]
+KernelType = Literal["auto", "rbf", "linear", "delta", "mixed", "precomputed"]
 EstimatorType = Literal["biased", "unbiased", "block", "linear", "rff", "nystrom"]
 BandwidthType = Literal["median", "iqr", "silverman"]
+
 
 class HSIC:
     def __init__(
@@ -409,12 +458,12 @@ class HSIC:
         bandwidth_method: BandwidthType = "iqr",
         estimator: EstimatorType = "biased",
         normalize: bool = True,
-        approx_m: int = 2048,         # for linear / Nyström
-        rff_features: int = 512,      # for RFF
+        approx_m: int = 2048,  # for linear / Nyström
+        rff_features: int = 512,  # for RFF
         prefer_float32: bool = False,
         use_numba: bool = True,
         random_state: int | None = None,
-        block_size: int = 1024,       # for block estimator
+        block_size: int = 1024,  # for block estimator
     ):
         self.kernel_x = kernel_x
         self.kernel_y = kernel_y
@@ -445,7 +494,9 @@ class HSIC:
         self._cat_mask_y = np.array(categorical_mask, dtype=bool, copy=False)
 
     # ------------- Main score -------------
-    def score(self, x: np.ndarray, y: np.ndarray, return_components: bool = False) -> float | tuple[float, dict]:
+    def score(
+        self, x: np.ndarray, y: np.ndarray, return_components: bool = False
+    ) -> float | tuple[float, dict]:
         X, Y = _nan_filter_two(x, y)
         X = _as_dtype(X, self.prefer_float32)
         Y = _as_dtype(Y, self.prefer_float32)
@@ -454,17 +505,31 @@ class HSIC:
             raise ValueError("x and y must have the same number of samples")
         if n < 5:
             res = np.nan
-            return (res, {"error": "insufficient_data", "n": n}) if return_components else res
+            return (
+                (res, {"error": "insufficient_data", "n": n})
+                if return_components
+                else res
+            )
 
         # Fast estimators: linear / RFF / Nyström
         if self.estimator == "linear":
             val = self._lhsic(X, Y)
-            comps = {"n": n, "estimator": "linear", "sigma_x": self._last_sigma_x, "sigma_y": self._last_sigma_y}
+            comps = {
+                "n": n,
+                "estimator": "linear",
+                "sigma_x": self._last_sigma_x,
+                "sigma_y": self._last_sigma_y,
+            }
             return (val, comps) if return_components else val
 
         if self.estimator == "rff":
             val = self._rff_hsic(X, Y)
-            comps = {"n": n, "estimator": "rff", "sigma_x": self._last_sigma_x, "sigma_y": self._last_sigma_y}
+            comps = {
+                "n": n,
+                "estimator": "rff",
+                "sigma_x": self._last_sigma_x,
+                "sigma_y": self._last_sigma_y,
+            }
             return (val, comps) if return_components else val
 
         if self.estimator == "nystrom":
@@ -477,7 +542,11 @@ class HSIC:
         L, Lc, yy = self._gram_and_center(Y, which="y")
 
         if self.estimator == "unbiased":
-            val = float(_hsic_unbiased_from_grams_numba(K, L)) if self.use_numba else float(self._hsic_unbiased_np(K, L))
+            val = (
+                float(_hsic_unbiased_from_grams_numba(K, L))
+                if self.use_numba
+                else float(self._hsic_unbiased_np(K, L))
+            )
             comps = {"n": n, "estimator": "unbiased", "raw": val}
             return (val, comps) if return_components else val
 
@@ -494,12 +563,25 @@ class HSIC:
             den = math.sqrt(max(xx, EPS) * max(yy, EPS)) + EPS
             val = float(np.clip(num / den, 0.0, 1.0))
 
-        comps = {"n": n, "estimator": "biased", "sigma_x": self._last_sigma_x, "sigma_y": self._last_sigma_y, "normalization": self.normalize}
+        comps = {
+            "n": n,
+            "estimator": "biased",
+            "sigma_x": self._last_sigma_x,
+            "sigma_y": self._last_sigma_y,
+            "normalization": self.normalize,
+        }
         return (val, comps) if return_components else val
 
     # ------------- P-value -------------
-    def pvalue(self, x: np.ndarray, y: np.ndarray, B: int = 200, subsample: int | None = None,
-               method: str = "auto", use_corrections: bool = True) -> tuple[float, float, dict]:
+    def pvalue(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        B: int = 200,
+        subsample: int | None = None,
+        method: str = "auto",
+        use_corrections: bool = True,
+    ) -> tuple[float, float, dict]:
         rng = self.rng
         X, Y = _nan_filter_two(x, y)
         X = _as_dtype(X, self.prefer_float32)
@@ -510,7 +592,9 @@ class HSIC:
 
         if subsample is not None and n > subsample:
             idx = rng.choice(n, size=subsample, replace=False)
-            X = X[idx]; Y = Y[idx]; n = X.shape[0]
+            X = X[idx]
+            Y = Y[idx]
+            n = X.shape[0]
 
         # Fast estimators: permutation p-value
         if self.estimator in ("linear", "rff", "nystrom"):
@@ -522,15 +606,27 @@ class HSIC:
                 yp = rng.permutation(n)
                 null_vals[b] = self.score(X, Y[yp])
             pval = float((np.sum(null_vals >= obs) + 1.0) / (B + 1.0))
-            return obs, pval, {"method": "permutation_approx", "n": n,
-                               "null_mean": float(null_vals.mean()), "null_std": float(null_vals.std(ddof=1))}
+            return (
+                obs,
+                pval,
+                {
+                    "method": "permutation_approx",
+                    "n": n,
+                    "null_mean": float(null_vals.mean()),
+                    "null_std": float(null_vals.std(ddof=1)),
+                },
+            )
 
         K, Kc, xx = self._gram_and_center(X, "x")
         L, Lc, yy = self._gram_and_center(Y, "y")
 
         # observed statistic
         if self.estimator == "unbiased":
-            obs = float(_hsic_unbiased_from_grams_numba(K, L)) if self.use_numba else float(self._hsic_unbiased_np(K, L))
+            obs = (
+                float(_hsic_unbiased_from_grams_numba(K, L))
+                if self.use_numba
+                else float(self._hsic_unbiased_np(K, L))
+            )
         elif self.estimator == "block":
             obs = self._hsic_block(Kc, Lc, xx, yy, block_size=self.block_size)
         else:
@@ -543,18 +639,39 @@ class HSIC:
         # choose null
         if method == "auto":
             try:
-                eig_K = np.linalg.eigvalsh(Kc / n).real if n <= 2000 else _top_eigs_randomized(Kc / n)
-                eig_L = np.linalg.eigvalsh(Lc / n).real if n <= 2000 else _top_eigs_randomized(Lc / n)
+                eig_K = (
+                    np.linalg.eigvalsh(Kc / n).real
+                    if n <= 2000
+                    else _top_eigs_randomized(Kc / n)
+                )
+                eig_L = (
+                    np.linalg.eigvalsh(Lc / n).real
+                    if n <= 2000
+                    else _top_eigs_randomized(Lc / n)
+                )
                 method = _adaptive_null_method(n, eig_K, eig_L)
             except Exception:
                 method = "gamma"
 
-        diagnostics = {"method": method, "n": n, "mu1": mu1, "mu2": mu2, "mu3": mu3, "mu4": mu4,
-                       "skewness": skewness, "kurtosis": kurtosis, "estimator": self.estimator}
+        diagnostics = {
+            "method": method,
+            "n": n,
+            "mu1": mu1,
+            "mu2": mu2,
+            "mu3": mu3,
+            "mu4": mu4,
+            "skewness": skewness,
+            "kurtosis": kurtosis,
+            "estimator": self.estimator,
+        }
 
         # Parametric null approximations are derived for unnormalized HSIC moments.
         # If normalized score is requested, use permutation for calibrated p-values.
-        if self.normalize and self.estimator in ("biased", "block") and method != "permutation":
+        if (
+            self.normalize
+            and self.estimator in ("biased", "block")
+            and method != "permutation"
+        ):
             method = "permutation"
             diagnostics["method"] = method
             diagnostics["method_override"] = "normalized_hsic_requires_permutation"
@@ -563,10 +680,14 @@ class HSIC:
             if mu2 <= 0:
                 return obs, np.nan, diagnostics
             z = (obs - mu1) / math.sqrt(mu2)
-            if method == "gaussian_corrected" or (use_corrections and (abs(skewness) > 0.1 or abs(kurtosis - 3) > 0.5)):
+            if method == "gaussian_corrected" or (
+                use_corrections and (abs(skewness) > 0.1 or abs(kurtosis - 3) > 0.5)
+            ):
                 zc = _cornish_fisher_correction(z, skewness, kurtosis)
                 pval = 1.0 - stats.norm.cdf(zc)
-                diagnostics.update({"correction": "cornish_fisher", "z_original": z, "z_corrected": zc})
+                diagnostics.update(
+                    {"correction": "cornish_fisher", "z_original": z, "z_corrected": zc}
+                )
             else:
                 pval = 1.0 - stats.norm.cdf(z)
                 diagnostics["correction"] = "none"
@@ -588,13 +709,25 @@ class HSIC:
                     perm = rng.permutation(n).astype(np.int64)
                     val = _hsic_biased_from_centered_perm(Kc, Lc, perm)
                     if self.normalize:
-                        val = float(np.clip(val / (math.sqrt(max(xx, EPS) * max(yy, EPS)) + EPS), 0.0, 1.0))
+                        val = float(
+                            np.clip(
+                                val / (math.sqrt(max(xx, EPS) * max(yy, EPS)) + EPS),
+                                0.0,
+                                1.0,
+                            )
+                        )
                     null_vals[b] = val
             pval = float((np.sum(null_vals >= obs) + 1.0) / (B + 1.0))
-            diagnostics.update({"null_mean": float(null_vals.mean()), "null_std": float(null_vals.std(ddof=1))})
+            diagnostics.update(
+                {
+                    "null_mean": float(null_vals.mean()),
+                    "null_std": float(null_vals.std(ddof=1)),
+                }
+            )
 
         else:  # gamma moment match
             from scipy.stats import gamma
+
             shape = mu1**2 / mu2 if mu2 > 0 else 1.0
             scale = mu2 / mu1 if mu1 > 0 else 1.0
             pval = 1.0 - gamma.cdf(obs, a=shape, scale=scale)
@@ -603,37 +736,56 @@ class HSIC:
         return obs, pval, diagnostics
 
     # ------------- Pairwise matrix -------------
-    def matrix(self, df: pd.DataFrame, show_progress: bool = True, n_jobs: int = 1) -> pd.DataFrame:
+    def matrix(
+        self, df: pd.DataFrame, show_progress: bool = True, n_jobs: int = 1
+    ) -> pd.DataFrame:
         cols = df.select_dtypes(include=[np.number]).columns
         if len(cols) != len(df.columns):
-            warnings.warn(f"Using only numeric columns: {len(cols)} of {len(df.columns)}")
+            warnings.warn(
+                f"Using only numeric columns: {len(cols)} of {len(df.columns)}"
+            )
         p = len(cols)
         M = np.eye(p, dtype=float)
 
         # Fast estimators path
         if self.estimator in ("linear", "rff", "nystrom"):
             raw = [_ensure_1d_or_2d(df[c].to_numpy()) for c in cols]
-            def compute_pair(i, j): return self.score(raw[i], raw[j])
+
+            def compute_pair(i, j):
+                return self.score(raw[i], raw[j])
+
             pairs = [(i, j) for i in range(p) for j in range(i + 1, p)]
             if _JOBLIB and n_jobs != 1:
-                vals = Parallel(n_jobs=n_jobs, prefer="threads")(delayed(compute_pair)(i, j) for (i, j) in pairs)
+                vals = Parallel(n_jobs=n_jobs, prefer="threads")(
+                    delayed(compute_pair)(i, j) for (i, j) in pairs
+                )
                 for (i, j), v in zip(pairs, vals):
                     M[i, j] = M[j, i] = v
             else:
                 for k, (i, j) in enumerate(pairs, 1):
                     M[i, j] = M[j, i] = compute_pair(i, j)
                     if show_progress and k % max(1, len(pairs) // 10) == 0:
-                        print(f"Progress: {k}/{len(pairs)} ({100*k/len(pairs):.1f}%)")
+                        print(
+                            f"Progress: {k}/{len(pairs)} ({100 * k / len(pairs):.1f}%)"
+                        )
             return pd.DataFrame(M, index=cols, columns=cols)
 
         # Kernel path: precompute grams once per column
-        grams = [self._gram_and_center(_ensure_1d_or_2d(df[c].to_numpy()), which="x") for c in cols]
+        grams = [
+            self._gram_and_center(_ensure_1d_or_2d(df[c].to_numpy()), which="x")
+            for c in cols
+        ]
         pairs = [(i, j) for i in range(p) for j in range(i + 1, p)]
+
         def compute_pair(i, j):
             Ki, Kci, xxi = grams[i]
             Kj, Kcj, xxj = grams[j]
             if self.estimator == "unbiased":
-                return float(_hsic_unbiased_from_grams_numba(Ki, Kj)) if self.use_numba else float(self._hsic_unbiased_np(Ki, Kj))
+                return (
+                    float(_hsic_unbiased_from_grams_numba(Ki, Kj))
+                    if self.use_numba
+                    else float(self._hsic_unbiased_np(Ki, Kj))
+                )
             if self.estimator == "block":
                 return self._hsic_block(Kci, Kcj, xxi, xxj, block_size=self.block_size)
             num = float(_trace_prod(Kci, Kcj) / ((Kci.shape[0] - 1.0) ** 2))
@@ -653,14 +805,16 @@ class HSIC:
                 v = compute_pair(i, j)
                 M[i, j] = M[j, i] = v
                 if show_progress and k % max(1, len(pairs) // 10) == 0:
-                    print(f"Progress: {k}/{len(pairs)} ({100*k/len(pairs):.1f}%)")
+                    print(f"Progress: {k}/{len(pairs)} ({100 * k / len(pairs):.1f}%)")
 
         return pd.DataFrame(M, index=cols, columns=cols)
 
     # ------------- Building blocks -------------
-    def _gram_and_center(self, A: np.ndarray, which: Literal["x", "y"]) -> tuple[np.ndarray, np.ndarray, float]:
+    def _gram_and_center(
+        self, A: np.ndarray, which: Literal["x", "y"]
+    ) -> tuple[np.ndarray, np.ndarray, float]:
         kernel = self.kernel_x if which == "x" else self.kernel_y
-        sigma  = self.sigma_x  if which == "x" else self.sigma_y
+        sigma = self.sigma_x if which == "x" else self.sigma_y
         cat_mask = self._cat_mask_x if which == "x" else self._cat_mask_y
 
         A = _as_dtype(_ensure_1d_or_2d(A), self.prefer_float32)
@@ -687,10 +841,15 @@ class HSIC:
             if d > 1 and sigma is None:
                 svec = _ard_sigma(A, "iqr")
                 if self.use_numba:
-                    K = _rbf_ard_from_sq_dists_sym(A.astype(np.float64), svec.astype(np.float64))
+                    K = _rbf_ard_from_sq_dists_sym(
+                        A.astype(np.float64), svec.astype(np.float64)
+                    )
                 else:
-                    denom = (svec[None, None, :] ** 2 + EPS)
-                    K = np.exp(-0.5 * ((A[:, None, :] - A[None, :, :]) ** 2 / denom).sum(axis=2))
+                    denom = svec[None, None, :] ** 2 + EPS
+                    K = np.exp(
+                        -0.5
+                        * ((A[:, None, :] - A[None, :, :]) ** 2 / denom).sum(axis=2)
+                    )
                 sigma_eff = float(np.exp(np.mean(np.log(np.maximum(svec, EPS)))))
 
             else:
@@ -698,9 +857,20 @@ class HSIC:
                     D2 = _pairwise_sq_dists_sym_nd(A.astype(np.float64))
                 else:
                     sq = np.sum(A * A, axis=1, keepdims=True)
-                    D2 = sq + sq.T - 2.0 * (A @ A.T); np.maximum(D2, 0.0, out=D2)
-                sigma_eff = _adaptive_sigma_selection(D2.astype(np.float64), self.bandwidth_method) if sigma is None else float(sigma)
-                K = _rbf_from_sq_dists_sym(D2.astype(np.float64), sigma_eff) if self.use_numba else np.exp(-D2 / (2.0 * sigma_eff * sigma_eff + EPS))
+                    D2 = sq + sq.T - 2.0 * (A @ A.T)
+                    np.maximum(D2, 0.0, out=D2)
+                sigma_eff = (
+                    _adaptive_sigma_selection(
+                        D2.astype(np.float64), self.bandwidth_method
+                    )
+                    if sigma is None
+                    else float(sigma)
+                )
+                K = (
+                    _rbf_from_sq_dists_sym(D2.astype(np.float64), sigma_eff)
+                    if self.use_numba
+                    else np.exp(-D2 / (2.0 * sigma_eff * sigma_eff + EPS))
+                )
             if which == "x":
                 self._last_sigma_x = sigma_eff
             else:
@@ -713,7 +883,11 @@ class HSIC:
             if A.shape[1] != 1:
                 raise ValueError("delta kernel expects 1D input")
             a1d = A.ravel()
-            K = _delta_gram_sym_1d(a1d) if self.use_numba else (a1d[:, None] == a1d[None, :]).astype(float)
+            K = (
+                _delta_gram_sym_1d(a1d)
+                if self.use_numba
+                else (a1d[:, None] == a1d[None, :]).astype(float)
+            )
 
         elif kernel == "mixed":
             K = self._mixed_kernel(A.astype(np.float64, copy=False), sigma, cat_mask)
@@ -736,7 +910,9 @@ class HSIC:
         xx = _trace_prod(Kc, Kc) / ((n - 1.0) ** 2)
         return K, Kc, float(xx)
 
-    def _mixed_kernel(self, A: np.ndarray, sigma: float | None, cat_mask: np.ndarray | None) -> np.ndarray:
+    def _mixed_kernel(
+        self, A: np.ndarray, sigma: float | None, cat_mask: np.ndarray | None
+    ) -> np.ndarray:
         if cat_mask is None:
             return self._rbf_kernel(A, sigma)
         cat_mask = np.array(cat_mask, dtype=bool, copy=False)
@@ -767,10 +943,20 @@ class HSIC:
             sq = np.sum(A * A, axis=1, keepdims=True)
             D2 = sq + sq.T - 2.0 * (A @ A.T)
             np.maximum(D2, 0.0, out=D2)
-        sig = _adaptive_sigma_selection(D2, self.bandwidth_method) if sigma is None else float(sigma)
-        return _rbf_from_sq_dists_sym(D2, sig) if self.use_numba else np.exp(-D2 / (2.0 * sig * sig + EPS))
+        sig = (
+            _adaptive_sigma_selection(D2, self.bandwidth_method)
+            if sigma is None
+            else float(sigma)
+        )
+        return (
+            _rbf_from_sq_dists_sym(D2, sig)
+            if self.use_numba
+            else np.exp(-D2 / (2.0 * sig * sig + EPS))
+        )
 
-    def _normalized_from_centered(self, Kc: np.ndarray, Lc: np.ndarray, xx: float, yy: float) -> float:
+    def _normalized_from_centered(
+        self, Kc: np.ndarray, Lc: np.ndarray, xx: float, yy: float
+    ) -> float:
         n = Kc.shape[0]
         num = float(_trace_prod(Kc, Lc) / ((n - 1.0) ** 2))
         if not self.normalize:
@@ -783,12 +969,16 @@ class HSIC:
         n = K.shape[0]
         if n < 4:
             return np.nan
-        Ku = K.copy(); np.fill_diagonal(Ku, 0.0)
-        Lu = L.copy(); np.fill_diagonal(Lu, 0.0)
+        Ku = K.copy()
+        np.fill_diagonal(Ku, 0.0)
+        Lu = L.copy()
+        np.fill_diagonal(Lu, 0.0)
         term1 = float((Ku * Lu).sum())
-        Ku_row = Ku.sum(axis=1); Lu_row = Lu.sum(axis=1)
+        Ku_row = Ku.sum(axis=1)
+        Lu_row = Lu.sum(axis=1)
         term3 = float((Ku_row * Lu_row).sum())
-        S_K = float(Ku_row.sum()); S_L = float(Lu_row.sum())
+        S_K = float(Ku_row.sum())
+        S_L = float(Lu_row.sum())
         n1, n2, n3 = n - 1.0, n - 2.0, n - 3.0
         if n3 <= 0:
             return np.nan
@@ -807,51 +997,73 @@ class HSIC:
         sigx, sigy = self._last_sigma_x, self._last_sigma_y
         if sigx is None or sigy is None:
             idx = rng.choice(n, size=min(2048, n), replace=False)
-            D2x = self._pairwise_sq_np(X[idx]); D2y = self._pairwise_sq_np(Y[idx])
-            if sigx is None: sigx = _adaptive_sigma_selection(D2x, self.bandwidth_method)
-            if sigy is None: sigy = _adaptive_sigma_selection(D2y, self.bandwidth_method)
+            D2x = self._pairwise_sq_np(X[idx])
+            D2y = self._pairwise_sq_np(Y[idx])
+            if sigx is None:
+                sigx = _adaptive_sigma_selection(D2x, self.bandwidth_method)
+            if sigy is None:
+                sigy = _adaptive_sigma_selection(D2y, self.bandwidth_method)
             self._last_sigma_x, self._last_sigma_y = float(sigx), float(sigy)
 
         idx = rng.choice(n, size=2 * m, replace=False)
-        A = idx[:m]; B = idx[m:]
+        A = idx[:m]
+        B = idx[m:]
         s = 0.0
-        inv2x = 1.0 / (2.0 * sigx * sigx + EPS); inv2y = 1.0 / (2.0 * sigy * sigy + EPS)
+        inv2x = 1.0 / (2.0 * sigx * sigx + EPS)
+        inv2y = 1.0 / (2.0 * sigy * sigy + EPS)
         for i in range(m):
             dx = float(np.dot(X[A[i]] - X[B[i]], X[A[i]] - X[B[i]]))
             dy = float(np.dot(Y[A[i]] - Y[B[i]], Y[A[i]] - Y[B[i]]))
-            k = math.exp(-dx * inv2x); l = math.exp(-dy * inv2y)
+            k = math.exp(-dx * inv2x)
+            l = math.exp(-dy * inv2y)
             s += (k - 1.0) * (l - 1.0)
         val = float(max(0.0, s / m))
         return val
 
     def _rff_hsic(self, X: np.ndarray, Y: np.ndarray) -> float:
         rng = np.random.default_rng(self.random_state)
-        n = X.shape[0]; D = int(self.rff_features)
-        if D < 1: raise ValueError("rff_features must be >= 1")
+        n = X.shape[0]
+        D = int(self.rff_features)
+        if D < 1:
+            raise ValueError("rff_features must be >= 1")
 
         sigx, sigy = self._last_sigma_x, self._last_sigma_y
         if sigx is None or sigy is None:
             idx = rng.choice(n, size=min(4096, n), replace=False)
-            D2x = self._pairwise_sq_np(X[idx]); D2y = self._pairwise_sq_np(Y[idx])
-            if sigx is None: sigx = _adaptive_sigma_selection(D2x, self.bandwidth_method)
-            if sigy is None: sigy = _adaptive_sigma_selection(D2y, self.bandwidth_method)
+            D2x = self._pairwise_sq_np(X[idx])
+            D2y = self._pairwise_sq_np(Y[idx])
+            if sigx is None:
+                sigx = _adaptive_sigma_selection(D2x, self.bandwidth_method)
+            if sigy is None:
+                sigy = _adaptive_sigma_selection(D2y, self.bandwidth_method)
             self._last_sigma_x, self._last_sigma_y = float(sigx), float(sigy)
 
-        Zx = self._rff_features_nd(X.astype(np.float64, copy=False), float(sigx), D, rng)
-        Zy = self._rff_features_nd(Y.astype(np.float64, copy=False), float(sigy), D, rng)
+        Zx = self._rff_features_nd(
+            X.astype(np.float64, copy=False), float(sigx), D, rng
+        )
+        Zy = self._rff_features_nd(
+            Y.astype(np.float64, copy=False), float(sigy), D, rng
+        )
         num = self._cross_cov_energy(Zx, Zy)
-        if not self.normalize: return float(max(0.0, num))
-        den = math.sqrt(max(self._cov_energy(Zx), EPS) * max(self._cov_energy(Zy), EPS)) + EPS
+        if not self.normalize:
+            return float(max(0.0, num))
+        den = (
+            math.sqrt(max(self._cov_energy(Zx), EPS) * max(self._cov_energy(Zy), EPS))
+            + EPS
+        )
         return float(np.clip(num / den, 0.0, 1.0))
 
     def _nystrom_hsic(self, X: np.ndarray, Y: np.ndarray, m: int = 512) -> float:
         rng = np.random.default_rng(self.random_state)
-        n = X.shape[0]; m = min(max(1, m), n)
+        n = X.shape[0]
+        m = min(max(1, m), n)
         idx = rng.choice(n, size=m, replace=False)
         Kx, _, _ = self._gram_and_center(X, which="x")
         Ky, _, _ = self._gram_and_center(Y, which="y")
-        Kxx = Kx[np.ix_(idx, idx)]; Kxy = Kx[:, idx]
-        Lyy = Ky[np.ix_(idx, idx)]; Lyx = Ky[:, idx]
+        Kxx = Kx[np.ix_(idx, idx)]
+        Kxy = Kx[:, idx]
+        Lyy = Ky[np.ix_(idx, idx)]
+        Lyx = Ky[:, idx]
         tau = 1e-6
         try:
             Cx = np.linalg.solve(Kxx + tau * np.eye(m), Kxy.T)
@@ -859,14 +1071,27 @@ class HSIC:
         except np.linalg.LinAlgError:
             Cx = np.linalg.pinv(Kxx + tau * np.eye(m)) @ Kxy.T
             Cy = np.linalg.pinv(Lyy + tau * np.eye(m)) @ Lyx.T
-        Phi = Cx.T; Psi = Cy.T
-        Phi -= Phi.mean(axis=0, keepdims=True); Psi -= Psi.mean(axis=0, keepdims=True)
+        Phi = Cx.T
+        Psi = Cy.T
+        Phi -= Phi.mean(axis=0, keepdims=True)
+        Psi -= Psi.mean(axis=0, keepdims=True)
         num = self._cross_cov_energy(Phi, Psi)
-        if not self.normalize: return float(max(0.0, num))
-        den = math.sqrt(max(self._cov_energy(Phi), EPS) * max(self._cov_energy(Psi), EPS)) + EPS
+        if not self.normalize:
+            return float(max(0.0, num))
+        den = (
+            math.sqrt(max(self._cov_energy(Phi), EPS) * max(self._cov_energy(Psi), EPS))
+            + EPS
+        )
         return float(np.clip(num / den, 0.0, 1.0))
 
-    def _hsic_block(self, Kc: np.ndarray, Lc: np.ndarray, xx: float, yy: float, block_size: int = 1024) -> float:
+    def _hsic_block(
+        self,
+        Kc: np.ndarray,
+        Lc: np.ndarray,
+        xx: float,
+        yy: float,
+        block_size: int = 1024,
+    ) -> float:
         """Block U-statistic approximation for large n (memory-light, unbiased-ish)."""
         n = Kc.shape[0]
         if n <= block_size:
@@ -876,12 +1101,20 @@ class HSIC:
         accum = 0.0
         for _ in range(B):
             idx = rng.choice(n, size=block_size, replace=False)
-            Kb = Kc[np.ix_(idx, idx)]; Lb = Lc[np.ix_(idx, idx)]
+            Kb = Kc[np.ix_(idx, idx)]
+            Lb = Lc[np.ix_(idx, idx)]
             xb = float(_trace_prod(Kb, Lb) / ((block_size - 1.0) ** 2))
             if self.normalize:
                 # approximate denominators with sub-block energies
-                xb_den = math.sqrt(max(float(_trace_prod(Kb, Kb) / ((block_size - 1.0) ** 2)), EPS) *
-                                   max(float(_trace_prod(Lb, Lb) / ((block_size - 1.0) ** 2)), EPS)) + EPS
+                xb_den = (
+                    math.sqrt(
+                        max(float(_trace_prod(Kb, Kb) / ((block_size - 1.0) ** 2)), EPS)
+                        * max(
+                            float(_trace_prod(Lb, Lb) / ((block_size - 1.0) ** 2)), EPS
+                        )
+                    )
+                    + EPS
+                )
                 xb = float(np.clip(xb / xb_den, 0.0, 1.0))
             else:
                 xb = float(max(0.0, xb))
@@ -896,13 +1129,16 @@ class HSIC:
         np.maximum(D2, 0.0, out=D2)
         return D2
 
-    def _rff_features_nd(self, X: np.ndarray, sigma: float, D: int, rng: np.random.Generator) -> np.ndarray:
+    def _rff_features_nd(
+        self, X: np.ndarray, sigma: float, D: int, rng: np.random.Generator
+    ) -> np.ndarray:
         n, d = X.shape
         # w ~ N(0, 1/sigma^2)
         w = rng.normal(0.0, 1.0 / (sigma + EPS), size=(d, D))
         b = rng.uniform(0.0, 2 * np.pi, size=(D,))
         XW = X @ w + b
-        Zc = np.cos(XW); Zs = np.sin(XW)
+        Zc = np.cos(XW)
+        Zs = np.sin(XW)
         Z = np.concatenate([Zc, Zs], axis=1)
         Z *= math.sqrt(1.0 / D)
         return Z
@@ -927,8 +1163,10 @@ class HSIC:
 # Convenience functions
 # =========================================================
 
+
 def hsic_test(x, y, alpha: float = 0.05, method: str = "auto", **kwargs) -> dict:
-    x = np.asarray(x); y = np.asarray(y)
+    x = np.asarray(x)
+    y = np.asarray(y)
     n = len(x)
     if method == "auto":
         if n <= 2000:
@@ -948,11 +1186,13 @@ def hsic_test(x, y, alpha: float = 0.05, method: str = "auto", **kwargs) -> dict
         "reject_independence": (pval < alpha) if np.isfinite(pval) else False,
         "method": method,
         "n": n,
-        "diagnostics": diagnostics
+        "diagnostics": diagnostics,
     }
 
+
 def auto_hsic(x, y, **kwargs) -> float:
-    x = np.asarray(x); y = np.asarray(y)
+    x = np.asarray(x)
+    y = np.asarray(y)
     n = len(x)
     if n > 5000:
         kwargs.setdefault("estimator", "block")
@@ -980,7 +1220,7 @@ class ConditionalHSIC:
     """
     Conditional HSIC: tests dependence between X and Y given Z.
     Zhang et al. (2011), NIPS: "Kernel-based Conditional Independence Test".
-    
+
     Improved implementation with better numerical stability and projection methods.
     """
 
@@ -1005,7 +1245,7 @@ class ConditionalHSIC:
         self.random_state = random_state
         self.regularization = regularization
         self.projection_method = projection_method
-        
+
         # Cache for last used sigmas
         self._last_sigma_x = None
         self._last_sigma_y = None
@@ -1015,48 +1255,60 @@ class ConditionalHSIC:
         """Compute kernel Gram matrix and center it. Reuses HSIC optimizations."""
         A = _as_dtype(_ensure_1d_or_2d(A), self.prefer_float32)
         n, d = A.shape
-        
+
         if kernel == "rbf":
             if self.use_numba:
                 D2 = _pairwise_sq_dists_sym_nd(A.astype(np.float64))
-                sigma_eff = _adaptive_sigma_selection(D2, self.bandwidth_method) if sigma is None else float(sigma)
+                sigma_eff = (
+                    _adaptive_sigma_selection(D2, self.bandwidth_method)
+                    if sigma is None
+                    else float(sigma)
+                )
                 K = _rbf_from_sq_dists_sym(D2, sigma_eff)
             else:
                 sq = np.sum(A * A, axis=1, keepdims=True)
                 D2 = sq + sq.T - 2.0 * (A @ A.T)
-                sigma_eff = _adaptive_sigma_selection(D2, self.bandwidth_method) if sigma is None else float(sigma)
+                sigma_eff = (
+                    _adaptive_sigma_selection(D2, self.bandwidth_method)
+                    if sigma is None
+                    else float(sigma)
+                )
                 K = np.exp(-D2 / (2.0 * sigma_eff * sigma_eff + EPS))
-                
+
         elif kernel == "linear":
             K = _linear_gram_sym(A) if self.use_numba else (A @ A.T)
             sigma_eff = None
-            
+
         elif kernel == "delta":
             if A.shape[1] != 1:
                 raise ValueError("delta kernel expects 1D input")
             a1d = A.ravel()
-            K = _delta_gram_sym_1d(a1d) if self.use_numba else (a1d[:, None] == a1d[None, :]).astype(float)
+            K = (
+                _delta_gram_sym_1d(a1d)
+                if self.use_numba
+                else (a1d[:, None] == a1d[None, :]).astype(float)
+            )
             sigma_eff = None
-            
+
         else:
             raise ValueError(f"Kernel {kernel} not implemented for ConditionalHSIC")
 
         # Center the kernel matrix
         Kc = K.copy()
         _center_inplace(Kc) if self.use_numba else _center_numpy_inplace(Kc)
-        
+
         return K, Kc, sigma_eff
 
     def score(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> float:
         """
         Compute conditional HSIC statistic between X and Y given Z.
-        
+
         Returns:
             Conditional HSIC statistic (non-negative float)
         """
         X, Y = _nan_filter_two(x, y, warn=False)
         Z = _ensure_1d_or_2d(np.asarray(z))
-        
+
         if not (X.shape[0] == Y.shape[0] == Z.shape[0]):
             raise ValueError("x, y, z must have same number of samples")
 
@@ -1069,16 +1321,16 @@ class ConditionalHSIC:
             z_var = np.var(Z)
         else:
             z_var = np.mean(np.var(Z, axis=0))
-            
+
         if z_var < 1e-12:
             # Z is constant, return unconditional HSIC
             warnings.warn("Z has no variation, computing unconditional HSIC")
             hsic_obj = HSIC(
-                kernel_x=self.kernel_x, 
+                kernel_x=self.kernel_x,
                 kernel_y=self.kernel_y,
                 bandwidth_method=self.bandwidth_method,
                 prefer_float32=self.prefer_float32,
-                use_numba=self.use_numba
+                use_numba=self.use_numba,
             )
             return hsic_obj.score(X, Y)
 
@@ -1089,20 +1341,25 @@ class ConditionalHSIC:
             Kz, Kz_c, sigz = self._gram_centered(Z, self.kernel_z, self._last_sigma_z)
 
             # Cache sigmas for next call
-            self._last_sigma_x, self._last_sigma_y, self._last_sigma_z = sigx, sigy, sigz
+            self._last_sigma_x, self._last_sigma_y, self._last_sigma_z = (
+                sigx,
+                sigy,
+                sigz,
+            )
 
             # Compute conditional HSIC
             stat = self._compute_conditional_hsic(Kx_c, Ky_c, Kz_c, n)
             return stat
-            
+
         except (np.linalg.LinAlgError, ValueError):
             return np.nan
 
-    def _compute_conditional_hsic(self, Kx_c: np.ndarray, Ky_c: np.ndarray, 
-                                 Kz_c: np.ndarray, n: int) -> float:
+    def _compute_conditional_hsic(
+        self, Kx_c: np.ndarray, Ky_c: np.ndarray, Kz_c: np.ndarray, n: int
+    ) -> float:
         """
         Compute conditional HSIC using improved projection method.
-        
+
         Two methods available:
         1. "standard": R_z = I - K_z(K_z + τI)^{-1} (Zhang et al. 2011)
         2. "centering": Uses centering matrix with improved stability
@@ -1112,92 +1369,104 @@ class ConditionalHSIC:
         else:
             return self._conditional_hsic_standard_method(Kx_c, Ky_c, Kz_c, n)
 
-    def _conditional_hsic_standard_method(self, Kx_c: np.ndarray, Ky_c: np.ndarray, 
-                                        Kz_c: np.ndarray, n: int) -> float:
+    def _conditional_hsic_standard_method(
+        self, Kx_c: np.ndarray, Ky_c: np.ndarray, Kz_c: np.ndarray, n: int
+    ) -> float:
         """Standard conditional HSIC following Zhang et al. (2011)"""
         # Adaptive regularization based on trace
         tau = max(self.regularization, 1e-6 * np.trace(Kz_c) / n)
-        
+
         # Add centered kernel back to get original (but we work with centered)
         # For numerical stability, work with the original kernel for projection
         Kz_orig = Kz_c + np.ones((n, n)) / n  # Un-center approximately
         Kz_reg = Kz_orig + tau * np.eye(n)
-        
+
         try:
             # Compute R_z = I - K_z(K_z + τI)^{-1}
             Kz_inv = np.linalg.solve(Kz_reg, np.eye(n))
             Rz = np.eye(n) - Kz_orig @ Kz_inv
-            
+
             # Project centered kernels
             Kx_proj = Rz @ Kx_c @ Rz
             Ky_proj = Rz @ Ky_c @ Rz
-            
+
             # Conditional HSIC statistic
             stat = np.trace(Kx_proj @ Ky_proj) / (n * (n - 1))
             return float(max(0.0, stat))
-            
+
         except np.linalg.LinAlgError:
             # Fallback to pseudoinverse
             Kz_pinv = np.linalg.pinv(Kz_reg)
             Rz = np.eye(n) - Kz_orig @ Kz_pinv
-            
+
             Kx_proj = Rz @ Kx_c @ Rz
             Ky_proj = Rz @ Ky_c @ Rz
-            
+
             stat = np.trace(Kx_proj @ Ky_proj) / (n * (n - 1))
             return float(max(0.0, stat))
 
-    def _conditional_hsic_centering_method(self, Kx_c: np.ndarray, Ky_c: np.ndarray, 
-                                         Kz_c: np.ndarray, n: int) -> float:
+    def _conditional_hsic_centering_method(
+        self, Kx_c: np.ndarray, Ky_c: np.ndarray, Kz_c: np.ndarray, n: int
+    ) -> float:
         """Alternative method using centering matrix for improved stability"""
         # Centering matrix
         H = np.eye(n) - np.ones((n, n)) / n
-        
+
         # Adaptive regularization
         tau = max(self.regularization, 1e-6 * np.trace(Kz_c) / n)
-        
+
         # Regularized centered kernel
         Kz_reg = Kz_c + tau * np.eye(n)
-        
+
         try:
             # Compute projection using centering: R_z = H - H*K_z*pinv(H*K_z*H)*H
             HKzH = H @ Kz_reg @ H
             HKzH_pinv = np.linalg.pinv(HKzH)
             Rz = H - HKzH @ HKzH_pinv
-            
+
             # Project kernels
             Kx_proj = Rz @ Kx_c @ Rz
             Ky_proj = Rz @ Ky_c @ Rz
-            
+
             # Re-center projected kernels
-            _center_inplace(Kx_proj) if self.use_numba else _center_numpy_inplace(Kx_proj)
-            _center_inplace(Ky_proj) if self.use_numba else _center_numpy_inplace(Ky_proj)
-            
+            _center_inplace(Kx_proj) if self.use_numba else _center_numpy_inplace(
+                Kx_proj
+            )
+            _center_inplace(Ky_proj) if self.use_numba else _center_numpy_inplace(
+                Ky_proj
+            )
+
             # Conditional HSIC statistic
             stat = np.trace(Kx_proj @ Ky_proj) / (n * (n - 1))
             return float(max(0.0, stat))
-            
+
         except np.linalg.LinAlgError:
             raise ValueError("Numerical instability in conditional HSIC computation")
 
-    def pvalue(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, 
-              B: int = 200, method: str = "permutation") -> tuple[float, float]:
+    def pvalue(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        z: np.ndarray,
+        B: int = 200,
+        method: str = "permutation",
+    ) -> tuple[float, float]:
         """
         Compute p-value for conditional independence test.
-        
+
         Args:
             x, y, z: Input arrays
             B: Number of permutations
             method: "permutation" (only supported method currently)
-            
+
         Returns:
             (statistic, p_value)
         """
         if method != "permutation":
             raise ValueError("Only permutation method supported for conditional HSIC")
-            
+
         rng = np.random.default_rng(self.random_state)
-        
+
         # Observed statistic
         obs = self.score(x, y, z)
         if not np.isfinite(obs):
@@ -1206,7 +1475,7 @@ class ConditionalHSIC:
         # Permutation test - permute Y while keeping X and Z fixed
         null_vals = np.empty(B, dtype=float)
         n = len(y)
-        
+
         for b in range(B):
             y_perm = rng.permutation(n)
             null_vals[b] = self.score(x, y[y_perm], z)
@@ -1220,16 +1489,22 @@ class ConditionalHSIC:
         pval = (np.sum(valid_nulls >= obs) + 1.0) / (len(valid_nulls) + 1.0)
         return obs, float(pval)
 
-    def test(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, 
-            alpha: float = 0.05, B: int = 200) -> dict:
+    def test(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        z: np.ndarray,
+        alpha: float = 0.05,
+        B: int = 200,
+    ) -> dict:
         """
         Perform conditional independence test.
-        
+
         Returns:
             Dictionary with test results including statistic, p-value, and decision
         """
         stat, pval = self.pvalue(x, y, z, B=B)
-        
+
         return {
             "statistic": stat,
             "pvalue": pval,
@@ -1238,7 +1513,7 @@ class ConditionalHSIC:
             "significant": (pval < alpha) if np.isfinite(pval) else False,
             "method": "conditional_hsic_permutation",
             "n_permutations": B,
-            "n_samples": len(x)
+            "n_samples": len(x),
         }
 
 
@@ -1246,18 +1521,18 @@ class ConditionalHSIC:
 def conditional_hsic_test(x, y, z, alpha: float = 0.05, **kwargs) -> dict:
     """
     Convenience function for conditional independence testing.
-    
+
     Tests: X ⊥ Y | Z (X independent of Y given Z)
-    
+
     Args:
         x, y, z: Input variables
         alpha: Significance level
         **kwargs: Additional arguments for ConditionalHSIC
-        
+
     Returns:
         Dictionary with test results
     """
     x, y, z = np.asarray(x), np.asarray(y), np.asarray(z)
-    
+
     tester = ConditionalHSIC(**kwargs)
     return tester.test(x, y, z, alpha=alpha)

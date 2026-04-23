@@ -533,9 +533,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
 
         return self
 
-    def transform(
-        self, X: pd.DataFrame | np.ndarray
-    ) -> pd.DataFrame | np.ndarray:
+    def transform(self, X: pd.DataFrame | np.ndarray) -> pd.DataFrame | np.ndarray:
         """Transform data by selecting only the chosen features."""
         if not self._is_fitted:
             raise ValueError("RFECV must be fitted before transform.")

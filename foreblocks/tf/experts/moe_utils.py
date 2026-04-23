@@ -94,9 +94,7 @@ def eager_topk_routing(logits: torch.Tensor, k: int):
 def should_fallback_router_topk(exc: RuntimeError) -> bool:
     msg = str(exc).lower()
     return (
-        "nvrtc" in msg
-        or "libnvrtc-builtins" in msg
-        or "torchscript interpreter" in msg
+        "nvrtc" in msg or "libnvrtc-builtins" in msg or "torchscript interpreter" in msg
     )
 
 

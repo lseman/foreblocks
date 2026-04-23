@@ -13,4 +13,3 @@ def build_gamma_strategy(
     adaptive_gamma_fn: Callable[[int], int],
 ) -> GammaStrategy:
     return DefaultGammaStrategy(gamma, gamma_strategy, adaptive_gamma_fn)
-
