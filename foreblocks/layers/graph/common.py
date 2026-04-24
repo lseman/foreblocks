@@ -137,6 +137,16 @@ def safe_eye(n: int, like: Tensor) -> Tensor:
     return torch.eye(n, device=like.device, dtype=like.dtype)
 
 
+def crop_residual_to_match(x: Tensor, ref: Tensor) -> Tensor:
+    if x.size(1) == ref.size(1):
+        return x
+    if x.size(1) < ref.size(1):
+        raise ValueError(
+            "Residual input is shorter than the temporal reference tensor."
+        )
+    return x[:, -ref.size(1) :, :, :]
+
+
 __all__ = [
     "ActivationType",
     "AggType",
@@ -150,4 +160,5 @@ __all__ = [
     "safe_eye",
     "to_dense_from_edge_index",
     "xavier_zero_bias",
+    "crop_residual_to_match",
 ]

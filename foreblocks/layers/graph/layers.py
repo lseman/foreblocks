@@ -161,9 +161,9 @@ class CachedNorm(nn.Module):
 
     def forward(
         self,
+        norm_fn,
         edge_index: Tensor,
         edge_weight: Tensor | None,
-        norm_fn,
         *args,
         **kwargs,
     ) -> Tensor:
@@ -175,7 +175,7 @@ class CachedNorm(nn.Module):
             return self._cached_result
         self._last_edge_index = edge_index
         self._last_edge_weight = edge_weight
-        self._cached_result = norm_fn(edge_index, *args, **kwargs)
+        self._cached_result = norm_fn(edge_index, edge_weight, *args, **kwargs)
         return self._cached_result
 
 
@@ -498,8 +498,6 @@ class GCNConv(GraphConvBase, MessagePassing):
                 )
             if not pre_normalized:
                 sparse_weight = self.cached_norm(
-                    edge_index,
-                    sparse_weight,
                     _normalize_gcn_edge_weight,
                     edge_index,
                     N,
@@ -609,8 +607,6 @@ class SAGEConv(GraphConvBase, MessagePassing):
                 device=x.device,
             )
             sparse_weight = self.cached_norm(
-                edge_index,
-                sparse_weight,
                 _normalize_row_edge_weight,
                 edge_index,
                 N,

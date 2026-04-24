@@ -16,19 +16,13 @@ Heavy logic is delegated to focused sub-modules:
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.amp import GradScaler, autocast
-from tqdm import tqdm
+from torch.amp import GradScaler
 
 from .architecture.core_blocks import TimeSeriesDARTS
-
-# ── Architecture ──────────────────────────────────────────────────────────
 from .architecture.finalization import (
     derive_final_architecture as derive_fixed_architecture,
 )
@@ -36,36 +30,48 @@ from .config import (
     DEFAULT_ARCH_MODES,
     DEFAULT_ATTENTION_VARIANTS,
     DEFAULT_FFN_VARIANTS,
-    DEFAULT_OP_FAMILIES,
+)
+from .config import (
     DEFAULT_OPS as SEARCH_DEFAULT_OPS,
 )
 from .evaluation import plotting as _plot_mod
-
-# ── Sub-module delegates ──────────────────────────────────────────────────
+from .evaluation.metrics import evaluate_on_loader
 from .search import (
     ablation as _abl_mod,
+)
+from .search import (
     multi_fidelity as _mf_mod,
+)
+from .search import (
     robust_pool as _rp_mod,
+)
+from .search import (
     zero_cost as _zc_mod,
 )
-
-# ── Metrics & Config ──────────────────────────────────────────────────────
-# ── Search utilities ─────────────────────────────────────────────────────
+from .search.candidate_config import (
+    make_candidate_config,
+    normalize_op_families,
+)
 from .search.orchestrator import (
     evaluate_search_candidate,
     make_default_search_candidate_config,
     run_parallel_candidate_collection,
     select_top_candidates,
 )
-from .training import darts_loop as _dl_mod, final_trainer as _ft_mod
-
-# ── Training helpers ─────────────────────────────────────────────────────
+from .training import darts_loop as _dl_mod
+from .training import final_trainer as _ft_mod
 from .training.helpers import (
     AlphaTracker,
+)
+from .training.helpers import (
     default_as_probability_vector as _as_probability_vector,
 )
-from .utils.training import unpack_forecasting_batch
-
+from .utils.training import (
+    autocast_ctx,
+    create_progress_bar,
+    get_loss_function,
+    unpack_forecasting_batch,
+)
 
 _DEFAULT_OPS = list(SEARCH_DEFAULT_OPS)
 
@@ -121,7 +127,7 @@ class DARTSTrainer:
             as_probability_vector_fn=_as_probability_vector
         )
         self.all_ops = list(all_ops) if all_ops is not None else _DEFAULT_OPS
-        self.op_families = self._normalize_op_families(op_families)
+        self.op_families = normalize_op_families(op_families, self.all_ops)
         min_family = max(1, int(family_range[0]))
         max_family = max(min_family, int(family_range[1]))
         self.family_range = (min_family, max_family)
@@ -161,113 +167,17 @@ class DARTSTrainer:
         print(f"  ffn_variants: {self.ffn_variants}")
 
     # ─────────────────────────────────────────────────────────────────────
-    # Internal utilities (kept inline — tightly coupled to instance state)
+    # Internal utilities (delegated to shared helper modules)
     # ─────────────────────────────────────────────────────────────────────
 
     def _get_loss_function(self, loss_type: str = "huber"):
-        registry = {
-            "huber": lambda p, t: F.huber_loss(p, t, delta=0.1),
-            "mse": F.mse_loss,
-            "mae": F.l1_loss,
-            "smooth_l1": F.smooth_l1_loss,
-        }
-        return registry.get(loss_type, registry["huber"])
+        return get_loss_function(loss_type)
 
     def _autocast(self, enabled: bool):
-        device_type = "cuda" if str(self.device).startswith("cuda") else "cpu"
-        return autocast(device_type=device_type, enabled=enabled)
+        return autocast_ctx(self.device, enabled=enabled)
 
     def _create_progress_bar(self, iterable, desc: str, leave: bool = True, **kwargs):
-        kwargs.setdefault("unit", "batch")
-        return tqdm(iterable, desc=desc, leave=leave, **kwargs)
-
-    def _split_architecture_and_model_params(
-        self, model: nn.Module
-    ) -> tuple[list, list, list, list]:
-        arch_params: list[torch.Tensor] = []
-        model_params: list[torch.Tensor] = []
-        edge_arch_params: list[torch.Tensor] = []
-        component_arch_params: list[torch.Tensor] = []
-        arch_param_ids: set = set()
-
-        for name, param in model.named_parameters():
-            if any(t in name for t in ["alphas", "arch_", "alpha_", "norm_alpha"]):
-                if id(param) in arch_param_ids:
-                    continue
-                arch_params.append(param)
-                arch_param_ids.add(id(param))
-                if "cells." in name and "edges." in name:
-                    edge_arch_params.append(param)
-                else:
-                    component_arch_params.append(param)
-            else:
-                model_params.append(param)
-
-        for source in self.alpha_tracker.component_alpha_sources(model):
-            alpha_tensor = source["alpha"]
-            if id(alpha_tensor) in arch_param_ids:
-                continue
-            arch_params.append(alpha_tensor)
-            arch_param_ids.add(id(alpha_tensor))
-            component_arch_params.append(alpha_tensor)
-
-        return arch_params, model_params, edge_arch_params, component_arch_params
-
-    def _build_arch_param_groups(
-        self,
-        edge_arch_params: list,
-        component_arch_params: list,
-        arch_params: list,
-        arch_learning_rate: float,
-    ) -> list[dict]:
-        groups = []
-        if edge_arch_params:
-            groups.append({"params": edge_arch_params, "lr": arch_learning_rate * 1.5})
-        if component_arch_params:
-            groups.append({"params": component_arch_params, "lr": arch_learning_rate})
-        if not groups:
-            groups = [{"params": arch_params, "lr": arch_learning_rate}]
-        return groups
-
-    def _reset_model_parameters(self, model: nn.Module) -> int:
-        count = 0
-        for module in model.modules():
-            reset_fn = getattr(module, "reset_parameters", None)
-            if callable(reset_fn):
-                try:
-                    reset_fn()
-                    count += 1
-                except Exception:
-                    continue
-        return count
-
-    def _capture_progressive_state(self, model: nn.Module) -> dict | None:
-        if not hasattr(model, "cells"):
-            return None
-        return {
-            "cells": [
-                {"progressive_stage": getattr(cell, "progressive_stage", None)}
-                for cell in getattr(model, "cells", [])
-            ]
-        }
-
-    def _restore_progressive_state(self, model: nn.Module, state: dict | None) -> None:
-        if state is None or not hasattr(model, "cells"):
-            return
-        cells = getattr(model, "cells", [])
-        for idx, cell in enumerate(cells):
-            if idx >= len(state.get("cells", [])):
-                break
-            stage = state["cells"][idx].get("progressive_stage")
-            if stage is None:
-                continue
-            if hasattr(cell, "set_progressive_stage"):
-                try:
-                    cell.set_progressive_stage(stage)
-                except Exception:
-                    pass
-            else:
-                cell.progressive_stage = stage
+        return create_progress_bar(iterable, desc=desc, leave=leave, **kwargs)
 
     def _run_model_training_epoch(
         self,
@@ -352,145 +262,12 @@ class DARTSTrainer:
         dataloader,
         loss_type: str = "huber",
     ) -> float:
-        model.eval()
-        loss_fn = self._get_loss_function(loss_type)
-        total = 0.0
-        with torch.no_grad():
-            for batch in dataloader:
-                bx, by, model_kwargs = unpack_forecasting_batch(
-                    batch,
-                    self.device,
-                    include_decoder_targets=False,
-                    teacher_forcing_ratio=0.0,
-                )
-                total += loss_fn(model(bx, **model_kwargs), by).item()
-        return total / max(len(dataloader), 1)
-
-    def _compute_metrics(
-        self, preds: np.ndarray, targets: np.ndarray
-    ) -> dict[str, float]:
-        mse = float(np.mean((preds - targets) ** 2))
-        rmse = float(np.sqrt(mse))
-        mae = float(np.mean(np.abs(preds - targets)))
-        mape = float(
-            np.mean(np.abs((preds - targets) / (np.abs(targets) + 1e-8))) * 100
+        return evaluate_on_loader(
+            model=model,
+            dataloader=dataloader,
+            loss_fn=self._get_loss_function(loss_type),
+            device=self.device,
         )
-        ss_res = np.sum((targets - preds) ** 2)
-        ss_tot = np.sum((targets - np.mean(targets)) ** 2)
-        r2 = float(1 - ss_res / (ss_tot + 1e-8))
-        return {"mse": mse, "rmse": rmse, "mae": mae, "mape": mape, "r2_score": r2}
-
-    def _normalize_op_families(
-        self, op_families: dict[str, list[str]] | None
-    ) -> dict[str, list[str]]:
-        family_source = op_families or DEFAULT_OP_FAMILIES
-        allowed_ops = set(self.all_ops)
-        normalized: dict[str, list[str]] = {}
-        for family_name, ops in family_source.items():
-            filtered = [op for op in ops if op in allowed_ops]
-            if filtered or str(family_name).lower() == "ssm":
-                normalized[str(family_name).lower()] = filtered
-        if not normalized:
-            normalized = {"mlp": [op for op in self.all_ops if op != "Identity"]}
-        return normalized
-
-    def _resolve_candidate_families(
-        self, rng, allowed_ops: list[str]
-    ) -> tuple[dict[str, list[str]], list[str], list[str]]:
-        allowed_set = set(allowed_ops)
-        family_space: dict[str, list[str]] = {}
-        for family_name, ops in self.op_families.items():
-            filtered = [op for op in ops if op in allowed_set]
-            if filtered:
-                family_space[family_name] = filtered
-
-        family_names = list(family_space.keys())
-        if not family_names:
-            fallback_ops = [op for op in allowed_ops if op != "Identity"]
-            return {"mlp": fallback_ops}, ["mlp"], ["mlp"]
-
-        min_families = min(self.family_range[0], len(family_names))
-        max_families = min(self.family_range[1], len(family_names))
-        if max_families < min_families:
-            max_families = min_families
-        num_families = rng.randint(min_families, max_families)
-        selected_families = rng.sample(family_names, k=num_families)
-        op_families = [name for name in selected_families if family_space.get(name)]
-
-        if not op_families:
-            non_ssm = [name for name, ops in family_space.items() if ops]
-            if non_ssm:
-                fallback = rng.choice(non_ssm)
-                if fallback not in selected_families:
-                    selected_families.append(fallback)
-                op_families = [fallback]
-
-        return family_space, selected_families, op_families
-
-    def _select_family_operations(
-        self,
-        rng,
-        *,
-        family_space: dict[str, list[str]],
-        op_families: list[str],
-        require_identity: bool,
-        min_ops: int,
-        max_ops: int | None,
-    ) -> tuple[list[str], dict[str, list[str]]]:
-        guaranteed_ops: list[str] = []
-        family_choices: dict[str, list[str]] = {}
-
-        for family_name in op_families:
-            family_pool = [
-                op for op in family_space.get(family_name, []) if op != "Identity"
-            ]
-            if not family_pool:
-                family_pool = list(family_space.get(family_name, []))
-            if not family_pool:
-                continue
-            chosen_op = rng.choice(family_pool)
-            guaranteed_ops.append(chosen_op)
-            family_choices[family_name] = [chosen_op]
-
-        guaranteed_ops = list(dict.fromkeys(guaranteed_ops))
-        ops_no_id = list(
-            dict.fromkeys(
-                op
-                for family_name in op_families
-                for op in family_space.get(family_name, [])
-                if op != "Identity"
-            )
-        )
-        if not ops_no_id:
-            ops_no_id = [op for op in self.all_ops if op != "Identity"]
-
-        max_ops_local = min(
-            max_ops or len(ops_no_id) + (1 if require_identity else 0),
-            len(ops_no_id) + (1 if require_identity else 0),
-        )
-        min_required = len(guaranteed_ops) + (1 if require_identity else 0)
-        min_ops_local = max(min_ops, min_required)
-        if max_ops_local < min_ops_local:
-            max_ops_local = min_ops_local
-
-        n_ops = rng.randint(min_ops_local, max_ops_local)
-        non_identity_target = max(0, n_ops - (1 if require_identity else 0))
-        extra_pool = [op for op in ops_no_id if op not in guaranteed_ops]
-        extra_count = min(
-            len(extra_pool), max(0, non_identity_target - len(guaranteed_ops))
-        )
-        extra_ops = rng.sample(extra_pool, k=extra_count) if extra_count > 0 else []
-        selected_non_identity = guaranteed_ops + extra_ops
-
-        if not selected_non_identity and ops_no_id:
-            selected_non_identity = [rng.choice(ops_no_id)]
-
-        selected_ops = (
-            ["Identity"] + selected_non_identity
-            if require_identity
-            else selected_non_identity
-        )
-        return selected_ops, family_choices
 
     def _make_candidate_config(
         self,
@@ -506,74 +283,23 @@ class DARTSTrainer:
         edge_to_op_target: float = 1.0,
         edge_to_op_max_ratio: float = 1.8,
     ) -> dict[str, Any]:
-        family_space, selected_families, op_families = self._resolve_candidate_families(
-            rng, allowed_ops
-        )
-        selected_ops, family_choices = self._select_family_operations(
-            rng,
-            family_space=family_space,
-            op_families=op_families,
-            require_identity=require_identity,
+        return make_candidate_config(
+            rng=rng,
+            allowed_ops=allowed_ops,
+            hidden_dim_choices=hidden_dim_choices,
+            cell_range=cell_range,
+            node_range=node_range,
+            op_families=self.op_families,
+            family_range=self.family_range,
             min_ops=min_ops,
             max_ops=max_ops,
+            require_identity=require_identity,
+            edge_to_op_target=edge_to_op_target,
+            edge_to_op_max_ratio=edge_to_op_max_ratio,
+            arch_modes=self.arch_modes,
+            attention_variants=self.attention_variants,
+            ffn_variants=self.ffn_variants,
         )
-
-        node_candidates = list(range(int(node_range[0]), int(node_range[1]) + 1))
-        op_budget = max(len(selected_ops) - (1 if require_identity else 0), 1)
-        desired_edges = max(
-            1, int(round(op_budget * max(float(edge_to_op_target), 0.2)))
-        )
-        max_edges = max(
-            3, int(math.ceil(op_budget * max(float(edge_to_op_max_ratio), 1.0)))
-        )
-        feasible = [
-            n for n in node_candidates if (n * (n - 1) // 2) <= max_edges
-        ] or node_candidates
-        weights = [
-            max(
-                math.exp(
-                    -abs((n * (n - 1) // 2) - desired_edges) / max(desired_edges, 1)
-                )
-                / (1.0 + 0.08 * float(n * (n - 1) // 2)),
-                1e-6,
-            )
-            for n in feasible
-        ]
-        try:
-            num_nodes = rng.choices(feasible, weights=weights, k=1)[0]
-        except Exception:
-            num_nodes = rng.choice(feasible)
-
-        if not self.arch_modes:
-            arch_mode = "encoder_decoder"
-        else:
-            arch_mode = rng.choice(self.arch_modes)
-
-        transformer_self_attention_type = (
-            rng.choice(self.attention_variants) if self.attention_variants else "auto"
-        )
-        transformer_ffn_variant = (
-            rng.choice(self.ffn_variants)
-            if "attention" in selected_families
-            else "auto"
-        )
-        family_choices = dict(family_choices)
-        if "attention" in selected_families:
-            family_choices["attention_variant"] = [transformer_self_attention_type]
-            family_choices["attention_ffn"] = [transformer_ffn_variant]
-
-        return {
-            "selected_ops": selected_ops,
-            "selected_families": selected_families,
-            "family_choices": family_choices,
-            "hidden_dim": rng.choice(hidden_dim_choices),
-            "num_cells": rng.randint(cell_range[0], cell_range[1]),
-            "num_nodes": int(num_nodes),
-            "arch_mode": arch_mode,
-            "transformer_self_attention_type": transformer_self_attention_type,
-            "transformer_ffn_variant": transformer_ffn_variant,
-            "transformer_use_moe": transformer_ffn_variant == "moe",
-        }
 
     def _build_candidate_model(self, cfg: dict[str, Any]) -> nn.Module:
         return TimeSeriesDARTS(
