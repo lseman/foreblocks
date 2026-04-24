@@ -1,8 +1,7 @@
 import warnings
 from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from typing import Any
 
@@ -12,8 +11,7 @@ import pandas as pd
 from sklearn.exceptions import ConvergenceWarning
 from statsmodels.tools.sm_exceptions import ValueWarning
 from statsmodels.tsa.seasonal import STL
-from statsmodels.tsa.stattools import acf
-from statsmodels.tsa.stattools import pacf
+from statsmodels.tsa.stattools import acf, pacf
 
 from .analyzers.cluster import ClusterAnalyzer
 from .analyzers.correlation import CorrelationAnalyzer

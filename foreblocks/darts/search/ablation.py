@@ -20,10 +20,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .scoring import score_from_metrics
-from .weight_schemes import build_weight_schemes
-from .weight_schemes import ranks_desc as _ranks_desc
-from .weight_schemes import spearman_from_scores as _spearman
-from .weight_schemes import topk_overlap_from_scores as _topk_overlap
+from .weight_schemes import (
+    build_weight_schemes,
+    ranks_desc as _ranks_desc,
+    spearman_from_scores as _spearman,
+    topk_overlap_from_scores as _topk_overlap,
+)
 
 
 # ---------------------------------------------------------------------------

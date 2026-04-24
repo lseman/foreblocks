@@ -9,12 +9,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .bb_attention import LearnedPoolingBridge
-from .bb_sequence import ArchitectureNormalizer
-from .bb_sequence import BaseFixedSequenceBlock
-from .bb_sequence import SearchableDecomposition
-from .bb_sequence import SequenceStateAdapter
-from .bb_transformers import LightweightTransformerDecoder
-from .bb_transformers import LightweightTransformerEncoder
+from .bb_sequence import (
+    ArchitectureNormalizer,
+    BaseFixedSequenceBlock,
+    SearchableDecomposition,
+    SequenceStateAdapter,
+)
+from .bb_transformers import (
+    LightweightTransformerDecoder,
+    LightweightTransformerEncoder,
+)
 
 
 __all__ = [

@@ -18,9 +18,7 @@ from torch.amp import GradScaler
 
 from ..evaluation.metrics import compute_metrics
 from ..utils.io import print_final_results
-from ..utils.training import autocast_ctx
-from ..utils.training import create_progress_bar
-from ..utils.training import unpack_forecasting_batch
+from ..utils.training import autocast_ctx, create_progress_bar, unpack_forecasting_batch
 
 
 # ---------------------------------------------------------------------------

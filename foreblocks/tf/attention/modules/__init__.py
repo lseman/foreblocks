@@ -1,5 +1,4 @@
-from .autocor_att import AutoCorrelation
-from .autocor_att import AutoCorrelationLayer
+from .autocor_att import AutoCorrelation, AutoCorrelationLayer
 from .dwt_att import DWTAttention
 from .frequency_att import FrequencyAttention
 from .gated_delta import *  # noqa: F403

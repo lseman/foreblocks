@@ -25,45 +25,38 @@
 
 from __future__ import annotations
 
-from abc import ABC
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Callable
-from typing import List
-from typing import Literal
-from typing import Optional
-from typing import Tuple
+from typing import Callable, List, Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
-from .attention.utils.residuals import AttentionResidual
-from .attention.utils.residuals import normalize_attention_residual_mode
-from .embeddings import LearnablePositionalEncoding
-from .embeddings import PositionalEncoding
+from .attention.utils.residuals import (
+    AttentionResidual,
+    normalize_attention_residual_mode,
+)
+from .embeddings import LearnablePositionalEncoding, PositionalEncoding
 from .ff import FeedForwardBlock
 from .fusions import fused_dropout_add  # fused helpers
-from .fusions import fused_dropout_add_norm
-from .fusions import fused_dropout_gateskip_norm
-from .fusions import get_dropout_p
-from .mhc import MHCHyperConnection
-from .mhc import mhc_apply_norm_streamwise
-from .mhc import mhc_collapse_streams
-from .mhc import mhc_init_streams
-from .norms import RMSNorm
-from .norms import create_norm_layer
-from .patching import PatchDetokenizer
-from .patching import PatchTokenizer
-from .patching import patchify_padding_mask
-from .skip.gateskip import BudgetScheduler
-from .skip.gateskip import ResidualGate
-from .skip.gateskip import apply_skip_to_kv
-from .skip.mod import MoDBudgetScheduler
-from .skip.mod import MoDRouter
-from .skip.mod import mod_capacity
-from .skip.mod import mod_routed_indices
-from .skip.mod import mod_router_aux_loss
-from .skip.mod import mod_topk_mask
+from .fusions import fused_dropout_add_norm, fused_dropout_gateskip_norm, get_dropout_p
+from .mhc import (
+    MHCHyperConnection,
+    mhc_apply_norm_streamwise,
+    mhc_collapse_streams,
+    mhc_init_streams,
+)
+from .norms import RMSNorm, create_norm_layer
+from .patching import PatchDetokenizer, PatchTokenizer, patchify_padding_mask
+from .skip.gateskip import BudgetScheduler, ResidualGate, apply_skip_to_kv
+from .skip.mod import (
+    MoDBudgetScheduler,
+    MoDRouter,
+    mod_capacity,
+    mod_routed_indices,
+    mod_router_aux_loss,
+    mod_topk_mask,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

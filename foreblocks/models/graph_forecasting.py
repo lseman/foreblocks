@@ -6,24 +6,22 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-from foreblocks.layers.graph.common import Tensor
-from foreblocks.layers.graph.common import ensure_adj
-from foreblocks.layers.graph.common import xavier_zero_bias
-from foreblocks.layers.graph.latent import CorrelationConfig
-from foreblocks.layers.graph.latent import LatentCorrelationLearner
-from foreblocks.layers.graph.layers import EdgeCondGCN
-from foreblocks.layers.graph.layers import GATConv
-from foreblocks.layers.graph.layers import GCNConv
-from foreblocks.layers.graph.layers import JumpKnowledge
-from foreblocks.layers.graph.layers import SAGEConv
-from foreblocks.layers.graph.layers import StochasticDepth
-from foreblocks.layers.graph.mtgnn import GraphWaveNetBlock
+from foreblocks.layers.graph.common import Tensor, ensure_adj, xavier_zero_bias
+from foreblocks.layers.graph.latent import CorrelationConfig, LatentCorrelationLearner
+from foreblocks.layers.graph.layers import (
+    EdgeCondGCN,
+    GATConv,
+    GCNConv,
+    JumpKnowledge,
+    SAGEConv,
+    StochasticDepth,
+)
 from foreblocks.layers.graph.norms import make_norm_pair
-
+from foreblocks.layers.graph.spatio_temporal import GraphWaveNetBlock
 
 GraphConvType = Literal["gcn", "sage", "gat", "edge_cond", "graph_wavenet"]
 GraphSource = Literal["latent", "external", "static"]
-JumpKnowledgeMode = Literal["none", "last", "sum", "max", "concat", "lstm"]
+JumpKnowledgeMode = Literal["none", "last", "sum", "max", "concat", "lstm", "attn"]
 GraphOutputMode = Literal["sequence", "last", "mean", "flatten_nodes"]
 
 

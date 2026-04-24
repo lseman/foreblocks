@@ -3,14 +3,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction import FeatureHasher
-from sklearn.feature_selection import chi2
-from sklearn.feature_selection import f_regression
-from sklearn.model_selection import GroupKFold
-from sklearn.model_selection import KFold
-from sklearn.model_selection import StratifiedKFold
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.preprocessing import OrdinalEncoder
+from sklearn.feature_selection import chi2, f_regression
+from sklearn.model_selection import GroupKFold, KFold, StratifiedKFold, TimeSeriesSplit
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 
 from .base import BaseFeatureTransformer
 

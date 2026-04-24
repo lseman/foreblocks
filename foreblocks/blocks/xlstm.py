@@ -4,8 +4,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from foreblocks.blocks.enc_dec import DecoderBase
-from foreblocks.blocks.enc_dec import EncoderBase
+from foreblocks.blocks.enc_dec import DecoderBase, EncoderBase
 from foreblocks.ui.node_spec import node
 
 

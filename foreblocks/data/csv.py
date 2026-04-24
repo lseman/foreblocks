@@ -1,5 +1,4 @@
-from typing import Annotated
-from typing import Any
+from typing import Annotated, Any
 
 import numpy as np
 import pandas as pd

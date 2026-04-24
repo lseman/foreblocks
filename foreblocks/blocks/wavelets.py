@@ -11,9 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.special import eval_legendre
-from sympy import Poly
-from sympy import Symbol
-from sympy import legendre
+from sympy import Poly, Symbol, legendre
 
 
 def legendre_der(k: int, x: np.ndarray) -> np.ndarray:

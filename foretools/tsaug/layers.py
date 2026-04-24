@@ -14,8 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .transformations import NUM_TRANSFORMS
-from .transformations import TRANSFORMATIONS
+from .transformations import NUM_TRANSFORMS, TRANSFORMATIONS
 
 
 class AugmentationLayer(nn.Module):

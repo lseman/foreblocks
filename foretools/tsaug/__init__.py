@@ -10,25 +10,24 @@ Reference:
     Under review at ICLR 2026.
 """
 
-from .features import FEATURE_DIM
-from .features import extract_features
-from .layers import AugmentationLayer
-from .layers import StackedAugmentationLayers
+from .features import FEATURE_DIM, extract_features
+from .layers import AugmentationLayer, StackedAugmentationLayers
 from .losses import CompositeLoss
-from .model import AutoDATimeseries
-from .model import AutoDATrainer
-from .transformations import NUM_TRANSFORMS
-from .transformations import TRANSFORM_NAMES
-from .transformations import TRANSFORMATIONS
-from .transformations import drift
-from .transformations import freq_warp
-from .transformations import jittering
-from .transformations import mag_warp
-from .transformations import raw
-from .transformations import resample
-from .transformations import scaling
-from .transformations import time_mask
-from .transformations import time_warp
+from .model import AutoDATimeseries, AutoDATrainer
+from .transformations import (
+    NUM_TRANSFORMS,
+    TRANSFORM_NAMES,
+    TRANSFORMATIONS,
+    drift,
+    freq_warp,
+    jittering,
+    mag_warp,
+    raw,
+    resample,
+    scaling,
+    time_mask,
+    time_warp,
+)
 
 
 __version__ = "0.1.0"

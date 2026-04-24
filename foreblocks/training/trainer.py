@@ -8,17 +8,14 @@ import contextlib
 import copy
 import datetime
 import warnings
-from collections.abc import Callable
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler
-from torch.amp import autocast
-from torch.utils.data import DataLoader
-from torch.utils.data import TensorDataset
+from torch.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from foreblocks.config import TrainingConfig
@@ -40,9 +37,11 @@ except ImportError:
 # Optional: import your MoE classes and HeadComposer
 try:
     from foreblocks.tf.experts.moe import MoEFeedForwardDMoE
-    from foreblocks.tf.experts.moe_logging import MoELogger
-    from foreblocks.tf.experts.moe_logging import ReportInputs
-    from foreblocks.tf.experts.moe_logging import build_moe_report
+    from foreblocks.tf.experts.moe_logging import (
+        MoELogger,
+        ReportInputs,
+        build_moe_report,
+    )
     from foreblocks.tf.ff import FeedForwardBlock
 except Exception:
     MoELogger = None
@@ -872,8 +871,7 @@ class Trainer:
             print(f"[MLTracker] Warning: Failed to log model info: {e}")
         # System + git tags (best-effort)
         try:
-            from foreblocks.mltracker.mltracker import _maybe_git_info
-            from foreblocks.mltracker.mltracker import _sys_info
+            from foreblocks.mltracker.mltracker import _maybe_git_info, _sys_info
 
             self.mltracker.set_tags({f"sys:{k}": v for k, v in _sys_info().items()})
             git = _maybe_git_info()

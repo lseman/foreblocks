@@ -2,17 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..sype import AdaptiveWarp
-from ..sype import SyPERotator
+from ..sype import AdaptiveWarp, SyPERotator
 from .cache.decode_stream import paged_stream_decode_standard
-from .cache.kv import DenseKVProvider
-from .cache.kv import KVProvider
-from .cache.kv import PagedKVProvider
+from .cache.kv import DenseKVProvider, KVProvider, PagedKVProvider
 from .cache.paged import PagedKVCache
-from .kernels import triton_apply_rope
-from .kernels import triton_paged_decode
-from .utils.compaction import AttentionMatchingCompactor
-from .utils.compaction import AttentionMatchingConfig
+from .kernels import triton_apply_rope, triton_paged_decode
+from .utils.compaction import AttentionMatchingCompactor, AttentionMatchingConfig
 from .utils.position import PositionEncodingApplier
 from .variants.base import AttentionImpl
 from .variants.standard import StandardAttentionImpl
@@ -387,8 +382,7 @@ class MultiAttention(nn.Module):
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
                 )
             elif attention_type == "autocor":
-                from .modules.autocor_att import AutoCorrelation
-                from .modules.autocor_att import AutoCorrelationLayer
+                from .modules.autocor_att import AutoCorrelation, AutoCorrelationLayer
 
                 autocorr = AutoCorrelation(
                     mask_flag=True,
@@ -409,12 +403,14 @@ class MultiAttention(nn.Module):
         return applier
 
     def _create_impl(self) -> AttentionImpl:
-        from .variants import NSAImpl
-        from .variants import ProbSparseAttentionImpl
-        from .variants import SlidingWindowAttentionImpl
-        from .variants import SoftpickAttentionImpl
-        from .variants import SpectralAttentionImpl
-        from .variants import StandardAttentionImpl
+        from .variants import (
+            NSAImpl,
+            ProbSparseAttentionImpl,
+            SlidingWindowAttentionImpl,
+            SoftpickAttentionImpl,
+            SpectralAttentionImpl,
+            StandardAttentionImpl,
+        )
 
         if self.attention_type in {"standard", "sype"}:
             return StandardAttentionImpl(self)

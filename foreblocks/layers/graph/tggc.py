@@ -7,9 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .common import Tensor
-from .common import is_batched_adj
-from .common import xavier_zero_bias
+from .common import Tensor, is_batched_adj, xavier_zero_bias
 
 
 def symmetric_normalize_adjacency(

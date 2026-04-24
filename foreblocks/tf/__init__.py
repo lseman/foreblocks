@@ -1,11 +1,5 @@
-from . import attention
-from . import compute
-from . import experts
-from . import ff
-from . import popular
-from . import skip
-from .transformer_tuner import ModernTransformerTuner
-from .transformer_tuner import TransformerTuner
+from . import attention, compute, experts, ff, popular, skip
+from .transformer_tuner import ModernTransformerTuner, TransformerTuner
 
 
 __all__ = [

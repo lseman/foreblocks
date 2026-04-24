@@ -15,26 +15,28 @@ All classes live in dedicated sub-modules:
                       FixedEncoder, FixedDecoder
 """
 
-from .bb_attention import AttentionBridge
-from .bb_attention import LearnedPoolingBridge
-from .bb_attention import SelfAttention
-from .bb_mixed import ArchitectureConverter
-from .bb_mixed import FixedDecoder
-from .bb_mixed import FixedEncoder
-from .bb_mixed import MixedDecoder
-from .bb_mixed import MixedEncoder
+from .bb_attention import AttentionBridge, LearnedPoolingBridge, SelfAttention
+from .bb_mixed import (
+    ArchitectureConverter,
+    FixedDecoder,
+    FixedEncoder,
+    MixedDecoder,
+    MixedEncoder,
+)
 from .bb_moe import DARTSFeedForward
-from .bb_positional import PositionalEncoding
-from .bb_positional import RotaryPositionalEncoding
-from .bb_primitives import RMSNorm
-from .bb_primitives import SwiGLUFFN
-from .bb_sequence import ArchitectureNormalizer
-from .bb_sequence import BaseFixedSequenceBlock
-from .bb_sequence import BaseMixedSequenceBlock
-from .bb_sequence import SearchableDecomposition
-from .bb_sequence import SequenceStateAdapter
-from .bb_transformers import LightweightTransformerDecoder
-from .bb_transformers import LightweightTransformerEncoder
+from .bb_positional import PositionalEncoding, RotaryPositionalEncoding
+from .bb_primitives import RMSNorm, SwiGLUFFN
+from .bb_sequence import (
+    ArchitectureNormalizer,
+    BaseFixedSequenceBlock,
+    BaseMixedSequenceBlock,
+    SearchableDecomposition,
+    SequenceStateAdapter,
+)
+from .bb_transformers import (
+    LightweightTransformerDecoder,
+    LightweightTransformerEncoder,
+)
 
 
 __all__ = [

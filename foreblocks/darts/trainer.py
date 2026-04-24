@@ -23,40 +23,47 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp import GradScaler
-from torch.amp import autocast
+from torch.amp import GradScaler, autocast
 from tqdm import tqdm
+
+from .architecture.core_blocks import TimeSeriesDARTS
 
 # ── Architecture ──────────────────────────────────────────────────────────
 from .architecture.finalization import (
     derive_final_architecture as derive_fixed_architecture,
 )
-from .architecture.core_blocks import TimeSeriesDARTS
-from .config import DEFAULT_ARCH_MODES
-from .config import DEFAULT_ATTENTION_VARIANTS
-from .config import DEFAULT_FFN_VARIANTS
-from .config import DEFAULT_OP_FAMILIES
-from .config import DEFAULT_OPS as SEARCH_DEFAULT_OPS
+from .config import (
+    DEFAULT_ARCH_MODES,
+    DEFAULT_ATTENTION_VARIANTS,
+    DEFAULT_FFN_VARIANTS,
+    DEFAULT_OP_FAMILIES,
+    DEFAULT_OPS as SEARCH_DEFAULT_OPS,
+)
 from .evaluation import plotting as _plot_mod
 
 # ── Sub-module delegates ──────────────────────────────────────────────────
-from .search import ablation as _abl_mod
-from .search import multi_fidelity as _mf_mod
-from .search import robust_pool as _rp_mod
-from .search import zero_cost as _zc_mod
+from .search import (
+    ablation as _abl_mod,
+    multi_fidelity as _mf_mod,
+    robust_pool as _rp_mod,
+    zero_cost as _zc_mod,
+)
 
 # ── Metrics & Config ──────────────────────────────────────────────────────
 # ── Search utilities ─────────────────────────────────────────────────────
-from .search.orchestrator import evaluate_search_candidate
-from .search.orchestrator import make_default_search_candidate_config
-from .search.orchestrator import run_parallel_candidate_collection
-from .search.orchestrator import select_top_candidates
-from .training import darts_loop as _dl_mod
-from .training import final_trainer as _ft_mod
+from .search.orchestrator import (
+    evaluate_search_candidate,
+    make_default_search_candidate_config,
+    run_parallel_candidate_collection,
+    select_top_candidates,
+)
+from .training import darts_loop as _dl_mod, final_trainer as _ft_mod
 
 # ── Training helpers ─────────────────────────────────────────────────────
-from .training.helpers import AlphaTracker
-from .training.helpers import default_as_probability_vector as _as_probability_vector
+from .training.helpers import (
+    AlphaTracker,
+    default_as_probability_vector as _as_probability_vector,
+)
 from .utils.training import unpack_forecasting_batch
 
 

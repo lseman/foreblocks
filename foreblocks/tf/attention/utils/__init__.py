@@ -1,9 +1,10 @@
-from .compaction import AttentionMatchingCompactor
-from .compaction import AttentionMatchingConfig
+from .compaction import AttentionMatchingCompactor, AttentionMatchingConfig
 from .position import PositionEncodingApplier
-from .residuals import AttentionResidual
-from .residuals import BlockAttentionResidual
-from .residuals import normalize_attention_residual_mode
+from .residuals import (
+    AttentionResidual,
+    BlockAttentionResidual,
+    normalize_attention_residual_mode,
+)
 
 
 __all__ = [

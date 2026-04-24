@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.interpolate import Akima1DInterpolator
-from scipy.interpolate import PchipInterpolator
-from scipy.interpolate import interp1d
-from scipy.signal import find_peaks
-from scipy.signal import hilbert
+from scipy.interpolate import Akima1DInterpolator, PchipInterpolator, interp1d
+from scipy.signal import find_peaks, hilbert
 
 
 class EMDVariants:

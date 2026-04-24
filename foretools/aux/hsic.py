@@ -14,8 +14,7 @@ from scipy import stats
 # Optional Numba
 # ----------------------------
 try:
-    from numba import njit
-    from numba import prange
+    from numba import njit, prange
 
     NUMBA_AVAILABLE = True
 except Exception:
@@ -35,8 +34,7 @@ except Exception:
 # Optional Joblib (matrix parallel)
 # ----------------------------
 try:
-    from joblib import Parallel
-    from joblib import delayed
+    from joblib import Parallel, delayed
 
     _JOBLIB = True
 except Exception:

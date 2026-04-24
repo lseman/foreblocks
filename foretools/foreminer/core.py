@@ -1,7 +1,6 @@
 import traceback
 import warnings
-from abc import ABC
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import wraps
@@ -12,8 +11,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from scipy.stats import kurtosis
-from scipy.stats import skew
+from scipy.stats import kurtosis, skew
 from sklearn.decomposition import PCA
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.preprocessing import StandardScaler

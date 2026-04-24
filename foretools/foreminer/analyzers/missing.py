@@ -3,8 +3,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..core import AnalysisConfig
-from ..core import AnalysisStrategy
+from ..core import AnalysisConfig, AnalysisStrategy
 
 
 class MissingnessAnalyzer(AnalysisStrategy):
@@ -107,12 +106,9 @@ class MissingnessAnalyzer(AnalysisStrategy):
     def _analyze_mnar(
         self, data: pd.DataFrame, target_col: str, config: AnalysisConfig
     ) -> dict[str, Any]:
-        from scipy.stats import chi2_contingency
-        from scipy.stats import ks_2samp
-        from scipy.stats import ttest_ind
+        from scipy.stats import chi2_contingency, ks_2samp, ttest_ind
         from sklearn.linear_model import LogisticRegression
-        from sklearn.metrics import mutual_info_score
-        from sklearn.metrics import roc_auc_score
+        from sklearn.metrics import mutual_info_score, roc_auc_score
 
         insights: dict[str, Any] = {}
         target = data[target_col]

@@ -12,26 +12,24 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from contextlib import asynccontextmanager
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks
-from fastapi import Depends
-from fastapi import FastAPI
-from fastapi import File
-from fastapi import HTTPException
-from fastapi import Query
-from fastapi import UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.responses import JSONResponse
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 # ---- import your tracker (use the improved MLTracker you implemented) ----
 from foreblocks.mltracker import MLTracker

@@ -37,10 +37,8 @@ from typing import Any
 import numpy as np
 
 from .pruning import PruningConfig
-from .tpe import TPE
-from .tpe import TPEConf
-from .trial import Trial
-from .trial import TrialPruned
+from .tpe import TPE, TPEConf
+from .trial import Trial, TrialPruned
 from .utils import _canonical_config_key
 
 

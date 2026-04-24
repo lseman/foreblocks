@@ -10,8 +10,7 @@ except Exception:
     HAS_DCOR = False
 
 try:
-    from numba import njit
-    from numba import prange
+    from numba import njit, prange
 
     HAS_NUMBA = True
 except Exception:

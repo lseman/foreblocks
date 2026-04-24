@@ -4,15 +4,10 @@ from collections.abc import Sequence
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor
-from torch import nn
+from torch import Tensor, nn
 
-from .poly import DEFAULT_POLY_FAMILIES
-from .poly import PolyFamily
-from .poly import PolyLayerConfig
-from .poly import build_poly_layer
-from .router import RouterConfig
-from .router import TokenRouter
+from .poly import DEFAULT_POLY_FAMILIES, PolyFamily, PolyLayerConfig, build_poly_layer
+from .router import RouterConfig, TokenRouter
 
 
 def resolve_poly_config(

@@ -42,15 +42,12 @@ fig.savefig("gpt_style.png", dpi=220, bbox_inches="tight")
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
-from matplotlib.patches import FancyBboxPatch
-from matplotlib.patches import PathPatch
+from matplotlib.patches import Circle, FancyBboxPatch, PathPatch
 from matplotlib.path import Path
 
 

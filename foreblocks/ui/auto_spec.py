@@ -4,17 +4,9 @@ from __future__ import annotations
 import collections.abc as cabc
 import enum
 import inspect
-from collections.abc import Mapping
-from collections.abc import Sequence
-from dataclasses import fields
-from dataclasses import is_dataclass
-from typing import Annotated
-from typing import Any
-from typing import Literal
-from typing import Union
-from typing import get_args
-from typing import get_origin
-from typing import get_type_hints
+from collections.abc import Mapping, Sequence
+from dataclasses import fields, is_dataclass
+from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
 
 """

@@ -1,12 +1,12 @@
 # ForeBlocks Docs
 
 <div class="hero-panel">
-  <span class="eyebrow">ForeBlocks v{{ $frontmatter.foreBlocksVersion }} | Docs Home</span>
-  <h1>Forecasting, preprocessing, search, and tooling in one documentation hub</h1>
+  <span class="eyebrow">foreBlocks v{{ $frontmatter.foreBlocksVersion }} | Documentation</span>
+  <h1>Modular time-series forecasting for PyTorch</h1>
   <p class="hero-lead">
-    <code>foreblocks</code> is the forecasting library. <code>foretools</code> is the companion toolbox.
-    The docs are designed to keep the first run small, then help you branch into preprocessing,
-    architecture search, uncertainty, or dashboard tooling once the baseline path is working.
+    <code>foreblocks</code> provides forecasting models, training, evaluation, and preprocessing.
+    <code>foretools</code> offers companion utilities for synthetic data, feature engineering, decomposition, and hyperparameter search.
+    The docs guide you from a simple baseline to advanced architectures and architecture search.
   </p>
   <div class="hero-actions">
     <a class="md-button md-button--primary" href="getting-started/">Run your first model</a>
@@ -16,10 +16,10 @@
 </div>
 
 <div class="metric-strip">
-  <div class="metric-chip"><strong>Stable first step</strong><span><code>ForecastingModel</code> + <code>Trainer</code> + <code>ModelEvaluator</code> are the best first run.</span></div>
-  <div class="metric-chip"><strong>Raw-series bridge</strong><span><code>TimeSeriesHandler</code> converts raw <code>[T, D]</code> arrays into training windows.</span></div>
-  <div class="metric-chip"><strong>Search stack</strong><span>DARTS guides cover screening, bilevel search, retraining, and analysis.</span></div>
-  <div class="metric-chip"><strong>Companion tooling</strong><span><code>foretools</code> adds BOHB, synthetic generation, VMD, and feature engineering.</span></div>
+  <div class="metric-chip"><strong>Start small</strong><span>Use <code>ForecastingModel</code> + <code>Trainer</code> + <code>ModelEvaluator</code> for a quick baseline.</span></div>
+  <div class="metric-chip"><strong>Raw series ready</strong><span><code>TimeSeriesHandler</code> converts raw <code>[T, D]</code> arrays into training windows automatically.</span></div>
+  <div class="metric-chip"><strong>Search included</strong><span>DARTS guides cover screening, bilevel search, retraining, and analysis.</span></div>
+  <div class="metric-chip"><strong>Toolbox utilities</strong><span><code>foretools</code> adds synthetic data generation, BOHB search, VMD decomposition, and feature engineering.</span></div>
 </div>
 
 ## Choose your route
@@ -27,33 +27,33 @@
 <div class="path-grid">
   <div class="path-card">
     <p class="route-kicker">Path 01</p>
-    <h3><a href="getting-started/">Train a baseline first</a></h3>
-    <p>Use the smallest reliable public API path before adding preprocessing, search, or dashboard features.</p>
+    <h3><a href="getting-started/">Train a baseline model</a></h3>
+    <p>Start with the smallest reliable public API path. Validates imports, dataloader shapes, and evaluation before adding extras.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 02</p>
-    <h3><a href="preprocessor/">Start from raw series</a></h3>
-    <p>Scale, filter, impute, and slice a raw multivariate array into training windows with the preprocessing stack.</p>
+    <h3><a href="preprocessor/">Handle raw time series</a></h3>
+    <p>Use <code>TimeSeriesHandler</code> to automatically scale, filter, window, and prepare raw multivariate arrays.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 03</p>
-    <h3><a href="transformer/">Customize architectures</a></h3>
-    <p>Transformer, MoE, custom blocks, and Hybrid Mamba guides explain the more configurable model internals.</p>
+    <h3><a href="transformer/">Explore advanced backbones</a></h3>
+    <p>Learn transformer attention, MoE routing, custom blocks, and Hybrid Mamba for stronger models.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 04</p>
-    <h3><a href="darts/">Search architectures</a></h3>
-    <p>Move into DARTS once the baseline path is healthy and you want automated structure search.</p>
+    <h3><a href="darts/">Automate architecture search</a></h3>
+    <p>Run DARTS to automatically discover optimal architecture combinations from a defined operation pool.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 05</p>
     <h3><a href="uncertainty/">Add uncertainty intervals</a></h3>
-    <p>Use conformal workflows when point predictions are not enough for reporting or coverage analysis.</p>
+    <p>Use conformal prediction to generate prediction intervals when you need coverage guarantees.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 06</p>
-    <h3><a href="foretools/">Open the companion toolbox</a></h3>
-    <p>Explore synthetic data, BOHB, VMD decomposition, and feature-engineering utilities.</p>
+    <h3><a href="foretools/">Use companion utilities</a></h3>
+    <p>Access synthetic data generation, BOHB search, VMD decomposition, and feature engineering tools.</p>
   </div>
 </div>
 
@@ -61,32 +61,34 @@
 
 <div class="step-grid">
   <div class="step-card">
-    <strong>1. Confirm the baseline path</strong>
-    <span>Start with <a href="getting-started/">Getting Started</a> and make sure a small training loop runs end to end.</span>
+    <strong>1. Run a baseline</strong>
+    <span>Follow <a href="getting-started/">Getting Started</a> to validate the core training loop with minimal dependencies.</span>
   </div>
   <div class="step-card">
-    <strong>2. Learn the mental model</strong>
-    <span>Read <a href="overview/">Overview</a> to understand how <code>foreblocks</code>, extras, and <code>foretools</code> fit together.</span>
+    <strong>2. Understand the stack</strong>
+    <span>Read <a href="overview/">Overview</a> to see how <code>foreblocks</code> and <code>foretools</code> connect.</span>
   </div>
   <div class="step-card">
-    <strong>3. Stay on the public surface first</strong>
-    <span>Use <a href="reference/public-api/">Public API</a> before reaching for subsystem-level imports.</span>
+    <strong>3. Explore the public API</strong>
+    <span>Browse <a href="reference/public-api/">Public API</a> to learn stable imports before diving into subsystems.</span>
   </div>
   <div class="step-card">
-    <strong>4. Branch by workflow</strong>
-    <span>Open the guide that matches your next step: preprocessing, transformers, DARTS, uncertainty, or tooling.</span>
+    <strong>4. Choose your workflow</strong>
+    <span>Pick a guide based on your task: preprocessing, transformers, DARTS search, uncertainty, or foretools.</span>
   </div>
 </div>
 
 ## Install by intent
 
-| Need | Suggested install | Best next page |
+| Need | Command | Next page |
 | --- | --- | --- |
-| Core forecasting only | `pip install foreblocks` | [Getting Started](getting-started.md) |
+| Core forecasting | `pip install foreblocks` | [Getting Started](getting-started.md) |
 | Raw-series preprocessing | `pip install "foreblocks[preprocessing]"` | [Preprocessor Guide](preprocessor.md) |
-| DARTS training, search, and analysis | `pip install "foreblocks[darts]"` | [DARTS Guide](darts.md) |
-| Tracking UI and API clients | `pip install "foreblocks[mltracker]"` | [Web UI](webui.md) |
-| Everything | `pip install "foreblocks[all]"` | [Overview](overview.md) |
+| Architecture search (DARTS) | `pip install "foreblocks[darts]"` | [DARTS Guide](darts.md) |
+| Experiment tracking (MLTracker) | `pip install "foreblocks[mltracker]"` | [Web UI](webui.md) |
+| VMD decomposition | `pip install "foreblocks[vmd]"` | [VMD Guide](foretools/vmd.md) |
+| Wavelet utilities | `pip install "foreblocks[wavelets]"` | Coming soon |
+| All runtime extras | `pip install "foreblocks[all]"` | [Overview](overview.md) |
 
 ## Documentation map
 
@@ -95,8 +97,8 @@
 Step-by-step runnable paths:
 
 - [Getting Started](getting-started.md)
-- [Train A Direct Model](tutorials/train-direct-model.md)
-- [Run A DARTS Search](tutorials/darts-multifidelity-search.md)
+- [Train a Direct Model](tutorials/train-direct-model.md)
+- [Run a DARTS Search](tutorials/darts-multifidelity-search.md)
 - [Generate Synthetic Series](tutorials/generate-synthetic-series.md)
 - [Optimize With BOHB](tutorials/optimize-with-bohb.md)
 
@@ -181,6 +183,14 @@ from foreblocks.hybrid_mamba import (
 )
 ```
 
+### Wavelet utilities (coming soon)
+
+```python
+from foreblocks.blocks import WaveletAttention
+from foreblocks.blocks import WaveletConv1d
+```
+
+
 <div class="docs-callout">
   The docs now mirror the package split more intentionally: stable forecasting first,
   optional extras second, and specialist subsystems framed as branches instead of default prerequisites.
@@ -190,5 +200,4 @@ from foreblocks.hybrid_mamba import (
 
 - The canonical docs source lives in `docs/`.
 - The published versioned docs live under `/docs/`.
-- The site root landing page lives in `web/`.
-- `foretools` is documented here too, even when utilities are not re-exported from top-level `foreblocks`.
+- `foretools` utilities are documented here even when not re-exported from top-level `foreblocks`.

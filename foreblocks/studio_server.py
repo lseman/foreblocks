@@ -7,8 +7,7 @@ import socket
 import sys
 import webbrowser
 from http import HTTPStatus
-from http.server import SimpleHTTPRequestHandler
-from http.server import ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 

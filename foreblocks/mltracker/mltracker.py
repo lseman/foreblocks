@@ -20,13 +20,11 @@ import shutil
 import sqlite3
 import sys
 import time
-from collections.abc import Iterable
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
-from typing import Literal
+from typing import Any, Literal
 
 
 try:

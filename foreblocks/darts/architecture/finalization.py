@@ -7,8 +7,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_blocks import ArchitectureConverter
-from .bb_transformers import LightweightTransformerDecoder
-from .bb_transformers import LightweightTransformerEncoder
+from .bb_transformers import (
+    LightweightTransformerDecoder,
+    LightweightTransformerEncoder,
+)
 from .operation_blocks import FixedOp
 
 

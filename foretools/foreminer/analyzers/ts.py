@@ -3,15 +3,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks
-from scipy.signal import welch
+from scipy.signal import find_peaks, welch
 from scipy.stats import linregress
 
-from ..core import AnalysisConfig
-from ..core import AnalysisStrategy
-from .analyzer_utils import build_series_map
-from .analyzer_utils import get_numeric_columns
-from .analyzer_utils import safe_call
+from ..core import AnalysisConfig, AnalysisStrategy
+from .analyzer_utils import build_series_map, get_numeric_columns, safe_call
 
 
 # Optional dependencies
@@ -133,8 +129,7 @@ class TimeSeriesAnalyzer(AnalysisStrategy):
         self, series_map: dict[str, pd.Series], config: AnalysisConfig
     ) -> pd.DataFrame:
         """Modern stationarity analysis using most reliable tests"""
-        from statsmodels.tsa.stattools import adfuller
-        from statsmodels.tsa.stattools import kpss
+        from statsmodels.tsa.stattools import adfuller, kpss
 
         results = []
         for col, series in series_map.items():

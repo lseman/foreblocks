@@ -12,8 +12,7 @@ import numpy as np
 # Scientific Computing & ML
 # ============================
 import statsmodels.api as sm
-from joblib import Parallel
-from joblib import delayed
+from joblib import Parallel, delayed
 
 from foretools.ewt.ewt_core import EWT1D
 

@@ -6,11 +6,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .ops import causal_depthwise_conv1d
-from .ops import dt_prep
-from .ops import fused_out
-from .ops import grouped_ssd_scan
-from .ops import selective_scan
+from .ops import (
+    causal_depthwise_conv1d,
+    dt_prep,
+    fused_out,
+    grouped_ssd_scan,
+    selective_scan,
+)
 
 
 # ---------------------------------------------------------------------------

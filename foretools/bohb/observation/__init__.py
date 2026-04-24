@@ -1,5 +1,4 @@
-from .store import Observation
-from .store import ObservationStore
+from .store import Observation, ObservationStore
 
 
 __all__ = ["Observation", "ObservationStore"]

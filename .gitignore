@@ -76,3 +76,5 @@ node_modules/
 */node_modules/
 .codex
 CLAUDE.md
+# Added by code-review-graph
+.code-review-graph/

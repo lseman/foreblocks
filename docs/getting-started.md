@@ -39,13 +39,34 @@ pip install -e ".[dev]"
 
 ### With extras
 
-| Workflow | Install |
+| Extra | Adds |
 | --- | --- |
-| Plotting helpers | `pip install "foreblocks[plotting]"` |
-| Raw-series preprocessing and scientific utilities | `pip install "foreblocks[preprocessing]"` |
-| DARTS training, search, and analysis | `pip install "foreblocks[darts]"` |
-| MLTracker API and TUI | `pip install "foreblocks[mltracker]"` |
-| Everything | `pip install "foreblocks[all]"` |
+| `preprocessing` | `TimeSeriesHandler`, windowing, scaling, filtering, imputation |
+| `darts` | Architecture search, NAS, and evaluation helpers |
+| `mltracker` | Experiment tracking API, local dashboard, and CLI TUI |
+| `studio` | Studio frontend launcher and bundled server command |
+| `vmd` | VMD decomposition and analysis helpers |
+| `wavelets` | Wavelet preprocessing and attention utilities |
+| `benchmark` | External forecasting baselines and spreadsheet readers |
+| `foreminer` | Changepoint detection and dataset mining |
+| `all` | All runtime extras |
+
+### Install examples
+
+```bash
+# DARTS only
+pip install "foreblocks[darts]"
+
+# Multiple extras
+pip install "foreblocks[vmd,wavelets]"
+
+# Everything (large)
+pip install "foreblocks[all]"
+```
+
+::: note Documentation site
+Full guides, API reference, and examples: [https://foreblocks.laioseman.com/](https://foreblocks.laioseman.com/)
+:::
 
 ## 2. Keep the first run intentionally small
 
@@ -77,6 +98,8 @@ If this fails, verify your Python environment and installed extras.
 
 ## 4. Minimal training example
 
+This example trains a direct forecasting model with a simple custom head.
+
 ```python
 import numpy as np
 import torch
@@ -90,20 +113,26 @@ from foreblocks import (
     create_dataloaders,
 )
 
-seq_len = 24
-horizon = 6
-n_features = 4
+# === Configuration ===
+# Shapes: X = [N, T, F], y = [N, H]
+seq_len = 24    # input sequence length
+horizon = 6     # forecast horizon
+n_features = 4  # number of input features
+batch_size = 16
 
+# === Generate synthetic data ===
 rng = np.random.default_rng(0)
 X_train = rng.normal(size=(64, seq_len, n_features)).astype("float32")
 y_train = rng.normal(size=(64, horizon)).astype("float32")
 X_val = rng.normal(size=(16, seq_len, n_features)).astype("float32")
 y_val = rng.normal(size=(16, horizon)).astype("float32")
 
+# === Build dataloaders ===
 train_loader, val_loader = create_dataloaders(
-    X_train, y_train, X_val, y_val, batch_size=16
+    X_train, y_train, X_val, y_val, batch_size=batch_size,
 )
 
+# === Define a simple head ===
 head = nn.Sequential(
     nn.Flatten(),
     nn.Linear(seq_len * n_features, 64),
@@ -111,6 +140,7 @@ head = nn.Sequential(
     nn.Linear(64, horizon),
 )
 
+# === Assemble model ===
 model = ForecastingModel(
     head=head,
     forecasting_strategy="direct",
@@ -118,71 +148,95 @@ model = ForecastingModel(
     target_len=horizon,
 )
 
+# === Train ===
 trainer = Trainer(
     model,
-    config=TrainingConfig(num_epochs=5, batch_size=16, patience=3, use_amp=False),
+    config=TrainingConfig(
+        num_epochs=5,
+        batch_size=batch_size,
+        patience=3,
+        use_amp=False,
+    ),
     auto_track=False,
 )
 
 history = trainer.train(train_loader, val_loader)
 
+# === Evaluate ===
 evaluator = ModelEvaluator(trainer)
 metrics = evaluator.compute_metrics(torch.tensor(X_val), torch.tensor(y_val))
 
-print("final_train_loss:", history.train_losses[-1])
-print("metrics:", metrics)
+print(f"Final training loss: {history.train_losses[-1]:.4f}")
+print(f"Metrics: {metrics}")
 ```
+
+### What this validates
+
+- The import path works correctly
+- Dataloader shapes match the trainer expectations
+- The model trains without optional subsystems
+- Evaluation works on held-out data
 
 ## 5. Trainer and MLTracker notes
 
-`Trainer` initializes MLTracker automatically if it is installed. During a local smoke test, keep `auto_track=False` so you can verify the training loop without starting the dashboard.
+`Trainer` initializes MLTracker automatically if installed. Pass `auto_track=False` during local smoke tests.
 
 ## 6. Shape expectations
 
 ### Direct forecasting
 
-| Tensor | Shape |
-| --- | --- |
-| `X` | `[N, T, F]` - samples x input timesteps x features |
-| `y` | any shape matching your head's output |
+| Tensor | Shape | Description |
+| --- | --- | --- |
+| `X` | `[N, T, F]` | Samples × input timesteps × features |
+| `y` | `[N, H]` | Samples × horizon |
 
-### Encoder / decoder
+### Encoder / decoder (seq2seq)
 
-| Tensor | Shape |
-| --- | --- |
-| `X` | `[N, T, F]` |
-| `y` | `[N, H, D]` - samples x horizon x output channels |
+| Tensor | Shape | Description |
+| --- | --- | --- |
+| `X` | `[N, T, F]` | Samples × input timesteps × features |
+| `y` | `[N, H, D]` | Samples × horizon × output channels |
 
 Decoder-based models have stricter dimension contracts. Read the [Custom Blocks](custom_blocks.md) guide before wiring custom modules.
 
-## 7. Starting from raw series instead of windows
+## 7. Starting from raw time series
 
 When your starting point is a single `[T, D]` array, use `TimeSeriesHandler` instead of building windows manually:
 
 ```python
 import numpy as np
+import pandas as pd
 from foreblocks import TimeSeriesHandler
 
-raw = np.random.randn(240, 3)
+# Load raw data
+raw = np.random.randn(240, 3)  # [T, F]
+timestamps = pd.date_range("2025-01-01", periods=len(raw), freq="h")
 
+# Configure preprocessing
 pre = TimeSeriesHandler(
-    window_size=24,
-    horizon=6,
-    normalize=True,
+    window_size=24,   # sequence length
+    horizon=6,        # forecast horizon
+    normalize=True,   # standardize features
     generate_time_features=False,
     verbose=False,
 )
 
-X, y, processed, time_feat = pre.fit_transform(raw)
+# Fit and transform
+X, y, processed, time_feats = pre.fit_transform(raw, time_stamps=timestamps)
+
+# Transform validation data using fitted state
+X_val = pre.transform(val_raw, time_stamps=val_timestamps)
 ```
 
 ::: tip Extra required
+Install `foreblocks[preprocessing]` to get `TimeSeriesHandler`:
+
 ```bash
 pip install "foreblocks[preprocessing]"
 ```
 :::
 
-Continue with [Preprocessor Guide](preprocessor.md) once the baseline path itself is working.
+Continue with [Preprocessor Guide](preprocessor.md) for advanced options like filtering, outlier handling, and feature engineering.
 
 ## 8. When to add DARTS
 
@@ -200,13 +254,13 @@ Then continue with:
 
 ## 9. Where to go next
 
-Use this decision tree to pick the next page based on what you want to improve:
+Use this decision tree to pick the next page based on your goals:
 
 ```
 Baseline works and metrics are acceptable?
 ├── No → improve your data
 │   ├── Raw series (single array)   → Preprocessor Guide
-│   └── Feature engineering        → foretools/feature-engineering.md
+│   └── Feature engineering        → Feature Engineering
 │
 ├── Yes, but I want better accuracy
 │   ├── Try a stronger backbone     → Transformer Guide
@@ -259,7 +313,33 @@ Baseline works and metrics are acceptable?
 
 ## Notes
 
-- `Trainer` initializes MLTracker automatically. Pass `auto_track=False` during local smoke tests.
-- `TrainingConfig` includes conformal options, but you do not need them for the baseline path above.
+- `Trainer` initializes MLTracker automatically if installed. Pass `auto_track=False` for local smoke tests.
+- `TrainingConfig` includes conformal and NAS options, but you do not need them for the baseline path.
 - `TimeSeriesDataset` is available if you want to build PyTorch dataloaders manually.
-- The direct strategy is still the best first step. Move to seq2seq, transformers, or DARTS after the small baseline loop already succeeds.
+- The direct strategy is still the best first step. Move to seq2seq, transformers, or DARTS after the baseline succeeds.
+
+::: note Documentation site
+Full guides, API reference, and examples: [https://foreblocks.laioseman.com/](https://foreblocks.laioseman.com/)
+:::
+
+## Public API quick reference
+
+```python
+from foreblocks import (
+    ForecastingModel,   # Core model wrapper
+    Trainer,            # Training loop
+    ModelEvaluator,     # Evaluation and metrics
+    TimeSeriesHandler,  # Preprocessing (requires [preprocessing] extra)
+    TimeSeriesDataset,  # Dataset wrapper
+    create_dataloaders, # Dataloader helper
+    ModelConfig,        # Model configuration
+    TrainingConfig,     # Training configuration
+)
+```
+
+## Related pages
+
+- [Overview](overview.md) - Mental model of the stack
+- [Public API](reference/public-api.md) - Complete API reference
+- [Configuration](reference/configuration.md) - All configuration options
+- [Troubleshooting](troubleshooting.md) - Common issues and fixes

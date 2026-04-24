@@ -57,12 +57,14 @@ try:
     from .norms.triton_backend import (
         TRITON_AVAILABLE as _NORM_TRITON_AVAILABLE,  # type: ignore
     )
-    from .norms.triton_backend import FusedAddRMSNormFunction
-    from .norms.triton_backend import LayerNormTritonFunction
-    from .norms.triton_backend import RMSNormTritonFunction
-    from .norms.triton_backend import _should_use_triton as _norm_should_use_triton
-    from .norms.triton_backend import triton_fused_rmsnorm_scale_bias
-    from .norms.triton_backend import triton_scale_bias
+    from .norms.triton_backend import (
+        FusedAddRMSNormFunction,
+        LayerNormTritonFunction,
+        RMSNormTritonFunction,
+        _should_use_triton as _norm_should_use_triton,
+        triton_fused_rmsnorm_scale_bias,
+        triton_scale_bias,
+    )
 
     _HAS_TRITON_NORM_BACKEND = True
 except Exception:  # pragma: no cover

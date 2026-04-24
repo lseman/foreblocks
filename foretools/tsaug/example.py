@@ -14,11 +14,8 @@ import sys
 import numpy as np
 import torch
 import torch.nn as nn
-from autoda_timeseries import AutoDATimeseries
-from autoda_timeseries import AutoDATrainer
-from autoda_timeseries import extract_features
-from torch.utils.data import DataLoader
-from torch.utils.data import TensorDataset
+from autoda_timeseries import AutoDATimeseries, AutoDATrainer, extract_features
+from torch.utils.data import DataLoader, TensorDataset
 
 
 sys.path.insert(0, "/home/claude")
@@ -318,8 +315,7 @@ def demonstrate_augmentations():
     print("DEMO: Augmentation Transformations")
     print("=" * 70)
 
-    from autoda_timeseries.transformations import TRANSFORM_NAMES
-    from autoda_timeseries.transformations import TRANSFORMATIONS
+    from autoda_timeseries.transformations import TRANSFORM_NAMES, TRANSFORMATIONS
 
     # Create a simple sine wave
     t = torch.linspace(0, 4 * np.pi, 100)

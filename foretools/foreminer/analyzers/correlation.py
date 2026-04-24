@@ -9,8 +9,7 @@ from sklearn.decomposition import PCA
 from ...aux.adaptive_mi import AdaptiveMI
 from ...aux.distance_correlation import DistanceCorrelation
 from ...aux.hsic import HSIC
-from ..core import AnalysisConfig
-from ..core import AnalysisStrategy
+from ..core import AnalysisConfig, AnalysisStrategy
 
 
 # Optional deps

@@ -1,40 +1,35 @@
 from __future__ import annotations
 
 import math
-from collections import OrderedDict
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
-from dataclasses import field
-from typing import Any
-from typing import Tuple
+from dataclasses import dataclass, field
+from typing import Any, Tuple
 
 import numpy as np
 from scipy.special import logsumexp
-from scipy.stats import multivariate_normal
-from scipy.stats import norm
-from scipy.stats import yeojohnson_normmax
+from scipy.stats import multivariate_normal, norm, yeojohnson_normmax
 
-from .acquisition import AcquisitionStrategy
-from .acquisition import LogRatioAcquisition
-from .batch import BatchSelector
-from .batch import FantasizedBatchSelector
-from .batch import GreedyDiversitySelector
-from .batch import LocalPenalizationSelector
-from .batch import ThompsonSamplingSelector
-from .gamma import GammaStrategy
-from .gamma import build_gamma_strategy
+from .acquisition import AcquisitionStrategy, LogRatioAcquisition
+from .batch import (
+    BatchSelector,
+    FantasizedBatchSelector,
+    GreedyDiversitySelector,
+    LocalPenalizationSelector,
+    ThompsonSamplingSelector,
+)
+from .gamma import GammaStrategy, build_gamma_strategy
 from .observation import ObservationStore
-from .param_models import CatModel
-from .param_models import FloatModel
-from .param_models import IntModel
-from .utils import _clamp
-from .utils import _reflect_into_bounds
-from .utils import _robust_scale_1d
-from .utils import make_positive_definite
-from .utils import safe_log
-from .utils import safe_normalize
-from .utils import yeojohnson_forward
+from .param_models import CatModel, FloatModel, IntModel
+from .utils import (
+    _clamp,
+    _reflect_into_bounds,
+    _robust_scale_1d,
+    make_positive_definite,
+    safe_log,
+    safe_normalize,
+    yeojohnson_forward,
+)
 
 
 try:  # optional
@@ -47,8 +42,7 @@ except Exception:  # pragma: no cover
     minimize = None
 try:  # optional
     from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import RBF
-    from sklearn.gaussian_process.kernels import WhiteKernel
+    from sklearn.gaussian_process.kernels import RBF, WhiteKernel
 except Exception:  # pragma: no cover
     GaussianProcessRegressor = None
     RBF = None
@@ -3386,8 +3380,7 @@ class TPE:
         Topological sort of joint groups based on parent parameter dependencies.
         Uses parameter topo order as tie-breaker / approximation.
         """
-        from collections import defaultdict
-        from collections import deque
+        from collections import defaultdict, deque
 
         # Build graph: group → children groups that depend on it
         graph = defaultdict(list)

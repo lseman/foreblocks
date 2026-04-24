@@ -14,9 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bb_primitives import GeGLUFFN
-from .bb_primitives import ReluFFN
-from .bb_primitives import SwiGLUFFN
+from .bb_primitives import GeGLUFFN, ReluFFN, SwiGLUFFN
 
 
 __all__ = ["DARTSFeedForward", "DARTSMoEFeedForward"]

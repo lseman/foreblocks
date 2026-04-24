@@ -30,8 +30,7 @@
 #
 # A CSV is saved at the end for convenience.
 
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from typing import Any
 
 import matplotlib.pyplot as plt

@@ -2,11 +2,13 @@ from typing import Any
 
 import pandas as pd
 
-from .core import report_metric
-from .core import report_pct
-from .core import report_recommendation
-from .core import report_section
-from .core import top_list
+from .core import (
+    report_metric,
+    report_pct,
+    report_recommendation,
+    report_section,
+    top_list,
+)
 
 
 class DatasetReportPrinter:

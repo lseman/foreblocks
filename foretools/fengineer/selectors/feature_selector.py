@@ -3,15 +3,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import KFold
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 
 from foretools.aux.adaptive_mi import AdaptiveMI
 from foretools.aux.adaptive_mrmr import AdaptiveMRMR
 
-from .rfecv import AdvancedRFECV
-from .rfecv import RFECVConfig
+from .rfecv import AdvancedRFECV, RFECVConfig
 
 
 class FeatureSelector:

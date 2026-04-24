@@ -5,7 +5,6 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-
 Tensor = torch.Tensor
 AggType = Literal["add", "mean", "max"]
 ActivationType = Literal["relu", "gelu", "silu", "none"]
@@ -16,12 +15,17 @@ def is_batched_adj(adj: Tensor) -> bool:
 
 
 def add_self_loops(adj: Tensor) -> Tensor:
+    """Add self-loops to a dense adjacency matrix.
+
+    Supports both unbatched adjacency matrices shaped [N, N] and batched
+    adjacency matrices shaped [B, N, N]. For batched inputs, the identity
+    matrix is constructed using ``torch.diag_embed`` for efficiency and
+    correctness across devices and dtypes.
+    """
     if is_batched_adj(adj):
         batch_size, num_nodes, _ = adj.shape
-        eye = (
-            torch.eye(num_nodes, device=adj.device, dtype=adj.dtype)
-            .unsqueeze(0)
-            .expand(batch_size, num_nodes, num_nodes)
+        eye = torch.diag_embed(
+            torch.ones(batch_size, num_nodes, device=adj.device, dtype=adj.dtype)
         )
         return adj + eye
     num_nodes = adj.size(0)
@@ -29,6 +33,12 @@ def add_self_loops(adj: Tensor) -> Tensor:
 
 
 def normalize_gcn(adj: Tensor, eps: float = 1e-9) -> Tensor:
+    """Compute symmetric normalized adjacency for graph convolution.
+
+    The returned tensor is D^{-1/2} A D^{-1/2}, where D is the degree matrix
+    of the adjacency. Batched adjacency tensors are normalized independently
+    for each batch element.
+    """
     deg = adj.sum(-1)
     inv = deg.clamp(min=eps).pow(-0.5)
     inv[torch.isinf(inv)] = 0.0
@@ -38,6 +48,11 @@ def normalize_gcn(adj: Tensor, eps: float = 1e-9) -> Tensor:
 
 
 def normalize_row(adj: Tensor, eps: float = 1e-9) -> Tensor:
+    """Row-normalize adjacency matrices so each row sums to one.
+
+    Supports both unbatched adjacency matrices shaped [N, N] and batched
+    adjacency matrices shaped [B, N, N].
+    """
     deg = adj.sum(-1).clamp(min=eps)
     if is_batched_adj(adj):
         return adj / deg.unsqueeze(-1)
@@ -52,6 +67,12 @@ def to_dense_from_edge_index(
     dtype: torch.dtype = torch.float32,
     device: torch.device | None = None,
 ) -> Tensor:
+    """Convert an edge index representation to a dense adjacency matrix.
+
+    If ``batch_size`` is supplied, this will return a batched adjacency tensor
+    shaped [B, N, N]. Otherwise it returns an unbatched adjacency matrix
+    shaped [N, N].
+    """
     device = device or edge_index.device
     src, dst = edge_index[0], edge_index[1]
     if batch_size is None:
@@ -79,6 +100,7 @@ def ensure_adj(
     dtype: torch.dtype,
     device: torch.device,
 ) -> Tensor:
+    """Return a dense adjacency matrix, converting from sparse edge_index if needed."""
     if adj is not None:
         return adj
     if edge_index is None:
@@ -94,6 +116,7 @@ def ensure_adj(
 
 
 def xavier_zero_bias(module: nn.Module, gain: float = 1.0) -> None:
+    """Initialize a linear module with Xavier weight and zero bias."""
     if isinstance(module, nn.Linear):
         nn.init.xavier_uniform_(module.weight, gain=gain)
         if module.bias is not None:
@@ -101,6 +124,7 @@ def xavier_zero_bias(module: nn.Module, gain: float = 1.0) -> None:
 
 
 def dtype_neg_inf(dtype: torch.dtype) -> float:
+    """Return a negative infinity sentinel appropriate for the given dtype."""
     if dtype == torch.float16:
         return -65504.0
     if dtype == torch.bfloat16:
@@ -109,6 +133,7 @@ def dtype_neg_inf(dtype: torch.dtype) -> float:
 
 
 def safe_eye(n: int, like: Tensor) -> Tensor:
+    """Create an identity matrix on the same device and dtype as ``like``."""
     return torch.eye(n, device=like.device, dtype=like.dtype)
 
 

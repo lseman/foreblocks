@@ -1,9 +1,7 @@
 from .group_norm import ChannelLastGroupNorm
-from .layer_norm import AdaptiveLayerNorm
-from .layer_norm import FastLayerNorm
+from .layer_norm import AdaptiveLayerNorm, FastLayerNorm
 from .revin import RevIN
-from .rms_norm import AdaptiveRMSNorm
-from .rms_norm import RMSNorm
+from .rms_norm import AdaptiveRMSNorm, RMSNorm
 from .temporal_norm import TemporalNorm
 
 

@@ -1,7 +1,6 @@
 """Forecasting model composition API."""
 
-from foreblocks.core.model import BaseHead
-from foreblocks.core.model import ForecastingModel
+from foreblocks.core.model import BaseHead, ForecastingModel
 
 
 __all__ = [

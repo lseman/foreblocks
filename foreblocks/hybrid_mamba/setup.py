@@ -6,8 +6,7 @@ from pathlib import Path
 import torch
 import torch.utils.cpp_extension as cpp_extension
 from setuptools import setup
-from torch.utils.cpp_extension import BuildExtension
-from torch.utils.cpp_extension import CUDAExtension
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 
 ROOT = Path(__file__).resolve().parent

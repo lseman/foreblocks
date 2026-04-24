@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import torch
-from torch import Tensor
-from torch import nn
+from torch import Tensor, nn
 
 
 PolyFamily = Literal[

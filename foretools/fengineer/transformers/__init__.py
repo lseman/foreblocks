@@ -5,9 +5,11 @@ from .config import FeatureConfig
 from .datetime import DateTimeTransformer
 from .interaction import InteractionTransformer
 from .mathematical import MathematicalTransformer
-from .rff import ClusteringTransformer
-from .rff import FourierTransformer
-from .rff import RandomFourierFeaturesTransformer
+from .rff import (
+    ClusteringTransformer,
+    FourierTransformer,
+    RandomFourierFeaturesTransformer,
+)
 from .statistical import StatisticalTransformer
 
 

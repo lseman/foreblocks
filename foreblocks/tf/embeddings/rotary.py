@@ -4,8 +4,7 @@
 from functools import partial
 
 import torch
-from einops import rearrange
-from einops import repeat
+from einops import rearrange, repeat
 from torch import Tensor
 
 

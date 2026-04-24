@@ -8,13 +8,15 @@ import numpy as np
 from scipy.special import logsumexp
 from scipy.stats import norm
 
-from .utils import _clamp
-from .utils import _reflect_into_bounds
-from .utils import inv_yeojohnson
-from .utils import safe_log
-from .utils import safe_normalize
-from .utils import yeojohnson_forward
-from .utils import yeojohnson_log_jacobian
+from .utils import (
+    _clamp,
+    _reflect_into_bounds,
+    inv_yeojohnson,
+    safe_log,
+    safe_normalize,
+    yeojohnson_forward,
+    yeojohnson_log_jacobian,
+)
 
 
 class BaseParamModel:

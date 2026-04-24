@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import pickle
 import warnings
-from collections.abc import Callable
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Literal
 
 import numpy as np

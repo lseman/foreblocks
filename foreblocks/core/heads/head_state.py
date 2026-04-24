@@ -8,9 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .head_types import ActiveHead
-from .head_types import AlphaWeights
-from .head_types import HeadSpec
+from .head_types import ActiveHead, AlphaWeights, HeadSpec
 
 
 class HeadStateManager(nn.Module):

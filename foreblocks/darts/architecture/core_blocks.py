@@ -11,26 +11,27 @@ import torch.nn.functional as F
 
 from foreblocks.tf.norms import RevIN
 
-from .base_blocks import MixedDecoder
-from .base_blocks import MixedEncoder
+from .base_blocks import MixedDecoder, MixedEncoder
 from .bb_moe import DARTSFeedForward
-from .operation_blocks import ConvMixerOp
-from .operation_blocks import DLinearOp
-from .operation_blocks import FourierOp
-from .operation_blocks import GRNOp
-from .operation_blocks import IdentityOp
-from .operation_blocks import InvertedAttentionOp
-from .operation_blocks import MLPMixerOp
-from .operation_blocks import MultiScaleConvOp
-from .operation_blocks import NBeatsOp
-from .operation_blocks import PatchEmbedOp
-from .operation_blocks import PyramidConvOp
-from .operation_blocks import ResidualMLPOp
-from .operation_blocks import RMSNorm
-from .operation_blocks import TCNOp
-from .operation_blocks import TimeConvOp
-from .operation_blocks import TimesNetOp
-from .operation_blocks import WaveletOp
+from .operation_blocks import (
+    ConvMixerOp,
+    DLinearOp,
+    FourierOp,
+    GRNOp,
+    IdentityOp,
+    InvertedAttentionOp,
+    MLPMixerOp,
+    MultiScaleConvOp,
+    NBeatsOp,
+    PatchEmbedOp,
+    PyramidConvOp,
+    ResidualMLPOp,
+    RMSNorm,
+    TCNOp,
+    TimeConvOp,
+    TimesNetOp,
+    WaveletOp,
+)
 
 
 # --- Searchable Normalization ---

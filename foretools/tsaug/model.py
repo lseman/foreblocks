@@ -18,12 +18,10 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from .features import FEATURE_DIM
-from .features import extract_features
+from .features import FEATURE_DIM, extract_features
 from .layers import StackedAugmentationLayers
 from .losses import CompositeLoss
-from .transformations import NUM_TRANSFORMS
-from .transformations import TRANSFORM_NAMES
+from .transformations import NUM_TRANSFORMS, TRANSFORM_NAMES
 
 
 class AutoDATimeseries(nn.Module):

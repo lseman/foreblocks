@@ -2,31 +2,23 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.cluster import KMeans
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.decomposition import NMF
-from sklearn.decomposition import PCA
-from sklearn.decomposition import FactorAnalysis
-from sklearn.decomposition import FastICA
-from sklearn.decomposition import TruncatedSVD
+from sklearn.cluster import KMeans, MiniBatchKMeans
+from sklearn.decomposition import NMF, PCA, FactorAnalysis, FastICA, TruncatedSVD
 from sklearn.feature_selection import VarianceThreshold
-from sklearn.manifold import TSNE
-from sklearn.manifold import Isomap
-from sklearn.manifold import LocallyLinearEmbedding
-from sklearn.manifold import SpectralEmbedding
-from sklearn.manifold import trustworthiness
+from sklearn.manifold import (
+    TSNE,
+    Isomap,
+    LocallyLinearEmbedding,
+    SpectralEmbedding,
+    trustworthiness,
+)
 from sklearn.metrics import silhouette_score
 from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import PowerTransformer
-from sklearn.preprocessing import RobustScaler
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import PowerTransformer, RobustScaler, StandardScaler
 from sklearn.utils.extmath import randomized_svd
 
 # Shared analyzer protocol + optional backend availability flags
-from ..core import HAS_OPENTSNE
-from ..core import HAS_UMAP
-from ..core import AnalysisConfig
-from ..core import AnalysisStrategy
+from ..core import HAS_OPENTSNE, HAS_UMAP, AnalysisConfig, AnalysisStrategy
 
 
 # --------------------------- Small utilities ---------------------------

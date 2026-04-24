@@ -25,10 +25,7 @@ import torch
 
 from ..utils.training import reset_model_parameters
 from .candidate_scoring import rescore_candidates_poolwise
-from .stats_reporting import append_whatif_estimates
-from .stats_reporting import mean_std
-from .stats_reporting import save_csv
-from .stats_reporting import save_json
+from .stats_reporting import append_whatif_estimates, mean_std, save_csv, save_json
 
 
 # ---------------------------------------------------------------------------

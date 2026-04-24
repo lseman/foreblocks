@@ -3,14 +3,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import scipy.stats as sps
-from scipy.stats import jarque_bera
-from scipy.stats import shapiro
-from sklearn.preprocessing import PowerTransformer
-from sklearn.preprocessing import QuantileTransformer
+from scipy.stats import jarque_bera, shapiro
+from sklearn.preprocessing import PowerTransformer, QuantileTransformer
 
 from ...aux.hsic import HSIC  # your class
-from ..core import AnalysisConfig
-from ..core import AnalysisStrategy
+from ..core import AnalysisConfig, AnalysisStrategy
 
 
 class FeatureEngineeringAnalyzer(AnalysisStrategy):
@@ -494,10 +491,12 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
     ) -> dict[str, float]:
         import numpy as np
         import pandas as pd
-        from sklearn.ensemble import ExtraTreesRegressor
-        from sklearn.ensemble import GradientBoostingRegressor
-        from sklearn.ensemble import HistGradientBoostingRegressor
-        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.ensemble import (
+            ExtraTreesRegressor,
+            GradientBoostingRegressor,
+            HistGradientBoostingRegressor,
+            RandomForestRegressor,
+        )
         from sklearn.feature_selection import mutual_info_regression
         from sklearn.inspection import permutation_importance
         from sklearn.linear_model import RidgeCV

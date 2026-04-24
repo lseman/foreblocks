@@ -7,12 +7,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.training.quantization import DynamicQuantizedLinear
-from foreblocks.training.quantization import FakeQuantize
-from foreblocks.training.quantization import ManualDeQuantStub
-from foreblocks.training.quantization import ManualQuantStub
-from foreblocks.training.quantization import QuantizationConfig
-from foreblocks.training.quantization import StaticQuantizedLinear
+from foreblocks.training.quantization import (
+    DynamicQuantizedLinear,
+    FakeQuantize,
+    ManualDeQuantStub,
+    ManualQuantStub,
+    QuantizationConfig,
+    StaticQuantizedLinear,
+)
 
 from .model import ForecastingModel
 

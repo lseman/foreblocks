@@ -2,8 +2,7 @@ from typing import TYPE_CHECKING
 
 from .history import TrainingHistory
 from .losses import LossComputer
-from .nas import NASHelper
-from .nas import plot_alpha_evolution
+from .nas import NASHelper, plot_alpha_evolution
 
 
 __all__ = [

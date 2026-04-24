@@ -1,7 +1,6 @@
 """Model-level composition APIs."""
 
-from .forecasting import BaseHead
-from .forecasting import ForecastingModel
+from .forecasting import BaseHead, ForecastingModel
 from .graph_forecasting import GraphForecastingModel
 
 

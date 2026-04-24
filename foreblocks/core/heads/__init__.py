@@ -1,5 +1,4 @@
-from .head_helper import HeadComposer
-from .head_helper import HeadSpec
+from .head_helper import HeadComposer, HeadSpec
 from .heads import *  # noqa: F403
 
 

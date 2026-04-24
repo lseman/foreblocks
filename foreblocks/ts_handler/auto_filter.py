@@ -52,8 +52,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from PyEMD import CEEMDAN
-from PyEMD import EMD
+from PyEMD import CEEMDAN, EMD
 from scipy import signal
 from scipy.ndimage import gaussian_filter1d
 from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
