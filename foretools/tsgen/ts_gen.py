@@ -1,34 +1,13 @@
-# Time Series Pedagogical Generator
-# ---------------------------------
-# This cell defines a *self-contained* synthetic time series generator aimed at teaching.
-# It supports many knobs (trend, seasonality, ARMA noise, regime switches, outliers,
-# missingness, exogenous variables, multivariate correlation, calendar effects, etc.).
-#
-# At the end, we create an example dataset, show a quick plot, and save a CSV you can download.
-#
-# Usage (basic):
-#   gen = TimeSeriesGenerator(random_state=42)
-#   df, meta = gen.make(
-#       n_series=3, n_steps=400, freq='D',
-#       trend={"type": "piecewise", "knots": [120, 260], "slopes": [0.02, -0.01, 0.03]},
-#       seasonality=[{"period": 7, "amplitude": 3.0}, {"period": 30.5, "amplitude": 2.0}],
-#       noise={"ar": [0.6], "ma": [0.2], "sigma": 1.0},
-#       regime={"n_states": 2, "p": [[0.95, 0.05],[0.08,0.92]], "state_bias": [0.0, 2.5], "state_sigma_scale": [1.0, 1.8]},
-#       outliers={"prob": 0.01, "scale": 6.0},
-#       missing={"prob": 0.03, "block_prob": 0.02, "block_max": 7},
-#       heterosked={"type": "arch1", "alpha0": 0.2, "alpha1": 0.6},
-#       exog={"n_features": 2, "types": ["random_walk", "seasonal"], "beta": [0.5, -1.0]},
-#       multivariate={"n_factors": 2, "mix_strength": 0.8}
-#   )
-#
-# The returned `df` is a tidy DataFrame with columns: ["series", "time", "y", ...exog..., ...calendar features...].
-# The `meta` dict contains the ground-truth components, parameters, and latent states for teaching.
-#
-# Plot helpers:
-#   gen.plot_series(df, series_id=0)                 # y over time
-#   gen.plot_decompose(meta, series_id=0)            # trend / seasonality / noise
-#
-# A CSV is saved at the end for convenience.
+"""
+Time series pedagogical generator.
+
+`foretools.tsgen` produces synthetic series with explicit trend,
+seasonality, cycle, regime, heteroskedasticity, missingness, and exogenous
+components. The generator is designed for teaching, debugging, and benchmark
+dataset creation.
+"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,12 +16,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+__all__ = ["TimeSeriesGenerator"]
+
 
 def _poly_trend(n: int, coeffs: list[float]) -> np.ndarray:
-    t = np.arange(n)
+    timesteps = np.arange(n)
     y = np.zeros(n, dtype=float)
     for k, c in enumerate(coeffs):
-        y += c * t**k
+        y += c * timesteps**k
     return y
 
 
@@ -54,7 +35,6 @@ def _piecewise_linear_trend(
     knots: sorted list of change indices (0 < k < n). Length m.
     slopes: length m+1, slope per segment.
     """
-    t = np.arange(n)
     segments = [0] + knots + [n]
     y = np.zeros(n, dtype=float)
     current = intercept
@@ -129,6 +109,16 @@ class TimeSeriesGenerator:
     def __post_init__(self):
         self._rng = np.random.default_rng(self.random_state)
 
+    def _validate_splits(self, splits: tuple[float, float, float] | None) -> None:
+        if splits is None:
+            return
+        if len(splits) != 3:
+            raise ValueError("splits must be a tuple of three proportions")
+        if abs(sum(splits) - 1.0) > 1e-6:
+            raise ValueError("splits must sum to 1.0")
+        if any(p < 0.0 or p > 1.0 for p in splits):
+            raise ValueError("splits values must be between 0.0 and 1.0")
+
     # ------------------------------
     # Main interface
     # ------------------------------
@@ -168,13 +158,18 @@ class TimeSeriesGenerator:
         """
         Returns tidy DataFrame and a metadata dict with ground-truth components.
         """
+        if n_series < 1:
+            raise ValueError("n_series must be at least 1")
+        if n_steps < 2:
+            raise ValueError("n_steps must be at least 2")
+        self._validate_splits(splits)
+
         # --- time index ---
         if start is None:
             start = pd.Timestamp("2020-01-01")
         index = pd.date_range(start=start, periods=n_steps, freq=freq)
 
         # --- prepare containers ---
-        series_ids = np.arange(n_series)
         Y = np.zeros((n_series, n_steps), dtype=float)
         comps = {
             "trend": np.zeros_like(Y),
@@ -185,7 +180,6 @@ class TimeSeriesGenerator:
             "exog_effect": np.zeros_like(Y),
             "states": None,
         }
-        exog_df = None
 
         # --- Trend ---
         for k in range(n_series):
@@ -511,6 +505,12 @@ class TimeSeriesGenerator:
     def make_train_ready(
         self, n_series: int = 1, n_steps: int = 500, horizon: int = 24, **kwargs
     ) -> dict[str, pd.DataFrame]:
+        """Create a ready-to-train wide-format dataset with chronological splits."""
+        if horizon < 1:
+            raise ValueError("horizon must be at least 1")
+        if 2 * horizon >= n_steps:
+            raise ValueError("n_steps must be larger than 2 * horizon")
+
         df, meta = self.make(n_series=n_series, n_steps=n_steps, **kwargs)
         # convert to wide format (one column per series)
         pivot = df.pivot(index="time", columns="series", values="y")

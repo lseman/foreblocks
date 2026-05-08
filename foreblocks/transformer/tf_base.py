@@ -37,7 +37,7 @@ from .attention.utils.residuals import (
     normalize_attention_residual_mode,
 )
 from .embeddings import LearnablePositionalEncoding, PositionalEncoding
-from .ff import FeedForwardBlock
+from .moe.ff import FeedForwardBlock
 from .fusions import fused_dropout_add  # fused helpers
 from .fusions import fused_dropout_add_norm, fused_dropout_gateskip_norm, get_dropout_p
 from .mhc import (

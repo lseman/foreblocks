@@ -684,7 +684,7 @@ class MultiAttention(nn.Module):
         Apply RoPE to q and k, with an optional per-batch seqlen_offset.
         q, k: [B, H, T, D]
         """
-        from foreblocks.tf.embeddings.rotary import (
+        from foreblocks.transformer.embeddings.rotary import (
             apply_rotary_emb,  # keep as-is for API compatibility
         )
 

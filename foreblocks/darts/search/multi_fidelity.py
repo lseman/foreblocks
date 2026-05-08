@@ -134,7 +134,7 @@ def run_multi_fidelity_search(
     train_kwargs: dict[str, Any] = {
         k: kwargs.pop(k)
         for k in (
-            "use_gdas",
+            "op_gdas",
             "moe_balance_weight",
             "transformer_exploration_weight",
             "beta_darts_weight",

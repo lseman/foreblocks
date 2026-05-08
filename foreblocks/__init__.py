@@ -1,3 +1,9 @@
+"""Public foreblocks API exports and lazy load helpers.
+
+This module exposes the main foreblocks entry points for forecasting,
+training, evaluation, and model composition.
+"""
+
 from importlib import import_module
 from typing import TYPE_CHECKING
 
@@ -6,11 +12,10 @@ from .config import ModelConfig, TrainingConfig
 from .core.att import AttentionLayer
 from .data import TimeSeriesDataset, create_dataloaders
 from .models import ForecastingModel, GraphForecastingModel
-from .tf.transformer import TransformerDecoder, TransformerEncoder
+from .transformer.transformer import TransformerDecoder, TransformerEncoder
 
 # from .pipeline import TimeSeriesSeq2Seq
-from .tf.transformer_tuner import ModernTransformerTuner, TransformerTuner
-
+from .transformer.transformer_tuner import ModernTransformerTuner, TransformerTuner
 
 if TYPE_CHECKING:
     from .evaluation import ModelEvaluator

@@ -16,7 +16,7 @@ ALLOWED_PACKAGES = [
     "foreblocks.core",
     "foreblocks.core.heads",
     "foreblocks.data",
-    "foreblocks.tf.transformer",
+    "foreblocks.transformer.transformer",
     "foreblocks.training",
 ]
 

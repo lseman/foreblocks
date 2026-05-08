@@ -1,10 +1,16 @@
+"""TimesNet block implementations for time-series forecasting.
+
+This module contains the core TimesNet building blocks used for periodicity
+extraction and local-global temporal modeling.
+"""
+
 import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.tf.norms import create_norm_layer  # your norm factory
+from foreblocks.transformer.norms import create_norm_layer  # your norm factory
 from foreblocks.ui.node_spec import node
 
 
@@ -341,7 +347,8 @@ class TimesBlock(nn.Module):
             agg = torch.zeros_like(h, dtype=torch.float32)
 
             sample_ids = (
-                torch.arange(B, device=h.device)
+                torch
+                .arange(B, device=h.device)
                 .unsqueeze(1)
                 .expand(B, n_periods)
                 .reshape(-1)
@@ -426,24 +433,22 @@ class TimesNetHeadCustom(nn.Module):
 
         self.enc_in = nn.Linear(in_channels, d_model)
 
-        self.blocks = nn.ModuleList(
-            [
-                TimesBlock(
-                    d_model=d_model,
-                    k_periods=k_periods,
-                    ks=inception_kernels,
-                    expand=expand,
-                    dropout=dropout,
-                    norm_type=norm_type,
-                    layer_norm_eps=layer_norm_eps,
-                    use_glu_gate=use_glu_gate,
-                    max_period_frac=max_period_frac,
-                    pad_mode=pad_mode,
-                    period_method=period_method,
-                )
-                for _ in range(n_blocks)
-            ]
-        )
+        self.blocks = nn.ModuleList([
+            TimesBlock(
+                d_model=d_model,
+                k_periods=k_periods,
+                ks=inception_kernels,
+                expand=expand,
+                dropout=dropout,
+                norm_type=norm_type,
+                layer_norm_eps=layer_norm_eps,
+                use_glu_gate=use_glu_gate,
+                max_period_frac=max_period_frac,
+                pad_mode=pad_mode,
+                period_method=period_method,
+            )
+            for _ in range(n_blocks)
+        ])
 
         d_out = out_channels if quantiles is None else out_channels * len(quantiles)
 

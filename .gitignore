@@ -1,31 +1,29 @@
-# Python
+# Python artifacts
 __pycache__/
 *.egg-info/
 *.egg
 *.so
 
-# Virtual environments & tooling
+# Virtual environments and tooling
 .venv/
 uv.lock
 typings/
 
-# Python packaging artifacts
+# Packaging and build artifacts
 /build/
 /dist/
-
-# Generated Studio frontend bundle
 /foreblocks/studio/dist/
 
-# Editors & IDEs
+# Editors and IDEs
 .vscode/
 .idea/
 
-# Jupyter
+# Jupyter notebooks
 .ipynb_checkpoints/
 *.ipynb
 !examples/bayesian_blocks_validation.ipynb
 
-# Data files
+# Data and model outputs
 *.csv
 *.pkl
 *.npy
@@ -35,48 +33,48 @@ typings/
 *.pth
 *.png
 *.pdf
+*.tex
+*.bib
 
-# External libraries / submodules
+# Node.js dependencies
+node_modules/
+*/node_modules/
+
+# External libraries / vendored repos
 flash-attention/
 mamba/
 uni2ts/
 timesfm/
 ml-pararnn/
 
-# Project-specific data directories
+# Project-specific generated directories
 foreblocks/mltracker/mltracker_data/
 mltracker_data/
-
-# Dashboard
 foreblocks/mltracker/dashboard_v2/node_modules/
 
-# Working / temporary directories
+# Working and temporary directories
 work/
 work2/
 working/
 old/
 foretree.old/
 agent/
+third-party/
+.openclaude/
 
-# Scripts
+# Generated or runtime scripts
 release.sh
 generate_manifest.sh
 pygit
 
-# Misc
+# Miscellaneous
 *backup*
 .superpowers/
-
-# Docs build output and local VitePress cache
-site/
-docs/.vitepress/cache/
-
-# ignore all node_modules
-node_modules/
-*/node_modules/
 .codex
 CLAUDE.md
-# Added by code-review-graph
+
+# Code-review graph / agent metadata
 .code-review-graph/
 .claude/
 .mcp.json
+AGENTS.md

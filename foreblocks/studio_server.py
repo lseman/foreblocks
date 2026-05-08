@@ -1,3 +1,9 @@
+"""Lightweight CLI server for foreBlocks Studio frontend assets.
+
+This module launches a local HTTP server to serve the Studio web UI and
+provides SPA fallback behavior for client-side routing.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -9,7 +15,6 @@ import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-
 
 LOCAL_BROWSER_HOSTS = {"127.0.0.1", "localhost"}
 

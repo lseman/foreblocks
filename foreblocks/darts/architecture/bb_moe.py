@@ -1,7 +1,7 @@
 """DARTS-local feed-forward / MoE blocks.
 
 This module intentionally keeps the DARTS transformer path independent from the
-generic ``foreblocks.tf`` MoE stack. The implementation here is small and
+generic ``foreblocks.transformer`` MoE stack. The implementation here is small and
 predictable: top-k token routing over a bank of SwiGLU experts, with optional
 shared experts that are always evaluated.
 """
@@ -163,7 +163,7 @@ class DARTSFeedForward(nn.Module):
         use_moe: bool = False,
         ffn_mode: str | None = None,
         temperature: float = 1.0,
-        single_path_search: bool = True,
+        variant_gdas: bool = True,
         num_experts: int = 8,
         top_k: int = 2,
         num_shared: int = 1,
@@ -182,7 +182,7 @@ class DARTSFeedForward(nn.Module):
             resolved_ffn_mode = "swiglu"
         self.ffn_mode = resolved_ffn_mode
         self.temperature = max(float(temperature), 1e-3)
-        self.single_path_search = bool(single_path_search)
+        self.variant_gdas = bool(variant_gdas)
         self.searchable = self.ffn_mode == "auto"
         self.supports_moe = self.ffn_mode in {"auto", "moe"}
         self.use_moe = self.ffn_mode == "moe"
@@ -218,7 +218,7 @@ class DARTSFeedForward(nn.Module):
         tau = max(float(self.temperature), 1e-3)
         if self.training:
             return F.gumbel_softmax(
-                self.ffn_alphas, tau=tau, hard=bool(self.single_path_search), dim=0
+                self.ffn_alphas, tau=tau, hard=bool(self.variant_gdas), dim=0
             )
         return F.softmax(self.ffn_alphas / tau, dim=0)
 

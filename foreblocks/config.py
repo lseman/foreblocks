@@ -1,3 +1,9 @@
+"""Core configuration objects used by foreblocks models and trainers.
+
+This module defines type-safe data classes for model architecture and
+training behavior.
+"""
+
 from dataclasses import dataclass
 
 

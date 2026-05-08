@@ -21,7 +21,7 @@ There is also a companion notebook:
 ## Minimal example
 
 ```python
-from foretools.tsgen.ts_gen import TimeSeriesGenerator
+from foretools.tsgen import TimeSeriesGenerator
 
 gen = TimeSeriesGenerator(random_state=42)
 

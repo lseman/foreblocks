@@ -1,3 +1,5 @@
+import logging
+import time
 import warnings
 from collections import Counter
 from collections.abc import Callable
@@ -24,10 +26,22 @@ from .analyzers.missing import MissingnessAnalyzer
 from .analyzers.outlier import OutlierAnalyzer
 from .analyzers.pattern import PatternDetector
 from .analyzers.ts import TimeSeriesAnalyzer
-from .core import *
-from .core import _run_analysis_worker
+from .core import (
+    OPTIONAL_IMPORTS,
+    AnalysisConfig,
+    AnalysisHooks,
+    AnalysisStrategy,
+    PlotHelper,
+    _run_analysis_worker,
+    quality_band,
+    report_metric,
+    report_pct,
+    report_recommendation,
+    report_section,
+    requires_library,
+    top_list,
+)
 from .report import DatasetReportPrinter
-
 
 # Suppress known noise warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -75,6 +89,15 @@ class DatasetAnalyzer:
         self.config = config or AnalysisConfig()
         self.verbose = verbose
 
+        self.logger = logging.getLogger(self.__class__.__name__)
+        level = logging.INFO if self.verbose else logging.WARNING
+        level = getattr(logging, str(self.config.log_level).upper(), level)
+        self.logger.setLevel(level)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            self.logger.addHandler(handler)
+
         # Initialize components
         self.hooks = AnalysisHooks()
         self.plot_helper = PlotHelper()
@@ -100,17 +123,23 @@ class DatasetAnalyzer:
         self._setup_time_index()
 
         if self.verbose:
-            print(
+            self.logger.info(
                 f"🔍 Initialized analyzer with {self.df.shape[0]:,} rows × {self.df.shape[1]} columns"
             )
-            print(f"   • Numeric features: {len(self._numeric_cols)}")
-            print(f"   • Categorical features: {len(self._categorical_cols)}")
+            self.logger.info(f"   • Numeric features: {len(self._numeric_cols)}")
+            self.logger.info(
+                f"   • Categorical features: {len(self._categorical_cols)}"
+            )
 
     def _setup_time_index(self):
         """Setup time index if provided"""
         if self.time_col and self.time_col in self.df.columns:
             self.df.set_index(self.time_col, inplace=True)
-            self.df.index = pd.to_datetime(self.df.index)
+            self.df.index = pd.to_datetime(self.df.index, errors="coerce")
+            if self.df.index.hasnans:
+                self._log(
+                    f"Warning: time column '{self.time_col}' contains invalid dates; coerced NaT values"
+                )
 
     def _register_default_strategies(self):
         """Register all available analysis strategies"""
@@ -154,9 +183,11 @@ class DatasetAnalyzer:
         for analysis_type, plotter in plotters:
             self.hooks.register_plotter(analysis_type, plotter)
 
-    def _log(self, message: str):
-        if self.verbose:
-            print(f"🔍 {message}")
+    def _log(self, message: str, level: str = "info"):
+        if not self.verbose:
+            return
+        log_fn = getattr(self.logger, level, self.logger.info)
+        log_fn(f"🔍 {message}")
 
     def _resolve_analysis_types(self, analysis_types: list[str] | None) -> list[str]:
         """Resolve requested analyses and skip unknown types."""
@@ -249,11 +280,13 @@ class DatasetAnalyzer:
         """Run specified analyses in parallel with pre/post hooks"""
         resolved_types = self._resolve_analysis_types(analysis_types)
         results = {}
+        started = time.perf_counter()
+        max_workers = getattr(self.config, "max_workers", None)
 
         tasks = []
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for analysis_type in resolved_types:
-                self._log(f"Running {analysis_type} analysis...")
+                self._log(f"Starting {analysis_type} analysis...")
                 context = self._build_hook_context(analysis_type)
                 self.hooks.trigger(f"pre_{analysis_type}", context)
 
@@ -271,9 +304,10 @@ class DatasetAnalyzer:
             for future in as_completed(tasks):
                 strategy_name, result, error = future.result()
                 if error:
-                    print(f"❌ {strategy_name} analysis failed:\n{error}")
+                    self.logger.error(f"❌ {strategy_name} analysis failed:\n{error}")
                     continue
 
+                self.logger.info(f"✅ {strategy_name} analysis complete")
                 results[strategy_name] = result
                 self._results_cache[strategy_name] = result
                 self.hooks.trigger(
@@ -281,6 +315,10 @@ class DatasetAnalyzer:
                     self._build_hook_context(strategy_name, result),
                 )
 
+        elapsed = time.perf_counter() - started
+        self._log(
+            f"Completed {len(results)}/{len(resolved_types)} analyses in {elapsed:.2f}s"
+        )
         return results
 
     def plot(self, analysis_types: list[str] | None = None):
@@ -303,28 +341,23 @@ class DatasetAnalyzer:
         self.plot(analysis_types)
         return results
 
-    def analyze_everything(self):
-        """Run the complete comprehensive analysis workflow"""
+    def analyze_everything(self, plot: bool = False):
+        """Run the complete comprehensive analysis workflow."""
         self._log("🚀 Starting comprehensive dataset analysis...")
 
-        # Run all analyses
         results = self.analyze()
-
-        # Generate comprehensive insights report
         self.print_detailed_insights()
 
-        # # Generate all plots
-        # self.plot()
+        if plot:
+            self.plot()
+            if "correlations" in results and OPTIONAL_IMPORTS["networkx"]:
+                try:
+                    self.plot_correlation_network()
+                except Exception as e:
+                    self.logger.warning(f"Network plot failed: {e}")
 
-        # # Special network plot if available
-        # if "correlations" in results and OPTIONAL_IMPORTS["networkx"]:
-        #     try:
-        #         self.plot_correlation_network()
-        #     except Exception as e:
-        #         print(f"Network plot failed: {e}")
-
-        # self._log("🎉 Comprehensive analysis complete!")
-        # return results
+        self._log("🎉 Comprehensive analysis complete!")
+        return results
 
     # ========================================================================
     # SPECIALIZED METHODS (Preserved from original)

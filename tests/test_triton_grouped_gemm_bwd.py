@@ -29,7 +29,7 @@ def _pytorch_forward(A_packed, offsets, B_list):
 
 
 def test_grad_A_matches_reference():
-    from foreblocks.tf.compute.kernels import grouped_mm_varM
+    from foreblocks.transformer.compute.kernels import grouped_mm_varM
     torch.manual_seed(3)
     E, K, N, Ms = 4, 16, 16, [3, 5, 2, 4]
     A_ref, B_ref, offsets = _make_grouped_inputs(E, K, N, Ms)
@@ -42,7 +42,7 @@ def test_grad_A_matches_reference():
 
 
 def test_grad_B_matches_reference():
-    from foreblocks.tf.compute.kernels import grouped_mm_varM
+    from foreblocks.transformer.compute.kernels import grouped_mm_varM
     torch.manual_seed(4)
     E, K, N, Ms = 4, 16, 16, [3, 5, 2, 4]
     A_ref, B_ref, offsets = _make_grouped_inputs(E, K, N, Ms)
@@ -56,7 +56,7 @@ def test_grad_B_matches_reference():
 
 
 def test_gradcheck_float32():
-    from foreblocks.tf.compute.kernels import _GroupedMMVarMFunction
+    from foreblocks.transformer.compute.kernels import _GroupedMMVarMFunction
     torch.manual_seed(5)
     E, K, N, Ms = 2, 8, 8, [2, 3]
     S = sum(Ms)
@@ -73,7 +73,7 @@ def test_gradcheck_float32():
 
 
 def test_empty_expert_segment():
-    from foreblocks.tf.compute.kernels import grouped_mm_varM
+    from foreblocks.transformer.compute.kernels import grouped_mm_varM
     E, K, N = 3, 8, 8
     Ms = [4, 0, 3]
     A, B_list, offsets = _make_grouped_inputs(E, K, N, Ms)

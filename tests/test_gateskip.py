@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.tf.skip.gateskip import ResidualGate, gateskip_apply
+from foreblocks.transformer.skip.gateskip import ResidualGate, gateskip_apply
 
 
 class TestResidualGate(unittest.TestCase):

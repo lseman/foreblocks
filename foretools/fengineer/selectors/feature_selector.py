@@ -1,3 +1,4 @@
+import logging
 import warnings
 from typing import Any
 
@@ -19,6 +20,16 @@ class FeatureSelector:
         self.mrmr_scores_: pd.Series | None = None
         self.shap_scores_: pd.Series | None = None
         self.selected_features_: list[str] = []
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(
+            getattr(
+                logging, str(getattr(config, "log_level", "INFO")).upper(), logging.INFO
+            )
+        )
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            self.logger.addHandler(handler)
 
         # Selector integration
         self.selector_method = str(getattr(config, "selector_method", "mi")).lower()
@@ -76,28 +87,28 @@ class FeatureSelector:
         method = self._resolve_selector_method(n_features=X.shape[1])
 
         if method == "boruta":
-            print("🌲 Running Boruta feature selection...")
+            self.logger.info("🌲 Running Boruta feature selection...")
             success = self._fit_boruta(X, y)
             if success:
                 self.selection_method_ = "boruta"
                 return self
-            print("   ⚠️  Boruta failed, falling back to MI selection")
+            self.logger.warning("   ⚠️  Boruta failed, falling back to MI selection")
 
         elif method == "mrmr":
-            print("🧠 Using AdaptiveMI mRMR feature selection...")
+            self.logger.info("🧠 Using AdaptiveMI mRMR feature selection...")
             self.selection_method_ = "mrmr"
             return self._fit_mrmr(X, y)
 
         elif method == "rfecv":
-            print("🔄 Using RFECV feature selection...")
+            self.logger.info("🔄 Using RFECV feature selection...")
             success = self._fit_rfecv(X, y)
             if success:
                 self.selection_method_ = "rfecv"
                 return self
-            print("   ⚠️  RFECV failed, falling back to MI selection")
+            self.logger.warning("   ⚠️  RFECV failed, falling back to MI selection")
 
         # Fallback/default MI-based selection
-        print("📊 Using Mutual Information feature selection...")
+        self.logger.info("📊 Using Mutual Information feature selection...")
         self.selection_method_ = "mi"
         return self._fit_mi(X, y)
 
@@ -197,7 +208,9 @@ class FeatureSelector:
             self.selected_features_ = selector.get_selected_features()
             self.boruta_selector_ = selector
 
-            print(f"   ✅ Boruta selected {len(self.selected_features_)} features")
+            self.logger.info(
+                f"   ✅ Boruta selected {len(self.selected_features_)} features"
+            )
             return True
         except Exception as e:
             warnings.warn(f"Boruta selection failed: {e}")
@@ -282,7 +295,9 @@ class FeatureSelector:
             # Get selected features
             self.selected_features_ = self.rfecv_selector_.get_selected_features()
 
-            print(f"   ✅ RFECV selected {len(self.selected_features_)} features")
+            self.logger.info(
+                f"   ✅ RFECV selected {len(self.selected_features_)} features"
+            )
             return True
 
         except Exception as e:

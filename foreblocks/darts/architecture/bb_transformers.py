@@ -60,7 +60,7 @@ class LightweightTransformerEncoder(nn.Module):
         rope_base: float = 500000.0,
         use_checkpoint: bool = False,
         temperature: float = 1.0,
-        single_path_search: bool = True,
+        variant_gdas: bool = True,
         enable_patch_search: bool = False,
         patching_mode: str = "direct",
         patch_size: int = 16,
@@ -85,7 +85,7 @@ class LightweightTransformerEncoder(nn.Module):
         self.use_moe = resolved_ffn_variant == "moe"
         self.use_checkpoint = use_checkpoint
         self.temperature = max(float(temperature), 1e-3)
-        self.single_path_search = bool(single_path_search)
+        self.variant_gdas = bool(variant_gdas)
         self.enable_patch_search = bool(enable_patch_search)
         self.patching_mode = resolved_patching_mode
         self.patch_mode_names = (
@@ -149,6 +149,8 @@ class LightweightTransformerEncoder(nn.Module):
                             position_mode=resolved_self_position_mode,
                             rope_base=rope_base,
                             rope_max_seq_len=max_seq_len,
+                            temperature=self.temperature,
+                            variant_gdas=self.variant_gdas,
                         ),
                         "ffn": DARTSFeedForward(
                             d_model=latent_dim,
@@ -157,7 +159,7 @@ class LightweightTransformerEncoder(nn.Module):
                             use_moe=self.use_moe,
                             ffn_mode=resolved_ffn_variant,
                             temperature=self.temperature,
-                            single_path_search=self.single_path_search,
+                            variant_gdas=self.variant_gdas,
                         ),
                         "norm1": RMSNorm(latent_dim),
                         "norm2": RMSNorm(latent_dim),
@@ -177,12 +179,21 @@ class LightweightTransformerEncoder(nn.Module):
     def set_temperature(self, temperature: float) -> None:
         self.temperature = max(float(temperature), 1e-3)
         for layer in self.layers:
-            ffn = _layer_get(layer, "ffn")
-            if ffn is not None and hasattr(ffn, "set_temperature"):
-                ffn.set_temperature(self.temperature)
+            for name in ("ffn", "self_attn", "cross_attn"):
+                mod = _layer_get(layer, name)
+                if mod is not None and hasattr(mod, "set_temperature"):
+                    mod.set_temperature(self.temperature)
+
+    def set_variant_gdas(self, enabled: bool) -> None:
+        self.variant_gdas = bool(enabled)
+        for layer in self.layers:
+            for name in ("ffn", "self_attn", "cross_attn"):
+                mod = _layer_get(layer, name)
+                if mod is not None and hasattr(mod, "set_variant_gdas"):
+                    mod.set_variant_gdas(self.variant_gdas)
 
     def _get_patch_mode_weights(
-        self, temperature: float = 1.0, single_path: bool = False
+        self, temperature: float = 1.0, variant_gdas: bool = False
     ) -> torch.Tensor:
         if not self.enable_patch_search or self.patching_mode != "auto":
             mode = (
@@ -198,16 +209,16 @@ class LightweightTransformerEncoder(nn.Module):
         tau = max(float(temperature), 1e-3)
         logits = self.patch_alpha_logits
         if self.training:
-            return F.gumbel_softmax(logits, tau=tau, hard=bool(single_path), dim=0)
+            return F.gumbel_softmax(logits, tau=tau, hard=bool(variant_gdas), dim=0)
         probs = F.softmax(logits / tau, dim=0)
-        if self.single_path_search:
+        if self.variant_gdas:
             hard = torch.zeros_like(probs)
             hard[int(torch.argmax(probs).item())] = 1.0
             return hard
         return probs
 
     def get_patch_mode_probs(self) -> torch.Tensor:
-        return self._get_patch_mode_weights(temperature=1.0, single_path=False)
+        return self._get_patch_mode_weights(temperature=1.0, variant_gdas=False)
 
     def resolve_patch_mode(self) -> str:
         weights = self.get_patch_mode_probs()
@@ -389,11 +400,11 @@ class LightweightTransformerEncoder(nn.Module):
         hidden_state=None,
         *,
         temperature: float = 1.0,
-        single_path: bool = False,
+        variant_gdas: bool = False,
     ):
         _, T, _ = x.shape
         tokenizer_weights = self._get_patch_mode_weights(
-            temperature=temperature, single_path=single_path
+            temperature=temperature, variant_gdas=variant_gdas
         )
         active_indices = [
             idx
@@ -442,7 +453,7 @@ class LightweightTransformerDecoder(nn.Module):
         rope_base: float = 500000.0,
         use_checkpoint: bool = False,
         temperature: float = 1.0,
-        single_path_search: bool = True,
+        variant_gdas: bool = True,
     ):
         super().__init__()
         resolved_self_attention_type = str(self_attention_type).lower()
@@ -463,7 +474,7 @@ class LightweightTransformerDecoder(nn.Module):
         self.use_moe = resolved_ffn_variant == "moe"
         self.use_checkpoint = use_checkpoint
         self.temperature = max(float(temperature), 1e-3)
-        self.single_path_search = bool(single_path_search)
+        self.variant_gdas = bool(variant_gdas)
 
         self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
 
@@ -480,6 +491,8 @@ class LightweightTransformerDecoder(nn.Module):
                             position_mode=resolved_self_position_mode,
                             rope_base=rope_base,
                             rope_max_seq_len=max_seq_len,
+                            temperature=self.temperature,
+                            variant_gdas=self.variant_gdas,
                         ),
                         "cross_attn": AttentionBridge(
                             latent_dim,
@@ -487,6 +500,8 @@ class LightweightTransformerDecoder(nn.Module):
                             dropout=dropout,
                             attention_type=resolved_cross_attention_type,
                             position_mode=resolved_cross_position_mode,
+                            temperature=self.temperature,
+                            variant_gdas=self.variant_gdas,
                         ),
                         "ffn": DARTSFeedForward(
                             d_model=latent_dim,
@@ -495,7 +510,7 @@ class LightweightTransformerDecoder(nn.Module):
                             use_moe=self.use_moe,
                             ffn_mode=resolved_ffn_variant,
                             temperature=self.temperature,
-                            single_path_search=self.single_path_search,
+                            variant_gdas=self.variant_gdas,
                         ),
                         "norm1": RMSNorm(latent_dim),
                         "norm2": RMSNorm(latent_dim),
@@ -515,9 +530,18 @@ class LightweightTransformerDecoder(nn.Module):
     def set_temperature(self, temperature: float) -> None:
         self.temperature = max(float(temperature), 1e-3)
         for layer in self.layers:
-            ffn = _layer_get(layer, "ffn")
-            if ffn is not None and hasattr(ffn, "set_temperature"):
-                ffn.set_temperature(self.temperature)
+            for name in ("ffn", "self_attn", "cross_attn"):
+                mod = _layer_get(layer, name)
+                if mod is not None and hasattr(mod, "set_temperature"):
+                    mod.set_temperature(self.temperature)
+
+    def set_variant_gdas(self, enabled: bool) -> None:
+        self.variant_gdas = bool(enabled)
+        for layer in self.layers:
+            for name in ("ffn", "self_attn", "cross_attn"):
+                mod = _layer_get(layer, name)
+                if mod is not None and hasattr(mod, "set_variant_gdas"):
+                    mod.set_variant_gdas(self.variant_gdas)
 
     def _prepare_memory(self, memory_or_hidden, batch_size: int | None = None):
         if memory_or_hidden is None:

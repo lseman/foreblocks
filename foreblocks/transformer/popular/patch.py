@@ -5,11 +5,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.tf.attention.multi_att import MultiAttention
+from foreblocks.transformer.attention.multi_att import MultiAttention
 
 # Use your project modules
-from foreblocks.tf.embeddings import PositionalEncoding
-from foreblocks.tf.norms import create_norm_layer
+from foreblocks.transformer.embeddings import PositionalEncoding
+from foreblocks.transformer.norms import create_norm_layer
 
 
 def _patchify_1d(x: torch.Tensor, patch_len: int, stride: int) -> torch.Tensor:
@@ -56,7 +56,7 @@ class PatchTokenEncoder(nn.Module):
         use_final_norm: bool = True,
     ):
         super().__init__()
-        from foreblocks.tf.transformer import TransformerEncoderLayer as _EncLayer
+        from foreblocks.transformer.transformer import TransformerEncoderLayer as _EncLayer
 
         layer_kwargs = dict(
             d_model=d_model,

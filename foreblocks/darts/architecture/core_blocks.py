@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.tf.norms import RevIN
+from foreblocks.transformer.norms import RevIN
 
 from .base_blocks import MixedDecoder, MixedEncoder
 from .bb_moe import DARTSFeedForward
@@ -97,7 +97,7 @@ class DARTSModelConfig:
     use_mixed_precision: bool = True
     use_compile: bool = False
     memory_efficient: bool = True
-    single_path_search: bool = True
+    variant_gdas: bool = True
     use_learned_memory_pooling: bool = True
     memory_num_queries: int = 8
 
@@ -124,7 +124,7 @@ class DARTSModelConfig:
     use_fair_darts_hierarchical: bool = True
     # GDAS: sample a single op per edge via Gumbel-Softmax with a straight-through
     # gradient estimator.  Takes precedence over use_drnas when both are True.
-    use_gdas: bool = False
+    op_gdas: bool = False
 
     # β-DARTS: L2 regularization weight on arch logits to prevent premature
     # commitment (skip-connection collapse).  Set to e.g. 1e-3 to enable.
@@ -222,7 +222,7 @@ class MixedOp(nn.Module):
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
-        use_gdas: bool = False,
+        op_gdas: bool = False,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -238,7 +238,7 @@ class MixedOp(nn.Module):
         )
         self.op_temperature = max(temperature, self.min_op_temperature)
         self.use_gumbel = use_gumbel
-        self.use_gdas = bool(use_gdas)
+        self.op_gdas = bool(op_gdas)
         self.use_drnas = use_drnas
         self.drnas_concentration = max(drnas_concentration, 1e-3)
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
@@ -685,7 +685,7 @@ class MixedOp(nn.Module):
 
     def forward(self, x: torch.Tensor, top_k: int | None = None) -> torch.Tensor:
         """Enhanced forward with better operation selection"""
-        if self.use_gdas and self.training:
+        if self.op_gdas and self.training:
             return self._gdas_forward(x)
 
         op_weights = self._get_weights(top_k)
@@ -913,7 +913,7 @@ class DARTSCell(nn.Module):
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
-        use_gdas: bool = False,
+        op_gdas: bool = False,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -939,7 +939,7 @@ class DARTSCell(nn.Module):
         self.use_drnas = use_drnas
         self.drnas_concentration = drnas_concentration
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
-        self.use_gdas = bool(use_gdas)
+        self.op_gdas = bool(op_gdas)
 
         # Progressive operation selection
         self.stage_operations = {
@@ -1097,7 +1097,7 @@ class DARTSCell(nn.Module):
                     use_drnas=self.use_drnas,
                     drnas_concentration=self.drnas_concentration,
                     use_fair_darts_hierarchical=self.use_fair_darts_hierarchical,
-                    use_gdas=self.use_gdas,
+                    op_gdas=self.op_gdas,
                 )
                 for _ in range(self.num_edges)
             ]
@@ -1346,7 +1346,7 @@ class TimeSeriesDARTS(nn.Module):
         temperature_warmup_epochs: int = 0,
         use_attention_bridge: bool = True,
         attention_layers: int = 2,
-        single_path_search: bool = True,
+        variant_gdas: bool = True,
         use_learned_memory_pooling: bool = True,
         memory_num_queries: int = 8,
         group_temperature_mult: float = 1.5,
@@ -1366,7 +1366,7 @@ class TimeSeriesDARTS(nn.Module):
         tie_encoder_decoder_arch: bool = True,
         transformer_self_attention_type: str = "auto",
         transformer_ffn_variant: str = "auto",
-        use_gdas: bool = False,
+        op_gdas: bool = False,
     ):
         super().__init__()
 
@@ -1393,7 +1393,7 @@ class TimeSeriesDARTS(nn.Module):
             "num_cells": num_cells,
             "num_nodes": num_nodes,
             "selected_ops": selected_ops,
-            "single_path_search": single_path_search,
+            "variant_gdas": variant_gdas,
             "temperature_schedule": temperature_schedule,
             "final_temperature": final_temperature,
             "temperature_warmup_epochs": temperature_warmup_epochs,
@@ -1416,7 +1416,7 @@ class TimeSeriesDARTS(nn.Module):
             "tie_encoder_decoder_arch": tie_encoder_decoder_arch,
             "transformer_self_attention_type": resolved_self_attention_type,
             "transformer_ffn_variant": resolved_transformer_ffn_variant,
-            "use_gdas": use_gdas,
+            "op_gdas": op_gdas,
         }
 
         # Store configuration
@@ -1439,7 +1439,7 @@ class TimeSeriesDARTS(nn.Module):
         self.temperature_warmup_epochs = int(temperature_warmup_epochs)
         self.use_attention_bridge = False
         self.attention_layers = attention_layers
-        self.single_path_search = single_path_search
+        self.variant_gdas = variant_gdas
         self.use_learned_memory_pooling = use_learned_memory_pooling
         self.memory_num_queries = memory_num_queries
         self.group_temperature_mult = group_temperature_mult
@@ -1460,7 +1460,7 @@ class TimeSeriesDARTS(nn.Module):
         self.transformer_self_attention_type = resolved_self_attention_type
         self.transformer_ffn_variant = resolved_transformer_ffn_variant
         self.transformer_use_moe = resolved_transformer_ffn_variant == "moe"
-        self.use_gdas = bool(use_gdas)
+        self.op_gdas = bool(op_gdas)
 
         # Searchable normalization
         self.norm_strategy = SearchableNorm(self.input_dim)
@@ -1499,7 +1499,7 @@ class TimeSeriesDARTS(nn.Module):
             "loss_type": cfg.loss_type,
             "use_gradient_checkpointing": cfg.use_gradient_checkpointing,
             "temperature": cfg.temperature,
-            "single_path_search": cfg.single_path_search,
+            "variant_gdas": cfg.variant_gdas,
             "use_learned_memory_pooling": cfg.use_learned_memory_pooling,
             "memory_num_queries": cfg.memory_num_queries,
             "group_temperature_mult": cfg.group_temperature_mult,
@@ -1565,7 +1565,7 @@ class TimeSeriesDARTS(nn.Module):
                     use_drnas=self.use_drnas,
                     drnas_concentration=self.drnas_concentration,
                     use_fair_darts_hierarchical=self.use_fair_darts_hierarchical,
-                    use_gdas=self.use_gdas,
+                    op_gdas=self.op_gdas,
                 )
             )
 
@@ -1604,7 +1604,7 @@ class TimeSeriesDARTS(nn.Module):
                 seq_len=self.seq_length,
                 dropout=self.dropout,
                 temperature=self.temperature,
-                single_path_search=self.single_path_search,
+                variant_gdas=self.variant_gdas,
                 include_patch=True,
                 transformer_self_attention_type=self.transformer_self_attention_type,
                 transformer_use_moe=self.transformer_use_moe,
@@ -1626,7 +1626,7 @@ class TimeSeriesDARTS(nn.Module):
                 attention_layers=self.attention_layers,
                 use_learned_memory_pooling=self.use_learned_memory_pooling,
                 memory_num_queries=self.memory_num_queries,
-                single_path_search=self.single_path_search,
+                variant_gdas=self.variant_gdas,
                 transformer_self_attention_type=self.transformer_self_attention_type,
                 transformer_use_moe=self.transformer_use_moe,
                 transformer_ffn_variant=self.transformer_ffn_variant,
@@ -1900,11 +1900,11 @@ class TimeSeriesDARTS(nn.Module):
                 return F.gumbel_softmax(
                     logits,
                     tau=tau,
-                    hard=bool(getattr(self, "single_path_search", False)),
+                    hard=bool(getattr(self, "variant_gdas", False)),
                     dim=0,
                 )
             probs = F.softmax(logits / tau, dim=0)
-            if bool(getattr(self, "single_path_search", False)):
+            if bool(getattr(self, "variant_gdas", False)):
                 hard = torch.zeros_like(probs)
                 hard[int(torch.argmax(probs).item())] = 1.0
                 return hard

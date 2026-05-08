@@ -36,10 +36,22 @@ from typing import Any
 
 import numpy as np
 
+from .hyperband import HyperbandScheduler
 from .pruning import PruningConfig
 from .tpe import TPE, TPEConf
 from .trial import Trial, TrialPruned
 from .utils import _canonical_config_key
+
+
+class _ImmediateFuture:
+    """Future-shaped wrapper around an already-computed value, used when
+    parallel_jobs == 1 so the ASHA loop has a single submit/await path."""
+
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def result(self) -> Any:
+        return self._value
 
 
 # -----------------------------------------------------------------------------
@@ -115,6 +127,21 @@ class BOHB:
         self._step_history: list[dict[str, float]] = []
         self._step_history_lock = threading.Lock()
 
+        # Hyperband rung grid for snapping cache-key budgets so that float
+        # noise (27.0 vs 27.0000001) doesn't cause cache misses.
+        self._rung_budgets: list[float] = self._build_rung_grid()
+        # Cached learning-curve slope: refit every _slope_refresh_every new
+        # history entries, since the slope barely moves between fits.
+        self._slope_cached: float = 0.0
+        self._slope_history_len: int = -1
+        self._slope_refresh_every: int = 10
+        # Indices over _step_history for O(1) cohort lookup. Each entry is
+        # (budget, progress, loss) so cohort filters can be applied without
+        # scanning the full history.
+        self._step_by_step: dict[int, list[tuple[float, float, float]]] = {}
+        self._step_by_progress_bin: dict[int, list[tuple[float, float, float]]] = {}
+        self._progress_bin_width = 0.05
+
         # cache: (sha1(config), budget) -> loss
         self.config_cache: dict[tuple[str, float], float] = {}
 
@@ -122,8 +149,11 @@ class BOHB:
             self._load_prior_trials_jsonl(prior_trials_jsonl)
 
     def run(self) -> tuple[dict[str, Any], float]:
-        s_max = int(math.log(self.max_budget / self.min_budget, self.eta))
-        B = (s_max + 1) * self.max_budget
+        scheduler = HyperbandScheduler(
+            min_budget=self.min_budget,
+            max_budget=self.max_budget,
+            eta=self.eta,
+        )
 
         for it in range(self.n_iterations):
             if self.verbose:
@@ -131,68 +161,8 @@ class BOHB:
                 print(f"BOHB Iteration {it + 1}/{self.n_iterations}")
                 print("=" * 70)
 
-            for s in reversed(range(s_max + 1)):
-                n = int(math.ceil((B / self.max_budget) * (self.eta**s) / (s + 1)))
-                r = self.max_budget * (self.eta ** (-s))
-
-                if self.verbose:
-                    print(f"\nBracket s={s}: n={n}, r={r:.4g}")
-
-                # ask for larger pool at budget r, then take top n from ranked list
-                recent_bracket_success = self._recent_bracket_improvement(s)
-                pool_multiplier = 4 + 8 * (1.0 - recent_bracket_success)
-                pool_n = max(n * int(pool_multiplier), 32, n * 3)
-                configs, scores = self.tpe.suggest(
-                    n_candidates=pool_n, budget=r, return_scores="aligned"
-                )
-                if r >= 0.4 * self.max_budget and self.best_config:
-                    n_jitter = 1 if r >= 0.7 * self.max_budget else 2
-                    for _ in range(n_jitter):
-                        jitter_cfg = self._jitter_config(
-                            self.best_config,
-                            scale=0.08 * (1.0 - r / self.max_budget),
-                        )
-                        if self.tpe._hard_constraints_satisfied(jitter_cfg):
-                            configs.append(jitter_cfg)
-                    configs = list(
-                        {_canonical_config_key(c): c for c in configs}.values()
-                    )
-                if len(configs) > n:
-                    scored = [
-                        (cfg, float(scores[i]) if i < len(scores) else 0.0)
-                        for i, cfg in enumerate(configs)
-                    ]
-                    scored.sort(key=lambda x: x[1], reverse=True)
-                    configs = [cfg for cfg, _ in scored[:n]]
-                else:
-                    configs = configs[:n]
-
-                # Successive Halving within this bracket
-                for i in range(s + 1):
-                    n_i = max(1, int(n * (self.eta ** (-i))))
-                    r_i = r * (self.eta**i)
-
-                    if self.verbose:
-                        print(f"  Round {i}/{s}: evaluating {n_i} @ budget {r_i:.4g}")
-
-                    results = self._evaluate_configs(configs[:n_i], r_i, it, s, i)
-                    for cfg, loss in results:
-                        self.tpe.observe(cfg, loss, budget=r_i)
-                        self._update_best(cfg, loss)
-
-                    if not results:
-                        if self.verbose:
-                            print("    No valid results in this round.")
-                        break
-
-                    results_sorted = sorted(
-                        results, key=lambda x: self._predict_final_loss(x[1], r_i)
-                    )
-                    self._update_top_configs(results_sorted)
-
-                    # keep top 1/eta (rank by predicted final loss)
-                    n_keep = max(1, int(n_i / self.eta))
-                    configs = [cfg for (cfg, _) in results_sorted[:n_keep]]
+            for s, n, r in scheduler.brackets():
+                self._run_bracket(it, s, n, r, scheduler)
 
         if self.best_config is None:
             raise RuntimeError("BOHB finished without any valid evaluation.")
@@ -218,6 +188,181 @@ class BOHB:
 
         return self.best_config, self.best_loss
 
+    def _run_bracket(
+        self,
+        iteration: int,
+        bracket: int,
+        n: int,
+        r: float,
+        scheduler: HyperbandScheduler,
+    ) -> None:
+        if self.verbose:
+            print(f"\nBracket s={bracket}: n={n}, r={r:.4g}")
+
+        configs, _scores = self._build_candidate_pool(bracket=bracket, n=n, budget=r)
+        rungs = scheduler.successive_halving(bracket, n, r)
+        self._run_asha_bracket(
+            iteration=iteration,
+            bracket=bracket,
+            initial_configs=configs,
+            rungs=rungs,
+        )
+
+    def _run_asha_bracket(
+        self,
+        iteration: int,
+        bracket: int,
+        initial_configs: list[dict[str, Any]],
+        rungs: list[tuple[int, int, float]],
+    ) -> None:
+        """
+        Async Successive Halving (ASHA): promote a config from rung i to i+1
+        as soon as its in-rung rank is in the top 1/eta. Replaces the
+        synchronous wait-all-then-halve loop.
+        """
+        if not rungs or not initial_configs:
+            return
+
+        # rung_results[i] -> list of (config, predicted_loss) at budget rungs[i].r
+        rung_results: list[list[tuple[dict[str, Any], float]]] = [[] for _ in rungs]
+        # Track which configs have already been promoted out of rung i.
+        rung_promoted_keys: list[set[str]] = [set() for _ in rungs]
+        rung_budgets = [r_i for _, _, r_i in rungs]
+        rung_targets = [n_i for _, n_i, _ in rungs]
+        max_rung = len(rungs) - 1
+
+        # Pending evaluations to submit: (rung_idx, config).
+        pending: list[tuple[int, dict[str, Any]]] = [
+            (0, cfg) for cfg in initial_configs[: rung_targets[0]]
+        ]
+
+        in_flight: dict[concurrent.futures.Future, tuple[int, dict[str, Any]]] = {}
+        executor: concurrent.futures.ThreadPoolExecutor | None = None
+        max_workers = max(1, self.parallel_jobs)
+        if max_workers > 1:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+
+        def _record_completion(rung_idx: int, config: dict[str, Any], loss: float) -> None:
+            self.tpe.observe(config, loss, budget=rung_budgets[rung_idx])
+            self._update_best(config, loss)
+            predicted = self._predict_final_loss(loss, rung_budgets[rung_idx])
+            rung_results[rung_idx].append((config, predicted))
+            self._update_top_configs([(config, loss)])
+            if rung_idx < max_rung:
+                finished = rung_results[rung_idx]
+                n_keep = max(1, len(finished) // self.eta)
+                ranked = sorted(finished, key=lambda x: x[1])
+                for cand_cfg, _ in ranked[:n_keep]:
+                    cand_key = _canonical_config_key(cand_cfg)
+                    if cand_key in rung_promoted_keys[rung_idx]:
+                        continue
+                    rung_promoted_keys[rung_idx].add(cand_key)
+                    pending.append((rung_idx + 1, cand_cfg))
+
+        try:
+            while pending or in_flight:
+                # Fill the in-flight pool up to max_workers, skipping configs
+                # that fail hard constraints or hit the cache.
+                while pending and len(in_flight) < max_workers:
+                    rung_idx, config = pending.pop(0)
+                    budget = rung_budgets[rung_idx]
+
+                    if not self.tpe._hard_constraints_satisfied(config):
+                        if self.verbose:
+                            print("    Hard constraint violated; skipping.")
+                        continue
+
+                    cache_key = self._cache_key(config, budget)
+                    if cache_key in self.config_cache:
+                        if self.verbose:
+                            print("    (cache hit)")
+                        _record_completion(rung_idx, config, self.config_cache[cache_key])
+                        continue
+
+                    if executor is not None:
+                        fut = executor.submit(self._evaluate_objective, config, budget)
+                    else:
+                        fut = _ImmediateFuture(
+                            self._evaluate_objective(config, budget)
+                        )
+                    in_flight[fut] = (rung_idx, config)
+
+                if not in_flight:
+                    break
+
+                if executor is not None:
+                    done_iter = concurrent.futures.as_completed(list(in_flight))
+                    done_fut = next(done_iter)
+                else:
+                    done_fut = next(iter(in_flight))
+
+                rung_idx, config = in_flight.pop(done_fut)
+                budget = rung_budgets[rung_idx]
+                cache_key = self._cache_key(config, budget)
+
+                try:
+                    outcome = done_fut.result()
+                except Exception as exc:
+                    if self.handle_errors:
+                        if self.verbose:
+                            print(f"    Eval error in parallel job: {exc}")
+                        outcome = None
+                    else:
+                        raise
+
+                loss = self._finalize_evaluation(
+                    config=config,
+                    budget=budget,
+                    outcome=outcome,
+                    cache_key=cache_key,
+                    iteration=iteration,
+                    bracket=bracket,
+                    round_idx=rung_idx,
+                )
+                if loss is None:
+                    continue
+
+                _record_completion(rung_idx, config, loss)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
+
+    def _build_candidate_pool(
+        self, bracket: int, n: int, budget: float
+    ) -> tuple[list[dict[str, Any]], list[float]]:
+        recent_bracket_success = self._recent_bracket_improvement(bracket)
+        pool_multiplier = 4 + 8 * (1.0 - recent_bracket_success)
+        pool_n = max(n * int(pool_multiplier), 32, n * 3)
+
+        configs, scores = self.tpe.suggest(
+            n_candidates=pool_n,
+            budget=budget,
+            return_scores="aligned",
+        )
+
+        if budget >= 0.4 * self.max_budget and self.best_config:
+            n_jitter = 1 if budget >= 0.7 * self.max_budget else 2
+            for _ in range(n_jitter):
+                jitter_cfg = self._jitter_config(
+                    self.best_config,
+                    scale=0.08 * (1.0 - budget / self.max_budget),
+                )
+                if self.tpe._hard_constraints_satisfied(jitter_cfg):
+                    configs.append(jitter_cfg)
+            configs = list({_canonical_config_key(c): c for c in configs}.values())
+
+        if len(configs) > n:
+            scored = [
+                (cfg, float(scores[i]) if i < len(scores) else 0.0)
+                for i, cfg in enumerate(configs)
+            ]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            configs = [cfg for cfg, _ in scored[:n]]
+        else:
+            configs = configs[:n]
+
+        return configs, []
+
     @staticmethod
     def _accepts_trial_argument(evaluate_fn: Callable[..., float]) -> bool:
         try:
@@ -233,10 +378,28 @@ class BOHB:
         if self.verbose:
             print(f"    New best: {self.best_loss:.6g}  cfg={self.best_config}")
 
+    def _build_rung_grid(self) -> list[float]:
+        if self.min_budget <= 0 or self.max_budget <= 0 or self.eta < 2:
+            return []
+        s_max = int(math.log(self.max_budget / self.min_budget, self.eta))
+        return [float(self.max_budget * (self.eta ** (-i))) for i in range(s_max + 1)]
+
+    def _snap_budget(self, budget: float) -> float:
+        """Round budget to ~9 sig figs, then snap to the nearest Hyperband
+        rung if within 0.1% relative tolerance. Out-of-grid budgets (e.g.
+        from arbitrary prior-trial JSONL) pass through with rounding only."""
+        b = float(budget)
+        if b <= 0 or not self._rung_budgets:
+            return float(f"{b:.9g}")
+        nearest = min(self._rung_budgets, key=lambda r: abs(r - b))
+        if abs(nearest - b) <= 1e-3 * max(nearest, b):
+            return nearest
+        return float(f"{b:.9g}")
+
     def _cache_key(self, config: dict[str, Any], budget: float) -> tuple[str, float]:
         key_json = _canonical_config_key(config)
         key_hash = hashlib.sha1(key_json.encode("utf-8")).hexdigest()
-        return key_hash, float(budget)
+        return key_hash, self._snap_budget(budget)
 
     def _make_history_entry(
         self,
@@ -260,88 +423,6 @@ class BOHB:
             "round": int(round_idx),
         }
 
-    def _evaluate_configs(
-        self,
-        configs: list[dict[str, Any]],
-        budget: float,
-        iteration: int,
-        bracket: int,
-        round_idx: int,
-    ) -> list[tuple[dict[str, Any], float]]:
-        indexed_results: list[tuple[int, dict[str, Any], float]] = []
-        pending: list[tuple[int, dict[str, Any], tuple[str, float]]] = []
-
-        for idx, config in enumerate(configs):
-            if not self.tpe._hard_constraints_satisfied(config):
-                if self.verbose:
-                    print("    Hard constraint violated; skipping.")
-                continue
-
-            cache_key = self._cache_key(config, budget)
-            if cache_key in self.config_cache:
-                if self.verbose:
-                    print("    (cache hit)")
-                indexed_results.append((idx, config, self.config_cache[cache_key]))
-                continue
-
-            pending.append((idx, config, cache_key))
-
-        if self.parallel_jobs > 1 and len(pending) > 1:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.parallel_jobs
-            ) as executor:
-                future_to_payload = {
-                    executor.submit(
-                        self._evaluate_objective,
-                        config,
-                        budget,
-                    ): (idx, config, cache_key)
-                    for idx, config, cache_key in pending
-                }
-                completed: list[
-                    tuple[
-                        int,
-                        dict[str, Any],
-                        tuple[float, float, float] | None,
-                        tuple[str, float],
-                    ]
-                ] = []
-                for future in concurrent.futures.as_completed(future_to_payload):
-                    idx, config, cache_key = future_to_payload[future]
-                    try:
-                        outcome = future.result()
-                    except Exception as exc:
-                        if self.handle_errors:
-                            if self.verbose:
-                                print(f"    Eval error in parallel job: {exc}")
-                            outcome = None
-                        else:
-                            raise
-                    completed.append((idx, config, outcome, cache_key))
-        else:
-            completed = []
-            for idx, config, cache_key in pending:
-                outcome = self._evaluate_objective(config, budget)
-                completed.append((idx, config, outcome, cache_key))
-
-        completed.sort(key=lambda item: item[0])
-        for idx, config, outcome, cache_key in completed:
-            loss = self._finalize_evaluation(
-                config=config,
-                budget=budget,
-                outcome=outcome,
-                cache_key=cache_key,
-                iteration=iteration,
-                bracket=bracket,
-                round_idx=round_idx,
-            )
-            if loss is None:
-                continue
-            indexed_results.append((idx, config, loss))
-
-        indexed_results.sort(key=lambda item: item[0])
-        return [(config, loss) for _, config, loss in indexed_results]
-
     def _evaluate_objective(
         self,
         config: dict[str, Any],
@@ -354,17 +435,6 @@ class BOHB:
                 raw_loss = self.evaluate_fn(config, float(budget), trial)
             else:
                 raw_loss = self.evaluate_fn(config, float(budget))
-            loss = raw_loss
-            if not isinstance(loss, (int, float)) or np.isnan(loss) or np.isinf(loss):
-                raise ValueError(f"Invalid loss: {loss}")
-
-            penalty = 0.0
-            if self.tpe.soft_constraints:
-                penalty = self.tpe._soft_constraint_violation(config)
-                if penalty > 0:
-                    loss = float(loss) + float(self.tpe.soft_penalty_weight) * penalty
-            loss = float(loss)
-            return loss, float(raw_loss), float(penalty)
         except TrialPruned:
             if self.verbose:
                 print("    Trial Pruned (Intermediate step gracefully terminated).")
@@ -375,6 +445,21 @@ class BOHB:
                     print(f"    Eval error: {e}")
                 return None
             raise
+
+        if not isinstance(raw_loss, (int, float)) or np.isnan(raw_loss) or np.isinf(raw_loss):
+            if self.handle_errors:
+                if self.verbose:
+                    print(f"    Invalid loss returned: {raw_loss}")
+                return None
+            raise ValueError(f"Invalid loss: {raw_loss}")
+
+        loss = float(raw_loss)
+        penalty = 0.0
+        if self.tpe.soft_constraints:
+            penalty = self.tpe._soft_constraint_violation(config)
+            if penalty > 0:
+                loss = loss + float(self.tpe.soft_penalty_weight) * penalty
+        return loss, float(raw_loss), float(penalty)
 
     def _finalize_evaluation(
         self,
@@ -470,6 +555,19 @@ class BOHB:
                 print(f"Prior trials file not found: {path}")
 
     def _estimate_learning_curve_slope(self) -> float:
+        n = len(self.history)
+        if (
+            self._slope_history_len >= 0
+            and n - self._slope_history_len < self._slope_refresh_every
+        ):
+            return self._slope_cached
+
+        slope = self._fit_learning_curve_slope()
+        self._slope_cached = slope
+        self._slope_history_len = n
+        return slope
+
+    def _fit_learning_curve_slope(self) -> float:
         if self.max_budget <= 0:
             return 0.0
         obs = [
@@ -627,14 +725,20 @@ class BOHB:
         return min(1.0, float(step + 1) / denom)
 
     def _record_trial_report(self, trial: Trial, step: int, loss: float) -> None:
+        progress = self._step_progress(step, trial.budget)
         record = {
             "step": float(step),
             "budget": float(trial.budget),
-            "progress": self._step_progress(step, trial.budget),
+            "progress": progress,
             "loss": float(loss),
         }
+        step_key = int(step)
+        progress_key = int(progress / self._progress_bin_width)
+        entry = (float(trial.budget), float(progress), float(loss))
         with self._step_history_lock:
             self._step_history.append(record)
+            self._step_by_step.setdefault(step_key, []).append(entry)
+            self._step_by_progress_bin.setdefault(progress_key, []).append(entry)
 
     def _get_step_cohort_losses(self, step: int, budget: float) -> list[float]:
         cfg = self.pruning_conf
@@ -651,23 +755,31 @@ class BOHB:
             hi = max(budget, other_budget)
             return (hi / lo) <= budget_ratio_limit
 
-        with self._step_history_lock:
-            exact_matches = [
-                rec["loss"]
-                for rec in self._step_history
-                if int(rec["step"]) == int(step)
-                and _budget_is_compatible(float(rec["budget"]))
-            ]
-            if len(exact_matches) >= cfg.step_exact_match_min:
-                return exact_matches
+        bin_radius = max(
+            1, int(math.ceil(cfg.step_progress_tolerance / self._progress_bin_width))
+        )
+        target_bin = int(target_progress / self._progress_bin_width)
 
-            nearby_matches = [
-                rec["loss"]
-                for rec in self._step_history
-                if abs(float(rec["progress"]) - target_progress)
-                <= cfg.step_progress_tolerance
-                and _budget_is_compatible(float(rec["budget"]))
-            ]
+        with self._step_history_lock:
+            step_bucket = list(self._step_by_step.get(int(step), ()))
+            nearby_bucket: list[tuple[float, float, float]] = []
+            for offset in range(-bin_radius, bin_radius + 1):
+                nearby_bucket.extend(
+                    self._step_by_progress_bin.get(target_bin + offset, ())
+                )
+
+        exact_matches = [
+            loss for b, _p, loss in step_bucket if _budget_is_compatible(b)
+        ]
+        if len(exact_matches) >= cfg.step_exact_match_min:
+            return exact_matches
+
+        nearby_matches = [
+            loss
+            for b, p, loss in nearby_bucket
+            if abs(p - target_progress) <= cfg.step_progress_tolerance
+            and _budget_is_compatible(b)
+        ]
 
         if len(nearby_matches) >= len(exact_matches):
             return nearby_matches

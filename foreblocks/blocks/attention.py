@@ -1,10 +1,16 @@
+"""Hierarchical attention module for time series forecasting.
+
+This module exposes a hierarchical attention layer with multi-scale
+processing and cross-level information flow.
+"""
+
 import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.tf.embeddings import PositionalEncoding
+from foreblocks.transformer.embeddings import PositionalEncoding
 from foreblocks.ui.node_spec import node
 
 

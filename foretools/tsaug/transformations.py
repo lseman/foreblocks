@@ -2,7 +2,8 @@
 Time series augmentation transformations for AutoDA-Timeseries.
 
 Implements transformation set T:
-  Raw, Jittering, Scaling, Resample, TimeWarp, FreqWarp, MagWarp, TimeMask, Drift
+  Raw, Jittering, Scaling, Resample, TimeWarp, FreqWarp, MagWarp, TimeMask, Drift,
+  Permutation, WindowSlice, TimeMix
 
 Each transformation takes:
   - x: (batch, length, channels) tensor
@@ -213,6 +214,70 @@ def drift(x: torch.Tensor, intensity: torch.Tensor) -> torch.Tensor:
     return x + base * scale
 
 
+def permutation(x: torch.Tensor, intensity: torch.Tensor) -> torch.Tensor:
+    """Randomly permute a small number of temporal segments."""
+    B, L, C = x.shape
+    intensity = _to_batch_intensity(intensity, B, x.device, x.dtype)
+    out = x.clone()
+
+    for b in range(B):
+        n_segments = int(
+            torch.clamp(2 + intensity[b] * 3.0, min=2.0, max=5.0).round().item()
+        )
+        # deterministic segment split on sorted random knots
+        if n_segments <= 1:
+            continue
+        cut_points = torch.rand(n_segments - 1, device=x.device).sort().values
+        cut_points = (cut_points * (L - 1)).long().unique()
+        splits = [0] + cut_points.tolist() + [L]
+        segments = [x[b, splits[i] : splits[i + 1], :] for i in range(len(splits) - 1)]
+        perm = torch.randperm(len(segments), device=x.device)
+        out[b] = torch.cat([segments[i] for i in perm], dim=0)
+
+    return out
+
+
+def window_slice(x: torch.Tensor, intensity: torch.Tensor) -> torch.Tensor:
+    """Randomly crop a window and resize it back to original length."""
+    B, L, C = x.shape
+    intensity = _to_batch_intensity(intensity, B, x.device, x.dtype)
+    out = x.clone()
+    x_t = x.permute(0, 2, 1)  # (B, C, L)
+
+    for b in range(B):
+        frac = intensity[b].abs().clamp(max=0.8).item() * 0.5
+        win = max(2, int(round(L * (1.0 - frac))))
+        if win >= L:
+            continue
+        start = torch.randint(0, L - win + 1, (1,), device=x.device).item()
+        segment = x_t[b : b + 1, :, start : start + win]
+        resized = F.interpolate(segment, size=L, mode="linear", align_corners=False)
+        out[b] = resized.squeeze(0).permute(1, 0)
+    return out
+
+
+def time_mix(x: torch.Tensor, intensity: torch.Tensor) -> torch.Tensor:
+    """Mix random temporally-aligned segments between paired samples."""
+    B, L, C = x.shape
+    if B < 2:
+        return x
+    intensity = _to_batch_intensity(intensity, B, x.device, x.dtype)
+    out = x.clone()
+    indices = torch.randperm(B, device=x.device)
+
+    for b in range(B):
+        partner = x[indices[b]]
+        mix = intensity[b].clamp(max=1.0).item()
+        if mix <= 0.0:
+            continue
+        win = max(1, int(round(L * (0.1 + 0.3 * mix))))
+        start = torch.randint(0, L - win + 1, (1,), device=x.device).item()
+        end = start + win
+        alpha = 0.5 + 0.5 * mix
+        out[b, start:end] = (1.0 - alpha) * x[b, start:end] + alpha * partner[start:end]
+    return out
+
+
 # Registry mapping indices to transformation functions
 TRANSFORMATIONS = [
     raw,  # T1: Raw (index 0)
@@ -224,6 +289,9 @@ TRANSFORMATIONS = [
     mag_warp,  # T7: MagWarp
     time_mask,  # T8: TimeMask
     drift,  # T9: Drift
+    permutation,  # T10: Permutation
+    window_slice,  # T11: WindowSlice
+    time_mix,  # T12: TimeMix
 ]
 
 TRANSFORM_NAMES = [
@@ -236,6 +304,9 @@ TRANSFORM_NAMES = [
     "MagWarp",
     "TimeMask",
     "Drift",
+    "Permutation",
+    "WindowSlice",
+    "TimeMix",
 ]
 
 NUM_TRANSFORMS = len(TRANSFORMATIONS)

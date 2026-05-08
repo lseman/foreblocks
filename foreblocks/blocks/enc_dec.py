@@ -1,3 +1,9 @@
+"""Encoder and decoder abstractions for sequence modeling.
+
+This module defines the LSTM/GRU encoder and decoder classes used by
+foreblocks forecasting models and builder APIs.
+"""
+
 import torch
 import torch.nn as nn
 from torch import Tensor

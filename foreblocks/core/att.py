@@ -1,3 +1,9 @@
+"""Flexible attention implementation for foreblocks models.
+
+This module provides the AttentionLayer class and related backend support
+for torch, xformers, and flash-attn attention execution.
+"""
+
 import math
 from contextlib import nullcontext
 
@@ -5,7 +11,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
-
 
 # Optional dependencies
 try:
@@ -39,9 +44,15 @@ class AttentionLayer(nn.Module):
     Backends: torch (SDPA), xformers, flash-attn
     """
 
-    _VALID_METHODS = frozenset(
-        {"dot", "mha", "multiscale", "probsparse", "linear", "sliding_window", "lsh"}
-    )
+    _VALID_METHODS = frozenset({
+        "dot",
+        "mha",
+        "multiscale",
+        "probsparse",
+        "linear",
+        "sliding_window",
+        "lsh",
+    })
     _VALID_BACKENDS = frozenset({"torch", "xformers", "flash"})
 
     def __init__(
@@ -181,21 +192,13 @@ class AttentionLayer(nn.Module):
 
     def _build_method_specific(self, num_scales: int):
         if self.method == "multiscale":
-            self.scale_projections = nn.ModuleList(
-                [
-                    nn.ModuleDict(
-                        {
-                            "k": nn.Linear(
-                                self.decoder_hidden_size, self.kv_dim, bias=False
-                            ),
-                            "v": nn.Linear(
-                                self.decoder_hidden_size, self.kv_dim, bias=False
-                            ),
-                        }
-                    )
-                    for _ in range(num_scales)
-                ]
-            )
+            self.scale_projections = nn.ModuleList([
+                nn.ModuleDict({
+                    "k": nn.Linear(self.decoder_hidden_size, self.kv_dim, bias=False),
+                    "v": nn.Linear(self.decoder_hidden_size, self.kv_dim, bias=False),
+                })
+                for _ in range(num_scales)
+            ])
             self.scale_weights = nn.Parameter(torch.ones(num_scales) / num_scales)
             self.dilations = tuple(2**i for i in range(num_scales))
         elif self.method == "linear":
@@ -413,7 +416,8 @@ class AttentionLayer(nn.Module):
     def _multiscale_attention(self, dec_h, enc, attn_mask=None, key_padding_mask=None):
         q1 = dec_h.unsqueeze(1)
         q = (
-            self.q_proj(q1)
+            self
+            .q_proj(q1)
             .view(-1, 1, self.nhead, self.head_dim)
             .transpose(1, 2)
             .contiguous()
@@ -434,12 +438,14 @@ class AttentionLayer(nn.Module):
 
             B, T, _ = e.shape
             k_i = (
-                self.scale_projections[i]["k"](e)
+                self
+                .scale_projections[i]["k"](e)
                 .view(B, T, self.n_kv_heads, self.head_dim)
                 .transpose(1, 2)
             )
             v_i = (
-                self.scale_projections[i]["v"](e)
+                self
+                .scale_projections[i]["v"](e)
                 .view(B, T, self.n_kv_heads, self.head_dim)
                 .transpose(1, 2)
             )

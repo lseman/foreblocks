@@ -5,9 +5,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.tf.embeddings import PositionalEncoding
-from foreblocks.tf.norms import create_norm_layer
-from foreblocks.tf.transformer_att import MultiAttention
+from foreblocks.transformer.embeddings import PositionalEncoding
+from foreblocks.transformer.norms import create_norm_layer
+from foreblocks.transformer.transformer_att import MultiAttention
 
 
 class _TemporalCompressor(nn.Module):
@@ -100,7 +100,7 @@ class VariableTokenEncoder(nn.Module):
         use_final_norm: bool = True,
     ):
         super().__init__()
-        from foreblocks.tf.transformer import TransformerEncoderLayer as _EncLayer
+        from foreblocks.transformer.transformer import TransformerEncoderLayer as _EncLayer
 
         layer_kwargs = dict(
             d_model=d_model,

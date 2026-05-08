@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,9 +20,39 @@ __all__ = [
 
 
 def _make_alibi_slopes(num_heads: int) -> torch.Tensor:
+    """Canonical ALiBi slopes from Press et al. (2021): 1 / 2^(8 i / H)."""
     num_heads = max(1, int(num_heads))
-    base = torch.arange(1, num_heads + 1, dtype=torch.float32)
-    return 1.0 / torch.pow(2.0, base / num_heads)
+    # For non-power-of-two head counts, fall back to interpolated slopes
+    # (same recipe as the reference ALiBi implementation).
+    def _pow2_slopes(n: int) -> list[float]:
+        start = 2.0 ** (-8.0 / n)
+        return [start ** (i + 1) for i in range(n)]
+
+    if math.log2(num_heads).is_integer():
+        slopes = _pow2_slopes(num_heads)
+    else:
+        closest = 2 ** int(math.floor(math.log2(num_heads)))
+        slopes = _pow2_slopes(closest)
+        extra = _pow2_slopes(2 * closest)[0::2][: num_heads - closest]
+        slopes = slopes + extra
+    return torch.tensor(slopes, dtype=torch.float32)
+
+
+def _causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
+    """Upper-triangular bool mask (True = block), cached per (device, len)."""
+    key = (device, seq_len)
+    cache = _causal_mask._cache  # type: ignore[attr-defined]
+    tensor = cache.get(key)
+    if tensor is None or tensor.size(0) != seq_len:
+        tensor = torch.triu(
+            torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
+            diagonal=1,
+        )
+        cache[key] = tensor
+    return tensor
+
+
+_causal_mask._cache = {}  # type: ignore[attr-defined]
 
 
 def _sinusoidal_features(
@@ -91,6 +123,8 @@ class SelfAttention(nn.Module):
         position_mode: str = "rope",
         rope_base: float = 500000.0,
         rope_max_seq_len: int = 1024,
+        temperature: float = 1.0,
+        variant_gdas: bool = False,
     ):
         super().__init__()
         resolved_attention_type = str(attention_type).lower()
@@ -112,6 +146,8 @@ class SelfAttention(nn.Module):
         self.searchable = resolved_attention_type == "auto"
         self.position_mode = resolved_position_mode
         self.position_searchable = resolved_position_mode == "auto"
+        self.temperature = max(float(temperature), 1e-3)
+        self.variant_gdas = bool(variant_gdas)
 
         assert dim % heads == 0, f"dim {dim} must be divisible by heads {heads}"
 
@@ -140,6 +176,22 @@ class SelfAttention(nn.Module):
             persistent=False,
         )
         self.positional_scale = nn.Parameter(torch.tensor(1.0))
+        # Learnable cosine inverse-temperature: for unit-norm Q/K, scores live
+        # in [-1,1]; without rescaling the softmax is near-uniform. Init at
+        # log(head_dim ** 0.5) so exp(.) matches the SDP scale at start.
+        self.cos_log_scale = nn.Parameter(
+            torch.tensor(math.log(self.head_dim**0.5))
+        )
+        # Deterministic generator for ProbSparse sampling: reduces variance in
+        # the architecture gradient since alphas are trying to estimate which
+        # kernel is best.
+        self._probsparse_gen = torch.Generator().manual_seed(0xC0FFEE)
+
+    def set_temperature(self, temperature: float) -> None:
+        self.temperature = max(float(temperature), 1e-3)
+
+    def set_variant_gdas(self, enabled: bool) -> None:
+        self.variant_gdas = bool(enabled)
 
     def _apply_rotary_pair(
         self, q: torch.Tensor, k: torch.Tensor, q_len: int, k_len: int
@@ -154,17 +206,33 @@ class SelfAttention(nn.Module):
         k = self.rotary_emb.apply_rotary_pos_emb(k, cos, sin)
         return q, k
 
-    def _get_position_mode(self) -> str:
+    def _position_mix_weights(self) -> torch.Tensor:
+        """Soft (differentiable) weights over POSITION_MODES.
+
+        When searchable + training, use Gumbel-Softmax (hard when
+        ``variant_gdas`` is set, with straight-through gradient) so
+        ``position_alphas`` receives gradient signal. When not searchable,
+        returns a one-hot vector on ``self.position_mode``.
+        """
         if not self.position_searchable or not hasattr(self, "position_alphas"):
-            return self.position_mode
-        logits = self.position_alphas
+            ref = next(self.parameters())
+            w = ref.new_zeros(len(self.POSITION_MODES))
+            resolved = (
+                self.position_mode
+                if self.position_mode in self.POSITION_MODES
+                else "rope"
+            )
+            w[self.POSITION_MODES.index(resolved)] = 1.0
+            return w
+        tau = max(float(self.temperature), 1e-3)
         if self.training:
-            weights = F.gumbel_softmax(logits, tau=1.0, hard=True, dim=0)
-            idx = int(torch.argmax(weights).item())
-            return self.POSITION_MODES[idx]
-        probs = F.softmax(logits.detach(), dim=0)
-        idx = int(torch.argmax(probs).item())
-        return self.POSITION_MODES[idx]
+            return F.gumbel_softmax(
+                self.position_alphas,
+                tau=tau,
+                hard=bool(self.variant_gdas),
+                dim=0,
+            )
+        return F.softmax(self.position_alphas / tau, dim=0)
 
     def get_position_mode_probs(self) -> torch.Tensor:
         if self.position_searchable and hasattr(self, "position_alphas"):
@@ -243,155 +311,240 @@ class SelfAttention(nn.Module):
         )
         return q, k, bias
 
+    def _sdp_kernel(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        position_bias: torch.Tensor | None,
+        T: int,
+    ) -> torch.Tensor:
+        dropout_p = self.dropout_p if self.training else 0.0
+        if position_bias is None:
+            return F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=None,
+                dropout_p=dropout_p,
+                is_causal=self.causal,
+                scale=self.scale,
+            )
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale + position_bias
+        if self.causal:
+            mask = _causal_mask(T, q.device)
+            scores = scores.masked_fill(mask.view(1, 1, T, T), float("-inf"))
+        attn = F.softmax(scores, dim=-1)
+        attn = torch.nan_to_num(attn, nan=1.0 / float(max(T, 1)))
+        if dropout_p > 0:
+            attn = F.dropout(attn, p=dropout_p)
+        return torch.matmul(attn, v)
+
+    def _linear_kernel(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        T: int,
+    ) -> torch.Tensor:
+        dropout_p = self.dropout_p if self.training else 0.0
+        if self.causal:
+            # Causal linear (ELU+1 Performer) requires a recurrent cumsum
+            # formulation for correctness; fall back to FlashAttention-backed
+            # SDP which is still efficient and numerically exact.
+            return F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=None,
+                dropout_p=dropout_p,
+                is_causal=True,
+                scale=self.scale,
+            )
+        q_feat = F.elu(q * self.scale) + 1.0
+        k_feat = F.elu(k) + 1.0
+        kv = torch.einsum("bhtd,bhtv->bhdv", k_feat, v)
+        k_sum = k_feat.sum(dim=2)
+        denom = torch.einsum("bhtd,bhd->bht", q_feat, k_sum).clamp_min(1e-6)
+        out_linear = torch.einsum("bhtd,bhdv->bhtv", q_feat, kv)
+        return out_linear / denom.unsqueeze(-1)
+
+    def _cosine_kernel(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        position_bias: torch.Tensor | None,
+        T: int,
+    ) -> torch.Tensor:
+        # True cosine attention: unit-norm Q/K, learnable inverse-temperature
+        # (a la Swin-V2 / CosFormer). Without this rescaling, softmax on
+        # cosine scores in [-1,1] is nearly uniform.
+        dropout_p = self.dropout_p if self.training else 0.0
+        qn = F.normalize(q, p=2, dim=-1)
+        kn = F.normalize(k, p=2, dim=-1)
+        scale = torch.exp(self.cos_log_scale)
+        scores = torch.matmul(qn, kn.transpose(-2, -1)) * scale
+        if position_bias is not None:
+            scores = scores + position_bias
+        if self.causal:
+            mask = _causal_mask(T, q.device)
+            scores = scores.masked_fill(mask.view(1, 1, T, T), float("-inf"))
+        attn = F.softmax(scores, dim=-1)
+        attn = torch.nan_to_num(attn, nan=1.0 / float(max(T, 1)))
+        if dropout_p > 0:
+            attn = F.dropout(attn, p=dropout_p)
+        return torch.matmul(attn, v)
+
+    def _local_kernel(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        position_bias: torch.Tensor | None,
+        T: int,
+    ) -> torch.Tensor:
+        dropout_p = self.dropout_p if self.training else 0.0
+        W = max(4, int(T * self.LOCAL_WINDOW_RATIO))
+        pos = torch.arange(T, device=q.device)
+        lo = (pos - (W // 2)).clamp(0, T - 1)
+        hi = (pos + (W // 2)).clamp(0, T - 1)
+        local_mask = (pos.unsqueeze(0) >= lo.unsqueeze(1)) & (
+            pos.unsqueeze(0) <= hi.unsqueeze(1)
+        )
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        if position_bias is not None:
+            scores = scores + position_bias
+        mask = ~local_mask
+        if self.causal:
+            mask = mask | _causal_mask(T, q.device)
+        scores = scores.masked_fill(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+        attn = F.softmax(scores, dim=-1)
+        attn = torch.nan_to_num(attn, nan=1.0 / float(T))
+        if dropout_p > 0:
+            attn = F.dropout(attn, p=dropout_p)
+        return torch.matmul(attn, v)
+
+    def _probsparse_kernel(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        position_bias: torch.Tensor | None,
+        B: int,
+        H: int,
+        T: int,
+    ) -> torch.Tensor:
+        dropout_p = self.dropout_p if self.training else 0.0
+        c = self.PROBSPARSE_C
+        n_top = min(T, max(1, int(c * math.log(T + 1))))
+        n_sample = min(T, max(1, int(c * math.log(T + 1))))
+        # Deterministic sampling: reduces variance in alpha gradients.
+        cpu_idx = torch.randperm(T, generator=self._probsparse_gen)[:n_sample]
+        sample_idx = cpu_idx.to(q.device)
+        k_sample = k[:, :, sample_idx, :]
+        q_scores = torch.matmul(q, k_sample.transpose(-2, -1)) * self.scale
+        M = q_scores.amax(dim=-1) - q_scores.mean(dim=-1)
+        top_idx = M.topk(n_top, dim=-1).indices
+        v_mean = v.mean(dim=2, keepdim=True).expand(B, H, T, self.head_dim)
+        out_sparse = v_mean.clone()
+        idx_exp = top_idx.unsqueeze(-1).expand(-1, -1, -1, self.head_dim)
+        q_top = q.gather(2, idx_exp)
+        scores_top = torch.matmul(q_top, k.transpose(-2, -1)) * self.scale
+        if position_bias is not None:
+            bias_expanded = position_bias.expand(B, -1, -1, -1)
+            pos_bias_top = bias_expanded.gather(
+                2, top_idx.unsqueeze(-1).expand(-1, -1, -1, T)
+            )
+            scores_top = scores_top + pos_bias_top
+        if self.causal:
+            full_idx = top_idx.unsqueeze(-1).expand(-1, -1, -1, T)
+            key_pos = torch.arange(T, device=q.device).view(1, 1, 1, T)
+            scores_top = scores_top.masked_fill(key_pos > full_idx, float("-inf"))
+        attn_top = F.softmax(scores_top, dim=-1)
+        attn_top = torch.nan_to_num(attn_top, nan=1.0 / float(T))
+        if dropout_p > 0:
+            attn_top = F.dropout(attn_top, p=dropout_p)
+        out_top = torch.matmul(attn_top, v)
+        out_sparse.scatter_(2, idx_exp, out_top)
+        return out_sparse
+
+    def _apply_kernel(
+        self,
+        mode: str,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        position_bias: torch.Tensor | None,
+        B: int,
+        H: int,
+        T: int,
+    ) -> torch.Tensor:
+        if mode == "sdp":
+            return self._sdp_kernel(q, k, v, position_bias, T)
+        if mode == "linear":
+            return self._linear_kernel(q, k, v, T)
+        if mode == "cosine":
+            return self._cosine_kernel(q, k, v, position_bias, T)
+        if mode == "local":
+            return self._local_kernel(q, k, v, position_bias, T)
+        return self._probsparse_kernel(q, k, v, position_bias, B, H, T)
+
+    def _attn_mix_weights(self, tau: float | None = None) -> torch.Tensor:
+        """Soft weights over MODES; honours ``variant_gdas``.
+
+        ``tau`` defaults to ``self.temperature``; pass an explicit value to
+        override (matches ``AttentionBridge._attn_mix_weights`` signature).
+        """
+        eff_tau = max(
+            float(tau if tau is not None else self.temperature),
+            1e-3,
+        )
+        if self.training:
+            return F.gumbel_softmax(
+                self.attn_alphas,
+                tau=eff_tau,
+                hard=bool(self.variant_gdas),
+                dim=0,
+            )
+        return F.softmax(self.attn_alphas / eff_tau, dim=0)
+
     def forward(self, x):
         B, T, D = x.shape
         H = self.heads
 
         qkv = self.to_qkv(x).view(B, T, 3, H, self.head_dim).permute(2, 0, 3, 1, 4)
         q_raw, k_raw, v = qkv.unbind(0)
-        position_mode = self._get_position_mode()
+
+        # Position-mode selection: argmax(weights) with straight-through
+        # gradient via ``weights[idx]`` multiplier below. Fixes the bug where
+        # ``position_alphas`` received zero gradient signal.
+        pos_weights = self._position_mix_weights()
+        pos_idx = int(torch.argmax(pos_weights.detach()).item())
+        position_mode = self.POSITION_MODES[pos_idx]
         q, k, position_bias = self._apply_position_mode(q_raw, k_raw, position_mode)
-
-        def _apply(mode: str) -> torch.Tensor:
-            dropout_p = self.dropout_p if self.training else 0.0
-
-            if mode == "sdp":
-                if position_bias is None:
-                    return F.scaled_dot_product_attention(
-                        q,
-                        k,
-                        v,
-                        attn_mask=None,
-                        dropout_p=dropout_p,
-                        is_causal=self.causal,
-                        scale=self.scale,
-                    )
-                scores = (
-                    torch.matmul(q, k.transpose(-2, -1)) * self.scale + position_bias
-                )
-                if self.causal:
-                    mask = torch.triu(
-                        torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1
-                    )
-                    scores = scores.masked_fill(mask.view(1, 1, T, T), float("-inf"))
-                attn = F.softmax(scores, dim=-1)
-                attn = torch.nan_to_num(attn, nan=1.0 / float(max(T, 1)))
-                if dropout_p > 0:
-                    attn = F.dropout(attn, p=dropout_p)
-                return torch.matmul(attn, v)
-
-            if mode == "linear":
-                if self.causal:
-                    # Causal linear (ELU+1 Performer) requires a recurrent
-                    # cumsum formulation for correctness; we fall back to
-                    # FlashAttention-backed SDP which is still efficient and
-                    # numerically exact.
-                    return F.scaled_dot_product_attention(
-                        q,
-                        k,
-                        v,
-                        attn_mask=None,
-                        dropout_p=dropout_p,
-                        is_causal=True,
-                        scale=self.scale,
-                    )
-                q_feat = F.elu(q * self.scale) + 1.0
-                k_feat = F.elu(k) + 1.0
-                kv = torch.einsum("bhtd,bhtv->bhdv", k_feat, v)
-                k_sum = k_feat.sum(dim=2)
-                denom = torch.einsum("bhtd,bhd->bht", q_feat, k_sum).clamp_min(1e-6)
-                out_linear = torch.einsum("bhtd,bhdv->bhtv", q_feat, kv)
-                return out_linear / denom.unsqueeze(-1)
-
-            if mode == "cosine":
-                qn = F.normalize(q, p=2, dim=-1)
-                kn = F.normalize(k, p=2, dim=-1)
-                scores = torch.matmul(qn, kn.transpose(-2, -1))
-                if position_bias is not None:
-                    scores = scores + position_bias
-                if self.causal:
-                    mask = torch.triu(
-                        torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1
-                    )
-                    scores = scores.masked_fill(
-                        mask.unsqueeze(0).unsqueeze(0), float("-inf")
-                    )
-                attn = F.softmax(scores, dim=-1)
-                if dropout_p > 0:
-                    attn = F.dropout(attn, p=dropout_p)
-                return torch.matmul(attn, v)
-
-            if mode == "local":
-                W = max(4, int(T * self.LOCAL_WINDOW_RATIO))
-                pos = torch.arange(T, device=x.device)
-                lo = (pos - (W // 2)).clamp(0, T - 1)
-                hi = (pos + (W // 2)).clamp(0, T - 1)
-                local_mask = (pos.unsqueeze(0) >= lo.unsqueeze(1)) & (
-                    pos.unsqueeze(0) <= hi.unsqueeze(1)
-                )
-                scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-                if position_bias is not None:
-                    scores = scores + position_bias
-                mask = ~local_mask
-                if self.causal:
-                    causal_mask = torch.triu(
-                        torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1
-                    )
-                    mask = mask | causal_mask
-                scores = scores.masked_fill(
-                    mask.unsqueeze(0).unsqueeze(0), float("-inf")
-                )
-                attn = F.softmax(scores, dim=-1)
-                attn = torch.nan_to_num(attn, nan=1.0 / float(T))
-                if dropout_p > 0:
-                    attn = F.dropout(attn, p=dropout_p)
-                return torch.matmul(attn, v)
-
-            import math
-
-            c = self.PROBSPARSE_C
-            n_top = min(T, max(1, int(c * math.log(T + 1))))
-            n_sample = min(T, max(1, int(c * math.log(T + 1))))
-            sample_idx = torch.randperm(T, device=x.device)[:n_sample]
-            k_sample = k[:, :, sample_idx, :]
-            q_scores = torch.matmul(q, k_sample.transpose(-2, -1)) * self.scale
-            M = q_scores.amax(dim=-1) - q_scores.mean(dim=-1)
-            top_idx = M.topk(n_top, dim=-1).indices
-            v_mean = v.mean(dim=2, keepdim=True).expand(B, H, T, self.head_dim)
-            out_sparse = v_mean.clone()
-            idx_exp = top_idx.unsqueeze(-1).expand(-1, -1, -1, self.head_dim)
-            q_top = q.gather(2, idx_exp)
-            scores_top = torch.matmul(q_top, k.transpose(-2, -1)) * self.scale
-            if position_bias is not None:
-                bias_expanded = position_bias.expand(B, -1, -1, -1)
-                pos_bias_top = bias_expanded.gather(
-                    2, top_idx.unsqueeze(-1).expand(-1, -1, -1, T)
-                )
-                scores_top = scores_top + pos_bias_top
-            if self.causal:
-                full_idx = top_idx.unsqueeze(-1).expand(-1, -1, -1, T)
-                key_pos = torch.arange(T, device=x.device).view(1, 1, 1, T)
-                causal_mask = key_pos > full_idx
-                scores_top = scores_top.masked_fill(causal_mask, float("-inf"))
-            attn_top = F.softmax(scores_top, dim=-1)
-            attn_top = torch.nan_to_num(attn_top, nan=1.0 / float(T))
-            if dropout_p > 0:
-                attn_top = F.dropout(attn_top, p=dropout_p)
-            out_top = torch.matmul(attn_top, v)
-            out_sparse.scatter_(2, idx_exp, out_top)
-            return out_sparse
+        pos_scalar = pos_weights[pos_idx] if self.position_searchable else None
 
         if self.searchable:
-            tau = 1.0
-            if self.training:
-                weights = F.gumbel_softmax(self.attn_alphas, tau=tau, hard=False, dim=0)
+            weights = self._attn_mix_weights()
+            if self.variant_gdas and self.training:
+                # Single path: only the argmax kernel runs (~5x speedup). STE
+                # gradient on alphas flows via the weights[idx] multiplier.
+                idx = int(torch.argmax(weights.detach()).item())
+                out = weights[idx] * self._apply_kernel(
+                    self.MODES[idx], q, k, v, position_bias, B, H, T
+                )
             else:
-                weights = F.softmax(self.attn_alphas, dim=0)
-            out = sum(
-                weights[i] * _apply(self.MODES[i]) for i in range(len(self.MODES))
-            )
+                out = sum(
+                    weights[i]
+                    * self._apply_kernel(
+                        self.MODES[i], q, k, v, position_bias, B, H, T
+                    )
+                    for i in range(len(self.MODES))
+                )
         else:
-            out = _apply(self.attention_type)
+            out = self._apply_kernel(
+                self.attention_type, q, k, v, position_bias, B, H, T
+            )
+
+        if pos_scalar is not None:
+            out = pos_scalar * out
 
         out = out.transpose(1, 2).reshape(B, T, D)
         return self.out_proj(out)
@@ -431,6 +584,8 @@ class AttentionBridge(nn.Module):
         dropout: float = 0.1,
         attention_type: str = "auto",
         position_mode: str = "rope",
+        temperature: float = 1.0,
+        variant_gdas: bool = False,
     ):
         super().__init__()
         resolved_attention_type = str(attention_type).lower()
@@ -448,6 +603,8 @@ class AttentionBridge(nn.Module):
         self.searchable = resolved_attention_type == "auto"
         self.position_mode = resolved_position_mode
         self.position_searchable = resolved_position_mode == "auto"
+        self.temperature = max(float(temperature), 1e-3)
+        self.variant_gdas = bool(variant_gdas)
 
         self.num_heads = min(max(1, int(num_heads)), self.d_model)
         while self.d_model % self.num_heads != 0 and self.num_heads > 1:
@@ -481,6 +638,18 @@ class AttentionBridge(nn.Module):
             persistent=False,
         )
         self.positional_scale = nn.Parameter(torch.tensor(1.0))
+        # Learnable inverse-temperature for cosine kernel (see SelfAttention).
+        self.cos_log_scale = nn.Parameter(
+            torch.tensor(math.log(self.head_dim**0.5))
+        )
+        # Deterministic generator for ProbSparse sampling.
+        self._probsparse_gen = torch.Generator().manual_seed(0xC0FFEE)
+
+    def set_temperature(self, temperature: float) -> None:
+        self.temperature = max(float(temperature), 1e-3)
+
+    def set_variant_gdas(self, enabled: bool) -> None:
+        self.variant_gdas = bool(enabled)
 
     # ------------------------------------------------------------------
     # Internal helpers — all return [B, L_dec, d_model]
@@ -507,17 +676,33 @@ class AttentionBridge(nn.Module):
         )
         return q, k
 
-    def _get_position_mode(self) -> str:
+    def _position_mix_weights(self) -> torch.Tensor:
+        """Soft (differentiable) weights over POSITION_MODES.
+
+        When searchable + training, use Gumbel-Softmax (hard when
+        ``variant_gdas`` is set, with straight-through gradient) so
+        ``position_alphas`` receives gradient signal. When not searchable,
+        returns a one-hot vector on ``self.position_mode``.
+        """
         if not self.position_searchable or not hasattr(self, "position_alphas"):
-            return self.position_mode
-        logits = self.position_alphas
+            ref = next(self.parameters())
+            w = ref.new_zeros(len(self.POSITION_MODES))
+            resolved = (
+                self.position_mode
+                if self.position_mode in self.POSITION_MODES
+                else "rope"
+            )
+            w[self.POSITION_MODES.index(resolved)] = 1.0
+            return w
+        tau = max(float(self.temperature), 1e-3)
         if self.training:
-            weights = F.gumbel_softmax(logits, tau=1.0, hard=True, dim=0)
-            idx = int(torch.argmax(weights).item())
-            return self.POSITION_MODES[idx]
-        probs = F.softmax(logits.detach(), dim=0)
-        idx = int(torch.argmax(probs).item())
-        return self.POSITION_MODES[idx]
+            return F.gumbel_softmax(
+                self.position_alphas,
+                tau=tau,
+                hard=bool(self.variant_gdas),
+                dim=0,
+            )
+        return F.softmax(self.position_alphas / tau, dim=0)
 
     def get_position_mode_probs(self) -> torch.Tensor:
         if self.position_searchable and hasattr(self, "position_alphas"):
@@ -677,8 +862,6 @@ class AttentionBridge(nn.Module):
         L_enc: int,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        import math
-
         q = self._reshape(q, B, L_dec)  # [B, H, L_dec, hd]
         k = self._reshape(k, B, L_enc)  # [B, H, L_enc, hd]
         v = self._reshape(v, B, L_enc)  # [B, H, L_enc, hd]
@@ -687,8 +870,10 @@ class AttentionBridge(nn.Module):
         n_top = min(L_dec, max(1, int(c * math.log(L_dec + 1))))
         n_sample = min(L_enc, max(1, int(c * math.log(L_enc + 1))))
 
-        # Sample a random subset of keys to estimate query sparsity
-        sample_idx = torch.randperm(L_enc, device=q.device)[:n_sample]
+        # Deterministic sampling: reduces variance in alpha gradients during
+        # DARTS search; Informer itself uses fresh randomness per step.
+        cpu_idx = torch.randperm(L_enc, generator=self._probsparse_gen)[:n_sample]
+        sample_idx = cpu_idx.to(q.device)
         k_sample = k[:, :, sample_idx, :]  # [B, H, n_sample, hd]
 
         # Sparsity measure M  (max - mean over sampled keys)
@@ -736,14 +921,18 @@ class AttentionBridge(nn.Module):
         L_enc: int,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        # True cosine attention with learnable inverse-temperature. When a
+        # position bias is present we fall back to the quadratic softmax form
+        # (cannot add an arbitrary bias inside the linear-kernel denominator).
         q = self._reshape(q, B, L_dec)
         k = self._reshape(k, B, L_enc)
         v = self._reshape(v, B, L_enc)
+        scale = torch.exp(self.cos_log_scale)
+        qn = F.normalize(q, p=2, dim=-1)
+        kn = F.normalize(k, p=2, dim=-1)
 
-        # L2-normalise, then use ReLU+ε as a non-negative feature map
-        # → preserves cosine similarity structure, O(T+S) cost
         if bias is not None:
-            scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale + bias
+            scores = torch.matmul(qn, kn.transpose(-2, -1)) * scale + bias
             attn = F.softmax(scores, dim=-1)
             attn = torch.nan_to_num(attn, nan=1.0 / float(max(L_enc, 1)))
             if self.training and self.dropout_p > 0:
@@ -751,9 +940,10 @@ class AttentionBridge(nn.Module):
             out = torch.matmul(attn, v)
             return self._merge(out, B, L_dec)
 
-        q_f = F.relu(F.normalize(q, p=2, dim=-1)) + 1e-6
-        k_f = F.relu(F.normalize(k, p=2, dim=-1)) + 1e-6
-
+        # Linear-time path (CosFormer-style): ReLU on unit-norm features is a
+        # non-negative kernel that preserves cosine similarity structure.
+        q_f = F.relu(qn) + 1e-6
+        k_f = F.relu(kn) + 1e-6
         kv = torch.einsum("bhtd,bhtv->bhdv", k_f, v)
         k_sum = k_f.sum(dim=2)
         denom = torch.einsum("bhtd,bhd->bht", q_f, k_sum).clamp_min(1e-6)
@@ -812,13 +1002,32 @@ class AttentionBridge(nn.Module):
     # Forward
     # ------------------------------------------------------------------
 
+    def _attn_mix_weights(self, tau: float | None = None) -> torch.Tensor:
+        """Soft weights over MODES; honours ``variant_gdas``.
+
+        ``tau`` defaults to ``self.temperature``; pass an explicit value to
+        override.
+        """
+        eff_tau = max(
+            float(tau if tau is not None else self.temperature),
+            1e-3,
+        )
+        if self.training:
+            return F.gumbel_softmax(
+                self.attn_alphas,
+                tau=eff_tau,
+                hard=bool(self.variant_gdas),
+                dim=0,
+            )
+        return F.softmax(self.attn_alphas / eff_tau, dim=0)
+
     def forward(
         self,
         decoder_hidden: torch.Tensor,
         encoder_output: torch.Tensor | None = None,
         encoder_context: torch.Tensor | None = None,
-        temperature: float = 1.0,
-        single_path: bool = False,
+        temperature: float | None = None,
+        variant_gdas: bool | None = None,
     ) -> torch.Tensor:
         source = encoder_output if encoder_output is not None else encoder_context
         if source is None:
@@ -832,7 +1041,14 @@ class AttentionBridge(nn.Module):
         q = self.q_proj(decoder_hidden)
         k = self.k_proj(source)
         v = self.v_proj(source)
-        position_mode = self._get_position_mode()
+
+        # Position-mode selection: argmax(weights) with straight-through
+        # gradient via weights[idx]. Fixes the bug where position_alphas
+        # received no gradient signal.
+        pos_weights = self._position_mix_weights()
+        pos_idx = int(torch.argmax(pos_weights.detach()).item())
+        position_mode = self.POSITION_MODES[pos_idx]
+        pos_scalar = pos_weights[pos_idx] if self.position_searchable else None
 
         _kernels = {
             "sdp": self._sdp,
@@ -859,21 +1075,35 @@ class AttentionBridge(nn.Module):
                 L_enc,
                 position_bias,
             )
+            if pos_scalar is not None:
+                raw = pos_scalar * raw
             return self.norm(decoder_hidden + self.out_proj(raw))
 
         if not self.searchable:
             return _apply(self.attention_type)
 
-        tau = max(float(temperature), 1e-3)
-        if self.training and single_path:
-            weights = F.gumbel_softmax(self.attn_alphas, tau=tau, hard=True, dim=0)
+        # Resolve effective temperature / single-path: explicit call arg wins
+        # over module state (set via set_temperature / set_variant_gdas).
+        eff_tau = (
+            max(float(temperature), 1e-3)
+            if temperature is not None
+            else max(float(self.temperature), 1e-3)
+        )
+        eff_single = (
+            bool(variant_gdas)
+            if variant_gdas is not None
+            else bool(self.variant_gdas)
+        )
+
+        if self.training and eff_single:
+            # Single path (GDAS-style): only the argmax kernel runs, cutting
+            # peak memory and FLOPs ~6x across all MODES. Gradient reaches the
+            # alphas via the weights[idx] multiplier (straight-through).
+            weights = F.gumbel_softmax(self.attn_alphas, tau=eff_tau, hard=True, dim=0)
             idx = int(weights.argmax().item())
             return weights[idx] * _apply(self.MODES[idx])
-        elif self.training:
-            weights = F.gumbel_softmax(self.attn_alphas, tau=tau, hard=False, dim=0)
-        else:
-            weights = F.softmax(self.attn_alphas / tau, dim=0)
 
+        weights = self._attn_mix_weights(eff_tau)
         return sum(weights[i] * _apply(self.MODES[i]) for i in range(len(self.MODES)))
 
 

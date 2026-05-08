@@ -7,6 +7,15 @@ import torch
 from einops import rearrange, repeat
 from torch import Tensor
 
+try:
+    from ..attention.kernels.fused_rope import (
+        _TRITON_AVAILABLE,
+        triton_apply_rope_bthd,
+    )
+except Exception:
+    _TRITON_AVAILABLE = False
+    triton_apply_rope_bthd = None  # type: ignore[assignment]
+
 
 # ---------------------------------------------------------------------------
 # Basic rotary helpers
@@ -202,6 +211,21 @@ def _apply_rotary_batch(
     if isinstance(seqlen_offsets, int) and seqlen_offsets == 0 and cos.dim() == 2:
         if conjugate:
             sin = -sin
+
+        # Triton fast path: non-interleaved, full rotation, non-inplace, CUDA
+        if (
+            not interleaved
+            and ro_dim == headdim
+            and not inplace
+            and x.is_cuda
+            and _TRITON_AVAILABLE
+            and triton_apply_rope_bthd is not None
+        ):
+            return triton_apply_rope_bthd(
+                x.contiguous(),
+                cos[:seqlen].contiguous(),
+                sin[:seqlen].contiguous(),
+            )
 
         cos_ = cos[:seqlen].unsqueeze(0)  # (1, seqlen, d/2)
         sin_ = sin[:seqlen].unsqueeze(0)

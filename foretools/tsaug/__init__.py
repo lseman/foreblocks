@@ -22,13 +22,15 @@ from .transformations import (
     freq_warp,
     jittering,
     mag_warp,
+    permutation,
     raw,
     resample,
     scaling,
     time_mask,
+    time_mix,
     time_warp,
+    window_slice,
 )
-
 
 __version__ = "0.1.0"
 __all__ = [
@@ -42,4 +44,16 @@ __all__ = [
     "TRANSFORMATIONS",
     "TRANSFORM_NAMES",
     "NUM_TRANSFORMS",
+    "raw",
+    "jittering",
+    "scaling",
+    "resample",
+    "time_warp",
+    "freq_warp",
+    "mag_warp",
+    "time_mask",
+    "drift",
+    "permutation",
+    "window_slice",
+    "time_mix",
 ]

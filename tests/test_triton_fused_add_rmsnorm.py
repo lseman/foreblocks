@@ -15,14 +15,14 @@ def _make_inputs(B, T, D, dtype=torch.float32, device="cuda", requires_grad=True
 
 
 def test_output_shape():
-    from foreblocks.tf.norms.triton_backend import fused_add_rmsnorm
+    from foreblocks.transformer.norms.triton_backend import fused_add_rmsnorm
     residual, update, weight = _make_inputs(2, 8, 64)
     out = fused_add_rmsnorm(residual, update, weight, eps=1e-5)
     assert out.shape == residual.shape
 
 
 def test_output_matches_pytorch_reference():
-    from foreblocks.tf.norms.triton_backend import fused_add_rmsnorm
+    from foreblocks.transformer.norms.triton_backend import fused_add_rmsnorm
     torch.manual_seed(0)
     residual, update, weight = _make_inputs(2, 8, 64)
     out_fused = fused_add_rmsnorm(
@@ -35,7 +35,7 @@ def test_output_matches_pytorch_reference():
 
 
 def test_gradcheck_float32():
-    from foreblocks.tf.norms.triton_backend import FusedAddRMSNormFunction
+    from foreblocks.transformer.norms.triton_backend import FusedAddRMSNormFunction
     B, T, D = 2, 4, 32
     residual = torch.randn(B, T, D, device="cuda", dtype=torch.float32, requires_grad=True)
     update = torch.randn(B, T, D, device="cuda", dtype=torch.float32, requires_grad=True)
@@ -51,7 +51,7 @@ def test_gradcheck_float32():
 
 
 def test_grad_residual_equals_grad_update():
-    from foreblocks.tf.norms.triton_backend import FusedAddRMSNormFunction
+    from foreblocks.transformer.norms.triton_backend import FusedAddRMSNormFunction
     B, T, D = 2, 4, 64
     residual = torch.randn(B, T, D, device="cuda", requires_grad=True)
     update = torch.randn(B, T, D, device="cuda", requires_grad=True)
@@ -62,8 +62,8 @@ def test_grad_residual_equals_grad_update():
 
 
 def test_fallback_for_large_d():
-    from foreblocks.tf.fusions import fused_dropout_add_norm
-    from foreblocks.tf.norms.rms_norm import RMSNorm
+    from foreblocks.transformer.fusions import fused_dropout_add_norm
+    from foreblocks.transformer.norms.rms_norm import RMSNorm
     D = 4096
     residual = torch.randn(1, 4, D, device="cuda")
     update = torch.randn(1, 4, D, device="cuda")

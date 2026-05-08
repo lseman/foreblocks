@@ -2,6 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from foreblocks.transformer.compute.triton_helpers import (
+        HAS_TRITON as _HAS_TRITON,
+    )
+    from foreblocks.transformer.compute.triton_helpers import (
+        triton_causal_linear_attn,
+    )
+except Exception:
+    _HAS_TRITON = False
+    triton_causal_linear_attn = None  # type: ignore[assignment]
+
 
 class LinearAttention(nn.Module):
     """
@@ -97,26 +108,30 @@ class LinearAttention(nn.Module):
 
         # Compute linear attention (global sum or causal cumsum)
         if is_causal:
-            # Causal: cumsum up to each position (assume Lq == Lk for self-attn)
+            # Causal: sequential scan or cumsum
             assert Lq == Lk, "Causal mode requires Lq == Lk"
-            k_cum = torch.cumsum(k_prime, dim=2)  # B H L F
-            kv_increment = k_prime.unsqueeze(-1) * v.unsqueeze(-2)  # B H L F Dh
-            kv_cum = torch.cumsum(kv_increment, dim=2)  # B H L F Dh
-            # Dot products: denom = q_prime * k_cum sum over F
-            denom = torch.sum(q_prime * k_cum, dim=-1, keepdim=True)  # B H L 1
-            # Matmul: numer = q_prime @ kv_cum (over F)
-            numer = torch.matmul(
-                q_prime, kv_cum
-            )  # B H L Dh  (matmul handles last two dims)
-            out_heads = numer / (denom + 1e-6)
+            if (
+                _HAS_TRITON
+                and q_prime.is_cuda
+                and not torch.is_grad_enabled()
+                and not torch.jit.is_scripting()
+            ):
+                # Streaming Triton scan: O(B·H·T·(F+Dh)) memory, no huge intermediate
+                out_heads = triton_causal_linear_attn(q_prime, k_prime, v, eps=1e-6)
+            else:
+                # PyTorch fallback — creates O(B·H·T·F·Dh) intermediate
+                k_cum = torch.cumsum(k_prime, dim=2)  # B H L F
+                kv_cum = torch.cumsum(
+                    k_prime.unsqueeze(-1) * v.unsqueeze(-2), dim=2
+                )  # B H L F Dh
+                denom = torch.sum(q_prime * k_cum, dim=-1, keepdim=True)  # B H L 1
+                numer = torch.matmul(q_prime, kv_cum)  # B H L Dh
+                out_heads = numer / (denom + 1e-6)
         else:
-            # Non-causal: global sums over keys/values
-            k_sum = torch.sum(k_prime, dim=2)  # B H F
-            kv_increment = k_prime.unsqueeze(-1) * v.unsqueeze(-2)  # B H L F Dh
-            kv_sum = torch.sum(kv_increment, dim=2)  # B H F Dh
-            # denom = q_prime @ k_sum
+            # Non-causal: fused einsum avoids O(B·H·L·F·Dh) intermediate tensor
+            k_sum = k_prime.sum(dim=2)  # B H F
+            kv_sum = torch.einsum("bhlf,bhld->bhfd", k_prime, v)  # B H F Dh
             denom = torch.matmul(q_prime, k_sum.unsqueeze(-1))  # B H L 1
-            # numer = q_prime @ kv_sum
             numer = torch.matmul(q_prime, kv_sum)  # B H L Dh
             out_heads = numer / (denom + 1e-6)
 

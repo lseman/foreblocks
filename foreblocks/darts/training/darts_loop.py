@@ -88,7 +88,7 @@ def train_darts_model(
     darts_pt_xi: float = 0.01,
     initial_drnas_concentration: float = 10.0,
     final_drnas_concentration: float = 2.0,
-    use_gdas: bool = False,
+    op_gdas: bool = False,
 ) -> dict[str, Any]:
     """
     Run one DARTS bilevel training cycle.
@@ -111,12 +111,12 @@ def train_darts_model(
     model = model.to(device)
     start_time = time.time()
 
-    # Propagate use_gdas to all MixedOp edges so callers can override the
+    # Propagate op_gdas to all MixedOp edges so callers can override the
     # model-level default without reconstructing the model.
-    if use_gdas:
+    if op_gdas:
         for m in model.modules():
-            if hasattr(m, "use_gdas"):
-                m.use_gdas = True
+            if hasattr(m, "op_gdas"):
+                m.op_gdas = True
 
     # ── Parameter groups ──────────────────────────────────────────────────
     (

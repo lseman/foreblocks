@@ -1,3 +1,9 @@
+"""Extended foreblocks forecasting models with knowledge distillation.
+
+This module provides DistilledForecastingModel, which adds teacher-student
+distillation support on top of the standard ForecastingModel API.
+"""
+
 import copy
 
 # -----------------------------
@@ -424,12 +430,10 @@ class DistilledForecastingModel(ForecastingModel):
         self, input_tensor: torch.Tensor, num_runs=100, warmup_runs=10
     ):
         result = super().benchmark_inference(input_tensor, num_runs, warmup_runs)
-        result.update(
-            {
-                "distillation_mode": self.distillation_mode,
-                "has_teacher": self.teacher_model is not None,
-            }
-        )
+        result.update({
+            "distillation_mode": self.distillation_mode,
+            "has_teacher": self.teacher_model is not None,
+        })
         return result
 
 
@@ -635,12 +639,10 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         self, input_tensor: torch.Tensor, num_runs=100, warmup_runs=10
     ):
         result = super().benchmark_inference(input_tensor, num_runs, warmup_runs)
-        result.update(
-            {
-                "quantization_mode": self.quantization_mode,
-                "is_quantized": self.is_quantized,
-            }
-        )
+        result.update({
+            "quantization_mode": self.quantization_mode,
+            "is_quantized": self.is_quantized,
+        })
         return result
 
     def get_quantization_info(self) -> dict[str, str | int | float | bool]:

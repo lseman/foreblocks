@@ -51,6 +51,8 @@ class FeatureConfig:
     max_features: int = 500
     min_features: int = 1
     min_samples: int = 10
+    verbose: bool = True
+    log_level: str = "INFO"
 
     # Selection parameters
     selector_method: str = "mi"  # "mi" | "mrmr" | "rfecv" | "boruta" | "auto"

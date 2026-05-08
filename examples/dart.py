@@ -256,7 +256,7 @@ for mode in ("encoder_decoder", "encoder_only", "decoder_only"):
         seq_length=_seq_len,
         selected_ops=["Identity", "TimeConv", "Fourier"],
         arch_mode=mode,
-        use_gdas=True,
+        op_gdas=True,
     )
     m.eval()
     with torch.no_grad():

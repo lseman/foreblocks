@@ -12,7 +12,6 @@ from collections.abc import Sequence
 import torch
 import torch.nn.functional as F
 
-
 try:
     import triton
     import triton.language as tl
@@ -20,6 +19,13 @@ try:
     TRITON_AVAILABLE = True
 except Exception:  # pragma: no cover
     TRITON_AVAILABLE = False
+
+try:
+    from .triton_helpers import HAS_TRITON as _HAS_SWIGLU_TRITON
+    from .triton_helpers import TritonSwiGLUGate as _TritonSwiGLUGate
+except Exception:
+    _HAS_SWIGLU_TRITON = False
+    _TritonSwiGLUGate = None
 
 
 class _GroupedMMVarMFunction(torch.autograd.Function):
@@ -84,20 +90,79 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
         A_packed, B_cat, offsets = ctx.saved_tensors
         grad_out = grad_out.contiguous()
 
-        grad_A = torch.zeros_like(A_packed)
-        grad_B = torch.zeros_like(B_cat)
+        needs_A = ctx.needs_input_grad[0]
+        needs_B = ctx.needs_input_grad[2]
 
         E = offsets.numel() - 1
-        for e in range(E):
-            s = int(offsets[e].item())
-            t = int(offsets[e + 1].item())
-            if t <= s:
-                continue
-            A_e = A_packed[s:t]  # [M, K]
-            dC_e = grad_out[s:t]  # [M, N]
-            B_e = B_cat[e]  # [K, N]
-            grad_A[s:t] = dC_e @ B_e.T  # [M, K]
-            grad_B[e] = A_e.T @ dC_e  # [K, N]
+        K = B_cat.shape[1]
+        N = B_cat.shape[2]
+
+        starts = offsets[:-1].to(torch.int32).contiguous()
+        M_per = (offsets[1:] - offsets[:-1]).to(torch.int32).contiguous()
+
+        if TRITON_AVAILABLE and A_packed.is_cuda:
+            # grad_A = dC @ B.T — reuse forward kernel with transposed B strides
+            # dC[M,N] @ B.T[N,K] = grad_A[M,K]
+            # Treat dC as "A" (M×N) and B.T as "B" (N×K):
+            #   inner dim K_arg = N_orig, output dim N_arg = K_orig
+            #   B strides swapped: stride_b_k ← B_cat.stride(2), stride_b_n ← B_cat.stride(1)
+            grad_A = torch.zeros_like(A_packed) if needs_A else None
+            if needs_A:
+                _grouped_gemm_varM_kernel[(E,)](
+                    grad_out,  # "A" = dC [S, N]
+                    B_cat,  # "B" = B_cat [E, K, N] accessed transposed
+                    grad_A,  # "C" = grad_A [S, K]
+                    starts,
+                    M_per,
+                    K=N,  # reduction over original N columns of dC
+                    N=K,  # output is original K columns of A
+                    stride_a_m=grad_out.stride(0),
+                    stride_a_k=grad_out.stride(1),
+                    stride_b_g=B_cat.stride(0),
+                    stride_b_k=B_cat.stride(2),  # transposed: n index → B's n-stride
+                    stride_b_n=B_cat.stride(1),  # transposed: k index → B's k-stride
+                    stride_c_m=grad_A.stride(0),
+                    stride_c_n=grad_A.stride(1),
+                    ACC_DTYPE=tl.float32,
+                )
+
+            # grad_B = A.T @ dC — dedicated Triton reduction kernel
+            # A[M,K].T @ dC[M,N] = grad_B[K,N] per expert
+            grad_B = torch.zeros_like(B_cat) if needs_B else None
+            if needs_B:
+                _grouped_gemm_bwd_dB_kernel[(E,)](
+                    A_packed,
+                    grad_out,
+                    grad_B,
+                    starts,
+                    M_per,
+                    K=K,
+                    N=N,
+                    stride_a_m=A_packed.stride(0),
+                    stride_a_k=A_packed.stride(1),
+                    stride_dc_m=grad_out.stride(0),
+                    stride_dc_n=grad_out.stride(1),
+                    stride_db_g=grad_B.stride(0),
+                    stride_db_k=grad_B.stride(1),
+                    stride_db_n=grad_B.stride(2),
+                    ACC_DTYPE=tl.float32,
+                )
+        else:
+            # Pure-PyTorch fallback — no CPU sync needed when E=0
+            grad_A = torch.zeros_like(A_packed) if needs_A else None
+            grad_B = torch.zeros_like(B_cat) if needs_B else None
+            for e in range(E):
+                s = int(offsets[e].item())
+                t = int(offsets[e + 1].item())
+                if t <= s:
+                    continue
+                A_e = A_packed[s:t]  # [M, K]
+                dC_e = grad_out[s:t]  # [M, N]
+                B_e = B_cat[e]  # [K, N]
+                if needs_A:
+                    grad_A[s:t] = dC_e @ B_e.T  # [M, K]
+                if needs_B:
+                    grad_B[e] = A_e.T @ dC_e  # [K, N]
 
         return grad_A, None, grad_B, None
 
@@ -224,6 +289,125 @@ if TRITON_AVAILABLE:
 
                 n0 += BLOCK_N
             m0 += BLOCK_M
+
+    @triton.autotune(
+        configs=[
+            triton.Config(
+                {"BLOCK_K": 64, "BLOCK_N": 64, "BLOCK_M": 32}, num_stages=2, num_warps=4
+            ),
+            triton.Config(
+                {"BLOCK_K": 64, "BLOCK_N": 128, "BLOCK_M": 32},
+                num_stages=2,
+                num_warps=4,
+            ),
+            triton.Config(
+                {"BLOCK_K": 128, "BLOCK_N": 64, "BLOCK_M": 32},
+                num_stages=2,
+                num_warps=4,
+            ),
+            triton.Config(
+                {"BLOCK_K": 128, "BLOCK_N": 128, "BLOCK_M": 32},
+                num_stages=3,
+                num_warps=8,
+            ),
+        ],
+        key=["K", "N"],
+    )
+    @triton.jit
+    def _grouped_gemm_bwd_dB_kernel(
+        A_ptr,  # *elem — A_packed [S, K]
+        dC_ptr,  # *elem — grad_output [S, N]
+        dB_ptr,  # *elem — grad_B [E, K, N]
+        starts_ptr,  # *int32 — row start per group in A/dC
+        M_ptr,  # *int32 — rows per group
+        K: tl.constexpr,
+        N: tl.constexpr,
+        stride_a_m,
+        stride_a_k,
+        stride_dc_m,
+        stride_dc_n,
+        stride_db_g,
+        stride_db_k,
+        stride_db_n,
+        BLOCK_K: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        ACC_DTYPE: tl.constexpr,
+    ):
+        """
+        One program per group g.
+
+        Computes grad_B[g] = A_g.T @ dC_g  where
+          A_g  [M_g, K] is rows [start_g : start_g+M_g) of A_packed
+          dC_g [M_g, N] is rows [start_g : start_g+M_g) of grad_output
+          grad_B[g] has shape [K, N]
+
+        Tiles over the (K, N) output and reduces over the M_g dimension.
+        A is loaded transposed as [BLOCK_K, BLOCK_M] so tl.dot works directly.
+        """
+        g = tl.program_id(0)
+        start_g = tl.load(starts_ptr + g).to(tl.int32)
+        M_g = tl.load(M_ptr + g).to(tl.int32)
+
+        db_base = dB_ptr + g * stride_db_g
+
+        k0 = 0
+        while k0 < K:
+            offs_k = k0 + tl.arange(0, BLOCK_K)
+            mask_k = offs_k < K
+
+            n0 = 0
+            while n0 < N:
+                offs_n = n0 + tl.arange(0, BLOCK_N)
+                mask_n = offs_n < N
+
+                acc = tl.zeros((BLOCK_K, BLOCK_N), dtype=ACC_DTYPE)
+
+                m0 = 0
+                while m0 < M_g:
+                    offs_m = tl.arange(0, BLOCK_M)
+                    mask_m = offs_m < (M_g - m0)
+                    abs_m = start_g + m0
+
+                    # Load A.T tile: [BLOCK_K, BLOCK_M] — load A[abs_m+m, k] transposed
+                    a_T_ptrs = (
+                        A_ptr
+                        + (abs_m + offs_m[None, :]) * stride_a_m
+                        + offs_k[:, None] * stride_a_k
+                    )
+                    a_T = tl.load(
+                        a_T_ptrs,
+                        mask=mask_k[:, None] & mask_m[None, :],
+                        other=0.0,
+                    )
+
+                    # Load dC tile: [BLOCK_M, BLOCK_N]
+                    dc_ptrs = (
+                        dC_ptr
+                        + (abs_m + offs_m[:, None]) * stride_dc_m
+                        + offs_n[None, :] * stride_dc_n
+                    )
+                    dc = tl.load(
+                        dc_ptrs,
+                        mask=mask_m[:, None] & mask_n[None, :],
+                        other=0.0,
+                    )
+
+                    # acc += A.T @ dC: [BK, BM] @ [BM, BN] = [BK, BN]
+                    acc += tl.dot(a_T, dc)
+
+                    m0 += BLOCK_M
+
+                # Store dB[g, k0:k0+BLOCK_K, n0:n0+BLOCK_N]
+                db_ptrs = (
+                    db_base
+                    + offs_k[:, None] * stride_db_k
+                    + offs_n[None, :] * stride_db_n
+                )
+                tl.store(db_ptrs, acc, mask=mask_k[:, None] & mask_n[None, :])
+
+                n0 += BLOCK_N
+            k0 += BLOCK_K
 
 # ============================== Python helpers ===============================
 
@@ -469,9 +653,19 @@ def grouped_mlp_swiglu(
         block_k=64,
     )
 
-    # SwiGLU
-    G, U = GU.split(H, dim=-1)
-    H_act = F.silu(G) * U
+    # SwiGLU — fuse split+silu+mul into a single Triton kernel when available
+    if (
+        _HAS_SWIGLU_TRITON
+        and _TritonSwiGLUGate is not None
+        and GU.is_cuda
+        and not torch.jit.is_scripting()
+    ):
+        G_3d = GU[:, :H].unsqueeze(0).contiguous()  # [1, S, H]
+        U_3d = GU[:, H:].unsqueeze(0).contiguous()  # [1, S, H]
+        H_act = _TritonSwiGLUGate.apply(G_3d, U_3d).squeeze(0)  # [S, H]
+    else:
+        G, U = GU.split(H, dim=-1)
+        H_act = F.silu(G) * U
     if training and dropout_p > 0:
         H_act = F.dropout(H_act, p=dropout_p, training=True)
 

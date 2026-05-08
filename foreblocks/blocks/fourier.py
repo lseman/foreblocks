@@ -1,3 +1,9 @@
+"""Fourier-based neural network blocks and feature encodings.
+
+This module contains frequency-domain and Fourier feature layers used by
+foreblocks models for time-series applications.
+"""
+
 import math
 
 import torch

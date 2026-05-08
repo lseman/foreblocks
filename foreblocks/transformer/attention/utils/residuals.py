@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from foreblocks.tf.norms import RMSNorm
+from foreblocks.transformer.norms import RMSNorm
 
 
 def normalize_attention_residual_mode(attn_residual_type: str) -> str:

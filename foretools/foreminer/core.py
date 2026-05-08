@@ -17,7 +17,6 @@ from sklearn.exceptions import ConvergenceWarning
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tools.sm_exceptions import ValueWarning
 
-
 # Suppress known noise warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -219,6 +218,8 @@ class AnalysisConfig:
     plot_style: str = "seaborn-v0_8"
     figure_size: tuple[int, int] = (12, 8)
     random_state: int = 42
+    log_level: str = "INFO"
+    max_workers: int | None = None
 
 
 class AnalysisHooks:

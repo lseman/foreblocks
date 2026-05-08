@@ -1,3 +1,9 @@
+"""Node discovery decorator utilities for the foreblocks UI builder.
+
+This module provides the `node` decorator used to annotate model components
+with metadata for auto-discovery, graph building, and visual editing.
+"""
+
 # foreblocks/node.py
 from __future__ import annotations
 

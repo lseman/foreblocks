@@ -537,7 +537,7 @@ class DARTSTrainer:
         temperature: float = 1.0,  # noqa: ARG002
         pruning_hard_epoch: int | None = None,  # noqa: ARG002
         log_arch_gradients: bool = False,  # noqa: ARG002
-        use_gdas: bool = False,
+        op_gdas: bool = False,
     ) -> dict[str, Any]:
         """
         Run DARTS bilevel architecture search training.
@@ -627,7 +627,7 @@ class DARTSTrainer:
             beta_darts_weight=beta_darts_weight,
             moe_balance_weight=moe_balance_weight,
             transformer_exploration_weight=transformer_exploration_weight,
-            use_gdas=use_gdas,
+            op_gdas=op_gdas,
         )
 
     # ── Final model training ──────────────────────────────────────────────

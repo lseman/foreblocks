@@ -485,7 +485,7 @@ class MixedEncoder(nn.Module):
         seq_len: int,
         dropout: float = 0.1,
         temperature: float = 1.0,
-        single_path_search: bool = True,
+        variant_gdas: bool = True,
         arch_path_keep_prob: float = 0.85,
         include_patch: bool = True,
         transformer_self_attention_type: str = "auto",
@@ -500,7 +500,7 @@ class MixedEncoder(nn.Module):
         self.dropout = dropout
         self.temperature = max(float(temperature), 1e-3)
         self.num_layers = 2
-        self.single_path_search = bool(single_path_search)
+        self.variant_gdas = bool(variant_gdas)
         self.arch_path_keep_prob = float(min(max(arch_path_keep_prob, 0.0), 1.0))
         self.include_patch = bool(include_patch)
         self.rnn_type = "transformer"
@@ -522,7 +522,7 @@ class MixedEncoder(nn.Module):
             ffn_variant=self.transformer_ffn_variant,
             use_checkpoint=use_checkpoint,
             temperature=self.temperature,
-            single_path_search=self.single_path_search,
+            variant_gdas=self.variant_gdas,
             enable_patch_search=self.include_patch,
             patching_mode="auto" if self.include_patch else "direct",
         )
@@ -542,7 +542,7 @@ class MixedEncoder(nn.Module):
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         x = self.searchable_decomp(x, temperature=self.temperature)
-        single_path_active = self.training and self.single_path_search
+        variant_gdas_active = self.training and self.variant_gdas
         self.last_selected_output_idx = 0
         self.last_selected_layer_idx = torch.zeros(
             self.num_layers, device=x.device, dtype=torch.long
@@ -550,7 +550,7 @@ class MixedEncoder(nn.Module):
         trans_out, trans_ctx, trans_state = self.transformer(
             x,
             temperature=self.temperature,
-            single_path=single_path_active,
+            variant_gdas=variant_gdas_active,
         )
         output = self.normalizer.normalize_output(trans_out, "transformer")
         context = trans_ctx
@@ -589,7 +589,7 @@ class MixedDecoder(nn.Module):
         attention_layers: int = 1,
         use_learned_memory_pooling: bool = True,
         memory_num_queries: int = 8,
-        single_path_search: bool = True,
+        variant_gdas: bool = True,
         arch_path_keep_prob: float = 0.85,
         attention_temperature_mult: float = 0.7,
         min_attention_temperature: float = 0.25,
@@ -607,7 +607,7 @@ class MixedDecoder(nn.Module):
         self.dropout = dropout
         self.temperature = max(float(temperature), 1e-3)
         self.num_layers = 2
-        self.single_path_search = bool(single_path_search)
+        self.variant_gdas = bool(variant_gdas)
         self.arch_path_keep_prob = float(min(max(arch_path_keep_prob, 0.0), 1.0))
         self.rnn_type = "transformer"
         self.decode_style_names = ("autoregressive", "informer")
@@ -642,7 +642,7 @@ class MixedDecoder(nn.Module):
             ffn_variant=self.transformer_ffn_variant,
             use_checkpoint=use_checkpoint,
             temperature=self.temperature,
-            single_path_search=self.single_path_search,
+            variant_gdas=self.variant_gdas,
         )
 
         self.decoders = nn.ModuleList([self.transformer])
@@ -694,7 +694,7 @@ class MixedDecoder(nn.Module):
     def get_decode_style_weights(self) -> torch.Tensor:
         tau = max(float(self.temperature), 1e-3)
         if self.training:
-            if self.single_path_search:
+            if self.variant_gdas:
                 return F.gumbel_softmax(
                     self.decode_style_alphas, tau=tau, hard=True, dim=0
                 )
@@ -702,7 +702,7 @@ class MixedDecoder(nn.Module):
                 self.decode_style_alphas, tau=tau, hard=False, dim=0
             )
         probs = F.softmax(self.decode_style_alphas / tau, dim=0)
-        if self.single_path_search:
+        if self.variant_gdas:
             hard = torch.zeros_like(probs)
             hard[int(torch.argmax(probs).item())] = 1.0
             return hard
@@ -742,7 +742,7 @@ class MixedDecoder(nn.Module):
 
         tau = max(float(self.temperature), 1e-3)
         if self.training:
-            if self.single_path_search:
+            if self.variant_gdas:
                 return F.gumbel_softmax(
                     self.memory_query_alphas, tau=tau, hard=True, dim=0
                 )
@@ -750,7 +750,7 @@ class MixedDecoder(nn.Module):
                 self.memory_query_alphas, tau=tau, hard=False, dim=0
             )
         probs = F.softmax(self.memory_query_alphas / tau, dim=0)
-        if self.single_path_search:
+        if self.variant_gdas:
             hard = torch.zeros_like(probs)
             hard[int(torch.argmax(probs).item())] = 1.0
             return hard
@@ -784,7 +784,7 @@ class MixedDecoder(nn.Module):
                     pooled, self.default_memory_num_queries
                 )
 
-            if self.training and self.single_path_search:
+            if self.training and self.variant_gdas:
                 chosen = int(torch.argmax(memory_weights.detach()).item())
                 pooled = self.memory_pool_bridges[chosen](source)
                 pooled = self._resize_memory_queries(

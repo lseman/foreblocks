@@ -1,3 +1,9 @@
+"""Small utility blocks and normalization helpers.
+
+This module provides lightweight normalization, gated residual network, and
+activation factory helpers used across foreblocks models.
+"""
+
 import math
 
 import torch

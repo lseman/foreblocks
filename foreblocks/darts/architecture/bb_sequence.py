@@ -233,7 +233,7 @@ class BaseMixedSequenceBlock(nn.Module):
         temperature: float = 1.0,
         num_layers: int = 2,
         num_options: int = 3,
-        single_path_search: bool = True,
+        variant_gdas: bool = True,
         arch_path_keep_prob: float = 0.85,
     ):
         super().__init__()
@@ -243,7 +243,7 @@ class BaseMixedSequenceBlock(nn.Module):
         self.dropout = dropout
         self.temperature = temperature
         self.num_layers = num_layers
-        self.single_path_search = single_path_search
+        self.variant_gdas = variant_gdas
         self.arch_path_keep_prob = float(min(max(arch_path_keep_prob, 0.0), 1.0))
         self._warned_no_grad_sampling = False
 
@@ -289,7 +289,7 @@ class BaseMixedSequenceBlock(nn.Module):
             return False
         if torch.is_grad_enabled():
             return True
-        if self.single_path_search and not self._warned_no_grad_sampling:
+        if self.variant_gdas and not self._warned_no_grad_sampling:
             warnings.warn(
                 "Single-path architecture sampling requested while model is in train() "
                 "but gradients are disabled. Falling back to deterministic softmax. "
@@ -313,7 +313,7 @@ class BaseMixedSequenceBlock(nn.Module):
         logits = self._get_layer_arch_logits()
         tau = max(float(self.temperature), 1e-3)
         if self._should_use_stochastic_arch_sampling():
-            if self.single_path_search:
+            if self.variant_gdas:
                 weights = self._sample_straight_through_gumbel(logits, tau=tau, dim=-1)
             else:
                 weights = F.gumbel_softmax(logits, tau=tau, hard=False, dim=-1)
@@ -322,7 +322,7 @@ class BaseMixedSequenceBlock(nn.Module):
 
         if (
             self.training
-            and self.single_path_search
+            and self.variant_gdas
             and torch.is_grad_enabled()
             and self.arch_path_keep_prob < 1.0
         ):

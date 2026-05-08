@@ -24,10 +24,16 @@ from .dispatchers import DroplessPackedDispatcher, ExpertChoiceDispatcher
 from .expert_blocks import MoE_FFNExpert, MoE_SwiGLUExpert, MTPHead
 from .moe_utils import (
     autocast_bf16_enabled as _autocast_bf16_enabled,
+)
+from .moe_utils import (
     eager_topk_routing,
     maybe_compile,
     optimized_topk_routing,
+)
+from .moe_utils import (
     should_fallback_router_topk as _should_fallback_router_topk,
+)
+from .moe_utils import (
     supports_grouped_prepacked as _supports_grouped_prepacked,
 )
 from .routers import (
@@ -40,7 +46,6 @@ from .routers import (
     StraightThroughTopKRouter,
 )
 
-
 # Optional import: adjust to your package path
 try:
     from .moe_logging import MoELogger  # type: ignore
@@ -50,8 +55,10 @@ except Exception:
 # Optional grouped kernel path (can accept prepacked B* if your wrapper supports)
 try:
     # Prefer a wrapper that accepts B12_cat_prepacked / B3_cat_prepacked
-    from ..compute.kernels import fused_router_topk  # type: ignore
-    from ..compute.kernels import grouped_mlp_swiglu
+    from ..compute.kernels import (
+        fused_router_topk,  # type: ignore
+        grouped_mlp_swiglu,
+    )
 except Exception:
     grouped_mlp_swiglu = None  # fallback uses Python loop
     fused_router_topk = None  # type: ignore
@@ -229,6 +236,7 @@ class MoEFeedForwardDMoE(nn.Module):
         self.num_experts = num_experts
         self.num_shared = num_shared
         self.num_routed_experts = num_routed
+        self.use_swiglu = bool(use_swiglu)
         self.top_k = top_k
         self.routing_mode = routing_mode
         self.expert_choice_tokens_per_expert = (
@@ -658,20 +666,66 @@ class MoEFeedForwardDMoE(nn.Module):
         ):
             # Shared experts (always-on), computed for all tokens
             if self.num_shared > 0:
-                shared_out = torch.zeros_like(x_flat)
-                shared_list = []
-                for s_idx, s_exp in enumerate(self.shared_experts):
-                    y = s_exp(x_flat)
-                    scale = self.shared_scale[s_idx]
-                    y = y * scale
-                    shared_out.add_(y)
-                    if self.shared_combine == "concat":
-                        shared_list.append(y)
-                shared_cat = (
-                    torch.cat(shared_list, dim=-1)
-                    if self.shared_combine == "concat"
-                    else None
+                # Batched path: pack all-tokens repeated num_shared times into
+                # a single grouped_mlp_swiglu call, avoiding sequential launches.
+                # Requires SwiGLU experts, add-combine, and the grouped kernel.
+                _can_batch_shared = (
+                    self.num_shared > 1
+                    and self.use_swiglu
+                    and self.use_grouped_kernel
+                    and grouped_mlp_swiglu is not None
+                    and x_flat.is_cuda
+                    and self.shared_combine == "add"
                 )
+                if _can_batch_shared:
+                    T_flat = x_flat.size(0)
+                    packed_sh = x_flat.repeat(self.num_shared, 1)  # [num_shared*T, D]
+                    offsets_sh = (
+                        torch.arange(
+                            self.num_shared + 1,
+                            device=x_flat.device,
+                            dtype=torch.int32,
+                        )
+                        * T_flat
+                    )
+                    # Unwrap torch.compile wrappers so weight extraction works
+                    sh_experts = [
+                        getattr(e, "_orig_mod", e) for e in self.shared_experts
+                    ]
+                    sh_dp = getattr(sh_experts[0], "dropout_p", 0.0)
+                    packed_sh_y = grouped_mlp_swiglu(
+                        packed_sh,
+                        offsets_sh,
+                        sh_experts,
+                        dropout_p=sh_dp,
+                        training=self.training,
+                        out_dtype=x_flat.dtype,
+                        use_fp16_acc=self.triton_use_fp16_acc,
+                        use_shared_b=self.triton_use_shared_b,
+                        allow_triton_training=True,
+                    )
+                    shared_chunks = packed_sh_y.view(
+                        self.num_shared, T_flat, self.d_model
+                    )  # [num_shared, T, D]
+                    shared_out = (
+                        shared_chunks * self.shared_scale.view(self.num_shared, 1, 1)
+                    ).sum(0)  # [T, D]
+                    shared_cat = None
+                else:
+                    shared_out = torch.zeros_like(x_flat)
+                    shared_list = []
+                    for s_idx, s_exp in enumerate(self.shared_experts):
+                        y = s_exp(x_flat)
+                        scale = self.shared_scale[s_idx]
+                        y = y * scale
+                        shared_out.add_(y)
+                        if self.shared_combine == "concat":
+                            shared_list.append(y)
+                    shared_cat = (
+                        torch.cat(shared_list, dim=-1)
+                        if self.shared_combine == "concat"
+                        else None
+                    )
             else:
                 shared_out = None
                 shared_cat = None
@@ -1040,8 +1094,3 @@ class MoEFeedForwardDMoE(nn.Module):
             )
         except Exception:
             pass
-
-
-# -----------------------------------------------------------------------------
-# Backward-compatibility re-exports (FF moved to foreblocks.tf.ff)
-# -----------------------------------------------------------------------------

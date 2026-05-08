@@ -1,5 +1,5 @@
 import inspect
-import warnings
+import logging
 from typing import Any
 
 import numpy as np
@@ -52,10 +52,31 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         # Track feature creation statistics
         self.feature_stats_ = {}
 
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(
+            getattr(logging, str(self.config.log_level).upper(), logging.INFO)
+        )
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            self.logger.addHandler(handler)
+
     def _resolve_backend(self) -> str:
         backend = str(getattr(self.config, "backend", "auto")).lower()
         allowed = {"auto", "linear", "tree", "gbdt", "neural"}
-        return backend if backend in allowed else "auto"
+        if backend not in allowed:
+            self._log(
+                f"Unknown backend '{backend}', falling back to 'auto'",
+                level="warning",
+            )
+            return "auto"
+        return backend
+
+    def _log(self, message: str, level: str = "info") -> None:
+        if not getattr(self.config, "verbose", True):
+            return
+        log_fn = getattr(self.logger, level, self.logger.info)
+        log_fn(f"[FeatureEngineer] {message}")
 
     def _is_transformer_enabled(self, name: str, flag: str) -> bool:
         if not getattr(self.config, flag, False):
@@ -163,30 +184,31 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         if y is not None:
             y = pd.Series(y) if not isinstance(y, pd.Series) else y.copy()
 
-        print(
-            f"🚀 Fitting SOTA Feature Engineer on {X.shape[0]} rows, {X.shape[1]} columns"
+        self._log(
+            f"🚀 Fitting FeatureEngineer on {X.shape[0]} rows, {X.shape[1]} columns"
         )
         self.feature_stats_ = {}
 
-        # Initialize enabled transformers in a deterministic order
         self.transformers_ = self._build_transformers()
-
-        # Fit transformers sequentially
         current_X = X.copy()
+
         for name, transformer in self.transformers_.items():
-            print(f"🔧 Fitting {name} transformer...")
-            # try:
-            transformer.fit(current_X, y)
-            # Update current_X with new features for next transformer
-            transformed = self._transform_with_optional_y(transformer, current_X, y)
-            if not transformed.empty:
-                current_X = pd.concat([current_X, transformed], axis=1)
-                self.feature_stats_[name] = transformed.shape[1]
-            else:
+            self._log(f"🔧 Fitting {name} transformer...")
+            try:
+                transformer.fit(current_X, y)
+                transformed = self._transform_with_optional_y(transformer, current_X, y)
+                if transformed is not None and not transformed.empty:
+                    current_X = pd.concat([current_X, transformed], axis=1)
+                    self.feature_stats_[name] = transformed.shape[1]
+                else:
+                    self.feature_stats_[name] = 0
+            except Exception as exc:
+                self.logger.warning(
+                    f"Transformer '{name}' failed: {exc}. Skipping this step."
+                )
                 self.feature_stats_[name] = 0
 
-        # Apply correlation filtering
-        print("🔍 Applying correlation filtering...")
+        self._log("🔍 Applying correlation filtering...")
         self.correlation_filter_ = CorrelationFilter(
             threshold=self.config.corr_threshold,
             method=getattr(self.config, "corr_filter_method", "variance"),
@@ -201,7 +223,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
         # Feature selection
         if y is not None and not current_X.empty:
-            print("🎯 Performing feature selection...")
+            self._log("🎯 Performing feature selection...")
             self.selector_ = FeatureSelector(self.config)
             self.selector_.fit(current_X, y)
             selected_features = self.selector_.get_selected_features()
@@ -220,9 +242,14 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                     X_filled = current_X.fillna(current_X.median())
                     self.final_scaler_.fit(X_filled)
 
-                print(f"✅ Selected {len(selected_features)} features after filtering")
+                self._log(
+                    f"✅ Selected {len(selected_features)} features after filtering"
+                )
             else:
-                print("⚠️  No features selected - pipeline may need tuning")
+                self._log(
+                    "⚠️  No features selected - pipeline may need tuning",
+                    level="warning",
+                )
 
         # Print feature creation summary
         self.output_features_ = current_X.columns.tolist()
@@ -232,6 +259,21 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
         self.fitted_ = True
         return self
+
+    def get_summary(self) -> dict[str, Any]:
+        """Return a dictionary summarizing the fitted pipeline."""
+        return {
+            "backend": self._resolve_backend(),
+            "feature_stats": self.feature_stats_.copy(),
+            "output_features": self.output_features_.copy(),
+            "selected_features": self.selector_.get_selected_features()
+            if self.selector_
+            else [],
+            "correlation_dropped": len(self.correlation_filter_.features_to_drop_)
+            if self.correlation_filter_
+            else 0,
+            "final_scaler": self.final_scaler_ is not None,
+        }
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Transform data using the fitted pipeline."""
@@ -243,10 +285,10 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         for name, transformer in self.transformers_.items():
             try:
                 transformed = transformer.transform(current_X)
-                if not transformed.empty:
+                if transformed is not None and not transformed.empty:
                     current_X = pd.concat([current_X, transformed], axis=1)
             except Exception as e:
-                warnings.warn(f"Transform failed for {name}: {e}")
+                self.logger.warning(f"Transform failed for {name}: {e}")
 
         # Apply correlation filtering
         if self.correlation_filter_ is not None:
@@ -289,28 +331,26 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         return current_X if not current_X.empty else pd.DataFrame(index=X.index)
 
     def _print_feature_summary(self):
-        """Print summary of feature creation."""
-        print("\n📈 Feature Creation Summary:")
-        print("-" * 40)
-        total_features = 0
+        """Log summary of feature creation."""
+        total_features = sum(self.feature_stats_.values())
+        self._log("\n📈 Feature Creation Summary:")
+        self._log("-" * 40)
         for name, count in self.feature_stats_.items():
-            print(f"{name.title():<15}: {count:>4} features")
-            total_features += count
-        print("-" * 40)
-        print(f"{'Total':<15}: {total_features:>4} features")
+            self._log(f"{name.title():<15}: {count:>4} features")
+        self._log("-" * 40)
+        self._log(f"{'Total':<15}: {total_features:>4} features")
 
         if self.correlation_filter_:
             dropped = len(self.correlation_filter_.features_to_drop_)
-            print(f"{'Corr. Dropped':<15}: {dropped:>4} features")
+            self._log(f"{'Corr. Dropped':<15}: {dropped:>4} features")
 
         if self.selector_:
             selected = len(self.selector_.get_selected_features())
-            print(f"{'Final Selected':<15}: {selected:>4} features")
-
-            # Show selection method used if RFECV was used
+            self._log(f"{'Final Selected':<15}: {selected:>4} features")
             if hasattr(self.selector_, "selection_method_"):
-                print(f"{'Selection Method':<15}: {self.selector_.selection_method_}")
-        print()
+                self._log(
+                    f"{'Selection Method':<15}: {self.selector_.selection_method_}"
+                )
 
     def get_feature_importance(self) -> pd.Series | None:
         """Get feature importance from feature selection analysis."""
@@ -328,7 +368,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
         importance_scores = self.get_feature_importance()
         if importance_scores is None:
-            print("❌ No feature importance scores available.")
+            self.logger.warning("❌ No feature importance scores available.")
             return
 
         top_scores = importance_scores.head(top_k)
@@ -405,4 +445,4 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         ):
             self.selector_.rfecv_selector_.plot_cv_scores(**kwargs)
         else:
-            print("RFECV was not used or is not available for plotting.")
+            self.logger.warning("RFECV was not used or is not available for plotting.")

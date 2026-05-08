@@ -1,3 +1,9 @@
+"""KAN model definitions, normalization, and patching utilities.
+
+Includes RevIN normalization and the core KAN forecasting model used by
+the poly-analogy ensemble architecture.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -23,6 +29,12 @@ def compute_patch_num(
 
 
 class RevIN(nn.Module):
+    """Reversible instance normalization for time series.
+
+    Normalizes each series independently and supports reversing the transform
+    for forecast outputs.
+    """
+
     def __init__(
         self,
         num_features: int,
@@ -74,6 +86,12 @@ class RevIN(nn.Module):
 
 
 class Model(nn.Module):
+    """Core KAN forecasting model.
+
+    Builds a patch-based forecasting architecture with optional polynomial,
+    Jacobi, and wavelet basis components.
+    """
+
     def __init__(
         self,
         c_in: int,

@@ -1,3 +1,9 @@
+"""Causal temporal convolution blocks for foreblocks.
+
+This module provides dilated temporal convolutional layers and causal
+padding helpers for sequence modeling.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -128,9 +134,9 @@ class TCNPlus(nn.Module):
                 dilation *= 2
 
         # Skip aggregation (1×1 per block)
-        self.skip_projs = nn.ModuleList(
-            [nn.Conv1d(hidden_dim, hidden_dim, 1, bias=False) for _ in self.blocks]
-        )
+        self.skip_projs = nn.ModuleList([
+            nn.Conv1d(hidden_dim, hidden_dim, 1, bias=False) for _ in self.blocks
+        ])
         if use_weight_norm:
             for m in self.skip_projs:
                 nn.utils.weight_norm(m)

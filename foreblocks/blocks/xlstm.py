@@ -1,3 +1,9 @@
+"""xLSTM building blocks and recurrent sequence models.
+
+This module implements sLSTM layers and multi-layer recurrent building blocks
+for long-context time series prediction.
+"""
+
 import math
 
 import torch
@@ -6,7 +12,6 @@ from torch import Tensor
 
 from foreblocks.blocks.enc_dec import DecoderBase, EncoderBase
 from foreblocks.ui.node_spec import node
-
 
 # ==============================================================
 # Utilities
@@ -295,17 +300,15 @@ class sLSTMEncoder(EncoderBase):
         self.num_layers = num_layers
         self.forget_as_exp = forget_as_exp
 
-        self.layers = nn.ModuleList(
-            [
-                sLSTMLayer(
-                    input_size if layer_idx == 0 else hidden_size,
-                    hidden_size,
-                    bias=True,
-                    forget_as_exp=forget_as_exp,
-                )
-                for layer_idx in range(num_layers)
-            ]
-        )
+        self.layers = nn.ModuleList([
+            sLSTMLayer(
+                input_size if layer_idx == 0 else hidden_size,
+                hidden_size,
+                bias=True,
+                forget_as_exp=forget_as_exp,
+            )
+            for layer_idx in range(num_layers)
+        ])
         self.dropout_layer = (
             nn.Dropout(dropout) if (dropout and num_layers > 1) else nn.Identity()
         )
@@ -406,17 +409,15 @@ class sLSTMDecoder(DecoderBase):
         self.output_size = output_size
         self.num_layers = num_layers
 
-        self.layers = nn.ModuleList(
-            [
-                sLSTMLayer(
-                    input_size if layer_idx == 0 else hidden_size,
-                    hidden_size,
-                    bias=True,
-                    forget_as_exp=forget_as_exp,
-                )
-                for layer_idx in range(num_layers)
-            ]
-        )
+        self.layers = nn.ModuleList([
+            sLSTMLayer(
+                input_size if layer_idx == 0 else hidden_size,
+                hidden_size,
+                bias=True,
+                forget_as_exp=forget_as_exp,
+            )
+            for layer_idx in range(num_layers)
+        ])
         self.dropout_layer = (
             nn.Dropout(dropout) if (dropout and num_layers > 1) else nn.Identity()
         )
@@ -529,16 +530,14 @@ class mLSTMEncoder(EncoderBase):
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
 
-        self.layers = nn.ModuleList(
-            [
-                mLSTMLayer(
-                    input_size if layer_idx == 0 else hidden_size,
-                    hidden_size,
-                    num_heads=num_heads,
-                )
-                for layer_idx in range(num_layers)
-            ]
-        )
+        self.layers = nn.ModuleList([
+            mLSTMLayer(
+                input_size if layer_idx == 0 else hidden_size,
+                hidden_size,
+                num_heads=num_heads,
+            )
+            for layer_idx in range(num_layers)
+        ])
         self.dropout_layer = (
             nn.Dropout(dropout) if (dropout and num_layers > 1) else nn.Identity()
         )
@@ -634,16 +633,14 @@ class mLSTMDecoder(DecoderBase):
         self.head_dim = hidden_size // num_heads
         self.num_layers = num_layers
 
-        self.layers = nn.ModuleList(
-            [
-                mLSTMLayer(
-                    input_size if layer_idx == 0 else hidden_size,
-                    hidden_size,
-                    num_heads=num_heads,
-                )
-                for layer_idx in range(num_layers)
-            ]
-        )
+        self.layers = nn.ModuleList([
+            mLSTMLayer(
+                input_size if layer_idx == 0 else hidden_size,
+                hidden_size,
+                num_heads=num_heads,
+            )
+            for layer_idx in range(num_layers)
+        ])
         self.dropout_layer = (
             nn.Dropout(dropout) if (dropout and num_layers > 1) else nn.Identity()
         )

@@ -1,3 +1,9 @@
+"""Popular forecasting block implementations for foreblocks.
+
+This module provides N-BEATS blocks for interpretable time series forecasting
+and related basis/block components.
+"""
+
 import math
 
 import torch
@@ -67,9 +73,9 @@ class NBEATSBlock(nn.Module):
             self.hidden_layer = make_hidden_layer()
             self.hidden_blocks = None
         else:
-            self.hidden_blocks = nn.ModuleList(
-                [make_hidden_layer() for _ in range(stack_layers - 1)]
-            )
+            self.hidden_blocks = nn.ModuleList([
+                make_hidden_layer() for _ in range(stack_layers - 1)
+            ])
             self.hidden_layer = None
 
         # Theta coefficients
@@ -168,22 +174,20 @@ class NBEATS(nn.Module):
         use_layernorm: bool = False,
     ):
         super().__init__()
-        self.blocks = nn.ModuleList(
-            [
-                NBEATSBlock(
-                    input_size=input_size,
-                    basis_size=horizon,
-                    theta_size=theta_size,
-                    hidden_size=hidden_size,
-                    stack_layers=stack_layers,
-                    activation=activation,
-                    share_weights_across_layers=share_weights_in_block,
-                    dropout=dropout,
-                    use_layernorm=use_layernorm,
-                )
-                for _ in range(n_blocks)
-            ]
-        )
+        self.blocks = nn.ModuleList([
+            NBEATSBlock(
+                input_size=input_size,
+                basis_size=horizon,
+                theta_size=theta_size,
+                hidden_size=hidden_size,
+                stack_layers=stack_layers,
+                activation=activation,
+                share_weights_across_layers=share_weights_in_block,
+                dropout=dropout,
+                use_layernorm=use_layernorm,
+            )
+            for _ in range(n_blocks)
+        ])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

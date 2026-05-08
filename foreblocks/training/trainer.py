@@ -36,13 +36,13 @@ except ImportError:
 
 # Optional: import your MoE classes and HeadComposer
 try:
-    from foreblocks.tf.experts.moe import MoEFeedForwardDMoE
-    from foreblocks.tf.experts.moe_logging import (
+    from foreblocks.transformer.moe.experts.moe import MoEFeedForwardDMoE
+    from foreblocks.transformer.moe.experts.moe_logging import (
         MoELogger,
         ReportInputs,
         build_moe_report,
     )
-    from foreblocks.tf.ff import FeedForwardBlock
+    from foreblocks.transformer.moe.ff import FeedForwardBlock
 except Exception:
     MoELogger = None
     ReportInputs = None

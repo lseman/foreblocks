@@ -1,3 +1,9 @@
+"""High-performance hybrid Mamba layers for GPU-accelerated models.
+
+This module contains custom convolution and attention primitives used by
+hybrid Mamba model implementations.
+"""
+
 from __future__ import annotations
 
 import math
@@ -13,7 +19,6 @@ from .ops import (
     grouped_ssd_scan,
     selective_scan,
 )
-
 
 # ---------------------------------------------------------------------------
 # Primitives
@@ -895,20 +900,18 @@ class TinyHybridMambaLM(nn.Module):
     ):
         super().__init__()
         self.embed = nn.Embedding(vocab_size, d_model)
-        self.blocks = nn.ModuleList(
-            [
-                HybridMambaBlock(
-                    d_model=d_model,
-                    d_inner=2 * d_model,
-                    d_state=d_state,
-                    d_conv=d_conv,
-                    dt_rank=dt_rank,
-                    use_cuda_scan=True,
-                    use_pre_norm=use_pre_norm,
-                )
-                for _ in range(n_layers)
-            ]
-        )
+        self.blocks = nn.ModuleList([
+            HybridMambaBlock(
+                d_model=d_model,
+                d_inner=2 * d_model,
+                d_state=d_state,
+                d_conv=d_conv,
+                dt_rank=dt_rank,
+                use_cuda_scan=True,
+                use_pre_norm=use_pre_norm,
+            )
+            for _ in range(n_layers)
+        ])
         self._has_ffn: list[bool] = [
             mlp_every_n > 0 and (i + 1) % mlp_every_n == 0 for i in range(n_layers)
         ]

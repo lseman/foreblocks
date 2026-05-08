@@ -1,7 +1,7 @@
 import torch
 
-from foreblocks.tf.ff import FeedForwardBlock
-from foreblocks.tf.experts import moe
+from foreblocks.transformer.moe.ff import FeedForwardBlock
+from foreblocks.transformer.moe.experts import moe
 
 
 def test_latent_moe_preserves_output_shape_and_aux():

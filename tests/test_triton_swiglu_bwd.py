@@ -12,7 +12,7 @@ def _ref_swiglu(a, b):
 
 
 def test_forward_unchanged():
-    from foreblocks.tf.compute.triton_helpers import swiglu_gate
+    from foreblocks.transformer.compute.triton_helpers import swiglu_gate
     torch.manual_seed(1)
     a = torch.randn(2, 8, 64, device="cuda")
     b = torch.randn(2, 8, 64, device="cuda")
@@ -22,7 +22,7 @@ def test_forward_unchanged():
 
 
 def test_backward_matches_pytorch():
-    from foreblocks.tf.compute.triton_helpers import TritonSwiGLUGate
+    from foreblocks.transformer.compute.triton_helpers import TritonSwiGLUGate
     torch.manual_seed(2)
     B, T, D = 2, 8, 64
     a_ref = torch.randn(B, T, D, device="cuda", requires_grad=True)
@@ -38,7 +38,7 @@ def test_backward_matches_pytorch():
 
 
 def test_gradcheck_float32():
-    from foreblocks.tf.compute.triton_helpers import TritonSwiGLUGate
+    from foreblocks.transformer.compute.triton_helpers import TritonSwiGLUGate
     B, T, D = 1, 2, 16
     a = torch.randn(B, T, D, device="cuda", dtype=torch.float32, requires_grad=True)
     b = torch.randn(B, T, D, device="cuda", dtype=torch.float32, requires_grad=True)
@@ -48,7 +48,7 @@ def test_gradcheck_float32():
 
 
 def test_only_a_and_b_saved():
-    from foreblocks.tf.compute.triton_helpers import TritonSwiGLUGate
+    from foreblocks.transformer.compute.triton_helpers import TritonSwiGLUGate
 
     saved = []
 

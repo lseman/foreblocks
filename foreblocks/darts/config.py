@@ -147,12 +147,15 @@ class DARTSTrainConfig:
     # commitment / skip-connection dominance by penalising large logit magnitudes.
     # Values in [5e-4, 2e-3] are a good starting range; 0.0 disables.
     beta_darts_weight: float = 0.0
-    # GDAS: when True, each MixedOp forward samples exactly one operation via
-    # Gumbel-Softmax (hard=True) with a straight-through gradient estimator.
-    # This reduces peak memory (only one op runs per edge) and shrinks the
-    # discretization gap between the mixed and the final fixed architecture.
-    # Mutually exclusive with use_drnas — GDAS takes precedence when both are set.
-    use_gdas: bool = False
+    # GDAS over DARTS-cell primitive ops: when True, each MixedOp forward
+    # samples exactly one operation (TimeConv, Fourier, …) via Gumbel-Softmax
+    # (hard=True) with a straight-through gradient estimator. Reduces peak
+    # memory (only one op runs per edge) and shrinks the discretization gap
+    # between the mixed and the final fixed architecture. Mutually exclusive
+    # with use_drnas — op_gdas takes precedence when both are set.
+    # Sibling knob: ``variant_gdas`` (on DARTSModelConfig) — GDAS over
+    # block-level variant choices (attention kernel, FFN mode, etc.).
+    op_gdas: bool = False
     # Lightweight DARTS-local MoE routing balance regularizer. Encourages
     # routed experts to be used more evenly without adding full MoE aux-loss
     # machinery.
@@ -189,7 +192,7 @@ class FinalTrainConfig:
 
 
 @dataclass
-class MultiFildelitySearchConfig:
+class MultiFidelitySearchConfig:
     """Hyperparameters for the multi-fidelity NAS search pipeline."""
 
     num_candidates: int = 10
@@ -296,8 +299,8 @@ class DARTSConfig:
     space: DARTSSearchSpaceConfig = field(default_factory=DARTSSearchSpaceConfig)
     train: DARTSTrainConfig = field(default_factory=DARTSTrainConfig)
     final: FinalTrainConfig = field(default_factory=FinalTrainConfig)
-    search: MultiFildelitySearchConfig = field(
-        default_factory=MultiFildelitySearchConfig
+    search: MultiFidelitySearchConfig = field(
+        default_factory=MultiFidelitySearchConfig
     )
     ablation: AblationSearchConfig = field(default_factory=AblationSearchConfig)
     robust_pool: RobustPoolSearchConfig = field(default_factory=RobustPoolSearchConfig)
@@ -311,5 +314,6 @@ class DARTSConfig:
         return self.device
 
 
-# Corrected spelling alias (original had a typo: "Fidelity" was "Fidelity")
-MultiFidelitySearchConfig = MultiFildelitySearchConfig
+# Deprecated: misspelled alias kept for backwards compatibility. Use
+# ``MultiFidelitySearchConfig`` in new code.
+MultiFildelitySearchConfig = MultiFidelitySearchConfig

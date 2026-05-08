@@ -1,6 +1,5 @@
 import torch
 
-
 try:
     import triton
     import triton.language as tl
@@ -136,3 +135,54 @@ def triton_apply_rope(
     out_q = _triton_apply_rope_single(q, cos_s, sin_s, block_t)
     out_k = _triton_apply_rope_single(k, cos_s, sin_s, block_t)
     return out_q, out_k
+
+
+def triton_apply_rope_bthd(
+    x: torch.Tensor,  # [B, T, H, D]
+    cos: torch.Tensor,  # [T, D//2]
+    sin: torch.Tensor,  # [T, D//2]
+    seqlen_offset: int = 0,
+    block_t: int = 16,
+) -> torch.Tensor:
+    """
+    Apply RoPE to x in [B, T, H, D] layout using stride remapping — no transpose.
+
+    The underlying kernel is launched with grid (B, H, T_blocks) and the
+    time/head strides are swapped relative to the BHTD variant, avoiding
+    any extra memory copies.
+    """
+    if not _TRITON_AVAILABLE:
+        raise RuntimeError("Triton is not available")
+    if not x.is_cuda:
+        raise RuntimeError("Triton RoPE requires CUDA tensors")
+    if cos.dim() != 2 or sin.dim() != 2:
+        raise ValueError("triton_apply_rope_bthd expects 2D cos/sin caches")
+
+    B, T, H, D = x.shape
+    if D % 2 != 0:
+        raise ValueError("RoPE head_dim must be even")
+
+    cos_s = cos[seqlen_offset : seqlen_offset + T].contiguous()
+    sin_s = sin[seqlen_offset : seqlen_offset + T].contiguous()
+
+    out = torch.empty_like(x)
+    half_d = D // 2
+    grid = (B, H, triton.cdiv(T, block_t))
+
+    _rope_apply_kernel[grid](
+        x,
+        cos_s,
+        sin_s,
+        out,
+        stride_xb=x.stride(0),
+        stride_xh=x.stride(2),  # head is dim-2 in BTHD
+        stride_xt=x.stride(1),  # time is dim-1 in BTHD
+        stride_xd=x.stride(3),
+        stride_cos_t=cos_s.stride(0),
+        stride_cos_d=cos_s.stride(1),
+        T=T,
+        D=D,
+        HALF_D=half_d,
+        BLOCK_T=block_t,
+    )
+    return out

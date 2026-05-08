@@ -19,7 +19,8 @@ __all__ = [
     "DARTSSearchSpaceConfig",
     "DARTSTrainConfig",
     "FinalTrainConfig",
-    "MultiFildelitySearchConfig",
+    "MultiFidelitySearchConfig",
+    "MultiFildelitySearchConfig",  # deprecated alias; kept for backward compat
     "AblationSearchConfig",
     "RobustPoolSearchConfig",
     # Evaluation
@@ -43,6 +44,7 @@ def __getattr__(name):
         "DARTSSearchSpaceConfig": (".config", "DARTSSearchSpaceConfig"),
         "DARTSTrainConfig": (".config", "DARTSTrainConfig"),
         "FinalTrainConfig": (".config", "FinalTrainConfig"),
+        "MultiFidelitySearchConfig": (".config", "MultiFidelitySearchConfig"),
         "MultiFildelitySearchConfig": (".config", "MultiFildelitySearchConfig"),
         "AblationSearchConfig": (".config", "AblationSearchConfig"),
         "RobustPoolSearchConfig": (".config", "RobustPoolSearchConfig"),

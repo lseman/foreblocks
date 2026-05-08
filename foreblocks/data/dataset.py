@@ -1,3 +1,9 @@
+"""Dataset utilities for foreblocks time series training.
+
+Defines a lightweight PyTorch Dataset wrapper for time series inputs and
+convenience data loader construction helpers.
+"""
+
 from __future__ import annotations
 
 import numpy as np

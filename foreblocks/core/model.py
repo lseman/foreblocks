@@ -1,3 +1,9 @@
+"""Forecasting model wrappers and head composition utilities.
+
+This module defines the BaseHead wrapper and the ForecastingModel class used
+by foreblocks to assemble modular forecasting pipelines.
+"""
+
 from collections.abc import Callable
 from typing import Any
 
@@ -5,7 +11,6 @@ import torch
 import torch.nn as nn
 
 from foreblocks.ui.node_spec import node
-
 
 # =============================================================================
 # Base head wrapper

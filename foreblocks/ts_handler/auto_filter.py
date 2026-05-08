@@ -52,14 +52,22 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from PyEMD import CEEMDAN, EMD
 from scipy import signal
 from scipy.ndimage import gaussian_filter1d
 from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 from statsmodels.tsa.filters.hp_filter import hpfilter
 from statsmodels.tsa.holtwinters import SimpleExpSmoothing
-from vmdpy import VMD
 
+try:  # Optional adaptive-decomposition dependency.
+    from PyEMD import CEEMDAN, EMD
+except ImportError:  # pragma: no cover - exercised when dependency is absent.
+    CEEMDAN = None
+    EMD = None
+
+try:
+    from vmdpy import VMD
+except ImportError:  # pragma: no cover - exercised when dependency is absent.
+    VMD = None
 
 __all__ = [
     "auto_filter",
@@ -82,6 +90,7 @@ __all__ = [
     "train_dae",
     "filter_metrics",
     "tune_weights",
+    "suggest_weights",
     "plot_results",
 ]
 
@@ -1036,12 +1045,174 @@ def _unsupervised_proxy(
     return lb_norm[winner_idx] + rough_norm[winner_idx]
 
 
+def _clip01(value: float) -> float:
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _robust_scale(x: np.ndarray) -> float:
+    """MAD-based scale with a std fallback for near-constant signals."""
+    x = np.asarray(x, dtype=float)
+    mad = float(np.median(np.abs(x - np.median(x))))
+    scale = 1.4826 * mad
+    if scale <= 1e-12:
+        scale = float(np.std(x))
+    return max(scale, 1e-12)
+
+
+def _clean_signal_values(ts: pd.Series) -> np.ndarray:
+    values = pd.Series(ts, copy=False).astype(float).replace(
+        [np.inf, -np.inf], np.nan
+    )
+    if values.notna().any():
+        values = values.interpolate(limit_direction="both").ffill().bfill()
+    else:
+        values = values.fillna(0.0)
+    return values.to_numpy(dtype=float)
+
+
+def _signal_characteristics(x: np.ndarray) -> dict[str, float]:
+    """Robust, cheap signal diagnostics used by ``suggest_weights``."""
+    x = np.asarray(x, dtype=float).reshape(-1)
+    n = len(x)
+    if n < 4 or _robust_scale(x) <= 1e-12:
+        return {
+            "noise": 0.0,
+            "periodicity": 0.0,
+            "trend": 0.0,
+            "high_freq": 0.0,
+            "outliers": 0.0,
+        }
+
+    scale = _robust_scale(x)
+    centered = x - np.median(x)
+
+    # Robust white-noise proxy. For iid noise, std(diff2) ~= sqrt(6) * sigma.
+    diff2 = np.diff(centered, n=2)
+    noise_ratio = _robust_scale(diff2) / (np.sqrt(6.0) * scale)
+    noise = _clip01(noise_ratio / (noise_ratio + 0.65))
+
+    t = np.arange(n, dtype=float)
+    if n > 1:
+        t = (t - t.mean()) / max(float(t.std()), 1e-12)
+    try:
+        coeff = np.polyfit(t, x, 1)
+        trend_fit = np.polyval(coeff, t)
+        ss_res = float(np.sum((x - trend_fit) ** 2))
+        ss_tot = float(np.sum((x - x.mean()) ** 2))
+        trend = _clip01(1.0 - ss_res / max(ss_tot, 1e-12))
+    except Exception:
+        trend = 0.0
+        trend_fit = np.full_like(x, x.mean())
+
+    detrended = x - trend_fit
+    detrended -= detrended.mean()
+    if np.allclose(detrended, 0.0):
+        periodicity = 0.0
+        high_freq = 0.0
+    else:
+        freqs, power = signal.periodogram(
+            detrended,
+            scaling="spectrum",
+            detrend=False,
+        )
+        freqs = freqs[1:]
+        power = np.maximum(power[1:], 0.0)
+        total_power = float(power.sum())
+        if len(power) < 2 or total_power <= 1e-20:
+            periodicity = 0.0
+            high_freq = 0.0
+        else:
+            probs = power / total_power
+            entropy = float(-np.sum(probs * np.log(probs + 1e-12)))
+            entropy /= max(float(np.log(len(probs))), 1e-12)
+            peak_share = float(probs.max())
+            periodicity = _clip01(0.75 * (1.0 - entropy) + 0.25 * peak_share)
+            high_freq = _clip01(float(power[freqs >= 0.25].sum()) / total_power)
+
+    z = np.abs(centered) / scale
+    outliers = _clip01(float(np.mean(z > 3.5)) * 8.0)
+
+    return {
+        "noise": noise,
+        "periodicity": periodicity,
+        "trend": trend,
+        "high_freq": high_freq,
+        "outliers": outliers,
+    }
+
+
+def suggest_weights(ts: pd.Series) -> ScoringWeights:
+    """Heuristically suggest :class:`ScoringWeights` from signal characteristics.
+
+    The heuristic is intentionally cheap and deterministic, but it follows the
+    same broad tradeoffs used by modern unsupervised denoising objectives:
+    estimate structure, estimate high-frequency/noise pressure, then adjust the
+    multi-objective weights on the simplex.
+
+    Signal properties measured
+    --------------------------
+    noise
+        Robust MAD estimate from second differences. Noisier signals reduce
+        fidelity pressure because matching the raw series too closely preserves
+        noise.
+    periodicity
+        Low spectral entropy plus concentrated periodogram energy. Periodic
+        structure increases residual-whiteness and derivative-preservation
+        pressure.
+    trend
+        R2 of a linear fit. Trend-dominated signals increase shape preservation.
+    high_freq / outliers
+        Extra pressure to smooth when high-frequency energy or spikes dominate.
+
+    Examples
+    --------
+    >>> w = suggest_weights(ts_noisy)
+    >>> best_name, best_series, score_table = auto_filter(ts_noisy, weights=w)
+    """
+    x = _clean_signal_values(ts)
+    c = _signal_characteristics(x)
+    noise = c["noise"]
+    clean = 1.0 - noise
+    periodicity = c["periodicity"]
+    trend = c["trend"]
+    high_freq = c["high_freq"]
+    outliers = c["outliers"]
+
+    # These are positive evidence scores, not final probabilities. Normalising
+    # keeps the public ScoringWeights contract while making the mapping easy to
+    # reason about in tests and downstream notebooks.
+    w_fid = 0.42 + 0.25 * clean - 0.22 * noise - 0.10 * outliers
+    w_rough = 0.08 + 0.20 * noise + 0.08 * high_freq + 0.06 * outliers
+    w_resid = 0.20 + 0.18 * noise + 0.16 * periodicity + 0.06 * high_freq
+    w_deriv = (
+        0.25
+        + 0.16 * trend
+        + 0.12 * periodicity
+        + 0.10 * clean
+        - 0.08 * noise
+    )
+
+    raw = np.clip(
+        np.array([w_fid, w_rough, w_resid, w_deriv], dtype=float),
+        0.03,
+        None,
+    )
+    raw /= raw.sum()
+    return ScoringWeights(
+        fidelity_mse=float(raw[0]),
+        roughness=float(raw[1]),
+        residual_autocorr=float(raw[2]),
+        derivative_corr=float(raw[3]),
+    )
+
+
 def tune_weights(
     ts: pd.Series,
     n_trials: int = 100,
     fast: bool = True,
     seed: int = _SEED,
     verbose: bool = False,
+    warm_start: bool = True,
 ) -> ScoringWeights:
     """Auto-tune :class:`ScoringWeights` using Optuna (Bayesian TPE, unsupervised).
 
@@ -1069,6 +1240,10 @@ def tune_weights(
         Random seed for reproducibility.
     verbose:
         If False (default), Optuna logging is suppressed.
+    warm_start:
+        If True (default), enqueue the :func:`suggest_weights` heuristic as
+        the first Optuna trial so the TPE sampler starts from a signal-aware
+        point rather than a random one.
 
     Returns
     -------
@@ -1120,6 +1295,16 @@ def tune_weights(
 
     sampler = optuna.samplers.TPESampler(seed=seed)
     study = optuna.create_study(direction="minimize", sampler=sampler)
+
+    if warm_start:
+        sw = suggest_weights(ts)
+        study.enqueue_trial({
+            "w0": sw.fidelity_mse,
+            "w1": sw.roughness,
+            "w2": sw.residual_autocorr,
+            "w3": sw.derivative_corr,
+        })
+
     study.optimize(objective, n_trials=n_trials, show_progress_bar=verbose)
 
     best = study.best_params
