@@ -12,10 +12,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from .scoring import (
+from ..scoring import (
     normalize_metric_value as _normalize_metric_value_shared,
     score_from_metrics as _score_from_metrics_shared,
 )
+from .activation_diversity import compute_activation_diversity
+from .conditioning import compute_conditioning
+from .fisher import compute_fisher
+from .flops import compute_activation_flops, compute_flops
+from .grasp import compute_grasp
+from .jacobian import compute_jacobian
+from .naswot import compute_naswot
+from .params import compute_params
+from .sensitivity import compute_sensitivity
+from .snip import compute_snip
+from .synflow import compute_synflow
 
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -460,108 +471,13 @@ class MetricsComputer:
     def _compute_activation_metrics(
         self, activations, conv_linear_modules, relu_modules, flops_count
     ):
-        """Compute metrics that only need stored activations"""
+        """Compute metrics that only need stored activations."""
         results = {}
-
-        # ────────────────────────────────────────────────
-        # NASWOT kernel from binary activation agreements:
-        # K = B B^T + (1-B)(1-B)^T, then score = log|det(K)|.
-        # ────────────────────────────────────────────────
-        def _naswot():
-            total_logdet = 0.0
-            valid_layers = 0
-
-            for name, _ in conv_linear_modules:
-                if name not in activations:
-                    continue
-                act = activations[name]
-                if act.size(0) < 2:  # need at least 2 samples for meaningful kernel
-                    continue
-
-                try:
-                    flat = act.flatten(1)
-                    binary = (flat > 0).to(dtype=torch.float64)
-                    inv_binary = 1.0 - binary
-
-                    # Agreement-count kernel used by NASWOT.
-                    kernel = binary @ binary.t() + inv_binary @ inv_binary.t()
-                    kernel = 0.5 * (kernel + kernel.t())
-
-                    sign, logdet = torch.linalg.slogdet(kernel)
-                    if sign.item() <= 0 or not torch.isfinite(logdet):
-                        # Minimal jitter fallback for numerical stability only.
-                        eye = torch.eye(
-                            kernel.size(0), device=kernel.device, dtype=kernel.dtype
-                        )
-                        jitter = max(float(self.config.eps), 1e-12)
-                        stable = False
-                        for _ in range(6):
-                            sign, logdet = torch.linalg.slogdet(kernel + jitter * eye)
-                            if sign.item() > 0 and torch.isfinite(logdet):
-                                stable = True
-                                break
-                            jitter *= 10.0
-                        if not stable:
-                            continue
-
-                    total_logdet += float(logdet.item())
-                    valid_layers += 1
-                except RuntimeError:
-                    continue
-
-            if valid_layers == 0:
-                return 0.0
-            return total_logdet / valid_layers
-
-        results["naswot"] = self._compute_safely(_naswot)
-
-        # ────────────────────────────────────────────────
-        # Activation diversity proxy (non-canonical Zen-NAS):
-        # mean absolute pairwise cosine across layers.
-        # ────────────────────────────────────────────────
-        def _activation_diversity():
-            total_score = 0.0
-            valid_layers = 0
-
-            for name, _ in relu_modules:
-                if name not in activations:
-                    continue
-                act = activations[name]
-                if act.size(0) < 2:
-                    continue
-
-                try:
-                    flat = act.flatten(1)  # [B, features]
-                    norm = flat.norm(dim=1, keepdim=True).clamp_min(self.config.eps)
-                    normalized = flat / norm
-
-                    cos = normalized @ normalized.t()  # [B,B]
-                    eye = torch.eye(cos.size(0), device=cos.device, dtype=torch.bool)
-                    pairwise = cos.masked_fill(eye, 0.0)
-
-                    # Literature-style simple proxy: mean absolute pairwise cosine.
-                    denom = max(cos.numel() - cos.size(0), 1)
-                    score = pairwise.abs().sum() / denom
-
-                    if torch.isfinite(score):
-                        total_score += score.item()
-                        valid_layers += 1
-                except Exception:
-                    continue
-
-            if valid_layers == 0:
-                return 0.0
-            return total_score / valid_layers
-
-        results["activation_diversity"] = self._compute_safely(_activation_diversity)
-
-        # FLOPS remains unchanged (already reasonable)
-        def _flops():
-            total = sum(flops_count.values())
-            return max(total, 1.0)
-
-        results["flops"] = self._compute_safely(_flops)
-
+        results["naswot"] = compute_naswot(self, activations, conv_linear_modules)
+        results["activation_diversity"] = compute_activation_diversity(
+            self, activations, relu_modules
+        )
+        results["flops"] = compute_activation_flops(self, flops_count)
         return results
 
     def _compute_gradient_metrics(
@@ -640,228 +556,34 @@ class MetricsComputer:
                     else "current"
                 )
 
-            # ----- GRASP -----
-            def _grasp():
-                def _grasp_from_loss(
-                    loss_local: torch.Tensor,
-                    weights_local,
-                    *,
-                    retain_graph: bool,
-                ) -> float:
-                    grads_local = torch.autograd.grad(
-                        loss_local,
-                        weights_local,
-                        create_graph=True,
-                        retain_graph=True,
-                        allow_unused=True,
-                    )
-
-                    hvp_seed = torch.tensor(0.0, device=loss_local.device)
-                    valid_grads = 0
-                    for g in grads_local:
-                        if g is None or not torch.isfinite(g).all():
-                            continue
-                        # Seed for HVP: d/dw <g, stopgrad(g)> = H g
-                        hvp_seed = hvp_seed + (g * g.detach()).sum()
-                        valid_grads += 1
-
-                    if valid_grads == 0:
-                        return 0.0
-
-                    hgs_local = torch.autograd.grad(
-                        hvp_seed,
-                        weights_local,
-                        create_graph=False,
-                        retain_graph=retain_graph,
-                        allow_unused=True,
-                    )
-
-                    scores = []
-                    for hg, g in zip(hgs_local, grads_local):
-                        if hg is None or g is None:
-                            continue
-                        if not torch.isfinite(hg).all() or not torch.isfinite(g).all():
-                            continue
-                        score_item = (hg * g.detach()).sum().item()
-                        if np.isfinite(score_item):
-                            scores.append(float(score_item))
-
-                    if not scores:
-                        return 0.0
-
-                    # GRASP objective: - <H g, g>
-                    value = -sum(scores) / max(len(scores), 1)
-                    if not np.isfinite(value):
-                        return 0.0
-                    return float(value)
-
-                def _retry_with_safe_mode() -> float:
-                    model.zero_grad()
-                    x_retry = x.detach().clone().requires_grad_(True)
-                    y_retry = y.detach().clone()
-                    with self.helper.safe_mode(model):
-                        out_retry = model(x_retry)
-                    out_retry, y_retry_prep = self.helper.prepare_data(
-                        out_retry, y_retry
-                    )
-                    loss_retry = loss_fn(out_retry, y_retry_prep)
-
-                    if not torch.isfinite(loss_retry):
-                        return 0.0
-
-                    return _grasp_from_loss(
-                        loss_retry,
-                        weights,
-                        retain_graph=False,
-                    )
-
-                try:
-                    value = _grasp_from_loss(
-                        loss,
-                        weights,
-                        retain_graph=True,
-                    )
-                    if np.isfinite(value):
-                        return float(value)
-                    return _retry_with_safe_mode()
-                except RuntimeError as e:
-                    # Some backends (CuDNN RNN and certain SDPA kernels) do not
-                    # implement required second-order derivatives. Retry with a
-                    # fresh graph in compatibility mode (manual attention +
-                    # CuDNN disabled) instead of failing the metric entirely.
-                    if not self._is_backend_double_backward_error(e):
-                        raise
-
-                    try:
-                        return _retry_with_safe_mode()
-                    except RuntimeError as retry_error:
-                        # If both paths hit backend limits, keep search running.
-                        if self._is_backend_double_backward_error(retry_error):
-                            return 0.0
-                        raise
-                    except Exception:
-                        return 0.0
-
-            # ----- Fisher -----
-            def _fisher():
-                if not bool(getattr(self.config, "fisher_per_sample", True)):
-                    vals = [
-                        g.pow(2).sum().item()
-                        for g in grads_first_order
-                        if g is not None and torch.isfinite(g).all()
-                    ]
-                    if not vals:
-                        return 0.0
-                    return float(sum(vals) / max(len(vals), 1))
-
-                fisher_per_sample = []
-                x_f = x.detach()
-                y_f = y.detach()
-
-                for i in range(int(x_f.size(0))):
-                    xi = x_f[i : i + 1]
-                    yi = y_f[i : i + 1]
-                    out_i = model(xi)
-                    out_i, yi_prep = self.helper.prepare_data(out_i, yi)
-                    loss_i = loss_fn(out_i, yi_prep)
-                    if not torch.isfinite(loss_i):
-                        continue
-
-                    grads_i = torch.autograd.grad(
-                        loss_i,
-                        weights,
-                        create_graph=False,
-                        retain_graph=False,
-                        allow_unused=True,
-                    )
-
-                    vals_i = [
-                        gi.pow(2).sum().item()
-                        for gi in grads_i
-                        if gi is not None and torch.isfinite(gi).all()
-                    ]
-                    if vals_i:
-                        fisher_per_sample.append(sum(vals_i) / max(len(vals_i), 1))
-
-                if not fisher_per_sample:
-                    return 0.0
-                return float(sum(fisher_per_sample) / len(fisher_per_sample))
-
-            # ----- SNIP -----
-            def _snip():
-                if snip_mode == "current":
-                    snip_value = 0.0
-                    snip_count = 0
-                    for (n, p), g in zip(weight_params, grads_first_order):
-                        if "weight" not in n:
-                            continue
-                        if g is not None and torch.isfinite(g).all():
-                            snip_value += (g.detach() * p.detach()).abs().sum().item()
-                            snip_count += 1
-                    if snip_count == 0:
-                        return 0.0
-                    return snip_value / snip_count
-
-                state_backup = {
-                    k: v.detach().clone() for k, v in model.state_dict().items()
-                }
-                snip_value = 0.0
-                snip_count = 0
-                try:
-                    for module in model.modules():
-                        if hasattr(module, "reset_parameters"):
-                            module.reset_parameters()
-
-                    model.zero_grad()
-                    x0 = x.clone().detach().requires_grad_(True)
-                    y0 = y.clone().detach()
-
-                    outputs0 = model(x0)
-                    outputs0, y0_prep = self.helper.prepare_data(outputs0, y0)
-                    loss0 = loss_fn(outputs0, y0_prep)
-
-                    if not torch.isfinite(loss0):
-                        return 0.0
-
-                    init_weight_params = [
-                        (n, p)
-                        for n, p in model.named_parameters()
-                        if p.requires_grad and "weight" in n
-                    ]
-                    init_weights = [p for _, p in init_weight_params]
-
-                    init_grads = torch.autograd.grad(
-                        loss0,
-                        init_weights,
-                        create_graph=False,
-                        retain_graph=False,
-                        allow_unused=True,
-                    )
-
-                    for (_, p), g in zip(init_weight_params, init_grads):
-                        if g is not None and torch.isfinite(g).all():
-                            snip_value += (g * p).abs().sum().item()
-                            snip_count += 1
-                finally:
-                    model.load_state_dict(state_backup, strict=False)
-                    model.zero_grad()
-
-                if snip_count == 0:
-                    return 0.0
-                return snip_value / snip_count
-
-            results["grasp"] = self._compute_safely(_grasp)
-            results["fisher"] = self._compute_safely(_fisher)
-            if include_snip:
-                results["snip"] = self._compute_safely(_snip)
-
-            # Use the robust sensitivity implementation with finite-difference fallback.
+            results["grasp"] = self._compute_safely(
+                lambda: compute_grasp(self, model, x, y, loss, loss_fn, weights)
+            )
+            results["fisher"] = self._compute_safely(
+                lambda: compute_fisher(
+                    self, model, x, y, loss_fn, weights, grads_first_order
+                )
+            )
+            # Reuse the live shared graph before SNIP optionally resets weights.
             results["sensitivity"] = self.sensitivity(
                 model,
                 inputs,
                 shared_outputs=shared_outputs,
                 shared_inputs=shared_inputs,
             )
+            if include_snip:
+                results["snip"] = self._compute_safely(
+                    lambda: compute_snip(
+                        self,
+                        model,
+                        x,
+                        y,
+                        loss_fn,
+                        weight_params,
+                        grads_first_order,
+                        snip_mode,
+                    )
+                )
 
         finally:
             if not was_training:
@@ -874,51 +596,7 @@ class MetricsComputer:
 
     def _compute_synflow(self, model, inputs):
         """SynFlow score (original 2020 form): sum(|p * grad|)."""
-
-        def _compute():
-            was_training = model.training
-            params = [p for p in model.parameters() if p.requires_grad]
-            original_data = [p.detach().clone() for p in params]
-
-            try:
-                model.train()
-                # Linearize model weights (abs) while preserving architecture-dependent magnitudes.
-                with torch.no_grad():
-                    for p in params:
-                        p.abs_()
-
-                x = torch.ones_like(inputs[: self.config.max_samples])
-                model.zero_grad()
-                out = self._unwrap_output(model(x))
-                if out.dim() > 2:
-                    out = out.flatten(1)
-                out.sum().backward()
-
-                score_sum = 0.0
-                count = 0
-                for p in model.parameters():
-                    if p.grad is not None and p.requires_grad:
-                        contrib = (p * p.grad).abs().sum().item()
-                        if contrib > 0 and np.isfinite(contrib):
-                            score_sum += contrib
-                            count += 1
-
-                if count == 0:
-                    return 0.0
-
-                # Return the raw SynFlow score; downstream normalization handles scaling.
-                return float(score_sum)
-
-            finally:
-                # restore
-                with torch.no_grad():
-                    for p, p0 in zip(params, original_data):
-                        p.copy_(p0)
-                model.zero_grad()
-                if not was_training:
-                    model.eval()
-
-        return self._compute_safely(_compute)
+        return compute_synflow(self, model, inputs)
 
     def _compute_jacobian(
         self,
@@ -927,138 +605,14 @@ class MetricsComputer:
         shared_outputs: torch.Tensor | None = None,
         shared_inputs: torch.Tensor | None = None,
     ):
-        """
-        Jacobian trace approximation with multi-probe Hutchinson estimator.
-
-        Improvements over one-probe baseline:
-        - averages over multiple probes (lower variance)
-        - random output-dimension sampling (avoids fixed first-dim bias)
-
-        Returns log(Tr(JJ^T)/d_in).
-        """
-
-        def _compute():
-            was_training = model.training
-            model.train()
-            bs = min(inputs.size(0), self.config.max_samples)
-            try:
-                can_reuse_shared = (
-                    shared_inputs is not None
-                    and shared_outputs is not None
-                    and shared_inputs.requires_grad
-                    and shared_outputs.requires_grad
-                    and shared_inputs.size(0) >= bs
-                )
-
-                if can_reuse_shared:
-                    x = cast(torch.Tensor, shared_inputs)[:bs]
-                    out = cast(torch.Tensor, shared_outputs)[:bs]
-                else:
-                    x = inputs[:bs].detach().clone().requires_grad_(True)
-                    with self.helper.safe_mode(model):
-                        out = model(x)
-
-                out = self._unwrap_output(out)
-
-                if out is None or not out.requires_grad:
-                    return self._finite_difference_jacobian(model, inputs)
-
-                if out.dim() == 1:
-                    out = out.unsqueeze(1)
-                elif out.dim() > 2:
-                    out = out.flatten(1)
-
-                total_out = int(out.size(1))
-                if total_out < 1:
-                    return 0.0
-
-                d_out = min(total_out, int(self.config.max_outputs))
-                probes = max(1, int(getattr(self.config, "jacobian_probes", 2)))
-
-                trace_vals: list[float] = []
-                device = out.device
-
-                for probe_idx in range(probes):
-                    if d_out == total_out:
-                        idx = torch.arange(total_out, device=device)
-                    else:
-                        idx = torch.randperm(total_out, device=device)[:d_out]
-
-                    out_sel = out.index_select(1, idx)
-
-                    # Rademacher probe tends to be stable and low-variance
-                    v = torch.randint(
-                        0, 2, out_sel.shape, device=device, dtype=torch.int8
-                    )
-                    v = (v.to(out_sel.dtype) * 2.0) - 1.0
-
-                    (Jv,) = torch.autograd.grad(
-                        out_sel,
-                        x,
-                        v,
-                        retain_graph=(probe_idx < probes - 1),
-                        create_graph=False,
-                        allow_unused=True,
-                    )
-
-                    if Jv is None:
-                        continue
-
-                    trace_probe = (Jv.view(bs, -1) ** 2).sum(dim=1).mean().item()
-                    if np.isfinite(trace_probe):
-                        trace_vals.append(float(trace_probe))
-
-                if not trace_vals:
-                    return self._finite_difference_jacobian(model, inputs, d_out=d_out)
-
-                trace_est = float(np.mean(trace_vals))
-                d_in = max(int(x[0].numel()), 1)
-                normalized = trace_est / (d_in + self.config.eps)
-                return float(np.clip(np.log(normalized + self.config.eps), -12, 12))
-
-            except Exception as e:
-                # Robust fallback with fresh graph (avoids shared-graph lifetime issues).
-                try:
-                    x = inputs[:bs].detach().clone().requires_grad_(True)
-                    with self.helper.safe_mode(model):
-                        out = self._unwrap_output(model(x))
-
-                    if out.dim() == 1:
-                        out = out.unsqueeze(1)
-                    elif out.dim() > 2:
-                        out = out.flatten(1)
-
-                    d_out = min(int(out.size(1)), int(self.config.max_outputs))
-                    if d_out < 1:
-                        return 0.0
-
-                    out_sel = out[:, :d_out]
-                    v = torch.randint(0, 2, out_sel.shape, device=out_sel.device)
-                    v = (v.to(out_sel.dtype) * 2.0) - 1.0
-                    (Jv,) = torch.autograd.grad(
-                        out_sel,
-                        x,
-                        v,
-                        retain_graph=False,
-                        create_graph=False,
-                        allow_unused=True,
-                    )
-                    if Jv is None:
-                        return 0.0
-                    trace_est = (Jv.view(x.size(0), -1) ** 2).sum(dim=1).mean().item()
-                    d_in = max(int(x[0].numel()), 1)
-                    normalized = trace_est / (d_in + self.config.eps)
-                    return float(np.clip(np.log(normalized + self.config.eps), -12, 12))
-                except Exception:
-                    print(f"Jacobian failed: {str(e)}")
-                    return self._finite_difference_jacobian(model, inputs)
-
-            finally:
-                model.zero_grad()
-                if not was_training:
-                    model.eval()
-
-        return self._compute_safely(_compute)
+        """Jacobian trace approximation with multi-probe Hutchinson estimator."""
+        return compute_jacobian(
+            self,
+            model,
+            inputs,
+            shared_outputs=shared_outputs,
+            shared_inputs=shared_inputs,
+        )
 
     def _compute_safely(self, compute_fn):
         try:
@@ -1109,183 +663,16 @@ class MetricsComputer:
         return self._compute_gradient_metrics(model, inputs, targets)["snip"]
 
     def params(self, model: nn.Module) -> Result:
-        """Parameter count using fvcore if available"""
-
-        def _compute():
-            try:
-                fvcore_nn = importlib.import_module("fvcore.nn")
-                parameter_count = getattr(fvcore_nn, "parameter_count")
-                count_dict = parameter_count(model)
-                return sum(v for v in count_dict.values())
-            except Exception:
-                return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-        return self._compute_safely(_compute)
+        """Parameter count using fvcore if available."""
+        return compute_params(self, model)
 
     def conditioning(self, model: nn.Module) -> Result:
         """Conditioning estimate using exact or iterative singular-value bounds."""
-
-        def _compute():
-            log_conditions = []
-            every_n = max(
-                1, int(getattr(self.config, "conditioning_every_n_layers", 1))
-            )
-            min_out = int(getattr(self.config, "conditioning_min_out_features", 0))
-            iters = max(
-                2,
-                int(getattr(self.config, "conditioning_power_iters", 6)),
-            )
-            exact_max_dim = max(
-                8, int(getattr(self.config, "conditioning_exact_max_dim", 256))
-            )
-            inverse_shift = max(
-                float(getattr(self.config, "conditioning_inverse_shift", 1e-6)),
-                self.config.eps,
-            )
-            eps = float(self.config.eps)
-            layer_idx = 0
-            for name, param in model.named_parameters():
-                if "weight" in name and param.dim() >= 2 and param.requires_grad:
-                    W = param.view(param.size(0), -1)
-                    if layer_idx % every_n != 0:
-                        layer_idx += 1
-                        continue
-                    if min_out > 0 and W.size(0) < min_out:
-                        layer_idx += 1
-                        continue
-                    layer_idx += 1
-                    if min(W.size()) > 1:
-                        try:
-                            # Use the smaller Gram matrix so we estimate non-zero singular values.
-                            if W.size(0) <= W.size(1):
-                                gram = W.matmul(W.t())
-                            else:
-                                gram = W.t().matmul(W)
-                            gram = gram.to(dtype=torch.float64)
-                            k = int(gram.size(0))
-                            if k < 2:
-                                continue
-
-                            if k <= exact_max_dim:
-                                eigvals = torch.linalg.eigvalsh(gram)
-                                lambda_min = float(
-                                    torch.clamp(eigvals[0], min=eps).item()
-                                )
-                                lambda_max = float(
-                                    torch.clamp(eigvals[-1], min=eps).item()
-                                )
-                            else:
-                                # Power iteration for largest eigenvalue.
-                                v = torch.randn(k, device=gram.device, dtype=gram.dtype)
-                                v = v / (v.norm() + eps)
-                                for _ in range(iters):
-                                    v = gram.matmul(v)
-                                    v = v / (v.norm() + eps)
-                                lambda_max = float(
-                                    torch.clamp(
-                                        torch.dot(v, gram.matmul(v)), min=eps
-                                    ).item()
-                                )
-
-                                # Shifted inverse iteration for smallest eigenvalue.
-                                trace_mean = float(torch.trace(gram).item() / max(k, 1))
-                                shift = max(inverse_shift * max(trace_mean, eps), eps)
-                                eye = torch.eye(
-                                    k,
-                                    device=gram.device,
-                                    dtype=gram.dtype,
-                                )
-                                shifted = gram + shift * eye
-
-                                u = torch.randn(k, device=gram.device, dtype=gram.dtype)
-                                u = u / (u.norm() + eps)
-                                for _ in range(iters):
-                                    try:
-                                        u = torch.linalg.solve(shifted, u)
-                                    except RuntimeError:
-                                        u = torch.linalg.pinv(shifted).matmul(u)
-                                    u = u / (u.norm() + eps)
-                                lambda_min = float(
-                                    torch.clamp(
-                                        torch.dot(u, gram.matmul(u)), min=eps
-                                    ).item()
-                                )
-
-                            s_max = math.sqrt(lambda_max)
-                            s_min = math.sqrt(lambda_min)
-                            if math.isfinite(s_max) and math.isfinite(s_min):
-                                cond = s_max / max(s_min, eps)
-                                if cond > 0 and math.isfinite(cond):
-                                    # log-scale for stability across very ill-conditioned layers
-                                    log_cond = math.log(cond + eps)
-                                    log_cond = float(np.clip(log_cond, 0.0, 30.0))
-                                    log_conditions.append(log_cond)
-                        except Exception:
-                            continue
-            return sum(log_conditions) / len(log_conditions) if log_conditions else 0.0
-
-        return self._compute_safely(_compute)
+        return compute_conditioning(self, model)
 
     def flops(self, model: nn.Module, inputs: torch.Tensor) -> Result:
-        """FLOP estimation using fvcore with fallback to manual hook-based count"""
-
-        def _compute():
-            try:
-                fvcore_nn = importlib.import_module("fvcore.nn")
-                FlopCountAnalysis = getattr(fvcore_nn, "FlopCountAnalysis")
-
-                # Ensure input is in tuple format
-                input_tuple = (inputs[:1].detach().clone(),)
-                flops = FlopCountAnalysis(model, input_tuple)
-                return flops.total()
-
-            except Exception:
-                # Fallback to original hook-based logic
-                flops_count = {}
-
-                def counting_hook(name):
-                    def hook(module, inp, out):
-                        input_shape = inp[0].shape
-                        output_shape = (
-                            out.shape if not isinstance(out, tuple) else out[0].shape
-                        )
-
-                        if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                            kernel_ops = (
-                                np.prod(module.kernel_size)
-                                * module.in_channels
-                                // module.groups
-                            )
-                            output_elements = np.prod(output_shape)
-                            flops = output_elements * kernel_ops * 2
-                        elif isinstance(module, nn.Linear):
-                            flops = (
-                                input_shape[0]
-                                * module.in_features
-                                * module.out_features
-                                * 2
-                            )
-                        else:
-                            flops = 0
-
-                        flops_count[name] = flops
-
-                    return hook
-
-                hooks = []
-                for name, module in model.named_modules():
-                    if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)):
-                        hooks.append(module.register_forward_hook(counting_hook(name)))
-
-                try:
-                    with torch.no_grad():
-                        model(inputs[:1])  # only one sample needed
-                    return sum(flops_count.values())
-                finally:
-                    for hook in hooks:
-                        hook.remove()
-
-        return self._compute_safely(_compute)
+        """FLOP estimation using fvcore with fallback to manual hook count."""
+        return compute_flops(self, model, inputs)
 
     def sensitivity(
         self,
@@ -1295,73 +682,13 @@ class MetricsComputer:
         shared_inputs: torch.Tensor | None = None,
     ) -> Result:
         """Input-gradient sensitivity (plain input influence signal)."""
-
-        def _compute():
-            was_training = model.training
-            model.train()
-            model.zero_grad()
-
-            can_reuse_shared = (
-                shared_inputs is not None
-                and shared_outputs is not None
-                and shared_inputs.requires_grad
-                and shared_outputs.requires_grad
-                and shared_inputs.shape == inputs.shape
-            )
-
-            if can_reuse_shared:
-                x = cast(torch.Tensor, shared_inputs)
-                output = cast(torch.Tensor, shared_outputs)
-            else:
-                x = inputs.clone().detach().requires_grad_(True)
-                output = model(x)
-
-            output = self._unwrap_output(output)
-
-            try:
-                # Gradient of output energy wrt input is a stable sensitivity proxy.
-                if output.dim() == 1:
-                    scalar = output.pow(2).mean()
-                else:
-                    scalar = output.flatten(1).pow(2).mean()
-                scalar.backward()
-            except RuntimeError as e:
-                # Graph may have been consumed by another metric; fallback to local pass.
-                warnings.warn(
-                    f"Sensitivity shared-graph reuse failed; retrying with fresh pass: {e}",
-                    RuntimeWarning,
-                )
-                model.zero_grad()
-                x = inputs.clone().detach().requires_grad_(True)
-                output = self._unwrap_output(model(x))
-                scalar = (
-                    output.flatten(1).pow(2).mean()
-                    if output.dim() > 1
-                    else output.pow(2).mean()
-                )
-                scalar.backward()
-
-            # Input gradient norm only (standard, less custom than mixed proxy)
-            input_grad_norm = (
-                x.grad.norm(p=2, dim=tuple(range(1, x.grad.dim()))).mean().item()
-                if x.grad is not None
-                else 0.0
-            )
-
-            # Fallback: finite-difference sensitivity if gradient degenerates to ~0.
-            if not np.isfinite(input_grad_norm) or input_grad_norm <= self.config.eps:
-                input_grad_norm = self._finite_difference_sensitivity(model, inputs)
-
-            model.zero_grad()
-            if shared_inputs is None or x is not shared_inputs:
-                x.requires_grad_(False)
-            if not was_training:
-                model.eval()
-
-            return float(input_grad_norm)
-
-        return self._compute_safely(_compute)
-
+        return compute_sensitivity(
+            self,
+            model,
+            inputs,
+            shared_outputs=shared_outputs,
+            shared_inputs=shared_inputs,
+        )
 
 class ZeroCostNAS:
     """Main zero-cost NAS evaluation class"""
@@ -1589,7 +916,8 @@ class ZeroCostNAS:
         for batch_idx, (inputs, targets) in enumerate(batches):
             try:
                 print(
-                    f"Computing metrics for batch {batch_idx + 1}/{len(batches)} (heavy_metrics={batch_idx < heavy_batches})..."
+                    f"Computing metrics for batch {batch_idx + 1}/{len(batches)} "
+                    f"(heavy_metrics={batch_idx < heavy_batches})..."
                 )
                 results = self.computer.compute_all(
                     model,

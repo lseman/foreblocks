@@ -7,8 +7,11 @@ from __future__ import annotations
 import contextlib
 import copy
 import datetime
+import os
+import tempfile
 import warnings
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -133,6 +136,21 @@ class Trainer:
 
     Config = TrainingConfig
 
+    @staticmethod
+    def _resolve_device(device: str | torch.device | None = None) -> torch.device:
+        """Resolve user/device defaults to a torch.device."""
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        resolved = torch.device(device)
+        if resolved.type == "cuda" and not torch.cuda.is_available():
+            warnings.warn(
+                "CUDA was requested but is not available; falling back to CPU.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return torch.device("cpu")
+        return resolved
+
     def __init__(
         self,
         model: nn.Module,
@@ -161,9 +179,9 @@ class Trainer:
         mltracker_uri: None
         | (str) = None,  # DB directory; defaults to <project_root>/mltracker_data
         auto_track: bool = True,  # Auto-create MLTracker when none is supplied
-    ):
+    ) -> None:
 
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = self._resolve_device(device)
         self.model = model.to(self.device)
         self.use_wandb = use_wandb
 
@@ -174,16 +192,14 @@ class Trainer:
         # Priority: explicit argument > MLTRACKER_DIR env var > package-relative default
         # ------------------------------------------------------------------
         import os as _os
-        from pathlib import Path as _Path
 
         if mltracker_uri is None:
             mltracker_uri = _os.environ.get(
                 "MLTRACKER_DIR",
                 str(
-                    _Path(__file__).resolve().parent.parent / "mltracker/mltracker_data"
+                    Path(__file__).resolve().parent.parent / "mltracker/mltracker_data"
                 ),
             )
-            print(f"[MLTracker] Resolved mltracker_uri to: {mltracker_uri}")
 
         # ------------------------------------------------------------------
         # Auto-tracking: create an MLTracker from the DB path when none is
@@ -250,7 +266,8 @@ class Trainer:
         # -----------------------------------------
         self.scheduler = scheduler or self._create_scheduler()
         self.loss_computer = LossComputer(self.model, self.config, criterion)
-        self.scaler = GradScaler() if self.config.use_amp else None
+        self._amp_enabled = bool(self.config.use_amp and self.device.type == "cuda")
+        self.scaler = GradScaler("cuda", enabled=self._amp_enabled)
 
         self.history = TrainingHistory()
         self.best_val_loss = float("inf")
@@ -399,15 +416,38 @@ class Trainer:
                 step_size=self.config.lr_step_size,
                 gamma=self.config.lr_gamma,
             )
+        if self.config.scheduler_type == "plateau":
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                factor=self.config.lr_gamma,
+                patience=max(1, self.config.patience // 2),
+                min_lr=self.config.min_lr,
+            )
+        if self.config.scheduler_type == "cosine":
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=max(1, self.config.num_epochs),
+                eta_min=self.config.min_lr,
+            )
         return None
 
     @contextlib.contextmanager
     def _amp_context(self):
-        if self.config.use_amp and self.device == "cuda":
+        if self._amp_enabled:
             with autocast("cuda"):
                 yield
         else:
             yield
+
+    def _step_scheduler(self, train_loss: float, val_loss: float | None = None) -> None:
+        """Step scheduler using the correct API for metric-aware schedulers."""
+        if self.scheduler is None:
+            return
+        metric = val_loss if val_loss is not None else train_loss
+        if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            self.scheduler.step(metric)
+        else:
+            self.scheduler.step()
 
     @staticmethod
     def _unpack_batch(
@@ -468,18 +508,25 @@ class Trainer:
         graph_kwargs: dict[str, Any] | None = None,
     ) -> tuple[Any, Any | None, Any | None, dict[str, Any]]:
         """Move available tensors in a batch to the trainer device."""
-        if torch.is_tensor(X):
-            X = X.to(self.device)
-        if torch.is_tensor(y):
-            y = y.to(self.device)
-        if torch.is_tensor(time_feat):
-            time_feat = time_feat.to(self.device)
+        X = self._to_device(X)
+        y = self._to_device(y)
+        time_feat = self._to_device(time_feat)
         moved_graph_kwargs = {}
         for key, value in (graph_kwargs or {}).items():
-            moved_graph_kwargs[key] = (
-                value.to(self.device) if torch.is_tensor(value) else value
-            )
+            moved_graph_kwargs[key] = self._to_device(value)
         return X, y, time_feat, moved_graph_kwargs
+
+    def _to_device(self, value: Any) -> Any:
+        """Move tensors or simple nested containers to the trainer device."""
+        if torch.is_tensor(value):
+            return value.to(self.device, non_blocking=True)
+        if isinstance(value, dict):
+            return {key: self._to_device(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._to_device(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._to_device(item) for item in value)
+        return value
 
     def _forward_pass(
         self,
@@ -534,6 +581,13 @@ class Trainer:
 
         outputs = result[0] if isinstance(result, tuple) else result
         return outputs, aux
+
+    @staticmethod
+    def _loader_len(dataloader: Any) -> int | None:
+        try:
+            return len(dataloader)
+        except TypeError:
+            return None
 
     def _backward_step(
         self,
@@ -628,7 +682,8 @@ class Trainer:
                 # --- DEBUG / FAIL FAST (add inside _alpha_step right before backward) ---
                 if not alpha_params:
                     raise RuntimeError(
-                        "[NAS] alpha_params is empty. NASHelper did not find architecture parameters."
+                        "[NAS] alpha_params is empty. NASHelper did not find "
+                        "architecture parameters."
                     )
 
                 # ensure at least one alpha param requires grad
@@ -648,7 +703,7 @@ class Trainer:
                     )
 
                 if not outputs.requires_grad:
-                    # This is the key symptom: forward does not depend on alpha (since theta is frozen)
+                    # Key symptom: forward does not depend on alpha while theta is frozen.
                     raise RuntimeError(
                         "[NAS] outputs.requires_grad is False during alpha step. "
                         "This means the forward pass is not connected to alpha parameters "
@@ -709,6 +764,10 @@ class Trainer:
             for p in self.nas_helper.get_alpha_parameters():
                 p.requires_grad_(False)
 
+        total_batches = self._loader_len(train_loader)
+        if total_batches is None:
+            total_batches = 0
+
         try:
             for batch_idx, batch in enumerate(train_loader):
                 X, y, time_feat, graph_kwargs = self._unpack_batch(batch)
@@ -732,7 +791,7 @@ class Trainer:
                     target = y if y is not None else outputs.detach() * 0
                     loss = self.loss_computer.compute(outputs, target, aux)
 
-                self._backward_step(loss, batch_idx, len(train_loader), self.optimizer)
+                self._backward_step(loss, batch_idx, total_batches, self.optimizer)
                 total_loss += float(loss.detach())
                 self.global_step += 1
 
@@ -744,7 +803,8 @@ class Trainer:
                     p.requires_grad_(True)
 
         avg_components = {k: float(np.mean(v)) for k, v in all_components.items()}
-        return total_loss / max(1, len(train_loader)), avg_components
+        batches_seen = max(1, batch_idx + 1) if "batch_idx" in locals() else 1
+        return total_loss / batches_seen, avg_components
 
     @torch.no_grad()
     def evaluate(self, dataloader: DataLoader) -> float:
@@ -903,6 +963,19 @@ class Trainer:
         except Exception as e:
             print(f"[MLTracker] Warning: Failed to log final summary: {e}")
 
+    @contextlib.contextmanager
+    def _last_run_context(self):
+        """Temporarily route MLTracker calls to the most recent training run."""
+        if not self.mltracker or not self._last_run_id:
+            yield False
+            return
+        previous = self.mltracker._active_run
+        try:
+            self.mltracker._active_run = self._last_run_id
+            yield True
+        finally:
+            self.mltracker._active_run = previous
+
     def _log_to_last_run(
         self,
         metrics: dict[str, float],
@@ -910,30 +983,51 @@ class Trainer:
         prefix: str = "",
     ) -> None:
         """Log metrics to the most recently finished training run without re-opening it."""
-        if not self.mltracker or not self._last_run_id:
-            return
-        _prev = self.mltracker._active_run
         try:
-            self.mltracker._active_run = self._last_run_id
-            prefixed = {f"{prefix}{k}": v for k, v in metrics.items()}
-            self.mltracker.log_metrics(prefixed, step=step if step is not None else 0)
+            with self._last_run_context() as active:
+                if not active:
+                    return
+                prefixed = {f"{prefix}{k}": v for k, v in metrics.items()}
+                self.mltracker.log_metrics(
+                    prefixed,
+                    step=step if step is not None else 0,
+                )
         except Exception as e:
             print(f"[MLTracker] Warning: Failed to log eval metrics: {e}")
-        finally:
-            self.mltracker._active_run = _prev
 
     def _log_model_to_last_run(self, model_name: str = "model") -> None:
         """Log model artifacts (including architecture) to the most recent run."""
-        if not self.mltracker or not self._last_run_id:
-            return
-        _prev = self.mltracker._active_run
         try:
-            self.mltracker._active_run = self._last_run_id
-            self.mltracker.log_model(self.model, model_name=model_name)
+            with self._last_run_context() as active:
+                if not active:
+                    return
+                self.mltracker.log_model(self.model, model_name=model_name)
         except Exception as e:
             print(f"[MLTracker] Warning: Failed to log model artifacts: {e}")
-        finally:
-            self.mltracker._active_run = _prev
+
+    def _log_figure_to_last_run(
+        self,
+        fig: Any,
+        artifact_path: str = "plots",
+    ) -> None:
+        """Best-effort figure artifact logging for the most recent run."""
+        try:
+            with self._last_run_context() as active:
+                if not active:
+                    return
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp_path = tmp.name
+                try:
+                    fig.savefig(tmp_path, dpi=120, bbox_inches="tight")
+                    self.mltracker.log_artifact(
+                        tmp_path,
+                        artifact_path=artifact_path,
+                    )
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp_path)
+        except Exception:
+            pass
 
     # =====================================================================
     # TRAIN LOOP — REMOVED AUTO-CALIBRATION (data leakage)
@@ -958,6 +1052,9 @@ class Trainer:
                 self._last_run_id = self.mltracker._active_run
             self._log_mltracker_params()
             self._log_mltracker_model_info()
+
+            completed_epochs = 0
+            stopped_early = False
 
             with tqdm(range(num_epochs), desc="Training", unit="epoch") as pbar:
                 for epoch in pbar:
@@ -996,12 +1093,13 @@ class Trainer:
                             self.epochs_without_improvement += 1
                         if self.epochs_without_improvement >= self.config.patience:
                             print(f"\\nEarly stopping at epoch {epoch + 1}")
+                            completed_epochs = epoch + 1
+                            stopped_early = True
                             break
 
                     pbar.set_postfix({"train": train_loss, "val": val_loss, "lr": lr})
 
-                    if self.scheduler:
-                        self.scheduler.step(val_loss if val_loader else train_loss)
+                    self._step_scheduler(train_loss, val_loss)
 
                     for cb in callbacks:
                         if hasattr(cb, "on_epoch_end"):
@@ -1023,15 +1121,14 @@ class Trainer:
                         components=components,
                         val_loss=val_loss,
                     )
+                    completed_epochs = epoch + 1
 
             self._log_mltracker_final(
-                total_epochs=epoch + 1,
-                stopped_early=self.epochs_without_improvement >= self.config.patience
-                if val_loader
-                else False,
+                total_epochs=completed_epochs,
+                stopped_early=stopped_early,
             )
 
-        if self.best_model_state:
+        if self.best_model_state is not None:
             self.model.load_state_dict(self.best_model_state)
 
         # Persist final model + architecture artifacts to the completed run.
@@ -1041,7 +1138,8 @@ class Trainer:
         # with held-out data to avoid data leakage
         if self.config.conformal_enabled and self.conformal_engine is not None:
             print(
-                "\n[Conformal] Engine ready. Call calibrate_conformal(cal_loader) with held-out data."
+                "\n[Conformal] Engine ready. Call calibrate_conformal(cal_loader) "
+                "with held-out data."
             )
 
         return self.history
@@ -1081,10 +1179,11 @@ class Trainer:
         ):
             raise ValueError("EnbPI with member models requires `enbpi_boot_indices`.")
 
-        # If method is AFOCP and no feature_extractor was passed, engine will create an internal one.
+        # If no extractor is passed, AFOCP creates an internal default one.
         if method == "afocp" and feature_extractor is None:
             warnings.warn(
-                "AFOCP without a feature_extractor will use an internal (untrained) DefaultFeatureExtractor. "
+                "AFOCP without a feature_extractor will use an internal "
+                "(untrained) DefaultFeatureExtractor. "
                 "This is valid but may be weaker than a pretrained extractor."
             )
 
@@ -1213,31 +1312,24 @@ class Trainer:
         or multi-target forecasts we also expose `joint_coverage`, which counts
         a sample as covered only if every horizon/target is inside its interval.
         """
-        preds, lower, upper = self.predict_with_intervals(X, return_tensors=False)
+        _, lower, upper = self.predict_with_intervals(X, return_tensors=False)
 
         y_np = _as_numpy(y)
         y_np = _ensure_y_shape_like_intervals(y_np, lower)
 
-        covered = (y_np >= lower) & (y_np <= upper)
-        joint_covered = covered.all(axis=(1, 2))
-        widths = upper - lower
-
-        return {
-            "coverage": float(covered.mean()),
-            "joint_coverage": float(joint_covered.mean()),
-            "target_coverage": float(self.conformal_engine.q),
-            "coverage_gap": float(covered.mean() - self.conformal_engine.q),
-            "joint_coverage_gap": float(joint_covered.mean() - self.conformal_engine.q),
-            "mean_interval_width": float(widths.mean()),
-            "std_interval_width": float(widths.std()),
-            "min_interval_width": float(widths.min()),
-            "max_interval_width": float(widths.max()),
-        }
+        return self._coverage_summary(
+            y_np,
+            lower,
+            upper,
+            target_coverage=float(self.conformal_engine.q),
+        )
 
     # =====================================================================
     # Saving, loading
     # =====================================================================
-    def save(self, path: str):
+    def save(self, path: str | Path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         save_dict = {
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
@@ -1262,9 +1354,10 @@ class Trainer:
 
         torch.save(save_dict, path)
 
-    def load(self, path: str):
-        checkpoint = torch.load(path, map_location=self.device)
+    def load(self, path: str | Path):
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.model.to(self.device)
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if (
             "alpha_optimizer_state_dict" in checkpoint
@@ -1361,6 +1454,44 @@ class Trainer:
             return arr
         return arr.reshape(arr.shape[0], -1)
 
+    @staticmethod
+    def _coverage_summary(
+        y_true: np.ndarray,
+        lower: np.ndarray,
+        upper: np.ndarray,
+        target_coverage: float,
+        *,
+        include_breakdowns: bool = False,
+    ) -> dict[str, Any]:
+        """Compute shared conformal coverage statistics."""
+        covered = (y_true >= lower) & (y_true <= upper)
+        joint_covered = covered.all(axis=(1, 2))
+        widths = upper - lower
+
+        summary: dict[str, Any] = {
+            "coverage": float(covered.mean()),
+            "joint_coverage": float(joint_covered.mean()),
+            "target_coverage": float(target_coverage),
+            "coverage_gap": float(covered.mean() - target_coverage),
+            "joint_coverage_gap": float(joint_covered.mean() - target_coverage),
+            "mean_interval_width": float(widths.mean()),
+            "std_interval_width": float(widths.std()),
+            "min_interval_width": float(widths.min()),
+            "max_interval_width": float(widths.max()),
+        }
+        if include_breakdowns:
+            summary.update(
+                {
+                    "per_horizon_coverage": covered.mean(axis=(0, 2)),
+                    "per_feature_coverage": covered.mean(axis=(0, 1)),
+                    "per_feature_joint_coverage": covered.all(axis=1).mean(axis=0),
+                    "per_horizon_all_feature_coverage": covered.all(axis=2).mean(
+                        axis=0
+                    ),
+                }
+            )
+        return summary
+
     # =====================================================================
     # Visualization
     # =====================================================================
@@ -1449,24 +1580,7 @@ class Trainer:
                 fig.savefig(save_path, dpi=120, bbox_inches="tight")
             if show:
                 plt.show()
-            # Save plot as artifact in the last training run
-            if self.mltracker and self._last_run_id:
-                try:
-                    import os as _os
-                    import tempfile
-
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".png", delete=False
-                    ) as tmp:
-                        tmp_path = tmp.name
-                    fig.savefig(tmp_path, dpi=120, bbox_inches="tight")
-                    _prev = self.mltracker._active_run
-                    self.mltracker._active_run = self._last_run_id
-                    self.mltracker.log_artifact(tmp_path, artifact_path="plots")
-                    self.mltracker._active_run = _prev
-                    _os.unlink(tmp_path)
-                except Exception:
-                    pass  # artifact logging is best-effort
+            self._log_figure_to_last_run(fig)
             return fig
 
         pred_mean = pred_np.mean(axis=0)
@@ -1507,22 +1621,7 @@ class Trainer:
         plt.tight_layout()
         if show:
             plt.show()
-        # Save plot as artifact in the last training run
-        if self.mltracker and self._last_run_id:
-            try:
-                import os as _os
-                import tempfile
-
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                    tmp_path = tmp.name
-                fig.savefig(tmp_path, dpi=120, bbox_inches="tight")
-                _prev = self.mltracker._active_run
-                self.mltracker._active_run = self._last_run_id
-                self.mltracker.log_artifact(tmp_path, artifact_path="plots")
-                self.mltracker._active_run = _prev
-                _os.unlink(tmp_path)
-            except Exception as _e:
-                pass  # artifact logging is best-effort
+        self._log_figure_to_last_run(fig)
         return fig
 
     def metrics(
@@ -1895,7 +1994,8 @@ class Trainer:
         Streaming (rolling) prediction over a DataLoader.
 
         - Assumes dataloader yields (X, y) or (X, y, ...)
-        - Predicts intervals batch-by-batch in chronological order (so dataloader must have shuffle=False).
+        - Predicts intervals batch-by-batch in chronological order.
+          The dataloader should have shuffle=False.
         - If do_update=True, performs online update AFTER predicting each batch (leakage-safe).
         - If sequential=None, auto-enables for ACI methods (rolling/agaci).
 
@@ -1960,34 +2060,20 @@ class Trainer:
         marks a window covered only when every horizon/target is inside the
         interval.
         """
-        preds, lower, upper, y_true = self.predict_with_intervals_streaming(
+        _, lower, upper, y_true = self.predict_with_intervals_streaming(
             dataloader=dataloader,
             do_update=do_update,
             return_numpy=True,
             sequential=sequential,
         )
 
-        covered = (y_true >= lower) & (y_true <= upper)
-        joint_covered = covered.all(axis=(1, 2))
-        per_feature_joint_coverage = covered.all(axis=1).mean(axis=0)
-        per_horizon_all_feature_coverage = covered.all(axis=2).mean(axis=0)
-        widths = upper - lower
-
-        return {
-            "coverage": float(covered.mean()),
-            "joint_coverage": float(joint_covered.mean()),
-            "target_coverage": float(self.conformal_engine.q),
-            "coverage_gap": float(covered.mean() - self.conformal_engine.q),
-            "joint_coverage_gap": float(joint_covered.mean() - self.conformal_engine.q),
-            "per_horizon_coverage": covered.mean(axis=(0, 2)),
-            "per_feature_coverage": covered.mean(axis=(0, 1)),
-            "per_feature_joint_coverage": per_feature_joint_coverage,
-            "per_horizon_all_feature_coverage": per_horizon_all_feature_coverage,
-            "mean_interval_width": float(widths.mean()),
-            "std_interval_width": float(widths.std()),
-            "min_interval_width": float(widths.min()),
-            "max_interval_width": float(widths.max()),
-        }
+        return self._coverage_summary(
+            y_true,
+            lower,
+            upper,
+            target_coverage=float(self.conformal_engine.q),
+            include_breakdowns=True,
+        )
 
     def plot_violation_heatmap_streaming(
         self,

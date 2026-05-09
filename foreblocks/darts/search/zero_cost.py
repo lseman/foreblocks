@@ -1,7 +1,7 @@
 """
 Zero-cost neural architecture search metric evaluation.
 
-Thin wrappers around ``ZeroCostNAS`` from ``search.nas_metrics`` that follow the
+Thin wrappers around ``ZeroCostNAS`` from ``search.metrics`` that follow the
 same interface as the rest of the search sub-package: free functions that
 receive a ``trainer`` as their first argument.
 """
@@ -12,7 +12,7 @@ from typing import Any
 
 import torch.nn as nn
 
-from .nas_metrics import Config, ZeroCostNAS
+from .metrics import Config, ZeroCostNAS
 from .weight_schemes import build_weight_schemes
 
 
@@ -89,7 +89,7 @@ def evaluate_zero_cost_metrics(
     Evaluate a model using zero-cost proxy metrics.
 
     When ``ablation=False`` (the default), a single aggregate score is
-    produced using the default weights from :class:`~search.nas_metrics.Config`.
+    produced using the default weights from :class:`~search.metrics.Config`.
     When ``ablation=True``, the model is evaluated under many weight schemes
     and the per-scheme results are returned alongside the default.
 
@@ -154,7 +154,7 @@ def evaluate_zero_cost_metrics(
 
 
 def _make_config(*, max_samples: int, fast_mode: bool) -> Config:
-    """Build a :class:`~search.nas_metrics.Config` with appropriate defaults."""
+    """Build a :class:`~search.metrics.Config` with appropriate defaults."""
     cfg = Config(max_samples=max_samples, max_outputs=10)
     if fast_mode:
         cfg.jacobian_probes = 1

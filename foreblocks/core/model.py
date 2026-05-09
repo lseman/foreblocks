@@ -4,6 +4,7 @@ This module defines the BaseHead wrapper and the ForecastingModel class used
 by foreblocks to assemble modular forecasting pipelines.
 """
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -37,10 +38,7 @@ class BaseHead(nn.Module):
 
     # ---- aux loss handling ---------------------------------------------------
     def _infer_device(self) -> torch.device:
-        """Infer and cache a reasonable device for scalar tensors."""
-        if self._fallback_device is not None:
-            return self._fallback_device
-
+        """Infer a reasonable device for scalar tensors."""
         for p in self.module.parameters():
             self._fallback_device = p.device
             return p.device
@@ -48,7 +46,7 @@ class BaseHead(nn.Module):
             self._fallback_device = b.device
             return b.device
 
-        self._fallback_device = torch.device("cpu")
+        self._fallback_device = self._fallback_device or torch.device("cpu")
         return self._fallback_device
 
     def get_aux_loss(self) -> torch.Tensor:
@@ -66,8 +64,11 @@ class BaseHead(nn.Module):
         """Delegate attribute access to the wrapped module."""
         try:
             return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.module, name)
+        except AttributeError as exc:
+            module = self.__dict__.get("_modules", {}).get("module")
+            if module is None:
+                raise exc
+            return getattr(module, name)
 
 
 # =============================================================================
@@ -93,8 +94,8 @@ class ForecastingModel(nn.Module):
       • For 'direct' strategy, uses self.head (not decoder).
     """
 
-    VALID_STRATEGIES = ["seq2seq", "autoregressive", "direct", "transformer_seq2seq"]
-    VALID_MODEL_TYPES = ["lstm", "transformer", "informer-like", "head_only"]
+    VALID_STRATEGIES = ("seq2seq", "autoregressive", "direct", "transformer_seq2seq")
+    VALID_MODEL_TYPES = ("lstm", "transformer", "informer-like", "head_only")
 
     def __init__(
         self,
@@ -136,13 +137,19 @@ class ForecastingModel(nn.Module):
             raise ValueError(f"Invalid forecasting strategy: {forecasting_strategy}")
         if model_type not in self.VALID_MODEL_TYPES:
             raise ValueError(f"Invalid model type: {model_type}")
+        if target_len <= 0:
+            raise ValueError("target_len must be positive")
+        if label_len is not None and label_len < 0:
+            raise ValueError("label_len must be non-negative")
 
         # === Store Core Params ===
         self.strategy = forecasting_strategy
         self.model_type = model_type
-        self.target_len = target_len
+        self.target_len = int(target_len)
         self.hidden_size = hidden_size
-        self.teacher_forcing_ratio = float(teacher_forcing_ratio)
+        self.teacher_forcing_ratio = float(
+            max(0.0, min(1.0, teacher_forcing_ratio))
+        )
         self.scheduled_sampling_fn = scheduled_sampling_fn
         self.input_skip_connection = input_skip_connection
 
@@ -187,7 +194,7 @@ class ForecastingModel(nn.Module):
             )
 
         # label_len is a prompt length for transformer decoding
-        self.label_len = label_len if label_len is not None else target_len // 2
+        self.label_len = int(label_len) if label_len is not None else target_len // 2
 
         # Aux (kept for backward compatibility)
         self._kl: torch.Tensor | None = None
@@ -262,7 +269,9 @@ class ForecastingModel(nn.Module):
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
-    def add_head(self, head: nn.Module, position: str = "input", name: str = None):
+    def add_head(
+        self, head: nn.Module, position: str = "input", name: str | None = None
+    ):
         """
         Add/replace a head at positions:
           'encoder', 'decoder', 'attention', 'input', 'output',
@@ -407,13 +416,17 @@ class ForecastingModel(nn.Module):
     def get_model_size(self) -> dict[str, Any]:
         """Calculate model size statistics."""
         params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         buffers = sum(b.numel() for b in self.buffers())
-        size_mb = (params + buffers) * 4 / 1024**2
+        size_bytes = sum(p.numel() * p.element_size() for p in self.parameters()) + sum(
+            b.numel() * b.element_size() for b in self.buffers()
+        )
         return {
             "parameters": params,
+            "trainable_parameters": trainable_params,
             "buffers": buffers,
             "total_elements": params + buffers,
-            "size_mb": size_mb,
+            "size_mb": size_bytes / 1024**2,
             "is_quantized": False,
         }
 
@@ -424,8 +437,11 @@ class ForecastingModel(nn.Module):
         import time
 
         self.eval()
-        device = next(self.parameters()).device
-        input_tensor = input_tensor.to(device)
+        device, dtype = self._get_model_device_dtype()
+        if dtype is not None and input_tensor.is_floating_point():
+            input_tensor = input_tensor.to(device=device, dtype=dtype)
+        else:
+            input_tensor = input_tensor.to(device=device)
         with torch.no_grad():
             for _ in range(warmup_runs):
                 _ = self(input_tensor)
@@ -454,13 +470,18 @@ class ForecastingModel(nn.Module):
         output_idx: int | None = None,
     ) -> torch.Tensor:
         """Forward pass for attribution analysis (gradients enabled)."""
+        was_training = self.training
         self.train()
-        self._disable_dropout()
-        src = src.requires_grad_()
-        out = self.forward(
-            src, targets=targets, time_features=time_features, epoch=epoch
-        )
-        return out[..., output_idx] if output_idx is not None else out
+        try:
+            with self._dropout_disabled():
+                src = src.requires_grad_()
+                out = self.forward(
+                    src, targets=targets, time_features=time_features, epoch=epoch
+                )
+                return out[..., output_idx] if output_idx is not None else out
+        finally:
+            if not was_training:
+                self.eval()
 
     # -------------------------------------------------------------------------
     # Private / setup
@@ -472,11 +493,14 @@ class ForecastingModel(nn.Module):
         return BaseHead(module, name)
 
     def _get_model_device_dtype(self) -> tuple[torch.device, torch.dtype | None]:
-        """Get device and dtype from model parameters."""
+        """Get device and dtype from the first parameter or buffer."""
         ref_param = next(self.parameters(), None)
-        if ref_param is None:
-            return torch.device("cpu"), None
-        return ref_param.device, ref_param.dtype
+        if ref_param is not None:
+            return ref_param.device, ref_param.dtype
+        ref_buffer = next(self.buffers(), None)
+        if ref_buffer is not None:
+            return ref_buffer.device, ref_buffer.dtype
+        return torch.device("cpu"), None
 
     def _to_model_device_dtype(self, module: nn.Module) -> None:
         """Move module to model's device/dtype."""
@@ -515,7 +539,8 @@ class ForecastingModel(nn.Module):
         decoder_hidden = getattr(self.decoder, "hidden_size", self.hidden_size)
         if self.output_size is None:
             raise ValueError(
-                "output_size must be provided (or decoder must have .output_size) for non-direct strategies."
+                "output_size must be provided (or decoder must have .output_size) "
+                "for non-direct strategies."
             )
 
         out_dim = (
@@ -569,6 +594,12 @@ class ForecastingModel(nn.Module):
     ) -> torch.Tensor:
         """Run selected strategy and return raw predictions."""
         return self._get_strategy_fn()(src, targets, time_features, epoch)
+
+    def _project_decoder_output(self, out: torch.Tensor) -> torch.Tensor:
+        """Project decoder features unless they already match output_size."""
+        if self.output_size is not None and out.size(-1) == self.output_size:
+            return out
+        return self.output_head(out)
 
     def _encode_memory(
         self,
@@ -732,6 +763,20 @@ class ForecastingModel(nn.Module):
             if isinstance(m, nn.Dropout):
                 m.p = 0.0
 
+    @contextlib.contextmanager
+    def _dropout_disabled(self):
+        """Temporarily disable dropout without mutating the model permanently."""
+        original: list[tuple[nn.Dropout, float]] = []
+        for module in self.modules():
+            if isinstance(module, nn.Dropout):
+                original.append((module, module.p))
+                module.p = 0.0
+        try:
+            yield
+        finally:
+            for module, p in original:
+                module.p = p
+
     def _decoder_model_dim(self) -> int | None:
         """Get model dimension from decoder if available."""
         if self.decoder is None:
@@ -750,7 +795,13 @@ class ForecastingModel(nn.Module):
             return memory
         if self._mem_model_bridge is None:
             self._mem_model_bridge = nn.Linear(memory.size(-1), d_model).to(
-                memory.device
+                device=memory.device,
+                dtype=memory.dtype,
+            )
+        else:
+            self._mem_model_bridge = self._mem_model_bridge.to(
+                device=memory.device,
+                dtype=memory.dtype,
             )
         return self._mem_model_bridge(memory)
 
@@ -830,7 +881,12 @@ class ForecastingModel(nn.Module):
         epoch: int | None = None,
     ) -> torch.Tensor:
         """Direct prediction strategy (no autoregression)."""
-        return self.head(src)  # RAW
+        out = self.head(src)
+        if out.dim() == 2 and self.output_size is not None:
+            expected = self.target_len * self.output_size
+            if out.size(-1) == expected:
+                out = out.reshape(out.size(0), self.target_len, self.output_size)
+        return out  # RAW
 
     def _forward_autoregressive(
         self,
@@ -1128,4 +1184,4 @@ class ForecastingModel(nn.Module):
 
         # Keep only the forecast window
         dec_out = dec_out_full[:, -H:, :]  # [B, H, d_model]
-        return dec_out
+        return self._project_decoder_output(dec_out)

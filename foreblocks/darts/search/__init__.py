@@ -1,5 +1,5 @@
 # New focused sub-modules
-from . import ablation, multi_fidelity, nas_metrics, robust_pool, scoring, zero_cost
+from . import ablation, metrics, multi_fidelity, robust_pool, scoring, zero_cost
 from .candidate_scoring import (
     candidate_diversity_bonus,
     candidate_signature,
@@ -31,7 +31,7 @@ from .weight_schemes import (
 __all__ = [
     "ablation",
     "multi_fidelity",
-    "nas_metrics",
+    "metrics",
     "robust_pool",
     "scoring",
     "zero_cost",
