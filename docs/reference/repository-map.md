@@ -13,6 +13,7 @@ This page gives a quick path through the repository for contributors and power u
 | `examples/` | Notebooks and runnable examples |
 | `foreblocks/` | Main forecasting library |
 | `foretools/` | Companion tooling |
+| `darts/` | Neural architecture search (DARTS) |
 
 ## `foreblocks/`
 
@@ -28,9 +29,8 @@ This page gives a quick path through the repository for contributors and power u
 | `foreblocks/data/` | Dataset and dataloader helpers |
 | `foreblocks/ts_handler/` | Preprocessing and sequence construction |
 | `foreblocks/tf/` | Transformer stack and advanced attention |
-| `foreblocks/darts/` | Neural architecture search |
 | `foreblocks/mltracker/` | Experiment tracking |
-| `foreblocks/hybrid_mamba/` | Hybrid Mamba SSM blocks (HybridMambaBlock, HybridMamba2Block, SSD) |
+| `foreblocks/custom_mamba/` | Hybrid Mamba SSM blocks (HybridMambaBlock, HybridMamba2Block, SSD) |
 | `foreblocks/mamba/` | Original Mamba backbone with MoE, positional encoding, and eval tools |
 | `foreblocks/kan/` | Kolmogorov-Arnold Network backbone |
 
@@ -56,8 +56,8 @@ This page gives a quick path through the repository for contributors and power u
 | Building dataloaders | [`foreblocks/data/dataset.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/data/dataset.py) |
 | Adding preprocessing logic | [`foreblocks/ts_handler/preprocessing.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/ts_handler/preprocessing.py) |
 | Exploring transformer internals | [`foreblocks/tf/transformer.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/tf/transformer.py) |
-| Working on architecture search | [`foreblocks/darts/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/darts) |
-| Using SSM / Mamba-style blocks | [`foreblocks/hybrid_mamba/layers.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/hybrid_mamba/layers.py) |
+| Working on architecture search | [`darts/`](https://github.com/lseman/foreblocks/tree/main/darts) |
+| Using SSM / Mamba-style blocks | [`foreblocks/custom_mamba/layers.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/custom_mamba/layers.py) |
 | Generating synthetic data | [`foretools/tsgen/`](https://github.com/lseman/foreblocks/tree/main/foretools/tsgen) |
 | Running hyperparameter search | [`foretools/bohb/`](https://github.com/lseman/foreblocks/tree/main/foretools/bohb) |
 | Augmenting training data adaptively | [`foretools/tsaug/`](https://github.com/lseman/foreblocks/tree/main/foretools/tsaug) |

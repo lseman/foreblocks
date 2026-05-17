@@ -8,17 +8,16 @@ import torch.utils.cpp_extension as cpp_extension
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-
 ROOT = Path(__file__).resolve().parent
 CSRC = ROOT / "csrc"
-EXTENSION_NAME = "hybrid_mamba_selective_scan"
-FORCE_ENV_VAR = "HYBRID_MAMBA_FORCE_CUDA_VERSION"
-DEFAULT_ARCH_LIST_ENV_VAR = "HYBRID_MAMBA_CUDA_ARCH_LIST"
+EXTENSION_NAME = "custom_mamba_selective_scan"
+FORCE_ENV_VAR = "CUSTOM_MAMBA_FORCE_CUDA_VERSION"
+DEFAULT_ARCH_LIST_ENV_VAR = "CUSTOM_MAMBA_CUDA_ARCH_LIST"
 DEFAULT_ARCH_LIST = "8.0;8.6;8.9;9.0"
 
 
 def _get_version() -> str:
-    return os.environ.get("HYBRID_MAMBA_VERSION", "0.1.0")
+    return os.environ.get("CUSTOM_MAMBA_VERSION", "0.1.0")
 
 
 def _should_force_cuda_version() -> bool:
@@ -53,8 +52,8 @@ def _make_extensions():
         CUDAExtension(
             name=EXTENSION_NAME,
             sources=[
-                str(CSRC / "selective_scan_bindings.cpp"),
-                str(CSRC / "selective_scan.cu"),
+                "csrc/selective_scan_bindings.cpp",
+                "csrc/selective_scan.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3"],
@@ -68,10 +67,11 @@ setup(
     name="hybrid-mamba",
     version=_get_version(),
     description="Hybrid Triton + CUDA Mamba starter components",
-    packages=["hybrid_mamba", "hybrid_mamba.ops"],
+    packages=["custom_mamba", "custom_mamba.blocks", "custom_mamba.ops"],
     package_dir={
-        "hybrid_mamba": ".",
-        "hybrid_mamba.ops": "ops",
+        "custom_mamba": ".",
+        "custom_mamba.blocks": "blocks",
+        "custom_mamba.ops": "ops",
     },
     include_package_data=True,
     ext_modules=_make_extensions(),

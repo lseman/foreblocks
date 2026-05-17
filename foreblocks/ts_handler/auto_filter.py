@@ -44,6 +44,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, Literal, overload
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -1049,6 +1050,10 @@ def _clip01(value: float) -> float:
     return float(np.clip(value, 0.0, 1.0))
 
 
+def _safe_ratio(num: float, den: float) -> float:
+    return float(num / max(den, 1e-12))
+
+
 def _robust_scale(x: np.ndarray) -> float:
     """MAD-based scale with a std fallback for near-constant signals."""
     x = np.asarray(x, dtype=float)
@@ -1070,6 +1075,146 @@ def _clean_signal_values(ts: pd.Series) -> np.ndarray:
     return values.to_numpy(dtype=float)
 
 
+def _safe_r2(y: np.ndarray, yhat: np.ndarray) -> float:
+    ss_res = float(np.sum((y - yhat) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    return _clip01(1.0 - ss_res / max(ss_tot, 1e-12))
+
+
+def _softmax_simplex(
+    logits: np.ndarray,
+    *,
+    floor: float = 0.05,
+    cap: float = 0.60,
+    temperature: float = 1.0,
+) -> np.ndarray:
+    """Map diagnostic logits to a stable simplex with floors and soft caps."""
+    logits = np.asarray(logits, dtype=float)
+    logits = np.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+    logits = logits / max(float(temperature), 1e-6)
+    logits = logits - float(np.max(logits))
+    raw = np.exp(logits)
+    raw /= max(float(raw.sum()), 1e-12)
+
+    n = raw.size
+    floor = float(np.clip(floor, 0.0, 1.0 / max(n, 1) - 1e-9))
+    weights = floor + (1.0 - floor * n) * raw
+
+    # A single metric should rarely dominate an unsupervised denoising choice.
+    for _ in range(3):
+        over = weights > cap
+        if not np.any(over):
+            break
+        excess = float(np.sum(weights[over] - cap))
+        weights[over] = cap
+        under = ~over
+        if np.any(under):
+            weights[under] += excess * weights[under] / max(float(weights[under].sum()), 1e-12)
+    weights /= max(float(weights.sum()), 1e-12)
+    return weights
+
+
+def _strength_label(value: float) -> str:
+    if value >= 0.70:
+        return "high"
+    if value >= 0.35:
+        return "moderate"
+    return "low"
+
+
+def _round_mapping(values: dict[str, float], digits: int = 4) -> dict[str, float]:
+    return {key: round(float(value), digits) for key, value in values.items()}
+
+
+def _build_weight_explanation(
+    weights: ScoringWeights,
+    diagnostics: dict[str, float],
+    derived: dict[str, float],
+    logits: np.ndarray,
+) -> dict[str, Any]:
+    """Create a compact, serialisable explanation for suggested weights."""
+    weight_map = {
+        "fidelity_mse": weights.fidelity_mse,
+        "roughness": weights.roughness,
+        "residual_autocorr": weights.residual_autocorr,
+        "derivative_corr": weights.derivative_corr,
+    }
+    logit_map = dict(zip(weight_map.keys(), logits, strict=True))
+
+    reasons: list[str] = []
+    if derived["smoothing_pressure"] >= 0.35:
+        reasons.append(
+            "Smoothing pressure is "
+            f"{_strength_label(derived['smoothing_pressure'])}; this lowers "
+            "fidelity pressure and raises roughness/residual-whiteness pressure."
+        )
+    else:
+        reasons.append(
+            "Smoothing pressure is low; the raw series appears informative enough "
+            "to keep fidelity relatively important."
+        )
+
+    if diagnostics["periodicity"] >= 0.35 or diagnostics["memory"] >= 0.35:
+        reasons.append(
+            "Periodic or autocorrelated structure is visible, so residual "
+            "autocorrelation and derivative preservation get more weight."
+        )
+
+    if diagnostics["trend"] >= 0.35:
+        reasons.append(
+            "Trend strength is "
+            f"{_strength_label(diagnostics['trend'])}; derivative correlation "
+            "is favored to preserve the signal shape."
+        )
+
+    if diagnostics["jumps"] >= 0.05:
+        reasons.append(
+            "Potential level shifts are present, so the heuristic avoids putting "
+            "too much emphasis on generic roughness minimization."
+        )
+
+    if diagnostics["outliers"] >= 0.10:
+        reasons.append(
+            "Outlier pressure is noticeable, which shifts weight away from exact "
+            "fidelity and toward smoothing criteria."
+        )
+
+    if not reasons:
+        reasons.append(
+            "No dominant structure or noise pressure was detected, so the weights "
+            "stay near the balanced default prior."
+        )
+
+    rationale = {
+        "fidelity_mse": [
+            "increases when estimated noise is low",
+            "decreases when smoothing pressure or outlier pressure is high",
+        ],
+        "roughness": [
+            "increases for high-frequency noise, outliers, or rough local jitter",
+            "decreases when jumps or periodic structure should be preserved",
+        ],
+        "residual_autocorr": [
+            "increases when noise, memory, or periodicity suggest residual "
+            "whiteness matters",
+            "slightly decreases when simple trend dominates",
+        ],
+        "derivative_corr": [
+            "increases for trend, periodicity, memory, and level-shift structure",
+            "decreases when the series looks mostly noisy",
+        ],
+    }
+
+    return {
+        "weights": _round_mapping(weight_map),
+        "diagnostics": _round_mapping(diagnostics),
+        "derived": _round_mapping(derived),
+        "logits": _round_mapping(logit_map),
+        "reasons": reasons,
+        "rationale": rationale,
+    }
+
+
 def _signal_characteristics(x: np.ndarray) -> dict[str, float]:
     """Robust, cheap signal diagnostics used by ``suggest_weights``."""
     x = np.asarray(x, dtype=float).reshape(-1)
@@ -1081,25 +1226,42 @@ def _signal_characteristics(x: np.ndarray) -> dict[str, float]:
             "trend": 0.0,
             "high_freq": 0.0,
             "outliers": 0.0,
+            "jumps": 0.0,
+            "memory": 0.0,
+            "roughness": 0.0,
         }
 
     scale = _robust_scale(x)
     centered = x - np.median(x)
 
-    # Robust white-noise proxy. For iid noise, std(diff2) ~= sqrt(6) * sigma.
+    # Robust white-noise proxies. The second-difference estimator catches
+    # sample-to-sample jitter, while the high-pass residual avoids calling a
+    # strong but smooth trend "noise".
+    diff1 = np.diff(centered)
     diff2 = np.diff(centered, n=2)
-    noise_ratio = _robust_scale(diff2) / (np.sqrt(6.0) * scale)
-    noise = _clip01(noise_ratio / (noise_ratio + 0.65))
+    noise_ratio_diff = _safe_ratio(_robust_scale(diff2), np.sqrt(6.0) * scale)
+    sg_window = _valid_odd_window(n, preferred=max(7, n // 12), minimum=5)
+    if sg_window >= 5:
+        polyorder = min(2, sg_window - 1)
+        try:
+            baseline = signal.savgol_filter(centered, sg_window, polyorder, mode="interp")
+        except Exception:
+            baseline = pd.Series(centered).rolling(
+                window=sg_window, center=True, min_periods=1
+            ).median().to_numpy()
+    else:
+        baseline = np.full_like(centered, np.median(centered))
+    noise_ratio_hp = _safe_ratio(_robust_scale(centered - baseline), scale)
+    noise = _clip01(0.55 * noise_ratio_diff / (noise_ratio_diff + 0.55) + 0.45 * noise_ratio_hp / (noise_ratio_hp + 0.70))
 
     t = np.arange(n, dtype=float)
     if n > 1:
         t = (t - t.mean()) / max(float(t.std()), 1e-12)
     try:
-        coeff = np.polyfit(t, x, 1)
-        trend_fit = np.polyval(coeff, t)
-        ss_res = float(np.sum((x - trend_fit) ** 2))
-        ss_tot = float(np.sum((x - x.mean()) ** 2))
-        trend = _clip01(1.0 - ss_res / max(ss_tot, 1e-12))
+        linear_fit = np.polyval(np.polyfit(t, x, 1), t)
+        quad_fit = np.polyval(np.polyfit(t, x, min(2, n - 1)), t)
+        trend_fit = quad_fit if _safe_r2(x, quad_fit) > _safe_r2(x, linear_fit) else linear_fit
+        trend = max(_safe_r2(x, linear_fit), _safe_r2(x, quad_fit))
     except Exception:
         trend = 0.0
         trend_fit = np.full_like(x, x.mean())
@@ -1126,11 +1288,26 @@ def _signal_characteristics(x: np.ndarray) -> dict[str, float]:
             entropy = float(-np.sum(probs * np.log(probs + 1e-12)))
             entropy /= max(float(np.log(len(probs))), 1e-12)
             peak_share = float(probs.max())
-            periodicity = _clip01(0.75 * (1.0 - entropy) + 0.25 * peak_share)
+            top_k = min(3, len(probs))
+            top_share = float(np.partition(probs, -top_k)[-top_k:].sum())
+            periodicity = _clip01(0.55 * (1.0 - entropy) + 0.30 * top_share + 0.15 * peak_share)
             high_freq = _clip01(float(power[freqs >= 0.25].sum()) / total_power)
 
     z = np.abs(centered) / scale
     outliers = _clip01(float(np.mean(z > 3.5)) * 8.0)
+
+    diff_scale = _robust_scale(diff1) if diff1.size else 0.0
+    if diff1.size and diff_scale > 1e-12:
+        dz = np.abs(diff1 - np.median(diff1)) / diff_scale
+        jumps = _clip01(float(np.mean(dz > 4.5)) * 10.0)
+        roughness = _clip01(_safe_ratio(diff_scale, scale) / 1.35)
+    else:
+        jumps = 0.0
+        roughness = 0.0
+
+    max_lag = min(24, max(1, n // 5))
+    ac_vals = [abs(_autocorr(centered, lag)) for lag in range(1, max_lag + 1)]
+    memory = _clip01(float(np.nanmean(ac_vals)) if ac_vals else 0.0)
 
     return {
         "noise": noise,
@@ -1138,16 +1315,34 @@ def _signal_characteristics(x: np.ndarray) -> dict[str, float]:
         "trend": trend,
         "high_freq": high_freq,
         "outliers": outliers,
+        "jumps": jumps,
+        "memory": memory,
+        "roughness": roughness,
     }
 
 
-def suggest_weights(ts: pd.Series) -> ScoringWeights:
+@overload
+def suggest_weights(ts: pd.Series, *, explain: Literal[False] = False) -> ScoringWeights:
+    ...
+
+
+@overload
+def suggest_weights(
+    ts: pd.Series, *, explain: Literal[True]
+) -> tuple[ScoringWeights, dict[str, Any]]:
+    ...
+
+
+def suggest_weights(
+    ts: pd.Series, *, explain: bool = False
+) -> ScoringWeights | tuple[ScoringWeights, dict[str, Any]]:
     """Heuristically suggest :class:`ScoringWeights` from signal characteristics.
 
-    The heuristic is intentionally cheap and deterministic, but it follows the
-    same broad tradeoffs used by modern unsupervised denoising objectives:
-    estimate structure, estimate high-frequency/noise pressure, then adjust the
-    multi-objective weights on the simplex.
+    The heuristic is intentionally cheap and deterministic, but it follows a
+    signal-aware prior similar to modern unsupervised denoising objectives:
+    separate structure from high-frequency pressure, detect whether the series
+    has memory/seasonality/trend/jumps, then project bounded evidence logits to
+    the weight simplex.
 
     Signal properties measured
     --------------------------
@@ -1163,11 +1358,18 @@ def suggest_weights(ts: pd.Series) -> ScoringWeights:
         R2 of a linear fit. Trend-dominated signals increase shape preservation.
     high_freq / outliers
         Extra pressure to smooth when high-frequency energy or spikes dominate.
+    jumps / memory
+        Jump pressure protects level shifts from being over-smoothed. Memory
+        and periodic structure increase residual-whiteness and
+        derivative-preservation pressure because correlated residuals often
+        mean the filter removed real signal.
 
     Examples
     --------
     >>> w = suggest_weights(ts_noisy)
     >>> best_name, best_series, score_table = auto_filter(ts_noisy, weights=w)
+    >>> w, why = suggest_weights(ts_noisy, explain=True)
+    >>> why["reasons"]
     """
     x = _clean_signal_values(ts)
     c = _signal_characteristics(x)
@@ -1177,33 +1379,47 @@ def suggest_weights(ts: pd.Series) -> ScoringWeights:
     trend = c["trend"]
     high_freq = c["high_freq"]
     outliers = c["outliers"]
+    jumps = c["jumps"]
+    memory = c["memory"]
+    roughness = c["roughness"]
+    structure = _clip01(0.35 * trend + 0.35 * periodicity + 0.20 * memory + 0.10 * jumps)
+    smoothing_pressure = _clip01(
+        0.42 * noise + 0.24 * high_freq + 0.18 * outliers + 0.16 * roughness
+    )
+    shape_pressure = _clip01(0.35 * structure + 0.30 * trend + 0.20 * periodicity + 0.15 * jumps)
 
-    # These are positive evidence scores, not final probabilities. Normalising
-    # keeps the public ScoringWeights contract while making the mapping easy to
-    # reason about in tests and downstream notebooks.
-    w_fid = 0.42 + 0.25 * clean - 0.22 * noise - 0.10 * outliers
-    w_rough = 0.08 + 0.20 * noise + 0.08 * high_freq + 0.06 * outliers
-    w_resid = 0.20 + 0.18 * noise + 0.16 * periodicity + 0.06 * high_freq
-    w_deriv = (
-        0.25
-        + 0.16 * trend
-        + 0.12 * periodicity
-        + 0.10 * clean
-        - 0.08 * noise
+    logits = np.array(
+        [
+            0.75 + 1.15 * clean + 0.40 * structure - 1.20 * smoothing_pressure - 0.35 * outliers,
+            -0.35 + 1.05 * smoothing_pressure + 0.35 * high_freq + 0.30 * outliers - 0.45 * jumps - 0.25 * periodicity,
+            0.25 + 0.85 * noise + 0.70 * memory + 0.55 * periodicity + 0.30 * high_freq - 0.20 * trend,
+            0.35 + 0.95 * shape_pressure + 0.65 * structure + 0.30 * clean - 0.45 * noise,
+        ],
+        dtype=float,
     )
 
-    raw = np.clip(
-        np.array([w_fid, w_rough, w_resid, w_deriv], dtype=float),
-        0.03,
-        None,
-    )
-    raw /= raw.sum()
-    return ScoringWeights(
+    raw = _softmax_simplex(logits, floor=0.04, cap=0.56, temperature=1.35)
+    weights = ScoringWeights(
         fidelity_mse=float(raw[0]),
         roughness=float(raw[1]),
         residual_autocorr=float(raw[2]),
         derivative_corr=float(raw[3]),
     )
+    if not explain:
+        return weights
+
+    explanation = _build_weight_explanation(
+        weights=weights,
+        diagnostics=c,
+        derived={
+            "clean": clean,
+            "structure": structure,
+            "smoothing_pressure": smoothing_pressure,
+            "shape_pressure": shape_pressure,
+        },
+        logits=logits,
+    )
+    return weights, explanation
 
 
 def tune_weights(

@@ -1,6 +1,6 @@
-# grouped_gemm.py / tf/kernels.py (FIXED AUTOTUNE META CONFLICT)
+# grouped_gemm.py
 # -----------------------------------------------------------------------------
-# From-scratch grouped GEMM (Triton) + SwiGLU MLP for packed MoE segments.
+# Grouped GEMM (Triton) for packed MoE segments with variable M per expert.
 #
 # - Triton kernel is autotuned over BLOCK_M/BLOCK_N/BLOCK_K.
 # - DO NOT pass BLOCK_* at launch; autotune provides them.
@@ -10,7 +10,6 @@
 from collections.abc import Sequence
 
 import torch
-import torch.nn.functional as F
 
 try:
     import triton
@@ -19,13 +18,6 @@ try:
     TRITON_AVAILABLE = True
 except Exception:  # pragma: no cover
     TRITON_AVAILABLE = False
-
-try:
-    from .triton_helpers import HAS_TRITON as _HAS_SWIGLU_TRITON
-    from .triton_helpers import TritonSwiGLUGate as _TritonSwiGLUGate
-except Exception:
-    _HAS_SWIGLU_TRITON = False
-    _TritonSwiGLUGate = None
 
 
 class _GroupedMMVarMFunction(torch.autograd.Function):
@@ -101,33 +93,26 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
         M_per = (offsets[1:] - offsets[:-1]).to(torch.int32).contiguous()
 
         if TRITON_AVAILABLE and A_packed.is_cuda:
-            # grad_A = dC @ B.T — reuse forward kernel with transposed B strides
-            # dC[M,N] @ B.T[N,K] = grad_A[M,K]
-            # Treat dC as "A" (M×N) and B.T as "B" (N×K):
-            #   inner dim K_arg = N_orig, output dim N_arg = K_orig
-            #   B strides swapped: stride_b_k ← B_cat.stride(2), stride_b_n ← B_cat.stride(1)
             grad_A = torch.zeros_like(A_packed) if needs_A else None
             if needs_A:
                 _grouped_gemm_varM_kernel[(E,)](
-                    grad_out,  # "A" = dC [S, N]
-                    B_cat,  # "B" = B_cat [E, K, N] accessed transposed
-                    grad_A,  # "C" = grad_A [S, K]
+                    grad_out,
+                    B_cat,
+                    grad_A,
                     starts,
                     M_per,
-                    K=N,  # reduction over original N columns of dC
-                    N=K,  # output is original K columns of A
+                    K=N,
+                    N=K,
                     stride_a_m=grad_out.stride(0),
                     stride_a_k=grad_out.stride(1),
                     stride_b_g=B_cat.stride(0),
-                    stride_b_k=B_cat.stride(2),  # transposed: n index → B's n-stride
-                    stride_b_n=B_cat.stride(1),  # transposed: k index → B's k-stride
+                    stride_b_k=B_cat.stride(2),
+                    stride_b_n=B_cat.stride(1),
                     stride_c_m=grad_A.stride(0),
                     stride_c_n=grad_A.stride(1),
                     ACC_DTYPE=tl.float32,
                 )
 
-            # grad_B = A.T @ dC — dedicated Triton reduction kernel
-            # A[M,K].T @ dC[M,N] = grad_B[K,N] per expert
             grad_B = torch.zeros_like(B_cat) if needs_B else None
             if needs_B:
                 _grouped_gemm_bwd_dB_kernel[(E,)](
@@ -148,7 +133,6 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
                     ACC_DTYPE=tl.float32,
                 )
         else:
-            # Pure-PyTorch fallback — no CPU sync needed when E=0
             grad_A = torch.zeros_like(A_packed) if needs_A else None
             grad_B = torch.zeros_like(B_cat) if needs_B else None
             for e in range(E):
@@ -156,13 +140,13 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
                 t = int(offsets[e + 1].item())
                 if t <= s:
                     continue
-                A_e = A_packed[s:t]  # [M, K]
-                dC_e = grad_out[s:t]  # [M, N]
-                B_e = B_cat[e]  # [K, N]
+                A_e = A_packed[s:t]
+                dC_e = grad_out[s:t]
+                B_e = B_cat[e]
                 if needs_A:
-                    grad_A[s:t] = dC_e @ B_e.T  # [M, K]
+                    grad_A[s:t] = dC_e @ B_e.T
                 if needs_B:
-                    grad_B[e] = A_e.T @ dC_e  # [K, N]
+                    grad_B[e] = A_e.T @ dC_e
 
         return grad_A, None, grad_B, None
 
@@ -195,40 +179,30 @@ if TRITON_AVAILABLE:
     )
     @triton.jit
     def _grouped_gemm_varM_kernel(
-        A_ptr,  # *elem (points to A_packed [S,K])
-        B_ptr,  # *elem (points to B_cat [E,K,N])
-        C_ptr,  # *elem (points to C_packed [S,N])
-        starts_ptr,  # *int32 (row start per group in A/C)
-        M_ptr,  # *int32 (rows per group)
-        # Shared sizes (K,N) and B strides for [E,K,N]
+        A_ptr,
+        B_ptr,
+        C_ptr,
+        starts_ptr,
+        M_ptr,
         K: tl.constexpr,
         N: tl.constexpr,
         stride_a_m,
         stride_a_k,
         stride_b_g,
         stride_b_k,
-        stride_b_n,  # B is 3D: [g, k, n]
+        stride_b_n,
         stride_c_m,
         stride_c_n,
-        # Tiling params (autotuned) — PROVIDED BY AUTOTUNE CONFIGS
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         BLOCK_K: tl.constexpr,
         ACC_DTYPE: tl.constexpr,
     ):
-        """
-        One program per group g.
-
-        A_g: [M_g,K] is located at rows [start_g : start_g+M_g) of A_packed
-        B_g: [K,N] is slice B_cat[g, :, :]
-        C_g: [M_g,N] is written at rows [start_g : start_g+M_g) of C_packed
-        """
-
+        """One program per group g. Computes C_g = A_g @ B_g."""
         g = tl.program_id(0)
         start_g = tl.load(starts_ptr + g).to(tl.int32)
         M_g = tl.load(M_ptr + g).to(tl.int32)
 
-        # Base pointer for B (for this group)
         b_base = B_ptr + g * stride_b_g
 
         m0 = 0
@@ -252,34 +226,27 @@ if TRITON_AVAILABLE:
                     k_ids = k0 + offs_k
                     k_mask = k_ids < K
 
-                    # A chunk: [BLOCK_M, BLOCK_K]
                     a_ptrs = (
                         a_tile_base
                         + offs_m[:, None] * stride_a_m
                         + k_ids[None, :] * stride_a_k
                     )
                     a = tl.load(
-                        a_ptrs,
-                        mask=mask_m[:, None] & k_mask[None, :],
-                        other=0.0,
+                        a_ptrs, mask=mask_m[:, None] & k_mask[None, :], other=0.0
                     )
 
-                    # B chunk: [BLOCK_K, BLOCK_N] from B_g
                     b_ptrs = (
                         b_base
                         + k_ids[:, None] * stride_b_k
                         + offs_n[None, :] * stride_b_n
                     )
                     b = tl.load(
-                        b_ptrs,
-                        mask=k_mask[:, None] & mask_n[None, :],
-                        other=0.0,
+                        b_ptrs, mask=k_mask[:, None] & mask_n[None, :], other=0.0
                     )
 
                     acc += tl.dot(a, b)
                     k0 += BLOCK_K
 
-                # Write C_g
                 c_ptrs = (
                     c_tile_base
                     + offs_m[:, None] * stride_c_m
@@ -315,11 +282,11 @@ if TRITON_AVAILABLE:
     )
     @triton.jit
     def _grouped_gemm_bwd_dB_kernel(
-        A_ptr,  # *elem — A_packed [S, K]
-        dC_ptr,  # *elem — grad_output [S, N]
-        dB_ptr,  # *elem — grad_B [E, K, N]
-        starts_ptr,  # *int32 — row start per group in A/dC
-        M_ptr,  # *int32 — rows per group
+        A_ptr,
+        dC_ptr,
+        dB_ptr,
+        starts_ptr,
+        M_ptr,
         K: tl.constexpr,
         N: tl.constexpr,
         stride_a_m,
@@ -334,17 +301,7 @@ if TRITON_AVAILABLE:
         BLOCK_M: tl.constexpr,
         ACC_DTYPE: tl.constexpr,
     ):
-        """
-        One program per group g.
-
-        Computes grad_B[g] = A_g.T @ dC_g  where
-          A_g  [M_g, K] is rows [start_g : start_g+M_g) of A_packed
-          dC_g [M_g, N] is rows [start_g : start_g+M_g) of grad_output
-          grad_B[g] has shape [K, N]
-
-        Tiles over the (K, N) output and reduces over the M_g dimension.
-        A is loaded transposed as [BLOCK_K, BLOCK_M] so tl.dot works directly.
-        """
+        """One program per group g. Computes grad_B[g] = A_g.T @ dC_g."""
         g = tl.program_id(0)
         start_g = tl.load(starts_ptr + g).to(tl.int32)
         M_g = tl.load(M_ptr + g).to(tl.int32)
@@ -369,36 +326,28 @@ if TRITON_AVAILABLE:
                     mask_m = offs_m < (M_g - m0)
                     abs_m = start_g + m0
 
-                    # Load A.T tile: [BLOCK_K, BLOCK_M] — load A[abs_m+m, k] transposed
                     a_T_ptrs = (
                         A_ptr
                         + (abs_m + offs_m[None, :]) * stride_a_m
                         + offs_k[:, None] * stride_a_k
                     )
                     a_T = tl.load(
-                        a_T_ptrs,
-                        mask=mask_k[:, None] & mask_m[None, :],
-                        other=0.0,
+                        a_T_ptrs, mask=mask_k[:, None] & mask_m[None, :], other=0.0
                     )
 
-                    # Load dC tile: [BLOCK_M, BLOCK_N]
                     dc_ptrs = (
                         dC_ptr
                         + (abs_m + offs_m[:, None]) * stride_dc_m
                         + offs_n[None, :] * stride_dc_n
                     )
                     dc = tl.load(
-                        dc_ptrs,
-                        mask=mask_m[:, None] & mask_n[None, :],
-                        other=0.0,
+                        dc_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0.0
                     )
 
-                    # acc += A.T @ dC: [BK, BM] @ [BM, BN] = [BK, BN]
                     acc += tl.dot(a_T, dc)
 
                     m0 += BLOCK_M
 
-                # Store dB[g, k0:k0+BLOCK_K, n0:n0+BLOCK_N]
                 db_ptrs = (
                     db_base
                     + offs_k[:, None] * stride_db_k
@@ -409,14 +358,12 @@ if TRITON_AVAILABLE:
                 n0 += BLOCK_N
             k0 += BLOCK_K
 
+
 # ============================== Python helpers ===============================
 
 
 def _split_by_offsets(x: torch.Tensor, offsets: torch.Tensor) -> list[torch.Tensor]:
-    """
-    Given x of shape [S, D] and offsets [E+1], return a list of E views: x[start:end].
-    Only used in the CPU / fallback path.
-    """
+    """Return a list of E views: x[start:end] for each expert."""
     out: list[torch.Tensor] = []
     for e in range(offsets.numel() - 1):
         s = int(offsets[e].item())
@@ -441,20 +388,20 @@ def _foreach_mm(
 
 # ============================== Grouped GEMM API ==============================
 
-__SHARED_B_WARNED = False  # shared-mem flag is a no-op for now
+__SHARED_B_WARNED = False
 
 
 def grouped_mm_varM(
-    A_packed: torch.Tensor,  # [S, K]
-    offsets: torch.Tensor,  # [E+1]
-    B_per_expert: Sequence[torch.Tensor],  # each [K, N], same K,N
+    A_packed: torch.Tensor,
+    offsets: torch.Tensor,
+    B_per_expert: Sequence[torch.Tensor],
     out_dtype: torch.dtype | None = None,
-    use_fp16_acc: bool = False,  # Optional tuning toggle for Triton path
-    use_shared_b: bool = False,  # Ignored for now; kept for API compat
+    use_fp16_acc: bool = False,
+    use_shared_b: bool = False,
     allow_triton_training: bool = True,
-    block_m: int = 128,  # NOTE: ignored on Triton path (autotune chooses)
-    block_n: int = 128,  # NOTE: ignored on Triton path
-    block_k: int = 64,  # NOTE: ignored on Triton path
+    block_m: int = 128,
+    block_n: int = 128,
+    block_k: int = 64,
 ) -> torch.Tensor:
     """
     Compute concatenated C = concat_e (A_e @ B_e) with variable M_e.
@@ -463,9 +410,6 @@ def grouped_mm_varM(
     offsets: starts/ends per expert in A_packed/C_packed, shape [E+1]
     B_per_expert: list of [K, N] (one per expert, same K and N)
     Returns C_packed: [S, N]
-
-    - Triton path supports training via custom autograd (optional).
-    - Fallback path uses pure torch.mm.
     """
     global __SHARED_B_WARNED
 
@@ -482,7 +426,6 @@ def grouped_mm_varM(
     if not offsets.is_contiguous():
         offsets = offsets.contiguous()
 
-    # Detect whether gradients are needed.
     requires_grad = torch.is_grad_enabled() and (
         A_packed.requires_grad or any(b.requires_grad for b in B_per_expert)
     )
@@ -498,19 +441,16 @@ def grouped_mm_varM(
                 C_packed[s_i:t_i] = y.to(out_dtype)
         return C_packed
 
-    # Triton path ------------------------------------------------------------
     K = B_per_expert[0].shape[0]
     N = B_per_expert[0].shape[1]
     B_cat = torch.stack([b.contiguous() for b in B_per_expert], dim=0).to(
         A_packed.dtype
-    )  # [E,K,N]
+    )
 
-    # Training path with manual-backward autograd wrapper
     if requires_grad and allow_triton_training:
         C = _GroupedMMVarMFunction.apply(A_packed, offsets, B_cat, use_fp16_acc)
         return C.to(out_dtype) if C.dtype != out_dtype else C
 
-    # Strict fallback for training if custom-triton backward is disabled
     if requires_grad:
         A_blocks = _split_by_offsets(A_packed, offsets)
         Y = _foreach_mm(A_blocks, list(B_per_expert))
@@ -524,14 +464,13 @@ def grouped_mm_varM(
     if use_shared_b and not __SHARED_B_WARNED:
         print(
             "[grouped_mm_varM] use_shared_b=True is currently ignored; "
-            "shared-memory optimization was removed for clarity. "
-            "If you need it, implement it in a dedicated kernel."
+            "shared-memory optimization was removed for clarity."
         )
         __SHARED_B_WARNED = True
 
     C_packed = torch.empty((A_packed.shape[0], N), device=device, dtype=out_dtype)
-    starts = offsets[:-1].to(torch.int32).contiguous()  # [E]
-    M_per = (offsets[1:] - offsets[:-1]).to(torch.int32).contiguous()  # [E]
+    starts = offsets[:-1].to(torch.int32).contiguous()
+    M_per = (offsets[1:] - offsets[:-1]).to(torch.int32).contiguous()
 
     stride_a_m, stride_a_k = A_packed.stride()
     stride_b_g, stride_b_k, stride_b_n = B_cat.stride()
@@ -539,10 +478,7 @@ def grouped_mm_varM(
 
     acc_dtype = tl.float16 if use_fp16_acc else tl.float32
 
-    grid = (E,)
-
-    # IMPORTANT: DO NOT pass BLOCK_M/N/K here; autotune sets them.
-    _grouped_gemm_varM_kernel[grid](
+    _grouped_gemm_varM_kernel[(E,)](
         A_packed,
         B_cat,
         C_packed,
@@ -562,124 +498,10 @@ def grouped_mm_varM(
     return C_packed
 
 
-# ============================ SwiGLU grouped MLP ==============================
-
-
-def _weights_from_swiglu_experts(
-    experts: Sequence[torch.nn.Module],
-) -> tuple[list[torch.Tensor], list[torch.Tensor], int]:
-    """
-    Extract per-expert weights for SwiGLU experts.
-    Returns ([w12_e], [w3_e], H), with shapes [D,2H] and [H,D].
-    """
-    w12_list: list[torch.Tensor] = []
-    w3_list: list[torch.Tensor] = []
-    H: int | None = None
-
-    for e in experts:
-        if hasattr(e, "w12") and hasattr(e, "w3"):
-            w12, w3 = e.w12.weight.t().contiguous(), e.w3.weight.t().contiguous()
-        elif hasattr(e, "gate_up_proj") and hasattr(e, "down_proj"):
-            w12, w3 = (
-                e.gate_up_proj.weight.t().contiguous(),
-                e.down_proj.weight.t().contiguous(),
-            )
-        else:
-            raise ValueError("Unsupported expert layout for SwiGLU extraction.")
-
-        if H is None:
-            H = w3.shape[0]
-        w12_list.append(w12)
-        w3_list.append(w3)
-
-    assert H is not None
-    return w12_list, w3_list, H
-
-
-def grouped_mlp_swiglu(
-    packed_x: torch.Tensor,  # [S, D]
-    offsets: torch.Tensor,  # [E+1]
-    experts: Sequence[torch.nn.Module],
-    dropout_p: float = 0.0,
-    training: bool = False,
-    out_dtype: torch.dtype | None = None,
-    use_fp16_acc: bool = False,  # Passed through for optional tuning
-    use_shared_b: bool = False,  # Currently ignored in Triton path (see grouped_mm_varM)
-    allow_triton_training: bool = True,
-    B12_cat_prepacked: torch.Tensor | None = None,
-    B3_cat_prepacked: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """
-    SwiGLU MLP in grouped mode over packed slices:
-
-        GU = grouped_mm_varM(packed_x, W12[e])  # D -> 2H
-        H  = SiLU(G) * U
-        Y  = grouped_mm_varM(H, W3[e])         # H -> D
-
-    Returns Y packed in the same order ([S, D]).
-    """
-    if offsets.numel() <= 1:
-        return packed_x.new_zeros((0, packed_x.shape[1]))
-
-    D = packed_x.shape[1]
-    if (B12_cat_prepacked is not None) and (B3_cat_prepacked is not None):
-        B12 = B12_cat_prepacked
-        B3 = B3_cat_prepacked
-        if B12.ndim != 3 or B3.ndim != 3:
-            raise ValueError(
-                "Prepacked tensors must be rank-3: [E, D, 2H] and [E, H, D]."
-            )
-        H = B3.shape[1]
-        w12_list = list(B12.unbind(0))
-        w3_list = list(B3.unbind(0))
-    else:
-        w12_list, w3_list, H = _weights_from_swiglu_experts(experts)
-
-    assert all(w.shape == (D, 2 * H) for w in w12_list), "All w12 must be [D, 2H]"
-    assert all(w.shape == (H, D) for w in w3_list), "All w3 must be [H, D]"
-
-    # Phase A: up-projection (D -> 2H)
-    GU = grouped_mm_varM(
-        A_packed=packed_x,
-        offsets=offsets,
-        B_per_expert=w12_list,  # [D, 2H]
-        out_dtype=packed_x.dtype,
-        use_fp16_acc=use_fp16_acc,
-        use_shared_b=use_shared_b,
-        allow_triton_training=allow_triton_training,
-        # block_* args kept for API compat but ignored on Triton path
-        block_m=128,
-        block_n=128,
-        block_k=64,
-    )
-
-    # SwiGLU — fuse split+silu+mul into a single Triton kernel when available
-    if (
-        _HAS_SWIGLU_TRITON
-        and _TritonSwiGLUGate is not None
-        and GU.is_cuda
-        and not torch.jit.is_scripting()
-    ):
-        G_3d = GU[:, :H].unsqueeze(0).contiguous()  # [1, S, H]
-        U_3d = GU[:, H:].unsqueeze(0).contiguous()  # [1, S, H]
-        H_act = _TritonSwiGLUGate.apply(G_3d, U_3d).squeeze(0)  # [S, H]
-    else:
-        G, U = GU.split(H, dim=-1)
-        H_act = F.silu(G) * U
-    if training and dropout_p > 0:
-        H_act = F.dropout(H_act, p=dropout_p, training=True)
-
-    # Phase B: down-projection (H -> D)
-    Y = grouped_mm_varM(
-        A_packed=H_act,
-        offsets=offsets,
-        B_per_expert=w3_list,  # [H, D]
-        out_dtype=out_dtype or packed_x.dtype,
-        use_fp16_acc=use_fp16_acc,
-        use_shared_b=use_shared_b,
-        allow_triton_training=allow_triton_training,
-        block_m=128,
-        block_n=128,
-        block_k=64,
-    )
-    return Y
+__all__ = [
+    "TRITON_AVAILABLE",
+    "_GroupedMMVarMFunction",
+    "_split_by_offsets",
+    "_foreach_mm",
+    "grouped_mm_varM",
+]

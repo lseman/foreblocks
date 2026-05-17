@@ -3,10 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 try:
-    from foreblocks.transformer.compute.triton_helpers import (
+    from foreblocks.transformer.kernels.triton_helpers import (
         HAS_TRITON as _HAS_TRITON,
     )
-    from foreblocks.transformer.compute.triton_helpers import (
+    from foreblocks.transformer.kernels.triton_helpers import (
         triton_causal_linear_attn,
     )
 except Exception:

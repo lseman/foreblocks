@@ -38,7 +38,7 @@
   <div class="path-card">
     <p class="route-kicker">Path 03</p>
     <h3><a href="transformer/">Explore advanced backbones</a></h3>
-    <p>Learn transformer attention, MoE routing, custom blocks, and Hybrid Mamba for stronger models.</p>
+    <p>Learn transformer attention, MoE routing, custom blocks, and Custom Mamba for stronger models.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 04</p>
@@ -110,7 +110,7 @@ Topic-based deep dives:
 - [Custom Blocks](custom_blocks.md)
 - [Transformer](transformer.md)
 - [Mixture of Experts](moe.md)
-- [Hybrid Mamba](hybrid-mamba.md)
+- [Custom Mamba](hybrid-mamba.md)
 - [DARTS](darts.md)
 - [Evaluation & Metrics](evaluation.md)
 - [Uncertainty Quantification](uncertainty.md)
@@ -158,7 +158,7 @@ from foreblocks import (
 ### Architecture search
 
 ```python
-from foreblocks.darts import (
+from darts import (
     DARTSTrainer,
     DARTSConfig,
     DARTSTrainConfig,
@@ -173,10 +173,10 @@ from foreblocks.darts import (
 from foreblocks.core import ConformalPredictionEngine
 ```
 
-### Hybrid Mamba
+### Custom Mamba
 
 ```python
-from foreblocks.hybrid_mamba import (
+from foreblocks.custom_mamba import (
     HybridMambaBlock,
     HybridMamba2Block,
     TinyHybridMamba2LM,

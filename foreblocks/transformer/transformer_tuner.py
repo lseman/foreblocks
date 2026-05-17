@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
 import torch
-from pydantic import BaseModel  # pip install pydantic
-from pydantic import Field, field_validator
+from pydantic import (
+    BaseModel,  # pip install pydantic
+    Field,
+    field_validator,
+)
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
@@ -59,16 +63,12 @@ def _linear_detrend(values: np.ndarray) -> tuple[np.ndarray, float]:
     if values.size <= 2:
         return values - values.mean(), 0.0
 
-    timeline = np.arange(values.size, dtype=np.float64)
-    slope, intercept = np.polyfit(timeline, values, deg=1)
-    trend = slope * timeline + intercept
+    x = np.arange(values.size, dtype=np.float64)
+    A = np.vstack([x, np.ones_like(x)]).T
+    coef, _, _, _ = np.linalg.lstsq(A, values, rcond=None)
+    trend = A @ coef
     residual = values - trend
-
-    total_var = float(np.var(values))
-    residual_var = float(np.var(residual))
-    trend_strength = (
-        0.0 if total_var <= 1e-12 else _clamp(1.0 - residual_var / total_var)
-    )
+    trend_strength = float(_clamp(1.0 - np.var(residual) / (np.var(values) + 1e-12)))
     return residual, trend_strength
 
 
@@ -111,6 +111,71 @@ def _spectral_entropy(normalized_power: np.ndarray) -> float:
         return 1.0
     entropy = -float(np.sum(power * np.log(power)))
     return entropy / max(np.log(power.size), 1e-8)
+
+
+@dataclass
+class TunerConfig:
+    """All tunable thresholds for ModernTransformerTuner heuristics."""
+
+    # --- Patching score ---
+    roughness_high: float = 1.05  # roughness above this → shrink base patch
+    roughness_low: float = 0.55  # roughness below this → grow base patch
+    roughness_ref: float = 1.45  # denominator for roughness term in patching score
+    roughness_medium: float = 0.95  # roughness threshold for wavelet head / emd decomp
+    peak_concentration_ref: float = (
+        0.22  # denominator for concentration term in patching score
+    )
+    repeatability_ref: float = (
+        0.45  # denominator for repeatability term in patching score
+    )
+    context_length_ref: float = (
+        240.0  # denominator for context-length term in patching score
+    )
+    patching_good: int = 68  # score >= this → "good"
+    patching_moderate: int = 48  # score >= this → "moderate"
+    forecastability_weak: float = 35.0  # score < this → large forecastability penalty
+    forecastability_strong: float = 55.0  # score < this → small forecastability penalty
+    forecastability_penalty_weak: int = 10
+    forecastability_penalty_moderate: int = 4
+
+    # --- Scale bands ---
+    scale_band_strong: float = 0.22  # band share >= this counts toward scale_spread
+    short_long_threshold: float = (
+        0.14  # short & long share >= this for multiscale bonus
+    )
+    medium_ref: float = 0.35  # denominator for medium-band multiscale term
+    short_band_threshold: float = 0.18  # short share >= this to recommend wavelet
+
+    # --- Multiscale score ---
+    scale_spread_ref: float = 3.0  # denominator for scale_spread term
+    effective_periods_ref: float = 3.0  # denominator for effective-periods term
+    dominant_power_threshold: float = (
+        0.58  # dominant peak power >= this → penalise multiscale
+    )
+    second_period_threshold: float = (
+        0.14  # second peak power <= this → penalise multiscale
+    )
+    multiscale_penalty: int = 25  # penalty applied when signal is single-dominant
+    multiscale_high: int = 65  # score >= this → "high"
+    multiscale_moderate: int = 45  # score >= this → "moderate"
+
+    # --- Hierarchical / harmonic ---
+    period_power_min: float = (
+        0.08  # min normalised power for a period to be "effective"
+    )
+    harmonic_tolerance: float = 0.2  # max ratio deviation to count as harmonic
+    harmonic_pairs_ref: float = 2.0  # denominator for harmonic-pairs term
+    hierarchical_high: int = 65  # score >= this → "high"
+    hierarchical_moderate: int = 45  # score >= this → "moderate"
+
+    # --- Decomposition / preprocessing heads ---
+    trend_strength_threshold: float = 0.2  # trend strength >= this → recommend decomp
+    dominant_period_min: float = (
+        8.0  # dominant period >= this → recommend trend_seasonal
+    )
+
+    # --- Attention mode ---
+    series_length_large: int = 768  # series length >= this → prefer linear/hybrid
 
 
 class SpectralPeak(BaseModel):
@@ -188,17 +253,28 @@ class ModernTransformerTuner:
     PatchTST, iTransformer, and recent dynamic patching research.
     """
 
+    DEFAULT_PATCH_LENGTHS: list[int] = [4, 6, 8, 12, 16, 24, 32, 48, 64]
+    DEFAULT_STRIDES: list[int] = [1, 2, 4, 6, 8, 12, 16, 24, 32]
+
+    # Scoring weights for patching score formula
+    PATCHING_WEIGHTS: dict[str, float] = {
+        "peak": 0.30,
+        "repeat": 0.25,
+        "smooth": 0.25,
+        "length": 0.20,
+    }
+
     def __init__(
         self,
         candidate_patch_lengths: Iterable[int] | None = None,
         candidate_strides: Iterable[int] | None = None,
+        config: TunerConfig | None = None,
     ) -> None:
         self.candidate_patch_lengths = list(
-            candidate_patch_lengths or [4, 6, 8, 12, 16, 24, 32, 48, 64]
+            candidate_patch_lengths or self.DEFAULT_PATCH_LENGTHS
         )
-        self.candidate_strides = list(
-            candidate_strides or [1, 2, 4, 6, 8, 12, 16, 24, 32]
-        )
+        self.candidate_strides = list(candidate_strides or self.DEFAULT_STRIDES)
+        self.config = config if config is not None else TunerConfig()
 
     def analyze(
         self,
@@ -261,8 +337,9 @@ class ModernTransformerTuner:
         repeatability = max((abs(v) for _, v in acf_peaks), default=0.0)
         acf_periods = tuple(lag for lag, _ in acf_peaks)
 
-        # Spectral analysis (FFT)
-        centered = detrended - detrended.mean()
+        # Spectral analysis (FFT) — Hann window reduces spectral leakage
+        window = np.hanning(len(detrended))
+        centered = (detrended - detrended.mean()) * window
         spectrum = np.abs(np.fft.rfft(centered))[1:] ** 2
         total_power = float(np.sum(spectrum))
 
@@ -315,7 +392,9 @@ class ModernTransformerTuner:
         else:
             short = medium = long_ = 0.0
 
-        scale_spread = sum(1 for s in (short, medium, long_) if s >= 0.22)
+        scale_spread = sum(
+            1 for s in (short, medium, long_) if s >= self.config.scale_band_strong
+        )
         peak_concentration = sum(p.normalized_power for p in dominant_periods[:3])
         spectral_entropy = _spectral_entropy(normalized_power)
         forecastability_score = round(100.0 * (1.0 - spectral_entropy), 2)
@@ -327,9 +406,9 @@ class ModernTransformerTuner:
         )
         base_patch = dominant_period / (3 if dominant_period >= 24 else 2)
 
-        if roughness > 1.05:
+        if roughness > self.config.roughness_high:
             base_patch *= 0.75
-        elif roughness < 0.55:
+        elif roughness < self.config.roughness_low:
             base_patch *= 1.15
 
         if context_length is not None and context_length >= 32:
@@ -363,18 +442,29 @@ class ModernTransformerTuner:
             estimated_num_patches = None
 
         forecastability_penalty = (
-            10 if forecastability_score < 35 else 4 if forecastability_score < 55 else 0
+            self.config.forecastability_penalty_weak
+            if forecastability_score < self.config.forecastability_weak
+            else self.config.forecastability_penalty_moderate
+            if forecastability_score < self.config.forecastability_strong
+            else 0
         )
 
+        w = self.PATCHING_WEIGHTS
         patching_score = int(
             _clamp(
                 round(
                     100.0
                     * (
-                        0.30 * min(1.0, peak_concentration / 0.22)
-                        + 0.25 * min(1.0, repeatability / 0.45)
-                        + 0.25 * (1.0 - min(1.0, roughness / 1.45))
-                        + 0.20 * min(1.0, effective_context / 240.0)
+                        w["peak"]
+                        * min(
+                            1.0, peak_concentration / self.config.peak_concentration_ref
+                        )
+                        + w["repeat"]
+                        * min(1.0, repeatability / self.config.repeatability_ref)
+                        + w["smooth"]
+                        * (1.0 - min(1.0, roughness / self.config.roughness_ref))
+                        + w["length"]
+                        * min(1.0, effective_context / self.config.context_length_ref)
                     )
                 )
                 - forecastability_penalty,
@@ -384,15 +474,17 @@ class ModernTransformerTuner:
         )
         patching_label = (
             "good"
-            if patching_score >= 68
+            if patching_score >= self.config.patching_good
             else "moderate"
-            if patching_score >= 48
+            if patching_score >= self.config.patching_moderate
             else "weak"
         )
 
         # Multiscale & hierarchical logic (kept similar but cleaner)
         effective_periods = [
-            p.period for p in dominant_periods if p.normalized_power >= 0.08
+            p.period
+            for p in dominant_periods
+            if p.normalized_power >= self.config.period_power_min
         ]
 
         multiscale_score = int(
@@ -400,22 +492,34 @@ class ModernTransformerTuner:
                 round(
                     100.0
                     * (
-                        0.45 * min(1.0, scale_spread / 3.0)
-                        + 0.35 * min(1.0, max(0, len(effective_periods) - 1) / 3.0)
+                        0.45 * min(1.0, scale_spread / self.config.scale_spread_ref)
+                        + 0.35
+                        * min(
+                            1.0,
+                            max(0, len(effective_periods) - 1)
+                            / self.config.effective_periods_ref,
+                        )
                         + 0.20
                         * min(
                             1.0,
-                            1.0 if (short > 0.14 and long_ > 0.14) else medium / 0.35,
+                            1.0
+                            if (
+                                short > self.config.short_long_threshold
+                                and long_ > self.config.short_long_threshold
+                            )
+                            else medium / self.config.medium_ref,
                         )
                     )
                 )
                 - (
-                    25
+                    self.config.multiscale_penalty
                     if dominant_periods
-                    and dominant_periods[0].normalized_power >= 0.58
+                    and dominant_periods[0].normalized_power
+                    >= self.config.dominant_power_threshold
                     and (
                         len(dominant_periods) < 2
-                        or dominant_periods[1].normalized_power <= 0.14
+                        or dominant_periods[1].normalized_power
+                        <= self.config.second_period_threshold
                     )
                     else 0
                 ),
@@ -425,9 +529,9 @@ class ModernTransformerTuner:
         )
         multiscale_label = (
             "high"
-            if multiscale_score >= 65
+            if multiscale_score >= self.config.multiscale_high
             else "moderate"
-            if multiscale_score >= 45
+            if multiscale_score >= self.config.multiscale_moderate
             else "low"
         )
 
@@ -440,7 +544,10 @@ class ModernTransformerTuner:
             for p2 in period_pool[i + 1 :]:
                 ratio = p2 / max(p1, 1)
                 nearest = round(ratio)
-                if nearest >= 2 and abs(ratio - nearest) <= 0.2:
+                if (
+                    nearest >= 2
+                    and abs(ratio - nearest) <= self.config.harmonic_tolerance
+                ):
                     harmonic_pairs += 1
                     if p1 not in hierarchy_periods:
                         hierarchy_periods.append(p1)
@@ -452,9 +559,15 @@ class ModernTransformerTuner:
                 round(
                     100.0
                     * (
-                        0.40 * min(1.0, max(0, len(period_pool) - 1) / 3.0)
-                        + 0.35 * min(1.0, harmonic_pairs / 2.0)
-                        + 0.25 * min(1.0, scale_spread / 3.0)
+                        0.40
+                        * min(
+                            1.0,
+                            max(0, len(period_pool) - 1)
+                            / self.config.effective_periods_ref,
+                        )
+                        + 0.35
+                        * min(1.0, harmonic_pairs / self.config.harmonic_pairs_ref)
+                        + 0.25 * min(1.0, scale_spread / self.config.scale_spread_ref)
                     )
                 ),
                 0,
@@ -463,34 +576,35 @@ class ModernTransformerTuner:
         )
         hierarchical_label = (
             "high"
-            if hierarchical_score >= 65
+            if hierarchical_score >= self.config.hierarchical_high
             else "moderate"
-            if hierarchical_score >= 45
+            if hierarchical_score >= self.config.hierarchical_moderate
             else "low"
         )
 
         # Patch set for experimentation
         rec_patch_set = tuple(
-            sorted(
-                {
-                    _choose_nearest_candidate(
-                        max(4.0, rec_patch_len / 2),
-                        self.candidate_patch_lengths,
-                        max_patch,
-                    ),
-                    rec_patch_len,
-                    _choose_nearest_candidate(
-                        max(4.0, dominant_period),
-                        self.candidate_patch_lengths,
-                        max_patch,
-                    ),
-                }
-            )
+            sorted({
+                _choose_nearest_candidate(
+                    max(4.0, rec_patch_len / 2),
+                    self.candidate_patch_lengths,
+                    max_patch,
+                ),
+                rec_patch_len,
+                _choose_nearest_candidate(
+                    max(4.0, dominant_period),
+                    self.candidate_patch_lengths,
+                    max_patch,
+                ),
+            })
         )
 
         # Decomposition recommendations
         decomps: list[DecompositionRecommendation] = []
-        if trend_strength >= 0.2 and dominant_period >= 8:
+        if (
+            trend_strength >= self.config.trend_strength_threshold
+            and dominant_period >= self.config.dominant_period_min
+        ):
             decomps.append(
                 DecompositionRecommendation(
                     method="trend_seasonal",
@@ -508,7 +622,10 @@ class ModernTransformerTuner:
                     periods=tuple(period_pool[:3]),
                 )
             )
-        if roughness >= 0.95 and short >= 0.18:
+        if (
+            roughness >= self.config.roughness_medium
+            and short >= self.config.short_band_threshold
+        ):
             decomps.append(
                 DecompositionRecommendation(
                     method="wavelet",
@@ -516,7 +633,7 @@ class ModernTransformerTuner:
                     rationale="High short-scale energy suggests wavelet or localized multiscale processing.",
                 )
             )
-        if multiscale_label == "high" and roughness >= 0.9:
+        if multiscale_label == "high" and roughness >= self.config.roughness_medium:
             decomps.append(
                 DecompositionRecommendation(
                     method="emd",
@@ -533,7 +650,7 @@ class ModernTransformerTuner:
             heads.append("MultiScaleConvHead")
 
         # Attention mode recommendation (modern defaults favor efficient variants)
-        if n >= 768 and patching_label != "weak":
+        if n >= self.config.series_length_large and patching_label != "weak":
             attention_mode = (
                 "hybrid" if multiscale_label in {"moderate", "high"} else "linear"
             )
@@ -623,6 +740,7 @@ class ModernTransformerTuner:
 TransformerTuner = ModernTransformerTuner
 
 __all__ = [
+    "TunerConfig",
     "ScaleBandShare",
     "SpectralPeak",
     "DecompositionRecommendation",

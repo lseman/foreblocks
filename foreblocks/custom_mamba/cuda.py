@@ -8,13 +8,12 @@ import torch
 import torch.utils.cpp_extension as cpp_extension
 from torch.utils.cpp_extension import load
 
-
-EXTENSION_NAME = "hybrid_mamba_selective_scan"
+EXTENSION_NAME = "custom_mamba_selective_scan"
 PACKAGE_ROOT = Path(__file__).resolve().parent
 CSRC_DIR = PACKAGE_ROOT / "csrc"
 DEFAULT_BUILD_DIR = PACKAGE_ROOT / ".build"
-FORCE_ENV_VAR = "HYBRID_MAMBA_FORCE_CUDA_VERSION"
-DEFAULT_ARCH_LIST_ENV_VAR = "HYBRID_MAMBA_CUDA_ARCH_LIST"
+FORCE_ENV_VAR = "CUSTOM_MAMBA_FORCE_CUDA_VERSION"
+DEFAULT_ARCH_LIST_ENV_VAR = "CUSTOM_MAMBA_CUDA_ARCH_LIST"
 DEFAULT_ARCH_LIST = "8.0;8.6;8.9;9.0"
 
 _EXT = None
@@ -25,7 +24,7 @@ def extension_available() -> bool:
 
 
 def get_default_build_dir() -> Path:
-    raw = os.environ.get("HYBRID_MAMBA_BUILD_DIR")
+    raw = os.environ.get("CUSTOM_MAMBA_BUILD_DIR")
     return Path(raw).expanduser().resolve() if raw else DEFAULT_BUILD_DIR
 
 

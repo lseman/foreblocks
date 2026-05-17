@@ -1,10 +1,10 @@
-from . import attention, compute, moe, popular, skip
+from . import attention, kernels, moe, popular, skip
 from .transformer_tuner import ModernTransformerTuner, TransformerTuner
 
 __all__ = [
     "attention",
     "moe",
-    "compute",
+    "kernels",
     "popular",
     "skip",
     "ModernTransformerTuner",

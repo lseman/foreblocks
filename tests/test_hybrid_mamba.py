@@ -3,15 +3,16 @@ import math
 import torch
 import torch.nn as nn
 
-from foreblocks.hybrid_mamba import (
+from foreblocks.custom_mamba import (
     GROUPED_SSD_TRITON_AVAILABLE,
     grouped_ssd_scan,
     grouped_ssd_scan_reference,
 )
-from foreblocks.hybrid_mamba.layers import (
+from foreblocks.custom_mamba.layers import (
     FeedForward,
     HybridMamba2Block,
     HybridMambaBlock,
+    RMSNorm,
     RotaryEmbedding,
     SlidingWindowAttention,
     StructuredStateSpaceDualityBranch,
@@ -20,7 +21,7 @@ from foreblocks.hybrid_mamba.layers import (
 )
 
 
-def test_hybrid_mamba_block_cpu_forward_uses_low_rank_dt() -> None:
+def test_custom_mamba_block_cpu_forward_uses_low_rank_dt() -> None:
     block = HybridMambaBlock(
         d_model=32,
         d_inner=64,
@@ -38,7 +39,7 @@ def test_hybrid_mamba_block_cpu_forward_uses_low_rank_dt() -> None:
     assert y.shape == x.shape
 
 
-def test_tiny_hybrid_mamba_lm_ties_embeddings_by_default() -> None:
+def test_tiny_custom_mamba_lm_ties_embeddings_by_default() -> None:
     model = TinyHybridMambaLM(
         vocab_size=101,
         d_model=32,
@@ -73,7 +74,7 @@ def test_sliding_window_attention_is_causal() -> None:
     assert torch.allclose(y[:, :-1, :], y_perturbed[:, :-1, :], atol=1e-6, rtol=1e-6)
 
 
-def test_hybrid_mamba2_block_cpu_forward() -> None:
+def test_custom_mamba2_block_cpu_forward() -> None:
     block = HybridMamba2Block(
         d_model=32,
         d_inner=64,
@@ -91,7 +92,7 @@ def test_hybrid_mamba2_block_cpu_forward() -> None:
     assert isinstance(block.ssm, StructuredStateSpaceDualityBranch)
 
 
-def test_tiny_hybrid_mamba2_lm_forward_and_tied_weights() -> None:
+def test_tiny_custom_mamba2_lm_forward_and_tied_weights() -> None:
     model = TinyHybridMamba2LM(
         vocab_size=127,
         d_model=32,
@@ -129,7 +130,7 @@ def test_structured_ssd_branch_supports_gated_delta() -> None:
     assert y.shape == x.shape
 
 
-def test_tiny_hybrid_mamba2_lm_supports_gated_delta() -> None:
+def test_tiny_custom_mamba2_lm_supports_gated_delta() -> None:
     model = TinyHybridMamba2LM(
         vocab_size=64,
         d_model=32,
@@ -199,7 +200,25 @@ def test_sliding_window_attention_gqa_shapes() -> None:
     assert y.shape == x.shape
 
 
-def test_hybrid_mamba_block_pre_norm_disabled() -> None:
+def test_sliding_window_attention_qk_norm_and_softcap() -> None:
+    attn = SlidingWindowAttention(
+        d_model=32,
+        num_heads=8,
+        n_kv_heads=2,
+        window_size=4,
+        dropout=0.0,
+        qk_norm=True,
+        logit_softcap=20.0,
+    )
+    assert isinstance(attn.q_norm, RMSNorm)
+    assert isinstance(attn.k_norm, RMSNorm)
+
+    x = torch.randn(2, 6, 32)
+    y = attn(x)
+    assert y.shape == x.shape
+
+
+def test_custom_mamba_block_pre_norm_disabled() -> None:
     block = HybridMambaBlock(
         d_model=32,
         d_inner=64,
@@ -215,7 +234,7 @@ def test_hybrid_mamba_block_pre_norm_disabled() -> None:
     assert y.shape == x.shape
 
 
-def test_hybrid_mamba2_block_out_norm_present() -> None:
+def test_custom_mamba2_block_out_norm_present() -> None:
     block = HybridMamba2Block(
         d_model=32,
         d_inner=64,
@@ -233,7 +252,7 @@ def test_hybrid_mamba2_block_out_norm_present() -> None:
     assert y.shape == x.shape
 
 
-def test_tiny_hybrid_mamba2_lm_with_gqa() -> None:
+def test_tiny_custom_mamba2_lm_with_gqa() -> None:
     model = TinyHybridMamba2LM(
         vocab_size=64,
         d_model=32,
@@ -260,11 +279,16 @@ def test_feedforward_block_forward() -> None:
     assert y.shape == x.shape
 
 
-def test_hybrid_mamba_block_step_matches_parallel() -> None:
+def test_custom_mamba_block_step_matches_parallel() -> None:
     torch.manual_seed(0)
     block = HybridMambaBlock(
-        d_model=32, d_inner=64, d_state=8, d_conv=4, dt_rank=4,
-        use_cuda_scan=False, use_pre_norm=False,
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        use_cuda_scan=False,
+        use_pre_norm=False,
     )
     block.eval()
     T = 6
@@ -279,14 +303,20 @@ def test_hybrid_mamba_block_step_matches_parallel() -> None:
             ys.append(block.step(x[:, t], state))
         y_step = torch.stack(ys, dim=1)
 
-    assert torch.allclose(y_par, y_step, atol=1e-4, rtol=1e-4), \
+    assert torch.allclose(y_par, y_step, atol=1e-4, rtol=1e-4), (
         f"max diff: {(y_par - y_step).abs().max().item()}"
+    )
 
 
 def test_ssd_branch_step_matches_parallel() -> None:
     torch.manual_seed(1)
     branch = StructuredStateSpaceDualityBranch(
-        d_model=32, d_inner=64, d_state=8, d_conv=4, dt_rank=4, num_heads=4,
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
     )
     branch.eval()
     T = 5
@@ -299,14 +329,21 @@ def test_ssd_branch_step_matches_parallel() -> None:
         ys = [branch.step(x[:, t], state) for t in range(T)]
         y_step = torch.stack(ys, dim=1)
 
-    assert torch.allclose(y_par, y_step, atol=1e-4, rtol=1e-4), \
+    assert torch.allclose(y_par, y_step, atol=1e-4, rtol=1e-4), (
         f"max diff: {(y_par - y_step).abs().max().item()}"
+    )
 
 
-def test_hybrid_mamba2_block_step_runs() -> None:
+def test_custom_mamba2_block_step_runs() -> None:
     block = HybridMamba2Block(
-        d_model=32, d_inner=64, d_state=8, d_conv=4, dt_rank=4,
-        num_heads=4, window_size=8, use_cuda_scan=False,
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        window_size=8,
+        use_cuda_scan=False,
     )
     block.eval()
     x = torch.randn(2, 32)
@@ -316,11 +353,80 @@ def test_hybrid_mamba2_block_step_runs() -> None:
     assert y.shape == (2, 32)
 
 
-def test_tiny_hybrid_mamba2_lm_generate() -> None:
+def test_custom_mamba2_block_step_matches_parallel_with_attention_sink() -> None:
+    torch.manual_seed(2)
+    block = HybridMamba2Block(
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        window_size=4,
+        n_sink_tokens=2,
+        use_cuda_scan=False,
+    )
+    block.eval()
+    x = torch.randn(1, 7, 32)
+
+    with torch.no_grad():
+        y_parallel = block(x)
+        state = block.make_state(1)
+        y_step = torch.stack(
+            [block.step(x[:, t], state) for t in range(x.shape[1])],
+            dim=1,
+        )
+
+    assert torch.allclose(y_parallel, y_step, atol=1e-4, rtol=1e-4), (
+        f"max diff: {(y_parallel - y_step).abs().max().item()}"
+    )
+
+
+def test_custom_mamba2_block_step_matches_parallel_with_modern_attn_knobs() -> None:
+    torch.manual_seed(3)
+    block = HybridMamba2Block(
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        n_kv_heads=2,
+        window_size=4,
+        qk_norm=True,
+        attn_logit_softcap=15.0,
+        layer_scale_init=0.1,
+        use_cuda_scan=False,
+    )
+    block.eval()
+    x = torch.randn(1, 7, 32)
+
+    with torch.no_grad():
+        y_parallel = block(x)
+        state = block.make_state(1)
+        y_step = torch.stack(
+            [block.step(x[:, t], state) for t in range(x.shape[1])],
+            dim=1,
+        )
+
+    assert torch.allclose(y_parallel, y_step, atol=1e-4, rtol=1e-4), (
+        f"max diff: {(y_parallel - y_step).abs().max().item()}"
+    )
+
+
+def test_tiny_custom_mamba2_lm_generate() -> None:
     model = TinyHybridMamba2LM(
-        vocab_size=64, d_model=32, n_layers=4, d_state=8, d_conv=4,
-        dt_rank=4, num_heads=4, window_size=8, attn_every_n=2,
-        tie_embeddings=True, use_cuda_scan=False,
+        vocab_size=64,
+        d_model=32,
+        n_layers=4,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        window_size=8,
+        attn_every_n=2,
+        tie_embeddings=True,
+        use_cuda_scan=False,
     )
     model.eval()
     input_ids = torch.randint(0, 64, (1, 5))
@@ -330,9 +436,13 @@ def test_tiny_hybrid_mamba2_lm_generate() -> None:
     assert (out[:, :5] == input_ids).all()
 
 
-def test_tiny_hybrid_mamba_lm_generate() -> None:
+def test_tiny_custom_mamba_lm_generate() -> None:
     model = TinyHybridMambaLM(
-        vocab_size=64, d_model=32, n_layers=2, d_state=8, d_conv=4,
+        vocab_size=64,
+        d_model=32,
+        n_layers=2,
+        d_state=8,
+        d_conv=4,
         tie_embeddings=True,
     )
     model.eval()
@@ -344,9 +454,17 @@ def test_tiny_hybrid_mamba_lm_generate() -> None:
 
 def test_feedforward_mlp_interleaving() -> None:
     model = TinyHybridMamba2LM(
-        vocab_size=64, d_model=32, n_layers=4, d_state=8, d_conv=4,
-        dt_rank=4, num_heads=4, window_size=8, attn_every_n=2,
-        tie_embeddings=True, use_cuda_scan=False,
+        vocab_size=64,
+        d_model=32,
+        n_layers=4,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        window_size=8,
+        attn_every_n=2,
+        tie_embeddings=True,
+        use_cuda_scan=False,
         mlp_every_n=2,
     )
     ffn_count = sum(model._has_ffn)
@@ -358,15 +476,21 @@ def test_feedforward_mlp_interleaving() -> None:
 
 def test_attention_sink_mask() -> None:
     attn = SlidingWindowAttention(
-        d_model=16, num_heads=4, window_size=3, dropout=0.0, n_sink_tokens=1,
+        d_model=16,
+        num_heads=4,
+        window_size=3,
+        dropout=0.0,
+        n_sink_tokens=2,
     )
     attn.eval()
     # Position 5 (past the window from position 0) should still attend to sink (col 0)
     # The mask for row 5, col 0 should be 0.0 (not -inf)
     mask = attn._sliding_mask(8, torch.device("cpu"), torch.float32)
-    assert mask[5, 0].item() == 0.0    # sink: always visible
-    assert mask[5, 1].item() == float("-inf")  # outside window and not sink
-    assert mask[5, 4].item() == 0.0    # within window (rel=1)
+    assert mask[5, 0].item() == 0.0  # sink: always visible
+    assert mask[5, 1].item() == 0.0  # sink: always visible
+    assert mask[5, 4].item() == 0.0  # within window (rel=1)
+    assert mask[0, 1].item() == float("-inf")  # future sink is still causal
+    assert mask[5, 2].item() == float("-inf")  # outside window and not sink
     x = torch.randn(2, 8, 16)
     y = attn(x)
     assert y.shape == x.shape

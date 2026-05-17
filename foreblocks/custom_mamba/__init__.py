@@ -16,11 +16,12 @@ from .diagnostics import (
     example_train_step,
     run_default_diagnostics,
 )
-from .layers import (
+from .blocks import (
     CausalDepthwiseConv1d,
     FeedForward,
     HybridMamba2Block,
     HybridMambaBlock,
+    RMSNorm,
     RMSNormWeightOnly,
     RotaryEmbedding,
     SlidingWindowAttention,
@@ -88,6 +89,7 @@ __all__ = [
     "HybridMamba2Block",
     "load_selective_scan_extension",
     "precompile_selective_scan_extension",
+    "RMSNorm",
     "RMSNormWeightOnly",
     "run_default_diagnostics",
     "SlidingWindowAttention",

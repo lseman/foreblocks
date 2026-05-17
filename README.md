@@ -226,7 +226,7 @@ The most stable first imports are exposed from the top-level `foreblocks` packag
 | `foreblocks/mltracker` | experiment tracking server, logging, and TUI integration |
 | `foreblocks/kan` | Kolmogorov-Arnold Network backbone |
 | `foreblocks/mamba` | Mamba SSM backbone with MoE and positional encoding |
-| `foreblocks/hybrid_mamba` | Hybrid Mamba SSM blocks for forecasting |
+| `foreblocks/custom_mamba` | Hybrid Mamba SSM blocks for forecasting |
 | `foreblocks/blocks` | Reusable building blocks: dropout, NBeats, popular blocks |
 | `foreblocks/wavelets` | Wavelet-based preprocessing and attention utilities |
 | `foreblocks/benchmark` | External forecasting baselines and spreadsheet readers |

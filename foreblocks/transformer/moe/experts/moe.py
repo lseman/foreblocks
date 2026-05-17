@@ -55,7 +55,7 @@ except Exception:
 # Optional grouped kernel path (can accept prepacked B* if your wrapper supports)
 try:
     # Prefer a wrapper that accepts B12_cat_prepacked / B3_cat_prepacked
-    from ..compute.kernels import (
+    from ..kernels.kernels import (
         fused_router_topk,  # type: ignore
         grouped_mlp_swiglu,
     )

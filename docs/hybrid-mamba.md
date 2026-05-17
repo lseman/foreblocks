@@ -1,9 +1,11 @@
 # Hybrid Mamba
 
-`foreblocks.hybrid_mamba` provides custom SSM (State Space Model) building blocks that combine selective-scan dynamics with sliding-window attention. Two block variants are available:
+`foreblocks.custom_mamba` provides custom SSM (State Space Model) building blocks that combine selective-scan dynamics with sliding-window attention. Two block variants are available:
 
 - **`HybridMambaBlock`** — pure SSM (Mamba v1-style selective scan) with optional pre-norm
 - **`HybridMamba2Block`** — parallel SSM + sliding-window attention branches fused with a learned gate, RoPE, GQA, and output normalisation (Mamba-2 / SSD-based)
+
+Block implementations live under `foreblocks.custom_mamba.blocks`; package-level imports and the legacy `foreblocks.custom_mamba.layers` module remain supported for compatibility.
 
 ## Installation requirements
 
@@ -17,7 +19,7 @@ The module is pure PyTorch by default. Optional acceleration layers:
 Check availability at runtime:
 
 ```python
-from foreblocks.hybrid_mamba import TRITON_AVAILABLE, extension_available
+from foreblocks.custom_mamba import TRITON_AVAILABLE, extension_available
 
 print(TRITON_AVAILABLE)       # True if triton is installed
 print(extension_available())  # True if CUDA extension is built
@@ -28,7 +30,7 @@ print(extension_available())  # True if CUDA extension is built
 Rotary Position Embedding (Su et al. 2021 — RoFormer). Applied to Q and K inside `SlidingWindowAttention`. Available as a standalone module if you need to add RoPE to your own attention implementation.
 
 ```python
-from foreblocks.hybrid_mamba import RotaryEmbedding
+from foreblocks.custom_mamba import RotaryEmbedding
 
 rope = RotaryEmbedding(head_dim=64, base=10_000, max_seq_len=2048)
 
@@ -52,7 +54,7 @@ A single Mamba-style block. Expands `d_model` → `d_inner` via a causal depthwi
 
 ```python
 import torch
-from foreblocks.hybrid_mamba import HybridMambaBlock
+from foreblocks.custom_mamba import HybridMambaBlock
 
 block = HybridMambaBlock(
     d_model=256,
@@ -83,7 +85,7 @@ y = block(x)                 # same shape as x
 
 ## `HybridMamba2Block`
 
-Combines a multi-head SSD branch (`StructuredStateSpaceDualityBranch`) with a `SlidingWindowAttention` branch. The two outputs are mixed with a sigmoid gate, then passed through an output norm before the final projection:
+Combines a multi-head SSD branch (`StructuredStateSpaceDualityBranch`) with a `SlidingWindowAttention` branch. The attention branch supports RoPE, GQA, attention sinks, optional Q/K RMSNorm, and optional attention-logit soft-capping. The two branch outputs are mixed with a sigmoid gate, then passed through an output norm before the final projection:
 
 ```
 ssm_out  = SSD( LayerNorm(x) )
@@ -96,7 +98,7 @@ output   = out_proj( LayerNorm(mixed) )
 The output `LayerNorm` (`out_norm`) stabilises gradients through the mixing gate.
 
 ```python
-from foreblocks.hybrid_mamba import HybridMamba2Block
+from foreblocks.custom_mamba import HybridMamba2Block
 
 block = HybridMamba2Block(
     d_model=256,
@@ -111,6 +113,9 @@ block = HybridMamba2Block(
     use_gated_delta=False,
     rope_base=10_000,
     max_seq_len=2048,
+    qk_norm=True,
+    attn_logit_softcap=50.0,
+    layer_scale_init=1e-2,
 )
 
 x = torch.randn(4, 128, 256)
@@ -133,6 +138,11 @@ y = block(x)  # (4, 128, 256)
 | `use_gated_delta` | `False` | Add per-head sigmoid gate on Δt in the SSD branch |
 | `rope_base` | `10_000` | RoPE frequency base |
 | `max_seq_len` | `8192` | Pre-built RoPE cache length |
+| `n_sink_tokens` | `0` | Number of leading tokens every position may attend to outside the local window |
+| `qk_norm` | `False` | Apply per-head RMSNorm to Q/K before RoPE for attention-logit stability |
+| `qk_norm_eps` | `1e-6` | Epsilon for Q/K RMSNorm |
+| `attn_logit_softcap` | `None` | Optional tanh soft-cap for attention logits before softmax |
+| `layer_scale_init` | `None` | Optional initial per-channel output scale before the outer residual add |
 
 ## Grouped Query Attention (GQA)
 
@@ -154,7 +164,7 @@ KV heads are broadcast to query heads via `repeat_interleave` before SDPA — no
 `TinyHybridMamba2LM` shows the recommended stacking pattern: every `attn_every_n` layers uses a `HybridMamba2Block`; all others use the cheaper `HybridMambaBlock`.
 
 ```python
-from foreblocks.hybrid_mamba import TinyHybridMamba2LM
+from foreblocks.custom_mamba import TinyHybridMamba2LM
 
 model = TinyHybridMamba2LM(
     vocab_size=50257,
@@ -178,7 +188,7 @@ For use as a time-series backbone, replace the embedding + LM-head with your own
 ## Diagnostics
 
 ```python
-from foreblocks.hybrid_mamba import run_default_diagnostics, benchmark_block
+from foreblocks.custom_mamba import run_default_diagnostics, benchmark_block
 
 run_default_diagnostics()   # quick correctness checks for ops on current device
 

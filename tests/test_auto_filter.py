@@ -52,6 +52,51 @@ def test_suggest_weights_preserve_shape_for_trended_series() -> None:
     assert weights.fidelity_mse > weights.residual_autocorr
 
 
+def test_suggest_weights_protect_level_shifts() -> None:
+    rng = np.random.default_rng(456)
+    step = np.r_[np.zeros(96), np.full(96, 4.0)]
+    series = pd.Series(step + 0.08 * rng.normal(size=step.size))
+
+    weights = af.suggest_weights(series)
+
+    assert weights.derivative_corr > weights.residual_autocorr
+    assert weights.roughness < weights.derivative_corr
+
+
+def test_suggest_weights_prioritizes_smoothing_for_white_noise() -> None:
+    rng = np.random.default_rng(789)
+    series = pd.Series(rng.normal(size=256))
+
+    weights = af.suggest_weights(series)
+
+    assert weights.fidelity_mse < 0.30
+    assert weights.roughness + weights.residual_autocorr > weights.derivative_corr
+
+
+def test_suggest_weights_can_explain_recommendation() -> None:
+    rng = np.random.default_rng(246)
+    t = np.linspace(0.0, 6.0 * np.pi, 192)
+    series = pd.Series(np.sin(t) + 0.55 * rng.normal(size=t.size))
+
+    weights, explanation = af.suggest_weights(series, explain=True)
+
+    assert isinstance(weights, af.ScoringWeights)
+    assert set(explanation["weights"]) == {
+        "fidelity_mse",
+        "roughness",
+        "residual_autocorr",
+        "derivative_corr",
+    }
+    assert {"noise", "periodicity", "trend", "memory"} <= set(
+        explanation["diagnostics"]
+    )
+    assert {"structure", "smoothing_pressure", "shape_pressure"} <= set(
+        explanation["derived"]
+    )
+    assert explanation["reasons"]
+    assert all(isinstance(reason, str) for reason in explanation["reasons"])
+
+
 def test_auto_filter_scores_custom_registry(monkeypatch) -> None:
     ts = pd.Series([0.0, 1.0, 0.0, 1.0, 0.0])
 

@@ -78,3 +78,8 @@ CLAUDE.md
 .claude/
 .mcp.json
 AGENTS.md
+
+!examples/*.ipynb
+estudo_rebeca/
+
+ariadne.db

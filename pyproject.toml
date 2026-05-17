@@ -128,7 +128,7 @@ foreblocks = ["studio/dist/*", "studio/dist/assets/*"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["foreblocks*", "foretools*"]
+exclude = ["foreblocks*", "foretools*", "darts*"]
 
 
 [tool.isort]

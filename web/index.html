@@ -2080,8 +2080,7 @@ cd foreblocks && pip install -e ".[dev]"</code></pre>
             </div>
             <div class="api-card">
               <div class="api-card-tag">Specialist namespaces</div>
-              <div class="api-card-desc"><code class="inline">foreblocks.darts</code>, transformer internals, and Hybrid
-                Mamba are available when you need them — but are not the default starting point.</div>
+              <div class="api-card-desc">The top-level <code class="inline">darts</code> package, transformer internals, and <code class="inline">custom_mamba</code> are available when you need them — but are not the default starting point.</div>
             </div>
           </div>
         </div>
@@ -2104,7 +2103,7 @@ cd foreblocks && pip install -e ".[dev]"</code></pre>
     TrainingConfig,
 )
 
-from foreblocks.darts import (
+from darts import (
     DARTSTrainer,
     DARTSConfig,
     DARTSTrainConfig,

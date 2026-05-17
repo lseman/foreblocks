@@ -1,10 +1,16 @@
 import argparse
+import sys
 import time
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 
-from flash3_cuda import flash_attn_backward_backend, flash_attn_func
+PACKAGE_PARENT = Path(__file__).resolve().parent.parent
+if str(PACKAGE_PARENT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_PARENT))
+
+from custom_att import flash_attn_backward_backend, flash_attn_func
 
 
 def _time_ms(fn, warmup, iters):
@@ -48,7 +54,7 @@ def _check_correctness(q, k, v, causal, dtype):
     try:
         torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
         return "ok"
-    except AssertionError as e:
+    except AssertionError:
         max_abs = (out - ref).abs().max().item()
         return f"FAIL (max_abs={max_abs:.2e})"
 
@@ -60,7 +66,11 @@ def bench_case(B, H, N, D, dtype, causal, backward, warmup, iters, check):
     v = torch.randn_like(q, requires_grad=backward)
     grad = torch.randn_like(q) if backward else None
 
-    status = _check_correctness(q.detach(), k.detach(), v.detach(), causal, dtype) if check else "-"
+    status = (
+        _check_correctness(q.detach(), k.detach(), v.detach(), causal, dtype)
+        if check
+        else "-"
+    )
 
     def custom():
         out = flash_attn_func(q, k, v, causal=causal)
@@ -77,7 +87,9 @@ def bench_case(B, H, N, D, dtype, causal, backward, warmup, iters, check):
     custom_ms = _time_ms(custom, warmup, iters)
     sdpa_ms = _time_ms(sdpa, warmup, iters)
     speed = sdpa_ms / custom_ms if custom_ms > 0 else float("inf")
-    flops = _flops_bwd(B, H, N, D, causal) if backward else _flops_fwd(B, H, N, D, causal)
+    flops = (
+        _flops_bwd(B, H, N, D, causal) if backward else _flops_fwd(B, H, N, D, causal)
+    )
     custom_tflops = flops / (custom_ms * 1e-3) / 1e12
     sdpa_tflops = flops / (sdpa_ms * 1e-3) / 1e12
     mode = "fwd+bwd" if backward else "fwd"
@@ -114,18 +126,25 @@ def main():
     parser.add_argument("--dims", type=int, nargs="+", default=None)
     parser.add_argument("--seqs", type=int, nargs="+", default=None)
     parser.add_argument("--dtype", choices=list(_DTYPES), default="fp16")
-    parser.add_argument("--dtypes", nargs="+", default=None,
-                        help="Sweep over multiple dtypes, e.g. --dtypes fp16 bf16")
+    parser.add_argument(
+        "--dtypes",
+        nargs="+",
+        default=None,
+        help="Sweep over multiple dtypes, e.g. --dtypes fp16 bf16",
+    )
     parser.add_argument("--causal", action="store_true")
-    parser.add_argument("--both-causal", action="store_true",
-                        help="Sweep both causal and non-causal")
+    parser.add_argument(
+        "--both-causal", action="store_true", help="Sweep both causal and non-causal"
+    )
     parser.add_argument("--backward", action="store_true")
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=50)
-    parser.add_argument("--sweep", action="store_true",
-                        help="Run the full (dtype, D, N, causal) matrix")
-    parser.add_argument("--no-check", action="store_true",
-                        help="Skip correctness check vs SDPA")
+    parser.add_argument(
+        "--sweep", action="store_true", help="Run the full (dtype, D, N, causal) matrix"
+    )
+    parser.add_argument(
+        "--no-check", action="store_true", help="Skip correctness check vs SDPA"
+    )
     args = parser.parse_args()
 
     if args.sweep:
@@ -133,12 +152,21 @@ def main():
     else:
         dtype = _DTYPES[args.dtype]
         dims = args.dims if args.dims else [32, 64, 128]
-        cases = [(args.batch, args.heads, args.seq, D, dtype, args.causal) for D in dims]
+        cases = [
+            (args.batch, args.heads, args.seq, D, dtype, args.causal) for D in dims
+        ]
 
     for B, H, N, D, dtype, causal in cases:
         bench_case(
-            B, H, N, D, dtype, causal,
-            args.backward, args.warmup, args.iters,
+            B,
+            H,
+            N,
+            D,
+            dtype,
+            causal,
+            args.backward,
+            args.warmup,
+            args.iters,
             check=not args.no_check,
         )
 

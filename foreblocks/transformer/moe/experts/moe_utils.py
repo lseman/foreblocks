@@ -5,9 +5,8 @@ import inspect
 import torch
 import torch.nn as nn
 
-
 try:
-    from ..compute.kernels import grouped_mlp_swiglu  # type: ignore
+    from ..kernels.kernels import grouped_mlp_swiglu  # type: ignore
 except Exception:
     grouped_mlp_swiglu = None  # type: ignore
 

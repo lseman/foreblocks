@@ -7,12 +7,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 if TYPE_CHECKING:
     from .experts.moe_logging import MoELogger
 
 try:
-    from .compute.kernels import grouped_mlp_swiglu
+    from ..kernels.kernels import grouped_mlp_swiglu
 except Exception:
     grouped_mlp_swiglu = None
 

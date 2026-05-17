@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 import torch
-from hybrid_mamba import HybridMambaBlock  # noqa: E402
-from hybrid_mamba import (
+from custom_mamba import (
+    HybridMambaBlock,  # noqa: E402
     TinyHybridMambaLM,
     benchmark_block,
     benchmark_causal_conv,
@@ -96,7 +96,7 @@ def run_lm_forward(
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Quick smoke tests for hybrid_mamba")
+    parser = argparse.ArgumentParser(description="Quick smoke tests for custom_mamba")
     parser.add_argument(
         "mode",
         nargs="?",
