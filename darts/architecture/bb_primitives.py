@@ -6,12 +6,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from foreblocks.transformer.norms.triton_backend import (
+        TRITON_AVAILABLE,
+        RMSNormTritonFunction,
+        _should_use_triton,
+    )
+except Exception:  # pragma: no cover - foreblocks namespace may exclude transformer
+    TRITON_AVAILABLE = False
+    RMSNormTritonFunction = None
+
+    def _should_use_triton(x, min_numel: int = 2048) -> bool:
+        return False
+
 
 __all__ = ["RMSNorm", "SwiGLUFFN", "GeGLUFFN", "ReluFFN"]
 
 
 class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization"""
+    """Root Mean Square Layer Normalization with Triton acceleration when available."""
 
     def __init__(self, dim: int, eps: float = 1e-8):
         super().__init__()
@@ -19,8 +32,14 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        norm = x.norm(dim=-1, keepdim=True) * (x.size(-1) ** -0.5)
-        return self.weight * x / (norm + self.eps)
+        if (
+            _should_use_triton(x, min_numel=2048)
+            and TRITON_AVAILABLE
+            and RMSNormTritonFunction is not None
+        ):
+            return RMSNormTritonFunction.apply(x, self.weight, self.eps)
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        return x * torch.rsqrt(variance + self.eps) * self.weight
 
 
 class SwiGLUFFN(nn.Module):

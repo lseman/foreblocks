@@ -1,0 +1,686 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 980" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#1a1a1a">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arrowGray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7a7a7a"/>
+    </marker>
+    <marker id="arrowWin" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4f8a5f"/>
+    </marker>
+
+    <style>
+      .ttl    { font-size: 16px; font-weight: 700; }
+      .stage  { font-size: 12.5px; font-weight: 700; fill: #2a2a2a; letter-spacing: 0.05em; }
+      .lbl    { font-size: 12.5px; }
+      .small  { font-size: 11px; fill: #444; }
+      .smaller{ font-size: 10px; fill: #555; }
+      .tiny   { font-size: 9px; fill: #666; }
+      .math   { font-style: italic; }
+      .mono   { font-family: 'Courier New', Courier, monospace; font-size: 11px; }
+      .flow   { fill: none; stroke: #1a1a1a; stroke-width: 1.4; }
+      .flowDim{ fill: none; stroke: #7a7a7a; stroke-width: 1.0; stroke-dasharray: 4 3; }
+      .winFlow{ fill: none; stroke: #4f8a5f; stroke-width: 2.0; }
+      .axis   { stroke: #999; stroke-width: 0.6; }
+      .panel  { fill: #ffffff; stroke: #1a1a1a; stroke-width: 1.1; }
+      .famHdr { font-size: 11.5px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <!-- ===================== Title ===================== -->
+  <text x="640" y="32" text-anchor="middle" class="ttl">ForeBlocks-DARTS: differentiable architecture search for multivariate time series forecasting</text>
+  <text x="640" y="52" text-anchor="middle" class="small" font-style="italic">jointly searchable normalisation, hierarchical mixed operations (16 ops x 4 families), topology mode (enc-dec / enc-only / dec-only), and block-internal slots (see Transformer-block figure) - bi-level optimisation with five regularisers</text>
+
+  <!-- Stage column captions -->
+  <text x="125"  y="80" text-anchor="middle" class="stage">1. INPUT</text>
+  <text x="425"  y="80" text-anchor="middle" class="stage">2. SEARCH SPACE</text>
+  <text x="785"  y="80" text-anchor="middle" class="stage">3. BI-LEVEL OPTIMISATION</text>
+  <text x="1150" y="80" text-anchor="middle" class="stage">4. DERIVED CHILD</text>
+
+  <!-- ===================== INPUT panel ===================== -->
+  <g transform="translate(40,100)">
+    <rect x="0" y="0" width="180" height="280" rx="10" class="panel"/>
+    <text x="90" y="22" text-anchor="middle" class="lbl" font-weight="700">multivariate window</text>
+    <text x="90" y="38" text-anchor="middle" class="math">X in R^(B x L x C)</text>
+
+    <!-- Channel C=3 mini stack of series -->
+    <g transform="translate(20,52)">
+      <!-- channel 1 -->
+      <line class="axis" x1="0" y1="30" x2="140" y2="30"/>
+      <polyline fill="none" stroke="#3c5b80" stroke-width="1.2"
+        points="2,28 12,22 22,26 32,18 42,24 52,14 62,20 72,10 82,16 92,8 102,12 112,6 122,10 132,4 140,8"/>
+      <text x="-4" y="34" text-anchor="end" class="tiny">c1</text>
+
+      <line class="axis" x1="0" y1="68" x2="140" y2="68"/>
+      <polyline fill="none" stroke="#7b9352" stroke-width="1.2"
+        points="2,60 12,56 22,62 32,52 42,58 52,48 62,54 72,46 82,52 92,42 102,48 112,40 122,46 132,38 140,44"/>
+      <text x="-4" y="72" text-anchor="end" class="tiny">c2</text>
+
+      <line class="axis" x1="0" y1="106" x2="140" y2="106"/>
+      <polyline fill="none" stroke="#b35e5e" stroke-width="1.2"
+        points="2,98 12,102 22,96 32,100 42,92 52,98 62,90 72,94 82,88 92,92 102,84 112,90 122,82 132,86 140,80"/>
+      <text x="-4" y="110" text-anchor="end" class="tiny">c3</text>
+    </g>
+
+    <text x="90" y="180" text-anchor="middle" class="small">look-back L, channels C</text>
+    <text x="90" y="196" text-anchor="middle" class="small">forecast horizon H</text>
+
+    <!-- Searchable normalisation head -->
+    <g transform="translate(10,210)">
+      <rect x="0" y="0" width="160" height="60" rx="6" fill="#f4f8fc" stroke="#6b8db5" stroke-width="1.1"/>
+      <text x="80" y="14" text-anchor="middle" class="famHdr" fill="#3e5b7a">searchable norm head</text>
+      <text x="80" y="30" text-anchor="middle" class="math">pi1*RevIN + pi2*IN + pi3*Id</text>
+      <text x="80" y="46" text-anchor="middle" class="smaller">pi = softmax(alpha_norm / tau)</text>
+    </g>
+  </g>
+
+  <!-- Arrow input -> search space column -->
+  <path class="flow" marker-end="url(#arrow)" d="M 220 240 L 260 240"/>
+
+  <!-- ===================== SEARCH SPACE COLUMN ===================== -->
+
+  <!-- Group: MLP family -->
+  <g transform="translate(265,100)">
+    <rect x="0" y="0" width="320" height="100" rx="8" fill="#f4f8fc" stroke="#6b8db5" stroke-width="1.2"/>
+    <text x="10" y="16" class="famHdr" fill="#3e5b7a">M_mlp: MLP family</text>
+    <text x="10" y="32" class="small">Identity - ResidualMLP - GRN - TimeMixer - NBeats</text>
+
+    <!-- mini illustration: position-wise dense lanes -->
+    <g transform="translate(10,40)">
+      <line class="axis" x1="0" y1="50" x2="300" y2="50"/>
+      <g fill="#6b8db5">
+        <rect x="6"   y="32" width="10" height="14" opacity="0.85"/>
+        <rect x="26"  y="22" width="10" height="24" opacity="0.85"/>
+        <rect x="46"  y="36" width="10" height="10" opacity="0.85"/>
+        <rect x="66"  y="14" width="10" height="32" opacity="0.85"/>
+        <rect x="86"  y="28" width="10" height="18" opacity="0.85"/>
+        <rect x="106" y="10" width="10" height="36" opacity="0.85"/>
+        <rect x="126" y="24" width="10" height="22" opacity="0.85"/>
+        <rect x="146" y="18" width="10" height="28" opacity="0.85"/>
+        <rect x="166" y="30" width="10" height="16" opacity="0.85"/>
+        <rect x="186" y="12" width="10" height="34" opacity="0.85"/>
+        <rect x="206" y="26" width="10" height="20" opacity="0.85"/>
+        <rect x="226" y="16" width="10" height="30" opacity="0.85"/>
+        <rect x="246" y="20" width="10" height="26" opacity="0.85"/>
+        <rect x="266" y="8"  width="10" height="38" opacity="0.85"/>
+        <rect x="286" y="18" width="10" height="28" opacity="0.85"/>
+      </g>
+      <text x="290" y="58" text-anchor="end" class="smaller" fill="#3e5b7a" font-style="italic">position-wise dense</text>
+    </g>
+  </g>
+
+  <!-- Group: Conv family -->
+  <g transform="translate(265,210)">
+    <rect x="0" y="0" width="320" height="100" rx="8" fill="#f5f9ee" stroke="#7b9352" stroke-width="1.2"/>
+    <text x="10" y="16" class="famHdr" fill="#4f6a35">M_conv: Conv family</text>
+    <text x="10" y="32" class="small">TimeConv - TCN - ConvMixer - MultiScaleConv - PyramidConv</text>
+
+    <!-- mini illustration: dilated/causal kernels over a sequence -->
+    <g transform="translate(10,40)">
+      <line class="axis" x1="0" y1="50" x2="300" y2="50"/>
+      <!-- dilation 1 -->
+      <g stroke="#7b9352" stroke-width="1.2" fill="none">
+        <path d="M 10,42 Q 22,32 34,42"/>
+        <path d="M 34,42 Q 46,32 58,42"/>
+        <path d="M 58,42 Q 70,32 82,42"/>
+      </g>
+      <!-- dilation 2 -->
+      <g stroke="#7b9352" stroke-width="1.2" fill="none" opacity="0.7">
+        <path d="M 90,30 Q 114,14 138,30"/>
+        <path d="M 138,30 Q 162,14 186,30"/>
+      </g>
+      <!-- dilation 4 -->
+      <g stroke="#7b9352" stroke-width="1.2" fill="none" opacity="0.5">
+        <path d="M 196,18 Q 232,-4 268,18"/>
+      </g>
+      <!-- input ticks -->
+      <g fill="#4f6a35">
+        <circle cx="10"  cy="42" r="1.4"/><circle cx="34"  cy="42" r="1.4"/>
+        <circle cx="58"  cy="42" r="1.4"/><circle cx="82"  cy="42" r="1.4"/>
+        <circle cx="106" cy="42" r="1.4"/><circle cx="130" cy="42" r="1.4"/>
+        <circle cx="154" cy="42" r="1.4"/><circle cx="178" cy="42" r="1.4"/>
+        <circle cx="202" cy="42" r="1.4"/><circle cx="226" cy="42" r="1.4"/>
+        <circle cx="250" cy="42" r="1.4"/><circle cx="274" cy="42" r="1.4"/>
+      </g>
+      <text x="290" y="58" text-anchor="end" class="smaller" fill="#4f6a35" font-style="italic">dilated / causal kernels</text>
+    </g>
+  </g>
+
+  <!-- Group: Frequency family -->
+  <g transform="translate(265,320)">
+    <rect x="0" y="0" width="320" height="100" rx="8" fill="#f7f0f8" stroke="#8b6794" stroke-width="1.2"/>
+    <text x="10" y="16" class="famHdr" fill="#5e4566">M_freq: Frequency family</text>
+    <text x="10" y="32" class="small">Fourier - Wavelet - DLinear - TimesNet</text>
+
+    <!-- mini illustration: spectrum bars + low/high band -->
+    <g transform="translate(10,40)">
+      <line class="axis" x1="0" y1="50" x2="300" y2="50"/>
+      <g fill="#8b6794">
+        <rect x="6"   y="36" width="6" height="14"/>
+        <rect x="18"  y="20" width="6" height="30"/>
+        <rect x="30"  y="10" width="6" height="40"/>
+        <rect x="42"  y="14" width="6" height="36"/>
+        <rect x="54"  y="22" width="6" height="28"/>
+        <rect x="66"  y="30" width="6" height="20"/>
+        <rect x="78"  y="36" width="6" height="14"/>
+        <rect x="90"  y="40" width="6" height="10"/>
+      </g>
+      <g fill="#bba3c2">
+        <rect x="106" y="44" width="6" height="6"/>
+        <rect x="118" y="42" width="6" height="8"/>
+        <rect x="130" y="46" width="6" height="4"/>
+        <rect x="142" y="44" width="6" height="6"/>
+        <rect x="154" y="46" width="6" height="4"/>
+        <rect x="166" y="44" width="6" height="6"/>
+        <rect x="178" y="46" width="6" height="4"/>
+      </g>
+      <!-- band-split arrow -->
+      <line x1="100" y1="6" x2="100" y2="52" stroke="#8b6794" stroke-width="0.6" stroke-dasharray="2 2"/>
+      <text x="50"  y="62" text-anchor="middle" class="smaller" fill="#5e4566">low-freq</text>
+      <text x="150" y="62" text-anchor="middle" class="smaller" fill="#5e4566">high-freq</text>
+      <text x="290" y="58" text-anchor="end" class="smaller" fill="#5e4566" font-style="italic">spectral decomposition</text>
+    </g>
+  </g>
+
+  <!-- Group: Attention family -->
+  <g transform="translate(265,430)">
+    <rect x="0" y="0" width="320" height="100" rx="8" fill="#fdf2e3" stroke="#c08652" stroke-width="1.2"/>
+    <text x="10" y="16" class="famHdr" fill="#7d4f2a">M_attn: Attention family</text>
+    <text x="10" y="32" class="small">PatchEmbed - InvertedAttention (iTransformer)</text>
+
+    <!-- mini illustration: attention map QK^T grid -->
+    <g transform="translate(10,40)">
+      <!-- 6x6 grid -->
+      <g stroke="#c08652" stroke-width="0.4" fill="#fbe5cf">
+        <rect x="6"  y="4"  width="9" height="9" opacity="0.3"/>
+        <rect x="16" y="4"  width="9" height="9" opacity="0.5"/>
+        <rect x="26" y="4"  width="9" height="9" opacity="0.9"/>
+        <rect x="36" y="4"  width="9" height="9" opacity="0.4"/>
+        <rect x="46" y="4"  width="9" height="9" opacity="0.2"/>
+        <rect x="56" y="4"  width="9" height="9" opacity="0.6"/>
+        <rect x="6"  y="14" width="9" height="9" opacity="0.5"/>
+        <rect x="16" y="14" width="9" height="9" opacity="0.9"/>
+        <rect x="26" y="14" width="9" height="9" opacity="0.4"/>
+        <rect x="36" y="14" width="9" height="9" opacity="0.7"/>
+        <rect x="46" y="14" width="9" height="9" opacity="0.3"/>
+        <rect x="56" y="14" width="9" height="9" opacity="0.5"/>
+        <rect x="6"  y="24" width="9" height="9" opacity="0.7"/>
+        <rect x="16" y="24" width="9" height="9" opacity="0.4"/>
+        <rect x="26" y="24" width="9" height="9" opacity="0.9"/>
+        <rect x="36" y="24" width="9" height="9" opacity="0.3"/>
+        <rect x="46" y="24" width="9" height="9" opacity="0.6"/>
+        <rect x="56" y="24" width="9" height="9" opacity="0.4"/>
+        <rect x="6"  y="34" width="9" height="9" opacity="0.2"/>
+        <rect x="16" y="34" width="9" height="9" opacity="0.6"/>
+        <rect x="26" y="34" width="9" height="9" opacity="0.3"/>
+        <rect x="36" y="34" width="9" height="9" opacity="0.9"/>
+        <rect x="46" y="34" width="9" height="9" opacity="0.5"/>
+        <rect x="56" y="34" width="9" height="9" opacity="0.7"/>
+      </g>
+      <text x="36" y="60" text-anchor="middle" class="smaller" fill="#7d4f2a">QK^T map</text>
+
+      <!-- right: schematic iTransformer (channel tokens) -->
+      <g transform="translate(110,4)">
+        <rect x="0"  y="0" width="14" height="40" fill="#fbe5cf" stroke="#c08652"/>
+        <rect x="18" y="0" width="14" height="40" fill="#fbe5cf" stroke="#c08652"/>
+        <rect x="36" y="0" width="14" height="40" fill="#fbe5cf" stroke="#c08652"/>
+        <rect x="54" y="0" width="14" height="40" fill="#fbe5cf" stroke="#c08652"/>
+        <text x="34" y="54" text-anchor="middle" class="smaller" fill="#7d4f2a">channels as tokens</text>
+      </g>
+      <text x="290" y="60" text-anchor="end" class="smaller" fill="#7d4f2a" font-style="italic">global token mixing</text>
+    </g>
+  </g>
+
+  <!-- DARTS Cell DAG (with mixed-op edges) -->
+  <g transform="translate(265,545)">
+    <rect x="0" y="0" width="320" height="135" rx="8" fill="#f1ecdd" stroke="#9c8559" stroke-width="1.2"/>
+    <text x="10" y="16" class="famHdr" fill="#6a5733">DARTS cell DAG - mixed operation per edge</text>
+    <text x="10" y="32" class="small">o_hat_e = sum_k p_e,k o_k(x) - soft / DrNAS Dir / GDAS straight-through</text>
+
+    <!-- DAG nodes -->
+    <g transform="translate(0,38)">
+      <!-- input node -->
+      <circle cx="32" cy="40" r="11" fill="#ffffff" stroke="#6a5733" stroke-width="1.2"/>
+      <text x="32" y="44" text-anchor="middle" class="smaller">h_-1</text>
+      <!-- intermediate nodes h0,h1,h2 -->
+      <circle cx="110" cy="20" r="11" fill="#ffffff" stroke="#6a5733" stroke-width="1.2"/>
+      <text x="110" y="24" text-anchor="middle" class="smaller">h0</text>
+      <circle cx="190" cy="60" r="11" fill="#ffffff" stroke="#6a5733" stroke-width="1.2"/>
+      <text x="190" y="64" text-anchor="middle" class="smaller">h1</text>
+      <circle cx="262" cy="30" r="11" fill="#9c8559" stroke="#6a5733" stroke-width="1.2"/>
+      <text x="262" y="34" text-anchor="middle" class="smaller" fill="#ffffff">h2</text>
+
+      <!-- edges with mixed-op annotation -->
+      <line x1="42"  y1="38" x2="100" y2="22"  stroke="#6a5733" stroke-width="1.1"/>
+      <line x1="42"  y1="42" x2="180" y2="58"  stroke="#6a5733" stroke-width="0.8" opacity="0.7"/>
+      <line x1="120" y1="22" x2="180" y2="58"  stroke="#6a5733" stroke-width="1.4"/>
+      <line x1="120" y1="22" x2="252" y2="30"  stroke="#6a5733" stroke-width="0.8" opacity="0.7"/>
+      <line x1="200" y1="58" x2="252" y2="32"  stroke="#6a5733" stroke-width="1.1"/>
+
+      <!-- mixed-op badge on the highlighted edge -->
+      <g transform="translate(135,32)">
+        <rect x="0" y="0" width="44" height="14" rx="3" fill="#ffffff" stroke="#9c8559"/>
+        <text x="22" y="10" text-anchor="middle" class="tiny" fill="#6a5733">p*o1+p*o2+...</text>
+      </g>
+
+      <!-- residual gate -->
+      <text x="262" y="58" text-anchor="middle" class="tiny" fill="#6a5733" font-style="italic">sigma(r) gated</text>
+
+      <!-- partial-channel routing badge -->
+      <g transform="translate(8,82)">
+        <rect x="0" y="0" width="90" height="14" rx="3" fill="#ffffff" stroke="#9c8559"/>
+        <text x="45" y="10" text-anchor="middle" class="tiny" fill="#6a5733">PC routing (rho*C)</text>
+      </g>
+      <g transform="translate(104,82)">
+        <rect x="0" y="0" width="92" height="14" rx="3" fill="#ffffff" stroke="#9c8559"/>
+        <text x="46" y="10" text-anchor="middle" class="tiny" fill="#6a5733">DropPath p_drop</text>
+      </g>
+      <g transform="translate(202,82)">
+        <rect x="0" y="0" width="92" height="14" rx="3" fill="#ffffff" stroke="#9c8559"/>
+        <text x="46" y="10" text-anchor="middle" class="tiny" fill="#6a5733">cosine tau(e)</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Hierarchical search-space brace label below filter column -->
+  <text x="425" y="697" text-anchor="middle" class="small" font-style="italic">|O| = 16 cell operations - hierarchical group x op factorisation p_e,k = pi_g(alpha_G) * q_g,k</text>
+
+  <!-- ===================== Topology mode panel (global view: 3 modes only) ===================== -->
+  <g transform="translate(265,710)">
+    <rect x="0" y="0" width="320" height="200" rx="10" fill="#fbf6e6" stroke="#b89a3e" stroke-width="1.2"/>
+    <text x="160" y="20" text-anchor="middle" class="lbl" font-weight="700" fill="#6e5a1f">topology mode m in M</text>
+    <text x="160" y="34" text-anchor="middle" class="smaller" font-style="italic" fill="#6e5a1f">discrete axis - outer ASHA loop</text>
+    <line x1="14" y1="42" x2="306" y2="42" stroke="#d8c590" stroke-width="0.8"/>
+
+    <!-- mode 1: enc-dec -->
+    <g transform="translate(14,52)">
+      <rect x="0" y="0" width="58" height="26" rx="4" fill="#dde5ef" stroke="#3e5b7a" stroke-width="1.1"/>
+      <text x="29" y="17" text-anchor="middle" class="tiny" font-weight="700" fill="#3e5b7a">Encoder</text>
+      <rect x="78" y="0" width="58" height="26" rx="4" fill="#e0ebd1" stroke="#4f6a35" stroke-width="1.1"/>
+      <text x="107" y="17" text-anchor="middle" class="tiny" font-weight="700" fill="#4f6a35">Decoder</text>
+      <path d="M 58 13 C 66 13, 70 13, 78 13" fill="none" stroke="#b35e5e" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+      <text x="150" y="11" class="smaller" font-weight="700" fill="#6e5a1f">enc-dec</text>
+      <text x="150" y="22" class="tiny" fill="#444">bridge active (default)</text>
+    </g>
+
+    <!-- mode 2: enc-only -->
+    <g transform="translate(14,90)">
+      <rect x="0" y="0" width="58" height="26" rx="4" fill="#dde5ef" stroke="#3e5b7a" stroke-width="1.1"/>
+      <text x="29" y="17" text-anchor="middle" class="tiny" font-weight="700" fill="#3e5b7a">Encoder</text>
+      <rect x="78" y="0" width="58" height="26" rx="4" fill="#fafafa" stroke="#bbbbbb" stroke-width="1.0" stroke-dasharray="3 3"/>
+      <text x="107" y="17" text-anchor="middle" class="tiny" fill="#999">--</text>
+      <line x1="58" y1="13" x2="78" y2="13" stroke="#cccccc" stroke-width="1.0" stroke-dasharray="3 3"/>
+      <text x="150" y="11" class="smaller" font-weight="700" fill="#6e5a1f">enc-only</text>
+      <text x="150" y="22" class="tiny" fill="#444">PatchTST-style head</text>
+    </g>
+
+    <!-- mode 3: dec-only -->
+    <g transform="translate(14,128)">
+      <rect x="0" y="0" width="58" height="26" rx="4" fill="#fafafa" stroke="#bbbbbb" stroke-width="1.0" stroke-dasharray="3 3"/>
+      <text x="29" y="17" text-anchor="middle" class="tiny" fill="#999">--</text>
+      <rect x="78" y="0" width="58" height="26" rx="4" fill="#e0ebd1" stroke="#4f6a35" stroke-width="1.1"/>
+      <text x="107" y="17" text-anchor="middle" class="tiny" font-weight="700" fill="#4f6a35">Decoder</text>
+      <line x1="58" y1="13" x2="78" y2="13" stroke="#cccccc" stroke-width="1.0" stroke-dasharray="3 3"/>
+      <text x="150" y="11" class="smaller" font-weight="700" fill="#6e5a1f">dec-only</text>
+      <text x="150" y="22" class="tiny" fill="#444">autoregressive, masked</text>
+    </g>
+
+    <!-- footer note linking to the block figure -->
+    <text x="160" y="178" text-anchor="middle" class="tiny" fill="#6e5a1f" font-style="italic">block-internal slots detailed in</text>
+    <text x="160" y="190" text-anchor="middle" class="tiny" fill="#6e5a1f" font-style="italic">companion Transformer-block figure</text>
+  </g>
+
+  <!-- Funnel arrows from search-space column into bi-level block -->
+  <path class="flow" marker-end="url(#arrow)" d="M 585 380 C 605 380, 620 380, 640 380"/>
+  <path class="flowDim" d="M 585 150 C 605 150, 625 380, 640 380"/>
+  <path class="flowDim" d="M 585 260 C 605 260, 625 380, 640 380"/>
+  <path class="flowDim" d="M 585 480 C 605 480, 625 380, 640 380"/>
+  <path class="flowDim" d="M 585 610 C 605 610, 625 380, 640 380"/>
+  <!-- topology mode (discrete) feeds the outer ASHA loop -->
+  <path class="flowDim" marker-end="url(#arrowGray)" d="M 425 710 C 480 685, 560 670, 640 700"/>
+  <text x="500" y="680" text-anchor="middle" class="tiny" fill="#666" font-style="italic">m -> ASHA</text>
+
+  <!-- ===================== BI-LEVEL OPTIMISATION panel ===================== -->
+  <g transform="translate(640,100)">
+    <rect x="0" y="0" width="290" height="498" rx="10" class="panel"/>
+    <text x="145" y="22" text-anchor="middle" class="lbl" font-weight="700">bi-level update on stratified 50/50 split</text>
+    <line x1="14" y1="32" x2="276" y2="32" stroke="#bbbbbb" stroke-width="0.8"/>
+
+    <!-- alternation glyph: two interleaved gradient steps -->
+    <g transform="translate(14,42)">
+      <rect x="0" y="0" width="262" height="76" rx="4" fill="#fafafa" stroke="#cccccc"/>
+      <!-- inner update -->
+      <g transform="translate(10,12)">
+        <rect x="0" y="0" width="110" height="24" rx="3" fill="#eaf2fb" stroke="#6b8db5"/>
+        <text x="55" y="16" text-anchor="middle" class="smaller" fill="#3e5b7a">w update on L_train</text>
+        <text x="55" y="38" text-anchor="middle" class="tiny">inner (weights)</text>
+      </g>
+      <!-- outer update -->
+      <g transform="translate(140,12)">
+        <rect x="0" y="0" width="110" height="24" rx="3" fill="#fbf6e6" stroke="#b89a3e"/>
+        <text x="55" y="16" text-anchor="middle" class="smaller" fill="#6e5a1f">alpha update</text>
+        <text x="55" y="38" text-anchor="middle" class="tiny">outer (architecture)</text>
+      </g>
+      <!-- alternation arrows -->
+      <path d="M 120,24 C 132,16 138,16 140,24" fill="none" stroke="#7a7a7a" stroke-width="1.0" marker-end="url(#arrowGray)"/>
+      <path d="M 140,32 C 130,40 122,40 120,32" fill="none" stroke="#7a7a7a" stroke-width="1.0" marker-end="url(#arrowGray)"/>
+      <!-- EMA badge -->
+      <text x="131" y="68" text-anchor="middle" class="smaller" fill="#444" font-style="italic">g_hat = EMA(grad L_alpha)</text>
+    </g>
+
+    <!-- Total architecture loss block -->
+    <g transform="translate(14,128)">
+      <rect x="0" y="0" width="262" height="170" rx="4" fill="#fafafa" stroke="#cccccc"/>
+      <text x="131" y="16" text-anchor="middle" class="lbl" font-weight="700">L_alpha = L_val + sum_i lambda_i R_i</text>
+
+      <!-- five regulariser pills -->
+      <g transform="translate(10,26)">
+        <rect x="0"   y="0"  width="118" height="22" rx="3" fill="#eef4ff" stroke="#6b8db5"/>
+        <text x="59"  y="14" text-anchor="middle" class="smaller" fill="#3e5b7a">R_kl (KL to uniform)</text>
+
+        <rect x="124" y="0"  width="118" height="22" rx="3" fill="#f5fbe8" stroke="#7b9352"/>
+        <text x="183" y="14" text-anchor="middle" class="smaller" fill="#4f6a35">R_flop (FLOPs)</text>
+
+        <rect x="0"   y="28" width="118" height="22" rx="3" fill="#f7eef9" stroke="#8b6794"/>
+        <text x="59"  y="42" text-anchor="middle" class="smaller" fill="#5e4566">beta-DARTS: ||alpha||^2</text>
+
+        <rect x="124" y="28" width="118" height="22" rx="3" fill="#fdf2e3" stroke="#c08652"/>
+        <text x="183" y="42" text-anchor="middle" class="smaller" fill="#7d4f2a">R_aux (cos+ent+id cap)</text>
+
+        <rect x="62"  y="56" width="118" height="22" rx="3" fill="#faeaea" stroke="#b35e5e"/>
+        <text x="121" y="70" text-anchor="middle" class="smaller" fill="#7a3838">R_c (SDARTS curvature)</text>
+      </g>
+
+      <!-- Curvature glyph -->
+      <g transform="translate(14,108)">
+        <line class="axis" x1="0" y1="48" x2="234" y2="48"/>
+        <!-- parabola valley -->
+        <path fill="none" stroke="#b35e5e" stroke-width="1.3"
+          d="M 0,10 Q 60,48 117,48 T 234,10"/>
+        <!-- +/- eps tick lines -->
+        <line x1="100" y1="44" x2="100" y2="52" stroke="#1a1a1a" stroke-width="1"/>
+        <line x1="134" y1="44" x2="134" y2="52" stroke="#1a1a1a" stroke-width="1"/>
+        <text x="117" y="58" text-anchor="middle" class="tiny">+/- eps</text>
+        <!-- d arrow -->
+        <line x1="117" y1="48" x2="160" y2="36" stroke="#7a7a7a" stroke-width="1" marker-end="url(#arrowGray)"/>
+        <text x="163" y="38" class="tiny" fill="#666">d = grad_w L_train / ||.||</text>
+        <text x="0" y="8" class="tiny" fill="#666">L_val(w)</text>
+      </g>
+    </g>
+
+    <!-- Mixed-op estimators row -->
+    <g transform="translate(14,308)">
+      <rect x="0" y="0" width="262" height="80" rx="4" fill="#fafafa" stroke="#cccccc"/>
+      <text x="131" y="16" text-anchor="middle" class="lbl" font-weight="700">three exchangeable estimators</text>
+
+      <g transform="translate(8,24)">
+        <rect x="0"  y="0" width="80" height="46" rx="3" fill="#eef4ff" stroke="#6b8db5"/>
+        <text x="40" y="14" text-anchor="middle" class="smaller" fill="#3e5b7a" font-weight="700">soft</text>
+        <text x="40" y="28" text-anchor="middle" class="tiny">sum p_k o_k(x)</text>
+        <text x="40" y="40" text-anchor="middle" class="tiny" fill="#666">all ops eval&apos;d</text>
+      </g>
+      <g transform="translate(94,24)">
+        <rect x="0"  y="0" width="80" height="46" rx="3" fill="#f7eef9" stroke="#8b6794"/>
+        <text x="40" y="14" text-anchor="middle" class="smaller" fill="#5e4566" font-weight="700">DrNAS</text>
+        <text x="40" y="28" text-anchor="middle" class="tiny">p_hat ~ Dir(eta p)</text>
+        <text x="40" y="40" text-anchor="middle" class="tiny" fill="#666">stochastic mix</text>
+      </g>
+      <g transform="translate(180,24)">
+        <rect x="0"  y="0" width="80" height="46" rx="3" fill="#f5fbe8" stroke="#7b9352"/>
+        <text x="40" y="14" text-anchor="middle" class="smaller" fill="#4f6a35" font-weight="700">GDAS</text>
+        <text x="40" y="28" text-anchor="middle" class="tiny">argmax + ST</text>
+        <text x="40" y="40" text-anchor="middle" class="tiny" fill="#666">1 op / fwd</text>
+      </g>
+    </g>
+
+    <!-- Temperature schedule + progressive shrinking -->
+    <g transform="translate(14,398)">
+      <rect x="0" y="0" width="262" height="90" rx="4" fill="#fafafa" stroke="#cccccc"/>
+      <text x="131" y="16" text-anchor="middle" class="lbl" font-weight="700">temperature schedule &amp; progressive shrinking</text>
+
+      <!-- cosine schedule curve -->
+      <g transform="translate(10,24)">
+        <line class="axis" x1="0" y1="50" x2="120" y2="50"/>
+        <line class="axis" x1="0" y1="6"  x2="0"  y2="50"/>
+        <path fill="none" stroke="#3e5b7a" stroke-width="1.6"
+          d="M 0,10 L 18,10 Q 28,10 38,18 T 70,38 T 118,46"/>
+        <line x1="0" y1="48" x2="18" y2="48" stroke="#3e5b7a" stroke-width="0.7" stroke-dasharray="2 2"/>
+        <text x="9"  y="58" text-anchor="middle" class="tiny">e0</text>
+        <text x="60" y="58" text-anchor="middle" class="tiny">epoch e</text>
+        <text x="2"  y="8"  class="tiny">tau0</text>
+        <text x="118" y="46" class="tiny" text-anchor="end" dy="10">tau_min</text>
+      </g>
+
+      <!-- progressive subsets staircase -->
+      <g transform="translate(140,24)">
+        <text x="55" y="10" text-anchor="middle" class="smaller" fill="#666">op pool</text>
+        <rect x="0"  y="14" width="32" height="14" fill="#eef4ff" stroke="#6b8db5"/>
+        <rect x="0"  y="14" width="64" height="14" fill="none" stroke="#6b8db5" stroke-dasharray="2 2"/>
+        <rect x="0"  y="14" width="110" height="14" fill="none" stroke="#6b8db5" stroke-dasharray="2 2"/>
+        <text x="16" y="40" text-anchor="middle" class="tiny">basic</text>
+        <text x="48" y="40" text-anchor="middle" class="tiny">int.</text>
+        <text x="87" y="40" text-anchor="middle" class="tiny">advanced</text>
+        <text x="55" y="56" text-anchor="middle" class="tiny" fill="#666" font-style="italic">unfolds with epoch</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Arrow bi-level -> discretisation -->
+  <path class="flow" marker-end="url(#arrow)" d="M 785 598 L 785 625"/>
+
+  <!-- Discretisation block -->
+  <g transform="translate(640,625)">
+    <rect x="0" y="0" width="290" height="68" rx="8" class="panel" stroke-width="1.4"/>
+    <text x="145" y="22" text-anchor="middle" class="lbl" font-weight="700">architecture discretisation</text>
+    <text x="145" y="42" text-anchor="middle" class="math">o*_e,k = argmax_j p_e,k,j</text>
+    <text x="145" y="58" text-anchor="middle" class="smaller" fill="#666">retained iff p_e &gt; theta - else -> Identity</text>
+  </g>
+
+  <!-- ===================== Multi-fidelity outer loop ===================== -->
+  <g transform="translate(640,710)">
+    <rect x="0" y="0" width="290" height="180" rx="8" fill="#fbf6e6" stroke="#b89a3e" stroke-width="1.2"/>
+    <text x="145" y="20" text-anchor="middle" class="lbl" font-weight="700" fill="#6e5a1f">multi-fidelity outer loop (ASHA)</text>
+
+    <!-- Funnel diagram: C0 -> C1 -> C2 -->
+    <g transform="translate(20,30)">
+      <!-- P1 stack of dots -->
+      <text x="30" y="10" text-anchor="middle" class="smaller" fill="#6e5a1f" font-weight="700">P1 - zero-cost</text>
+      <g fill="#b89a3e">
+        <circle cx="6"  cy="22" r="1.6"/><circle cx="14" cy="22" r="1.6"/>
+        <circle cx="22" cy="22" r="1.6"/><circle cx="30" cy="22" r="1.6"/>
+        <circle cx="38" cy="22" r="1.6"/><circle cx="46" cy="22" r="1.6"/>
+        <circle cx="54" cy="22" r="1.6"/><circle cx="6"  cy="30" r="1.6"/>
+        <circle cx="14" cy="30" r="1.6"/><circle cx="22" cy="30" r="1.6"/>
+        <circle cx="30" cy="30" r="1.6"/><circle cx="38" cy="30" r="1.6"/>
+        <circle cx="46" cy="30" r="1.6"/><circle cx="54" cy="30" r="1.6"/>
+        <circle cx="6"  cy="38" r="1.6"/><circle cx="14" cy="38" r="1.6"/>
+        <circle cx="22" cy="38" r="1.6"/><circle cx="30" cy="38" r="1.6"/>
+        <circle cx="38" cy="38" r="1.6"/><circle cx="46" cy="38" r="1.6"/>
+        <circle cx="54" cy="38" r="1.6"/>
+      </g>
+      <text x="30" y="56" text-anchor="middle" class="tiny" fill="#6e5a1f">C0 (synflow / SNIP)</text>
+
+      <!-- arrow 1 -->
+      <line x1="70" y1="30" x2="92" y2="30" stroke="#6e5a1f" stroke-width="1.2" marker-end="url(#arrowGray)"/>
+
+      <!-- P2 -->
+      <text x="120" y="10" text-anchor="middle" class="smaller" fill="#6e5a1f" font-weight="700">P2 - partial</text>
+      <g fill="#b89a3e">
+        <circle cx="100" cy="22" r="2"/><circle cx="112" cy="22" r="2"/>
+        <circle cx="124" cy="22" r="2"/><circle cx="136" cy="22" r="2"/>
+        <circle cx="100" cy="32" r="2"/><circle cx="112" cy="32" r="2"/>
+        <circle cx="124" cy="32" r="2"/><circle cx="136" cy="32" r="2"/>
+      </g>
+      <text x="118" y="56" text-anchor="middle" class="tiny" fill="#6e5a1f">C1 (E1 epochs)</text>
+
+      <!-- arrow 2 -->
+      <line x1="152" y1="30" x2="174" y2="30" stroke="#6e5a1f" stroke-width="1.2" marker-end="url(#arrowGray)"/>
+
+      <!-- P3 -->
+      <text x="206" y="10" text-anchor="middle" class="smaller" fill="#6e5a1f" font-weight="700">P3 - full DARTS</text>
+      <g fill="#4f8a5f">
+        <circle cx="184" cy="26" r="2.6"/><circle cx="196" cy="26" r="2.6"/>
+        <circle cx="208" cy="26" r="2.6"/>
+      </g>
+      <text x="196" y="56" text-anchor="middle" class="tiny" fill="#2e5b3a">C2 (full budget E)</text>
+    </g>
+
+    <!-- Annotation row -->
+    <g transform="translate(14,108)">
+      <text x="0" y="0" class="smaller" fill="#6e5a1f">ASHA halving (eta=2) over non-diff axes:</text>
+      <text x="0" y="16" class="smaller" fill="#6e5a1f">- topology mode m in M</text>
+      <text x="0" y="30" class="smaller" fill="#6e5a1f">- cell count K - hidden width d_h</text>
+      <text x="0" y="50" class="smaller" fill="#444" font-style="italic">early-stopping of poor candidates dominates GPU time</text>
+    </g>
+  </g>
+
+  <!-- Arrow bi-level/outer-loop -> selection -->
+  <path class="winFlow" marker-end="url(#arrowWin)" d="M 930 660 L 1000 660"/>
+  <text x="965" y="652" text-anchor="middle" class="smaller" font-style="italic" fill="#2e5b3a">argmax alpha</text>
+
+  <!-- ===================== DERIVED CHILD column ===================== -->
+
+  <!-- Derived discrete cell schematic -->
+  <g transform="translate(960,100)">
+    <rect x="0" y="0" width="290" height="240" rx="10" class="panel"/>
+    <text x="145" y="22" text-anchor="middle" class="lbl" font-weight="700">derived discrete cell</text>
+    <line x1="14" y1="32" x2="276" y2="32" stroke="#bbbbbb" stroke-width="0.8"/>
+    <text x="14" y="48" class="smaller" fill="#444">one operation per retained edge</text>
+
+    <!-- DAG with single-op labels -->
+    <g transform="translate(20,60)">
+      <!-- nodes -->
+      <circle cx="20"  cy="60" r="11" fill="#ffffff" stroke="#2e5b3a" stroke-width="1.4"/>
+      <text x="20" y="64" text-anchor="middle" class="smaller">h_-1</text>
+      <circle cx="100" cy="20" r="11" fill="#ffffff" stroke="#2e5b3a" stroke-width="1.4"/>
+      <text x="100" y="24" text-anchor="middle" class="smaller">h0</text>
+      <circle cx="180" cy="70" r="11" fill="#ffffff" stroke="#2e5b3a" stroke-width="1.4"/>
+      <text x="180" y="74" text-anchor="middle" class="smaller">h1</text>
+      <circle cx="250" cy="40" r="11" fill="#4f8a5f" stroke="#2e5b3a" stroke-width="1.4"/>
+      <text x="250" y="44" text-anchor="middle" class="smaller" fill="#ffffff">h2</text>
+
+      <!-- selected edges -->
+      <line x1="30"  y1="56" x2="90"  y2="24" stroke="#4f8a5f" stroke-width="1.8" marker-end="url(#arrowWin)"/>
+      <line x1="30"  y1="64" x2="170" y2="68" stroke="#4f8a5f" stroke-width="1.8" marker-end="url(#arrowWin)"/>
+      <line x1="110" y1="24" x2="240" y2="40" stroke="#4f8a5f" stroke-width="1.8" marker-end="url(#arrowWin)"/>
+      <line x1="190" y1="68" x2="244" y2="46" stroke="#4f8a5f" stroke-width="1.8" marker-end="url(#arrowWin)"/>
+
+      <!-- edge labels (chosen ops) -->
+      <g class="tiny">
+        <text x="50"  y="38" fill="#2e5b3a">Wavelet</text>
+        <text x="92"  y="66" fill="#2e5b3a">TimeConv</text>
+        <text x="180" y="28" fill="#2e5b3a">GRN</text>
+        <text x="225" y="62" fill="#2e5b3a">InvAttn</text>
+      </g>
+    </g>
+
+    <!-- Discrete choices row -->
+    <g transform="translate(14,180)">
+      <rect x="0" y="0" width="262" height="46" rx="4" fill="#eaf4ed" stroke="#4f8a5f" stroke-width="1.2"/>
+      <text x="131" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#2e5b3a">discrete block-level choices</text>
+      <text x="8"  y="30" class="tiny" fill="#2e5b3a">norm: RevIN</text>
+      <text x="92" y="30" class="tiny" fill="#2e5b3a">mode: enc-dec</text>
+      <text x="184" y="30" class="tiny" fill="#2e5b3a">bridge: Linear</text>
+      <text x="8"  y="42" class="tiny" fill="#2e5b3a">pos: RoPE</text>
+      <text x="92" y="42" class="tiny" fill="#2e5b3a">cells: K = 4</text>
+      <text x="184" y="42" class="tiny" fill="#2e5b3a">width: d_h = 192</text>
+    </g>
+  </g>
+
+  <!-- FinalTrainer + forecast output -->
+  <g transform="translate(960,355)">
+    <rect x="0" y="0" width="290" height="240" rx="10" fill="#eaf4ed" stroke="#4f8a5f" stroke-width="1.6"/>
+    <text x="145" y="22" text-anchor="middle" class="lbl" font-weight="700" fill="#2e5b3a">FinalTrainer - retrain from scratch</text>
+    <text x="145" y="38" text-anchor="middle" class="smaller" fill="#2e5b3a">one-cycle LR - SWA on last 33%</text>
+
+    <!-- Side-by-side mini-plots: input window vs forecast -->
+    <g transform="translate(14,52)">
+      <!-- LEFT: look-back window -->
+      <rect x="0" y="0" width="125" height="100" fill="#ffffff" stroke="#bbbbbb"/>
+      <text x="62" y="14" text-anchor="middle" class="smaller">look-back X (L)</text>
+      <line class="axis" x1="8" y1="90" x2="118" y2="90"/>
+      <line class="axis" x1="8" y1="22" x2="8"  y2="90"/>
+      <polyline fill="none" stroke="#3c5b80" stroke-width="1.4"
+        points="10,82 22,72 34,76 46,62 58,68 70,54 82,60 94,46 106,52 118,40"/>
+      <polyline fill="none" stroke="#7b9352" stroke-width="1.0" opacity="0.7"
+        points="10,86 22,80 34,84 46,76 58,80 70,72 82,76 94,68 106,72 118,64"/>
+
+      <!-- arrow between panels -->
+      <path class="winFlow" marker-end="url(#arrowWin)" d="M 128 50 L 138 50"/>
+
+      <!-- RIGHT: forecast horizon -->
+      <rect x="138" y="0" width="125" height="100" fill="#ffffff" stroke="#bbbbbb"/>
+      <text x="200" y="14" text-anchor="middle" class="smaller" fill="#2e5b3a">forecast Y_hat (H)</text>
+      <line class="axis" x1="146" y1="90" x2="256" y2="90"/>
+      <line class="axis" x1="146" y1="22" x2="146" y2="90"/>
+      <!-- ground truth dashed -->
+      <polyline fill="none" stroke="#888" stroke-width="0.8" stroke-dasharray="3 3"
+        points="148,38 162,32 176,28 190,24 204,22 218,20 232,18 246,18 256,18"/>
+      <!-- prediction solid green -->
+      <polyline fill="none" stroke="#4f8a5f" stroke-width="2.0"
+        points="148,40 162,34 176,30 190,26 204,24 218,22 232,20 246,20 256,20"/>
+      <!-- uncertainty band -->
+      <path d="M 148,46 L 162,40 L 176,36 L 190,32 L 204,30 L 218,28 L 232,26 L 246,26 L 256,26 L 256,14 L 246,14 L 232,14 L 218,16 L 204,18 L 190,20 L 176,24 L 162,28 L 148,34 Z"
+            fill="#4f8a5f" opacity="0.12"/>
+    </g>
+
+    <!-- bottom annotation -->
+    <text x="145" y="180" text-anchor="middle" class="small" fill="#2e5b3a">child evaluated on held-out test</text>
+    <text x="145" y="196" text-anchor="middle" class="smaller" fill="#2e5b3a" font-style="italic">MAE / MSE / sMAPE reported per dataset</text>
+    <text x="145" y="220" text-anchor="middle" class="smaller" fill="#444">argmax norm / mode / bridge / pos applied as hard choice</text>
+  </g>
+
+  <!-- Arrow discretisation -> final trainer -->
+  <path class="winFlow" marker-end="url(#arrowWin)" d="M 1105 340 L 1105 353"/>
+
+  <!-- ===================== Legend ===================== -->
+  <g transform="translate(40,925)">
+    <rect x="0" y="0" width="1200" height="44" rx="6" fill="#fafafa" stroke="#cccccc"/>
+    <text x="14" y="16" class="small" font-weight="700">Operation families:</text>
+
+    <g transform="translate(140,8)">
+      <rect x="0" y="0" width="14" height="12" fill="#eef4ff" stroke="#6b8db5"/>
+      <text x="20" y="10" class="small">MLP</text>
+    </g>
+    <g transform="translate(210,8)">
+      <rect x="0" y="0" width="14" height="12" fill="#f5fbe8" stroke="#7b9352"/>
+      <text x="20" y="10" class="small">Conv / FFN</text>
+    </g>
+    <g transform="translate(300,8)">
+      <rect x="0" y="0" width="14" height="12" fill="#f7eef9" stroke="#8b6794"/>
+      <text x="20" y="10" class="small">Frequency / positional</text>
+    </g>
+    <g transform="translate(440,8)">
+      <rect x="0" y="0" width="14" height="12" fill="#fdf2e3" stroke="#c08652"/>
+      <text x="20" y="10" class="small">Patch tokenizer</text>
+    </g>
+    <g transform="translate(560,8)">
+      <rect x="0" y="0" width="14" height="12" fill="#faeaea" stroke="#b35e5e"/>
+      <text x="20" y="10" class="small">Attention kernels</text>
+    </g>
+    <g transform="translate(760,8)">
+      <rect x="0" y="0" width="14" height="12" fill="#f1ecdd" stroke="#9c8559"/>
+      <text x="20" y="10" class="small">DARTS cell DAG</text>
+    </g>
+    <g transform="translate(890,8)">
+      <rect x="0" y="0" width="14" height="12" fill="#fbf6e6" stroke="#b89a3e"/>
+      <text x="20" y="10" class="small">outer-loop / variant-GDAS</text>
+    </g>
+    <g transform="translate(1060,8)">
+      <rect x="0" y="0" width="14" height="12" fill="#ffffff" stroke="#4f8a5f" stroke-width="1.6"/>
+      <text x="20" y="10" class="small">derived child path</text>
+    </g>
+
+    <g transform="translate(140,26)">
+      <line x1="0" y1="6" x2="22" y2="6" class="flow"/>
+      <text x="28" y="10" class="small">data flow</text>
+      <line x1="120" y1="6" x2="142" y2="6" class="flowDim"/>
+      <text x="148" y="10" class="small">auxiliary / parameter flow (architecture alpha)</text>
+      <line x1="400" y1="6" x2="422" y2="6" class="winFlow"/>
+      <text x="428" y="10" class="small">winning-candidate path (after argmax)</text>
+    </g>
+  </g>
+
+</svg>

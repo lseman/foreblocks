@@ -27,7 +27,6 @@ from ..utils.training import reset_model_parameters
 from .candidate_scoring import rescore_candidates_poolwise
 from .stats_reporting import append_whatif_estimates, mean_std, save_csv, save_json
 
-
 # ---------------------------------------------------------------------------
 # Public entry-point
 # ---------------------------------------------------------------------------
@@ -42,6 +41,7 @@ def run_multi_fidelity_search(
     num_candidates: int = 10,
     search_epochs: int = 10,
     final_epochs: int = 100,
+    final_patience: int | None = None,
     max_samples: int = 32,
     top_k: int = 5,
     max_workers: int | None = None,
@@ -58,6 +58,7 @@ def run_multi_fidelity_search(
     retrain_final_from_scratch: bool = True,
     discrete_arch_threshold: float = 0.3,
     use_amp: bool = False,
+    phase1_progress: bool = False,
     **kwargs,
 ) -> dict[str, Any]:
     """
@@ -71,6 +72,8 @@ def run_multi_fidelity_search(
         num_candidates:   Total random architectures to evaluate (phase 1).
         search_epochs:    DARTS epochs for each top-k candidate (phase 3).
         final_epochs:     Final training epochs (phase 5).
+        final_patience:   Early-stopping patience for phase-5 final training.
+                          ``None`` derives ~20% of ``final_epochs`` (min 5).
         max_samples:      Zero-cost evaluation sample budget.
         top_k:            Candidates to advance from phase 1 to phase 3.
         max_workers:      Thread-pool size for phase 1 (``None`` = auto).
@@ -81,6 +84,7 @@ def run_multi_fidelity_search(
         logger:           Optional Python logger (defaults to ``NASLogger``).
         retrain_final_from_scratch: Re-initialise model weights before phase 5.
         discrete_arch_threshold: Threshold for ``derive_discrete_architecture``.
+        phase1_progress:  If True, show a tqdm bar as phase-1 candidates finish.
 
     Returns:
         Dict with keys: ``final_model``, ``candidates``, ``top_candidates``,
@@ -124,6 +128,15 @@ def run_multi_fidelity_search(
         f"max_workers={max_workers or 'auto'}"
     )
 
+    effective_phase1_workers = max_workers
+    if effective_phase1_workers is None and str(
+        getattr(trainer, "device", "")
+    ).startswith("cuda"):
+        # A single GPU is the bottleneck for zero-cost metrics. Running several
+        # candidate threads only queues them behind the shared CUDA lock and
+        # makes the run look stuck when one candidate is slow.
+        effective_phase1_workers = 1
+
     phase1_rescore_mode = str(kwargs.pop("phase1_rescore_mode", "pool")).lower()
     phase3_reduction_factor = max(2, int(kwargs.pop("phase3_reduction_factor", 2)))
     phase3_min_epoch_budget = max(1, int(kwargs.pop("phase3_min_epoch_budget", 2)))
@@ -145,9 +158,17 @@ def run_multi_fidelity_search(
             "edge_usage_balance_weight",
             "edge_identity_cap",
             "edge_identity_cap_weight",
+            "max_train_batches",
+            "max_val_batches",
         )
         if k in kwargs
     }
+    phase3_train_max_batches = kwargs.pop("phase3_train_max_batches", None)
+    phase3_val_max_batches = kwargs.pop("phase3_val_max_batches", None)
+    if phase3_train_max_batches is not None:
+        train_kwargs["max_train_batches"] = int(phase3_train_max_batches)
+    if phase3_val_max_batches is not None:
+        train_kwargs["max_val_batches"] = int(phase3_val_max_batches)
 
     phase_summary: dict[str, Any] = {}
     per_candidate_rows: list[list] = []
@@ -213,8 +234,10 @@ def run_multi_fidelity_search(
     candidates = trainer._run_parallel_candidate_collection(
         num_candidates=num_candidates,
         candidate_fn=_generate_and_eval,
-        max_workers=max_workers,
+        max_workers=effective_phase1_workers,
         on_result=_on_phase1,
+        progress=phase1_progress,
+        progress_desc="Phase 1 candidates",
         error_log_fn=lambda e: logger.warning(
             f"[P1] future error ({type(e).__name__}): {e!r}"
         ),
@@ -357,6 +380,9 @@ def run_multi_fidelity_search(
                 use_swa=False,
                 use_amp=use_amp,
                 verbose=phase3_verbose,
+                # Phase 3 only reads best_val_loss; skip the extra final-metrics
+                # validation pass on every candidate×rung call.
+                compute_metrics=False,
                 **train_kwargs,
             )
             t_search = time.perf_counter() - t_s0
@@ -367,25 +393,21 @@ def run_multi_fidelity_search(
             state["epochs_trained"] = int(rung_epoch)
             state["mixed_val_loss"] = float(search_results["best_val_loss"])
             state["promotion_score"] = float(search_results["best_val_loss"])
-            state["round_history"].append(
-                {
-                    "rung": int(rung_idx + 1),
-                    "epoch_budget": int(rung_epoch),
-                    "delta_epochs": int(delta_epochs),
-                    "mixed_val_loss": float(search_results["best_val_loss"]),
-                    "train_time_sec": float(t_search),
-                    "total_time_sec": float(t_total),
-                }
-            )
-            round_rows.append(
-                {
-                    "candidate_id": cid,
-                    "epoch_budget": int(rung_epoch),
-                    "mixed_val_loss": float(search_results["best_val_loss"]),
-                    "train_time_sec": float(t_search),
-                    "total_time_sec": float(t_total),
-                }
-            )
+            state["round_history"].append({
+                "rung": int(rung_idx + 1),
+                "epoch_budget": int(rung_epoch),
+                "delta_epochs": int(delta_epochs),
+                "mixed_val_loss": float(search_results["best_val_loss"]),
+                "train_time_sec": float(t_search),
+                "total_time_sec": float(t_total),
+            })
+            round_rows.append({
+                "candidate_id": cid,
+                "epoch_budget": int(rung_epoch),
+                "mixed_val_loss": float(search_results["best_val_loss"]),
+                "train_time_sec": float(t_search),
+                "total_time_sec": float(t_total),
+            })
             result_msg = (
                 f"[P3] completed rung {rung_idx + 1} candidate id={cid} "
                 f"| mixed_val_loss={float(search_results['best_val_loss']):.6f} "
@@ -418,30 +440,26 @@ def run_multi_fidelity_search(
             )
             print(promote_msg)
             logger.info(promote_msg)
-            phase3_rounds.append(
-                {
-                    "rung_index": int(rung_idx + 1),
-                    "epoch_budget": int(rung_epoch),
-                    "num_candidates": len(round_rows),
-                    "num_promoted": int(keep),
-                    "results": round_rows,
-                    "promoted_candidate_ids": promoted_ids,
-                }
-            )
+            phase3_rounds.append({
+                "rung_index": int(rung_idx + 1),
+                "epoch_budget": int(rung_epoch),
+                "num_candidates": len(round_rows),
+                "num_promoted": int(keep),
+                "results": round_rows,
+                "promoted_candidate_ids": promoted_ids,
+            })
             asha_states = asha_states[:keep]
         else:
-            phase3_rounds.append(
-                {
-                    "rung_index": int(rung_idx + 1),
-                    "epoch_budget": int(rung_epoch),
-                    "num_candidates": len(round_rows),
-                    "num_promoted": len(round_rows),
-                    "results": round_rows,
-                    "promoted_candidate_ids": [
-                        s["candidate"].get("candidate_id", -1) for s in asha_states
-                    ],
-                }
-            )
+            phase3_rounds.append({
+                "rung_index": int(rung_idx + 1),
+                "epoch_budget": int(rung_epoch),
+                "num_candidates": len(round_rows),
+                "num_promoted": len(round_rows),
+                "results": round_rows,
+                "promoted_candidate_ids": [
+                    s["candidate"].get("candidate_id", -1) for s in asha_states
+                ],
+            })
 
     for state in asha_states:
         cand = state["candidate"]
@@ -449,16 +467,14 @@ def run_multi_fidelity_search(
         if state["search_results"] is None:
             continue
 
-        trained_non_derived.append(
-            {
-                "model": copy.deepcopy(state["search_results"]["model"]),
-                "val_loss": float(state["mixed_val_loss"]),
-                "candidate": cand,
-                "search_results": state["search_results"],
-                "phase3_round_history": list(state["round_history"]),
-                "epochs_trained": int(state["epochs_trained"]),
-            }
-        )
+        trained_non_derived.append({
+            "model": copy.deepcopy(state["search_results"]["model"]),
+            "val_loss": float(state["mixed_val_loss"]),
+            "candidate": cand,
+            "search_results": state["search_results"],
+            "phase3_round_history": list(state["round_history"]),
+            "epochs_trained": int(state["epochs_trained"]),
+        })
 
         t_d0 = time.perf_counter()
         derived = trainer.derive_final_architecture(state["search_results"]["model"])
@@ -466,17 +482,15 @@ def run_multi_fidelity_search(
         t_derive = time.perf_counter() - t_d0
         p3_derive_times.append(float(t_derive))
 
-        trained_candidates.append(
-            {
-                "model": derived,
-                "val_loss": float(val_loss),
-                "candidate": cand,
-                "search_results": state["search_results"],
-                "phase3_round_history": list(state["round_history"]),
-                "epochs_trained": int(state["epochs_trained"]),
-                "mixed_val_loss": float(state["mixed_val_loss"]),
-            }
-        )
+        trained_candidates.append({
+            "model": derived,
+            "val_loss": float(val_loss),
+            "candidate": cand,
+            "search_results": state["search_results"],
+            "phase3_round_history": list(state["round_history"]),
+            "epochs_trained": int(state["epochs_trained"]),
+            "mixed_val_loss": float(state["mixed_val_loss"]),
+        })
         finalist_msg = (
             f"[P3][finalist] id={cid} derived_val_loss={val_loss:.6f} "
             f"mixed_val_loss={state['mixed_val_loss']:.6f} "
@@ -510,6 +524,8 @@ def run_multi_fidelity_search(
         "derive_eval_std_sec": p3_ds,
         "rung_epochs": [int(x) for x in rung_epochs],
         "reduction_factor": int(phase3_reduction_factor),
+        "max_train_batches": train_kwargs.get("max_train_batches"),
+        "max_val_batches": train_kwargs.get("max_val_batches"),
         "rounds": phase3_rounds,
     }
     if collect_stats:
@@ -1002,6 +1018,14 @@ def run_multi_fidelity_search(
         modules_reset = reset_model_parameters(final_model)
         logger.info(f"[P5] re-initialised {modules_reset} modules")
 
+    # Early-stopping patience for final training. Default scales with
+    # final_epochs (~20%, min 5) so it actually fires on a converged run
+    # instead of always running all epochs.
+    if final_patience is None:
+        resolved_patience = max(5, int(round(final_epochs * 0.2)))
+    else:
+        resolved_patience = int(final_patience)
+
     final_results = trainer.train_final_model(
         model=final_model,
         train_loader=train_loader,
@@ -1010,6 +1034,7 @@ def run_multi_fidelity_search(
         epochs=final_epochs,
         learning_rate=5e-4,
         weight_decay=1e-5,
+        patience=resolved_patience,
         use_amp=use_amp,
     )
 
@@ -1138,9 +1163,9 @@ def _resolve_phase3_rung_epochs(
     """Build monotonically increasing ASHA rung budgets ending at search_epochs."""
     max_epochs = max(1, int(search_epochs))
     if explicit:
-        rung_epochs = sorted(
-            {max(1, min(max_epochs, int(v))) for v in explicit if int(v) > 0}
-        )
+        rung_epochs = sorted({
+            max(1, min(max_epochs, int(v))) for v in explicit if int(v) > 0
+        })
         if not rung_epochs:
             return [max_epochs]
         if rung_epochs[-1] != max_epochs:
@@ -1187,15 +1212,13 @@ def _run_phase1_benchmark(
 
         wall = time.perf_counter() - t0
         m, s = mean_std(task_times)
-        results.append(
-            {
-                "workers": w,
-                "ncand": n_candidates,
-                "wall_time_sec": wall,
-                "task_mean_sec": m,
-                "task_std_sec": s,
-            }
-        )
+        results.append({
+            "workers": w,
+            "ncand": n_candidates,
+            "wall_time_sec": wall,
+            "task_mean_sec": m,
+            "task_std_sec": s,
+        })
         rows.append([run_id, w, n_candidates, wall, m, s])
         logger.info(
             f"[P1 bench] workers={w}: wall={wall:.3f}s mean={m:.3f}s std={s:.3f}s"
@@ -1401,22 +1424,20 @@ def bilevel_lr_sensitivity(
                 if out.get("diversity_scores"):
                     health_last = out["diversity_scores"][-1]
 
-                results.append(
-                    {
-                        "model_lr": mlr,
-                        "arch_lr": alr,
-                        "seed": s,
-                        "best_val_loss_mixed": float(out["best_val_loss"]),
-                        "val_loss_derived": float(derived_val),
-                        "train_time_s": float(out["training_time"]),
-                        "health_score": None
-                        if not health_last
-                        else float(health_last["health_score"]),
-                        "avg_identity_dominance": None
-                        if not health_last
-                        else float(health_last["avg_identity_dominance"]),
-                    }
-                )
+                results.append({
+                    "model_lr": mlr,
+                    "arch_lr": alr,
+                    "seed": s,
+                    "best_val_loss_mixed": float(out["best_val_loss"]),
+                    "val_loss_derived": float(derived_val),
+                    "train_time_s": float(out["training_time"]),
+                    "health_score": None
+                    if not health_last
+                    else float(health_last["health_score"]),
+                    "avg_identity_dominance": None
+                    if not health_last
+                    else float(health_last["avg_identity_dominance"]),
+                })
 
     df = pd.DataFrame(results)
     if save_csv_path:

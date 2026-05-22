@@ -88,7 +88,10 @@ def train_darts_model(
     darts_pt_xi: float = 0.01,
     initial_drnas_concentration: float = 10.0,
     final_drnas_concentration: float = 2.0,
-    op_gdas: bool = False,
+    op_gdas: bool = True,
+    compute_metrics: bool = True,
+    max_train_batches: int | None = None,
+    max_val_batches: int | None = None,
 ) -> dict[str, Any]:
     """
     Run one DARTS bilevel training cycle.
@@ -111,12 +114,34 @@ def train_darts_model(
     model = model.to(device)
     start_time = time.time()
 
+    # ── GPU fast-path settings (Ampere+) ──────────────────────────────────
+    # TF32 matmul/conv is a large free speedup on Ampere and newer with no
+    # change to which architecture the search converges to.
+    if device.startswith("cuda"):
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        # cudnn.benchmark autotunes conv kernels on the first batch of each new
+        # shape. That one-off cost only pays off over many steps, so for short
+        # runs (e.g. phase-3 ASHA rungs of 2-4 epochs) it is net-negative —
+        # gate it on a minimum epoch budget.
+        torch.backends.cudnn.benchmark = epochs >= 10
+
+    # Warm-up must leave room for at least one architecture-update epoch.
+    # The arch loop runs only when ``epoch >= warmup_epochs``; with the default
+    # warmup_epochs=2 a 2-epoch run (epochs 0,1) would never update the
+    # architecture at all — training weights but doing zero search. Cap warmup
+    # so short rungs still search.
+    if warmup_epochs >= epochs:
+        warmup_epochs = max(0, epochs - 1)
+
     # Propagate op_gdas to all MixedOp edges so callers can override the
-    # model-level default without reconstructing the model.
-    if op_gdas:
-        for m in model.modules():
-            if hasattr(m, "op_gdas"):
-                m.op_gdas = True
+    # model-level default (now True) without reconstructing the model. Sync
+    # both directions so an explicit op_gdas=False here actually disables
+    # single-path sampling on edges built with the True default.
+    for m in model.modules():
+        if hasattr(m, "op_gdas"):
+            m.op_gdas = bool(op_gdas)
 
     # ── Parameter groups ──────────────────────────────────────────────────
     (
@@ -174,7 +199,13 @@ def train_darts_model(
         max_lr=model_learning_rate,
         epochs=epochs,
         steps_per_epoch=max(
-            1, len(train_loader) // max(1, gradient_accumulation_steps)
+            1,
+            (
+                int(max_train_batches)
+                if max_train_batches is not None
+                else len(train_loader)
+            )
+            // max(1, gradient_accumulation_steps),
         ),
         pct_start=0.3,
         anneal_strategy="cos",
@@ -305,7 +336,12 @@ def train_darts_model(
             epoch, epochs, warmup_epochs, architecture_update_freq
         )
         _arch_iters = _dynamic_inner_arch_iters(epoch, epochs, warmup_epochs)
-        if epoch >= warmup_epochs and epoch % _arch_freq == 0:
+        # Count the update cadence from the warm-up boundary so the first
+        # post-warmup epoch always updates the architecture. The previous
+        # ``epoch % _arch_freq`` keyed off the absolute epoch index, which on
+        # short runs (e.g. a 2-epoch phase-3 rung) could skip the only eligible
+        # epoch entirely — training weights but never searching.
+        if epoch >= warmup_epochs and (epoch - warmup_epochs) % _arch_freq == 0:
             for _ in range(_arch_iters):
                 arch_batch = bilevel_optimizer.next_arch_batch()
                 arch_x, arch_y, arch_model_kwargs = unpack_forecasting_batch(
@@ -531,6 +567,7 @@ def train_darts_model(
             use_amp=use_amp,
             verbose=verbose,
             epoch=epoch,
+            max_batches=max_train_batches,
         )
 
         avg_val_loss = _run_validation_epoch(
@@ -540,6 +577,7 @@ def train_darts_model(
             device=device,
             use_amp=use_amp,
             verbose=verbose,
+            max_batches=max_val_batches,
         )
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
@@ -619,7 +657,14 @@ def train_darts_model(
     else:
         model = model.float()
 
-    final_metrics = compute_final_metrics(model, val_loader, device)
+    # Skip the extra full-val metrics pass when the caller doesn't need it
+    # (e.g. phase-3 ASHA rungs, which only read best_val_loss). Saves one
+    # validation pass per call across many candidate×rung invocations.
+    final_metrics = (
+        compute_final_metrics(model, val_loader, device)
+        if compute_metrics
+        else {"mse": float("nan"), "mae": float("nan")}
+    )
 
     if verbose:
         print(f"\nTraining completed in {training_time:.1f}s")
@@ -705,6 +750,7 @@ def _run_model_training_epoch(
     use_amp: bool,
     verbose: bool,
     epoch: int,
+    max_batches: int | None = None,
 ) -> float:
     """Run one model-parameter epoch and return mean training loss."""
     model.train()
@@ -721,7 +767,11 @@ def _run_model_training_epoch(
     )
 
     model_optimizer.zero_grad()
+    batches_seen = 0
     for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
+        if max_batches is not None and batch_idx >= int(max_batches):
+            break
+        batches_seen += 1
         batch_x = batch_x.to(device, non_blocking=True)
         batch_y = batch_y.to(device, non_blocking=True)
 
@@ -752,7 +802,7 @@ def _run_model_training_epoch(
     if verbose and hasattr(batch_pbar, "close"):
         batch_pbar.close()
 
-    return epoch_train_loss / max(len(train_model_loader), 1)
+    return epoch_train_loss / max(batches_seen, 1)
 
 
 def _run_validation_epoch(
@@ -763,6 +813,7 @@ def _run_validation_epoch(
     device: str,
     use_amp: bool,
     verbose: bool,
+    max_batches: int | None = None,
 ) -> float:
     """Run one validation epoch and return mean validation loss."""
     model.eval()
@@ -774,19 +825,23 @@ def _run_validation_epoch(
             if verbose
             else val_loader
         )
-        for batch_data in val_pbar:
+        batches_seen = 0
+        for batch_idx, batch_data in enumerate(val_pbar):
+            if max_batches is not None and batch_idx >= int(max_batches):
+                break
+            batches_seen += 1
             x = batch_data[0].to(device, non_blocking=True)
             y = batch_data[1].to(device, non_blocking=True)
             with autocast_ctx(device, enabled=use_amp):
                 val_loss += loss_fn(model(x), y).item()
             if verbose and hasattr(val_pbar, "set_postfix"):
                 val_pbar.set_postfix(
-                    {"val_loss": f"{val_loss / max(len(val_loader), 1):.4f}"}
+                    {"val_loss": f"{val_loss / max(batches_seen, 1):.4f}"}
                 )
         if verbose and hasattr(val_pbar, "close"):
             val_pbar.close()
 
-    return val_loss / max(len(val_loader), 1)
+    return val_loss / max(batches_seen, 1)
 
 
 def _apply_darts_pt_perturbation(

@@ -1,3 +1,5 @@
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -45,6 +47,7 @@ def _bwd_dkdv_inner(
     k_tile,
     v_tile,
     q_desc,
+    o_desc,
     do_desc,
     lse_ptr,
     delta_ptr,
@@ -61,6 +64,7 @@ def _bwd_dkdv_inner(
     stage: tl.constexpr,
     needs_m_mask: tl.constexpr,
     needs_n_mask: tl.constexpr,
+    fused_delta: tl.constexpr,
 ):
     offs_m = tl.arange(0, block_m)
     log2e = 1.4426950408889634
@@ -71,11 +75,16 @@ def _bwd_dkdv_inner(
             q_tile = q_desc.load([m, 0])
             do_tile = do_desc.load([m, 0])
             lse_row = tl.load(lse_ptr + lse_base + rows, mask=row_mask, other=0.0)
-            d_row = tl.load(delta_ptr + lse_base + rows, mask=row_mask, other=0.0)
         else:
             q_tile = q_desc.load([m, 0])
             do_tile = do_desc.load([m, 0])
             lse_row = tl.load(lse_ptr + lse_base + rows)
+        if fused_delta:
+            o_tile = o_desc.load([m, 0])
+            d_row = tl.sum(o_tile.to(tl.float32) * do_tile.to(tl.float32), axis=1)
+        elif needs_m_mask:
+            d_row = tl.load(delta_ptr + lse_base + rows, mask=row_mask, other=0.0)
+        else:
             d_row = tl.load(delta_ptr + lse_base + rows)
 
         qk = tl.dot(q_tile, tl.trans(k_tile)) * qk_scale
@@ -104,37 +113,12 @@ def _bwd_dkdv_inner(
     return dk_acc, dv_acc
 
 
-def _bwd_dkdv_configs():
-    cfgs = []
-    for bm, bn, w, s in [
-        (128, 128, 8, 3),
-        (128, 128, 4, 4),
-        (128, 64, 8, 3),
-        (128, 64, 4, 4),
-        (128, 64, 8, 2),
-        (128, 64, 4, 3),
-        (64, 128, 8, 3),
-        (64, 128, 4, 4),
-        (64, 128, 4, 3),
-        (64, 64, 8, 3),
-        (64, 64, 4, 4),
-        (64, 64, 4, 3),
-        (128, 32, 4, 3),
-        (64, 32, 4, 2),
-        (32, 64, 4, 2),
-    ]:
-        cfgs.append(
-            triton.Config({"block_m": bm, "block_n": bn}, num_warps=w, num_stages=s)
-        )
-    return cfgs
-
-
-@triton.autotune(configs=_bwd_dkdv_configs(), key=["n_ctx", "d_head", "causal"])
 @triton.jit
 def _bwd_dkdv_kernel(
     q,
     k,
     v,
+    o,
     do,
     lse,
     delta,
@@ -146,6 +130,7 @@ def _bwd_dkdv_kernel(
     causal: tl.constexpr,
     block_m: tl.constexpr,
     block_n: tl.constexpr,
+    fused_delta: tl.constexpr,
 ):
     pid_n = tl.program_id(0)
     pid_bh = tl.program_id(1)
@@ -157,6 +142,12 @@ def _bwd_dkdv_kernel(
     qk_scale = scale * 1.4426950408889634
     q_desc = tl.make_tensor_descriptor(
         base=q + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
+        block_shape=[block_m, d_head],
+    )
+    o_desc = tl.make_tensor_descriptor(
+        base=o + base,
         shape=[n_ctx, d_head],
         strides=[d_head, 1],
         block_shape=[block_m, d_head],
@@ -207,6 +198,7 @@ def _bwd_dkdv_kernel(
             k_tile,
             v_tile,
             q_desc,
+            o_desc,
             do_desc,
             lse,
             delta,
@@ -223,6 +215,7 @@ def _bwd_dkdv_kernel(
             stage=2,
             needs_m_mask=True,
             needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
         )
         # Off-diagonal: interior q-tiles (unmasked) + tail q-tile (m-masked).
         off_interior_end = (n_ctx // block_m) * block_m
@@ -234,6 +227,7 @@ def _bwd_dkdv_kernel(
             k_tile,
             v_tile,
             q_desc,
+            o_desc,
             do_desc,
             lse,
             delta,
@@ -250,6 +244,7 @@ def _bwd_dkdv_kernel(
             stage=1,
             needs_m_mask=False,
             needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
         )
         dk_acc, dv_acc = _bwd_dkdv_inner(
             dk_acc,
@@ -257,6 +252,7 @@ def _bwd_dkdv_kernel(
             k_tile,
             v_tile,
             q_desc,
+            o_desc,
             do_desc,
             lse,
             delta,
@@ -273,6 +269,7 @@ def _bwd_dkdv_kernel(
             stage=1,
             needs_m_mask=True,
             needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
         )
     else:
         interior_end = (n_ctx // block_m) * block_m
@@ -282,6 +279,7 @@ def _bwd_dkdv_kernel(
             k_tile,
             v_tile,
             q_desc,
+            o_desc,
             do_desc,
             lse,
             delta,
@@ -298,6 +296,7 @@ def _bwd_dkdv_kernel(
             stage=0,
             needs_m_mask=False,
             needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
         )
         dk_acc, dv_acc = _bwd_dkdv_inner(
             dk_acc,
@@ -305,6 +304,7 @@ def _bwd_dkdv_kernel(
             k_tile,
             v_tile,
             q_desc,
+            o_desc,
             do_desc,
             lse,
             delta,
@@ -321,6 +321,7 @@ def _bwd_dkdv_kernel(
             stage=0,
             needs_m_mask=True,
             needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
         )
 
     out_mask = offs_n[:, None] < n_ctx
@@ -392,37 +393,12 @@ def _bwd_dq_inner(
     return dq_acc
 
 
-def _bwd_dq_configs():
-    cfgs = []
-    for bm, bn, w, s in [
-        (128, 128, 8, 3),
-        (128, 128, 4, 4),
-        (128, 64, 8, 3),
-        (128, 64, 4, 4),
-        (128, 64, 8, 2),
-        (128, 64, 4, 3),
-        (64, 128, 8, 3),
-        (64, 128, 4, 4),
-        (64, 128, 4, 3),
-        (64, 64, 8, 3),
-        (64, 64, 4, 4),
-        (64, 64, 4, 3),
-        (128, 32, 4, 3),
-        (64, 32, 4, 2),
-        (32, 64, 4, 2),
-    ]:
-        cfgs.append(
-            triton.Config({"block_m": bm, "block_n": bn}, num_warps=w, num_stages=s)
-        )
-    return cfgs
-
-
-@triton.autotune(configs=_bwd_dq_configs(), key=["n_ctx", "d_head", "causal"])
 @triton.jit
 def _bwd_dq_kernel(
     q,
     k,
     v,
+    o,
     do,
     lse,
     delta,
@@ -433,6 +409,7 @@ def _bwd_dq_kernel(
     causal: tl.constexpr,
     block_m: tl.constexpr,
     block_n: tl.constexpr,
+    fused_delta: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_bh = tl.program_id(1)
@@ -447,6 +424,12 @@ def _bwd_dq_kernel(
     needs_m_mask = (pid_m + 1) * block_m > n_ctx
     q_desc = tl.make_tensor_descriptor(
         base=q + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
+        block_shape=[block_m, d_head],
+    )
+    o_desc = tl.make_tensor_descriptor(
+        base=o + base,
         shape=[n_ctx, d_head],
         strides=[d_head, 1],
         block_shape=[block_m, d_head],
@@ -472,7 +455,11 @@ def _bwd_dq_kernel(
     q_tile = q_desc.load([pid_m * block_m, 0])
     do_tile = do_desc.load([pid_m * block_m, 0])
     lse_row = tl.load(lse + lse_base + offs_m, mask=row_mask, other=0.0)
-    d_row = tl.load(delta + lse_base + offs_m, mask=row_mask, other=0.0)
+    if fused_delta:
+        o_tile = o_desc.load([pid_m * block_m, 0])
+        d_row = tl.sum(o_tile.to(tl.float32) * do_tile.to(tl.float32), axis=1)
+    else:
+        d_row = tl.load(delta + lse_base + offs_m, mask=row_mask, other=0.0)
 
     dq_acc = tl.zeros((block_m, d_head), tl.float32)
 
@@ -581,6 +568,542 @@ def _bwd_dq_kernel(
     )
 
 
+@triton.jit
+def _bwd_dq_persistent_kernel(
+    q,
+    k,
+    v,
+    o,
+    do,
+    lse,
+    delta,
+    dq,
+    scale: tl.constexpr,
+    n_ctx: tl.constexpr,
+    d_head: tl.constexpr,
+    causal: tl.constexpr,
+    block_m: tl.constexpr,
+    block_n: tl.constexpr,
+    fused_delta: tl.constexpr,
+    n_tiles_m: tl.constexpr,
+    tile_stride: tl.constexpr,
+):
+    tile_m = tl.program_id(0)
+    pid_bh = tl.program_id(1)
+
+    offs_d = tl.arange(0, d_head)
+    base = pid_bh * n_ctx * d_head
+    lse_base = pid_bh * n_ctx
+    qk_scale = scale * 1.4426950408889634
+
+    q_desc = tl.make_tensor_descriptor(
+        base=q + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
+        block_shape=[block_m, d_head],
+    )
+    o_desc = tl.make_tensor_descriptor(
+        base=o + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
+        block_shape=[block_m, d_head],
+    )
+    do_desc = tl.make_tensor_descriptor(
+        base=do + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
+        block_shape=[block_m, d_head],
+    )
+    k_desc = tl.make_tensor_descriptor(
+        base=k + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
+        block_shape=[block_n, d_head],
+    )
+    v_desc = tl.make_tensor_descriptor(
+        base=v + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
+        block_shape=[block_n, d_head],
+    )
+
+    while tile_m < n_tiles_m:
+        offs_m = tile_m * block_m + tl.arange(0, block_m)
+        row_mask = offs_m < n_ctx
+        needs_m_mask = (tile_m + 1) * block_m > n_ctx
+
+        q_tile = q_desc.load([tile_m * block_m, 0])
+        do_tile = do_desc.load([tile_m * block_m, 0])
+        lse_row = tl.load(lse + lse_base + offs_m, mask=row_mask, other=0.0)
+        if fused_delta:
+            o_tile = o_desc.load([tile_m * block_m, 0])
+            d_row = tl.sum(o_tile.to(tl.float32) * do_tile.to(tl.float32), axis=1)
+        else:
+            d_row = tl.load(delta + lse_base + offs_m, mask=row_mask, other=0.0)
+
+        dq_acc = tl.zeros((block_m, d_head), tl.float32)
+
+        if causal:
+            q_row_start = tile_m * block_m
+            off_end = (q_row_start // block_n) * block_n
+            dq_acc = _bwd_dq_inner(
+                dq_acc,
+                q_tile,
+                do_tile,
+                lse_row,
+                d_row,
+                k_desc,
+                v_desc,
+                base,
+                offs_m,
+                0,
+                off_end,
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_n,
+                stage=1,
+                needs_n_mask=False,
+                row_mask_for_dot=row_mask,
+                needs_m_mask=needs_m_mask,
+            )
+            diag_end = tl.minimum(n_ctx, (tile_m + 1) * block_m)
+            dq_acc = _bwd_dq_inner(
+                dq_acc,
+                q_tile,
+                do_tile,
+                lse_row,
+                d_row,
+                k_desc,
+                v_desc,
+                base,
+                offs_m,
+                off_end,
+                diag_end,
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_n,
+                stage=2,
+                needs_n_mask=True,
+                row_mask_for_dot=row_mask,
+                needs_m_mask=needs_m_mask,
+            )
+        else:
+            interior_end = (n_ctx // block_n) * block_n
+            dq_acc = _bwd_dq_inner(
+                dq_acc,
+                q_tile,
+                do_tile,
+                lse_row,
+                d_row,
+                k_desc,
+                v_desc,
+                base,
+                offs_m,
+                0,
+                interior_end,
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_n,
+                stage=0,
+                needs_n_mask=False,
+                row_mask_for_dot=row_mask,
+                needs_m_mask=needs_m_mask,
+            )
+            dq_acc = _bwd_dq_inner(
+                dq_acc,
+                q_tile,
+                do_tile,
+                lse_row,
+                d_row,
+                k_desc,
+                v_desc,
+                base,
+                offs_m,
+                interior_end,
+                n_ctx,
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_n,
+                stage=0,
+                needs_n_mask=True,
+                row_mask_for_dot=row_mask,
+                needs_m_mask=needs_m_mask,
+            )
+
+        tl.store(
+            dq + base + offs_m[:, None] * d_head + offs_d[None, :],
+            dq_acc.to(dq.dtype.element_ty),
+            mask=row_mask[:, None],
+        )
+        tile_m += tile_stride
+
+
+@triton.jit
+def _bwd_combined_dkdv_inner(
+    dk,
+    dv,
+    q,
+    k_tile,
+    v_tile,
+    do,
+    lse,
+    delta,
+    base,
+    lse_base,
+    start_n,
+    start_m,
+    num_steps,
+    scale: tl.constexpr,
+    qk_scale: tl.constexpr,
+    d_head: tl.constexpr,
+    block_m: tl.constexpr,
+    block_n: tl.constexpr,
+    mask: tl.constexpr,
+    prescale_k: tl.constexpr,
+):
+    offs_n = start_n + tl.arange(0, block_n)
+    offs_d = tl.arange(0, d_head)
+    offs_m = start_m + tl.arange(0, block_m)
+    q_t_ptrs = q + base + offs_d[:, None] + offs_m[None, :] * d_head
+    do_ptrs = do + base + offs_m[:, None] * d_head + offs_d[None, :]
+    for _ in range(num_steps):
+        q_t = tl.load(q_t_ptrs)
+        do_tile = tl.load(do_ptrs)
+        lse_row = tl.load(lse + lse_base + offs_m)
+        d_row = tl.load(delta + lse_base + offs_m)
+
+        if prescale_k:
+            k_scaled = (k_tile * qk_scale).to(k_tile.dtype)
+            qk_t = tl.dot(k_scaled, q_t)
+        else:
+            qk_t = tl.dot(k_tile, q_t) * qk_scale
+        p_t = tl.math.exp2(qk_t - lse_row[None, :] * 1.4426950408889634)
+        if mask:
+            p_t = tl.where(offs_m[None, :] >= offs_n[:, None], p_t, 0.0)
+
+        dv += tl.dot(p_t.to(do_tile.dtype), do_tile)
+        dp_t = tl.dot(v_tile, tl.trans(do_tile))
+        ds_t = p_t * (dp_t - d_row[None, :])
+        if not prescale_k:
+            ds_t *= scale
+        dk += tl.dot(ds_t.to(q_t.dtype), tl.trans(q_t))
+
+        offs_m += block_m
+        q_t_ptrs += block_m * d_head
+        do_ptrs += block_m * d_head
+    return dk, dv
+
+
+@triton.jit
+def _bwd_combined_dq_inner(
+    dq,
+    q_tile,
+    do_tile,
+    k,
+    v,
+    lse_row,
+    d_row,
+    base,
+    start_m,
+    start_n,
+    num_steps,
+    scale: tl.constexpr,
+    qk_scale: tl.constexpr,
+    d_head: tl.constexpr,
+    block_m: tl.constexpr,
+    block_n: tl.constexpr,
+    mask: tl.constexpr,
+    prescale_k: tl.constexpr,
+):
+    offs_m = start_m + tl.arange(0, block_m)
+    offs_n = start_n + tl.arange(0, block_n)
+    offs_d = tl.arange(0, d_head)
+    k_t_ptrs = k + base + offs_n[None, :] * d_head + offs_d[:, None]
+    v_t_ptrs = v + base + offs_n[None, :] * d_head + offs_d[:, None]
+    for _ in range(num_steps):
+        k_t = tl.load(k_t_ptrs)
+        v_t = tl.load(v_t_ptrs)
+        if prescale_k:
+            k_t_scaled = (k_t * qk_scale).to(k_t.dtype)
+            qk = tl.dot(q_tile, k_t_scaled)
+        else:
+            qk = tl.dot(q_tile, k_t) * qk_scale
+        p = tl.math.exp2(qk - lse_row[:, None] * 1.4426950408889634)
+        if mask:
+            p = tl.where(offs_m[:, None] >= offs_n[None, :], p, 0.0)
+
+        dp = tl.dot(do_tile, v_t)
+        ds = p * (dp - d_row[:, None])
+        if prescale_k:
+            dq += tl.dot(ds.to(k_t_scaled.dtype), tl.trans(k_t_scaled))
+        else:
+            ds *= scale
+            dq += tl.dot(ds.to(k_t.dtype), tl.trans(k_t))
+
+        offs_n += block_n
+        k_t_ptrs += block_n * d_head
+        v_t_ptrs += block_n * d_head
+    return dq
+
+
+@triton.jit
+def _bwd_combined_kernel(
+    q,
+    k,
+    v,
+    do,
+    lse,
+    delta,
+    dq,
+    dk,
+    dv,
+    scale: tl.constexpr,
+    n_ctx: tl.constexpr,
+    d_head: tl.constexpr,
+    causal: tl.constexpr,
+    block_m1: tl.constexpr,
+    block_n1: tl.constexpr,
+    block_m2: tl.constexpr,
+    block_n2: tl.constexpr,
+    blk_slice_factor: tl.constexpr,
+    prescale_k: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    pid_bh = tl.program_id(1)
+    base = pid_bh * n_ctx * d_head
+    lse_base = pid_bh * n_ctx
+    offs_d = tl.arange(0, d_head)
+    qk_scale = scale * 1.4426950408889634
+
+    start_n = pid * block_n1
+    offs_n = start_n + tl.arange(0, block_n1)
+    k_tile = tl.load(k + base + offs_n[:, None] * d_head + offs_d[None, :])
+    v_tile = tl.load(v + base + offs_n[:, None] * d_head + offs_d[None, :])
+    dk_acc = tl.zeros((block_n1, d_head), tl.float32)
+    dv_acc = tl.zeros((block_n1, d_head), tl.float32)
+
+    start_m = 0
+    mask_block_m1: tl.constexpr = block_m1 // blk_slice_factor
+    if causal:
+        start_m = start_n
+        num_steps = block_n1 // mask_block_m1
+        dk_acc, dv_acc = _bwd_combined_dkdv_inner(
+            dk_acc,
+            dv_acc,
+            q,
+            k_tile,
+            v_tile,
+            do,
+            lse,
+            delta,
+            base,
+            lse_base,
+            start_n,
+            start_m,
+            num_steps,
+            scale,
+            qk_scale,
+            d_head,
+            mask_block_m1,
+            block_n1,
+            mask=True,
+            prescale_k=prescale_k,
+        )
+        start_m += num_steps * mask_block_m1
+
+    num_steps = (n_ctx - start_m) // block_m1
+    dk_acc, dv_acc = _bwd_combined_dkdv_inner(
+        dk_acc,
+        dv_acc,
+        q,
+        k_tile,
+        v_tile,
+        do,
+        lse,
+        delta,
+        base,
+        lse_base,
+        start_n,
+        start_m,
+        num_steps,
+        scale,
+        qk_scale,
+        d_head,
+        block_m1,
+        block_n1,
+        mask=False,
+        prescale_k=prescale_k,
+    )
+
+    if prescale_k:
+        tl.store(
+            dk + base + offs_n[:, None] * d_head + offs_d[None, :],
+            (dk_acc * scale).to(dk.dtype.element_ty),
+        )
+    else:
+        tl.store(
+            dk + base + offs_n[:, None] * d_head + offs_d[None, :],
+            dk_acc.to(dk.dtype.element_ty),
+        )
+    tl.store(dv + base + offs_n[:, None] * d_head + offs_d[None, :], dv_acc.to(dv.dtype.element_ty))
+
+    mask_block_n2: tl.constexpr = block_n2 // blk_slice_factor
+    for dq_offset in range(0, block_n1, block_m2):
+        start_m2 = pid * block_n1 + dq_offset
+        offs_m2 = start_m2 + tl.arange(0, block_m2)
+        q_tile = tl.load(q + base + offs_m2[:, None] * d_head + offs_d[None, :])
+        do_tile = tl.load(do + base + offs_m2[:, None] * d_head + offs_d[None, :])
+        lse_row = tl.load(lse + lse_base + offs_m2)
+        d_row = tl.load(delta + lse_base + offs_m2)
+        dq_acc = tl.zeros((block_m2, d_head), tl.float32)
+
+        start_n2 = 0
+        num_steps2 = n_ctx // block_n2
+        if causal:
+            end_n = start_m2 + block_m2
+            num_mask_steps = block_m2 // mask_block_n2
+            dq_acc = _bwd_combined_dq_inner(
+                dq_acc,
+                q_tile,
+                do_tile,
+                k,
+                v,
+                lse_row,
+                d_row,
+                base,
+                start_m2,
+                end_n - num_mask_steps * mask_block_n2,
+                num_mask_steps,
+                scale,
+                qk_scale,
+                d_head,
+                block_m2,
+                mask_block_n2,
+                mask=True,
+                prescale_k=prescale_k,
+            )
+            end_n -= num_mask_steps * mask_block_n2
+            num_steps2 = end_n // block_n2
+            start_n2 = end_n - num_steps2 * block_n2
+
+        dq_acc = _bwd_combined_dq_inner(
+            dq_acc,
+            q_tile,
+            do_tile,
+            k,
+            v,
+            lse_row,
+            d_row,
+            base,
+            start_m2,
+            start_n2,
+            num_steps2,
+            scale,
+            qk_scale,
+            d_head,
+            block_m2,
+            block_n2,
+            mask=False,
+            prescale_k=prescale_k,
+        )
+
+        if prescale_k:
+            tl.store(
+                dq + base + offs_m2[:, None] * d_head + offs_d[None, :],
+                (dq_acc * 0.6931471805599453).to(dq.dtype.element_ty),
+            )
+        else:
+            tl.store(
+                dq + base + offs_m2[:, None] * d_head + offs_d[None, :],
+                dq_acc.to(dq.dtype.element_ty),
+            )
+
+
+def _is_ada_or_newer(q):
+    major, minor = torch.cuda.get_device_capability(q.device)
+    return major > 8 or (major == 8 and minor >= 9)
+
+
+def _select_bwd_dkdv_config(q, n_ctx, d_head, causal, fused_delta):
+    if _is_ada_or_newer(q):
+        if d_head <= 32:
+            return 128, 128, 4, 2 if fused_delta else 4
+        if d_head == 64:
+            if causal:
+                return 128, 64, 4, 2 if fused_delta else 3
+            if n_ctx >= 1024:
+                return 64, 128, 4, 2 if fused_delta else 3
+            return 128, 64, 4, 2 if fused_delta else 3
+        if d_head == 128:
+            return 64, 64, 4, 2
+    if d_head <= 64:
+        return 128, 64, 4, 3
+    return 64, 64, 4, 3
+
+
+def _select_bwd_dq_config(q, n_ctx, d_head, causal, fused_delta):
+    if _is_ada_or_newer(q):
+        if d_head <= 32:
+            return 128, 128, 4, 2 if fused_delta else 4
+        if d_head == 64:
+            if causal:
+                return 128, 64, 4, 3
+            return (128, 128, 4, 2) if n_ctx >= 1024 else (64, 128, 4, 3)
+        if d_head == 128:
+            return (32, 64, 4, 2) if causal else (128, 32, 4, 2)
+    if d_head <= 64:
+        return 128, 64, 4, 3
+    return 64, 64, 4, 3
+
+
+def _use_fused_delta(n_ctx, d_head, causal):
+    # Fusing D = sum(O * dO) removes one launch and global delta traffic. On Ada it
+    # helps launch-bound cases, but large tiles prefer the precomputed delta path.
+    return (d_head == 64 and n_ctx <= 512) or (
+        d_head == 128 and n_ctx <= 512 and causal
+    )
+
+
+def _use_persistent_dq(q, n_ctx, d_head, causal):
+    return (
+        _is_ada_or_newer(q)
+        and n_ctx >= 4096
+        and d_head == 128
+        and not causal
+        and os.environ.get("CUSTOM_ATT_DISABLE_PERSISTENT_DQ") != "1"
+        and torch.cuda.get_device_properties(q.device).multi_processor_count > 0
+    )
+
+
+def _combined_bwd_config(q, n_ctx, d_head, causal, fused_delta):
+    if not (
+        _is_ada_or_newer(q)
+        and not fused_delta
+        and d_head in (64, 128)
+        and n_ctx >= 1024
+        and n_ctx % 128 == 0
+        and os.environ.get("CUSTOM_ATT_DISABLE_COMBINED_BWD") != "1"
+    ):
+        return None
+    if d_head == 64:
+        return 32, 128, 64, 64, 2, 4, 3, False
+    return 32, 128, 128, 32, 2, 8, 2, False
+
+
+def _use_combined_bwd(q, n_ctx, d_head, causal, fused_delta):
+    return (
+        _combined_bwd_config(q, n_ctx, d_head, causal, fused_delta) is not None
+    )
+
+
 def triton_flash_bwd(grad_out, q, k, v, out, lse, causal=False, softmax_scale=None):
     assert grad_out.is_contiguous() and q.is_contiguous() and k.is_contiguous()
     assert v.is_contiguous() and out.is_contiguous() and lse.is_contiguous()
@@ -589,30 +1112,65 @@ def triton_flash_bwd(grad_out, q, k, v, out, lse, causal=False, softmax_scale=No
     scale = softmax_scale if softmax_scale is not None else d_head**-0.5
 
     bh = q.shape[0] * q.shape[1]
-    delta = torch.empty(q.shape[:-1], device=q.device, dtype=torch.float32)
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
+    fused_delta = _use_fused_delta(n_ctx, d_head, bool(causal))
+    if fused_delta:
+        delta = out
+    else:
+        delta = torch.empty(q.shape[:-1], device=q.device, dtype=torch.float32)
+        pre_block = 256 if d_head <= 128 else 128
+        _bwd_preprocess[(triton.cdiv(n_ctx, pre_block), bh)](
+            out,
+            grad_out,
+            delta,
+            n_ctx,
+            d_head,
+            pre_block,
+            num_warps=8 if pre_block == 256 else 4,
+            num_stages=2,
+        )
 
-    pre_block = 256 if d_head <= 128 else 128
-    _bwd_preprocess[(triton.cdiv(n_ctx, pre_block), bh)](
-        out,
-        grad_out,
-        delta,
-        n_ctx,
-        d_head,
-        pre_block,
-        num_warps=8 if pre_block == 256 else 4,
-        num_stages=2,
+    combined_config = _combined_bwd_config(q, n_ctx, d_head, bool(causal), fused_delta)
+    if combined_config is not None:
+        block_m1, block_n1, block_m2, block_n2, slice_factor, warps, stages, prescale_k = (
+            combined_config
+        )
+        _bwd_combined_kernel[(n_ctx // block_n1, bh)](
+            q,
+            k,
+            v,
+            grad_out,
+            lse,
+            delta,
+            dq,
+            dk,
+            dv,
+            scale,
+            n_ctx,
+            d_head,
+            causal,
+            block_m1,
+            block_n1,
+            block_m2,
+            block_n2,
+            slice_factor,
+            prescale_k,
+            num_warps=warps,
+            num_stages=stages,
+        )
+        return dq, dk, dv
+
+    dkdv_block_m, dkdv_block_n, dkdv_warps, dkdv_stages = _select_bwd_dkdv_config(
+        q, n_ctx, d_head, bool(causal), fused_delta
     )
 
-    def dkdv_grid(meta):
-        return triton.cdiv(n_ctx, meta["block_n"]), bh
-
-    _bwd_dkdv_kernel[dkdv_grid](
+    _bwd_dkdv_kernel[(triton.cdiv(n_ctx, dkdv_block_n), bh)](
         q,
         k,
         v,
+        out,
         grad_out,
         lse,
         delta,
@@ -622,24 +1180,62 @@ def triton_flash_bwd(grad_out, q, k, v, out, lse, causal=False, softmax_scale=No
         n_ctx,
         d_head,
         causal,
+        dkdv_block_m,
+        dkdv_block_n,
+        fused_delta,
+        num_warps=dkdv_warps,
+        num_stages=dkdv_stages,
     )
 
-    def dq_grid(meta):
-        return triton.cdiv(n_ctx, meta["block_m"]), bh
-
-    _bwd_dq_kernel[dq_grid](
-        q,
-        k,
-        v,
-        grad_out,
-        lse,
-        delta,
-        dq,
-        scale,
-        n_ctx,
-        d_head,
-        causal,
+    dq_block_m, dq_block_n, dq_warps, dq_stages = _select_bwd_dq_config(
+        q, n_ctx, d_head, bool(causal), fused_delta
     )
+
+    dq_tiles = triton.cdiv(n_ctx, dq_block_m)
+    if _use_persistent_dq(q, n_ctx, d_head, bool(causal)):
+        sm_count = torch.cuda.get_device_properties(q.device).multi_processor_count
+        persistent_tiles = min(dq_tiles, sm_count * 2)
+        _bwd_dq_persistent_kernel[(persistent_tiles, bh)](
+            q,
+            k,
+            v,
+            out,
+            grad_out,
+            lse,
+            delta,
+            dq,
+            scale,
+            n_ctx,
+            d_head,
+            causal,
+            dq_block_m,
+            dq_block_n,
+            fused_delta,
+            dq_tiles,
+            persistent_tiles,
+            num_warps=dq_warps,
+            num_stages=dq_stages,
+        )
+    else:
+        _bwd_dq_kernel[(dq_tiles, bh)](
+            q,
+            k,
+            v,
+            out,
+            grad_out,
+            lse,
+            delta,
+            dq,
+            scale,
+            n_ctx,
+            d_head,
+            causal,
+            dq_block_m,
+            dq_block_n,
+            fused_delta,
+            num_warps=dq_warps,
+            num_stages=dq_stages,
+        )
 
     return dq, dk, dv
 

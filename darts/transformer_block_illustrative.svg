@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 540" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#1a1a1a">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arrowGray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7a7a7a"/>
+    </marker>
+
+    <style>
+      .ttl    { font-size: 16px; font-weight: 700; }
+      .lbl    { font-size: 12.5px; }
+      .small  { font-size: 11px; fill: #444; }
+      .smaller{ font-size: 10px; fill: #555; }
+      .tiny   { font-size: 9px; fill: #666; }
+      .math   { font-style: italic; }
+      .famHdr { font-size: 11.5px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <!-- ===================== Title ===================== -->
+  <text x="380" y="32" text-anchor="middle" class="ttl">Searchable Transformer Encoder - Decoder block</text>
+  <text x="380" y="52" text-anchor="middle" class="small" font-style="italic">mixed-operation alpha slots for patching, position, attention, and FFN choices</text>
+
+  <!-- Topology mode tag -->
+  <g transform="translate(40,72)">
+    <rect x="0" y="0" width="680" height="36" rx="6" fill="#fbf6e6" stroke="#b89a3e" stroke-width="1.1"/>
+    <text x="10" y="14" class="famHdr" fill="#6e5a1f">topology mode m in M</text>
+    <text x="10" y="30" class="smaller" fill="#6e5a1f">enc-dec (shown) - enc-only - dec-only; resolved by outer ASHA loop; GDAS for block choices</text>
+  </g>
+
+  <!-- ===================== SEARCHABLE TRANSFORMER BLOCK ===================== -->
+  <g transform="translate(40,120)">
+    <rect x="0" y="0" width="680" height="340" rx="10" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+    <text x="340" y="20" text-anchor="middle" class="lbl" font-weight="700">Searchable Transformer Encoder - Decoder: coloured slots are mixed-operation alpha</text>
+    <text x="340" y="36" text-anchor="middle" class="smaller" font-style="italic">encoder/decoder type is also searched: LSTM - GRU - Transformer - PatchTST (encoder only)</text>
+    <line x1="14" y1="44" x2="666" y2="44" stroke="#bbbbbb" stroke-width="0.8"/>
+
+    <!-- =============== ENCODER side =============== -->
+    <text x="170" y="62" text-anchor="middle" class="famHdr" fill="#3e5b7a">Encoder block</text>
+
+    <!-- input sequence -->
+    <g transform="translate(28,72)">
+      <rect x="0"  y="0" width="14" height="22" fill="#dde5ef" stroke="#3e5b7a"/>
+      <rect x="16" y="0" width="14" height="22" fill="#dde5ef" stroke="#3e5b7a"/>
+      <rect x="32" y="0" width="14" height="22" fill="#dde5ef" stroke="#3e5b7a"/>
+      <rect x="48" y="0" width="14" height="22" fill="#dde5ef" stroke="#3e5b7a"/>
+      <rect x="64" y="0" width="14" height="22" fill="#dde5ef" stroke="#3e5b7a"/>
+      <rect x="80" y="0" width="14" height="22" fill="#dde5ef" stroke="#3e5b7a"/>
+      <text x="47" y="36" text-anchor="middle" class="tiny" fill="#3e5b7a">F* sequence (L x d_h)</text>
+    </g>
+
+    <!-- Patch tokenizer slot -->
+    <g transform="translate(150,72)">
+      <rect x="0" y="0" width="120" height="38" rx="4" fill="#fdf2e3" stroke="#c08652" stroke-width="1.2"/>
+      <text x="60" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#7d4f2a">patch tokenizer</text>
+      <text x="60" y="28" text-anchor="middle" class="tiny" fill="#7d4f2a">size in {8, 16, 32}</text>
+      <g transform="translate(6,32)">
+        <rect x="0"  y="0" width="14" height="3" fill="#c08652" opacity="0.85"/>
+        <rect x="18" y="0" width="22" height="3" fill="#c08652" opacity="0.65"/>
+        <rect x="46" y="0" width="40" height="3" fill="#c08652" opacity="0.5"/>
+      </g>
+    </g>
+    <line x1="128" y1="91" x2="148" y2="91" stroke="#3e5b7a" stroke-width="1.3" marker-end="url(#arrow)"/>
+
+    <!-- Positional encoding mixer slot -->
+    <g transform="translate(150,124)">
+      <rect x="0" y="0" width="120" height="36" rx="4" fill="#f7eef9" stroke="#8b6794" stroke-width="1.2"/>
+      <text x="60" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#5e4566">positional phi</text>
+      <text x="60" y="28" text-anchor="middle" class="tiny" fill="#5e4566">RoPE - ALiBi - None - Seasonal</text>
+    </g>
+    <line x1="210" y1="110" x2="210" y2="122" stroke="#3e5b7a" stroke-width="1.0" marker-end="url(#arrow)"/>
+
+    <!-- Self-attention kernel mixed slot -->
+    <g transform="translate(150,170)">
+      <rect x="0" y="0" width="120" height="56" rx="4" fill="#faeaea" stroke="#b35e5e" stroke-width="1.4"/>
+      <text x="60" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#7a3838">self-attention kernel</text>
+      <g transform="translate(6,20)">
+        <rect x="0"  y="0" width="20" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="10" y="10" text-anchor="middle" class="tiny" fill="#7a3838">SDP</text>
+        <rect x="22" y="0" width="22" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="33" y="10" text-anchor="middle" class="tiny" fill="#7a3838">Lin</text>
+        <rect x="46" y="0" width="26" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="59" y="10" text-anchor="middle" class="tiny" fill="#7a3838">ProbS</text>
+        <rect x="74" y="0" width="22" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="85" y="10" text-anchor="middle" class="tiny" fill="#7a3838">Cos</text>
+        <rect x="98" y="0" width="12" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="104" y="10" text-anchor="middle" class="tiny" fill="#7a3838">Loc</text>
+      </g>
+      <text x="60" y="48" text-anchor="middle" class="tiny" fill="#7a3838" font-style="italic">mixed Attn(Q,K,V; phi)</text>
+    </g>
+    <line x1="210" y1="160" x2="210" y2="168" stroke="#3e5b7a" stroke-width="1.0" marker-end="url(#arrow)"/>
+
+    <!-- Add & Norm -->
+    <g transform="translate(150,236)">
+      <rect x="0" y="0" width="120" height="20" rx="3" fill="#fafafa" stroke="#999"/>
+      <text x="60" y="14" text-anchor="middle" class="tiny">Add &amp; RMSNorm</text>
+    </g>
+    <line x1="210" y1="226" x2="210" y2="234" stroke="#3e5b7a" stroke-width="1.0" marker-end="url(#arrow)"/>
+
+    <!-- FFN type slot -->
+    <g transform="translate(150,264)">
+      <rect x="0" y="0" width="120" height="44" rx="4" fill="#f5fbe8" stroke="#7b9352" stroke-width="1.2"/>
+      <text x="60" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#4f6a35">FFN slot</text>
+      <g transform="translate(6,20)">
+        <rect x="0"  y="0" width="26" height="14" rx="2" fill="#e3eed7" stroke="#7b9352"/>
+        <text x="13" y="10" text-anchor="middle" class="tiny" fill="#4f6a35">SwiGLU</text>
+        <rect x="28" y="0" width="24" height="14" rx="2" fill="#e3eed7" stroke="#7b9352"/>
+        <text x="40" y="10" text-anchor="middle" class="tiny" fill="#4f6a35">GeGLU</text>
+        <rect x="54" y="0" width="22" height="14" rx="2" fill="#e3eed7" stroke="#7b9352"/>
+        <text x="65" y="10" text-anchor="middle" class="tiny" fill="#4f6a35">ReLU</text>
+        <rect x="78" y="0" width="32" height="14" rx="2" fill="#e3eed7" stroke="#7b9352" stroke-width="1.4"/>
+        <text x="94" y="10" text-anchor="middle" class="tiny" fill="#4f6a35">MoE</text>
+      </g>
+    </g>
+    <line x1="210" y1="256" x2="210" y2="262" stroke="#3e5b7a" stroke-width="1.0" marker-end="url(#arrow)"/>
+
+    <!-- encoder output -->
+    <g transform="translate(150,316)">
+      <text x="60" y="0" text-anchor="middle" class="tiny" fill="#3e5b7a" font-style="italic">-> H_enc</text>
+    </g>
+
+    <!-- Vertical separator -->
+    <line x1="343" y1="56" x2="343" y2="320" stroke="#bbbbbb" stroke-width="0.8" stroke-dasharray="3 3"/>
+
+    <!-- =============== AttentionBridge (cross link) =============== -->
+    <g transform="translate(358,72)">
+      <rect x="0" y="0" width="150" height="60" rx="4" fill="#faeaea" stroke="#b35e5e" stroke-width="1.4"/>
+      <text x="75" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#7a3838">cross-attention bridge</text>
+      <g transform="translate(8,20)">
+        <rect x="0"   y="0" width="22" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="11"  y="10" text-anchor="middle" class="tiny" fill="#7a3838">None</text>
+        <rect x="24"  y="0" width="20" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="34"  y="10" text-anchor="middle" class="tiny" fill="#7a3838">SDP</text>
+        <rect x="46"  y="0" width="22" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="57"  y="10" text-anchor="middle" class="tiny" fill="#7a3838">Lin</text>
+        <rect x="70"  y="0" width="26" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="83"  y="10" text-anchor="middle" class="tiny" fill="#7a3838">ProbS</text>
+        <rect x="98"  y="0" width="22" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="109" y="10" text-anchor="middle" class="tiny" fill="#7a3838">Cos</text>
+        <rect x="122" y="0" width="14" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="129" y="10" text-anchor="middle" class="tiny" fill="#7a3838">Loc</text>
+      </g>
+      <text x="75" y="50" text-anchor="middle" class="tiny" fill="#7a3838" font-style="italic">cross-pos: RoPE - ALiBi - None - Seasonal</text>
+    </g>
+
+    <!-- KV pipe from encoder to bridge -->
+    <path d="M 270 102 C 300 102, 330 102, 358 102" fill="none" stroke="#3e5b7a" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <text x="314" y="96" text-anchor="middle" class="tiny" fill="#3e5b7a" font-style="italic">K, V</text>
+
+    <!-- =============== DECODER side =============== -->
+    <text x="520" y="62" text-anchor="middle" class="famHdr" fill="#4f6a35">Decoder block</text>
+
+    <!-- decoder shifted queries -->
+    <g transform="translate(550,72)">
+      <rect x="0"  y="0" width="12" height="22" fill="#e0ebd1" stroke="#4f6a35"/>
+      <rect x="14" y="0" width="12" height="22" fill="#e0ebd1" stroke="#4f6a35"/>
+      <rect x="28" y="0" width="12" height="22" fill="#e0ebd1" stroke="#4f6a35"/>
+      <rect x="42" y="0" width="12" height="22" fill="#e0ebd1" stroke="#4f6a35"/>
+      <rect x="56" y="0" width="12" height="22" fill="#e0ebd1" stroke="#4f6a35"/>
+      <rect x="70" y="0" width="12" height="22" fill="#fafafa" stroke="#999" stroke-dasharray="2 2"/>
+      <text x="41" y="36" text-anchor="middle" class="tiny" fill="#4f6a35">y_t-1 queries (masked)</text>
+    </g>
+
+    <!-- Decoder positional encoding -->
+    <g transform="translate(526,124)">
+      <rect x="0" y="0" width="120" height="36" rx="4" fill="#f7eef9" stroke="#8b6794" stroke-width="1.2"/>
+      <text x="60" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#5e4566">positional phi</text>
+      <text x="60" y="28" text-anchor="middle" class="tiny" fill="#5e4566">RoPE - ALiBi - None - Seasonal</text>
+    </g>
+
+    <!-- Decoder masked self-attention -->
+    <g transform="translate(526,170)">
+      <rect x="0" y="0" width="120" height="56" rx="4" fill="#faeaea" stroke="#b35e5e" stroke-width="1.4"/>
+      <text x="60" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#7a3838">masked self-attn</text>
+      <g transform="translate(6,20)">
+        <rect x="0"  y="0" width="20" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="10" y="10" text-anchor="middle" class="tiny" fill="#7a3838">SDP</text>
+        <rect x="22" y="0" width="22" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="33" y="10" text-anchor="middle" class="tiny" fill="#7a3838">Lin</text>
+        <rect x="46" y="0" width="26" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="59" y="10" text-anchor="middle" class="tiny" fill="#7a3838">ProbS</text>
+        <rect x="74" y="0" width="22" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="85" y="10" text-anchor="middle" class="tiny" fill="#7a3838">Cos</text>
+        <rect x="98" y="0" width="12" height="14" rx="2" fill="#f7d8d8" stroke="#b35e5e"/>
+        <text x="104" y="10" text-anchor="middle" class="tiny" fill="#7a3838">Loc</text>
+      </g>
+      <text x="60" y="48" text-anchor="middle" class="tiny" fill="#7a3838" font-style="italic">causal mask</text>
+    </g>
+
+    <!-- Bridge feeds into decoder (between self-attn and cross-attn add&norm) -->
+    <path d="M 508 102 C 516 102, 522 160, 526 198" fill="none" stroke="#b35e5e" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+    <text x="518" y="160" text-anchor="middle" class="tiny" fill="#7a3838" font-style="italic">c_ctx</text>
+
+    <!-- Decoder Add&Norm -->
+    <g transform="translate(526,236)">
+      <rect x="0" y="0" width="120" height="20" rx="3" fill="#fafafa" stroke="#999"/>
+      <text x="60" y="14" text-anchor="middle" class="tiny">Add &amp; RMSNorm</text>
+    </g>
+    <line x1="586" y1="226" x2="586" y2="234" stroke="#4f6a35" stroke-width="1.0" marker-end="url(#arrow)"/>
+
+    <!-- Decoder FFN slot -->
+    <g transform="translate(526,264)">
+      <rect x="0" y="0" width="120" height="44" rx="4" fill="#f5fbe8" stroke="#7b9352" stroke-width="1.2"/>
+      <text x="60" y="14" text-anchor="middle" class="smaller" font-weight="700" fill="#4f6a35">FFN slot</text>
+      <g transform="translate(6,20)">
+        <rect x="0"  y="0" width="26" height="14" rx="2" fill="#e3eed7" stroke="#7b9352"/>
+        <text x="13" y="10" text-anchor="middle" class="tiny" fill="#4f6a35">SwiGLU</text>
+        <rect x="28" y="0" width="24" height="14" rx="2" fill="#e3eed7" stroke="#7b9352"/>
+        <text x="40" y="10" text-anchor="middle" class="tiny" fill="#4f6a35">GeGLU</text>
+        <rect x="54" y="0" width="22" height="14" rx="2" fill="#e3eed7" stroke="#7b9352"/>
+        <text x="65" y="10" text-anchor="middle" class="tiny" fill="#4f6a35">ReLU</text>
+        <rect x="78" y="0" width="32" height="14" rx="2" fill="#e3eed7" stroke="#7b9352" stroke-width="1.4"/>
+        <text x="94" y="10" text-anchor="middle" class="tiny" fill="#4f6a35">MoE</text>
+      </g>
+    </g>
+    <line x1="586" y1="256" x2="586" y2="262" stroke="#4f6a35" stroke-width="1.0" marker-end="url(#arrow)"/>
+
+    <!-- Decoder output -->
+    <g transform="translate(526,316)">
+      <text x="60" y="0" text-anchor="middle" class="tiny" fill="#4f6a35" font-style="italic">-> y_hat_t</text>
+    </g>
+
+    <!-- Right-side legend strip inside this panel -->
+    <g transform="translate(28,168)">
+      <text x="0" y="0" class="tiny" fill="#666" font-weight="700">Every slot:</text>
+      <text x="0" y="14" class="tiny" fill="#666">soft mix in search;</text>
+      <text x="0" y="28" class="tiny" fill="#666">argmax at discretisation</text>
+      <text x="0" y="48" class="tiny" fill="#666" font-style="italic">tied to the same</text>
+      <text x="0" y="60" class="tiny" fill="#666" font-style="italic">temperature tau(e)</text>
+      <text x="0" y="80" class="tiny" fill="#666">GDAS may sample a</text>
+      <text x="0" y="92" class="tiny" fill="#666">single slot per fwd pass</text>
+    </g>
+  </g>
+
+  <!-- ===================== Legend ===================== -->
+  <g transform="translate(40,475)">
+    <rect x="0" y="0" width="680" height="44" rx="6" fill="#fafafa" stroke="#cccccc"/>
+    <text x="14" y="14" class="small" font-weight="700">Slot families:</text>
+
+    <g transform="translate(110,6)">
+      <rect x="0" y="0" width="14" height="12" fill="#fdf2e3" stroke="#c08652"/>
+      <text x="20" y="10" class="small">Patch tokenizer</text>
+    </g>
+    <g transform="translate(230,6)">
+      <rect x="0" y="0" width="14" height="12" fill="#f7eef9" stroke="#8b6794"/>
+      <text x="20" y="10" class="small">Positional family</text>
+    </g>
+    <g transform="translate(360,6)">
+      <rect x="0" y="0" width="14" height="12" fill="#faeaea" stroke="#b35e5e"/>
+      <text x="20" y="10" class="small">Attention kernels</text>
+    </g>
+    <g transform="translate(540,6)">
+      <rect x="0" y="0" width="14" height="12" fill="#f5fbe8" stroke="#7b9352"/>
+      <text x="20" y="10" class="small">FFN type</text>
+    </g>
+
+    <g transform="translate(110,20)">
+      <line x1="0" y1="6" x2="22" y2="6" stroke="#1a1a1a" stroke-width="1.4"/>
+      <text x="28" y="10" class="small">data flow</text>
+      <line x1="120" y1="6" x2="142" y2="6" stroke="#b35e5e" stroke-width="1.3" stroke-dasharray="4 3"/>
+      <text x="148" y="10" class="small">cross-attention context c_ctx</text>
+    </g>
+  </g>
+</svg>

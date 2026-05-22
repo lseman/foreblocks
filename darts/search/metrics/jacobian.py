@@ -75,7 +75,7 @@ def compute_jacobian(
                 if Jv is None:
                     continue
 
-                trace_probe = (Jv.view(bs, -1) ** 2).sum(dim=1).mean().item()
+                trace_probe = (Jv.reshape(bs, -1) ** 2).sum(dim=1).mean().item()
                 if np.isfinite(trace_probe):
                     trace_vals.append(float(trace_probe))
 
@@ -115,7 +115,9 @@ def compute_jacobian(
                 )
                 if Jv is None:
                     return 0.0
-                trace_est = (Jv.view(x.size(0), -1) ** 2).sum(dim=1).mean().item()
+                trace_est = (
+                    (Jv.reshape(x.size(0), -1) ** 2).sum(dim=1).mean().item()
+                )
                 d_in = max(int(x[0].numel()), 1)
                 normalized = trace_est / (d_in + computer.config.eps)
                 return float(np.clip(np.log(normalized + computer.config.eps), -12, 12))

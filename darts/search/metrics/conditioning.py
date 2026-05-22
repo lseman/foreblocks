@@ -25,7 +25,7 @@ def compute_conditioning(computer, model):
             if "weight" not in name or param.dim() < 2 or not param.requires_grad:
                 continue
 
-            W = param.view(param.size(0), -1)
+            W = param.reshape(param.size(0), -1)
             if layer_idx % every_n != 0:
                 layer_idx += 1
                 continue

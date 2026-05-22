@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,7 +12,6 @@ from torch.utils.checkpoint import checkpoint
 from .bb_attention import AttentionBridge, SelfAttention
 from .bb_moe import DARTSFeedForward
 from .bb_primitives import RMSNorm
-
 
 __all__ = [
     "LightweightTransformerEncoder",
@@ -111,20 +112,16 @@ class LightweightTransformerEncoder(nn.Module):
         }
 
         self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
-        self.patch_projs = nn.ModuleDict(
-            {
-                str(size): nn.Linear(size, latent_dim, bias=False)
-                for size in self.patch_sizes
-            }
-        )
-        self.patch_pos_embeds = nn.ParameterDict(
-            {
-                str(size): nn.Parameter(
-                    torch.zeros(1, self.num_patches_by_size[size], latent_dim)
-                )
-                for size in self.patch_sizes
-            }
-        )
+        self.patch_projs = nn.ModuleDict({
+            str(size): nn.Linear(size, latent_dim, bias=False)
+            for size in self.patch_sizes
+        })
+        self.patch_pos_embeds = nn.ParameterDict({
+            str(size): nn.Parameter(
+                torch.zeros(1, self.num_patches_by_size[size], latent_dim)
+            )
+            for size in self.patch_sizes
+        })
         for pos in self.patch_pos_embeds.values():
             nn.init.trunc_normal_(pos, std=0.02)
         self.variate_proj = nn.Linear(self.target_seq_len, latent_dim, bias=False)
@@ -136,41 +133,37 @@ class LightweightTransformerEncoder(nn.Module):
                 nn.Parameter(0.01 * torch.randn(len(self.patch_mode_names))),
             )
 
-        self.layers = nn.ModuleList(
-            [
-                nn.ModuleDict(
-                    {
-                        "self_attn": SelfAttention(
-                            latent_dim,
-                            heads=nhead,
-                            dropout=dropout,
-                            causal=causal,
-                            attention_type=resolved_self_attention_type,
-                            position_mode=resolved_self_position_mode,
-                            rope_base=rope_base,
-                            rope_max_seq_len=max_seq_len,
-                            temperature=self.temperature,
-                            variant_gdas=self.variant_gdas,
-                        ),
-                        "ffn": DARTSFeedForward(
-                            d_model=latent_dim,
-                            expand=4,
-                            dropout=dropout,
-                            use_moe=self.use_moe,
-                            ffn_mode=resolved_ffn_variant,
-                            temperature=self.temperature,
-                            variant_gdas=self.variant_gdas,
-                        ),
-                        "norm1": RMSNorm(latent_dim),
-                        "norm2": RMSNorm(latent_dim),
-                        "patch_mix": nn.Parameter(torch.randn(len(self.patch_sizes)))
-                        if self.patching_mode == "hierarchical"
-                        else None,
-                    }
-                )
-                for _ in range(num_layers)
-            ]
-        )
+        self.layers = nn.ModuleList([
+            nn.ModuleDict({
+                "self_attn": SelfAttention(
+                    latent_dim,
+                    heads=nhead,
+                    dropout=dropout,
+                    causal=causal,
+                    attention_type=resolved_self_attention_type,
+                    position_mode=resolved_self_position_mode,
+                    rope_base=rope_base,
+                    rope_max_seq_len=max_seq_len,
+                    temperature=self.temperature,
+                    variant_gdas=self.variant_gdas,
+                ),
+                "ffn": DARTSFeedForward(
+                    d_model=latent_dim,
+                    expand=4,
+                    dropout=dropout,
+                    use_moe=self.use_moe,
+                    ffn_mode=resolved_ffn_variant,
+                    temperature=self.temperature,
+                    variant_gdas=self.variant_gdas,
+                ),
+                "norm1": RMSNorm(latent_dim),
+                "norm2": RMSNorm(latent_dim),
+                "patch_mix": nn.Parameter(torch.randn(len(self.patch_sizes)))
+                if self.patching_mode == "hierarchical"
+                else None,
+            })
+            for _ in range(num_layers)
+        ])
 
         self.final_norm = RMSNorm(latent_dim)
         self.dropout_p = dropout
@@ -285,7 +278,7 @@ class LightweightTransformerEncoder(nn.Module):
         patches = x_t.unfold(2, patch_size, stride)
         n_patches = patches.size(2)
         # PatchTST-style tokenization: each channel contributes its own patch stream.
-        patches = patches.contiguous().view(B * C, n_patches, patch_size)
+        patches = patches.contiguous().reshape(B * C, n_patches, patch_size)
         tokens = self.patch_projs[str(patch_size)](patches)
         pos_param = self.patch_pos_embeds[str(patch_size)]
         if n_patches != pos_param.size(1):
@@ -305,7 +298,7 @@ class LightweightTransformerEncoder(nn.Module):
         B, _, C = x.shape
         tokens = self._build_patch_tokens(x, patch_size)
         encoded = self._run_encoder_layers(tokens)
-        encoded = encoded.view(B, C, encoded.size(1), self.latent_dim).mean(dim=1)
+        encoded = encoded.reshape(B, C, encoded.size(1), self.latent_dim).mean(dim=1)
         return self._summarize_sequence(encoded, output_len)
 
     def _build_variate_tokens(self, x: torch.Tensor) -> torch.Tensor:
@@ -417,9 +410,10 @@ class LightweightTransformerEncoder(nn.Module):
         outputs = []
         for idx in active_indices:
             mode = self.patch_mode_names[idx]
-            outputs.append(
-                (tokenizer_weights[idx], self._encode_mode(x, mode, output_len=T))
-            )
+            outputs.append((
+                tokenizer_weights[idx],
+                self._encode_mode(x, mode, output_len=T),
+            ))
 
         if len(outputs) == 1:
             _, (out, ctx, state) = outputs[0]
@@ -448,6 +442,7 @@ class LightweightTransformerDecoder(nn.Module):
         self_attention_position_mode: str = "auto",
         cross_attention_type: str = "auto",
         cross_attention_position_mode: str = "auto",
+        cross_attention_modes: Sequence[str] | None = None,
         use_moe: bool = False,
         ffn_variant: str | None = None,
         rope_base: float = 500000.0,
@@ -478,48 +473,45 @@ class LightweightTransformerDecoder(nn.Module):
 
         self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
 
-        self.layers = nn.ModuleList(
-            [
-                nn.ModuleDict(
-                    {
-                        "self_attn": SelfAttention(
-                            latent_dim,
-                            heads=nhead,
-                            dropout=dropout,
-                            causal=causal,
-                            attention_type=resolved_self_attention_type,
-                            position_mode=resolved_self_position_mode,
-                            rope_base=rope_base,
-                            rope_max_seq_len=max_seq_len,
-                            temperature=self.temperature,
-                            variant_gdas=self.variant_gdas,
-                        ),
-                        "cross_attn": AttentionBridge(
-                            latent_dim,
-                            num_heads=nhead,
-                            dropout=dropout,
-                            attention_type=resolved_cross_attention_type,
-                            position_mode=resolved_cross_position_mode,
-                            temperature=self.temperature,
-                            variant_gdas=self.variant_gdas,
-                        ),
-                        "ffn": DARTSFeedForward(
-                            d_model=latent_dim,
-                            expand=4,
-                            dropout=dropout,
-                            use_moe=self.use_moe,
-                            ffn_mode=resolved_ffn_variant,
-                            temperature=self.temperature,
-                            variant_gdas=self.variant_gdas,
-                        ),
-                        "norm1": RMSNorm(latent_dim),
-                        "norm2": RMSNorm(latent_dim),
-                        "norm3": RMSNorm(latent_dim),
-                    }
-                )
-                for _ in range(num_layers)
-            ]
-        )
+        self.layers = nn.ModuleList([
+            nn.ModuleDict({
+                "self_attn": SelfAttention(
+                    latent_dim,
+                    heads=nhead,
+                    dropout=dropout,
+                    causal=causal,
+                    attention_type=resolved_self_attention_type,
+                    position_mode=resolved_self_position_mode,
+                    rope_base=rope_base,
+                    rope_max_seq_len=max_seq_len,
+                    temperature=self.temperature,
+                    variant_gdas=self.variant_gdas,
+                ),
+                "cross_attn": AttentionBridge(
+                    latent_dim,
+                    num_heads=nhead,
+                    dropout=dropout,
+                    attention_type=resolved_cross_attention_type,
+                    position_mode=resolved_cross_position_mode,
+                    attention_modes=cross_attention_modes,
+                    temperature=self.temperature,
+                    variant_gdas=self.variant_gdas,
+                ),
+                "ffn": DARTSFeedForward(
+                    d_model=latent_dim,
+                    expand=4,
+                    dropout=dropout,
+                    use_moe=self.use_moe,
+                    ffn_mode=resolved_ffn_variant,
+                    temperature=self.temperature,
+                    variant_gdas=self.variant_gdas,
+                ),
+                "norm1": RMSNorm(latent_dim),
+                "norm2": RMSNorm(latent_dim),
+                "norm3": RMSNorm(latent_dim),
+            })
+            for _ in range(num_layers)
+        ])
 
         self.final_norm = RMSNorm(latent_dim)
         self.dropout_p = dropout

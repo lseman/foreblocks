@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
@@ -19,7 +20,6 @@ from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
-
 
 __all__ = [
     "MixedEncoder",
@@ -596,6 +596,7 @@ class MixedDecoder(nn.Module):
         memory_query_options: list[int] | None = None,
         transformer_self_attention_type: str = "auto",
         transformer_cross_attention_type: str = "auto",
+        transformer_cross_attention_modes: Sequence[str] | None = None,
         transformer_use_moe: bool = False,
         transformer_ffn_variant: str = "auto",
         use_checkpoint: bool = False,
@@ -638,6 +639,7 @@ class MixedDecoder(nn.Module):
             self_attention_position_mode="auto",
             cross_attention_type=resolved_cross_attention_type,
             cross_attention_position_mode="auto",
+            cross_attention_modes=transformer_cross_attention_modes,
             use_moe=self.transformer_use_moe,
             ffn_variant=self.transformer_ffn_variant,
             use_checkpoint=use_checkpoint,
@@ -673,17 +675,15 @@ class MixedDecoder(nn.Module):
         )
 
         if use_learned_memory_pooling:
-            self.memory_pool_bridges = nn.ModuleList(
-                [
-                    LearnedPoolingBridge(
-                        dim=latent_dim,
-                        num_queries=num_queries,
-                        num_heads=4,
-                        dropout=dropout,
-                    )
-                    for num_queries in self.memory_query_options
-                ]
-            )
+            self.memory_pool_bridges = nn.ModuleList([
+                LearnedPoolingBridge(
+                    dim=latent_dim,
+                    num_queries=num_queries,
+                    num_heads=4,
+                    dropout=dropout,
+                )
+                for num_queries in self.memory_query_options
+            ])
             memory_query_init = 0.01 * torch.randn(len(self.memory_query_options))
             self.register_parameter(
                 "memory_query_alphas", nn.Parameter(memory_query_init)

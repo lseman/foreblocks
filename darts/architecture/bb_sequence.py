@@ -369,7 +369,7 @@ class BaseMixedSequenceBlock(nn.Module):
                     continue
                 if rows % cols == 0:
                     gates = rows // cols
-                    chunks = param.view(gates, cols, cols)
+                    chunks = param.reshape(gates, cols, cols)
                     for mat in chunks:
                         gram = mat @ mat.t()
                         eye = torch.eye(cols, device=mat.device, dtype=mat.dtype)

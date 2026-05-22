@@ -2,9 +2,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from foreblocks.transformer.norms.triton_backend import (
+        TRITON_AVAILABLE,
+        RMSNormTritonFunction,
+        _should_use_triton,
+    )
+except Exception:  # pragma: no cover - foreblocks namespace may exclude transformer
+    TRITON_AVAILABLE = False
+    RMSNormTritonFunction = None
+
+    def _should_use_triton(x, min_numel: int = 2048) -> bool:
+        return False
+
 
 class RMSNorm(nn.Module):
-    """Simple RMS normalization"""
+    """Simple RMS normalization with Triton acceleration when available."""
 
     def __init__(self, dim: int, eps: float = 1e-8):
         super().__init__()
@@ -12,8 +25,14 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        norm = x.norm(dim=-1, keepdim=True) * (x.size(-1) ** -0.5)
-        return self.scale * x / (norm + self.eps)
+        if (
+            _should_use_triton(x, min_numel=2048)
+            and TRITON_AVAILABLE
+            and RMSNormTritonFunction is not None
+        ):
+            return RMSNormTritonFunction.apply(x, self.scale, self.eps)
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        return x * torch.rsqrt(variance + self.eps) * self.scale
 
 
 class ChannelRMSNorm(nn.Module):
@@ -296,7 +315,7 @@ class FourierOp(nn.Module):
 
         low_mask = torch.sigmoid((low_cut - pos) * sharpness)
         high_mask = torch.sigmoid((pos - high_cut) * sharpness)
-        return low_mask.view(1, -1, 1), high_mask.view(1, -1, 1)
+        return low_mask.reshape(1, -1, 1), high_mask.reshape(1, -1, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, C = x.shape
@@ -327,7 +346,7 @@ class FourierOp(nn.Module):
         freq_feat = post_mix * low_feat + (1.0 - post_mix) * high_feat
 
         # Global spectral summary (weighted) + local spectral context (interpolated).
-        weights = F.softmax(self.freq_weights[:n_freq], dim=0).view(1, -1, 1)
+        weights = F.softmax(self.freq_weights[:n_freq], dim=0).reshape(1, -1, 1)
         global_feat = (freq_feat * weights).sum(dim=1, keepdim=True).expand(-1, L, -1)
 
         local_feat = F.interpolate(
@@ -719,7 +738,7 @@ class PatchEmbedOp(nn.Module):
 
         patches = x_t.unfold(dimension=2, size=self.patch_size, step=self.stride)
         patches = (
-            patches.permute(0, 2, 1, 3).contiguous().view(B, -1, C * self.patch_size)
+            patches.permute(0, 2, 1, 3).contiguous().reshape(B, -1, C * self.patch_size)
         )
 
         patch_tokens = self.patch_proj(patches)

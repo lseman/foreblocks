@@ -396,6 +396,9 @@ class DARTSTrainer:
         max_workers: int | None = None,
         on_result=None,
         error_log_fn=None,
+        progress: bool = False,
+        progress_desc: str = "Phase 1 candidates",
+        candidate_timeout: float = 120.0,
     ) -> list[dict]:
         return run_parallel_candidate_collection(
             num_candidates=num_candidates,
@@ -403,6 +406,9 @@ class DARTSTrainer:
             max_workers=max_workers,
             on_result=on_result,
             error_log_fn=error_log_fn,
+            progress=progress,
+            progress_desc=progress_desc,
+            candidate_timeout=candidate_timeout,
         )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -537,7 +543,10 @@ class DARTSTrainer:
         temperature: float = 1.0,  # noqa: ARG002
         pruning_hard_epoch: int | None = None,  # noqa: ARG002
         log_arch_gradients: bool = False,  # noqa: ARG002
-        op_gdas: bool = False,
+        op_gdas: bool = True,
+        compute_metrics: bool = True,
+        max_train_batches: int | None = None,
+        max_val_batches: int | None = None,
     ) -> dict[str, Any]:
         """
         Run DARTS bilevel architecture search training.
@@ -628,6 +637,9 @@ class DARTSTrainer:
             moe_balance_weight=moe_balance_weight,
             transformer_exploration_weight=transformer_exploration_weight,
             op_gdas=op_gdas,
+            compute_metrics=compute_metrics,
+            max_train_batches=max_train_batches,
+            max_val_batches=max_val_batches,
         )
 
     # ── Final model training ──────────────────────────────────────────────
@@ -701,6 +713,7 @@ class DARTSTrainer:
         retrain_final_from_scratch: bool = True,
         discrete_arch_threshold: float = 0.3,
         use_amp: bool = True,
+        phase1_progress: bool = False,
         **kwargs,
     ) -> dict[str, Any]:
         """Run the complete multi-fidelity DARTS search pipeline."""
@@ -722,6 +735,7 @@ class DARTSTrainer:
             retrain_final_from_scratch=retrain_final_from_scratch,
             discrete_arch_threshold=discrete_arch_threshold,
             use_amp=use_amp,
+            phase1_progress=phase1_progress,
             **kwargs,
         )
 

@@ -1,6 +1,8 @@
 import contextlib
 import importlib
 import math
+import os
+import threading
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -14,6 +16,8 @@ from torch.utils.data import DataLoader
 
 from ..scoring import (
     normalize_metric_value as _normalize_metric_value_shared,
+)
+from ..scoring import (
     score_from_metrics as _score_from_metrics_shared,
 )
 from .activation_diversity import compute_activation_diversity
@@ -28,8 +32,38 @@ from .sensitivity import compute_sensitivity
 from .snip import compute_snip
 from .synflow import compute_synflow
 
-
 warnings.filterwarnings("ignore", category=UserWarning)
+
+
+# Phase-1 zero-cost evaluation runs many candidates concurrently in a thread
+# pool (see search/multi_fidelity.py). Each candidate's metrics issue CUDA
+# forward/backward work; running them in parallel oversubscribes a single GPU,
+# so each candidate's kernels get starved by its siblings and a normally ~8s
+# evaluation stretches past the timeout. Serialising GPU access with this lock
+# lets each candidate run at full speed in turn — total throughput is the same
+# (the GPU is the bottleneck) but no candidate stalls. The lock is a no-op cost
+# on CPU-only runs.
+_ZC_GPU_LOCK = threading.Lock()
+
+
+# Env-gated stage tracer for diagnosing Phase-1 hangs. When FORE_ZC_TRACE=1,
+# each stage of compute_all prints "[ZC] >> <stage>" on entry (so a hang leaves
+# the stalling stage as the last line) and "[ZC] << <stage> (Ns)" on exit. The
+# cuda.synchronize() ensures async kernel time is attributed to the right stage
+# rather than leaking into the next one. Zero overhead when the env var is unset.
+@contextlib.contextmanager
+def _zc_trace(stage: str):
+    if os.environ.get("FORE_ZC_TRACE") != "1":
+        yield
+        return
+    print(f"[ZC] >> {stage}", flush=True)
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        print(f"[ZC] << {stage} ({time.perf_counter() - t0:.3f}s)", flush=True)
 
 
 @dataclass
@@ -39,16 +73,35 @@ class Config:
     max_samples: int = 32
     max_outputs: int = 10
     eps: float = 1e-8
+    # NASWOT builds an [R, R] kernel from each layer's activation. For
+    # transformer/MoE layers R = batch*seq (can be thousands); cap it so slogdet
+    # stays cheap and bounded. Layers with R > 2*features are skipped as
+    # rank-deficient (see metrics/naswot.py).
+    naswot_max_rows: int = 256
+    # Per-metric wall-clock timeout enforced via a daemon thread in
+    # MetricsComputer._compute_safely. If a metric computation (e.g. GRASP
+    # second-order backward) stalls in a CUDA kernel, the thread is abandoned
+    # and the metric returns a failed Result so evaluation can proceed.
     timeout: float = 30.0
     enable_mixed_precision: bool = False
-    jacobian_probes: int = 2
+    # One probe is standard for proxy NAS and sufficient for candidate ranking;
+    # more probes reduce Hutchinson estimator variance at the cost of extra backward passes.
+    jacobian_probes: int = 1
     # SNIP is defined at initialization; keep this as the default behavior.
     snip_at_init: bool = True
-    # Explicit mode: "init" (paper-consistent) or "current" (fast proxy).
-    snip_mode: str = "init"
+    # Explicit mode: "current" is faster (no weight reset, no extra forward/backward
+    # at init) and avoids hangs from reset_parameters on custom layers.
+    # Use "init" only if paper-consistent SNIP scores are needed.
+    snip_mode: str = "current"
     heavy_metrics_batches: int = 1
     gradient_max_samples: int = 4
-    fisher_per_sample: bool = True
+    # False: uses the already-computed batch gradient squared (free, no extra
+    # forward/backward passes). True: runs one forward+backward per sample
+    # (more accurate diagonal Fisher, but O(N) passes extra).
+    fisher_per_sample: bool = False
+    enable_grasp: bool = True
+    enable_jacobian: bool = True
+    enable_synflow: bool = True
     conditioning_every_n_layers: int = 3
     conditioning_min_out_features: int = 0
     conditioning_power_iters: int = 6
@@ -150,7 +203,7 @@ class CompatibilityHelper:
         # Classification: long targets
         if targets.dtype == torch.long:
             if outputs.ndim > 2:
-                outputs = outputs.view(outputs.size(0), -1)
+                outputs = outputs.reshape(outputs.size(0), -1)
             if targets.ndim == 2 and targets.size(1) == 1:
                 targets = targets.squeeze(1)
             if outputs.size(-1) == 1 and targets.max() <= 1:
@@ -159,7 +212,7 @@ class CompatibilityHelper:
             # Regression: force shape match
             if outputs.shape != targets.shape:
                 try:
-                    outputs = outputs.view_as(targets)
+                    outputs = outputs.reshape_as(targets)
                 except RuntimeError:
                     if outputs.ndim == 1:
                         outputs = outputs.unsqueeze(1)
@@ -269,8 +322,10 @@ class MetricsComputer:
 
             eps = 1e-2
             u = torch.randn_like(x)
-            u_norm = u.view(bs, -1).norm(dim=1, keepdim=True).clamp_min(self.config.eps)
-            u = u / u_norm.view([bs] + [1] * (x.dim() - 1))
+            u_norm = (
+                u.reshape(bs, -1).norm(dim=1, keepdim=True).clamp_min(self.config.eps)
+            )
+            u = u / u_norm.reshape([bs] + [1] * (x.dim() - 1))
 
             with torch.no_grad():
                 yp = self._unwrap_output(model(x + eps * u))
@@ -389,30 +444,33 @@ class MetricsComputer:
                 shared_inputs = inputs.detach().clone().requires_grad_(True)
                 # Keep CuDNN enabled for speed by default.
                 # GRASP handles CuDNN double-backward via retry path in _grasp.
-                shared_outputs = model(shared_inputs)
+                with _zc_trace("shared_forward(train)"):
+                    shared_outputs = model(shared_inputs)
             else:
-                with torch.no_grad():
+                with torch.no_grad(), _zc_trace("shared_forward(eval)"):
                     shared_outputs = model(inputs)
 
             # Process all metrics that only need activations
-            results.update(
-                self._compute_activation_metrics(
-                    activations, conv_linear_modules, relu_modules, flops_count
+            with _zc_trace("activation_metrics"):
+                results.update(
+                    self._compute_activation_metrics(
+                        activations, conv_linear_modules, relu_modules, flops_count
+                    )
                 )
-            )
 
             # Metrics requiring gradients (separate forward passes with minimal overhead)
             if targets is not None:
-                results.update(
-                    self._compute_gradient_metrics(
-                        model,
-                        inputs,
-                        targets,
-                        include_snip=include_heavy_metrics,
-                        shared_inputs=shared_inputs,
-                        shared_outputs=shared_outputs,
+                with _zc_trace("gradient_metrics"):
+                    results.update(
+                        self._compute_gradient_metrics(
+                            model,
+                            inputs,
+                            targets,
+                            include_snip=include_heavy_metrics,
+                            shared_inputs=shared_inputs,
+                            shared_outputs=shared_outputs,
+                        )
                     )
-                )
                 if "snip" not in results:
                     results["snip"] = Result(
                         0.0,
@@ -424,40 +482,47 @@ class MetricsComputer:
             # Jacobian must run before SynFlow when reusing shared graph tensors.
             # SynFlow mutates weights and calls model.zero_grad() in cleanup; even though
             # it is isolated, keeping Jacobian first makes graph-lifetime dependencies explicit.
-            if include_heavy_metrics:
-                results["jacobian"] = self._compute_jacobian(
-                    model,
-                    inputs,
-                    shared_outputs=shared_outputs,
-                    shared_inputs=shared_inputs,
-                )
+            if include_heavy_metrics and bool(
+                getattr(self.config, "enable_jacobian", True)
+            ):
+                with _zc_trace("jacobian"):
+                    results["jacobian"] = self._compute_jacobian(
+                        model,
+                        inputs,
+                        shared_outputs=shared_outputs,
+                        shared_inputs=shared_inputs,
+                    )
             else:
                 results["jacobian"] = Result(
                     0.0,
                     False,
-                    "Skipped (include_heavy_metrics=False)",
+                    "Skipped (include_heavy_metrics=False or enable_jacobian=False)",
                     0.0,
                 )
 
             # SynFlow (independent, runs after graph-dependent metrics)
-            if include_heavy_metrics:
-                results["synflow"] = self._compute_synflow(model, inputs)
+            if include_heavy_metrics and bool(
+                getattr(self.config, "enable_synflow", True)
+            ):
+                with _zc_trace("synflow"):
+                    results["synflow"] = self._compute_synflow(model, inputs)
             else:
                 results["synflow"] = Result(
                     0.0,
                     False,
-                    "Skipped (include_heavy_metrics=False)",
+                    "Skipped (include_heavy_metrics=False or enable_synflow=False)",
                     0.0,
                 )
 
             # Sensitivity (prefer shared gradient pass when available)
             if "sensitivity" not in results:
-                results["sensitivity"] = self.sensitivity(
-                    model,
-                    inputs,
-                    shared_outputs=shared_outputs,
-                    shared_inputs=shared_inputs,
-                )
+                with _zc_trace("sensitivity"):
+                    results["sensitivity"] = self.sensitivity(
+                        model,
+                        inputs,
+                        shared_outputs=shared_outputs,
+                        shared_inputs=shared_inputs,
+                    )
 
         finally:
             # Clean up hooks
@@ -538,13 +603,14 @@ class MetricsComputer:
             weights = [p for _, p in weight_params]
 
             # Shared first-order gradients for Fisher/SNIP.
-            grads_first_order = torch.autograd.grad(
-                loss,
-                weights,
-                create_graph=False,
-                retain_graph=True,
-                allow_unused=True,
-            )
+            with _zc_trace("grad_metrics:first_order_backward"):
+                grads_first_order = torch.autograd.grad(
+                    loss,
+                    weights,
+                    create_graph=False,
+                    retain_graph=True,
+                    allow_unused=True,
+                )
 
             snip_mode_raw = str(getattr(self.config, "snip_mode", "")).strip().lower()
             if snip_mode_raw in {"init", "current"}:
@@ -556,9 +622,14 @@ class MetricsComputer:
                     else "current"
                 )
 
-            results["grasp"] = self._compute_safely(
-                lambda: compute_grasp(self, model, x, y, loss, loss_fn, weights)
-            )
+            if bool(getattr(self.config, "enable_grasp", True)):
+                results["grasp"] = self._compute_safely(
+                    lambda: compute_grasp(self, model, x, y, loss, loss_fn, weights)
+                )
+            else:
+                results["grasp"] = Result(
+                    0.0, False, "Skipped (enable_grasp=False)", 0.0
+                )
             results["fisher"] = self._compute_safely(
                 lambda: compute_fisher(
                     self, model, x, y, loss_fn, weights, grads_first_order
@@ -615,25 +686,61 @@ class MetricsComputer:
         )
 
     def _compute_safely(self, compute_fn):
-        try:
-            start_time = time.time()
-            value = compute_fn()
+        """Run ``compute_fn()`` with a hard wall-clock timeout.
+
+        Each metric is executed in a daemon thread.  If it does not finish
+        within ``self.config.timeout`` seconds (e.g. GRASP second-order
+        backward stalls in a CUDA kernel) the method returns a failed Result
+        immediately, allowing the rest of the evaluation to continue and
+        releasing ``_ZC_GPU_LOCK`` so the next candidate can proceed.
+        The abandoned thread eventually terminates on its own.
+        """
+        name = getattr(compute_fn, "__name__", "metric")
+        timeout = float(getattr(self.config, "timeout", 0.0) or 0.0)
+        start_time = time.time()
+
+        if timeout > 0:
+            _result: list[Any] = [None]
+            _exc: list[BaseException | None] = [None]
+
+            def _run() -> None:
+                try:
+                    _result[0] = compute_fn()
+                except Exception as exc:
+                    _exc[0] = exc
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout=timeout)
             elapsed = time.time() - start_time
 
-            if isinstance(value, (int, float)):
-                if np.isnan(value) or np.isinf(value):
-                    print(f"Metric failed due to nan/inf: {compute_fn.__name__}")
-                    return Result(
-                        0.0, False, "Numerical instability (nan/inf)", elapsed
-                    )
+            if t.is_alive():
+                warnings.warn(
+                    f"Zero-cost metric '{name}' timed out after {timeout:.0f}s; "
+                    "skipping.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return Result(0.0, False, f"timeout after {timeout:.0f}s", elapsed)
 
-                value = np.clip(value, -1e10, 1e10)
+            if _exc[0] is not None:
+                return Result(0.0, False, str(_exc[0]), elapsed)
 
-            return Result(float(value), True, "", elapsed)
+            value = _result[0]
 
-        except Exception as e:
-            print(f"Metric '{compute_fn.__name__}' failed with exception: {e}")
-            return Result(0.0, False, str(e), 0.0)
+        else:
+            try:
+                value = compute_fn()
+            except Exception as e:
+                return Result(0.0, False, str(e), 0.0)
+            elapsed = time.time() - start_time
+
+        if isinstance(value, (int, float)):
+            if np.isnan(value) or np.isinf(value):
+                return Result(0.0, False, "Numerical instability (nan/inf)", elapsed)
+            value = np.clip(value, -1e10, 1e10)
+
+        return Result(float(value), True, "", elapsed)
 
     # Individual metric methods for compatibility
     def synflow(self, model: nn.Module, inputs: torch.Tensor) -> Result:
@@ -690,6 +797,7 @@ class MetricsComputer:
             shared_inputs=shared_inputs,
         )
 
+
 class ZeroCostNAS:
     """Main zero-cost NAS evaluation class"""
 
@@ -706,38 +814,49 @@ class ZeroCostNAS:
         verbose: bool = True,
     ) -> dict[str, Any]:
         """Evaluate a single model"""
-        model = model.to(device)
-        model.eval()
+        # Serialise GPU access so concurrent candidate threads don't
+        # oversubscribe the device (see _ZC_GPU_LOCK).
+        with _ZC_GPU_LOCK:
+            model = model.to(device)
+            model.eval()
 
-        batches = []
-        for i, batch in enumerate(dataloader):
-            # print(f"Loading batch {i + 1}...")
-            if i >= num_batches:
-                break
+            batches = []
+            for i, batch in enumerate(dataloader):
+                if i >= num_batches:
+                    break
 
-            inputs, targets = self._extract_inputs_targets(batch, model, device)
-            inputs = inputs[: self.config.max_samples]
-            targets = targets[: self.config.max_samples]
-            batches.append((inputs, targets))
+                inputs, targets = self._extract_inputs_targets(batch, model, device)
+                inputs = inputs[: self.config.max_samples]
+                targets = targets[: self.config.max_samples]
+                batches.append((inputs, targets))
 
-        # print(f"Computing metrics on {len(batches)} batches...")
-        all_results = []
-        model_only_results = self.computer.compute_model_only_metrics(model)
-        heavy_batches = max(1, int(getattr(self.config, "heavy_metrics_batches", 1)))
-        for i, (inputs, targets) in enumerate(batches):
-            # if verbose:
-            #    print(f"Processing batch {i+1}/{len(batches)}")
-            batch_results = self.computer.compute_all(
-                model,
-                inputs,
-                targets,
-                include_heavy_metrics=(i < heavy_batches),
-                model_only_results=model_only_results,
+            if not batches:
+                return {
+                    "metrics": {},
+                    "success_rates": {},
+                    "error_messages": {
+                        "_global": "No valid batches after extraction/slicing."
+                    },
+                    "aggregate_score": float("-inf"),
+                    "config": self.config,
+                }
+
+            all_results = []
+            model_only_results = self.computer.compute_model_only_metrics(model)
+            heavy_batches = max(
+                1, int(getattr(self.config, "heavy_metrics_batches", 1))
             )
-            all_results.append(batch_results)
-        # print("Aggregating results across batches...")
-        final_results: dict[str, Result] = self._aggregate_results(all_results)
-        score = self._compute_score(final_results)
+            for i, (inputs, targets) in enumerate(batches):
+                batch_results = self.computer.compute_all(
+                    model,
+                    inputs,
+                    targets,
+                    include_heavy_metrics=(i < heavy_batches),
+                    model_only_results=model_only_results,
+                )
+                all_results.append(batch_results)
+            final_results: dict[str, Result] = self._aggregate_results(all_results)
+            score = self._compute_score(final_results)
 
         return {
             "metrics": {k: r.value for k, r in final_results.items()},
@@ -877,78 +996,105 @@ class ZeroCostNAS:
         if isinstance(device, str):
             device = torch.device(device)
 
-        model = model.to(device)
-        model.eval()
-
-        # ---- collect (inputs, targets) batches (same as evaluate_model)
-        batches: list[tuple[torch.Tensor, torch.Tensor]] = []
-        for i, batch in enumerate(dataloader):
-            print(f"Extracting batch {i + 1} for raw metrics...")
-            if i >= num_batches:
-                break
-
-            inputs, targets = self._extract_inputs_targets(batch, model, device)
-            inputs = inputs[: self.config.max_samples]
-            targets = targets[: self.config.max_samples]
-
-            if inputs is None or targets is None:
-                continue
-            if inputs.numel() == 0 or targets.numel() == 0:
-                continue
-
-            batches.append((inputs, targets))
-
-        if not batches:
-            return {
-                "raw_metrics": {},
-                "success_rates": {},
-                "errors": {"_global": "No valid batches after extraction/slicing."},
-            }
-
         per_metric_values: dict[str, list[float]] = {}
         per_metric_success: dict[str, int] = {}
         per_metric_total: dict[str, int] = {}
         per_metric_errors: dict[str, str] = {}
-        model_only_results = self.computer.compute_model_only_metrics(model)
-        heavy_batches = max(1, int(getattr(self.config, "heavy_metrics_batches", 1)))
 
-        # IMPORTANT: DO NOT use torch.no_grad() here (grad-based metrics need autograd)
-        for batch_idx, (inputs, targets) in enumerate(batches):
-            try:
-                print(
-                    f"Computing metrics for batch {batch_idx + 1}/{len(batches)} "
-                    f"(heavy_metrics={batch_idx < heavy_batches})..."
-                )
-                results = self.computer.compute_all(
-                    model,
-                    inputs,
-                    targets,
-                    include_heavy_metrics=(batch_idx < heavy_batches),
-                    model_only_results=model_only_results,
-                )
-            except Exception as e:
-                per_metric_errors["_batch_compute_all"] = str(e)
-                continue
+        # Serialise GPU access across concurrent candidate threads (see
+        # _ZC_GPU_LOCK). Held across batch extraction + metric computation; the
+        # pure-CPU aggregation below runs outside the lock.
+        with _ZC_GPU_LOCK:
+            model = model.to(device)
+            model.eval()
 
-            for name, res in results.items():
-                per_metric_total[name] = per_metric_total.get(name, 0) + 1
+            # ---- collect (inputs, targets) batches (same as evaluate_model)
+            batches: list[tuple[torch.Tensor, torch.Tensor]] = []
+            for i, batch in enumerate(dataloader):
+                if i >= num_batches:
+                    break
 
+                inputs, targets = self._extract_inputs_targets(batch, model, device)
+                inputs = inputs[: self.config.max_samples]
+                targets = targets[: self.config.max_samples]
+
+                if inputs is None or targets is None:
+                    continue
+                if inputs.numel() == 0 or targets.numel() == 0:
+                    continue
+
+                batches.append((inputs, targets))
+
+            if not batches:
+                return {
+                    "raw_metrics": {},
+                    "success_rates": {},
+                    "errors": {"_global": "No valid batches after extraction/slicing."},
+                }
+
+            model_only_results = self.computer.compute_model_only_metrics(model)
+            heavy_batches = max(
+                1, int(getattr(self.config, "heavy_metrics_batches", 1))
+            )
+
+            # IMPORTANT: DO NOT use torch.no_grad() here (grad-based metrics
+            # need autograd)
+            for batch_idx, (inputs, targets) in enumerate(batches):
                 try:
-                    if isinstance(res, Result):
-                        val = float(res.value)
-                    else:
-                        val = float(res)
-
-                    # Filter NaN/inf
-                    if not torch.isfinite(torch.tensor(val)):
-                        raise ValueError(f"Non-finite value: {val}")
-
-                    per_metric_values.setdefault(name, []).append(val)
-                    per_metric_success[name] = per_metric_success.get(name, 0) + 1
-
+                    results = self.computer.compute_all(
+                        model,
+                        inputs,
+                        targets,
+                        include_heavy_metrics=(batch_idx < heavy_batches),
+                        model_only_results=model_only_results,
+                    )
                 except Exception as e:
-                    per_metric_errors[name] = str(e)
+                    per_metric_errors["_batch_compute_all"] = str(e)
+                    continue
 
+                self._accumulate_raw_batch(
+                    results,
+                    per_metric_values,
+                    per_metric_success,
+                    per_metric_total,
+                    per_metric_errors,
+                )
+
+        return self._finalize_raw_metrics(
+            per_metric_values, per_metric_success, per_metric_total, per_metric_errors
+        )
+
+    @staticmethod
+    def _accumulate_raw_batch(
+        results,
+        per_metric_values,
+        per_metric_success,
+        per_metric_total,
+        per_metric_errors,
+    ) -> None:
+        for name, res in results.items():
+            per_metric_total[name] = per_metric_total.get(name, 0) + 1
+
+            try:
+                if isinstance(res, Result):
+                    val = float(res.value)
+                else:
+                    val = float(res)
+
+                # Filter NaN/inf
+                if not torch.isfinite(torch.tensor(val)):
+                    raise ValueError(f"Non-finite value: {val}")
+
+                per_metric_values.setdefault(name, []).append(val)
+                per_metric_success[name] = per_metric_success.get(name, 0) + 1
+
+            except Exception as e:
+                per_metric_errors[name] = str(e)
+
+    @staticmethod
+    def _finalize_raw_metrics(
+        per_metric_values, per_metric_success, per_metric_total, per_metric_errors
+    ) -> dict[str, Any]:
         raw_metrics: dict[str, float] = {
             name: float(sum(vals) / len(vals))
             for name, vals in per_metric_values.items()

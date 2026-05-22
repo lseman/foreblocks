@@ -103,15 +103,22 @@ class DARTSMoEFeedForward(nn.Module):
         # Only run the selected top-k experts per token — O(top_k) not O(num_experts).
         N = x_flat.size(0)
         mixed = x_flat.new_zeros(N, self.d_model)
-        for k in range(self.top_k):
-            expert_ids = top_idx[:, k]  # [N]
-            weight_k = top_weights[:, k]  # [N]
-            for eid in range(self.num_routed):
-                mask = expert_ids == eid
-                if not mask.any():
-                    continue
-                out_e = self.routed_experts[eid](x_flat[mask])
-                mixed[mask] = mixed[mask] + weight_k[mask].unsqueeze(-1) * out_e
+        # Scatter the top-k weights into a dense [N, num_routed] gate. topk
+        # returns distinct expert ids per token, so each (token, expert) pair
+        # gets at most one weight — this exactly encodes the per-token mixture.
+        gate = x_flat.new_zeros(N, self.num_routed)
+        top_weights = top_weights.to(device=gate.device, dtype=gate.dtype)
+        gate.scatter_(1, top_idx, top_weights)
+        # Process each expert once over all its routed tokens (no top_k loop,
+        # no per-(k, expert) mask.any() sync).
+        for eid in range(self.num_routed):
+            token_idx = gate[:, eid].nonzero(as_tuple=True)[0]
+            if token_idx.numel() == 0:
+                continue
+            out_e = self.routed_experts[eid](x_flat[token_idx])
+            mixed[token_idx] = (
+                mixed[token_idx] + gate[token_idx, eid].unsqueeze(-1) * out_e
+            )
 
         if self.shared_experts:
             shared = torch.stack(
@@ -258,6 +265,20 @@ class DARTSFeedForward(nn.Module):
             if self.ffn_mode == "relu":
                 return self.relu_block(x)
             return self.moe_block(x)
+
+        if self.training and self.variant_gdas:
+            # GDAS returns a one-hot forward choice with straight-through
+            # gradients. Run only the selected branch instead of evaluating all
+            # FFN variants, especially the expensive MoE branch.
+            idx = int(torch.argmax(weights.detach()).item())
+            if idx == 0:
+                return weights[idx] * self.swiglu_block(x)
+            if idx == 1:
+                return weights[idx] * self.geglu_block(x)
+            if idx == 2:
+                return weights[idx] * self.relu_block(x)
+            return weights[idx] * self.moe_block(x)
+
         # Weighted mix — MODE_NAMES = ("swiglu", "geglu", "relu", "moe")
         return (
             weights[0] * self.swiglu_block(x)

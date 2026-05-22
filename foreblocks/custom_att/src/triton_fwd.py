@@ -43,32 +43,6 @@ def _attn_fwd_inner(
     return acc, l_i, m_i
 
 
-def _fwd_configs():
-    cfgs = []
-    for bm, bn, w, s in [
-        (128, 128, 8, 3),
-        (128, 128, 4, 4),
-        (128, 64, 8, 4),
-        (128, 64, 4, 3),
-        (128, 64, 8, 3),
-        (128, 64, 4, 4),
-        (64, 128, 8, 3),
-        (64, 128, 4, 4),
-        (64, 64, 8, 3),
-        (64, 64, 4, 4),
-        (64, 64, 4, 3),
-        (128, 64, 8, 2),
-        (128, 32, 4, 3),
-        (64, 32, 4, 2),
-        (32, 64, 4, 2),
-    ]:
-        cfgs.append(
-            triton.Config({"block_m": bm, "block_n": bn}, num_warps=w, num_stages=s)
-        )
-    return cfgs
-
-
-@triton.autotune(configs=_fwd_configs(), key=["n_ctx", "d_head", "causal"])
 @triton.jit
 def _flash_fwd_kernel(
     q,
@@ -202,6 +176,26 @@ def _flash_fwd_kernel(
     )
 
 
+def _is_ada_or_newer(q):
+    major, minor = torch.cuda.get_device_capability(q.device)
+    return major > 8 or (major == 8 and minor >= 9)
+
+
+def _select_fwd_config(q, n_ctx, d_head, causal):
+    if _is_ada_or_newer(q):
+        if d_head <= 32:
+            return 128, 128, 4, 4
+        if d_head == 64:
+            if causal:
+                return 128, 64, 4, 3
+            return (128, 128, 4, 3) if n_ctx >= 1024 else (64, 128, 4, 3)
+        if d_head == 128:
+            return (32, 64, 4, 2) if causal else (128, 32, 4, 2)
+    if d_head <= 64:
+        return 128, 64, 4, 3
+    return 64, 64, 4, 3
+
+
 def triton_flash_fwd(q, k, v, causal=False, softmax_scale=None):
     n_ctx = q.shape[-2]
     d_head = q.shape[-1]
@@ -209,7 +203,10 @@ def triton_flash_fwd(q, k, v, causal=False, softmax_scale=None):
     out = torch.empty_like(q)
     lse = torch.empty(q.shape[:-1], device=q.device, dtype=torch.float32)
     bh = q.shape[0] * q.shape[1]
-    grid = lambda meta: (triton.cdiv(n_ctx, meta["block_m"]), bh)
+    block_m, block_n, num_warps, num_stages = _select_fwd_config(
+        q, n_ctx, d_head, bool(causal)
+    )
+    grid = (triton.cdiv(n_ctx, block_m), bh)
     _flash_fwd_kernel[grid](
         q,
         k,
@@ -220,6 +217,10 @@ def triton_flash_fwd(q, k, v, causal=False, softmax_scale=None):
         n_ctx,
         d_head,
         causal,
+        block_m,
+        block_n,
+        num_warps=num_warps,
+        num_stages=num_stages,
     )
     return out, lse
 

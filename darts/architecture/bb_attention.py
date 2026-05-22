@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
@@ -10,7 +11,6 @@ import torch.nn.functional as F
 
 from .bb_positional import RotaryPositionalEncoding
 from .bb_primitives import RMSNorm
-
 
 __all__ = [
     "SelfAttention",
@@ -22,6 +22,7 @@ __all__ = [
 def _make_alibi_slopes(num_heads: int) -> torch.Tensor:
     """Canonical ALiBi slopes from Press et al. (2021): 1 / 2^(8 i / H)."""
     num_heads = max(1, int(num_heads))
+
     # For non-power-of-two head counts, fall back to interpolated slopes
     # (same recipe as the reference ALiBi implementation).
     def _pow2_slopes(n: int) -> list[float]:
@@ -96,9 +97,9 @@ def _seasonal_relative_bias(
     slopes = (
         _make_alibi_slopes(num_heads)
         .to(device=device, dtype=dtype)
-        .view(1, num_heads, 1, 1)
+        .reshape(1, num_heads, 1, 1)
     )
-    return 0.1 * slopes * bias.view(1, 1, query_len, key_len)
+    return 0.1 * slopes * bias.reshape(1, 1, query_len, key_len)
 
 
 class SelfAttention(nn.Module):
@@ -179,9 +180,7 @@ class SelfAttention(nn.Module):
         # Learnable cosine inverse-temperature: for unit-norm Q/K, scores live
         # in [-1,1]; without rescaling the softmax is near-uniform. Init at
         # log(head_dim ** 0.5) so exp(.) matches the SDP scale at start.
-        self.cos_log_scale = nn.Parameter(
-            torch.tensor(math.log(self.head_dim**0.5))
-        )
+        self.cos_log_scale = nn.Parameter(torch.tensor(math.log(self.head_dim**0.5)))
         # Deterministic generator for ProbSparse sampling: reduces variance in
         # the architecture gradient since alphas are trying to estimate which
         # kernel is best.
@@ -268,10 +267,10 @@ class SelfAttention(nn.Module):
             q_pos = torch.arange(query_len, device=device, dtype=dtype).unsqueeze(1)
             k_pos = torch.arange(key_len, device=device, dtype=dtype).unsqueeze(0)
             rel = (q_pos - k_pos).abs()
-            slopes = self.alibi_slopes.to(device=device, dtype=dtype).view(
+            slopes = self.alibi_slopes.to(device=device, dtype=dtype).reshape(
                 1, self.heads, 1, 1
             )
-            return -slopes * rel.view(1, 1, query_len, key_len)
+            return -slopes * rel.reshape(1, 1, query_len, key_len)
         if position_mode == "seasonal":
             return _seasonal_relative_bias(
                 query_len,
@@ -295,10 +294,10 @@ class SelfAttention(nn.Module):
         if position_mode == "seasonal":
             pos_q = _sinusoidal_features(
                 query_len, self.head_dim, device=q.device, dtype=q.dtype
-            ).view(1, 1, query_len, self.head_dim)
+            ).reshape(1, 1, query_len, self.head_dim)
             pos_k = _sinusoidal_features(
                 key_len, self.head_dim, device=k.device, dtype=k.dtype
-            ).view(1, 1, key_len, self.head_dim)
+            ).reshape(1, 1, key_len, self.head_dim)
             scale = self.positional_scale.to(dtype=q.dtype)
             q = q + scale * pos_q
             k = k + scale * pos_k
@@ -322,21 +321,29 @@ class SelfAttention(nn.Module):
         dropout_p = self.dropout_p if self.training else 0.0
         if position_bias is None:
             return F.scaled_dot_product_attention(
-                q, k, v,
+                q,
+                k,
+                v,
                 attn_mask=None,
                 dropout_p=dropout_p,
                 is_causal=self.causal,
                 scale=self.scale,
             )
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale + position_bias
+        attn_mask = position_bias
         if self.causal:
             mask = _causal_mask(T, q.device)
-            scores = scores.masked_fill(mask.view(1, 1, T, T), float("-inf"))
-        attn = F.softmax(scores, dim=-1)
-        attn = torch.nan_to_num(attn, nan=1.0 / float(max(T, 1)))
-        if dropout_p > 0:
-            attn = F.dropout(attn, p=dropout_p)
-        return torch.matmul(attn, v)
+            attn_mask = position_bias.masked_fill(
+                mask.reshape(1, 1, T, T), float("-inf")
+            )
+        return F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=False,
+            scale=self.scale,
+        )
 
     def _linear_kernel(
         self,
@@ -351,7 +358,9 @@ class SelfAttention(nn.Module):
             # formulation for correctness; fall back to FlashAttention-backed
             # SDP which is still efficient and numerically exact.
             return F.scaled_dot_product_attention(
-                q, k, v,
+                q,
+                k,
+                v,
                 attn_mask=None,
                 dropout_p=dropout_p,
                 is_causal=True,
@@ -385,7 +394,7 @@ class SelfAttention(nn.Module):
             scores = scores + position_bias
         if self.causal:
             mask = _causal_mask(T, q.device)
-            scores = scores.masked_fill(mask.view(1, 1, T, T), float("-inf"))
+            scores = scores.masked_fill(mask.reshape(1, 1, T, T), float("-inf"))
         attn = F.softmax(scores, dim=-1)
         attn = torch.nan_to_num(attn, nan=1.0 / float(max(T, 1)))
         if dropout_p > 0:
@@ -455,7 +464,7 @@ class SelfAttention(nn.Module):
             scores_top = scores_top + pos_bias_top
         if self.causal:
             full_idx = top_idx.unsqueeze(-1).expand(-1, -1, -1, T)
-            key_pos = torch.arange(T, device=q.device).view(1, 1, 1, T)
+            key_pos = torch.arange(T, device=q.device).reshape(1, 1, 1, T)
             scores_top = scores_top.masked_fill(key_pos > full_idx, float("-inf"))
         attn_top = F.softmax(scores_top, dim=-1)
         attn_top = torch.nan_to_num(attn_top, nan=1.0 / float(T))
@@ -509,7 +518,7 @@ class SelfAttention(nn.Module):
         B, T, D = x.shape
         H = self.heads
 
-        qkv = self.to_qkv(x).view(B, T, 3, H, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = self.to_qkv(x).reshape(B, T, 3, H, self.head_dim).permute(2, 0, 3, 1, 4)
         q_raw, k_raw, v = qkv.unbind(0)
 
         # Position-mode selection: argmax(weights) with straight-through
@@ -533,9 +542,7 @@ class SelfAttention(nn.Module):
             else:
                 out = sum(
                     weights[i]
-                    * self._apply_kernel(
-                        self.MODES[i], q, k, v, position_bias, B, H, T
-                    )
+                    * self._apply_kernel(self.MODES[i], q, k, v, position_bias, B, H, T)
                     for i in range(len(self.MODES))
                 )
         else:
@@ -584,10 +591,17 @@ class AttentionBridge(nn.Module):
         dropout: float = 0.1,
         attention_type: str = "auto",
         position_mode: str = "rope",
+        attention_modes: Sequence[str] | None = None,
         temperature: float = 1.0,
         variant_gdas: bool = False,
     ):
         super().__init__()
+        resolved_modes = tuple(
+            str(mode).lower() for mode in (attention_modes or self.MODES)
+        )
+        if not resolved_modes:
+            raise ValueError("attention_modes must contain at least one mode")
+        self.MODES = resolved_modes
         resolved_attention_type = str(attention_type).lower()
         resolved_position_mode = str(position_mode).lower()
         assert resolved_attention_type in (*self.MODES, "auto"), (
@@ -639,9 +653,7 @@ class AttentionBridge(nn.Module):
         )
         self.positional_scale = nn.Parameter(torch.tensor(1.0))
         # Learnable inverse-temperature for cosine kernel (see SelfAttention).
-        self.cos_log_scale = nn.Parameter(
-            torch.tensor(math.log(self.head_dim**0.5))
-        )
+        self.cos_log_scale = nn.Parameter(torch.tensor(math.log(self.head_dim**0.5)))
         # Deterministic generator for ProbSparse sampling.
         self._probsparse_gen = torch.Generator().manual_seed(0xC0FFEE)
 
@@ -657,11 +669,11 @@ class AttentionBridge(nn.Module):
 
     def _reshape(self, x: torch.Tensor, B: int, L: int) -> torch.Tensor:
         """[B, L, D] → [B, H, L, hd]"""
-        return x.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        return x.reshape(B, L, self.num_heads, self.head_dim).transpose(1, 2)
 
     def _merge(self, x: torch.Tensor, B: int, L: int) -> torch.Tensor:
         """[B, H, L, hd] → [B, L, D]"""
-        return x.transpose(1, 2).contiguous().view(B, L, self.d_model)
+        return x.transpose(1, 2).contiguous().reshape(B, L, self.d_model)
 
     def _apply_rotary_pair(
         self, q: torch.Tensor, k: torch.Tensor, q_len: int, k_len: int
@@ -738,10 +750,10 @@ class AttentionBridge(nn.Module):
             q_pos = torch.arange(query_len, device=device, dtype=dtype).unsqueeze(1)
             k_pos = torch.arange(key_len, device=device, dtype=dtype).unsqueeze(0)
             rel = (q_pos - k_pos).abs()
-            slopes = self.alibi_slopes.to(device=device, dtype=dtype).view(
+            slopes = self.alibi_slopes.to(device=device, dtype=dtype).reshape(
                 1, self.num_heads, 1, 1
             )
-            return -slopes * rel.view(1, 1, query_len, key_len)
+            return -slopes * rel.reshape(1, 1, query_len, key_len)
         if position_mode == "seasonal":
             return _seasonal_relative_bias(
                 query_len,
@@ -767,10 +779,10 @@ class AttentionBridge(nn.Module):
         if position_mode == "seasonal":
             pos_q = _sinusoidal_features(
                 q_len, self.head_dim, device=q.device, dtype=q.dtype
-            ).view(1, 1, q_len, self.head_dim)
+            ).reshape(1, 1, q_len, self.head_dim)
             pos_k = _sinusoidal_features(
                 k_len, self.head_dim, device=k.device, dtype=k.dtype
-            ).view(1, 1, k_len, self.head_dim)
+            ).reshape(1, 1, k_len, self.head_dim)
             scale = self.positional_scale.to(dtype=q.dtype)
             q = q + scale * pos_q
             k = k + scale * pos_k
@@ -803,18 +815,11 @@ class AttentionBridge(nn.Module):
         k = self._reshape(k, B, L_enc)
         v = self._reshape(v, B, L_enc)
         dropout_p = self.dropout_p if self.training else 0.0
-        if bias is not None:
-            scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale + bias
-            attn = F.softmax(scores, dim=-1)
-            attn = torch.nan_to_num(attn, nan=1.0 / float(max(L_enc, 1)))
-            if dropout_p > 0:
-                attn = F.dropout(attn, p=dropout_p)
-            return self._merge(torch.matmul(attn, v), B, L_dec)
         out = F.scaled_dot_product_attention(
             q,
             k,
             v,
-            attn_mask=None,
+            attn_mask=bias,
             dropout_p=dropout_p,
             is_causal=False,
             scale=self.scale,
@@ -1090,9 +1095,7 @@ class AttentionBridge(nn.Module):
             else max(float(self.temperature), 1e-3)
         )
         eff_single = (
-            bool(variant_gdas)
-            if variant_gdas is not None
-            else bool(self.variant_gdas)
+            bool(variant_gdas) if variant_gdas is not None else bool(self.variant_gdas)
         )
 
         if self.training and eff_single:

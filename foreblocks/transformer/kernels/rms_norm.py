@@ -231,7 +231,7 @@ class RMSNormTritonFunction(torch.autograd.Function):
             raise RuntimeError("RMSNormTritonFunction expects non-None weight.")
 
         orig_shape = x.shape
-        x = x.view(-1, x.shape[-1]).contiguous()
+        x = x.reshape(-1, x.shape[-1]).contiguous()
         M, N = x.shape
 
         y = torch.empty_like(x)
@@ -256,7 +256,7 @@ class RMSNormTritonFunction(torch.autograd.Function):
         ctx.orig_shape = orig_shape
         ctx.eps = eps
         ctx.N = N
-        return y.view(orig_shape)
+        return y.reshape(orig_shape)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -270,7 +270,7 @@ class RMSNormTritonFunction(torch.autograd.Function):
         eps = ctx.eps
         N = ctx.N
 
-        grad_output = grad_output.view(-1, grad_output.shape[-1]).contiguous()
+        grad_output = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
         M = grad_output.shape[0]
 
         grad_input = torch.empty_like(x)
@@ -294,7 +294,7 @@ class RMSNormTritonFunction(torch.autograd.Function):
             BLOCK_SIZE,
         )
 
-        return grad_input.view(orig_shape), grad_weight, None
+        return grad_input.reshape(orig_shape), grad_weight, None
 
 
 class FusedAddRMSNormFunction(torch.autograd.Function):
@@ -315,8 +315,8 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
             )
 
         orig_shape = residual.shape
-        residual_2d = residual.view(-1, orig_shape[-1]).contiguous()
-        update_2d = update.view(-1, orig_shape[-1]).contiguous()
+        residual_2d = residual.reshape(-1, orig_shape[-1]).contiguous()
+        update_2d = update.reshape(-1, orig_shape[-1]).contiguous()
         M, N = residual_2d.shape
 
         y = torch.empty_like(residual_2d)
@@ -343,7 +343,7 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
         ctx.orig_shape = orig_shape
         ctx.N = N
         ctx.eps = eps
-        return y.view(orig_shape)
+        return y.reshape(orig_shape)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -352,7 +352,7 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
         N = ctx.N
         eps = ctx.eps
 
-        grad_output_2d = grad_output.view(-1, grad_output.shape[-1]).contiguous()
+        grad_output_2d = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
         M = grad_output_2d.shape[0]
 
         grad_input = torch.empty_like(out_2d)
@@ -377,7 +377,7 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
             BLOCK_SIZE,
         )
 
-        dx = grad_input.view(orig_shape)
+        dx = grad_input.reshape(orig_shape)
         return dx, dx, grad_weight, None
 
 
@@ -417,7 +417,7 @@ def triton_scale_bias(
         BLOCK_SIZE,
     )
 
-    return y_flat.view(*lead, H)
+    return y_flat.reshape(*lead, H)
 
 
 def triton_fused_rmsnorm_scale_bias(
@@ -454,7 +454,7 @@ def triton_fused_rmsnorm_scale_bias(
         BLOCK_SIZE,
     )
 
-    return y_flat.view(*lead, H)
+    return y_flat.reshape(*lead, H)
 
 
 __all__ = [

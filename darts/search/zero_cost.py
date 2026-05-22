@@ -164,5 +164,16 @@ def _make_config(*, max_samples: int, fast_mode: bool) -> Config:
         cfg.fisher_per_sample = False
         cfg.snip_mode = "current"
         cfg.heavy_metrics_batches = 1
+        # Phase-1 search needs a cheap, reliable ranking signal. GRASP,
+        # Jacobian and SynFlow are useful diagnostics, but they are also the
+        # common culprits for very slow or backend-sensitive candidate screens.
+        cfg.enable_grasp = False
+        cfg.enable_jacobian = False
+        cfg.enable_synflow = False
+        cfg.weights = {
+            k: v
+            for k, v in cfg.weights.items()
+            if k not in {"grasp", "jacobian", "synflow"}
+        }
         cfg.conditioning_every_n_layers = max(2, cfg.conditioning_every_n_layers)
     return cfg

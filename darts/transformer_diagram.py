@@ -47,29 +47,27 @@ from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea, VPacker
 from matplotlib.patches import Circle, FancyBboxPatch, PathPatch
 from matplotlib.path import Path
-
 
 # -----------------------------------------------------------------------------
 # Global styling
 # -----------------------------------------------------------------------------
 
-matplotlib.rcParams.update(
-    {
-        "font.family": "sans-serif",
-        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans", "Liberation Sans"],
-        "font.size": 10,
-        "figure.dpi": 150,
-        "savefig.dpi": 220,
-        "figure.facecolor": "white",
-        "axes.facecolor": "white",
-        "axes.titlesize": 14,
-        "axes.labelsize": 11,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-    }
-)
+matplotlib.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans", "Liberation Sans"],
+    "font.size": 10,
+    "figure.dpi": 150,
+    "savefig.dpi": 220,
+    "figure.facecolor": "white",
+    "axes.facecolor": "white",
+    "axes.titlesize": 14,
+    "axes.labelsize": 11,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+})
 
 
 # -----------------------------------------------------------------------------
@@ -560,13 +558,11 @@ def make_encoder_layers(
 ) -> list[dict[str, Any]]:
     layers: list[dict[str, Any]] = []
     if include_embed:
-        layers.append(
-            {
-                "type": embed_type,
-                "label": embed_label,
-                "sublabel": embed_sublabel,
-            }
-        )
+        layers.append({
+            "type": embed_type,
+            "label": embed_label,
+            "sublabel": embed_sublabel,
+        })
 
     layers += _sub_block(
         attn_type,
@@ -581,13 +577,11 @@ def make_encoder_layers(
         layers.append({"type": norm_type, "label": f"Final {norm_type.upper()}"})
 
     if include_output:
-        layers.append(
-            {
-                "type": "output",
-                "label": output_label,
-                "sublabel": output_sublabel,
-            }
-        )
+        layers.append({
+            "type": "output",
+            "label": output_label,
+            "sublabel": output_sublabel,
+        })
     return layers
 
 
@@ -617,13 +611,11 @@ def make_decoder_layers(
 
     layers: list[dict[str, Any]] = []
     if include_embed:
-        layers.append(
-            {
-                "type": embed_type,
-                "label": embed_label,
-                "sublabel": embed_sublabel,
-            }
-        )
+        layers.append({
+            "type": embed_type,
+            "label": embed_label,
+            "sublabel": embed_sublabel,
+        })
 
     layers += _sub_block(
         self_attn_type,
@@ -668,13 +660,11 @@ def make_decoder_layers(
         layers.append({"type": norm_type, "label": f"Final {norm_type.upper()}"})
 
     if include_output:
-        layers.append(
-            {
-                "type": "output",
-                "label": output_label,
-                "sublabel": output_sublabel,
-            }
-        )
+        layers.append({
+            "type": "output",
+            "label": output_label,
+            "sublabel": output_sublabel,
+        })
     return layers
 
 
@@ -1437,6 +1427,88 @@ def _summary_title(base: str, pairs: Iterable[tuple[str, str | None]]) -> str:
     return f"{base}\n" + " | ".join(parts)
 
 
+def _summary_lines(pairs: Iterable[tuple[str, str | None]]) -> list[str]:
+    return [f"{key}: {value}" for key, value in pairs if value and value != "unknown"]
+
+
+def _draw_side_legend(
+    ax,
+    x: float,
+    y: float,
+    *,
+    heading: str,
+    lines: Sequence[str],
+    align: str,
+):
+    if not lines:
+        return
+
+    rows = [
+        TextArea(
+            heading,
+            textprops=dict(
+                color=COLORS["text"],
+                fontsize=11.2,
+                fontweight="bold",
+            ),
+        )
+    ]
+
+    for line in lines:
+        key, sep, value = line.partition(":")
+        if sep:
+            row = HPacker(
+                children=[
+                    TextArea(
+                        f"{key}:",
+                        textprops=dict(
+                            color=COLORS["text"],
+                            fontsize=10.2,
+                            fontweight="bold",
+                        ),
+                    ),
+                    TextArea(
+                        f" {value.strip()}",
+                        textprops=dict(
+                            color=COLORS["text"],
+                            fontsize=10.2,
+                        ),
+                    ),
+                ],
+                align="baseline",
+                pad=0,
+                sep=2,
+            )
+        else:
+            row = TextArea(
+                line,
+                textprops=dict(
+                    color=COLORS["text"],
+                    fontsize=10.2,
+                ),
+            )
+        rows.append(row)
+
+    panel = VPacker(children=rows, align="left", pad=0, sep=5)
+    box_alignment = (1.0, 0.5) if align == "right" else (0.0, 0.5)
+    annotation = AnnotationBbox(
+        panel,
+        (x, y),
+        xycoords="data",
+        box_alignment=box_alignment,
+        frameon=True,
+        bboxprops=dict(
+            fc="#FCFCFC",
+            ec=COLORS["block_border"],
+            boxstyle="round,pad=0.68,rounding_size=0.44",
+            lw=1.2,
+            linestyle=(0, (3.0, 2.0)),
+        ),
+        zorder=5,
+    )
+    ax.add_artist(annotation)
+
+
 def make_encoder_layers_from_spec(spec: dict[str, Any]):
     tokenizer = _compact_choice(spec.get("tokenizer"), _TOKENIZER_NAMES)
     self_attn = _compact_choice(spec.get("self_attention"))
@@ -1457,8 +1529,7 @@ def make_encoder_layers_from_spec(spec: dict[str, Any]):
         output_label="Encoder states",
         output_sublabel=None,
     )
-    title = _summary_title(
-        "Encoder",
+    summary_lines = _summary_lines(
         [
             ("tok", tokenizer),
             ("attn", self_attn),
@@ -1466,7 +1537,7 @@ def make_encoder_layers_from_spec(spec: dict[str, Any]):
             ("ffn", ffn),
         ],
     )
-    return layers, title, int(spec.get("num_layers") or 1)
+    return layers, "Encoder", int(spec.get("num_layers") or 1), summary_lines
 
 
 def make_decoder_layers_from_spec(spec: dict[str, Any], *, encoder_available: bool):
@@ -1514,8 +1585,7 @@ def make_decoder_layers_from_spec(spec: dict[str, Any], *, encoder_available: bo
         cross_attn_sublabel=(f"{cross_attn} | {cross_pos}" if include_cross else None),
     )
 
-    title = _summary_title(
-        "Decoder",
+    summary_lines = _summary_lines(
         [
             ("style", style),
             ("query", query_mode),
@@ -1533,7 +1603,13 @@ def make_decoder_layers_from_spec(spec: dict[str, Any], *, encoder_available: bo
         if memory_queries not in (None, "", "unknown"):
             cross_label = f"encoder memory\n(K, V), {memory_queries} queries"
 
-    return layers, title, int(spec.get("num_layers") or 1), cross_label
+    return (
+        layers,
+        "Decoder",
+        int(spec.get("num_layers") or 1),
+        cross_label,
+        summary_lines,
+    )
 
 
 def draw_selected_transformer_architecture(
@@ -1546,12 +1622,15 @@ def draw_selected_transformer_architecture(
     overall_title = title or f"Selected Transformer Architecture ({arch_mode})"
 
     if arch_mode == "encoder_only" and encoder_spec is not None:
-        encoder_layers, encoder_title, encoder_repeats = make_encoder_layers_from_spec(
-            encoder_spec
+        encoder_layers, encoder_title, encoder_repeats, encoder_summary_lines = (
+            make_encoder_layers_from_spec(encoder_spec)
         )
+        single_title = overall_title
+        if encoder_summary_lines:
+            single_title += "\n" + "\n".join(encoder_summary_lines)
         return draw_single_block(
             encoder_layers,
-            title=f"{overall_title}\n{encoder_title}",
+            title=single_title,
             num_repeats=encoder_repeats,
             input_label="History / endogenous series",
             bg_color=COLORS["model_bg"],
@@ -1559,15 +1638,18 @@ def draw_selected_transformer_architecture(
         )
 
     if arch_mode == "decoder_only" and decoder_spec is not None:
-        decoder_layers, decoder_title, decoder_repeats, _ = (
+        decoder_layers, decoder_title, decoder_repeats, _, decoder_summary_lines = (
             make_decoder_layers_from_spec(
                 decoder_spec,
                 encoder_available=False,
             )
         )
+        single_title = overall_title
+        if decoder_summary_lines:
+            single_title += "\n" + "\n".join(decoder_summary_lines)
         return draw_single_block(
             decoder_layers,
-            title=f"{overall_title}\n{decoder_title}",
+            title=single_title,
             num_repeats=decoder_repeats,
             input_label="History-conditioned decoder input",
             bg_color=COLORS["model_bg"],
@@ -1579,14 +1661,18 @@ def draw_selected_transformer_architecture(
         and encoder_spec is not None
         and decoder_spec is not None
     ):
-        encoder_layers, encoder_title, encoder_repeats = make_encoder_layers_from_spec(
-            encoder_spec
+        encoder_layers, encoder_title, encoder_repeats, encoder_summary_lines = (
+            make_encoder_layers_from_spec(encoder_spec)
         )
-        decoder_layers, decoder_title, decoder_repeats, cross_label = (
-            make_decoder_layers_from_spec(
-                decoder_spec,
-                encoder_available=True,
-            )
+        (
+            decoder_layers,
+            decoder_title,
+            decoder_repeats,
+            cross_label,
+            decoder_summary_lines,
+        ) = make_decoder_layers_from_spec(
+            decoder_spec,
+            encoder_available=True,
         )
         return draw_encoder_decoder(
             encoder_layers=encoder_layers,
@@ -1600,6 +1686,8 @@ def draw_selected_transformer_architecture(
             title=overall_title,
             figsize=figsize,
             cross_label=cross_label,
+            encoder_summary_lines=encoder_summary_lines,
+            decoder_summary_lines=decoder_summary_lines,
         )
 
     fig, ax = plt.subplots(figsize=figsize or (8, 3))
@@ -1705,6 +1793,8 @@ def draw_encoder_decoder(
     title: str = "Transformer architecture",
     figsize=None,
     cross_label: str = "encoder memory\n(K, V)",
+    encoder_summary_lines: Sequence[str] | None = None,
+    decoder_summary_lines: Sequence[str] | None = None,
 ):
     enc = TransformerBlock(
         encoder_title,
@@ -1722,9 +1812,10 @@ def draw_encoder_decoder(
     )
 
     gap = 2.3
+    side_w = 3.15
     bw = max(enc.block_width(), dec.block_width())
-    tw = 2 * bw + gap + 2.6
-    th = max(enc.total_height(), dec.total_height()) + 2.0
+    tw = 2 * bw + gap + 2.6 + 2 * side_w
+    th = max(enc.total_height(), dec.total_height()) + 1.2
     figsize = figsize or (tw * 1.02, th * 1.02)
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -1739,6 +1830,29 @@ def draw_encoder_decoder(
 
     enc.draw(ax, cx_enc, 0.45)
     dec.draw(ax, cx_dec, 0.45)
+
+    enc_summary_x = cx_enc - enc.block_width() / 2 - 0.55
+    dec_summary_x = cx_dec + dec.block_width() / 2 + 0.55
+    enc_summary_y = (enc._y0 + enc._y1) / 2
+    dec_summary_y = (dec._y0 + dec._y1) / 2
+
+    _draw_side_legend(
+        ax,
+        enc_summary_x,
+        enc_summary_y,
+        heading=encoder_title,
+        lines=encoder_summary_lines or [],
+        align="right",
+    )
+
+    _draw_side_legend(
+        ax,
+        dec_summary_x,
+        dec_summary_y,
+        heading=decoder_title,
+        lines=decoder_summary_lines or [],
+        align="left",
+    )
 
     ca_port = dec.cross_attn_port()
     if ca_port:
@@ -1776,11 +1890,11 @@ def draw_encoder_decoder(
 
     ax.text(
         tw / 2,
-        th - 0.05,
+        th - 0.18,
         title,
         ha="center",
         va="top",
-        fontsize=15,
+        fontsize=16,
         fontweight="bold",
         color=COLORS["text"],
         zorder=6,

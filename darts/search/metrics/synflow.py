@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 
 
@@ -16,25 +15,30 @@ def compute_synflow(computer, model, inputs):
                 for p in params:
                     p.abs_()
 
-            x = torch.ones_like(inputs[: computer.config.max_samples])
+            # SynFlow is architecture-dependent, not data-dependent.
+            # A single all-ones input suffices; more samples just scale the
+            # gradient by N without changing the candidate ranking.
+            x = torch.ones_like(inputs[:1])
             model.zero_grad()
             out = computer._unwrap_output(model(x))
             if out.dim() > 2:
                 out = out.flatten(1)
             out.sum().backward()
 
-            score_sum = 0.0
-            count = 0
-            for p in model.parameters():
-                if p.grad is not None and p.requires_grad:
-                    contrib = (p * p.grad).abs().sum().item()
-                    if contrib > 0 and np.isfinite(contrib):
-                        score_sum += contrib
-                        count += 1
-
-            if count == 0:
+            # Accumulate per-parameter contributions on-device and sync once.
+            contribs = [
+                (p * p.grad).abs().sum()
+                for p in model.parameters()
+                if p.requires_grad and p.grad is not None
+            ]
+            if not contribs:
                 return 0.0
-            return float(score_sum)
+            stacked = torch.stack(contribs)
+            # Original semantics: keep only positive, finite contributions.
+            stacked = stacked[torch.isfinite(stacked) & (stacked > 0)]
+            if stacked.numel() == 0:
+                return 0.0
+            return float(stacked.sum().item())
 
         finally:
             with torch.no_grad():

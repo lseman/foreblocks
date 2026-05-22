@@ -13,17 +13,15 @@ def compute_snip(
 ):
     """SNIP saliency at initialization or current weights."""
     if snip_mode == "current":
-        snip_value = 0.0
-        snip_count = 0
-        for (n, p), g in zip(weight_params, grads_first_order):
-            if "weight" not in n:
-                continue
-            if g is not None and torch.isfinite(g).all():
-                snip_value += (g.detach() * p.detach()).abs().sum().item()
-                snip_count += 1
-        if snip_count == 0:
+        # Accumulate per-tensor saliencies on-device; sync once at the end.
+        per_tensor = [
+            (g.detach() * p.detach()).abs().sum()
+            for (n, p), g in zip(weight_params, grads_first_order)
+            if "weight" in n and g is not None and torch.isfinite(g).all()
+        ]
+        if not per_tensor:
             return 0.0
-        return snip_value / snip_count
+        return float(torch.stack(per_tensor).mean().item())
 
     state_backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
     snip_value = 0.0

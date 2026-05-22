@@ -107,8 +107,8 @@ class RotaryPositionalEncoding(nn.Module):
             return x
 
         half = rotary_dim // 2
-        cos = cos[:seq_len, :half].view(1, 1, seq_len, half).to(dtype=x.dtype)
-        sin = sin[:seq_len, :half].view(1, 1, seq_len, half).to(dtype=x.dtype)
+        cos = cos[:seq_len, :half].reshape(1, 1, seq_len, half).to(dtype=x.dtype)
+        sin = sin[:seq_len, :half].reshape(1, 1, seq_len, half).to(dtype=x.dtype)
 
         x_rot = x[..., :rotary_dim]
         x_even = x_rot[..., :half]

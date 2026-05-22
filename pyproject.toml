@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foreblocks"
-version = "0.1.23"
+version = "0.1.28"
 description = "Modular Time Series Forecasting Library"
 authors = [{ name = "Laio Seman", email = "laioseman@gmail.com" }]
 
@@ -36,7 +36,7 @@ classifiers = [
 # Keep the default install focused on the modeling stack.
 # Heavier scientific, preprocessing, tracking, and analysis features live in extras.
 dependencies = [
-    "torch>=2.0", # SDPBackend, autocast, compile — 2.x API used throughout
+    "torch>=2.0",  # SDPBackend, autocast, compile — 2.x API used throughout
     "numpy>=1.24",
     "einops>=0.6", # tf/embeddings/rotary.py, third_party/flash_softpick_attn
     "tqdm>=4.64",  # training loops, preprocessing progress bars
@@ -47,13 +47,13 @@ dependencies = [
 plotting = ["matplotlib>=3.6"]
 
 scientific = [
-    "pandas>=1.5",        # CSV loader, foretools, DARTS analyzer
-    "scipy>=1.10",        # signal processing, interpolation, statistical routines
-    "numba>=0.57",        # ts_handler/outlier.py and foretools accelerators
-    "scikit-learn>=1.2",  # preprocessing, feature engineering, metrics
-    "joblib>=1.3",        # parallel preprocessing and foretools helpers
-    "statsmodels>=0.14",  # preprocessing diagnostics and filters
-    "tabulate>=0.9",      # preprocessing summary tables
+    "pandas>=1.5",       # CSV loader, foretools, DARTS analyzer
+    "scipy>=1.10",       # signal processing, interpolation, statistical routines
+    "numba>=0.57",       # ts_handler/outlier.py and foretools accelerators
+    "scikit-learn>=1.2", # preprocessing, feature engineering, metrics
+    "joblib>=1.3",       # parallel preprocessing and foretools helpers
+    "statsmodels>=0.14", # preprocessing diagnostics and filters
+    "tabulate>=0.9",     # preprocessing summary tables
 ]
 
 # ── Time-series preprocessing / handlers ─────────────────────────────────
@@ -62,7 +62,7 @@ preprocessing = ["foreblocks[scientific,plotting]"]
 # ── DARTS search / training / analysis helpers ──────────────────────────
 darts = [
     "foreblocks[plotting,scientific]",
-    "seaborn>=0.13", # foreblocks/darts/evaluation/analyzer.py
+    "seaborn>=0.13",                   # foreblocks/darts/evaluation/analyzer.py
 ]
 
 # ── mltracker local + API clients / TUI ──────────────────────────────────
@@ -79,8 +79,8 @@ studio = []
 # ── foretools extras ──────────────────────────────────────────────────────
 vmd = [
     "foreblocks[scientific]",
-    "pyfftw>=0.13", # decomposition backend (foretools/emd_like/common.py)
-    "optuna>=3.0",  # VMD hyperparameter search
+    "pyfftw>=0.13",           # decomposition backend (foretools/emd_like/common.py)
+    "optuna>=3.0",            # VMD hyperparameter search
 ]
 
 # ── Wavelet / symbolic backends ──────────────────────────────────────────
@@ -107,7 +107,9 @@ foreminer = [
 ]
 
 # ── Full install ──────────────────────────────────────────────────────────
-all = ["foreblocks[preprocessing,darts,mltracker,studio,vmd,wavelets,benchmark,foreminer]"]
+all = [
+    "foreblocks[preprocessing,darts,mltracker,studio,vmd,wavelets,benchmark,foreminer]",
+]
 
 # ── Development tools (not packaged) ─────────────────────────────────────
 dev = ["pytest>=7.0", "ipykernel>=6.0", "ruff", "basedpyright"]
@@ -121,14 +123,21 @@ mltracker-tui = "foreblocks.mltracker.mltracker_tui:main"
 foreblocks-studio = "foreblocks.studio_server:main"
 
 [tool.setuptools]
-include-package-data = true
+include-package-data = false
 
 [tool.setuptools.package-data]
 foreblocks = ["studio/dist/*", "studio/dist/assets/*"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["foreblocks*", "foretools*", "darts*"]
+include = [
+    "foreblocks",
+    "foreblocks.*",
+    "foretools",
+    "foretools.*",
+    "darts",
+    "darts.*",
+]
 
 
 [tool.isort]

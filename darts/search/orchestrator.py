@@ -4,7 +4,9 @@ import threading
 import time
 from typing import Any
 
+from ..utils.training import create_progress_bar
 from .candidate_scoring import candidate_diversity_bonus
+from .metrics import _ZC_GPU_LOCK
 
 
 def make_default_search_candidate_config(trainer, rng=None) -> dict[str, Any]:
@@ -33,7 +35,12 @@ def evaluate_search_candidate(
 ) -> dict[str, Any]:
     t0 = time.perf_counter() if include_timing else None
     cfg = make_default_search_candidate_config(trainer, rng=rng)
-    model = trainer._build_candidate_model(cfg)
+    # Build under the shared GPU lock: candidate construction runs a FLOPs
+    # profiling forward on-device, so doing it concurrently across worker
+    # threads oversubscribes the GPU just like the metric eval does. Holding
+    # the same lock keeps the whole candidate's GPU work serialized.
+    with _ZC_GPU_LOCK:
+        model = trainer._build_candidate_model(cfg)
     print(
         f"Evaluating candidate {candidate_id} with config: {cfg['selected_ops']}, "
         f"hidden_dim={cfg['hidden_dim']}, num_cells={cfg['num_cells']}, "
@@ -76,7 +83,15 @@ def run_parallel_candidate_collection(
     max_workers: int | None = None,
     on_result=None,
     error_log_fn=None,
+    progress: bool = False,
+    progress_desc: str = "Phase 1 candidates",
+    candidate_timeout: float = 120.0,
 ) -> list[dict[str, Any]]:
+    if max_workers is None:
+        device = str(getattr(getattr(candidate_fn, "__self__", None), "device", ""))
+        # ``candidate_fn`` is normally a local closure, so fall back to the
+        # conservative CUDA default used by the multi-fidelity caller below.
+        max_workers = 1 if device.startswith("cuda") else None
     collected = []
     lock = threading.Lock()
     completed = 0
@@ -92,16 +107,55 @@ def run_parallel_candidate_collection(
             if on_result is not None:
                 on_result(result, completed)
 
+    # Total wall-clock budget: generous per-candidate allowance × candidate count.
+    # Per-metric timeouts inside _compute_safely handle the common hang cases; this
+    # outer budget is a belt-and-suspenders guard against hangs outside _compute_safely
+    # (e.g. the shared forward pass in compute_all).
+    total_timeout: float | None = (
+        candidate_timeout * num_candidates if candidate_timeout > 0 else None
+    )
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = [ex.submit(candidate_fn, i) for i in range(num_candidates)]
         for f in futs:
             f.add_done_callback(_done_cb)
-        for f in concurrent.futures.as_completed(futs):
-            try:
-                result = f.result()
-                if result.get("success", False):
-                    collected.append(result)
-            except Exception as e:
-                if error_log_fn is not None:
-                    error_log_fn(e)
+        try:
+            completed_iter = concurrent.futures.as_completed(
+                futs, timeout=total_timeout
+            )
+            if progress:
+                completed_iter = create_progress_bar(
+                    completed_iter,
+                    progress_desc,
+                    leave=False,
+                    total=len(futs),
+                    unit="candidate",
+                )
+            for f in completed_iter:
+                try:
+                    result = f.result()
+                    if result.get("success", False):
+                        collected.append(result)
+                except Exception as e:
+                    if error_log_fn is not None:
+                        error_log_fn(e)
+        except concurrent.futures.TimeoutError:
+            timed_out = sum(1 for f in futs if not f.done())
+            if error_log_fn is not None:
+                error_log_fn(
+                    TimeoutError(
+                        f"{timed_out} candidate(s) did not complete within "
+                        f"{total_timeout:.0f}s total budget; collected "
+                        f"{len(collected)}/{num_candidates}."
+                    )
+                )
+            # Collect any futures that finished before the timeout.
+            for f in futs:
+                if f.done() and not f.cancelled():
+                    try:
+                        result = f.result(timeout=1)
+                        if result.get("success", False) and result not in collected:
+                            collected.append(result)
+                    except Exception:
+                        pass
     return collected

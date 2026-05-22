@@ -162,7 +162,7 @@ class LayerNormTritonFunction(torch.autograd.Function):
             )
 
         orig_shape = x.shape
-        x = x.view(-1, x.shape[-1]).contiguous()
+        x = x.reshape(-1, x.shape[-1]).contiguous()
         M, N = x.shape
 
         y = torch.empty_like(x)
@@ -190,7 +190,7 @@ class LayerNormTritonFunction(torch.autograd.Function):
         ctx.save_for_backward(x, weight, bias, mean, rstd)
         ctx.orig_shape = orig_shape
         ctx.N = N
-        return y.view(orig_shape)
+        return y.reshape(orig_shape)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -203,7 +203,7 @@ class LayerNormTritonFunction(torch.autograd.Function):
         orig_shape = ctx.orig_shape
         N = ctx.N
 
-        grad_output = grad_output.view(-1, grad_output.shape[-1]).contiguous()
+        grad_output = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
         M = grad_output.shape[0]
 
         grad_input = torch.empty_like(x)
@@ -242,7 +242,7 @@ class LayerNormTritonFunction(torch.autograd.Function):
             BLOCK_WB,
         )
 
-        return grad_input.view(orig_shape), grad_weight, grad_bias, None
+        return grad_input.reshape(orig_shape), grad_weight, grad_bias, None
 
 
 __all__ = [

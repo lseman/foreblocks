@@ -155,7 +155,10 @@ class DARTSTrainConfig:
     # with use_drnas — op_gdas takes precedence when both are set.
     # Sibling knob: ``variant_gdas`` (on DARTSModelConfig) — GDAS over
     # block-level variant choices (attention kernel, FFN mode, etc.).
-    op_gdas: bool = False
+    # Defaults to True: single-path sampling runs one op per edge per forward
+    # instead of all of them, the dominant search-time speedup. Set False to
+    # restore dense DrNAS-style mixed-op forwards.
+    op_gdas: bool = True
     # Lightweight DARTS-local MoE routing balance regularizer. Encourages
     # routed experts to be used more evenly without adding full MoE aux-loss
     # machinery.
@@ -216,6 +219,8 @@ class MultiFidelitySearchConfig:
     phase3_reduction_factor: int = 2
     phase3_min_epoch_budget: int = 2
     phase3_rung_epochs: list[int] | None = None
+    phase3_train_max_batches: int | None = None
+    phase3_val_max_batches: int | None = None
 
 
 # ---------------------------------------------------------------------------

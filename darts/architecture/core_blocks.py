@@ -124,7 +124,7 @@ class DARTSModelConfig:
     use_fair_darts_hierarchical: bool = True
     # GDAS: sample a single op per edge via Gumbel-Softmax with a straight-through
     # gradient estimator.  Takes precedence over use_drnas when both are True.
-    op_gdas: bool = False
+    op_gdas: bool = True
 
     # β-DARTS: L2 regularization weight on arch logits to prevent premature
     # commitment (skip-connection collapse).  Set to e.g. 1e-3 to enable.
@@ -222,7 +222,7 @@ class MixedOp(nn.Module):
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
-        op_gdas: bool = False,
+        op_gdas: bool = True,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -696,12 +696,20 @@ class MixedOp(nn.Module):
             return self._ensure_output_dim(fallback_out)
 
         outputs = []
-        total_weight = 0
-        for op_idx, weight in op_weights:
-            # DropPath (stochastic depth)
-            if self.training and self.drop_prob > 0.0:
-                if torch.rand((), device=x.device).item() < self.drop_prob:
-                    continue
+        total_weight: torch.Tensor | None = None
+
+        # Precompute DropPath keep/drop decisions on the host in one shot so the
+        # per-op loop below never issues a GPU→CPU ``.item()`` sync (each sync
+        # stalls the CUDA pipeline). Drawing on CPU is equivalent in
+        # distribution to the previous per-op ``torch.rand(...).item()`` call.
+        if self.training and self.drop_prob > 0.0:
+            drop_mask = (torch.rand(len(op_weights)) < self.drop_prob).tolist()
+        else:
+            drop_mask = [False] * len(op_weights)
+
+        for path_idx, (op_idx, weight) in enumerate(op_weights):
+            if drop_mask[path_idx]:
+                continue
 
             op_input = x
             pc_scale = 1.0
@@ -712,7 +720,7 @@ class MixedOp(nn.Module):
                     idx = torch.randperm(channels, device=x.device)[:active_channels]
                     channel_mask = torch.zeros(channels, device=x.device, dtype=x.dtype)
                     channel_mask[idx] = 1.0
-                    op_input = x * channel_mask.view(1, 1, channels)
+                    op_input = x * channel_mask.reshape(1, 1, channels)
                     pc_scale = channels / float(active_channels)
 
             try:
@@ -728,7 +736,9 @@ class MixedOp(nn.Module):
 
             out = self._ensure_output_dim(out)
             outputs.append(out * weight)
-            total_weight += weight.item()
+            # Accumulate the normaliser as a tensor; dividing once at the end
+            # avoids a per-op ``.item()`` sync (see DropPath note above).
+            total_weight = weight if total_weight is None else total_weight + weight
 
             # Update performance tracker if adaptive sampling
             if self.adaptive_sampling and self.training:
@@ -753,7 +763,7 @@ class MixedOp(nn.Module):
                     self.usage_counter[op_idx] += 1
 
         if outputs:
-            result = sum(outputs) / max(total_weight, 1e-6)
+            result = sum(outputs) / total_weight.clamp_min(1e-6)
             return result
 
         # Final fallback
@@ -913,7 +923,7 @@ class DARTSCell(nn.Module):
         use_drnas: bool = True,
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
-        op_gdas: bool = False,
+        op_gdas: bool = True,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -1076,32 +1086,30 @@ class DARTSCell(nn.Module):
         )
 
         # Enhanced mixed operations
-        self.edges = nn.ModuleList(
-            [
-                MixedOp(
-                    self.latent_dim,
-                    self.latent_dim,
-                    self.seq_length,
-                    available_ops=self.available_ops,
-                    temperature=self.temperature,
-                    use_hierarchical=True,
-                    adaptive_sampling=True,
-                    group_temperature_mult=self.group_temperature_mult,
-                    min_group_temperature=self.min_group_temperature,
-                    min_op_temperature=self.min_op_temperature,
-                    group_min_prob=self.group_min_prob,
-                    competition_power=self.competition_power,
-                    adaptive_bias_scale=self.adaptive_bias_scale,
-                    performance_ema_decay=self.performance_ema_decay,
-                    pc_ratio=self.pc_ratio,
-                    use_drnas=self.use_drnas,
-                    drnas_concentration=self.drnas_concentration,
-                    use_fair_darts_hierarchical=self.use_fair_darts_hierarchical,
-                    op_gdas=self.op_gdas,
-                )
-                for _ in range(self.num_edges)
-            ]
-        )
+        self.edges = nn.ModuleList([
+            MixedOp(
+                self.latent_dim,
+                self.latent_dim,
+                self.seq_length,
+                available_ops=self.available_ops,
+                temperature=self.temperature,
+                use_hierarchical=True,
+                adaptive_sampling=True,
+                group_temperature_mult=self.group_temperature_mult,
+                min_group_temperature=self.min_group_temperature,
+                min_op_temperature=self.min_op_temperature,
+                group_min_prob=self.group_min_prob,
+                competition_power=self.competition_power,
+                adaptive_bias_scale=self.adaptive_bias_scale,
+                performance_ema_decay=self.performance_ema_decay,
+                pc_ratio=self.pc_ratio,
+                use_drnas=self.use_drnas,
+                drnas_concentration=self.drnas_concentration,
+                use_fair_darts_hierarchical=self.use_fair_darts_hierarchical,
+                op_gdas=self.op_gdas,
+            )
+            for _ in range(self.num_edges)
+        ])
 
         # Learnable residual weights per node
         self.residual_weights = nn.Parameter(torch.full((self.num_nodes,), 0.2))
@@ -1157,13 +1165,13 @@ class DARTSCell(nn.Module):
                 torch.stack([self.agg_weights[i] for i in edge_indices]), dim=0
             )
             # Match stacked shape [num_inputs, B, L, D] for safe broadcasting.
-            weights = weights.view(-1, 1, 1, 1)
+            weights = weights.reshape(-1, 1, 1, 1)
             return (weights * stacked).sum(dim=0)
         elif self.aggregation == "attention":
             # Simple attention mechanism
             attention_scores = torch.mean(stacked, dim=[2, 3])  # [num_inputs, batch]
             attention_weights = F.softmax(attention_scores, dim=0)
-            attention_weights = attention_weights.view(-1, 1, 1, 1)
+            attention_weights = attention_weights.reshape(-1, 1, 1, 1)
             return (attention_weights * stacked).sum(dim=0)
         elif self.aggregation == "max":
             return torch.max(stacked, dim=0)[0]
@@ -1224,14 +1232,12 @@ class DARTSCell(nn.Module):
                 # Apply edge importance gating (no .item() inside traced graph)
                 ew_val = _ew_vals[edge_idx]
                 if ew_val > 0.1:  # Skip unimportant edges
-                    candidate_edges.append(
-                        (
-                            ew_val,
-                            edge_idx,
-                            input_idx,
-                            _edge_weights[edge_idx],
-                        )
-                    )
+                    candidate_edges.append((
+                        ew_val,
+                        edge_idx,
+                        input_idx,
+                        _edge_weights[edge_idx],
+                    ))
 
             max_in_edges = self._max_in_edges_for_node(node_idx)
             if len(candidate_edges) > max_in_edges:
@@ -1366,7 +1372,7 @@ class TimeSeriesDARTS(nn.Module):
         tie_encoder_decoder_arch: bool = True,
         transformer_self_attention_type: str = "auto",
         transformer_ffn_variant: str = "auto",
-        op_gdas: bool = False,
+        op_gdas: bool = True,
     ):
         super().__init__()
 
@@ -1616,6 +1622,11 @@ class TimeSeriesDARTS(nn.Module):
 
         if self.arch_mode in ("encoder_decoder", "decoder_only"):
             self.decoder_use_attention_bridge = False
+            decoder_cross_attention_modes = (
+                ("sdp", "linear", "probsparse", "cosine", "local")
+                if self.arch_mode == "encoder_decoder"
+                else None
+            )
             self.forecast_decoder = MixedDecoder(
                 self.input_dim,
                 self.latent_dim,
@@ -1628,6 +1639,7 @@ class TimeSeriesDARTS(nn.Module):
                 memory_num_queries=self.memory_num_queries,
                 variant_gdas=self.variant_gdas,
                 transformer_self_attention_type=self.transformer_self_attention_type,
+                transformer_cross_attention_modes=decoder_cross_attention_modes,
                 transformer_use_moe=self.transformer_use_moe,
                 transformer_ffn_variant=self.transformer_ffn_variant,
                 use_checkpoint=self.use_gradient_checkpointing,
@@ -1681,9 +1693,9 @@ class TimeSeriesDARTS(nn.Module):
         else:
             self.decoder_query_mode = "repeat_last"
 
-        self.residual_weights = nn.ParameterList(
-            [nn.Parameter(torch.tensor(0.1)) for _ in range(self.num_cells)]
-        )
+        self.residual_weights = nn.ParameterList([
+            nn.Parameter(torch.tensor(0.1)) for _ in range(self.num_cells)
+        ])
 
         # Initialize weights
         self.apply(self._init_weights)
@@ -1834,7 +1846,7 @@ class TimeSeriesDARTS(nn.Module):
         pooled = h_enc.mean(dim=1) * 0.5 + h_enc[:, -1, :] * 0.5  # [B, latent_dim]
         pooled = self._ensure_dtype(pooled)
         out = self.enc_only_head(pooled)  # [B, H*C]
-        out = out.view(B, self.forecast_horizon, self.input_dim)
+        out = out.reshape(B, self.forecast_horizon, self.input_dim)
         out = self.norm_strategy.apply_output_denorm(
             out, self.norm_alpha, selected_norm=selected_norm
         )
@@ -2106,6 +2118,29 @@ class TimeSeriesDARTS(nn.Module):
         style_weights = self._get_decoder_style_weights(self.forecast_decoder)
         if style_weights is None or style_weights.numel() < 2:
             return self._decode_autoregressive_path(
+                x_seq,
+                decoder_targets,
+                teacher_forcing_ratio,
+                memory,
+                encoder_output,
+                decoder_hidden,
+            )
+
+        if self.training and bool(getattr(self, "variant_gdas", False)):
+            # Decode-style GDAS is one-hot in the forward pass. Avoid paying for
+            # both autoregressive and parallel decoding on every search step.
+            idx = int(torch.argmax(style_weights.detach()).item())
+            if idx == 1:
+                return style_weights[idx] * self._decode_parallel_informer_path(
+                    x_seq,
+                    x_future,
+                    decoder_targets,
+                    teacher_forcing_ratio,
+                    memory,
+                    encoder_output,
+                    decoder_hidden,
+                )
+            return style_weights[0] * self._decode_autoregressive_path(
                 x_seq,
                 decoder_targets,
                 teacher_forcing_ratio,
