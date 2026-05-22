@@ -326,7 +326,14 @@ class FourierOp(nn.Module):
         else:
             x_padded = x[:, : self.seq_length]
 
-        x_fft = torch.fft.rfft(x_padded, dim=1, norm="ortho")
+        # cuFFT only supports power-of-two signal lengths for fp16/bf16 rFFT.
+        # Keep AMP enabled around the op, but run the FFT itself in fp32.
+        if x_padded.is_cuda:
+            with torch.amp.autocast("cuda", enabled=False):
+                fft_input = x_padded if x_padded.dtype == torch.float64 else x_padded.float()
+                x_fft = torch.fft.rfft(fft_input, dim=1, norm="ortho")
+        else:
+            x_fft = torch.fft.rfft(x_padded, dim=1, norm="ortho")
         x_fft = x_fft[:, : self.num_frequencies]
         n_freq = x_fft.size(1)
         low_mask, high_mask = self._build_low_high_masks(
@@ -338,6 +345,9 @@ class FourierOp(nn.Module):
         # Frequency tokenization + learnable low/high filtering before projection.
         low_feat = torch.cat([low_fft.real, low_fft.imag], dim=-1)
         high_feat = torch.cat([high_fft.real, high_fft.imag], dim=-1)
+        if x.is_cuda and x.dtype in (torch.float16, torch.bfloat16):
+            low_feat = low_feat.to(dtype=x.dtype)
+            high_feat = high_feat.to(dtype=x.dtype)
 
         low_feat = self.low_freq_proj(low_feat)
         high_feat = self.high_freq_proj(high_feat)
@@ -358,6 +368,9 @@ class FourierOp(nn.Module):
 
         spectral_context = 0.5 * global_feat + 0.5 * local_feat
         gated = self.gate(spectral_context)
+        if spectral_context.dtype != x.dtype:
+            spectral_context = spectral_context.to(dtype=x.dtype)
+            gated = gated.to(dtype=x.dtype)
 
         combined = torch.cat([x, gated * spectral_context], dim=-1)
         return self.norm(self.output_proj(combined))

@@ -667,6 +667,10 @@ class DARTSTrainer:
         swa_start: int = 75,
         swa_lr: float = 5e-4,
         compute_final_metrics: bool = True,
+        max_train_batches: int | None = None,
+        max_val_batches: int | None = None,
+        max_test_batches: int | None = None,
+        compile_model: bool = False,
     ) -> dict[str, Any]:
         """
         Train the final fixed-architecture model.
@@ -690,6 +694,11 @@ class DARTSTrainer:
             swa_start_ratio=swa_start_ratio,
             grad_clip_norm=grad_clip_norm,
             use_amp=use_amp,
+            use_swa=use_swa,
+            max_train_batches=max_train_batches,
+            max_val_batches=max_val_batches,
+            max_test_batches=max_test_batches,
+            compile_model=compile_model,
         )
 
     # ── Multi-fidelity search ─────────────────────────────────────────────

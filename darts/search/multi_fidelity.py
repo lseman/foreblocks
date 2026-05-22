@@ -142,6 +142,11 @@ def run_multi_fidelity_search(
     phase3_min_epoch_budget = max(1, int(kwargs.pop("phase3_min_epoch_budget", 2)))
     phase3_rung_epochs = kwargs.pop("phase3_rung_epochs", None)
     phase3_verbose = bool(kwargs.pop("phase3_verbose", True))
+    final_train_max_batches = kwargs.pop("final_train_max_batches", None)
+    final_val_max_batches = kwargs.pop("final_val_max_batches", None)
+    final_test_max_batches = kwargs.pop("final_test_max_batches", None)
+    final_use_swa = bool(kwargs.pop("final_use_swa", False))
+    final_compile = bool(kwargs.pop("final_compile", False))
 
     # Training-config kwargs forwarded to every train_darts_model call in phase 3.
     train_kwargs: dict[str, Any] = {
@@ -1036,6 +1041,17 @@ def run_multi_fidelity_search(
         weight_decay=1e-5,
         patience=resolved_patience,
         use_amp=use_amp,
+        use_swa=final_use_swa,
+        max_train_batches=(
+            None if final_train_max_batches is None else int(final_train_max_batches)
+        ),
+        max_val_batches=(
+            None if final_val_max_batches is None else int(final_val_max_batches)
+        ),
+        max_test_batches=(
+            None if final_test_max_batches is None else int(final_test_max_batches)
+        ),
+        compile_model=final_compile,
     )
 
     # Quick training-curve plot
@@ -1115,6 +1131,19 @@ def run_multi_fidelity_search(
             "phase3_min_epoch_budget": int(phase3_min_epoch_budget),
             "phase3_rung_epochs": [int(x) for x in rung_epochs],
             "phase3_verbose": bool(phase3_verbose),
+            "final_train_max_batches": (
+                None
+                if final_train_max_batches is None
+                else int(final_train_max_batches)
+            ),
+            "final_val_max_batches": (
+                None if final_val_max_batches is None else int(final_val_max_batches)
+            ),
+            "final_test_max_batches": (
+                None if final_test_max_batches is None else int(final_test_max_batches)
+            ),
+            "final_use_swa": bool(final_use_swa),
+            "final_compile": bool(final_compile),
         },
         "trained_non_derived_candidates": trained_non_derived,
         "final_reset_modules": int(modules_reset),

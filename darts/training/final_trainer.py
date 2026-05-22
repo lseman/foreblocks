@@ -42,6 +42,11 @@ def train_final_model(
     swa_start_ratio: float = 0.33,
     grad_clip_norm: float = 1.0,
     use_amp: bool = True,
+    use_swa: bool = False,
+    max_train_batches: int | None = None,
+    max_val_batches: int | None = None,
+    max_test_batches: int | None = None,
+    compile_model: bool = False,
 ) -> dict[str, Any]:
     """
     Train the *fixed-operation* model resulting from architecture derivation.
@@ -62,11 +67,28 @@ def train_final_model(
     device = trainer.device
     loss_fn = trainer._get_loss_function(loss_type)
     model = model.to(device)
+    if compile_model and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+            print("  torch.compile: enabled (reduce-overhead)")
+        except Exception as exc:
+            print(f"  torch.compile: skipped ({exc})")
     start_time = time.time()
 
+    train_steps_per_epoch = len(train_loader)
+    if max_train_batches is not None:
+        train_steps_per_epoch = min(train_steps_per_epoch, max(1, int(max_train_batches)))
+    val_steps = None
+    if max_val_batches is not None:
+        val_steps = max(1, int(max_val_batches))
+    test_steps = None
+    if max_test_batches is not None:
+        test_steps = max(1, int(max_test_batches))
+
     # ── Optimiser ─────────────────────────────────────────────────────────
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=weight_decay
+        trainable_params, lr=learning_rate, weight_decay=weight_decay
     )
 
     # ── Scheduler ─────────────────────────────────────────────────────────
@@ -75,7 +97,7 @@ def train_final_model(
             optimizer,
             max_lr=learning_rate,
             epochs=epochs,
-            steps_per_epoch=len(train_loader),
+            steps_per_epoch=train_steps_per_epoch,
             pct_start=0.3,
             div_factor=25,
             final_div_factor=1000,
@@ -102,8 +124,14 @@ def train_final_model(
     print(f"  LR: {learning_rate}, weight_decay: {weight_decay}")
     print(
         f"  Scheduler: {'OneCycle' if use_onecycle else 'CosineAnnealing'}, "
-        f"SWA starts: epoch {swa_start}, patience: {patience}"
+        f"SWA starts: epoch {swa_start if use_swa else 'disabled'}, patience: {patience}"
     )
+    if max_train_batches is not None or max_val_batches is not None:
+        print(
+            "  Batch caps: "
+            f"train={train_steps_per_epoch}/{len(train_loader)}, "
+            f"val={val_steps or 'full'}"
+        )
     print("-" * 70)
 
     epoch_pbar = create_progress_bar(range(epochs), "Final Training", unit="epoch")
@@ -117,10 +145,13 @@ def train_final_model(
             train_loader,
             f"Epoch {epoch + 1:3d} Train",
             leave=False,
-            total=len(train_loader),
+            total=train_steps_per_epoch,
         )
 
+        train_batches_seen = 0
         for batch_idx, batch in enumerate(train_pbar):
+            if batch_idx >= train_steps_per_epoch:
+                break
             batch_x, batch_y, model_kwargs = unpack_forecasting_batch(
                 batch,
                 device,
@@ -142,10 +173,11 @@ def train_final_model(
                 scheduler.step()
 
             epoch_train_loss += loss.item()
+            train_batches_seen += 1
             train_pbar.set_postfix(
                 {
                     "loss": f"{loss.item():.4f}",
-                    "avg": f"{epoch_train_loss / (batch_idx + 1):.4f}",
+                    "avg": f"{epoch_train_loss / train_batches_seen:.4f}",
                     "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
                 }
             )
@@ -154,16 +186,23 @@ def train_final_model(
         if not use_onecycle:
             scheduler.step()
 
-        avg_train_loss = epoch_train_loss / len(train_loader)
+        avg_train_loss = epoch_train_loss / max(1, train_batches_seen)
         train_losses.append(avg_train_loss)
 
         # Validation phase
-        avg_val_loss = trainer._evaluate_model(model, val_loader, loss_type)
+        avg_val_loss = _evaluate_validation_set(
+            trainer,
+            model,
+            val_loader,
+            loss_type,
+            amp_enabled=_amp_enabled,
+            max_batches=val_steps,
+        )
         val_losses.append(avg_val_loss)
 
         # SWA update — instantiate lazily to avoid holding a full GPU copy
         # for the entire run when early stopping fires before swa_start.
-        swa_updated = epoch >= swa_start
+        swa_updated = use_swa and epoch >= swa_start
         if swa_updated:
             if swa_model is None:
                 swa_model = torch.optim.swa_utils.AveragedModel(model).to(device)
@@ -205,6 +244,9 @@ def train_final_model(
         loss_type=loss_type,
         best_val_loss=best_val_loss,
         best_state=best_state,
+        use_swa=use_swa,
+        max_val_batches=val_steps,
+        amp_enabled=_amp_enabled,
     )
     if swa_used and any(k.startswith("module.") for k in best_state):
         best_state = {k.replace("module.", "", 1): v for k, v in best_state.items()}
@@ -212,7 +254,12 @@ def train_final_model(
     # ── Final evaluation ──────────────────────────────────────────────────
     model.load_state_dict(best_state, strict=False)
     test_results = _evaluate_test_set(
-        trainer, model, test_loader, loss_type, amp_enabled=_amp_enabled
+        trainer,
+        model,
+        test_loader,
+        loss_type,
+        amp_enabled=_amp_enabled,
+        max_batches=test_steps,
     )
     training_time = time.time() - start_time
 
@@ -228,6 +275,11 @@ def train_final_model(
             "swa_used": swa_used,
             "final_lr": optimizer.param_groups[0]["lr"],
             "best_val_loss": best_val_loss,
+            "train_steps_per_epoch": train_steps_per_epoch,
+            "max_val_batches": val_steps,
+            "max_test_batches": test_steps,
+            "trainable_parameters": int(sum(p.numel() for p in trainable_params)),
+            "compiled": bool(compile_model),
         },
     }
 
@@ -253,9 +305,12 @@ def _finalize_swa(
     loss_type: str,
     best_val_loss: float,
     best_state: dict,
+    use_swa: bool,
+    max_val_batches: int | None,
+    amp_enabled: bool,
 ) -> bool:
     """Finalise SWA and update *best_state* if SWA is better. Returns bool."""
-    if epoch < swa_start:
+    if not use_swa or epoch < swa_start or swa_model is None:
         return False
 
     print("\nFinalizing SWA model...")
@@ -278,7 +333,14 @@ def _finalize_swa(
                 )
                 swa_model(batch_x, **model_kwargs)
 
-    swa_val_loss = trainer._evaluate_model(swa_model, val_loader, loss_type)
+    swa_val_loss = _evaluate_validation_set(
+        trainer,
+        swa_model,
+        val_loader,
+        loss_type,
+        amp_enabled=amp_enabled,
+        max_batches=max_val_batches,
+    )
     print(f"SWA val loss: {swa_val_loss:.6f} vs best: {best_val_loss:.6f}")
 
     if swa_val_loss < best_val_loss:
@@ -292,8 +354,53 @@ def _finalize_swa(
     return False
 
 
+def _evaluate_validation_set(
+    trainer,
+    model: nn.Module,
+    val_loader,
+    loss_type: str,
+    *,
+    amp_enabled: bool = False,
+    max_batches: int | None = None,
+) -> float:
+    """Evaluate validation loss, optionally on a small fixed prefix."""
+    if max_batches is None:
+        return trainer._evaluate_model(model, val_loader, loss_type)
+
+    device = trainer.device
+    loss_fn = trainer._get_loss_function(loss_type)
+    model.eval()
+    val_loss = 0.0
+    batches_seen = 0
+
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(val_loader):
+            if batch_idx >= max_batches:
+                break
+            batch_x, batch_y, model_kwargs = unpack_forecasting_batch(
+                batch,
+                device,
+                include_decoder_targets=False,
+                teacher_forcing_ratio=0.0,
+            )
+            with autocast_ctx(device, enabled=amp_enabled):
+                preds = model(batch_x, **model_kwargs)
+                batch_loss = loss_fn(preds, batch_y).item()
+            val_loss += batch_loss
+            batches_seen += 1
+
+    model.train()
+    return val_loss / max(1, batches_seen)
+
+
 def _evaluate_test_set(
-    trainer, model: nn.Module, test_loader, loss_type: str, *, amp_enabled: bool = False
+    trainer,
+    model: nn.Module,
+    test_loader,
+    loss_type: str,
+    *,
+    amp_enabled: bool = False,
+    max_batches: int | None = None,
 ) -> dict:
     """Evaluate model on the test set and return loss + metrics dict."""
     print("\nEvaluating on test set...")
@@ -303,10 +410,13 @@ def _evaluate_test_set(
 
     test_loss = 0.0
     all_preds, all_targets = [], []
+    batches_seen = 0
 
     with torch.no_grad():
         test_pbar = create_progress_bar(test_loader, "Test Evaluation")
-        for batch in test_pbar:
+        for batch_idx, batch in enumerate(test_pbar):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
             batch_x, batch_y, model_kwargs = unpack_forecasting_batch(
                 batch,
                 device,
@@ -319,10 +429,11 @@ def _evaluate_test_set(
             test_loss += batch_loss
             all_preds.append(preds.cpu().numpy())
             all_targets.append(batch_y.cpu().numpy())
+            batches_seen += 1
             test_pbar.set_postfix({"test_loss": f"{batch_loss:.4f}"})
         test_pbar.close()
 
-    test_loss /= len(test_loader)
+    test_loss /= max(1, batches_seen)
     preds_flat = np.concatenate(all_preds).reshape(-1)
     targets_flat = np.concatenate(all_targets).reshape(-1)
     return {

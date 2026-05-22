@@ -83,3 +83,5 @@ AGENTS.md
 estudo_rebeca/
 
 ariadne.db
+*.svg
+*.tex
