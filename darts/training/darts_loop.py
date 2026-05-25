@@ -89,6 +89,7 @@ def train_darts_model(
     initial_drnas_concentration: float = 10.0,
     final_drnas_concentration: float = 2.0,
     op_gdas: bool = True,
+    variant_gdas: bool | None = None,
     compute_metrics: bool = True,
     max_train_batches: int | None = None,
     max_val_batches: int | None = None,
@@ -142,6 +143,21 @@ def train_darts_model(
     for m in model.modules():
         if hasattr(m, "op_gdas"):
             m.op_gdas = bool(op_gdas)
+
+    # Drive the transformer-side single-path flag (variant_gdas) from the same
+    # run-level switch. Without this, variant_gdas is frozen at model
+    # construction while op_gdas is tunable here, so passing op_gdas=False would
+    # leave the transformer components running single-path against dense cells.
+    # variant_gdas=None mirrors op_gdas; pass an explicit bool to decouple them.
+    #
+    # Write the attribute directly (as with op_gdas above) rather than relying
+    # on set_variant_gdas alone: MixedEncoder.forward reads its own
+    # self.variant_gdas and passes it as a call arg that overrides the leaf
+    # module state, so the wrapper attribute must be updated too.
+    effective_variant_gdas = bool(op_gdas if variant_gdas is None else variant_gdas)
+    for m in model.modules():
+        if hasattr(m, "variant_gdas"):
+            m.variant_gdas = effective_variant_gdas
 
     # ── Parameter groups ──────────────────────────────────────────────────
     (

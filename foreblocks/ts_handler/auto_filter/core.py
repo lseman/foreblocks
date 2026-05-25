@@ -1816,6 +1816,7 @@ def tune_filter(
     n_trials: int = 60,
     seed: int = _SEED,
     verbose: bool = False,
+    progress: bool = False,
     families: tuple[str, ...] = _TUNE_FILTER_FAMILIES,
     rel_mae_band: tuple[float, float] = (0.02, 0.12),
     roughness_ratio_band: tuple[float, float] = (0.35, 0.92),
@@ -1851,6 +1852,10 @@ def tune_filter(
         ``sigma_v`` bounds in the bilateral search.
     n_trials:
         Number of Optuna trials.
+    progress:
+        If True, show Optuna's tqdm-backed trial progress bar when `tqdm` is
+        installed. This is independent from `verbose`, so you can keep Optuna
+        logs quiet while still seeing search progress.
     families:
         Filter families to include in the search.  Defaults to all supported
         parametric filters.
@@ -1921,7 +1926,11 @@ def tune_filter(
 
     sampler = optuna.samplers.TPESampler(seed=seed)
     study = optuna.create_study(direction="minimize", sampler=sampler)
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=verbose)
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        show_progress_bar=(progress and tqdm is not None),
+    )
 
     best = study.best_trial
     best_name = best.user_attrs["filter_name"]

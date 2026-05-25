@@ -7,12 +7,13 @@ from typing import Literal
 import torch
 from torch import Tensor, nn
 
-
 PolyFamily = Literal[
     "hahn",
     "chebyshev",
     "jacobi",
     "legendre",
+    "gegenbauer",
+    "laguerre",
     "fourier",
     "wavelet",
     "hermite",
@@ -27,6 +28,8 @@ class PolyLayerConfig:
     hahn_N: int = 7
     jacobi_alpha: float = 0.0
     jacobi_beta: float = 0.0
+    gegen_alpha: float = 1.0
+    laguerre_alpha: float = 0.0
     wavelet_num: int = 8
     wavelet_base_freq: float = 1.0
     wavelet_learn_freq: bool = True
@@ -54,6 +57,10 @@ def _tanh_to_unit(x: Tensor) -> Tensor:
     return torch.tanh(x)
 
 
+def _tanh_to_positive(x: Tensor) -> Tensor:
+    return 0.5 * (torch.tanh(x) + 1.0)
+
+
 def _init_coeffs(input_dim: int, output_dim: int, basis_size: int) -> nn.Parameter:
     coeffs = nn.Parameter(torch.empty(input_dim, output_dim, basis_size))
     nn.init.normal_(coeffs, mean=0.0, std=1.0 / (input_dim * basis_size))
@@ -73,6 +80,8 @@ POLY_FAMILIES: tuple[PolyFamily, ...] = (
     "chebyshev",
     "jacobi",
     "legendre",
+    "gegenbauer",
+    "laguerre",
     "fourier",
     "wavelet",
     "hermite",
@@ -83,6 +92,7 @@ DEFAULT_POLY_FAMILIES: tuple[PolyFamily, ...] = (
     "chebyshev",
     "jacobi",
     "legendre",
+    "gegenbauer",
 )
 
 
@@ -209,6 +219,98 @@ class JacobiPolynomials(nn.Module):
             C = (2.0 * nf + a + b - 1.0) * (a * a - b * b)
             D = 2.0 * (nf + a - 1.0) * (nf + b - 1.0) * (2.0 * nf + a + b)
             terms.append(((Bc * x2 + C) * terms[-1] - D * terms[-2]) / A)
+
+        basis = torch.stack(terms, dim=-1)
+        y2 = torch.einsum("nid,iod->no", basis, self.coeffs)
+        y = _restore_shape(y2, orig, self.output_dim)
+        if return_basis:
+            return y, basis
+        return y
+
+
+class GegenbauerPolynomials(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        degree: int,
+        alpha: float = 1.0,
+    ):
+        super().__init__()
+        if alpha <= -0.5:
+            raise ValueError("Gegenbauer alpha must be > -0.5")
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.degree = degree
+        self.alpha = float(alpha)
+        self.coeffs = _init_coeffs(input_dim, output_dim, degree + 1)
+
+    def forward(
+        self, x: Tensor, return_basis: bool = False
+    ) -> Tensor | tuple[Tensor, Tensor]:
+        x2, orig = _reshape_in_out(x, self.input_dim)
+        x2 = _tanh_to_unit(x2)
+
+        alpha = self.alpha
+        terms: list[Tensor] = [torch.ones_like(x2)]
+        if self.degree >= 1:
+            terms.append(2.0 * alpha * x2)
+
+        for n in range(2, self.degree + 1):
+            nf = float(n)
+            terms.append(
+                (
+                    2.0 * (nf + alpha - 1.0) * x2 * terms[-1]
+                    - (nf + 2.0 * alpha - 2.0) * terms[-2]
+                )
+                / nf
+            )
+
+        basis = torch.stack(terms, dim=-1)
+        y2 = torch.einsum("nid,iod->no", basis, self.coeffs)
+        y = _restore_shape(y2, orig, self.output_dim)
+        if return_basis:
+            return y, basis
+        return y
+
+
+class LaguerrePolynomials(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        degree: int,
+        alpha: float = 0.0,
+    ):
+        super().__init__()
+        if alpha <= -1.0:
+            raise ValueError("Laguerre alpha must be > -1.0")
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.degree = degree
+        self.alpha = float(alpha)
+        self.coeffs = _init_coeffs(input_dim, output_dim, degree + 1)
+
+    def forward(
+        self, x: Tensor, return_basis: bool = False
+    ) -> Tensor | tuple[Tensor, Tensor]:
+        x2, orig = _reshape_in_out(x, self.input_dim)
+        x2 = _tanh_to_positive(x2)
+
+        alpha = self.alpha
+        terms: list[Tensor] = [torch.ones_like(x2)]
+        if self.degree >= 1:
+            terms.append(1.0 + alpha - x2)
+
+        for n in range(2, self.degree + 1):
+            nf = float(n)
+            terms.append(
+                (
+                    (2.0 * nf - 1.0 + alpha - x2) * terms[-1]
+                    - (nf - 1.0 + alpha) * terms[-2]
+                )
+                / nf
+            )
 
         basis = torch.stack(terms, dim=-1)
         y2 = torch.einsum("nid,iod->no", basis, self.coeffs)
@@ -366,6 +468,20 @@ def build_poly_layer(
         )
     if family_name == "legendre":
         return JacobiPolynomials(input_dim, output_dim, cfg.degree, 0.0, 0.0)
+    if family_name == "gegenbauer":
+        return GegenbauerPolynomials(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            degree=cfg.degree,
+            alpha=cfg.gegen_alpha,
+        )
+    if family_name == "laguerre":
+        return LaguerrePolynomials(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            degree=cfg.degree,
+            alpha=cfg.laguerre_alpha,
+        )
     if family_name == "wavelet":
         num_wavelets = cfg.degree if cfg.degree > 4 else cfg.wavelet_num
         return WaveletKAN(
@@ -398,8 +514,10 @@ __all__ = [
     "ChebyshevPolynomials",
     "DEFAULT_POLY_FAMILIES",
     "FourierKAN",
+    "GegenbauerPolynomials",
     "HahnPolynomials",
     "JacobiPolynomials",
+    "LaguerrePolynomials",
     "POLY_FAMILIES",
     "PolyFamily",
     "PolyLayerConfig",

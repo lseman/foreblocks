@@ -39,12 +39,14 @@ def compute_grasp(computer, model, x, y, loss, loss_fn, weights):
         )
 
         scores = []
-        for hg, g in zip(hgs_local, grads_local):
-            if hg is None or g is None:
+        for hg, weight in zip(hgs_local, weights_local):
+            if hg is None:
                 continue
-            if not torch.isfinite(hg).all() or not torch.isfinite(g).all():
+            if not torch.isfinite(hg).all() or not torch.isfinite(weight).all():
                 continue
-            score_item = (hg * g.detach()).sum().item()
+            # GraSP saliency is -theta * H g, where H g is obtained by
+            # differentiating ||grad L||^2 with respect to the weights.
+            score_item = (hg * weight.detach()).sum().item()
             if np.isfinite(score_item):
                 scores.append(float(score_item))
 

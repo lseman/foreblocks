@@ -93,7 +93,7 @@ def bench_case(B, H, N, D, dtype, causal, backward, warmup, iters, check):
     custom_tflops = flops / (custom_ms * 1e-3) / 1e12
     sdpa_tflops = flops / (sdpa_ms * 1e-3) / 1e12
     mode = "fwd+bwd" if backward else "fwd"
-    bwd_backend = flash_attn_backward_backend(q) if backward else "-"
+    bwd_backend = flash_attn_backward_backend(q, causal=causal) if backward else "-"
     print(
         f"{mode:7s} N={N:5d} D={D:3d} {str(dtype).split('.')[-1]:9s} "
         f"causal={int(causal)} bwd={bwd_backend:6s} "

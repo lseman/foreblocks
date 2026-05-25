@@ -424,11 +424,9 @@ class MetricsComputer:
             if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)):
                 conv_linear_modules.append((module_name, module))
                 hooks.append(module.register_forward_hook(activation_hook(module_name)))
-        relu_modules = [
-            (name, module)
-            for name, module in model.named_modules()
-            if is_relu_like(module)
-        ]
+            elif is_relu_like(module):
+                relu_modules.append((module_name, module))
+                hooks.append(module.register_forward_hook(activation_hook(module_name)))
 
         try:
             # Single forward pass for multiple metrics
@@ -538,7 +536,8 @@ class MetricsComputer:
     ):
         """Compute metrics that only need stored activations."""
         results = {}
-        results["naswot"] = compute_naswot(self, activations, conv_linear_modules)
+        naswot_modules = relu_modules if relu_modules else conv_linear_modules
+        results["naswot"] = compute_naswot(self, activations, naswot_modules)
         results["activation_diversity"] = compute_activation_diversity(
             self, activations, relu_modules
         )

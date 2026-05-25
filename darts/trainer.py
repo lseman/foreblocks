@@ -544,6 +544,7 @@ class DARTSTrainer:
         pruning_hard_epoch: int | None = None,  # noqa: ARG002
         log_arch_gradients: bool = False,  # noqa: ARG002
         op_gdas: bool = True,
+        variant_gdas: bool | None = None,
         compute_metrics: bool = True,
         max_train_batches: int | None = None,
         max_val_batches: int | None = None,
@@ -637,6 +638,7 @@ class DARTSTrainer:
             moe_balance_weight=moe_balance_weight,
             transformer_exploration_weight=transformer_exploration_weight,
             op_gdas=op_gdas,
+            variant_gdas=variant_gdas,
             compute_metrics=compute_metrics,
             max_train_batches=max_train_batches,
             max_val_batches=max_val_batches,

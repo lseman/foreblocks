@@ -487,6 +487,7 @@ class MixedEncoder(nn.Module):
         temperature: float = 1.0,
         variant_gdas: bool = True,
         arch_path_keep_prob: float = 0.85,
+        single_path_search: bool | None = None,
         include_patch: bool = True,
         transformer_self_attention_type: str = "auto",
         transformer_use_moe: bool = False,
@@ -494,6 +495,8 @@ class MixedEncoder(nn.Module):
         use_checkpoint: bool = False,
     ):
         super().__init__()
+        if single_path_search is not None:
+            variant_gdas = bool(single_path_search)
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.seq_len = seq_len
@@ -504,6 +507,8 @@ class MixedEncoder(nn.Module):
         self.arch_path_keep_prob = float(min(max(arch_path_keep_prob, 0.0), 1.0))
         self.include_patch = bool(include_patch)
         self.rnn_type = "transformer"
+        self.register_buffer("alphas", torch.zeros(3))
+        self.register_buffer("layer_alpha_offsets", torch.zeros(self.num_layers, 3))
         self.searchable_decomp = SearchableDecomposition(c_in=input_dim)
 
         resolved_self_attention_type = str(transformer_self_attention_type).lower()
@@ -591,6 +596,7 @@ class MixedDecoder(nn.Module):
         memory_num_queries: int = 8,
         variant_gdas: bool = True,
         arch_path_keep_prob: float = 0.85,
+        single_path_search: bool | None = None,
         attention_temperature_mult: float = 0.7,
         min_attention_temperature: float = 0.25,
         memory_query_options: list[int] | None = None,
@@ -602,6 +608,8 @@ class MixedDecoder(nn.Module):
         use_checkpoint: bool = False,
     ):
         super().__init__()
+        if single_path_search is not None:
+            variant_gdas = bool(single_path_search)
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.seq_len = seq_len
@@ -918,7 +926,8 @@ class ArchitectureConverter:
         self_attention_type = None
         self_attention_position_mode = None
         ffn_mode = None
-        if best_type == "transformer":
+        preserve_soft_choices = not bool(getattr(mixed_encoder, "variant_gdas", True))
+        if best_type == "transformer" and not preserve_soft_choices:
             self_attention_type = _resolve_searchable_self_attention_type(
                 mixed_encoder.transformer
             )
@@ -926,7 +935,11 @@ class ArchitectureConverter:
                 mixed_encoder.transformer
             )
             ffn_mode = _resolve_searchable_ffn_mode(mixed_encoder.transformer)
-        patch_mode = _resolve_searchable_patch_mode(mixed_encoder.transformer)
+        patch_mode = (
+            None
+            if preserve_soft_choices
+            else _resolve_searchable_patch_mode(mixed_encoder.transformer)
+        )
         fixed_encoder = FixedEncoder(
             rnn=copy.deepcopy(mixed_encoder.transformer),
             input_dim=mixed_encoder.input_dim,
@@ -1059,11 +1072,6 @@ class ArchitectureConverter:
                     mixed_encoder.searchable_decomp
                 ).to(next(fixed_encoder.parameters()).device)
                 if hasattr(fixed_encoder.searchable_decomp, "alpha_logits"):
-                    with torch.no_grad():
-                        logits = fixed_encoder.searchable_decomp.alpha_logits
-                        hard = torch.full_like(logits, -10.0)
-                        hard[int(torch.argmax(logits).item())] = 10.0
-                        logits.copy_(hard)
                     fixed_encoder.searchable_decomp.alpha_logits.requires_grad_(False)
         except Exception as e:
             print(f"Warning: Could not transfer encoder weights: {e}")
@@ -1138,11 +1146,6 @@ class ArchitectureConverter:
                     mixed_decoder.searchable_decomp
                 ).to(next(fixed_decoder.parameters()).device)
                 if hasattr(fixed_decoder.searchable_decomp, "alpha_logits"):
-                    with torch.no_grad():
-                        logits = fixed_decoder.searchable_decomp.alpha_logits
-                        hard = torch.full_like(logits, -10.0)
-                        hard[int(torch.argmax(logits).item())] = 10.0
-                        logits.copy_(hard)
                     fixed_decoder.searchable_decomp.alpha_logits.requires_grad_(False)
 
         except Exception as e:
@@ -1173,12 +1176,12 @@ class FixedEncoder(BaseFixedSequenceBlock):
         self.self_attention_position_mode = (
             str(self_attention_position_mode).lower()
             if self_attention_position_mode is not None
-            else "rope"
+            else None
         )
         self.patching_mode = (
             str(patching_mode).lower() if patching_mode is not None else None
         )
-        self.ffn_mode = str(ffn_mode).lower() if ffn_mode is not None else "swiglu"
+        self.ffn_mode = str(ffn_mode).lower() if ffn_mode is not None else None
         super().__init__(
             rnn=rnn,
             rnn_type=rnn_type,
@@ -1194,8 +1197,10 @@ class FixedEncoder(BaseFixedSequenceBlock):
                         num_layers=num_layers,
                         dropout=dropout,
                         self_attention_type=self.self_attention_type or "sdp",
-                        self_attention_position_mode=self.self_attention_position_mode,
-                        ffn_variant=self.ffn_mode,
+                        self_attention_position_mode=(
+                            self.self_attention_position_mode or "rope"
+                        ),
+                        ffn_variant=self.ffn_mode or "swiglu",
                         patching_mode=self.patching_mode or "direct",
                         enable_patch_search=False,
                     )
@@ -1204,13 +1209,13 @@ class FixedEncoder(BaseFixedSequenceBlock):
         )
         if self.self_attention_type is not None and hasattr(self, "rnn"):
             _freeze_transformer_self_attention(self.rnn, self.self_attention_type)
-        if hasattr(self, "rnn"):
+        if self.self_attention_position_mode is not None and hasattr(self, "rnn"):
             _freeze_transformer_self_attention_position(
                 self.rnn, self.self_attention_position_mode
             )
         if self.patching_mode is not None and hasattr(self, "rnn"):
             _freeze_transformer_patch_mode(self.rnn, self.patching_mode)
-        if hasattr(self, "rnn"):
+        if self.ffn_mode is not None and hasattr(self, "rnn"):
             _freeze_transformer_ffn_mode(self.rnn, self.ffn_mode)
         self.normalizer = None
         self.context_proj = None
@@ -1221,7 +1226,11 @@ class FixedEncoder(BaseFixedSequenceBlock):
             x = self.searchable_decomp(x, temperature=0.01)
 
         if self.rnn_type == "transformer":
-            output, context, state = self.rnn(x)
+            output, context, state = self.rnn(
+                x,
+                temperature=getattr(self.rnn, "temperature", 1.0),
+                variant_gdas=False,
+            )
         else:
             raw_output, state = self.rnn(x)
             context = raw_output[:, -1:, :]

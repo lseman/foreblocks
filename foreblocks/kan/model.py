@@ -85,7 +85,7 @@ class RevIN(nn.Module):
         return x
 
 
-class Model(nn.Module):
+class KANModel(nn.Module):
     """Core KAN forecasting model.
 
     Builds a patch-based forecasting architecture with optional polynomial,
@@ -109,6 +109,13 @@ class Model(nn.Module):
         *,
         poly_config: PolyLayerConfig | None = None,
         router_config: RouterConfig | None = None,
+        head_hidden_dims: Sequence[int] | None = None,
+        head_dropout: float = 0.1,
+        head_use_norm: bool = True,
+        head_activation: str = "gelu",
+        block_dropout: float = 0.1,
+        block_use_norm: bool = True,
+        final_norm: bool = True,
         degree_intra: int | None = None,
         degree_inter: int | None = None,
         top_k: int | None = 2,
@@ -159,6 +166,9 @@ class Model(nn.Module):
             top_k=top_k,
             router_temperature=router_temperature,
             router_hidden=router_hidden,
+            block_dropout=block_dropout,
+            use_block_norm=block_use_norm,
+            final_norm=final_norm,
             load_balance_coef=load_balance_coef,
             hahn_alpha=hahn_alpha,
             hahn_beta=hahn_beta,
@@ -174,13 +184,25 @@ class Model(nn.Module):
             fourier_learn_freq=fourier_learn_freq,
         )
         self.head_nf = d_model * patch_num
-        self.head = FlattenHead(self.head_nf, target_window)
-        self.revert = nn.Linear(d_model, c_in)
+        self.head = FlattenHead(
+            self.head_nf,
+            target_window,
+            hidden_dims=head_hidden_dims,
+            dropout=head_dropout,
+            use_norm=head_use_norm,
+            activation=head_activation,
+        )
 
     def forward(self, z: Tensor) -> Tensor:
+        if z.ndim != 3:
+            raise ValueError(
+                f"KANModel expects input with shape (batch, time, channels), got {tuple(z.shape)}"
+            )
+
         if self.revin:
             z = self.revin_layer(z, "norm")
-            z = z.permute(0, 2, 1)
+
+        z = z.permute(0, 2, 1)
 
         if self.padding_patch == "end":
             z = self.padding_patch_layer(z)
@@ -189,11 +211,14 @@ class Model(nn.Module):
         z = z.permute(0, 1, 3, 2)
         z = self.backbone(z)
         z = self.head(z)
+        z = z.permute(0, 2, 1)
 
         if self.revin:
-            z = z.permute(0, 2, 1)
             z = self.revin_layer(z, "denorm")
         return z
 
 
-__all__ = ["Model", "RevIN", "compute_patch_num"]
+Model = KANModel
+
+
+__all__ = ["KANModel", "Model", "RevIN", "compute_patch_num"]

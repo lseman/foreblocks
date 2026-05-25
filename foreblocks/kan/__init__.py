@@ -7,14 +7,16 @@ from .backbone import (
     PolyKAN,
     PolyKANBlock,
 )
-from .model import Model, RevIN, compute_patch_num
+from .model import KANModel, Model, RevIN, compute_patch_num
 from .poly import (
     DEFAULT_POLY_FAMILIES,
     POLY_FAMILIES,
     ChebyshevPolynomials,
     FourierKAN,
+    GegenbauerPolynomials,
     HahnPolynomials,
     JacobiPolynomials,
+    LaguerrePolynomials,
     PolyFamily,
     PolyLayerConfig,
     ProbHermitePolynomials,
@@ -24,7 +26,6 @@ from .poly import (
 )
 from .router import RouterConfig, TokenRouter
 
-
 __all__ = [
     "BackBone",
     "Backbone",
@@ -33,9 +34,12 @@ __all__ = [
     "Flatten_Head",
     "FlattenHead",
     "FourierKAN",
+    "GegenbauerPolynomials",
     "HahnPolynomials",
     "HeteroMoKANLayer",
     "JacobiPolynomials",
+    "KANModel",
+    "LaguerrePolynomials",
     "Model",
     "POLY_FAMILIES",
     "PolyFamily",

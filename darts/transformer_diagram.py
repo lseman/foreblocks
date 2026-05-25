@@ -42,14 +42,19 @@ fig.savefig("gpt_style.png", dpi=220, bbox_inches="tight")
 
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Iterable, Sequence
 from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
+import torch
 from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea, VPacker
 from matplotlib.patches import Circle, FancyBboxPatch, PathPatch
 from matplotlib.path import Path
+
+from darts.config import DEFAULT_OP_FAMILIES
 
 # -----------------------------------------------------------------------------
 # Global styling
@@ -75,33 +80,33 @@ matplotlib.rcParams.update({
 # -----------------------------------------------------------------------------
 
 COLORS = {
-    "page_bg": "#F3F3F3",
-    "model_bg": "#D9D9D9",
-    "stack_bg": "#D79ABC",
-    "inner_group_bg": "#D79ABC",
-    "zoom_bg": "#E7E7E7",
-    "embedding": "#F7F7F7",
-    "tokenizer": "#F7F7F7",
-    "query_input": "#F7F7F7",
-    "memory": "#F7F7F7",
-    "norm": "#F7F7F7",
-    "self_attn": "#6B6B6B",
-    "cross_attn": "#F7F7F7",
-    "linear_attn": "#D9C8F2",
-    "feedforward": "#F7F7F7",
-    "moe": "#F7F7F7",
-    "swiglu": "#F7F7F7",
-    "geglu": "#F7F7F7",
-    "output": "#F7F7F7",
+    "page_bg": "#FFFFFF",
+    "model_bg": "#F5F5F7",
+    "stack_bg": "#E8CAD8",
+    "inner_group_bg": "#E8CAD8",
+    "zoom_bg": "#F4F4F6",
+    "embedding": "#FCFCFD",
+    "tokenizer": "#FCFCFD",
+    "query_input": "#FCFCFD",
+    "memory": "#FCFCFD",
+    "norm": "#FCFCFD",
+    "self_attn": "#6D7280",
+    "cross_attn": "#FCFCFD",
+    "linear_attn": "#D8DFF4",
+    "feedforward": "#FCFCFD",
+    "moe": "#FCFCFD",
+    "swiglu": "#FCFCFD",
+    "geglu": "#FCFCFD",
+    "output": "#FCFCFD",
     "add": "#FFFFFF",
-    "generic": "#F7F7F7",
-    "block_border": "#111111",
-    "text": "#111111",
-    "dim_text": "#444444",
-    "accent": "#D11B7E",
-    "arrow": "#111111",
-    "residual": "#111111",
-    "cross_arrow": "#111111",
+    "generic": "#FCFCFD",
+    "block_border": "#202124",
+    "text": "#202124",
+    "dim_text": "#5F6368",
+    "accent": "#B4235D",
+    "arrow": "#202124",
+    "residual": "#202124",
+    "cross_arrow": "#202124",
 }
 
 _TYPE_COLOR = {
@@ -1420,6 +1425,1143 @@ def extract_selected_transformer_spec(model: Any) -> dict[str, Any]:
     }
 
 
+def _edge_index(node_idx: int, input_idx: int) -> int:
+    return sum(range(node_idx)) + input_idx
+
+
+def _edge_source_target(edge_idx: int) -> tuple[int, int]:
+    edge_idx_remaining = int(edge_idx)
+    target = 1
+    while edge_idx_remaining >= target:
+        edge_idx_remaining -= target
+        target += 1
+    return edge_idx_remaining, target
+
+
+def _safe_float_list(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "tolist"):
+        data = value.tolist()
+        if isinstance(data, list):
+            return [float(v) for v in data]
+    if isinstance(value, (list, tuple)):
+        return [float(v) for v in value]
+    return []
+
+
+def _best_edge_choice(edge: Any) -> tuple[str | None, float | None]:
+    available_ops = list(getattr(edge, "available_ops", []) or [])
+    if not available_ops:
+        return None, None
+
+    getter = getattr(edge, "get_alphas", None)
+    if not callable(getter):
+        return available_ops[0], None
+
+    try:
+        logits = _safe_float_list(getter())
+    except Exception:
+        logits = []
+
+    if not logits:
+        return available_ops[0], None
+
+    num_ops = min(len(logits), len(available_ops))
+    best_idx = max(range(num_ops), key=lambda idx: logits[idx])
+    max_logit = max(logits[:num_ops])
+    exp_vals = [math.exp(value - max_logit) for value in logits[:num_ops]]
+    denom = sum(exp_vals) or 1.0
+    return available_ops[best_idx], exp_vals[best_idx] / denom
+
+
+def _edge_selection_weights_for_diagram(edge: Any):
+    if not hasattr(edge, "available_ops"):
+        return None
+
+    if (
+        hasattr(edge, "use_hierarchical")
+        and edge.use_hierarchical
+        and hasattr(edge, "_get_weights")
+        and hasattr(edge, "ops")
+    ):
+        try:
+            routed = edge._get_weights(top_k=None)
+            if routed:
+                probs = torch.zeros(len(edge.ops), dtype=routed[0][1].dtype)
+                for op_idx, weight in routed:
+                    probs[int(op_idx)] = probs[int(op_idx)] + weight.detach().cpu()
+                return probs
+        except Exception:
+            pass
+
+    getter = getattr(edge, "get_alphas", None)
+    if not callable(getter):
+        return None
+
+    try:
+        alpha_like = getter()
+    except Exception:
+        return None
+
+    if not isinstance(alpha_like, torch.Tensor) or alpha_like.numel() == 0:
+        return None
+
+    with torch.no_grad():
+        flat = alpha_like.detach().reshape(-1).cpu()
+        finite_ok = torch.isfinite(flat).all().item()
+        in_range = flat.min().item() >= -1e-6 and flat.max().item() <= 1.0 + 1e-6
+        sum_close = abs(flat.sum().item() - 1.0) <= 1e-4
+        looks_like_probs = finite_ok and in_range and sum_close
+        if looks_like_probs:
+            probs = flat.clamp_min(1e-8)
+            return probs / probs.sum().clamp_min(1e-8)
+        return torch.softmax(flat, dim=0)
+
+
+def _fixed_edge_operation_name(edge: Any) -> str | None:
+    op = getattr(edge, "op", None)
+    if op is None:
+        return None
+    class_name = type(op).__name__
+    if class_name.endswith("Op"):
+        class_name = class_name[:-2]
+    return class_name or None
+
+
+def _edge_operation_names(edge: Any) -> list[str]:
+    available_ops = getattr(edge, "available_ops", None)
+    if available_ops is not None:
+        return [str(name) for name in available_ops]
+    fixed_name = _fixed_edge_operation_name(edge)
+    if fixed_name is not None:
+        return [fixed_name]
+    return []
+
+
+def _assign_cell_edges_with_diversity_for_diagram(
+    cell: Any,
+    edge_weight_list: list[torch.Tensor | None],
+    edge_importance: list[float] | None = None,
+) -> tuple[list[int], dict[str, int]]:
+    n_edges = len(getattr(cell, "edges", []))
+    if n_edges == 0:
+        return [], {}
+    if edge_importance is None or len(edge_importance) != n_edges:
+        edge_importance = [1.0] * n_edges
+
+    assignments: list[int | None] = [None] * n_edges
+    op_counts_by_name: dict[str, int] = {}
+    used_unique_ops = set()
+
+    available_names = set()
+    for edge in cell.edges:
+        edge_names = getattr(edge, "available_ops", None)
+        if edge_names is not None:
+            available_names.update(edge_names)
+
+    unique_pool = [name for name in available_names if name != "Identity"]
+    pool_size = len(unique_pool) if unique_pool else len(available_names)
+    target_unique = min(max(2, int(math.ceil(n_edges * 0.5))), max(pool_size, 1))
+
+    candidates = []
+    for edge_idx, weights in enumerate(edge_weight_list):
+        if weights is None or weights.numel() == 0:
+            continue
+        for op_idx, weight in enumerate(weights):
+            score = float(weight.item()) * (
+                0.65 + 0.35 * float(edge_importance[edge_idx])
+            )
+            candidates.append((score, edge_idx, int(op_idx)))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+
+    for _, edge_idx, op_idx in candidates:
+        if len(used_unique_ops) >= target_unique:
+            break
+        if assignments[edge_idx] is not None:
+            continue
+        edge = cell.edges[edge_idx]
+        edge_op_names = _edge_operation_names(edge)
+        if not edge_op_names:
+            continue
+        op_name = edge_op_names[op_idx]
+        if op_name in used_unique_ops:
+            continue
+        if op_name == "Identity" and len(used_unique_ops) < max(target_unique - 1, 1):
+            continue
+        assignments[edge_idx] = op_idx
+        used_unique_ops.add(op_name)
+        op_counts_by_name[op_name] = op_counts_by_name.get(op_name, 0) + 1
+
+    remaining_edges = [idx for idx in range(n_edges) if assignments[idx] is None]
+    remaining_edges.sort(
+        key=lambda edge_idx: (
+            float(edge_weight_list[edge_idx].max().item())
+            * float(edge_importance[edge_idx])
+            if edge_weight_list[edge_idx] is not None
+            and edge_weight_list[edge_idx].numel() > 0
+            else -1e9
+        ),
+        reverse=True,
+    )
+
+    max_per_op = max(1, int(math.ceil(n_edges / max(target_unique, 1))))
+    repeat_penalty = 0.30
+    identity_extra_penalty = 0.40
+
+    for edge_idx in remaining_edges:
+        edge = cell.edges[edge_idx]
+        weights = edge_weight_list[edge_idx]
+        if weights is None or weights.numel() == 0:
+            chosen_idx = 0
+        else:
+            adjusted = weights.clone()
+            edge_op_names = _edge_operation_names(edge)
+            for op_idx, op_name in enumerate(edge_op_names):
+                count = op_counts_by_name.get(op_name, 0)
+                penalty = repeat_penalty * float(count)
+                if op_name == "Identity":
+                    penalty += identity_extra_penalty * float(count)
+                    if float(edge_importance[edge_idx]) < 0.35:
+                        penalty -= 0.15
+                adjusted[op_idx] = adjusted[op_idx] - penalty
+
+            ranked = torch.argsort(adjusted, descending=True).tolist()
+            chosen_idx = int(ranked[0])
+            for candidate_idx in ranked:
+                candidate_name = edge_op_names[int(candidate_idx)]
+                count = op_counts_by_name.get(candidate_name, 0)
+                if count < max_per_op or int(candidate_idx) == ranked[0]:
+                    chosen_idx = int(candidate_idx)
+                    break
+
+        assignments[edge_idx] = chosen_idx
+        chosen_name = _edge_operation_names(edge)[chosen_idx]
+        op_counts_by_name[chosen_name] = op_counts_by_name.get(chosen_name, 0) + 1
+
+    max_repeat = max(1, int(math.ceil(n_edges * 0.40)))
+    for _ in range(n_edges * 2):
+        changed = False
+        by_freq = sorted(
+            op_counts_by_name.items(), key=lambda item: item[1], reverse=True
+        )
+        for op_name, count in by_freq:
+            if count <= max_repeat:
+                continue
+
+            holders = []
+            for edge_idx, op_idx in enumerate(assignments):
+                if op_idx is None:
+                    continue
+                edge = cell.edges[edge_idx]
+                edge_op_names = _edge_operation_names(edge)
+                if not edge_op_names:
+                    continue
+                chosen_name = edge_op_names[int(op_idx)]
+                if chosen_name != op_name:
+                    continue
+                weights = edge_weight_list[edge_idx]
+                confidence = (
+                    float(weights[int(op_idx)].item())
+                    if weights is not None and weights.numel() > int(op_idx)
+                    else -1e9
+                )
+                holders.append((
+                    confidence * float(edge_importance[edge_idx]),
+                    edge_idx,
+                ))
+
+            holders.sort(key=lambda item: item[0])
+            replaced = False
+            for _, edge_idx in holders:
+                edge = cell.edges[edge_idx]
+                weights = edge_weight_list[edge_idx]
+                edge_op_names = _edge_operation_names(edge)
+                ranked = (
+                    list(range(len(edge_op_names)))
+                    if weights is None or weights.numel() == 0
+                    else torch.argsort(weights, descending=True).tolist()
+                )
+
+                for cand_idx in ranked:
+                    cand_idx = int(cand_idx)
+                    cand_name = edge_op_names[cand_idx]
+                    if cand_name == op_name:
+                        continue
+                    cand_count = op_counts_by_name.get(cand_name, 0)
+                    if cand_count >= max_repeat:
+                        continue
+                    if (
+                        cand_name == "Identity"
+                        and float(edge_importance[edge_idx]) > 0.65
+                    ):
+                        continue
+
+                    old_idx = int(assignments[edge_idx])
+                    old_name = edge_op_names[old_idx]
+                    assignments[edge_idx] = cand_idx
+                    op_counts_by_name[old_name] = op_counts_by_name.get(old_name, 1) - 1
+                    if op_counts_by_name[old_name] <= 0:
+                        op_counts_by_name.pop(old_name, None)
+                    op_counts_by_name[cand_name] = cand_count + 1
+                    replaced = True
+                    changed = True
+                    break
+
+                if replaced:
+                    break
+
+        if not changed:
+            break
+
+    final_assignments = [int(idx) if idx is not None else 0 for idx in assignments]
+    return final_assignments, op_counts_by_name
+
+
+def extract_logged_cell_specs(model: Any, log_text: str) -> list[dict[str, Any]]:
+    pattern = re.compile(
+        r"Cell\s+(?P<cell>\d+),\s+Edge\s+(?P<edge>\d+):\s+(?P<op>[A-Za-z0-9_]+)Op(?:\s+\(weight:\s*(?P<weight>[-+]?[0-9]*\.?[0-9]+)\))?"
+    )
+    matches = list(pattern.finditer(log_text or ""))
+    if not matches:
+        return []
+
+    cells = list(getattr(model, "cells", []) or [])
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for match in matches:
+        cell_idx = int(match.group("cell"))
+        edge_idx = int(match.group("edge"))
+        if cells and cell_idx >= len(cells):
+            continue
+
+        source, target = _edge_source_target(edge_idx)
+
+        weight_str = match.group("weight")
+        grouped.setdefault(cell_idx, []).append({
+            "edge_idx": edge_idx,
+            "source": source,
+            "target": target,
+            "operation": match.group("op"),
+            "op_weight": float(weight_str) if weight_str is not None else None,
+            "importance": 1.0,
+        })
+
+    specs: list[dict[str, Any]] = []
+    for cell_idx, selected_edges in sorted(grouped.items()):
+        cell = cells[cell_idx] if cell_idx < len(cells) else None
+        inferred_num_nodes = (
+            max(int(edge_spec["target"]) for edge_spec in selected_edges) + 1
+        )
+        num_nodes = int(getattr(cell, "num_nodes", 0) or inferred_num_nodes)
+        selected_edges.sort(
+            key=lambda edge_spec: (edge_spec["target"], edge_spec["source"])
+        )
+        node_roles = []
+        for node_idx in range(1, num_nodes):
+            incoming = [edge for edge in selected_edges if edge["target"] == node_idx]
+            label, sublabel = _node_role_from_edges(node_idx, incoming)
+            node_roles.append({
+                "node_idx": node_idx,
+                "label": label,
+                "sublabel": sublabel,
+            })
+        specs.append({
+            "cell_idx": cell_idx,
+            "num_nodes": num_nodes,
+            "selected_edges": selected_edges,
+            "selected_ops": sorted({edge["operation"] for edge in selected_edges}),
+            "node_roles": node_roles,
+        })
+
+    return specs
+
+
+def extract_selected_cell_specs(model: Any) -> list[dict[str, Any]]:
+    cells = list(getattr(model, "cells", []) or [])
+    if not cells:
+        return []
+
+    specs: list[dict[str, Any]] = []
+    for cell_idx, cell in enumerate(cells):
+        num_nodes = int(getattr(cell, "num_nodes", 0) or 0)
+        if num_nodes < 2:
+            continue
+
+        stored_selected_edges = getattr(cell, "selected_edge_specs", None)
+        if stored_selected_edges:
+            selected_edges = [
+                {
+                    "edge_idx": int(edge_spec.get("edge_idx", idx)),
+                    "source": int(edge_spec["source"]),
+                    "target": int(edge_spec["target"]),
+                    "operation": str(edge_spec["operation"]),
+                    "op_weight": edge_spec.get("op_weight"),
+                    "importance": float(edge_spec.get("importance", 1.0)),
+                }
+                for idx, edge_spec in enumerate(stored_selected_edges)
+                if "source" in edge_spec
+                and "target" in edge_spec
+                and "operation" in edge_spec
+            ]
+            selected_edges.sort(
+                key=lambda edge_spec: (edge_spec["target"], edge_spec["source"])
+            )
+            node_roles = []
+            for node_idx in range(1, num_nodes):
+                target_edges = [
+                    edge_spec
+                    for edge_spec in selected_edges
+                    if int(edge_spec["target"]) == node_idx
+                ]
+                label, sublabel = _node_role_from_edges(node_idx, target_edges)
+                node_roles.append({
+                    "node_idx": node_idx,
+                    "label": label,
+                    "sublabel": sublabel,
+                })
+            specs.append({
+                "cell_idx": cell_idx,
+                "num_nodes": num_nodes,
+                "selected_edges": selected_edges,
+                "selected_ops": sorted({edge["operation"] for edge in selected_edges}),
+                "node_roles": node_roles,
+            })
+            continue
+
+        importance_vals = []
+        edge_importance = getattr(cell, "edge_importance", None)
+        if edge_importance is not None and hasattr(edge_importance, "sigmoid"):
+            importance_vals = _safe_float_list(edge_importance.sigmoid())
+
+        selected_edges: list[dict[str, Any]] = []
+        cell_edges = list(getattr(cell, "edges", []))
+        if cell_edges and all(
+            not hasattr(edge, "available_ops") for edge in cell_edges
+        ):
+            selected_indices = [0] * len(cell_edges)
+            edge_weight_list = [None] * len(cell_edges)
+        else:
+            edge_weight_list = [
+                _edge_selection_weights_for_diagram(edge) for edge in cell_edges
+            ]
+            selected_indices, _ = _assign_cell_edges_with_diversity_for_diagram(
+                cell,
+                edge_weight_list,
+                edge_importance=importance_vals,
+            )
+
+        for edge_idx, op_idx in enumerate(selected_indices):
+            edge = cell.edges[edge_idx]
+            op_idx = int(op_idx)
+            edge_op_names = _edge_operation_names(edge)
+            if not edge_op_names:
+                continue
+            op_name = str(edge_op_names[op_idx])
+            weights = edge_weight_list[edge_idx]
+            op_weight = (
+                float(weights[op_idx].item())
+                if weights is not None and weights.numel() > op_idx
+                else None
+            )
+
+            source, target = _edge_source_target(edge_idx)
+            importance = (
+                float(importance_vals[edge_idx])
+                if edge_idx < len(importance_vals)
+                else 1.0
+            )
+
+            selected_edges.append({
+                "edge_idx": edge_idx,
+                "source": source,
+                "target": target,
+                "operation": op_name,
+                "op_weight": op_weight,
+                "importance": importance,
+            })
+
+        selected_edges.sort(
+            key=lambda edge_spec: (edge_spec["target"], edge_spec["source"])
+        )
+        node_roles = []
+        for node_idx in range(1, num_nodes):
+            target_edges = [
+                edge_spec
+                for edge_spec in selected_edges
+                if int(edge_spec["target"]) == node_idx
+            ]
+            label, sublabel = _node_role_from_edges(node_idx, target_edges)
+            node_roles.append({
+                "node_idx": node_idx,
+                "label": label,
+                "sublabel": sublabel,
+            })
+        specs.append({
+            "cell_idx": cell_idx,
+            "num_nodes": num_nodes,
+            "selected_edges": selected_edges,
+            "selected_ops": sorted({edge["operation"] for edge in selected_edges}),
+            "node_roles": node_roles,
+        })
+
+    return specs
+
+
+def _selected_edge_summary(selected_edges: Sequence[dict[str, Any]]) -> str:
+    parts = []
+    for edge_spec in sorted(
+        selected_edges,
+        key=lambda item: int(item.get("edge_idx", 0)),
+    ):
+        op_name = str(edge_spec.get("operation", "op"))
+        weight = edge_spec.get("op_weight")
+        weight_value = float(weight) if weight is not None else None
+        weight_text = (
+            f" w={weight_value:.3f}"
+            if weight_value is not None and math.isfinite(weight_value)
+            else ""
+        )
+        parts.append(
+            f"E{int(edge_spec.get('edge_idx', 0))} "
+            f"{int(edge_spec.get('source', 0))}->{int(edge_spec.get('target', 0))}: "
+            f"{op_name}{weight_text}"
+        )
+    return " | ".join(parts)
+
+
+def _draw_selected_operation_node_panel(
+    ax,
+    *,
+    cell_x: float,
+    cell_y: float,
+    cell_w: float,
+    cell_h: float,
+    cell_spec: dict[str, Any],
+    single_cell: bool,
+) -> bool:
+    selected_edges = sorted(
+        list(cell_spec.get("selected_edges", [])),
+        key=lambda edge_spec: int(edge_spec.get("edge_idx", 0)),
+    )
+    if not selected_edges:
+        return False
+
+    max_target = max(int(edge_spec.get("target", 1)) for edge_spec in selected_edges)
+    center_y = cell_y - 0.10
+    usable_w = cell_w - (0.92 if single_cell else 1.10)
+    input_x = cell_x - cell_w / 2 + (0.46 if single_cell else 0.55)
+    output_x = input_x + usable_w
+    span = output_x - input_x
+
+    target_groups: dict[int, list[dict[str, Any]]] = {}
+    for edge_spec in selected_edges:
+        target_groups.setdefault(int(edge_spec.get("target", 1)), []).append(edge_spec)
+
+    op_positions: dict[int, tuple[float, float]] = {}
+    for target, target_edges in sorted(target_groups.items()):
+        target_edges.sort(
+            key=lambda edge_spec: (
+                int(edge_spec.get("source", 0)),
+                int(edge_spec.get("edge_idx", 0)),
+            )
+        )
+        x_pos = input_x + span * (target / max(max_target + 1, 1))
+        if len(target_edges) == 1:
+            offsets = [0.0]
+        else:
+            step = min(0.62, 1.18 / max(len(target_edges) - 1, 1))
+            offsets = [
+                (len(target_edges) - 1) * step / 2 - idx * step
+                for idx in range(len(target_edges))
+            ]
+        for edge_spec, offset in zip(target_edges, offsets, strict=False):
+            op_positions[int(edge_spec.get("edge_idx", 0))] = (x_pos, center_y + offset)
+
+    incoming_by_state: dict[int, list[dict[str, Any]]] = {}
+    for edge_spec in selected_edges:
+        incoming_by_state.setdefault(int(edge_spec.get("target", 0)), []).append(
+            edge_spec
+        )
+
+    ax.add_patch(
+        Circle(
+            (input_x, center_y),
+            0.12,
+            facecolor="#FFFFFF",
+            edgecolor=COLORS["block_border"],
+            linewidth=1.0,
+            zorder=5,
+        )
+    )
+    ax.text(
+        input_x,
+        center_y + 0.18,
+        "Input",
+        ha="center",
+        va="bottom",
+        fontsize=7.8,
+        color=COLORS["text"],
+        zorder=6,
+    )
+
+    ax.add_patch(
+        Circle(
+            (output_x, center_y),
+            0.12,
+            facecolor="#FFFFFF",
+            edgecolor=COLORS["block_border"],
+            linewidth=1.0,
+            zorder=5,
+        )
+    )
+    ax.text(
+        output_x,
+        center_y + 0.18,
+        "Cell out",
+        ha="center",
+        va="bottom",
+        fontsize=7.8,
+        color=COLORS["text"],
+        zorder=6,
+    )
+
+    def draw_conn(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        *,
+        color: str,
+        dashed: bool = False,
+        rad: float = 0.0,
+        lw: float = 1.4,
+        zorder: int = 3,
+    ) -> None:
+        ax.annotate(
+            "",
+            xy=(end[0] - 0.12, end[1]),
+            xytext=(start[0] + 0.12, start[1]),
+            arrowprops=dict(
+                arrowstyle="-|>",
+                color=color,
+                lw=lw,
+                mutation_scale=10,
+                linestyle=(0, (3.0, 2.0)) if dashed else "-",
+                connectionstyle=f"arc3,rad={rad}",
+                shrinkA=0,
+                shrinkB=0,
+            ),
+            zorder=zorder,
+        )
+
+    for edge_spec in selected_edges:
+        edge_idx = int(edge_spec.get("edge_idx", 0))
+        source = int(edge_spec.get("source", 0))
+        op_name = str(edge_spec.get("operation", "op"))
+        color = _edge_op_color(op_name)
+        op_pos = op_positions[edge_idx]
+        if source == 0:
+            sources = [(input_x, center_y)]
+        else:
+            sources = [
+                op_positions[int(source_edge.get("edge_idx", 0))]
+                for source_edge in incoming_by_state.get(source, [])
+                if int(source_edge.get("edge_idx", 0)) in op_positions
+            ]
+        if not sources:
+            sources = [(input_x, center_y)]
+
+        for source_rank, source_pos in enumerate(sources):
+            rad = 0.08 * (source_rank - (len(sources) - 1) / 2)
+            draw_conn(
+                source_pos,
+                op_pos,
+                color=color,
+                dashed=op_name == "Identity",
+                rad=rad,
+                lw=1.4 if op_name == "Identity" else 2.1,
+            )
+
+    for edge_spec in incoming_by_state.get(max_target, []):
+        edge_idx = int(edge_spec.get("edge_idx", 0))
+        op_name = str(edge_spec.get("operation", "op"))
+        if edge_idx not in op_positions:
+            continue
+        draw_conn(
+            op_positions[edge_idx],
+            (output_x, center_y),
+            color=COLORS["arrow"],
+            rad=0.05 * (edge_idx - len(selected_edges) / 2),
+            lw=1.25,
+            zorder=2,
+        )
+
+    for edge_spec in selected_edges:
+        edge_idx = int(edge_spec.get("edge_idx", 0))
+        op_name = str(edge_spec.get("operation", "op"))
+        op_x, op_y = op_positions[edge_idx]
+        color = _edge_op_color(op_name)
+        ax.add_patch(
+            Circle(
+                (op_x, op_y),
+                0.13,
+                facecolor="#FFFFFF",
+                edgecolor=color,
+                linewidth=1.25,
+                linestyle=(0, (3.0, 2.0)) if op_name == "Identity" else "-",
+                zorder=5,
+            )
+        )
+        weight = edge_spec.get("op_weight")
+        weight_value = float(weight) if weight is not None else None
+        weight_line = (
+            f"w={weight_value:.3f}"
+            if weight_value is not None and math.isfinite(weight_value)
+            else None
+        )
+        label_lines = [f"E{edge_idx}", op_name]
+        if weight_line:
+            label_lines.append(weight_line)
+        label_above = op_y >= center_y - 0.02
+        label_x = op_x if label_above else op_x + 0.20
+        label_y = op_y + 0.20 if label_above else op_y
+        ax.text(
+            label_x,
+            label_y,
+            "\n".join(label_lines),
+            ha="center" if label_above else "left",
+            va="bottom" if label_above else "center",
+            fontsize=6.9,
+            color=COLORS["text"],
+            linespacing=1.0,
+            bbox=dict(
+                fc="#FFFFFF",
+                ec="#D7DCE3",
+                boxstyle="round,pad=0.18",
+                lw=0.8,
+            ),
+            zorder=6,
+        )
+
+    ax.plot(
+        [input_x + 0.10, output_x - 0.10],
+        [center_y - 0.38, center_y - 0.38],
+        color="#C7CCD3",
+        lw=0.85,
+        linestyle=(0, (2.0, 1.5)),
+        zorder=2,
+    )
+    ax.text(
+        (input_x + output_x) / 2,
+        center_y - 0.52,
+        "global residual",
+        ha="center",
+        va="center",
+        fontsize=7.3,
+        color=COLORS["dim_text"],
+        zorder=3,
+    )
+
+    ops_text = ", ".join(cell_spec.get("selected_ops", [])) or "n/a"
+    ax.text(
+        cell_x,
+        cell_y + cell_h / 2 - (0.16 if single_cell else 0.38),
+        f"selected primitives: {ops_text}",
+        ha="center",
+        va="top",
+        fontsize=7.6,
+        color=COLORS["dim_text"],
+        zorder=4,
+    )
+    return True
+
+
+def _draw_darts_cell_panel(
+    ax,
+    *,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    cell_specs: Sequence[dict[str, Any]],
+    heading: str | None = None,
+):
+    if not cell_specs:
+        return
+
+    if heading:
+        ax.text(
+            x,
+            y + h / 2 + 0.28,
+            heading,
+            ha="center",
+            va="bottom",
+            fontsize=14,
+            fontweight="bold",
+            color=COLORS["text"],
+            zorder=6,
+        )
+        ax.text(
+            x,
+            y + h / 2 + 0.10,
+            "faint edges show the full cell DAG; saturated edges show the discretized selection",
+            ha="center",
+            va="bottom",
+            fontsize=8.8,
+            color=COLORS["dim_text"],
+            zorder=6,
+        )
+
+    _container(
+        ax,
+        x,
+        y,
+        w,
+        h,
+        fc="#FBFBFC",
+        lw=1.0,
+        rounding=0.18,
+        zorder=1,
+    )
+
+    inner_margin = 0.28
+    gap = 0.34
+    n_cells = max(len(cell_specs), 1)
+    cell_w = (w - 2 * inner_margin - gap * (n_cells - 1)) / n_cells
+    cell_h = h - 0.66
+    left = x - w / 2 + inner_margin + cell_w / 2
+    single_cell = n_cells == 1
+
+    for idx, cell_spec in enumerate(cell_specs):
+        cell_x = left + idx * (cell_w + gap)
+        cell_y = y - 0.03
+        if not single_cell:
+            _container(
+                ax,
+                cell_x,
+                cell_y,
+                cell_w,
+                cell_h,
+                fc="#FFFFFF",
+                lw=0.95,
+                rounding=0.16,
+                zorder=2,
+            )
+        if not single_cell:
+            ax.text(
+                cell_x,
+                cell_y + cell_h / 2 - 0.16,
+                f"Cell {cell_spec['cell_idx']}",
+                ha="center",
+                va="top",
+                fontsize=10.4,
+                fontweight="bold",
+                color=COLORS["text"],
+                zorder=6,
+            )
+
+        if _draw_selected_operation_node_panel(
+            ax,
+            cell_x=cell_x,
+            cell_y=cell_y,
+            cell_w=cell_w,
+            cell_h=cell_h,
+            cell_spec=cell_spec,
+            single_cell=single_cell,
+        ):
+            continue
+
+        num_nodes = int(cell_spec.get("num_nodes", 0))
+        internal_nodes = max(num_nodes - 1, 1)
+        node_roles = {
+            int(role["node_idx"]): role for role in cell_spec.get("node_roles", [])
+        }
+        node_labels = ["Node 0"]
+        node_sublabels = [None]
+        for node_idx in range(1, num_nodes):
+            role = node_roles.get(node_idx, {})
+            role_label = str(role.get("label") or "hidden")
+            node_labels.append(f"Node {node_idx}")
+            node_sublabels.append(
+                role_label
+                if role.get("sublabel") is None
+                else f"{role_label}\n{role.get('sublabel')}"
+            )
+        node_labels.append("Cell out")
+        node_sublabels.append(None)
+        n_positions = len(node_labels)
+        usable_w = cell_w - (0.92 if single_cell else 1.10)
+        x0 = cell_x - cell_w / 2 + (0.46 if single_cell else 0.55)
+        x_positions = [
+            x0 + usable_w * (i / max(n_positions - 1, 1)) for i in range(n_positions)
+        ]
+
+        center_y = cell_y - 0.12
+        spread = min(0.48, 0.20 * max(internal_nodes - 1, 0))
+        y_positions = [center_y]
+        for i in range(internal_nodes):
+            if internal_nodes == 1:
+                yi = center_y
+            else:
+                frac = i / max(internal_nodes - 1, 1)
+                yi = center_y + spread * (0.5 - frac)
+            y_positions.append(yi)
+        y_positions.append(center_y)
+
+        for node_idx in range(1, num_nodes):
+            for input_idx in range(node_idx):
+                x1, y1 = x_positions[input_idx], y_positions[input_idx]
+                x2, y2 = x_positions[node_idx], y_positions[node_idx]
+                rad = 0.06 * (node_idx - input_idx)
+                ax.annotate(
+                    "",
+                    xy=(x2 - 0.10, y2),
+                    xytext=(x1 + 0.10, y1),
+                    arrowprops=dict(
+                        arrowstyle="-",
+                        color="#D0D4DA",
+                        lw=0.9,
+                        mutation_scale=8,
+                        connectionstyle=f"arc3,rad={rad}",
+                        shrinkA=0,
+                        shrinkB=0,
+                    ),
+                    zorder=2,
+                )
+
+        edges_by_target: dict[int, list[dict[str, Any]]] = {}
+        for edge_spec in cell_spec.get("selected_edges", []):
+            edges_by_target.setdefault(int(edge_spec["target"]), []).append(edge_spec)
+
+        selected_non_identity = [
+            edge_spec
+            for edge_spec in cell_spec.get("selected_edges", [])
+            if edge_spec.get("operation") != "Identity"
+        ]
+        non_identity_ops_by_target = {
+            target: {
+                str(edge_spec["operation"])
+                for edge_spec in target_edges
+                if edge_spec.get("operation") != "Identity"
+            }
+            for target, target_edges in edges_by_target.items()
+        }
+
+        for target, target_edges in sorted(edges_by_target.items()):
+            target_edges.sort(key=lambda edge_spec: edge_spec["source"])
+            for edge_rank, edge_spec in enumerate(target_edges):
+                src_idx = int(edge_spec["source"])
+                dst_idx = int(edge_spec["target"])
+                x1, y1 = x_positions[src_idx], y_positions[src_idx]
+                x2, y2 = x_positions[dst_idx], y_positions[dst_idx]
+                color = _edge_op_color(str(edge_spec["operation"]))
+                lw = 1.2 + 1.8 * float(edge_spec.get("importance", 0.5))
+                rad = 0.06 * (dst_idx - src_idx) + 0.03 * (
+                    edge_rank - (len(target_edges) - 1) / 2
+                )
+                ax.annotate(
+                    "",
+                    xy=(x2 - 0.11, y2),
+                    xytext=(x1 + 0.11, y1),
+                    arrowprops=dict(
+                        arrowstyle="-|>",
+                        color=color,
+                        lw=lw,
+                        mutation_scale=10,
+                        linestyle=(0, (3.0, 2.0))
+                        if edge_spec["operation"] == "Identity"
+                        else "-",
+                        connectionstyle=f"arc3,rad={rad}",
+                        shrinkA=0,
+                        shrinkB=0,
+                    ),
+                    zorder=3,
+                )
+
+                role = node_roles.get(dst_idx, {})
+                target_non_identity_ops = non_identity_ops_by_target.get(dst_idx, set())
+                show_edge_label = edge_spec["operation"] != "Identity" and (
+                    len(target_non_identity_ops) > 1
+                    or str(role.get("label") or "") != str(edge_spec["operation"])
+                )
+
+                if show_edge_label:
+                    mid_x = (x1 + x2) / 2
+                    mid_y = (y1 + y2) / 2
+                    dx = x2 - x1
+                    dy = y2 - y1
+                    edge_len = max((dx * dx + dy * dy) ** 0.5, 1e-6)
+                    normal_x = -dy / edge_len
+                    normal_y = dx / edge_len
+                    curve_sign = 1.0 if rad >= 0 else -1.0
+                    offset = 0.10 * (edge_rank - (len(target_edges) - 1) / 2)
+                    label_lift = 0.18 + 0.45 * abs(rad)
+                    mid_x += curve_sign * normal_x * label_lift
+                    mid_y += curve_sign * normal_y * label_lift + offset
+                    edge_label = str(edge_spec["operation"])
+                    if edge_spec.get("op_weight") is not None:
+                        edge_label = (
+                            f"{edge_label}\nw={float(edge_spec['op_weight']):.3f}"
+                        )
+                    ax.text(
+                        mid_x,
+                        mid_y,
+                        edge_label,
+                        ha="center",
+                        va="center",
+                        fontsize=6.8,
+                        color=COLORS["text"],
+                        linespacing=1.0,
+                        bbox=dict(
+                            fc="#FFFFFF",
+                            ec=color,
+                            boxstyle="round,pad=0.18",
+                            lw=0.85,
+                        ),
+                        zorder=4,
+                    )
+
+        last_internal_idx = max(1, n_positions - 2)
+        _arrow(
+            ax,
+            x_positions[last_internal_idx] + 0.12,
+            y_positions[last_internal_idx],
+            x_positions[-1] - 0.12,
+            y_positions[-1],
+            lw=1.35,
+            color=COLORS["arrow"],
+            zorder=3,
+        )
+        ax.plot(
+            [x_positions[0] + 0.10, x_positions[-1] - 0.10],
+            [y_positions[0] - 0.22, y_positions[-1] - 0.22],
+            color="#C7CCD3",
+            lw=0.85,
+            linestyle=(0, (2.0, 1.5)),
+            zorder=2,
+        )
+        ax.text(
+            (x_positions[0] + x_positions[-1]) / 2,
+            center_y - 0.36,
+            "global residual",
+            ha="center",
+            va="center",
+            fontsize=7.3,
+            color=COLORS["dim_text"],
+            zorder=3,
+        )
+
+        for node_x, node_y, node_label, node_sublabel in zip(
+            x_positions,
+            y_positions,
+            node_labels,
+            node_sublabels,
+            strict=False,
+        ):
+            is_cell_out = node_label == "Cell out"
+            is_input_node = node_label == "Node 0"
+            is_terminal = is_input_node or is_cell_out
+            ax.add_patch(
+                Circle(
+                    (node_x, node_y),
+                    0.12 if is_terminal else 0.105,
+                    facecolor="#FFFFFF" if is_terminal else "#F5F7FA",
+                    edgecolor=COLORS["block_border"],
+                    linewidth=1.0,
+                    zorder=5,
+                )
+            )
+            if is_terminal:
+                terminal_sublabel = "input" if is_input_node else None
+                label_text = (
+                    node_label
+                    if terminal_sublabel is None
+                    else f"{node_label}\n{terminal_sublabel}"
+                )
+                ax.text(
+                    node_x,
+                    node_y + 0.18,
+                    label_text,
+                    ha="center",
+                    va="bottom",
+                    fontsize=7.8,
+                    color=COLORS["text"],
+                    linespacing=1.05,
+                    zorder=6,
+                )
+            else:
+                label_lines = [str(node_label)]
+                if node_sublabel:
+                    label_lines.append(str(node_sublabel))
+                ax.text(
+                    node_x,
+                    node_y + 0.20,
+                    "\n".join(label_lines),
+                    ha="center",
+                    va="bottom",
+                    fontsize=6.7,
+                    color=COLORS["text"],
+                    linespacing=1.05,
+                    bbox=dict(
+                        fc="#FFFFFF",
+                        ec="#D7DCE3",
+                        boxstyle="round,pad=0.18",
+                        lw=0.8,
+                    ),
+                    zorder=6,
+                )
+
+        ops_text = ", ".join(cell_spec.get("selected_ops", [])) or "n/a"
+        ax.text(
+            cell_x,
+            cell_y + cell_h / 2 - (0.16 if single_cell else 0.38),
+            f"selected primitives: {ops_text}",
+            ha="center",
+            va="top",
+            fontsize=7.6,
+            color=COLORS["dim_text"],
+            zorder=4,
+        )
+        edge_summary = _selected_edge_summary(cell_spec.get("selected_edges", []))
+        if edge_summary:
+            ax.text(
+                cell_x,
+                cell_y - cell_h / 2 + 0.26,
+                edge_summary,
+                ha="center",
+                va="bottom",
+                fontsize=7.2,
+                color=COLORS["text"],
+                bbox=dict(
+                    fc="#FFFFFF",
+                    ec="#D7DCE3",
+                    boxstyle="round,pad=0.22",
+                    lw=0.8,
+                ),
+                zorder=6,
+            )
+
+        if not selected_non_identity:
+            ax.text(
+                cell_x,
+                center_y + 0.48,
+                "identity-dominant selection",
+                ha="center",
+                va="center",
+                fontsize=7.8,
+                color=COLORS["dim_text"],
+                bbox=dict(
+                    fc="#F7F8FA",
+                    ec="#C7CCD3",
+                    boxstyle="round,pad=0.20",
+                    lw=0.8,
+                ),
+                zorder=4,
+            )
+
+
 def _summary_title(base: str, pairs: Iterable[tuple[str, str | None]]) -> str:
     parts = [f"{key}={value}" for key, value in pairs if value and value != "unknown"]
     if not parts:
@@ -1498,15 +2640,72 @@ def _draw_side_legend(
         box_alignment=box_alignment,
         frameon=True,
         bboxprops=dict(
-            fc="#FCFCFC",
+            fc="#FAFAFB",
             ec=COLORS["block_border"],
-            boxstyle="round,pad=0.68,rounding_size=0.44",
-            lw=1.2,
-            linestyle=(0, (3.0, 2.0)),
+            boxstyle="round,pad=0.62,rounding_size=0.34",
+            lw=1.0,
         ),
         zorder=5,
     )
     ax.add_artist(annotation)
+
+
+def _edge_op_color(op_name: str) -> str:
+    if op_name == "Identity":
+        return "#9AA0A6"
+    if op_name in {"TimeConv", "TCN", "ConvMixer", "MultiScaleConv", "PyramidConv"}:
+        return COLORS["accent"]
+    if op_name in {"Fourier", "Wavelet"}:
+        return "#6B8E23"
+    return COLORS["text"]
+
+
+_OP_TO_FAMILY = {
+    op_name: family_name
+    for family_name, ops in DEFAULT_OP_FAMILIES.items()
+    for op_name in ops
+}
+
+
+def _family_display_name(family_name: str | None) -> str | None:
+    if not family_name:
+        return None
+    mapping = {
+        "conv": "Convolutional",
+        "frequency": "Frequency",
+        "attention": "Attention",
+        "mlp": "MLP",
+    }
+    return mapping.get(family_name, str(family_name).title())
+
+
+def _node_role_from_edges(
+    target_idx: int,
+    target_edges: Sequence[dict[str, Any]],
+) -> tuple[str, str | None]:
+    non_identity_ops = []
+    for edge_spec in target_edges:
+        op_name = str(edge_spec.get("operation", "Identity"))
+        if op_name != "Identity" and op_name not in non_identity_ops:
+            non_identity_ops.append(op_name)
+
+    if not non_identity_ops:
+        return f"Skip node {target_idx}", "identity"
+
+    families = []
+    for op_name in non_identity_ops:
+        family_name = _family_display_name(_OP_TO_FAMILY.get(op_name))
+        if family_name and family_name not in families:
+            families.append(family_name)
+
+    if len(non_identity_ops) == 1:
+        sublabel = families[0] if families else None
+        return non_identity_ops[0], sublabel
+
+    if len(families) == 1:
+        return f"{families[0]} node", ", ".join(non_identity_ops)
+
+    return f"Mixed node {target_idx}", ", ".join(non_identity_ops)
 
 
 def make_encoder_layers_from_spec(spec: dict[str, Any]):
@@ -1901,6 +3100,52 @@ def draw_encoder_decoder(
     )
 
     plt.tight_layout(pad=0.45)
+    return fig, ax
+
+
+def draw_selected_darts_cell_topology(
+    model: Any,
+    title: str | None = None,
+    figsize=None,
+    cell_specs_override: list[dict[str, Any]] | None = None,
+    log_text: str | None = None,
+):
+    cell_specs = cell_specs_override
+    if cell_specs is None and log_text:
+        cell_specs = extract_logged_cell_specs(model, log_text)
+    if not cell_specs:
+        cell_specs = extract_selected_cell_specs(model)
+
+    fig, ax = plt.subplots(figsize=figsize or (9.5, 3.8))
+    fig.patch.set_facecolor(COLORS["page_bg"])
+    ax.set_facecolor(COLORS["page_bg"])
+    ax.set_xlim(0, 9.5)
+    ax.set_ylim(0, 3.8)
+    ax.axis("off")
+
+    if not cell_specs:
+        ax.text(
+            4.75,
+            1.9,
+            "No DARTS cell topology available for this model.",
+            ha="center",
+            va="center",
+            fontsize=12,
+            color=COLORS["text"],
+        )
+        return fig, ax
+
+    _draw_darts_cell_panel(
+        ax,
+        x=4.75,
+        y=1.9,
+        w=8.7,
+        h=3.0,
+        cell_specs=cell_specs,
+        heading=title,
+    )
+
+    plt.tight_layout(pad=0.35)
     return fig, ax
 
 

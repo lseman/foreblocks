@@ -589,6 +589,7 @@ def derive_final_architecture(
             )
 
             new_edges = nn.ModuleList()
+            selected_edge_specs = []
             for edge_idx, edge in enumerate(cell.edges):
                 top_op_idx = selected_indices[edge_idx]
                 weights = edge_weights[edge_idx]
@@ -597,7 +598,30 @@ def derive_final_architecture(
                     if weights is not None and weights.numel() > top_op_idx
                     else float("nan")
                 )
+                stored_confidence = confidence if math.isfinite(confidence) else None
                 top_op = edge.ops[top_op_idx]
+                edge_idx_remaining = edge_idx
+                target = 1
+                while edge_idx_remaining >= target:
+                    edge_idx_remaining -= target
+                    target += 1
+                source = edge_idx_remaining
+                importance = (
+                    float(edge_importance[edge_idx])
+                    if edge_importance is not None and edge_idx < len(edge_importance)
+                    else 1.0
+                )
+                op_name = type(top_op).__name__
+                if op_name.endswith("Op"):
+                    op_name = op_name[:-2]
+                selected_edge_specs.append({
+                    "edge_idx": edge_idx,
+                    "source": source,
+                    "target": target,
+                    "operation": op_name,
+                    "op_weight": stored_confidence,
+                    "importance": importance,
+                })
                 print(
                     f"   Cell {cell_idx}, Edge {edge_idx}: {type(top_op).__name__} "
                     f"(weight: {confidence:.3f})"
@@ -612,6 +636,8 @@ def derive_final_architecture(
                 f"distribution={op_counts}"
             )
             cell.edges = new_edges
+            cell.selected_edge_specs = selected_edge_specs
+            cell.selected_op_distribution = dict(op_counts)
 
     device = next(new_model.parameters()).device
     arch_mode = str(getattr(new_model, "arch_mode", "unknown"))

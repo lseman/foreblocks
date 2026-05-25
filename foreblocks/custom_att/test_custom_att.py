@@ -50,7 +50,7 @@ def run(dtype=torch.float16, D=64, causal=False, N=128):
     torch.testing.assert_close(k.grad, k_ref.grad, atol=atol, rtol=rtol)
     torch.testing.assert_close(v.grad, v_ref.grad, atol=atol, rtol=rtol)
 
-    backend = flash_attn_backward_backend(q)
+    backend = flash_attn_backward_backend(q, causal=causal)
     print(dtype, D, "causal=", causal, backend, "ok")
 
 

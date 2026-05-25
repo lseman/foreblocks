@@ -83,5 +83,9 @@ AGENTS.md
 estudo_rebeca/
 
 ariadne.db
+.codex-ariadne-mcp.toml
+.cursor
+
 *.svg
 *.tex
+scripts/

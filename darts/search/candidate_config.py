@@ -171,7 +171,12 @@ def make_candidate_config(
         max_ops=max_ops,
     )
 
-    node_candidates = list(range(int(node_range[0]), int(node_range[1]) + 1))
+    # Floor at 2 nodes: a 1-node cell has sum(range(1)) = 0 edges, i.e. no
+    # searchable operations at all. Guard here so any caller's node_range lower
+    # bound cannot produce a degenerate, edge-free cell.
+    node_lo = max(2, int(node_range[0]))
+    node_hi = max(node_lo, int(node_range[1]))
+    node_candidates = list(range(node_lo, node_hi + 1))
     op_budget = max(len(selected_ops) - (1 if require_identity else 0), 1)
     desired_edges = max(1, int(round(op_budget * max(float(edge_to_op_target), 0.2))))
     max_edges = max(
@@ -197,9 +202,11 @@ def make_candidate_config(
     transformer_self_attention_type = (
         rng.choice(attention_variants) if attention_variants else "auto"
     )
-    transformer_ffn_variant = (
-        rng.choice(ffn_variants) if "attention" in selected_families else "auto"
-    )
+    # The transformer FFN is always present regardless of which cell-op
+    # families are sampled, so gate the FFN-variant search on whether
+    # ffn_variants was provided (mirroring transformer_self_attention_type)
+    # rather than on the cell-level "attention" family.
+    transformer_ffn_variant = rng.choice(ffn_variants) if ffn_variants else "auto"
     family_choices = dict(family_choices)
     if "attention" in selected_families:
         family_choices["attention_variant"] = [transformer_self_attention_type]

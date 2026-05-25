@@ -10,6 +10,19 @@ from .poly import DEFAULT_POLY_FAMILIES, PolyFamily, PolyLayerConfig, build_poly
 from .router import RouterConfig, TokenRouter
 
 
+def _build_activation(name: str) -> nn.Module:
+    normalized = name.lower()
+    if normalized == "gelu":
+        return nn.GELU()
+    if normalized == "relu":
+        return nn.ReLU()
+    if normalized == "silu":
+        return nn.SiLU()
+    if normalized in {"identity", "linear", "none"}:
+        return nn.Identity()
+    raise ValueError(f"Unsupported head activation '{name}'")
+
+
 def resolve_poly_config(
     base: PolyLayerConfig | None = None,
     *,
@@ -194,6 +207,8 @@ class HeteroMoKANLayer(nn.Module):
         top_k: int | None = 2,
         router_temperature: float | None = None,
         router_hidden: int | None = None,
+        use_input_norm: bool = True,
+        dropout: float = 0.0,
         load_balance_coef: float = 0.0,
         hahn_alpha: float | None = None,
         hahn_beta: float | None = None,
@@ -214,6 +229,8 @@ class HeteroMoKANLayer(nn.Module):
             raise ValueError("HeteroMoKANLayer requires at least one expert family")
         self.num_experts = len(self.families)
         self.load_balance_coef = float(load_balance_coef)
+        self.input_norm = nn.LayerNorm(d_model) if use_input_norm else nn.Identity()
+        self.output_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
         self.router = TokenRouter(
             d_model=d_model,
@@ -223,42 +240,42 @@ class HeteroMoKANLayer(nn.Module):
             temperature=router_temperature,
             top_k=top_k,
         )
-        self.experts = nn.ModuleList(
-            [
-                PolyKANBlock(
-                    dim=d_model,
-                    patch_num=patch_num,
-                    family=family,
-                    poly_config=poly_config,
-                    degree_intra=degree_intra,
-                    degree_inter=degree_inter,
-                    hahn_alpha=hahn_alpha,
-                    hahn_beta=hahn_beta,
-                    hahn_N=hahn_N,
-                    jacobi_alpha=jacobi_alpha,
-                    jacobi_beta=jacobi_beta,
-                    wavelet_num=wavelet_num,
-                    wavelet_base_freq=wavelet_base_freq,
-                    wavelet_learn_freq=wavelet_learn_freq,
-                    wavelet_learn_scale=wavelet_learn_scale,
-                    wavelet_learn_shift=wavelet_learn_shift,
-                    fourier_base_freq=fourier_base_freq,
-                    fourier_learn_freq=fourier_learn_freq,
-                )
-                for family in self.families
-            ]
-        )
+        self.experts = nn.ModuleList([
+            PolyKANBlock(
+                dim=d_model,
+                patch_num=patch_num,
+                family=family,
+                poly_config=poly_config,
+                degree_intra=degree_intra,
+                degree_inter=degree_inter,
+                hahn_alpha=hahn_alpha,
+                hahn_beta=hahn_beta,
+                hahn_N=hahn_N,
+                jacobi_alpha=jacobi_alpha,
+                jacobi_beta=jacobi_beta,
+                wavelet_num=wavelet_num,
+                wavelet_base_freq=wavelet_base_freq,
+                wavelet_learn_freq=wavelet_learn_freq,
+                wavelet_learn_scale=wavelet_learn_scale,
+                wavelet_learn_shift=wavelet_learn_shift,
+                fourier_base_freq=fourier_base_freq,
+                fourier_learn_freq=fourier_learn_freq,
+            )
+            for family in self.families
+        ])
         self.last_router_probs: Tensor | None = None
         self.last_router_logits: Tensor | None = None
 
     def forward(self, x: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
-        probs, logits = self.router(x)
+        x_norm = self.input_norm(x)
+        probs, logits = self.router(x_norm)
         self.last_router_probs = probs.detach()
         self.last_router_logits = logits.detach()
 
-        outs = torch.stack([expert(x) for expert in self.experts], dim=0)
+        outs = torch.stack([expert(x_norm) for expert in self.experts], dim=0)
         weights = probs.permute(2, 0, 1).unsqueeze(-1)
         y = (outs * weights).sum(dim=0)
+        y = self.output_dropout(y)
 
         mean_probs = probs.mean(dim=(0, 1))
         aux: dict[str, Tensor] = {
@@ -278,16 +295,35 @@ class HeteroMoKANLayer(nn.Module):
 
 
 class FlattenHead(nn.Module):
-    def __init__(self, nf: int, target_window: int):
+    def __init__(
+        self,
+        nf: int,
+        target_window: int,
+        *,
+        hidden_dims: Sequence[int] | None = None,
+        dropout: float = 0.0,
+        use_norm: bool = True,
+        activation: str = "gelu",
+    ):
         super().__init__()
         self.flatten = nn.Flatten(start_dim=-2)
-        self.linear1 = nn.Linear(nf, 336)
-        self.linear2 = nn.Linear(336, target_window)
+        self.input_norm = nn.LayerNorm(nf) if use_norm else nn.Identity()
+
+        dims = [nf, *(hidden_dims or ()), target_window]
+        layers: list[nn.Module] = []
+        for idx, (in_features, out_features) in enumerate(zip(dims, dims[1:])):
+            layers.append(nn.Linear(in_features, out_features))
+            is_last = idx == len(dims) - 2
+            if not is_last:
+                layers.append(_build_activation(activation))
+                if dropout > 0.0:
+                    layers.append(nn.Dropout(dropout))
+        self.projection = nn.Sequential(*layers)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.flatten(x)
-        x = self.linear1(x)
-        x = self.linear2(x)
+        x = self.input_norm(x)
+        x = self.projection(x)
         return x
 
 
@@ -307,6 +343,9 @@ class Backbone(nn.Module):
         top_k: int | None = 2,
         router_temperature: float | None = None,
         router_hidden: int | None = None,
+        block_dropout: float = 0.0,
+        use_block_norm: bool = True,
+        final_norm: bool = True,
         load_balance_coef: float = 0.0,
         hahn_alpha: float | None = None,
         hahn_beta: float | None = None,
@@ -325,41 +364,42 @@ class Backbone(nn.Module):
         self.patch_num = patch_num
         self.patch_len = patch_len
         self.seq_len = patch_num
+        self.final_norm = nn.LayerNorm(d_model) if final_norm else nn.Identity()
 
         self.W_P = nn.Linear(patch_len, d_model)
         self.W_pos = nn.Parameter(torch.randn(1, patch_num, d_model))
 
         expert_families = tuple(families or DEFAULT_POLY_FAMILIES)
-        self.encoder = nn.ModuleList(
-            [
-                HeteroMoKANLayer(
-                    d_model=d_model,
-                    patch_num=patch_num,
-                    families=expert_families,
-                    poly_config=poly_config,
-                    router_config=router_config,
-                    degree_intra=degree_intra,
-                    degree_inter=degree_inter,
-                    top_k=top_k,
-                    router_temperature=router_temperature,
-                    router_hidden=router_hidden,
-                    load_balance_coef=load_balance_coef,
-                    hahn_alpha=hahn_alpha,
-                    hahn_beta=hahn_beta,
-                    hahn_N=hahn_N,
-                    jacobi_alpha=jacobi_alpha,
-                    jacobi_beta=jacobi_beta,
-                    wavelet_num=wavelet_num,
-                    wavelet_base_freq=wavelet_base_freq,
-                    wavelet_learn_freq=wavelet_learn_freq,
-                    wavelet_learn_scale=wavelet_learn_scale,
-                    wavelet_learn_shift=wavelet_learn_shift,
-                    fourier_base_freq=fourier_base_freq,
-                    fourier_learn_freq=fourier_learn_freq,
-                )
-                for _ in range(depth)
-            ]
-        )
+        self.encoder = nn.ModuleList([
+            HeteroMoKANLayer(
+                d_model=d_model,
+                patch_num=patch_num,
+                families=expert_families,
+                poly_config=poly_config,
+                router_config=router_config,
+                degree_intra=degree_intra,
+                degree_inter=degree_inter,
+                top_k=top_k,
+                router_temperature=router_temperature,
+                router_hidden=router_hidden,
+                use_input_norm=use_block_norm,
+                dropout=block_dropout,
+                load_balance_coef=load_balance_coef,
+                hahn_alpha=hahn_alpha,
+                hahn_beta=hahn_beta,
+                hahn_N=hahn_N,
+                jacobi_alpha=jacobi_alpha,
+                jacobi_beta=jacobi_beta,
+                wavelet_num=wavelet_num,
+                wavelet_base_freq=wavelet_base_freq,
+                wavelet_learn_freq=wavelet_learn_freq,
+                wavelet_learn_scale=wavelet_learn_scale,
+                wavelet_learn_shift=wavelet_learn_shift,
+                fourier_base_freq=fourier_base_freq,
+                fourier_learn_freq=fourier_learn_freq,
+            )
+            for _ in range(depth)
+        ])
         self.last_aux: dict[str, Tensor] = {}
 
     def forward(self, x: Tensor) -> Tensor:
@@ -376,6 +416,7 @@ class Backbone(nn.Module):
             z = z + y
             lb_losses.append(aux["load_balance_loss"].reshape(()))
 
+        z = self.final_norm(z)
         self.last_aux = {"moe_load_balance_loss": torch.stack(lb_losses).sum()}
         z = z.reshape(-1, n_vars, z.shape[-2], z.shape[-1])
         z = z.permute(0, 1, 3, 2)

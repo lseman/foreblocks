@@ -7,10 +7,9 @@ from .backbone import (
     PolyKAN,
     PolyKANBlock,
 )
-from .model import Model, RevIN, compute_patch_num
+from .model import KANModel, Model, RevIN, compute_patch_num
 from .poly import PolyFamily, PolyLayerConfig
 from .router import RouterConfig, TokenRouter
-
 
 __all__ = [
     "BackBone",
@@ -18,6 +17,7 @@ __all__ = [
     "Flatten_Head",
     "FlattenHead",
     "HeteroMoKANLayer",
+    "KANModel",
     "Model",
     "PolyFamily",
     "PolyKAN",

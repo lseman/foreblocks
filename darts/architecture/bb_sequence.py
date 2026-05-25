@@ -235,8 +235,11 @@ class BaseMixedSequenceBlock(nn.Module):
         num_options: int = 3,
         variant_gdas: bool = True,
         arch_path_keep_prob: float = 0.85,
+        single_path_search: bool | None = None,
     ):
         super().__init__()
+        if single_path_search is not None:
+            variant_gdas = bool(single_path_search)
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.seq_len = seq_len
