@@ -5,6 +5,19 @@ from torch import Tensor
 class PagedKVCache:
     """
     Fixed-page KV cache for autoregressive self-attention (torch-only).
+
+    Block-based paging follows vLLM's PagedAttention: KV is stored in fixed-size
+    blocks drawn from a shared pool, and a per-sequence block table maps logical
+    token positions to physical blocks, so memory grows in block_size chunks
+    rather than one contiguous buffer per sequence.
+
+    References:
+        - Kwon et al., "Efficient Memory Management for Large Language Model
+          Serving with PagedAttention" (vLLM), SOSP 2023:
+          https://arxiv.org/abs/2309.06180
+        - vLLM block manager:
+          https://github.com/vllm-project/vllm/blob/main/vllm/core/block_manager.py
+
     Layout
     ------
     storage_k/v: [B, Hkv, max_blocks, block_size, D] (standard mode)

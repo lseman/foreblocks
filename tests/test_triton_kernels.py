@@ -1,0 +1,117 @@
+"""GPU correctness tests for the Triton attention kernels.
+
+Each kernel is checked against an independent eager reference:
+  - fused_rope (triton_apply_rope / triton_apply_rope_bthd) vs a rotate-half
+    RoPE reference using the GPT-NeoX convention (cos/sin = cat([freqs, freqs])).
+    This matches embeddings/rotary.py, which only dispatches to the Triton path
+    for the non-interleaved case.
+  - paged_decode (triton_paged_decode) vs the eager online-softmax decode
+    (paged_stream_decode_standard), which is itself pinned to dense attention
+    in tests/test_kv_cache.py.
+
+These require CUDA + a working Triton install and are skipped otherwise.
+"""
+import pytest
+import torch
+
+triton = pytest.importorskip("triton")
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Triton kernels require CUDA"
+)
+
+from foreblocks.transformer.attention.kernels.fused_rope import (
+    triton_apply_rope,
+    triton_apply_rope_bthd,
+)
+from foreblocks.transformer.attention.kernels.paged_decode import triton_paged_decode
+from foreblocks.transformer.attention.cache.paged import PagedKVCache
+from foreblocks.transformer.attention.cache.decode_stream import (
+    paged_stream_decode_standard,
+)
+
+DEV = "cuda"
+ATOL = 1e-3
+
+
+def _build_cossin(T, D, device):
+    """GPT-NeoX RoPE tables: emb = cat([freqs, freqs]) -> cos/sin of shape [T, D]."""
+    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, D, 2, device=device).float() / D))
+    freqs = torch.outer(torch.arange(T, device=device).float(), inv_freq)  # [T, D/2]
+    emb = torch.cat([freqs, freqs], dim=-1)  # [T, D]
+    return emb.cos(), emb.sin()
+
+
+def _rope_ref(x, cos, sin):
+    """Non-interleaved rotate-half RoPE. x:[B,H,T,D]; cos/sin:[T,D]."""
+    half = x.shape[-1] // 2
+    x1, x2 = x[..., :half], x[..., half:]
+    rot = torch.cat([-x2, x1], dim=-1)
+    return x * cos.view(1, 1, *cos.shape) + rot * sin.view(1, 1, *sin.shape)
+
+
+def test_triton_apply_rope_bhtd_matches_reference():
+    torch.manual_seed(0)
+    B, H, T, D = 2, 4, 7, 16
+    q = torch.randn(B, H, T, D, device=DEV)
+    k = torch.randn(B, H, T, D, device=DEV)
+    cos, sin = _build_cossin(T, D, DEV)  # [T, D]
+
+    oq, ok = triton_apply_rope(q, k, cos[:, : D // 2], sin[:, : D // 2], block_t=16)
+    torch.testing.assert_close(oq, _rope_ref(q, cos, sin), atol=ATOL, rtol=0)
+    torch.testing.assert_close(ok, _rope_ref(k, cos, sin), atol=ATOL, rtol=0)
+
+
+def test_triton_apply_rope_seqlen_offset():
+    torch.manual_seed(1)
+    B, H, T, D, off = 2, 4, 4, 16, 3
+    x = torch.randn(B, H, T, D, device=DEV)
+    cos, sin = _build_cossin(off + T, D, DEV)
+    oq, _ = triton_apply_rope(
+        x, x.clone(), cos[:, : D // 2], sin[:, : D // 2], seqlen_offset=off, block_t=16
+    )
+    ref = _rope_ref(x, cos[off : off + T], sin[off : off + T])
+    torch.testing.assert_close(oq, ref, atol=ATOL, rtol=0)
+
+
+def test_triton_apply_rope_bthd_matches_reference():
+    torch.manual_seed(2)
+    B, T, H, D = 2, 7, 4, 16
+    x = torch.randn(B, T, H, D, device=DEV)
+    cos, sin = _build_cossin(T, D, DEV)
+    out = triton_apply_rope_bthd(x, cos[:, : D // 2], sin[:, : D // 2], block_t=16)
+    ref = _rope_ref(x.transpose(1, 2), cos, sin).transpose(1, 2)
+    torch.testing.assert_close(out, ref, atol=ATOL, rtol=0)
+
+
+@pytest.mark.parametrize(
+    "B,Hkv,D,bs,Tk,Tq,n_rep",
+    [
+        (2, 2, 16, 4, 1, 1, 2),   # decode step, GQA
+        (1, 2, 16, 4, 9, 1, 1),   # multi-block, MHA
+        (2, 4, 16, 8, 17, 3, 2),  # multi-block, GQA, multi-query
+        (1, 1, 32, 4, 5, 2, 1),   # single head
+    ],
+)
+def test_triton_paged_decode_matches_eager(B, Hkv, D, bs, Tk, Tq, n_rep):
+    torch.manual_seed(3)
+    Hq = Hkv * n_rep
+    scale = D ** -0.5
+    c = PagedKVCache(B, Hkv, D, None, bs, 128, torch.device(DEV), torch.float32)
+    c.append(
+        torch.randn(B, Hkv, Tk, D, device=DEV),
+        torch.randn(B, Hkv, Tk, D, device=DEV),
+    )
+
+    q = torch.randn(B, Hq, Tq, D, device=DEV)
+    q_start = (c.logical_seq_len - Tq).clamp_min(0).to(torch.int32)
+
+    tri = triton_paged_decode(q, c, n_rep, scale, q_start_pos=q_start)
+    eager = paged_stream_decode_standard(
+        q, c, kv_repeat=n_rep, scale=scale, dropout_p=0.0,
+        training=False, is_causal=True, q_start_pos=q_start,
+    )
+    torch.testing.assert_close(tri, eager, atol=ATOL, rtol=0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

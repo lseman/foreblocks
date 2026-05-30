@@ -1,4 +1,12 @@
-# dlinear_head_custom.py
+# patch_head_custom.py
+
+"""PatchTST-style patch token transformer head.
+
+Based on: Nie et al., "A Time Series is Worth 64 Words: Long-term Forecasting with Transformers" (PatchTST),
+ICLR 2023.
+Paper: https://arxiv.org/abs/2211.14730
+"""
+
 from typing import Literal
 
 import torch
@@ -51,12 +59,13 @@ class PatchTokenEncoder(nn.Module):
         use_moe: bool = False,
         num_experts: int = 8,
         top_k: int = 2,
-        moe_capacity_factor: float = 1.25,
         layer_norm_eps: float = 1e-5,
         use_final_norm: bool = True,
     ):
         super().__init__()
-        from foreblocks.transformer.transformer import TransformerEncoderLayer as _EncLayer
+        from foreblocks.transformer.transformer import (
+            TransformerEncoderLayer as _EncLayer,
+        )
 
         layer_kwargs = dict(
             d_model=d_model,
@@ -73,11 +82,10 @@ class PatchTokenEncoder(nn.Module):
             use_moe=use_moe,
             num_experts=num_experts,
             top_k=top_k,
-            moe_capacity_factor=moe_capacity_factor,
         )
-        self.layers = nn.ModuleList(
-            [_EncLayer(**layer_kwargs) for _ in range(n_layers)]
-        )
+        self.layers = nn.ModuleList([
+            _EncLayer(**layer_kwargs) for _ in range(n_layers)
+        ])
         self.final_norm = (
             create_norm_layer(custom_norm, d_model, layer_norm_eps)
             if use_final_norm
@@ -89,7 +97,7 @@ class PatchTokenEncoder(nn.Module):
         h = x
         for layer in self.layers:
             # We pass None masks for token encoder (no padding by default)
-            h = layer(h, src_mask=None, src_key_padding_mask=None)
+            h, _ = layer(h, src_mask=None, src_key_padding_mask=None)
         return self.final_norm(h)
 
 
@@ -182,7 +190,6 @@ class PatchTSTHeadCustom(nn.Module):
             use_moe=use_moe,
             num_experts=num_experts,
             top_k=top_k,
-            moe_capacity_factor=moe_capacity_factor,
             layer_norm_eps=layer_norm_eps,
             use_final_norm=use_final_norm,
         )

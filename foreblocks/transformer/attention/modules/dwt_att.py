@@ -6,9 +6,22 @@ import torch.nn.functional as F
 
 
 class DWTAttention(nn.Module):
-    """
-    Discrete Wavelet Transform attention.
-    Alternative to frequency attention using wavelets instead of FFT.
+    """Attention in the wavelet-coefficient domain.
+
+    A spectral attention analogous to :class:`FrequencyAttention`, but using a
+    single-level orthogonal **Haar** discrete wavelet transform instead of the
+    FFT. The Haar DWT splits the sequence into an approximation (low-pass) and
+    a detail (high-pass) band; attention is then computed over the leading
+    wavelet coefficients and mapped back to the time domain via the inverse
+    transform.
+
+    The Haar transform is implemented directly (no external dependency) and is
+    fully differentiable; its analysis/synthesis pair is exactly invertible.
+
+    Parameters
+    ----------
+    modes : int
+        Number of leading wavelet coefficients to attend over.
     """
 
     def __init__(
@@ -17,27 +30,15 @@ class DWTAttention(nn.Module):
         n_heads: int,
         dropout: float = 0.1,
         modes: int = 32,
-        wavelet: str = "db4",
     ):
         super().__init__()
-        print("[Attention] Using DWT attention")
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
 
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
-        self.modes = modes
-        self.wavelet = wavelet
-
-        try:
-            import pywt
-
-            self.pywt = pywt
-            self.has_pywt = True
-        except ImportError:
-            print(
-                "Warning: PyWavelets not available. DWT attention will use simple approximation."
-            )
-            self.has_pywt = False
+        self.modes = int(modes)
+        self.scale = self.head_dim**-0.5
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
@@ -45,40 +46,41 @@ class DWTAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
+        # Per-head, per-coefficient learnable spectral weight.
         self.wavelet_weight = nn.Parameter(
-            torch.randn(n_heads, modes, self.head_dim) * 0.02
+            torch.randn(n_heads, max(1, self.modes), self.head_dim) * 0.02
         )
 
-    def _simple_dwt(self, x):
-        """Simple DWT approximation using average pooling and differences"""
-        B, H, L, D = x.shape
+    def _haar_dwt(self, x: torch.Tensor) -> torch.Tensor:
+        """Single-level Haar DWT along the time axis. x: [B, H, L, D].
 
+        Returns coefficients [approx; detail] concatenated along the time axis,
+        each of length ceil(L/2). Odd-length inputs are reflect-padded.
+        """
+        L = x.size(2)
         if L % 2 != 0:
             x = F.pad(x, (0, 0, 0, 1), mode="reflect")
-            L += 1
-
         approx = (x[:, :, ::2, :] + x[:, :, 1::2, :]) / 2
         detail = (x[:, :, ::2, :] - x[:, :, 1::2, :]) / 2
-
         return torch.cat([approx, detail], dim=2)
 
-    def _simple_idwt(self, coeffs, target_len):
-        """Simple inverse DWT approximation"""
-        B, H, L, D = coeffs.shape
-        half_L = L // 2
-
+    def _haar_idwt(self, coeffs: torch.Tensor, target_len: int) -> torch.Tensor:
+        """Inverse of :meth:`_haar_dwt`. coeffs: [B, H, L, D] → [B, H, target_len, D]."""
+        half_L = coeffs.size(2) // 2
         approx = coeffs[:, :, :half_L, :]
         detail = coeffs[:, :, half_L:, :]
-
         even = approx + detail
         odd = approx - detail
-
         result = torch.zeros(
-            B, H, half_L * 2, D, device=coeffs.device, dtype=coeffs.dtype
+            coeffs.size(0),
+            coeffs.size(1),
+            half_L * 2,
+            coeffs.size(3),
+            device=coeffs.device,
+            dtype=coeffs.dtype,
         )
         result[:, :, ::2, :] = even
         result[:, :, 1::2, :] = odd
-
         return result[:, :, :target_len, :]
 
     def forward(
@@ -97,41 +99,33 @@ class DWTAttention(nn.Module):
             value = key
 
         B, L_q, _ = query.shape
+        H, E = self.n_heads, self.head_dim
 
-        q = self.q_proj(query).view(B, L_q, self.n_heads, self.head_dim).transpose(1, 2)
-        v = (
-            self.v_proj(value)
-            .view(B, value.size(1), self.n_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        k = (
-            self.k_proj(key)
-            .view(B, key.size(1), self.n_heads, self.head_dim)
-            .transpose(1, 2)
-        )
+        q = self.q_proj(query).view(B, L_q, H, E).transpose(1, 2)
+        k = self.k_proj(key).view(B, key.size(1), H, E).transpose(1, 2)
+        v = self.v_proj(value).view(B, value.size(1), H, E).transpose(1, 2)
 
-        q_dwt = self._simple_dwt(q)
-        k_dwt = self._simple_dwt(k)
-        v_dwt = self._simple_dwt(v)
+        q_dwt = self._haar_dwt(q)  # [B, H, Lc, E]
+        k_dwt = self._haar_dwt(k)
+        v_dwt = self._haar_dwt(v)
 
-        modes = min(self.modes, q_dwt.size(2))
-        q_modes = q_dwt[:, :, :modes, :]
-        k_modes = k_dwt[:, :, :modes, :]
-        v_modes = v_dwt[:, :, :modes, :]
+        m = min(self.modes, q_dwt.size(2), k_dwt.size(2))
+        q_m = q_dwt[:, :, :m, :]  # [B, H, m, E]
+        k_m = k_dwt[:, :, :m, :]
+        v_m = v_dwt[:, :, :m, :]
 
-        scores = q_modes * k_modes
-        attn = torch.softmax(scores / math.sqrt(self.head_dim), dim=2)
-        mixed = torch.einsum(
-            "bhmd,hmd->bhmd", attn * v_modes, self.wavelet_weight[:, :modes, :]
-        )
+        # Attention between wavelet coefficients (contract feature dim E).
+        scores = torch.einsum("bhie,bhje->bhij", q_m, k_m) * self.scale
+        attn = torch.softmax(scores, dim=-1)  # over key coefficients
+        mixed = torch.einsum("bhij,bhje->bhie", attn, v_m)  # [B, H, m, E]
+        mixed = mixed * self.wavelet_weight[:, :m, :].unsqueeze(0)
 
         out_dwt = torch.zeros_like(q_dwt)
-        out_dwt[:, :, :modes, :] = mixed
+        out_dwt[:, :, :m, :] = mixed
 
-        out_time = self._simple_idwt(out_dwt, L_q)
-
+        out_time = self._haar_idwt(out_dwt, L_q)
         out = out_time.transpose(1, 2).contiguous().view(B, L_q, self.d_model)
-        out = self.out_proj(out)
-        out = self.dropout(out)
+        out = self.dropout(self.out_proj(out))
 
-        return out, None
+        attn_out = attn if need_weights else None
+        return out, attn_out

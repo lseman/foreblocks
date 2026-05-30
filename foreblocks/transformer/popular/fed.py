@@ -1,4 +1,11 @@
 # fedformer_head_custom.py
+"""FEDformer-style frequency-enhanced decomposed transformer components.
+
+Based on: Zhou et al., "FEDformer: Frequency Enhanced Decomposed Transformer for
+Long-term Series Forecasting", NeurIPS 2022.
+Paper: https://arxiv.org/abs/2201.12740
+"""
+
 from typing import Literal
 
 import torch
@@ -7,7 +14,6 @@ import torch.nn as nn
 from .transformer_aux import (
     create_norm_layer,  # your helper (rms/layer/batch norm etc.)
 )
-
 
 # ---------------------------
 # 1) Series decomposition
@@ -291,38 +297,34 @@ class FEDformerHeadCustom(nn.Module):
         self.dec_in = nn.Linear(in_channels, d_model)
 
         # Encoder
-        self.encoder = nn.ModuleList(
-            [
-                FEDEncoderLayer(
-                    d_model=d_model,
-                    dim_ff=dim_ff,
-                    dropout=dropout,
-                    modes=modes,
-                    mode_select=mode_select,
-                    custom_norm=custom_norm,
-                    eps=layer_norm_eps,
-                    activation=activation,
-                )
-                for _ in range(n_layers_enc)
-            ]
-        )
+        self.encoder = nn.ModuleList([
+            FEDEncoderLayer(
+                d_model=d_model,
+                dim_ff=dim_ff,
+                dropout=dropout,
+                modes=modes,
+                mode_select=mode_select,
+                custom_norm=custom_norm,
+                eps=layer_norm_eps,
+                activation=activation,
+            )
+            for _ in range(n_layers_enc)
+        ])
 
         # Decoder
-        self.decoder = nn.ModuleList(
-            [
-                FEDDecoderLayer(
-                    d_model=d_model,
-                    dim_ff=dim_ff,
-                    dropout=dropout,
-                    modes=modes,
-                    mode_select=mode_select,
-                    custom_norm=custom_norm,
-                    eps=layer_norm_eps,
-                    activation=activation,
-                )
-                for _ in range(n_layers_dec)
-            ]
-        )
+        self.decoder = nn.ModuleList([
+            FEDDecoderLayer(
+                d_model=d_model,
+                dim_ff=dim_ff,
+                dropout=dropout,
+                modes=modes,
+                mode_select=mode_select,
+                custom_norm=custom_norm,
+                eps=layer_norm_eps,
+                activation=activation,
+            )
+            for _ in range(n_layers_dec)
+        ])
 
         # Trend forecasting head (linear extrapolation from last trend state)
         self.trend_proj = nn.Sequential(

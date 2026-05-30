@@ -546,60 +546,89 @@ class _KDA_Fast(nn.Module):
             o_t = torch.bmm(S.transpose(1, 2), q_t.unsqueeze(-1)).squeeze(-1)
             return o_t, S
 
-    # ── parallel chunk output (approx intra-chunk) ────────────────────────────
+    # ── parallel chunk (exact WY representation, per-channel decay) ───────────
 
-    @staticmethod
-    def _parallel_chunk_output(
-        Q_c: torch.Tensor,  # [BH, C, Dk]
-        K_c: torch.Tensor,  # [BH, C, Dk]
-        V_c: torch.Tensor,  # [BH, C, Dv]
-        alpha_c: torch.Tensor,  # [BH, C, Dk]
-        beta_c: torch.Tensor,  # [BH, C, 1]
-        S_prev: torch.Tensor,  # [BH, Dk, Dv]
-    ) -> torch.Tensor:  # [BH, C, Dv]
+    def _chunk_parallel(
+        self,
+        S: torch.Tensor,  # [BH, Dk, Dv]  incoming state
+        Q: torch.Tensor,  # [BH, T, Dk]   normalised query
+        K: torch.Tensor,  # [BH, T, Dk]   normalised key
+        V: torch.Tensor,  # [BH, T, Dv]   value
+        alpha: torch.Tensor,  # [BH, T, Dk] per-channel decay
+        beta: torch.Tensor,  # [BH, T, 1]  scalar write strength
+        out: torch.Tensor,  # [BH, T, Dv] output buffer (written in place)
+        C: int,
+    ) -> torch.Tensor:
         """
-        Approximate parallel output for one chunk.
+        Chunk-parallel KDA via the WY representation, exact (to fp error) w.r.t.
+        the sequential ``_seq_step`` recurrence. Generalises the scalar gated
+        delta chunk form to KDA's per-channel diagonal decay α_t ∈ R^{Dk}.
 
-        Inter-chunk (exact):
-            O_inter[i] = S_prev^T q_i  →  Q_c @ S_prev  [one bmm]
+        Within a chunk of length L starting from state S_0, per channel d define
+        the cumulative decay P_t[d] = ∏_{j<=t} α_j[d]  and the bounded pairwise
+        ratio r_tj[d] = P_t[d]/P_j[d] (in (0,1] for t>=j). Then with
+        u_t = β_t·err_t solved from a unit lower-triangular system:
 
-        Intra-chunk (approx — ignores within-chunk S updates):
-            cum_alpha[i, j] = ∏_{l=j+1}^{i} alpha[l]   (upper=0 by mask)
-            A[i, j]         = (q_i ⊙ cum_alpha[i,j]) · (k_j ⊙ β_j)
-            O_intra[i]      = Σ_j A[i,j] · v_j
+            M_tj  = Σ_d k_t[d] k_j[d] r_tj[d]       (j<t, strictly lower)
+            RHS_t = β_t v_t - β_t (P_t⊙k_t)·S_0
+            U     = (I + tril(β M,-1))^{-1} RHS
+
+            o_t   = (P_t⊙q_t)·S_0 + Σ_{j<=t} (Σ_d q_t[d]k_j[d] r_tj[d]) U_j
+            S_new = diag(P_L) S_0 + Σ_j (P_L/P_j ⊙ k_j) ⊗ U_j
+
+        All decay factors are bounded in (0,1] (no 1/P overflow over long
+        chunks with small α).
         """
-        BH, C, Dk = Q_c.shape
-        device = Q_c.device
+        T = Q.shape[1]
+        dtype = S.dtype
+        work = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+        Qf, Kf, Vf = Q.to(work), K.to(work), V.to(work)
+        af, bf = alpha.to(work), beta.to(work).squeeze(-1)  # [BH,T,Dk], [BH,T]
+        S = S.to(work)
 
-        # ── inter-chunk ──────────────────────────────────────────────────────
-        # [BH, C, Dk] × [BH, Dk, Dv] → [BH, C, Dv]
-        O_inter = torch.bmm(Q_c, S_prev)
+        for s in range(0, T, C):
+            e = min(s + C, T)
+            L = e - s
+            Qc, Kc, Vc = Qf[:, s:e], Kf[:, s:e], Vf[:, s:e]
+            ac, bc = af[:, s:e], bf[:, s:e]  # [BH, L, Dk], [BH, L]
 
-        # ── intra-chunk ──────────────────────────────────────────────────────
-        # Cumulative log-alpha: [BH, C, Dk]
-        log_alpha = torch.log(alpha_c.clamp_min(1e-7))
-        cumlog = torch.cumsum(log_alpha, dim=1)  # [BH, C, Dk]
+            logP = torch.cumsum(ac.clamp_min(1e-12).log(), dim=1)  # [BH, L, Dk]
+            P = logP.exp()  # decay start→t inclusive, per channel
 
-        # cum_alpha[b, i, j, dk] = exp( cumlog[b,i,dk] - cumlog[b,j,dk] )
-        # for i >= j (empty product at i=j gives exp(0)=1 — correct).
-        # Shape: [BH, C, C, Dk]
-        diff = cumlog.unsqueeze(2) - cumlog.unsqueeze(1)  # [BH, C, C, Dk]
-        cum_alpha_ij = torch.exp(diff)  # [BH, C, C, Dk]
+            # Bounded pairwise per-channel ratio r_tj[d] = P_t[d]/P_j[d].
+            # Mask exponent to <=0 (t>=j) *before* exp to avoid +inf above the
+            # diagonal (which would give inf·0 = nan in backward).
+            lmask = torch.tril(
+                torch.ones(L, L, device=S.device, dtype=torch.bool), 0
+            )  # [L, L] t>=j
+            dlog = logP[:, :, None, :] - logP[:, None, :, :]  # [BH, L, L, Dk]
+            dlog = torch.where(lmask[None, :, :, None], dlog, torch.zeros_like(dlog))
+            r = dlog.exp()  # [BH, L, L, Dk] in (0,1] on/below diagonal
 
-        # Lower-triangular causal mask (i >= j)
-        causal = torch.tril(torch.ones(C, C, device=device, dtype=torch.bool))
-        cum_alpha_ij = cum_alpha_ij * causal.unsqueeze(0).unsqueeze(-1)
+            # Triangular system: M_tj = Σ_d k_t k_j r_tj
+            M = (Kc[:, :, None, :] * Kc[:, None, :, :] * r).sum(-1)  # [BH, L, L]
+            A = torch.eye(L, device=S.device, dtype=S.dtype) + torch.tril(
+                bc[:, :, None] * M, diagonal=-1
+            )
 
-        # Attention logits: A[b, i, j] = Σ_dk Q[b,i,dk] * cum_alpha[b,i,j,dk] * K_beta[b,j,dk]
-        # [BH, C, 1, Dk] * [BH, C, C, Dk] → [BH, C, C, Dk]
-        Q_dec = Q_c.unsqueeze(2) * cum_alpha_ij  # [BH, C, C, Dk]
-        K_beta = K_c * beta_c  # [BH, C, Dk]
-        A = (Q_dec * K_beta.unsqueeze(1)).sum(-1)  # [BH, C, C]
+            PK = P * Kc  # P_t ⊙ k_t : [BH, L, Dk]
+            Kt_S0 = torch.einsum("bik,bkd->bid", PK, S)  # (P_t⊙k_t)·S_0 : [BH, L, Dv]
+            rhs = bc[..., None] * Vc - bc[..., None] * Kt_S0
+            U = torch.linalg.solve_triangular(A, rhs, upper=False)  # [BH, L, Dv]
 
-        # Intra-chunk output
-        O_intra = torch.bmm(A, V_c)  # [BH, C, Dv]
+            # Output (S_0 is the pre-chunk state, = current S):
+            PQ = P * Qc
+            q_S0 = torch.einsum("bik,bkd->bid", PQ, S)  # [BH, L, Dv]
+            Mo = (Qc[:, :, None, :] * Kc[:, None, :, :] * r).sum(-1)  # [BH, L, L]
+            coef = torch.tril(Mo, diagonal=0)
+            out[:, s:e] = (q_S0 + torch.einsum("bij,bjd->bid", coef, U)).to(dtype)
 
-        return O_inter + O_intra
+            # State carry: P_L/P_j bounded in (0,1]
+            end_r = (logP[:, -1:, :] - logP).exp()  # [BH, L, Dk]
+            Gsum = torch.einsum("bik,bid->bkd", end_r * Kc, U)
+            S = P[:, -1][..., None] * S + Gsum  # [BH, Dk, Dv]
+
+        return S.to(dtype)
 
     # ── main forward ──────────────────────────────────────────────────────────
 
@@ -639,33 +668,8 @@ class _KDA_Fast(nn.Module):
         C = self.chunk_size if (self.chunk_size and self.chunk_size > 1) else 0
 
         if C:
-            # ── Parallel-chunk mode ───────────────────────────────────────
-            for s in range(0, T, C):
-                e = min(s + C, T)
-                c_len = e - s
-
-                Q_c = Q[:, s:e, :]  # [BH, c_len, Dk]
-                K_c = K[:, s:e, :]
-                V_c = V[:, s:e, :]
-                a_c = alpha[:, s:e, :]  # [BH, c_len, Dk]
-                b_c = beta[:, s:e, :]  # [BH, c_len, 1]
-
-                # Parallel output (vectorised, approximate intra-chunk)
-                out[:, s:e, :] = self._parallel_chunk_output(Q_c, K_c, V_c, a_c, b_c, S)
-
-                # Exact sequential state update within the chunk
-                # S is detached: it is a recurrent buffer, not a gradient path.
-                S = S.detach()
-                for t in range(c_len):
-                    _, S = self._seq_step(
-                        S,
-                        K_c[:, t, :],
-                        V_c[:, t, :],
-                        Q_c[:, t, :],
-                        a_c[:, t, :],
-                        b_c[:, t, :],
-                        use_triton_path=use_triton,
-                    )
+            # ── Parallel-chunk mode (exact WY representation) ──────────────
+            S = self._chunk_parallel(S, Q, K, V, alpha, beta, out, C)
         else:
             # ── Exact sequential mode ─────────────────────────────────────
             S = S.detach()

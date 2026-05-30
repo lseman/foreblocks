@@ -1,12 +1,18 @@
 # tft_head_custom.py
 
+"""Temporal Fusion Transformer components.
+
+Based on: Lim et al., "Temporal Fusion Transformers for Interpretable Multi-horizon
+Time Series Forecasting", NeurIPS 2020.
+Paper: https://arxiv.org/abs/1912.09363
+"""
+
 import torch
 import torch.nn as nn
 
 from .embeddings import PositionalEncoding
 from .transformer import TransformerDecoder, TransformerEncoder
 from .transformer_aux import create_norm_layer
-
 
 # ---------------------------
 # Core TFT building blocks
@@ -80,9 +86,9 @@ class VariableSelectionNetwork(nn.Module):
         self.name = name
 
         # Per-variable encoders map each var feature to d_model
-        self.var_encoders = nn.ModuleList(
-            [nn.Linear(d_in_per_var, d_model) for _ in range(num_vars)]
-        )
+        self.var_encoders = nn.ModuleList([
+            nn.Linear(d_in_per_var, d_model) for _ in range(num_vars)
+        ])
 
         # Gating: compute weights over variables
         # Aggregator input is concatenated encodings [B, T, num_vars * d_model]

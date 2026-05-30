@@ -1,9 +1,14 @@
 # dlinear_head_custom.py
 
+"""DLinear-style time series forecasting head.
+
+Based on: Zeng et al., "Are Transformers Effective for Time Series Forecasting?" (DLinear),
+Paper: https://arxiv.org/abs/2205.13504
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 # Use your project modules
 

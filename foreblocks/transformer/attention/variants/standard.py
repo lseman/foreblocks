@@ -189,7 +189,9 @@ class StandardAttentionImpl:
                 layer_state,
             )
 
-        q, k, v = self.parent._prepare_qkv_attention(query, key, value, layer_state)
+        q, k, v, q_start_pos = self.parent._prepare_qkv_attention(
+            query, key, value, layer_state
+        )
         out, weights = self.parent._compute_attention(
             q,
             k,
@@ -198,5 +200,6 @@ class StandardAttentionImpl:
             key_padding_mask,
             is_causal,
             need_weights,
+            q_start_pos=q_start_pos,
         )
         return self.parent._finalize_projected_output(out, B, T_q), weights, layer_state

@@ -40,7 +40,7 @@ class SoftpickAttentionImpl:
             from ...third_party.flash_softpick_attn import parallel_softpick_attn
 
             B, T_q, _ = query.shape
-            q, k, v = self.parent._prepare_qkv_attention(query, key, value, layer_state)
+            q, k, v, _ = self.parent._prepare_qkv_attention(query, key, value, layer_state)
 
             if cu_seqlens is None:
                 out = parallel_softpick_attn(

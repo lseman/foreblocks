@@ -1,13 +1,20 @@
 # itransformer_head_custom.py
+"""iTransformer-style variable-token transformer head for time series.
+
+Based on: iTransformer, a variable-token transformer design for improved
+time series forecasting and long-context modeling.
+Paper: https://arxiv.org/abs/2303.13538
+"""
+
 from typing import Literal
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from foreblocks.transformer.transformer_att import MultiAttention
 
 from foreblocks.transformer.embeddings import PositionalEncoding
 from foreblocks.transformer.norms import create_norm_layer
-from foreblocks.transformer.transformer_att import MultiAttention
 
 
 class _TemporalCompressor(nn.Module):
@@ -95,12 +102,13 @@ class VariableTokenEncoder(nn.Module):
         use_moe: bool = False,
         num_experts: int = 8,
         top_k: int = 2,
-        moe_capacity_factor: float = 1.25,
         layer_norm_eps: float = 1e-5,
         use_final_norm: bool = True,
     ):
         super().__init__()
-        from foreblocks.transformer.transformer import TransformerEncoderLayer as _EncLayer
+        from foreblocks.transformer.transformer import (
+            TransformerEncoderLayer as _EncLayer,
+        )
 
         layer_kwargs = dict(
             d_model=d_model,
@@ -117,11 +125,10 @@ class VariableTokenEncoder(nn.Module):
             use_moe=use_moe,
             num_experts=num_experts,
             top_k=top_k,
-            moe_capacity_factor=moe_capacity_factor,
         )
-        self.layers = nn.ModuleList(
-            [_EncLayer(**layer_kwargs) for _ in range(n_layers)]
-        )
+        self.layers = nn.ModuleList([
+            _EncLayer(**layer_kwargs) for _ in range(n_layers)
+        ])
         self.final_norm = (
             create_norm_layer(custom_norm, d_model, layer_norm_eps)
             if use_final_norm
@@ -133,7 +140,7 @@ class VariableTokenEncoder(nn.Module):
         h = tok
         for layer in self.layers:
             # No padding mask by default (Nv is fixed per batch)
-            h = layer(h, src_mask=None, src_key_padding_mask=None)  # shape preserved
+            h, _ = layer(h, src_mask=None, src_key_padding_mask=None)  # shape preserved
         return self.final_norm(h)
 
 

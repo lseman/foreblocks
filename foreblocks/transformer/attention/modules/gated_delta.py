@@ -1,5 +1,5 @@
 """
-gated_delta.py — Gated Delta Network Attention
+gated_delta.py - Gated Delta Network Attention
 
 Based on: "Gated Delta Networks: Improving Mamba2 with Delta Rule" (Yang et al., 2024)
 https://arxiv.org/abs/2412.06464
@@ -7,15 +7,15 @@ https://arxiv.org/abs/2412.06464
 Architecture
 ------------
 The Gated Delta Network extends DeltaNet with:
- 1. **Per-head matrix state** S ∈ ℝ^{Dk × Dv} maintained by the delta rule.
- 2. **Scalar forget gate α_t ∈ (0,1]** — element-wise decay of each row of S.
- 3. **Write strength β_t ∈ [0,1]** — controls how much the new (k,v) pair is written.
- 4. **Sigmoid output gate g_t** — data-dependent gating of retrieved memories.
+ 1. **Per-head matrix state** S ∈ R^{Dk × Dv} maintained by the delta rule.
+ 2. **Scalar forget gate α_t ∈ (0,1]** - element-wise decay of each row of S.
+ 3. **Write strength β_t ∈ [0,1]** - controls how much the new (k,v) pair is written.
+ 4. **Sigmoid output gate g_t** - data-dependent gating of retrieved memories.
  5. **Head-wise RMSNorm** before the output gate (stabilises large S values).
  6. **Optional short (causal) depthwise conv** on Q, K, V for local context.
 
 State update (per-head):
-    err_t  = v_t − S_{t-1} @ k_t                      (prediction error)
+    err_t  = v_t - S_{t-1} @ k_t                      (prediction error)
     S_t    = α_t · S_{t-1} + β_t · outer(err_t, k_t)  (delta rule + decay)
 
 Output (per-head):
@@ -23,11 +23,11 @@ Output (per-head):
 
 Three forward modes
 -------------------
- * **Sequential** (default, exact, training) — step-by-step O(T·Dk·Dv) per head.
- * **Chunk-parallel** (optional, approximate intra-chunk) — reduce Python loop
+ * **Sequential** (default, exact, training) - step-by-step O(T·Dk·Dv) per head.
+ * **Chunk-parallel** (optional, approximate intra-chunk) - reduce Python loop
    overhead; intra-chunk uses pre-S state (standard chunk-mode approximation).
    Exact sequential state update maintains correct S across chunks.
- * **Incremental** (layer_state dict) — single-step decoding for KV-cached
+ * **Incremental** (layer_state dict) - single-step decoding for KV-cached
    generation. Reads/writes "gdn_state" from/to the provided dict.
 
 Interface matches LinearAttention / KimiAttention:
@@ -39,6 +39,8 @@ For standalone use (internal KimiAttention-style) pass `x` directly:
 """
 
 from __future__ import annotations
+
+import math
 
 import torch
 import torch.nn as nn
@@ -184,7 +186,7 @@ class _CausalConv(nn.Module):
 
 
 class _HeadRMSNorm(nn.Module):
-    """Per-head RMSNorm — applied to [B, H, T, Dv] or [BH, T, Dv]."""
+    """Per-head RMSNorm - applied to [B, H, T, Dv] or [BH, T, Dv]."""
 
     def __init__(self, num_heads: int, head_dim: int, eps: float = 1e-6):
         super().__init__()
@@ -192,16 +194,16 @@ class _HeadRMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(num_heads, head_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, H, *, Dv]  or  [BH, *, Dv]  — norm over last dim
+        # x: [B, H, *, Dv]  or  [BH, *, Dv]  - norm over last dim
         rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
         out = x * rms
         # broadcast weight: handle both (B,H,T,Dv) and (BH,T,Dv)
         w = self.weight.view(*self.weight.shape)  # (H, Dv)
         if x.dim() == 4:
-            # (B, H, T, Dv) — unsqueeze for broadcast
+            # (B, H, T, Dv) - unsqueeze for broadcast
             out = out * w.unsqueeze(0).unsqueeze(2)
         else:
-            # (BH, T, Dv) — we don't know H here, return as-is (caller reshapes)
+            # (BH, T, Dv) - we don't know H here, return as-is (caller reshapes)
             out = out * w.reshape(-1, w.size(-1)).repeat(
                 x.size(0) // self.weight.size(0), 1
             ).unsqueeze(1)
@@ -239,12 +241,13 @@ class GatedDeltaNet(nn.Module):
         Apply a causal depthwise conv on Q, K, V before the attention recurrence.
     conv_kernel : int
         Kernel size for the short conv (default 4).
-    alpha_min : float
-        Minimum value for the forget gate α (numerical stability).
     beta_max : float
         Maximum value for the write gate β.
     eps : float
         Epsilon for head-wise RMSNorm.
+    use_mamba_gate : bool
+        Use Mamba2-style gating for α: ``exp(-exp(A_log) * softplus(g + dt))``.
+        Otherwise falls back to legacy ``sigmoid(α_proj(x))``.
     """
 
     def __init__(
@@ -252,7 +255,7 @@ class GatedDeltaNet(nn.Module):
         d_model: int,
         n_heads: int = 8,
         dropout: float = 0.1,
-        # Ignored kwargs — keep API-compatible with MultiAttention / LinearAttention
+        # Ignored kwargs - keep API-compatible with MultiAttention / LinearAttention
         attention_type: str = "standard",
         freq_modes: int = 16,
         cross_attention: bool = False,
@@ -262,12 +265,12 @@ class GatedDeltaNet(nn.Module):
         chunk_size: int = 64,
         use_short_conv: bool = True,
         conv_kernel: int = 4,
-        alpha_min: float = 0.1,
         beta_max: float = 1.0,
         eps: float = 1e-6,
         use_triton: bool = False,
         triton_block_i: int = 64,
         triton_block_j: int = 128,
+        use_mamba_gate: bool = True,
     ):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
@@ -277,11 +280,14 @@ class GatedDeltaNet(nn.Module):
         self.dk = d_key or (d_model // n_heads)
         self.dv = d_val or (d_model // n_heads)
         self.chunk_size = int(chunk_size) if chunk_size and chunk_size > 1 else 0
-        self.alpha_min = float(alpha_min)
         self.beta_max = float(beta_max)
         self.use_triton = bool(use_triton and _HAS_TRITON)
         self.triton_block_i = int(triton_block_i)
         self.triton_block_j = int(triton_block_j)
+        self.use_mamba_gate = bool(use_mamba_gate)
+
+        # Legacy compatibility: alpha_min is ignored when use_mamba_gate=True
+        # (Mamba2 gating is inherently stable via exp(-positive))
 
         # ── Projections ────────────────────────────────────────────────────
         self.q_proj = nn.Linear(d_model, self.h * self.dk, bias=False)
@@ -290,8 +296,30 @@ class GatedDeltaNet(nn.Module):
         self.o_proj = nn.Linear(self.h * self.dv, d_model, bias=False)
 
         # ── Gates ──────────────────────────────────────────────────────────
-        # α: per-head scalar forget gate (one value per head per step)
-        self.alpha_proj = nn.Linear(d_model, self.h, bias=True)
+        # α (forget/decay gate): per-head scalar, one value per head per step.
+        #   Mamba2-style: α = exp(-exp(A_log) * softplus(gk + dt_bias))
+        #     - A_log from uniform(1, 16) [logged], dt_bias ≈ N(0, 1)
+        #   Legacy fallback: α = sigmoid(alpha_proj(x))
+        self.gk_proj = nn.Linear(d_model, self.h, bias=True)  # raw projection for gating
+        if self.use_mamba_gate:
+            # Per-head decay parameter: A_log = log(A), A ~ uniform(1, 16)
+            #     Matches NVlabs: uniform_(1, 16).log()
+            self.A_log = nn.Parameter(torch.empty(self.h, dtype=torch.float32).uniform_(1, 16).log())
+            self.A_log._no_weight_decay = True
+            # Per-head dt bias: Mamba2 / NVlabs inverse-softplus init.
+            #   dt ~ exp(uniform(log dt_min, log dt_max)) clamped to >= dt_init_floor,
+            #   dt_bias = dt + log(-expm1(-dt))  (so softplus(dt_bias) == dt at init)
+            dt_min, dt_max, dt_floor = 1e-3, 1e-1, 1e-4
+            dt = torch.exp(
+                torch.rand(self.h, dtype=torch.float32)
+                * (math.log(dt_max) - math.log(dt_min))
+                + math.log(dt_min)
+            ).clamp_min(dt_floor)
+            inv_dt = dt + torch.log(-torch.expm1(-dt))  # inverse of softplus
+            self.dt_bias = nn.Parameter(inv_dt)
+            self.dt_bias._no_weight_decay = True
+        else:
+            self.alpha_proj = nn.Linear(d_model, self.h, bias=True)  # legacy
         # β: per-head scalar write strength
         self.beta_proj = nn.Linear(d_model, self.h, bias=True)
         # g: output gate, matched to value dim
@@ -314,8 +342,11 @@ class GatedDeltaNet(nn.Module):
         nn.init.xavier_uniform_(self.k_proj.weight, gain=0.5)
         # β bias: start near 0.5 (moderate write rate)
         nn.init.constant_(self.beta_proj.bias, 0.0)
-        # α bias: start near 0.9 (slow forgetting)
-        nn.init.constant_(self.alpha_proj.bias, 2.0)
+        # gk_proj: Xaviers uniform for Mamba2 gating input
+        nn.init.xavier_uniform_(self.gk_proj.weight, gain=0.5)
+        if not self.use_mamba_gate:
+            # legacy: α bias for sigmoid - start near 0.9 (slow forgetting)
+            nn.init.constant_(self.alpha_proj.bias, 2.0)
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
@@ -353,12 +384,22 @@ class GatedDeltaNet(nn.Module):
         alpha : [BH, T, 1]  scalar decay per head per step
         beta  : [BH, T, 1]  scalar write strength per head per step
         """
+        if self.use_mamba_gate:
+            # Mamba2-style gating: α = exp(-exp(A_log) * softplus(gk + dt_bias))
+            # g_raw: [B, T, H] → g_log: [B, T, H] (log-space decay, always ≤ 0)
+            g_raw = self.gk_proj(x)  # [B, T, H]
+            if self.dt_bias is not None:
+                g_log = -self.A_log.exp() * F.softplus(g_raw + self.dt_bias)  # [B, T, H]
+            else:
+                g_log = -self.A_log.exp() * F.softplus(g_raw)  # [B, T, H]
+            alpha = g_log.exp().clamp(max=1.0)  # [B, T, H] → (0, 1]
+        else:
+            # Legacy: α = sigmoid(alpha_proj(x))
+            alpha = torch.sigmoid(self.alpha_proj(x)).clamp(max=1.0)  # [B, T, H]
         alpha = (
-            torch.sigmoid(self.alpha_proj(x))  # [B, T, H]
-            .clamp(min=self.alpha_min, max=1.0)
-            .transpose(1, 2)  # [B, H, T]
+            alpha.transpose(1, 2)  # [B, H, T]
             .contiguous()
-            .reshape(BH, T, 1)
+            .reshape(BH, T, 1)  # [BH, T, 1]
         )
         beta = (
             torch.sigmoid(self.beta_proj(x))  # [B, T, H]
@@ -450,7 +491,11 @@ class GatedDeltaNet(nn.Module):
         alpha_t: torch.Tensor,
         beta_t: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Inference-only Triton fast step; numerically aligned with _delta_step."""
+        """Inference-only Triton fast step; numerically aligned with _delta_step.
+
+        Matches paper formula: S_t = αS + βk⊗(v - αkS)
+        Order: decay → error from decayed state → outer-product update → readout
+        """
         k32 = k_t.to(torch.float32).contiguous()
         v32 = v_t.to(torch.float32).contiguous()
         q32 = q_t.to(torch.float32).contiguous()
@@ -459,12 +504,17 @@ class GatedDeltaNet(nn.Module):
 
         S_work = S.contiguous().to(torch.float32)
 
-        v_hat = self._triton_matvec_xt(S_work, k32)
-        delta = v32 - v_hat
-
+        # 1 Apply decay first: S' = α S
         S_work.mul_(a32.unsqueeze(-1))
+
+        # 2 Prediction error from DECAYED state
+        v_hat = self._triton_matvec_xt(S_work, k32)
+        delta = v32 - v_hat  # error of decayed state prediction
+
+        # 3 Outer-product update: S += β k ⊗ delta
         self._triton_rank1_update(S_work, k32, delta, b32.squeeze(-1))
 
+        # 4 Readout from updated state
         o_t = self._triton_matvec_xt(S_work, q32).to(S.dtype)
         S_new = S_work.to(S.dtype)
         return o_t, S_new
@@ -477,81 +527,121 @@ class GatedDeltaNet(nn.Module):
         k_t: torch.Tensor,  # [BH, Dk]       normalised key
         v_t: torch.Tensor,  # [BH, Dv]       value
         q_t: torch.Tensor,  # [BH, Dk]       normalised query
-        alpha_t: torch.Tensor,  # [BH, 1]        or [BH, Dk] scalar/vector decay
+        alpha_t: torch.Tensor,  # [BH, 1]        scalar decay
         beta_t: torch.Tensor,  # [BH, 1]        write strength
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Delta-rule update + retrieval.
+        Delta-rule update + retrieval, per the Gated DeltaNet paper.
+
+        Paper formula:
+            S_t = α_t (I - β_t k_t^T k_t) S_{t-1} + β_t k_t^T v_t
+        which expands to:
+            S_t = α_t S_{t-1} + β_t k_t ⊗ (v_t - α_t k_t S_{t-1})
+
+        Key: the prediction error is computed from the *decayed* state
+        α_t S_{t-1}, not the raw S_{t-1}. This matches the NVlabs
+        official implementation and the FLA reference kernel.
 
         Returns (o_t [BH, Dv], S_new [BH, Dk, Dv]).
         """
-        # Prediction error: how wrong is the current state at predicting v_t?
-        # v_retrieved = S @ k  →  [BH, Dv]
-        v_hat = torch.einsum("bid,bi->bd", S, k_t)  # [BH, Dv]
-        err = v_t - v_hat  # [BH, Dv]
+        # 1 Apply decay: S' = α S
+        S_decayed = alpha_t.unsqueeze(-1) * S  # [BH, Dk, Dv]
 
-        # Outer product write: [BH, Dk, Dv]
+        # 2 Prediction error from DECAYED state: v_hat = k^T S_decayed
+        # einsum "bid,bi->bd" contracts over Dk: S_decayed @ k_t
+        v_hat = torch.einsum("bid,bi->bd", S_decayed, k_t)  # [BH, Dv]
+        err = v_t - v_hat  # [BH, Dv]  - error of decayed state prediction
+
+        # 3 Outer-product write: k ⊗ (β · err)
         write = torch.einsum("bi,bd->bid", k_t, err)  # [BH, Dk, Dv]
 
-        # State update: decay rows + add error-corrected outer product
-        # alpha_t is [BH, 1] — broadcast over (Dk, Dv)
-        S_new = alpha_t.unsqueeze(-1) * S + beta_t.unsqueeze(-1) * write
+        # 4 State update: S_t = α S + β k ⊗ err
+        S_new = S_decayed + beta_t.unsqueeze(-1) * write  # [BH, Dk, Dv]
 
-        # Retrieve from updated state
+        # 5 Retrieve from updated state: o_t = q^T S_new
         o_t = torch.einsum("bid,bi->bd", S_new, q_t)  # [BH, Dv]
 
         return o_t, S_new
 
-    # ── Chunk-parallel output (inter-chunk exact, intra-chunk approx) ─────────
+    # ── Chunk-parallel forward (exact WY representation, FLA-style) ──────────
 
-    def _chunk_output(
+    def _chunk_parallel(
         self,
-        Q: torch.Tensor,  # [BH, C, Dk]
-        K: torch.Tensor,  # [BH, C, Dk]
-        V: torch.Tensor,  # [BH, C, Dv]
-        alpha: torch.Tensor,  # [BH, C, 1]
-        beta: torch.Tensor,  # [BH, C, 1]
-        S_prev: torch.Tensor,  # [BH, Dk, Dv]
-    ) -> torch.Tensor:  # [BH, C, Dv]
+        S: torch.Tensor,  # [BH, Dk, Dv]  incoming state
+        Q: torch.Tensor,  # [BH, T, Dk]   normalised query
+        K: torch.Tensor,  # [BH, T, Dk]   normalised key
+        V: torch.Tensor,  # [BH, T, Dv]   value
+        alpha: torch.Tensor,  # [BH, T, 1] scalar decay per step
+        beta: torch.Tensor,  # [BH, T, 1]  scalar write strength per step
+        out: torch.Tensor,  # [BH, T, Dv] output buffer (written in place)
+        C: int,
+    ) -> torch.Tensor:
         """
-        Parallel output computation for one chunk using S_prev.
+        Chunk-parallel gated delta rule via the WY representation.
 
-        Inter-chunk: O_inter = cumulative alpha decay × (Q @ S_prev) contribution.
-        Intra-chunk: causal attention weighted by cumulative alpha and beta.
+        Mathematically equivalent (to fp error) to repeated ``_delta_step``.
+        Within a chunk of length L starting from state S_0:
 
-        This is an approximation: intra-chunk uses S_prev (not per-step S).
-        Set chunk_size=1 / chunk_size=0. for exact sequential behaviour.
+            b_t   = prod_{j<=t} alpha_j          (cumulative decay, log-space)
+            r_tj  = b_t / b_j   (t>=j, in (0,1])  (bounded relative decay)
+
+            RHS_t = beta_t v_t - beta_t b_t (K_c S_0)_t
+            L_tj  = beta_t r_tj (k_j . k_t)   for j<t   (strictly lower)
+            U     = (I + L)^{-1} RHS           (triangular solve;  U_t = beta_t err_t)
+
+            S_new = b_L S_0 + sum_j (b_L/b_j) k_j (x) U_j
+            o_t   = b_t (Q_c S_0)_t + sum_{j<=t} r_tj (q_t . k_j) U_j
+
+        All decay factors are bounded in (0,1], so no 1/b overflow over long
+        chunks. Derivation matches the file's ``_delta_step`` recurrence:
+        err computed from the *decayed* state.
         """
-        C = Q.size(1)
-        device = Q.device
+        T = Q.shape[1]
+        dtype = S.dtype
+        # Solve / accumulate in fp32 at minimum (promote fp16/bf16) for stability;
+        # keep higher precision (fp64) when the caller supplies it so the chunk
+        # path stays bit-for-bit comparable to the sequential recurrence.
+        work = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+        Qf, Kf, Vf = Q.to(work), K.to(work), V.to(work)
+        af, bf = alpha.to(work).squeeze(-1), beta.to(work).squeeze(-1)  # [BH, T]
 
-        # ── Inter-chunk contribution ──────────────────────────────────────
-        # cum_alpha[t] = product of alpha[0..t]  (for broadcasting over Dk axis)
-        cum_alpha = torch.cumprod(alpha, dim=1)  # [BH, C, 1]
-        # o_inter[t] = alpha_cum[t] * (S_prev^T @ q_t),  S: [BH,Dk,Dv], q: [BH,C,Dk]
-        # einsum contracts over Dk ("k"): [BH,Dk,Dv] × [BH,C,Dk] → [BH,C,Dv]
-        o_inter = torch.einsum("bkv,btk->btv", S_prev, Q) * cum_alpha
+        S = S.to(work)
+        for s in range(0, T, C):
+            e = min(s + C, T)
+            L = e - s
+            Qc, Kc, Vc = Qf[:, s:e], Kf[:, s:e], Vf[:, s:e]
+            ac, bc = af[:, s:e], bf[:, s:e]  # [BH, L]
 
-        # ── Intra-chunk attention ─────────────────────────────────────────
-        # For i >= j:  A[i,j] = (Q[i] · K[j]) × β[j] × cum_alpha[i] / cum_alpha[j]
-        log_cum = torch.log(cum_alpha.clamp_min(1e-7))  # [BH, C, 1]
-        # relative log-decay from j to i: log_cum[i] - log_cum[j]
-        decay_ij = torch.exp(
-            log_cum.squeeze(-1).unsqueeze(2) - log_cum.squeeze(-1).unsqueeze(1)
-        )  # [BH, C, C]
+            logb = torch.cumsum(ac.clamp_min(1e-12).log(), dim=1)  # [BH, L]
+            b = logb.exp()  # decay start→t inclusive, applied to S_0 path
+            # r_tj = b_t / b_j = exp(logb_t - logb_j); bounded (0,1] for t>=j.
+            # The upper triangle (t<j) has a positive exponent and would overflow
+            # to +inf; we discard it via tril below, but autograd then propagates
+            # inf·0 = nan. Mask the exponent to <=0 *before* exp so it stays finite.
+            dlog = (logb[:, :, None] - logb[:, None, :]).tril(diagonal=0)  # [BH, L, L]
+            ratio = dlog.exp()  # bounded in (0,1] on/below diagonal, finite above
 
-        # Causal lower-triangular mask
-        causal_mask = torch.tril(torch.ones(C, C, device=device, dtype=torch.bool))
-        decay_ij = decay_ij.masked_fill(~causal_mask.unsqueeze(0), 0.0)
+            Kt_S0 = torch.einsum("bik,bkd->bid", Kc, S)  # (K_c S_0)_t : [BH, L, Dv]
+            rhs = bc[..., None] * Vc - (bc * b)[..., None] * Kt_S0  # [BH, L, Dv]
 
-        # Attention logits: [BH, C, C]
-        attn = torch.bmm(Q, K.transpose(1, 2))  # [BH, C, C]
-        # Weight by beta and inter-step decay
-        attn = attn * (beta.squeeze(-1).unsqueeze(1)) * decay_ij
+            kkt = torch.einsum("bik,bjk->bij", Kc, Kc)  # (k_j . k_t) : [BH, L, L]
+            Lmat = torch.tril(bc[:, :, None] * ratio * kkt, diagonal=-1)
+            A = torch.eye(L, device=S.device, dtype=S.dtype) + Lmat
+            U = torch.linalg.solve_triangular(A, rhs, upper=False)  # [BH, L, Dv]
 
-        o_intra = torch.bmm(attn, V)  # [BH, C, Dv]
+            # Output uses the *pre-chunk* state S_0 (= current S):
+            #   o_t = b_t (Q_c S_0)_t + sum_{j<=t} r_tj (q_t . k_j) U_j
+            q_S0 = torch.einsum("bik,bkd->bid", Qc, S)  # [BH, L, Dv]
+            qkt = torch.einsum("bik,bjk->bij", Qc, Kc)  # (q_t . k_j) : [BH, L, L]
+            coef = torch.tril(ratio * qkt, diagonal=0)  # [BH, L, L]
+            out[:, s:e] = (b[..., None] * q_S0 + torch.einsum("bij,bjd->bid", coef, U)).to(dtype)
 
-        return o_inter + o_intra
+            # State carry: b_L/b_j bounded in (0,1]
+            end_ratio = (logb[:, -1, None] - logb).exp()  # [BH, L]
+            Gsum = torch.einsum("bik,bid->bkd", Kc * end_ratio[..., None], U)
+            S = b[:, -1, None, None] * S + Gsum  # [BH, Dk, Dv]
+
+        return S.to(dtype)
 
     # ── Core recurrent forward (standalone, x-in)  ────────────────────────────
 
@@ -559,6 +649,10 @@ class GatedDeltaNet(nn.Module):
         self,
         x: torch.Tensor,  # [B, T, D]
         state: torch.Tensor | None = None,  # [B, H, Dk, Dv]
+        k: torch.Tensor | None = None,  # pre-projected K (Oryx)
+        v: torch.Tensor | None = None,  # pre-projected V (Oryx)
+        skip_proj: bool = False,  # skip internal Q/K/V projection (Oryx)
+        skip_gate_norm: bool = False,  # skip internal gate+norm (Oryx)
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Full recurrence over T steps.
@@ -569,7 +663,14 @@ class GatedDeltaNet(nn.Module):
         BH = B * self.h
 
         # Project + (optional) short conv
-        q_raw, k_raw, v_raw = self._project(x)
+        if skip_proj:
+            # Oryx: use pre-projected K/V from shared projections.
+            # Only project Q internally (mixer-specific, no short conv per paper).
+            q_raw = self.q_proj(x)  # [B, T, H*Dk]
+            k_raw = k  # pre-projected + pre-convolved K: [B, T, H*Dk]
+            v_raw = v  # pre-projected + pre-convolved V: [B, T, H*Dv]
+        else:
+            q_raw, k_raw, v_raw = self._project(x)
 
         # Reshape to [BH, T, D*]
         Q = self._l2_norm(
@@ -602,38 +703,8 @@ class GatedDeltaNet(nn.Module):
         use_triton = self._can_use_triton(S)
 
         if C and T > C:
-            # ── Chunk-parallel mode ───────────────────────────────────────
-            for s in range(0, T, C):
-                e = min(s + C, T)
-                Q_c = Q[:, s:e]
-                K_c = K[:, s:e]
-                V_c = V[:, s:e]
-                a_c = alpha[:, s:e]
-                b_c = beta[:, s:e]
-
-                out[:, s:e] = self._chunk_output(Q_c, K_c, V_c, a_c, b_c, S)
-
-                # Exact sequential state update (detach: S is a recurrent buffer)
-                S = S.detach()
-                for t in range(e - s):
-                    if use_triton:
-                        _, S = self._delta_step_triton(
-                            S,
-                            K_c[:, t],
-                            V_c[:, t],
-                            Q_c[:, t],
-                            a_c[:, t],
-                            b_c[:, t],
-                        )
-                    else:
-                        _, S = self._delta_step(
-                            S,
-                            K_c[:, t],
-                            V_c[:, t],
-                            Q_c[:, t],
-                            a_c[:, t],
-                            b_c[:, t],
-                        )
+            # ── Chunk-parallel mode (exact WY representation) ─────────────
+            S = self._chunk_parallel(S, Q, K, V, alpha, beta, out, C)
         else:
             # ── Exact sequential mode ─────────────────────────────────────
             S = S.detach()
@@ -647,11 +718,12 @@ class GatedDeltaNet(nn.Module):
                         S, K[:, t], V[:, t], Q[:, t], alpha[:, t], beta[:, t]
                     )
 
-        # ── Output gate + head-wise RMSNorm ───────────────────────────────
+        # ── Output gate + head-wise RMSNorm (skip for Oryx) ───────────────
         out_h = out.reshape(B, self.h, T, self.dv)  # [B, H, T, Dv]
-        out_h = self.h_rms(out_h)
-        g = self._output_gate(x)  # [B, H, T, Dv]
-        out_h = out_h * g
+        if not skip_gate_norm:
+            out_h = self.h_rms(out_h)
+            g = self._output_gate(x)  # [B, H, T, Dv]
+            out_h = out_h * g
 
         y = out_h.permute(0, 2, 1, 3).contiguous().reshape(B, T, self.h * self.dv)
         y = self.drop(self.o_proj(y))
@@ -665,13 +737,14 @@ class GatedDeltaNet(nn.Module):
         self,
         x_t: torch.Tensor,  # [B, 1, D]
         state: torch.Tensor | None,  # [B, H, Dk, Dv]
+        skip_gate_norm: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """One-step forward for incremental (KV-cached) decoding."""
         B, _, _ = x_t.shape
         device, dtype = x_t.device, x_t.dtype
         BH = B * self.h
 
-        q_raw = self.q_proj(x_t)  # [B, 1, H*Dk] — no short conv during step
+        q_raw = self.q_proj(x_t)  # [B, 1, H*Dk] - no short conv during step
         k_raw = self.k_proj(x_t)
         v_raw = self.v_proj(x_t)
 
@@ -708,11 +781,12 @@ class GatedDeltaNet(nn.Module):
                 S, K[:, 0], V[:, 0], Q[:, 0], alpha[:, 0], beta[:, 0]
             )  # o_t: [BH, Dv]
 
-        # gate & norm
+        # gate & norm (skip for Oryx: external GatedRMSNorm applied)
         out_h = o_t.reshape(B, self.h, 1, self.dv)  # [B, H, 1, Dv]
-        out_h = self.h_rms(out_h)
-        g = self._output_gate(x_t)  # [B, H, 1, Dv]
-        out_h = out_h * g
+        if not skip_gate_norm:
+            out_h = self.h_rms(out_h)
+            g = self._output_gate(x_t)  # [B, H, 1, Dv]
+            out_h = out_h * g
 
         y = out_h.permute(0, 2, 1, 3).contiguous().reshape(B, 1, self.h * self.dv)
         y = self.drop(self.o_proj(y))
@@ -720,20 +794,22 @@ class GatedDeltaNet(nn.Module):
         next_state = S_new.reshape(B, self.h, self.dk, self.dv)
         return y, next_state
 
-    # ── Public forward — matches MultiAttention / LinearAttention API ──────────
+    # ── Public forward - matches MultiAttention / LinearAttention API ──────────
 
     def forward(
         self,
-        query: torch.Tensor,  # [B, Tq, D]
-        key: torch.Tensor,  # [B, Tk, D]  (self-attn: same as query)
-        value: torch.Tensor,  # [B, Tk, D]
+        query: torch.Tensor,
+        key: torch.Tensor | None = None,
+        value: torch.Tensor | None = None,
         attn_mask: torch.Tensor | None = None,
         key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
         layer_state: dict | None = None,
+        skip_cross_attention: bool = False,
+        skip_gate_norm: bool = False,
     ) -> tuple[torch.Tensor, None, None]:
         """
-        Drop-in forward.
+        Drop-in forward with optional Oryx compatibility.
 
         Notes
         -----
@@ -746,14 +822,33 @@ class GatedDeltaNet(nn.Module):
           (standard cross-attention approximation for recurrent models).
         * ``layer_state`` (dict): reads/writes ``"gdn_state"`` key for
           single-step incremental decoding.
+        * ``skip_cross_attention`` (Oryx): when True and key/value are
+          provided, uses pre-projected K/V in recurrent self-attention mode
+          instead of the cross-attention approximation.
+        * ``skip_gate_norm`` (Oryx): when True, skips internal RMSNorm +
+          output gate so external GatedRMSNorm can be applied (per Oryx
+          paper: Y = GatedRMSNorm(O, G) W_O).
         """
         B, Tq, D = query.shape
         is_cross = key is not query and key.data_ptr() != query.data_ptr()
 
+        # ── Oryx: use pre-projected K/V in recurrent self-attention mode ──
+        if skip_cross_attention and key is not None and value is not None:
+            x = query
+            if key_padding_mask is not None:
+                pad = key_padding_mask.unsqueeze(-1).to(dtype=x.dtype)
+                x = x * (1.0 - pad)
+            y, next_s = self._forward_recurrent(
+                x, state=None, k=key, v=value, skip_proj=True, skip_gate_norm=skip_gate_norm
+            )
+            if layer_state is not None:
+                layer_state["gdn_state"] = next_s
+            return y, None, None
+
         # ── Incremental single-step (decoder KV-cache path) ───────────────
         if layer_state is not None and Tq == 1 and not self.training:
             prev_s = layer_state.get("gdn_state", None)
-            y, next_s = self._step(query, prev_s)
+            y, next_s = self._step(query, prev_s, skip_gate_norm=skip_gate_norm)
             layer_state["gdn_state"] = next_s
             return y, None, None
 
@@ -763,7 +858,7 @@ class GatedDeltaNet(nn.Module):
             # single "batch" retrieved via the query stream.
             # Simplest correct approach: run recurrence on query, but use
             # projected K/V from the encoder memory as key/value vectors at
-            # each step — however for T_q != T_k this is ill-defined.
+            # each step - however for T_q != T_k this is ill-defined.
             # We fall back to: encode KV into a fixed state via a fast
             # summary pass, then decode with query.
             y = self._cross_attention_approx(query, key, value, key_padding_mask)
@@ -779,12 +874,14 @@ class GatedDeltaNet(nn.Module):
         # ── Incremental multi-step (carry state across calls) ─────────────
         if layer_state is not None:
             prev_s = layer_state.get("gdn_state", None)
-            y, next_s = self._forward_recurrent(x, prev_s)
+            y, next_s = self._forward_recurrent(
+                x, prev_s, skip_gate_norm=skip_gate_norm
+            )
             layer_state["gdn_state"] = next_s
             return y, None, None
 
         # ── Standard full-sequence forward ────────────────────────────────
-        y, _ = self._forward_recurrent(x, state=None)
+        y, _ = self._forward_recurrent(x, state=None, skip_gate_norm=skip_gate_norm)
         return y, None, None
 
     # ── Cross-attention approximation ────────────────────────────────────────
@@ -801,7 +898,7 @@ class GatedDeltaNet(nn.Module):
          1. Build a state S from (K, V) memory pairs using the delta rule.
          2. Retrieve from S using query vectors.
 
-        This is O(Tm·Dk·Dv + Tq·Dk·Dv) — linear in both memory and query length.
+        This is O(Tm·Dk·Dv + Tq·Dk·Dv) - linear in both memory and query length.
         """
         B, Tq, D = query.shape
         _, Tm, _ = key.shape
@@ -899,5 +996,5 @@ class GatedDeltaNet(nn.Module):
             f"d_model={self.d_model}, heads={self.h}, "
             f"dk={self.dk}, dv={self.dv}, chunk_size={self.chunk_size}, "
             f"short_conv={self.use_short_conv}, "
-            f"alpha_min={self.alpha_min}, beta_max={self.beta_max}"
+            f"mamba_gate={self.use_mamba_gate}, beta_max={self.beta_max}"
         )

@@ -21,7 +21,7 @@ class ProbSparseAttentionImpl:
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
-        q, k, v = self.parent._prepare_qkv_attention(query, key, value, layer_state)
+        q, k, v, _ = self.parent._prepare_qkv_attention(query, key, value, layer_state)
         out, weights = self._prob_sparse_attention(
             q,
             k,

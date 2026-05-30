@@ -1012,8 +1012,8 @@ class MultiAttention(nn.Module):
         key: torch.Tensor,
         value: torch.Tensor,
         layer_state: dict | None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q, k, v, kv_latent, provider, _ = self._prepare_qkv_with_provider(
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        q, k, v, kv_latent, provider, q_start_pos = self._prepare_qkv_with_provider(
             query,
             key,
             value,
@@ -1023,7 +1023,7 @@ class MultiAttention(nn.Module):
         if not self.cross_attention:
             k, v = provider.get_kv(k, v, kv_latent=kv_latent)
 
-        return q, self._repeat_kv(k), self._repeat_kv(v)
+        return q, self._repeat_kv(k), self._repeat_kv(v), q_start_pos
 
     # --------------------------------------------------------------------- #
     # Plain full attention compute (prefill / cross)

@@ -1,5 +1,12 @@
 # autoformer_head_custom.py
 
+"""Autoformer-style series decomposition and auto-correlation attention.
+
+Based on: Zhou et al., "Autoformer: Decomposition Transformers with Auto-Correlation
+for Long-Term Series Forecasting", ICLR 2022.
+Paper: https://arxiv.org/abs/2206.05440
+"""
+
 import torch
 import torch.nn as nn
 
@@ -267,38 +274,34 @@ class AutoformerHeadCustom(nn.Module):
         self.dec_in = nn.Linear(in_channels, d_model)
 
         # encoder/decoder stacks (seasonal path)
-        self.encoder = nn.ModuleList(
-            [
-                AutoformerEncoderLayer(
-                    d_model=d_model,
-                    n_heads=n_heads,
-                    dim_ff=dim_ff,
-                    dropout=dropout,
-                    k_delays=k_delays,
-                    norm_type=norm_type,
-                    eps=eps,
-                    activation=activation,
-                    kernel_size=kernel_size,
-                )
-                for _ in range(n_layers_enc)
-            ]
-        )
-        self.decoder = nn.ModuleList(
-            [
-                AutoformerDecoderLayer(
-                    d_model=d_model,
-                    n_heads=n_heads,
-                    dim_ff=dim_ff,
-                    dropout=dropout,
-                    k_delays=k_delays,
-                    norm_type=norm_type,
-                    eps=eps,
-                    activation=activation,
-                    kernel_size=kernel_size,
-                )
-                for _ in range(n_layers_dec)
-            ]
-        )
+        self.encoder = nn.ModuleList([
+            AutoformerEncoderLayer(
+                d_model=d_model,
+                n_heads=n_heads,
+                dim_ff=dim_ff,
+                dropout=dropout,
+                k_delays=k_delays,
+                norm_type=norm_type,
+                eps=eps,
+                activation=activation,
+                kernel_size=kernel_size,
+            )
+            for _ in range(n_layers_enc)
+        ])
+        self.decoder = nn.ModuleList([
+            AutoformerDecoderLayer(
+                d_model=d_model,
+                n_heads=n_heads,
+                dim_ff=dim_ff,
+                dropout=dropout,
+                k_delays=k_delays,
+                norm_type=norm_type,
+                eps=eps,
+                activation=activation,
+                kernel_size=kernel_size,
+            )
+            for _ in range(n_layers_dec)
+        ])
 
         # trend linear head (applied to trend decoder input)
         d_out = out_channels if quantiles is None else out_channels * len(quantiles)

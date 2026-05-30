@@ -8,6 +8,9 @@ from .triton_bwd import can_use_triton_bwd, triton_flash_bwd
 from .triton_fwd import can_use_triton_fwd, triton_flash_fwd
 
 _sdpa = F.scaled_dot_product_attention
+_TRITON_FWD_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_TRITON_FWD") != "1"
+_TRITON_BWD_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_TRITON_BWD") != "1"
+_SDPA_BWD_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_SDPA_BWD") != "1"
 
 
 def _reference_forward(q, k, v, causal, softmax_scale):
@@ -128,15 +131,15 @@ def _reference_backward(q, k, v, grad_out, causal, softmax_scale):
 
 
 def _triton_fwd_enabled():
-    return os.environ.get("CUSTOM_ATT_DISABLE_TRITON_FWD") != "1"
+    return _TRITON_FWD_ENABLED
 
 
 def _triton_bwd_enabled():
-    return os.environ.get("CUSTOM_ATT_DISABLE_TRITON_BWD") != "1"
+    return _TRITON_BWD_ENABLED
 
 
 def _sdpa_bwd_enabled():
-    return os.environ.get("CUSTOM_ATT_DISABLE_SDPA_BWD") != "1"
+    return _SDPA_BWD_ENABLED
 
 
 def _is_ada_or_newer(q):
@@ -290,14 +293,15 @@ def flash_attn_func(q, k, v, causal=False, softmax_scale=None):
         causal: lower-triangular causal masking.
         softmax_scale: defaults to 1/sqrt(D).
     """
-    scale = 0.0 if softmax_scale is None else float(softmax_scale)
-    if _prefer_sdpa_backward(q, bool(causal)):
+    if q.is_cuda and _SDPA_BWD_ENABLED:
+        if softmax_scale is None:
+            return _sdpa(q, k, v, is_causal=bool(causal))
         return _sdpa(
             q,
             k,
             v,
             is_causal=bool(causal),
-            scale=None if scale == 0.0 else scale,
+            scale=float(softmax_scale),
         )
     return CustomAttFunction.apply(q, k, v, causal, softmax_scale)
 
@@ -334,8 +338,8 @@ def flash_attn_backward_backend(q, causal=False):
     """Return which backward backend ``flash_attn_func(...).backward`` will use."""
     if _prefer_sdpa_backward(q, bool(causal)):
         return "sdpa"
-    if _triton_bwd_enabled() and can_use_triton_bwd(q):
+    if _TRITON_BWD_ENABLED and can_use_triton_bwd(q):
         return "triton"
-    if _sdpa_bwd_enabled() and q.is_cuda:
+    if _SDPA_BWD_ENABLED and q.is_cuda:
         return "sdpa"
     return "torch"

@@ -710,7 +710,10 @@ class RotaryEmbedding(torch.nn.Module):
     """
     Rotary position embeddings (RoFormer / GPT-NeoX) with optional XPos scaling.
 
-    If scale_base is not None, this implements XPos (Sun et al.).
+    RoPE: Su et al., "RoFormer: Enhanced Transformer with Rotary Position
+    Embedding" (https://arxiv.org/abs/2104.09864).
+    If scale_base is not None, this implements XPos: Sun et al., "A Length-
+    Extrapolatable Transformer" (https://arxiv.org/abs/2212.10554).
     """
 
     def __init__(

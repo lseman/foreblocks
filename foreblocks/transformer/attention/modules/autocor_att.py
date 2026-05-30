@@ -5,8 +5,23 @@ import torch.nn as nn
 
 
 class AutoCorrelation(nn.Module):
-    """
-    Fixed AutoCorrelation Mechanism - correcting critical bugs in the current implementation.
+    """Auto-Correlation mechanism from Autoformer.
+
+    Based on:
+        Wu et al., "Autoformer: Decomposition Transformers with Auto-Correlation
+        for Long-Term Series Forecasting", NeurIPS 2021.
+        Paper: https://arxiv.org/abs/2106.13008
+        Code:  https://github.com/thuml/Autoformer
+               (``layers/AutoCorrelation.py``)
+
+    Discovers period-based dependencies by computing the autocorrelation of
+    queries and keys via FFT, selects the top-k delays (k = factor·log L), and
+    aggregates the value series rolled by those delays, weighted by the
+    softmax-normalised correlation.
+
+    This is a vectorised re-implementation of ``time_delay_agg_training``: the
+    batched ``gather`` reproduces ``torch.roll(values, -delay)`` exactly (the
+    delayed series at position t reads from (t + delay) mod L).
     """
 
     def __init__(
@@ -42,7 +57,9 @@ class AutoCorrelation(nn.Module):
 
         base = torch.arange(L, device=device)
         shifts = topk.view(-1, 1)
-        indices = (base[None, :] - shifts) % L
+        # Autoformer aggregates via roll(values, -delay): position t reads from
+        # (t + delay) mod L. The gather index must therefore ADD the delay.
+        indices = (base[None, :] + shifts) % L
 
         values_exp = values.unsqueeze(3).expand(B, H, D, top_k, L)
         gather_idx = indices.view(1, 1, 1, top_k, L).expand(B, H, D, top_k, L)
@@ -128,7 +145,19 @@ class AutoCorrelationLayer(nn.Module):
         self.d_keys = d_keys
         self.d_values = d_values
 
-    def forward(self, queries, keys, values, attn_mask):
+    def forward(
+        self,
+        queries,
+        keys,
+        values,
+        attn_mask=None,
+        key_padding_mask=None,
+        is_causal=False,
+        need_weights=False,
+    ):
+        # key_padding_mask / is_causal / need_weights are accepted for a uniform
+        # attention interface (SpectralAttentionImpl) but AutoCorrelation does
+        # not use them — period discovery is via FFT correlation, not masking.
         B, L, _ = queries.shape
         _, S, _ = keys.shape
         H = self.n_heads

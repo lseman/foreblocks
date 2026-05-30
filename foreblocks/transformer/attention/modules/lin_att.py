@@ -69,6 +69,46 @@ class LinearAttention(nn.Module):
         else:
             raise ValueError(f"Unknown feature_map: {self.feature_map}")
 
+    def _incremental(
+        self,
+        q_prime: torch.Tensor,  # B H Lq F
+        k_prime: torch.Tensor,  # B H Lk F
+        v: torch.Tensor,  # B H Lk Dh
+        layer_state: dict,
+    ) -> torch.Tensor:
+        """
+        Causal linear attention with a carried recurrent state.
+
+        State (stored under "lin_kv" / "lin_k"):
+            k_sum  [B, H, F]      = Σ_j φ(k_j)
+            kv_sum [B, H, F, Dh]  = Σ_j φ(k_j) v_jᵀ
+
+        For each query position the prefix sums must include keys up to and
+        including that position, so we cumsum the new chunk and add the prior
+        running totals. Equivalent to the cumsum branch, but resumable.
+        """
+        prev_k = layer_state.get("lin_k")  # B H F  or None
+        prev_kv = layer_state.get("lin_kv")  # B H F Dh or None
+
+        # Running prefix sums within this chunk (inclusive).
+        k_cum = torch.cumsum(k_prime, dim=2)  # B H Lq F
+        kv_cum = torch.cumsum(
+            k_prime.unsqueeze(-1) * v.unsqueeze(-2), dim=2
+        )  # B H Lq F Dh
+
+        if prev_k is not None:
+            k_cum = k_cum + prev_k.unsqueeze(2)
+            kv_cum = kv_cum + prev_kv.unsqueeze(2)
+
+        denom = torch.sum(q_prime * k_cum, dim=-1, keepdim=True)  # B H Lq 1
+        numer = torch.einsum("bhlf,bhlfd->bhld", q_prime, kv_cum)  # B H Lq Dh
+        out_heads = numer / (denom + 1e-6)
+
+        # Persist the running totals (last position of the inclusive cumsum).
+        layer_state["lin_k"] = k_cum[:, :, -1]
+        layer_state["lin_kv"] = kv_cum[:, :, -1]
+        return out_heads
+
     def forward(
         self,
         query: torch.Tensor,
@@ -106,6 +146,17 @@ class LinearAttention(nn.Module):
             k_prime = k_prime.masked_fill(pad_mask, 0.0)
             v = v.masked_fill(pad_mask, 0.0)
 
+        # ── Incremental causal decoding (KV-cache via recurrent state) ────────
+        # Carries the linear-attention state (Σφ(k), Σφ(k)vᵀ) across steps so
+        # each call costs O(F·Dh) instead of recomputing the full prefix.
+        if layer_state is not None and is_causal:
+            out_heads = self._incremental(q_prime, k_prime, v, layer_state)
+            out = (
+                out_heads.transpose(1, 2).contiguous().view(B, Lq, self.d_model)
+            )
+            out = self.dropout(self.out_proj(out))
+            return out, None, layer_state
+
         # Compute linear attention (global sum or causal cumsum)
         if is_causal:
             # Causal: sequential scan or cumsum
@@ -125,7 +176,9 @@ class LinearAttention(nn.Module):
                     k_prime.unsqueeze(-1) * v.unsqueeze(-2), dim=2
                 )  # B H L F Dh
                 denom = torch.sum(q_prime * k_cum, dim=-1, keepdim=True)  # B H L 1
-                numer = torch.matmul(q_prime, kv_cum)  # B H L Dh
+                # Per-timestep contraction over the feature axis F:
+                #   numer[b,h,l,d] = Σ_f q'[b,h,l,f] · kv_cum[b,h,l,f,d]
+                numer = torch.einsum("bhlf,bhlfd->bhld", q_prime, kv_cum)  # B H L Dh
                 out_heads = numer / (denom + 1e-6)
         else:
             # Non-causal: fused einsum avoids O(B·H·L·F·Dh) intermediate tensor

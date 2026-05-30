@@ -62,6 +62,21 @@ def paged_stream_decode_standard(
     mla_k_up_proj: nn.Module | None = None,
     mla_v_up_proj: nn.Module | None = None,
 ) -> torch.Tensor:
+    """
+    Streaming attention over a PagedKVCache, block by block.
+
+    Uses the FlashAttention online-softmax recurrence (running max ``m``,
+    running denominator ``l``, running output ``o``) so each block is consumed
+    once without materializing the full [Tq, Tk] score matrix. This is the eager
+    torch analogue of vLLM's fused paged-attention CUDA kernel; the math matches
+    a dense softmax-attention reference (see tests/test_kv_cache.py).
+
+    References:
+        - Dao et al., "FlashAttention", 2022: https://arxiv.org/abs/2205.14135
+        - vLLM PagedAttention, SOSP 2023: https://arxiv.org/abs/2309.06180
+        - vLLM kernel:
+          https://github.com/vllm-project/vllm/blob/main/csrc/attention/attention_kernels.cu
+    """
     B, Hq, Tq, D = q_bhtd.shape
     BS = cache.block_size
 

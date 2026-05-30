@@ -2,20 +2,20 @@ import pytest
 import torch
 
 pytest.importorskip("triton", reason="Triton not available")
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA required"
-)
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 
 def _make_grouped_inputs(E, K, N, Ms, device="cuda", dtype=torch.float32):
     S = sum(Ms)
     A = torch.randn(S, K, device=device, dtype=dtype, requires_grad=True)
     B_list = [
-        torch.randn(K, N, device=device, dtype=dtype, requires_grad=True) for _ in range(E)
+        torch.randn(K, N, device=device, dtype=dtype, requires_grad=True)
+        for _ in range(E)
     ]
     offsets = torch.tensor(
         [0] + list(torch.cumsum(torch.tensor(Ms, dtype=torch.int64), 0).tolist()),
-        device=device, dtype=torch.int64,
+        device=device,
+        dtype=torch.int64,
     )
     return A, B_list, offsets
 
@@ -29,7 +29,8 @@ def _pytorch_forward(A_packed, offsets, B_list):
 
 
 def test_grad_A_matches_reference():
-    from foreblocks.transformer.compute.kernels import grouped_mm_varM
+    from foreblocks.transformer.kernels.grouped_gemm import grouped_mm_varM
+
     torch.manual_seed(3)
     E, K, N, Ms = 4, 16, 16, [3, 5, 2, 4]
     A_ref, B_ref, offsets = _make_grouped_inputs(E, K, N, Ms)
@@ -42,7 +43,8 @@ def test_grad_A_matches_reference():
 
 
 def test_grad_B_matches_reference():
-    from foreblocks.transformer.compute.kernels import grouped_mm_varM
+    from foreblocks.transformer.kernels.grouped_gemm import grouped_mm_varM
+
     torch.manual_seed(4)
     E, K, N, Ms = 4, 16, 16, [3, 5, 2, 4]
     A_ref, B_ref, offsets = _make_grouped_inputs(E, K, N, Ms)
@@ -56,7 +58,8 @@ def test_grad_B_matches_reference():
 
 
 def test_gradcheck_float32():
-    from foreblocks.transformer.compute.kernels import _GroupedMMVarMFunction
+    from foreblocks.transformer.kernels.grouped_gemm import _GroupedMMVarMFunction
+
     torch.manual_seed(5)
     E, K, N, Ms = 2, 8, 8, [2, 3]
     S = sum(Ms)
@@ -73,7 +76,8 @@ def test_gradcheck_float32():
 
 
 def test_empty_expert_segment():
-    from foreblocks.transformer.compute.kernels import grouped_mm_varM
+    from foreblocks.transformer.kernels.grouped_gemm import grouped_mm_varM
+
     E, K, N = 3, 8, 8
     Ms = [4, 0, 3]
     A, B_list, offsets = _make_grouped_inputs(E, K, N, Ms)
