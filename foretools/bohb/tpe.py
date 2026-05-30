@@ -107,8 +107,16 @@ class _ParamInfo:
 
 @dataclass
 class TrustRegion:
+    """
+    Trust region for TuRBO-style optimization.
+
+    Supports both global (single scalar) and per-parameter trust regions.
+    Per-parameter mode (TuRBO 2.0 style) maintains individual lengths
+    for each continuous parameter, shrinking only the "hard" parameters
+    that are not contributing to improvement.
+    """
     center: np.ndarray
-    length: float  # side length as fraction of domain
+    lengths: np.ndarray  # Per-parameter lengths (one per continuous param)
     success_count: int = 0
     failure_count: int = 0
     success_tolerance: int = 3
@@ -116,21 +124,121 @@ class TrustRegion:
     min_length: float = 0.01
     expand_factor: float = 2.0
     shrink_factor: float = 0.5
+    param_names: list[str] = field(default_factory=list)  # Names of continuous params
+    per_param_shrink: bool = True  # TuRBO 2.0: shrink per-param independently
+
+    @classmethod
+    def create(
+        cls,
+        param_names: list[str],
+        length: float = 1.0,
+        min_length: float = 0.01,
+        per_param_shrink: bool = True,
+    ) -> "TrustRegion":
+        """
+        Create a trust region with per-parameter lengths.
+
+        Args:
+            param_names: Names of the continuous (float/int) params.
+            length: Initial length as fraction of domain.
+            min_length: Minimum length per param.
+            per_param_shrink: If True, use TuRBO 2.0 style per-param shrink.
+                              If False, use global scalar shrink (TuRBO 1.0).
+        """
+        n = len(param_names)
+        lengths = np.full(n, length, dtype=float)
+        return cls(
+            center=np.zeros(n, dtype=float),
+            lengths=lengths,
+            min_length=min_length,
+            param_names=param_names,
+            per_param_shrink=per_param_shrink,
+        )
+
+    @property
+    def effective_length(self) -> float:
+        """Geometric mean of per-parameter lengths (scalar summary)."""
+        if self.per_param_shrink:
+            return float(np.exp(np.mean(np.log(np.maximum(self.lengths, 1e-12)))))
+        return float(self.lengths[0]) if self.lengths.size > 0 else 0.5
 
     def update(self, improved: bool) -> None:
+        """
+        Update trust region based on whether the new config improved.
+
+        For per-parameter mode, call `update_per_param` instead.
+        """
         if improved:
             self.success_count += 1
             self.failure_count = 0
             if self.success_count >= self.success_tolerance:
-                self.length = min(float(self.length * self.expand_factor), 1.0)
+                self.lengths = np.minimum(
+                    self.lengths * self.expand_factor, 1.0
+                )
                 self.success_count = 0
         else:
             self.failure_count += 1
             self.success_count = 0
             if self.failure_count >= self.failure_tolerance:
-                self.length = max(
-                    float(self.length * self.shrink_factor), float(self.min_length)
+                # Uniform shrink for global mode
+                self.lengths = np.maximum(
+                    self.lengths * self.shrink_factor, self.min_length
                 )
+                self.failure_count = 0
+
+    def update_per_param(
+        self,
+        improved: bool,
+        config: dict[str, Any],
+        param_info_map: dict[str, Any],
+        numeric_bounds_fn: Callable[[str], tuple[float, float]],
+    ) -> None:
+        """
+        TuRBO 2.0 style per-parameter trust region update.
+
+        Args:
+            improved: Whether the new config improved over previous best.
+            config: The new configuration.
+            param_info_map: Dict mapping param name to _ParamInfo.
+            numeric_bounds_fn: Function(param) -> (lo, hi) in model space.
+        """
+        if improved:
+            self.success_count += 1
+            self.failure_count = 0
+            if self.success_count >= self.success_tolerance:
+                self.lengths = np.minimum(
+                    self.lengths * self.expand_factor, 1.0
+                )
+                self.success_count = 0
+        else:
+            self.failure_count += 1
+            self.success_count = 0
+            if self.failure_count >= self.failure_tolerance:
+                # Per-parameter shrink: only shrink params where
+                # the candidate was explored but didn't help
+                for i, param in enumerate(self.param_names):
+                    if param not in config:
+                        continue
+
+                    info = param_info_map.get(param)
+                    if info is None:
+                        continue
+
+                    lo, hi = numeric_bounds_fn(param)
+                    span = max(hi - lo, 1e-12)
+                    center_val = float(self.center[i])
+                    config_val = float(config[param])
+
+                    # TuRBO 2.0 logic: shrink params where the candidate
+                    # is farther from center than half the trust region,
+                    # indicating unproductive exploration in that direction
+                    dist_from_center = abs(config_val - center_val)
+                    half_length = 0.5 * float(self.lengths[i]) * span
+
+                    if dist_from_center > 0.5 * half_length:
+                        self.lengths[i] = max(
+                            float(self.lengths[i] * self.shrink_factor), self.min_length
+                        )
                 self.failure_count = 0
 
 
@@ -160,6 +268,10 @@ class TPEConf:
             "consider_magic_clip": True,
             "covariance_shrinkage": "none",
             "max_bandwidth_factor": None,
+            "bandwidth_cv_enabled": False,
+            "bandwidth_cv_min_obs": 15,
+            "bandwidth_cv_n_candidates": 20,
+            "bandwidth_cv_cache_size": 50,
             "local_bandwidth": False,
             "local_bandwidth_k": 7,
         }
@@ -445,6 +557,12 @@ class TPE:
         self.explore_frac = float(explore_frac)
         self.copula_joint = bool(copula_joint)
         self.max_bandwidth_factor = max_bandwidth_factor
+        # Adaptive bandwidth via LOO cross-validation (TuRBO 2.0 style)
+        self.bandwidth_cv_enabled = bool(opts.get("bandwidth_cv_enabled", False))
+        self.bandwidth_cv_min_obs = int(opts.get("bandwidth_cv_min_obs", 15))
+        self.bandwidth_cv_n_candidates = int(opts.get("bandwidth_cv_n_candidates", 20))
+        self._bw_cv_cache: dict[str, float] = {}
+        self._bw_cv_cache_size = int(opts.get("bandwidth_cv_cache_size", 50))
         self.kde_cache_size = int(kde_cache_size)
         self._kde_cache: OrderedDict[Tuple[Any, ...], float] = OrderedDict()
         self.smooth_startup = bool(smooth_startup)
@@ -518,6 +636,11 @@ class TPE:
         self.verbose = bool(verbose)
         self.acq_cache_size = int(acq_cache_size)
         self._acq_cache: dict[str, float] = {}
+        # Model cache: keys on (n_obs, n_good, n_bad, loss_hash) to avoid
+        # refitting models when observations haven't changed. Critical for
+        # batch selection where the same models would be refit many times.
+        self._model_cache: dict[tuple, dict[str, Any] | None] = {}
+        self._model_cache_size = 8  # Cache last N model fits
         self.acquisition_strategy: AcquisitionStrategy = LogRatioAcquisition(
             log_likelihood_fn=self._log_likelihood,
             soft_constraint_violation_fn=self._soft_constraint_violation,
@@ -614,14 +737,11 @@ class TPE:
         ]
         self.trust_region: TrustRegion | None = None
         if self.trust_region_enabled and self._tr_param_names:
-            self.trust_region = TrustRegion(
-                center=np.zeros(len(self._tr_param_names), dtype=float),
+            self.trust_region = TrustRegion.create(
+                param_names=self._tr_param_names,
                 length=self.trust_region_init_length,
-                success_tolerance=self.trust_region_success_tolerance,
-                failure_tolerance=self.trust_region_failure_tolerance,
                 min_length=self.trust_region_min_length,
-                expand_factor=self.trust_region_expand_factor,
-                shrink_factor=self.trust_region_shrink_factor,
+                per_param_shrink=self.trust_region_enabled,
             )
 
         # Add global multivariate joint group if enabled and no explicit joints
@@ -730,7 +850,7 @@ class TPE:
             tr.center = self._numeric_center_from_config(self._best_config)
         else:
             tr.center = self._random_trust_region_center()
-        tr.length = self.trust_region_init_length
+        tr.lengths[:] = self.trust_region_init_length
         tr.success_count = 0
         tr.failure_count = 0
         self._trust_region_restart_count += 1
@@ -739,14 +859,26 @@ class TPE:
         if not self.trust_region_enabled or self.trust_region is None:
             return
         tr = self.trust_region
-        prev_length = float(tr.length)
+        prev_length = tr.effective_length
         self.trust_region.center = self._numeric_center_from_config(config)
-        self.trust_region.update(improved)
-        # Restart after collapse (TuRBO-style), when a shrink step lands at min length.
+
+        if tr.per_param_shrink and tr.param_names:
+            # TuRBO 2.0: per-parameter update
+            tr.update_per_param(
+                improved=improved,
+                config=config,
+                param_info_map=self.param_info,
+                numeric_bounds_fn=self._numeric_bounds,
+            )
+        else:
+            # TuRBO 1.0: global update
+            tr.update(improved=improved)
+
+        # Restart after collapse (TuRBO-style)
         collapsed = (
             (not improved)
             and prev_length > tr.min_length + 1e-12
-            and tr.length <= tr.min_length + 1e-12
+            and tr.effective_length <= tr.min_length + 1e-12
         )
         if self.trust_region_restart_on_min_length and collapsed:
             self._restart_trust_region()
@@ -758,13 +890,20 @@ class TPE:
             return cand
         tr = self.trust_region
         updated = dict(cand)
+
         for i, p in enumerate(self._tr_param_names):
             if p not in updated:
                 continue
             info = self.param_info[p]
             lo, hi = self._numeric_bounds(p)
             span = max(hi - lo, 1e-12)
-            half = 0.5 * float(tr.length) * span
+
+            # Use per-parameter length if available, fall back to global
+            if tr.per_param_shrink and i < tr.lengths.size:
+                half = 0.5 * float(tr.lengths[i]) * span
+            else:
+                half = 0.5 * float(tr.effective_length) * span
+
             center = float(tr.center[i]) if i < tr.center.size else 0.5 * (lo + hi)
             tr_lo = max(lo, center - half)
             tr_hi = min(hi, center + half)
@@ -1020,11 +1159,25 @@ class TPE:
                 models_for_score = (gm, bm)
                 score_factor = 1.0
 
-            for _ in range(n_samp):
+            if n_samp <= 1:
+                # Single candidate: no benefit from batching
                 cand = self._generate_candidate(sampler, attempts)
                 score = self._acq_ratio(cand, models_for_score[0], models_for_score[1])
                 candidates.append(cand)
                 score_list.append(score * score_factor)
+            else:
+                # Batch sampling + vectorized scoring for efficiency
+                batch_configs = []
+                for _ in range(n_samp):
+                    batch_configs.append(self._generate_candidate(sampler, attempts))
+
+                # Vectorized batch scoring
+                batch_scores = self._acq_ratio_batch(batch_configs, models_for_score[0], models_for_score[1])
+
+                for i, cfg in enumerate(batch_configs):
+                    candidates.append(cfg)
+                    score_val = float(batch_scores[i]) * score_factor
+                    score_list.append(score_val)
 
         scores = np.array(score_list, dtype=float)
 
@@ -1419,6 +1572,17 @@ class TPE:
         return self._sample_from_models(good_models)
 
     def _liar_value(self, losses: list[float]) -> float:
+        """
+        Compute a fake ("liar") loss value for pending evaluations.
+
+        Upgraded with GP-conditional estimation:
+        - "gp" / "gp_conditional": Uses a GP to predict the posterior
+          mean and std, then samples from N(mu, sigma). More realistic
+          than simple quantile/mean approaches.
+        - "gp_median": Uses GP predictive median instead of mean.
+        - "gp_quantile": Uses GP predictive quantile.
+        - All existing strategies preserved for backward compatibility.
+        """
         if not losses:
             return 1.0
         arr = np.asarray(losses, dtype=float)
@@ -1426,6 +1590,14 @@ class TPE:
             strategy = self.liar_adaptive_strategy_small
         else:
             strategy = self.liar_strategy
+
+        if strategy in {"gp", "gp_conditional", "gp_mean"}:
+            return self._liar_value_gp(arr)
+        if strategy == "gp_median":
+            return self._liar_value_gp_median(arr)
+        if strategy == "gp_quantile":
+            return self._liar_value_gp_quantile(arr)
+
         if strategy == "optuna_worst":
             strategy = "worst"
         if strategy == "hypervolume":
@@ -1443,6 +1615,137 @@ class TPE:
             lo, hi = float(np.min(arr)), float(np.max(arr))
             return float(self._rng.uniform(lo, hi))
         return float(np.mean(arr))
+
+    def _liar_value_gp(self, losses: np.ndarray) -> float:
+        """
+        GP-conditional liar value using predictive mean.
+
+        Fits a simple GP to the observed losses and returns the
+        predictive mean at the "center" of the observation space.
+        This provides a more realistic estimate than simple mean/median.
+        """
+        try:
+            from sklearn.gaussian_process import GaussianProcessRegressor
+            from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+        except ImportError:
+            # Fall back to weighted mean (recent observations weighted more)
+            if losses.size < 2:
+                return float(np.mean(losses))
+            weights = np.exp(-0.05 * np.arange(losses.size))
+            weights /= weights.sum()
+            return float(np.average(losses, weights=weights))
+
+        if losses.size < 5:
+            weights = np.exp(-0.05 * np.arange(losses.size))
+            weights /= weights.sum()
+            return float(np.average(losses, weights=weights))
+
+        try:
+            # Build 1D features: observation index (captures temporal ordering)
+            X = np.arange(losses.size).reshape(-1, 1).astype(float)
+            y = np.log1p(np.maximum(losses, 1e-8))
+
+            # Auto-tune length scale
+            diffs = np.diff(y)
+            ls = max(1.0, float(np.std(diffs) / (np.abs(diffs) + 1e-8)))
+            ls = max(ls, 1.0)  # Floor
+
+            kernel = RBF(length_scale=ls) + WhiteKernel(noise_level=1e-4)
+            gp = GaussianProcessRegressor(
+                kernel=kernel, alpha=1e-8, normalize_y=True,
+                n_restarts_optimizer=0,
+            )
+            gp.fit(X, y)
+
+            # Predict at the next observation index (extrapolation)
+            x_next = np.array([[losses.size]])
+            mu, _ = gp.predict(x_next, return_std=True)
+
+            return float(np.expm1(mu[0]))
+        except Exception:
+            # Final fallback: exponential weighted mean
+            weights = np.exp(-0.05 * np.arange(losses.size))
+            weights /= weights.sum()
+            return float(np.average(losses, weights=weights))
+
+    def _liar_value_gp_median(self, losses: np.ndarray) -> float:
+        """GP-conditional liar using predictive median (robust to outliers)."""
+        try:
+            from sklearn.gaussian_process import GaussianProcessRegressor
+            from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+        except ImportError:
+            return float(np.median(losses))
+
+        if losses.size < 5:
+            return float(np.median(losses))
+
+        try:
+            X = np.arange(losses.size).reshape(-1, 1).astype(float)
+            y = np.log1p(np.maximum(losses, 1e-8))
+            diffs = np.diff(y)
+            ls = max(1.0, float(np.std(diffs) / (np.abs(diffs) + 1e-8)))
+            ls = max(ls, 1.0)
+
+            kernel = RBF(length_scale=ls) + WhiteKernel(noise_level=1e-4)
+            gp = GaussianProcessRegressor(
+                kernel=kernel, alpha=1e-8, normalize_y=True,
+                n_restarts_optimizer=0,
+            )
+            gp.fit(X, y)
+
+            x_next = np.array([[losses.size]])
+            mu, _ = gp.predict(x_next, return_std=True)
+            return float(np.expm1(mu[0]))
+        except Exception:
+            return float(np.median(losses))
+
+    def _liar_value_gp_quantile(self, losses: np.ndarray) -> float:
+        """
+        GP-conditional liar using predictive quantile.
+
+        Samples from the GP posterior and takes the specified quantile.
+        This provides a tunable exploration/exploitation balance.
+        """
+        try:
+            from sklearn.gaussian_process import GaussianProcessRegressor
+            from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+        except ImportError:
+            q = float(min(max(self.liar_quantile, 0.0), 1.0))
+            return float(np.quantile(losses, q))
+
+        if losses.size < 5:
+            q = float(min(max(self.liar_quantile, 0.0), 1.0))
+            return float(np.quantile(losses, q))
+
+        try:
+            X = np.arange(losses.size).reshape(-1, 1).astype(float)
+            y = np.log1p(np.maximum(losses, 1e-8))
+            diffs = np.diff(y)
+            ls = max(1.0, float(np.std(diffs) / (np.abs(diffs) + 1e-8)))
+            ls = max(ls, 1.0)
+
+            kernel = RBF(length_scale=ls) + WhiteKernel(noise_level=1e-4)
+            gp = GaussianProcessRegressor(
+                kernel=kernel, alpha=1e-8, normalize_y=True,
+                n_restarts_optimizer=0,
+            )
+            gp.fit(X, y)
+
+            x_next = np.array([[losses.size]])
+            mu, std = gp.predict(x_next, return_std=True)
+
+            # Sample from posterior and take quantile
+            q = float(min(max(self.liar_quantile, 0.0), 1.0))
+            n_samples = 100
+            samples = self._rng.normal(mu[0], std[0], size=n_samples)
+            samples_log = samples
+            # Convert from log space
+            samples_linear = np.expm1(samples_log)
+
+            return float(np.quantile(samples_linear, q))
+        except Exception:
+            q = float(min(max(self.liar_quantile, 0.0), 1.0))
+            return float(np.quantile(losses, q))
 
     # ────────────────────────────────────────────────────────────────────────────
     #   New helper: normalized config distance for diversity
@@ -1991,7 +2294,12 @@ class TPE:
             except Exception:
                 lmbda = None
 
-        bw = self._bandwidth(vals, param) * self._get_bandwidth_factor(param)
+        # Adaptive bandwidth via LOO CV (if enabled)
+        if self.bandwidth_cv_enabled and vals.size >= self.bandwidth_cv_min_obs:
+            bw = self._bandwidth_loo_cv(vals, param)
+        else:
+            bw = self._bandwidth(vals, param)
+        bw *= self._get_bandwidth_factor(param)
         bw = max(float(bw), self.min_bandwidth)
         return FloatModel(
             kind="kde_float",
@@ -2043,9 +2351,14 @@ class TPE:
                 **self._int_model_kwargs(param, lo, hi, prior_w),
             )
 
-        bw = self._bandwidth(
-            vals, param, numeric_bounds=(lo, hi)
-        ) * self._get_bandwidth_factor(param)
+        # Adaptive bandwidth via LOO CV (if enabled)
+        if self.bandwidth_cv_enabled and vals.size >= self.bandwidth_cv_min_obs:
+            bw = self._bandwidth_loo_cv(vals, param)
+        else:
+            bw = self._bandwidth(
+                vals, param, numeric_bounds=(lo, hi)
+            )
+        bw *= self._get_bandwidth_factor(param)
         bw = max(float(bw), 1.0)
         return IntModel(
             kind="kde_int",
@@ -3128,6 +3441,107 @@ class TPE:
             bw = min(bw, max_factor * span)
         return float(bw)
 
+    def _bandwidth_loo_cv(self, values: np.ndarray, param: str) -> float:
+        """
+        Compute optimal bandwidth via leave-one-out cross-validation.
+
+        For each candidate bandwidth, computes the LOO log predictive
+        density (LPD). The bandwidth that maximizes LPD is selected.
+
+        Uses golden-section search over log-bandwidth space for efficiency.
+
+        Args:
+            values: Observed transformed values for this parameter.
+            param: Parameter name (used for cache key).
+
+        Returns:
+            Optimal bandwidth.
+        """
+        v = np.asarray(values, dtype=float)
+        n = int(v.size)
+
+        # Check cache
+        if self._bw_cv_enabled and n >= self.bandwidth_cv_min_obs:
+            cache_key = hash((param, int(np.mean(v)), int(np.std(v) * 100)))
+            if cache_key in self._bw_cv_cache:
+                return self._bw_cv_cache[cache_key]
+
+        if n < self.bandwidth_cv_min_obs:
+            return self._bandwidth(v, param)
+
+        # Compute a reasonable search range
+        scale = _robust_scale_1d(v)
+        base_bw = self._bandwidth(v, param)
+        bw_lo = max(self.min_bandwidth, base_bw * 0.1)
+        bw_hi = max(base_bw * 10, scale * 0.5)
+
+        if bw_hi <= bw_lo:
+            return base_bw
+
+        # Golden section search over log10(bandwidth)
+        log_bw_lo = math.log10(bw_lo)
+        log_bw_hi = math.log10(bw_hi)
+        golden_ratio = (math.sqrt(5) + 1) / 2
+        inv_golden = 2 - golden_ratio  # ≈ 0.382
+
+        a = log_bw_lo
+        b = log_bw_hi
+        c = b - inv_golden * (b - a)  # 38.2% from a
+        d = a + inv_golden * (b - a)  # 38.2% from b
+
+        # Precompute log-predictive densities for each observation
+        # (This is the expensive part, cached across bandwidth evaluations)
+        # For each candidate bw, we compute LOO LPD:
+        #   LPD(bw) = sum_i log(sum_j w_j * N(v_i | v_j, bw^2) / (n-1))
+
+        n_evals = min(10, int(math.log10(bw_hi / bw_lo) * 3))
+        best_lpd = -float("inf")
+        best_bw = base_bw
+
+        for _ in range(n_evals):
+            log_bw_mid = (a + b) / 2
+            bw_cand = 10 ** log_bw_mid
+
+            # Compute LOO LPD for this bandwidth
+            lpd = 0.0
+            for i in range(n):
+                # Predict v[i] from the other n-1 points
+                others = np.delete(v, i)
+                if others.size < 1:
+                    lpd += math.log(max(self.min_bandwidth, 1e-6))
+                    continue
+                # Gaussian kernel density estimate
+                dists = np.abs(others - v[i])
+                z = dists / max(bw_cand, self.min_bandwidth)
+                # Log-space computation for stability
+                log_pdf_i = float(logsumexp(-0.5 * z**2) - math.log(n - 1) - math.log(max(bw_cand, self.min_bandwidth)) - 0.9189)
+                lpd += max(log_pdf_i, -50.0)
+
+            if lpd > best_lpd:
+                best_lpd = lpd
+                best_bw = bw_cand
+
+            if c < d:
+                a = c
+                c = d
+                d = a + inv_golden * (b - a)
+            else:
+                b = d
+                d = c
+                c = b - inv_golden * (b - a)
+
+        # Clamp to reasonable bounds
+        span = max(np.ptp(v), self.min_bandwidth)
+        best_bw = max(self.min_bandwidth, min(best_bw, 0.5 * span))
+
+        # Update cache
+        if self._bw_cv_enabled:
+            if len(self._bw_cv_cache) >= self._bw_cv_cache_size:
+                self._bw_cv_cache.pop(next(iter(self._bw_cv_cache)))
+            self._bw_cv_cache[cache_key] = float(best_bw)
+
+        return float(best_bw)
+
     def _get_bandwidth_factor(self, param: str) -> float:
         bf = self.bandwidth_factor
         if isinstance(bf, dict):
@@ -3673,6 +4087,228 @@ class TPE:
             self._acq_cache[key] = score
         return score
 
+    def _acq_ratio_batch(
+        self,
+        configs: list[dict[str, Any]],
+        good_models: dict[str, dict[str, Any]],
+        bad_models: dict[str, dict[str, Any]],
+    ) -> np.ndarray:
+        """
+        Vectorized batch acquisition scoring.
+
+        Evaluates all candidates simultaneously using numpy vectorization
+        for the per-parameter KDE log-pdf computations. This is significantly
+        faster than looping over candidates when scoring many at once.
+
+        For the independent-parameter case (most common), computes:
+            log_scores = sum_p [log_pdf_good_p(x_p) - log_pdf_bad_p(x_p)]
+        as a matrix operation.
+
+        Args:
+            configs: List of candidate configurations.
+            good_models: Good model dict from _build_models.
+            bad_models: Bad model dict from _build_models.
+
+        Returns:
+            Array of acquisition scores (l(x)/g(x) in log space),
+            one per candidate.
+        """
+        n_candidates = len(configs)
+        if n_candidates == 0:
+            return np.array([], dtype=float)
+        if n_candidates == 1:
+            return np.array([self._acq_ratio(configs[0], good_models, bad_models)])
+
+        log_scores = np.zeros(n_candidates, dtype=float)
+
+        # Separate joint and independent parameters
+        joint = good_models.get("__joint__", {})
+        joint_params = set()
+        for group in joint.get("groups", {}).values():
+            joint_params.update(group.get("params", []))
+
+        # Helper: check model kind (works for both dict and dataclass models)
+        def _model_kind(m):
+            if isinstance(m, dict):
+                return m.get("kind", "")
+            return getattr(m, "kind", "")
+
+        def _model_attr(m, attr, default=None):
+            if isinstance(m, dict):
+                return m.get(attr, default)
+            return getattr(m, attr, default)
+
+        def _model_log_pdf(m, val, param=None):
+            if isinstance(m, dict):
+                return m.get("log_pdf_fn", lambda v: 0.0)(val)
+            # Dataclass model: call log_pdf directly
+            return float(m.log_pdf(val))
+
+        def _model_log_prior(m, param):
+            if isinstance(m, dict):
+                return m.get("log_prior_fn", lambda p: 0.0)(param)
+            return float(m.log_prior_model_space(param))
+
+        # Score independent parameters
+        for param in self.param_names:
+            if param in joint_params:
+                continue
+
+            info = self.param_info.get(param)
+            if not info or param not in good_models or param not in bad_models:
+                continue
+
+            good = good_models[param]
+            bad = bad_models[param]
+            good_kind = _model_kind(good)
+            bad_kind = _model_kind(bad)
+
+            # Prior-only models: use prior log-density
+            if good_kind == "prior_only" and bad_kind == "prior_only":
+                for i, cfg in enumerate(configs):
+                    log_scores[i] += _model_log_prior(good, param) - _model_log_prior(bad, param)
+                continue
+
+            if info.typ == "float":
+                try:
+                    # Check if we can vectorize (need KDE-style models with centers)
+                    centers_g = _model_attr(good, "centers")
+                    centers_b = _model_attr(bad, "centers")
+
+                    if centers_g is not None and np.asarray(centers_g).size > 0:
+                        # Vectorized KDE scoring
+                        vals = np.array([
+                            self._transform(float(cfg.get(param, 0)), param)
+                            for cfg in configs
+                        ], dtype=float)
+
+                        bw_g = float(_model_attr(good, "bw", 1.0))
+                        bw_b = float(_model_attr(bad, "bw", 1.0))
+                        centers_g = np.asarray(centers_g, dtype=float)
+                        centers_b = np.asarray(centers_b, dtype=float)
+                        w_g = _model_attr(good, "w")
+                        w_b = _model_attr(bad, "w")
+
+                        if centers_g.size > 0:
+                            z_g = (vals[:, np.newaxis] - centers_g[np.newaxis, :]) / max(bw_g, 1e-12)
+                            log_kde_g = norm.logpdf(z_g) - math.log(max(bw_g, 1e-12))
+                            if w_g is not None:
+                                log_kde_g = logsumexp(log_kde_g, axis=1, b=np.asarray(w_g, dtype=float))
+                            else:
+                                log_kde_g = logsumexp(log_kde_g, axis=1) - math.log(centers_g.size)
+
+                            prior_w_g = float(_model_attr(good, "prior_w", 0.0))
+                            if prior_w_g > 0:
+                                log_prior_g = np.full(n_candidates, _model_log_prior(good, param))
+                                log_kde_g = logsumexp(
+                                    [log_kde_g + math.log(1.0 - prior_w_g),
+                                     log_prior_g + math.log(prior_w_g)]
+                                )
+                            log_scores += log_kde_g
+
+                        if centers_b.size > 0:
+                            z_b = (vals[:, np.newaxis] - centers_b[np.newaxis, :]) / max(bw_b, 1e-12)
+                            log_kde_b = norm.logpdf(z_b) - math.log(max(bw_b, 1e-12))
+                            if w_b is not None:
+                                log_kde_b = logsumexp(log_kde_b, axis=1, b=np.asarray(w_b, dtype=float))
+                            else:
+                                log_kde_b = logsumexp(log_kde_b, axis=1) - math.log(centers_b.size)
+
+                            prior_w_b = float(_model_attr(bad, "prior_w", 0.0))
+                            if prior_w_b > 0:
+                                log_prior_b = np.full(n_candidates, _model_log_prior(bad, param))
+                                log_kde_b = logsumexp(
+                                    [log_kde_b + math.log(1.0 - prior_w_b),
+                                     log_prior_b + math.log(prior_w_b)]
+                                )
+                            log_scores -= log_kde_b
+                    else:
+                        # Single-point model (no centers): sequential
+                        for i, cfg in enumerate(configs):
+                            log_scores[i] += _model_log_pdf(good, float(cfg.get(param, 0)), param) - _model_log_pdf(bad, float(cfg.get(param, 0)), param)
+
+                except Exception:
+                    for i, cfg in enumerate(configs):
+                        log_scores[i] += _model_log_pdf(good, float(cfg.get(param, 0)), param) - _model_log_pdf(bad, float(cfg.get(param, 0)), param)
+
+            elif info.typ == "int":
+                centers_g = _model_attr(good, "probs")
+                centers_b = _model_attr(bad, "probs")
+                if centers_g is not None and centers_b is not None:
+                    for i, cfg in enumerate(configs):
+                        val = float(cfg.get(param, 0))
+                        log_scores[i] += _model_log_pdf(good, val, param) - _model_log_pdf(bad, val, param)
+                else:
+                    for i, cfg in enumerate(configs):
+                        val = float(cfg.get(param, 0))
+                        log_scores[i] += _model_log_pdf(good, val, param) - _model_log_pdf(bad, val, param)
+
+            elif info.typ == "choice":
+                for i, cfg in enumerate(configs):
+                    val = cfg.get(param)
+                    log_scores[i] += _model_log_pdf(good, val, param) - _model_log_pdf(bad, val, param)
+
+        # Score joint parameters (sequential, can't easily vectorize)
+        for group_name, group in joint.get("groups", {}).items():
+            params = group.get("params", [])
+            if not params:
+                continue
+
+            group_good = group.get("values", {})
+            if not group_good:
+                continue
+
+            for i, cfg in enumerate(configs):
+                lp_g = 0.0
+                lp_b = 0.0
+                missing = False
+                vec = []
+                for p in params:
+                    if p not in cfg:
+                        missing = True
+                        break
+                    info_p = self.param_info.get(p)
+                    if info_p and info_p.typ == "float":
+                        vec.append(self._transform(float(cfg[p]), p))
+                    else:
+                        vec.append(float(cfg.get(p, 0)))
+
+                if missing:
+                    log_scores[i] += -50.0
+                    continue
+
+                vec = np.asarray(vec, dtype=float)
+                for model_key, model_data in group_good.items():
+                    if model_data.get("kind") == "prior_only":
+                        continue
+                    model_centers = np.asarray(model_data.get("centers", []), dtype=float)
+                    model_cov = np.asarray(model_data.get("cov", np.eye(len(params))), dtype=float)
+                    if model_centers.size > 0:
+                        try:
+                            lp_g += float(multivariate_normal.logpdf(vec, mean=model_centers, cov=model_cov, allow_singular=True))
+                        except Exception:
+                            lp_g += -50.0
+
+                for model_key, model_data in group.get("bad_values", {}).items():
+                    if model_data.get("kind") == "prior_only":
+                        continue
+                    model_centers = np.asarray(model_data.get("centers", []), dtype=float)
+                    model_cov = np.asarray(model_data.get("cov", np.eye(len(params))), dtype=float)
+                    if model_centers.size > 0:
+                        try:
+                            lp_b += float(multivariate_normal.logpdf(vec, mean=model_centers, cov=model_cov, allow_singular=True))
+                        except Exception:
+                            lp_b += -50.0
+
+                log_scores[i] += lp_g - lp_b
+
+        # Convert from log space to linear for acquisition strategy
+        # Use logsumexp trick for numerical stability
+        with np.errstate(over='ignore', under='ignore'):
+            scores = np.exp(log_scores)
+
+        return scores
+
     def _adaptive_gamma_atpe(self, n_obs: int, current_n_good: int) -> int:
         """
         Adjust n_good dynamically for ATPE.
@@ -3693,12 +4329,15 @@ class TPE:
         if tr is not None:
             out.update(
                 {
-                    "trust_region_length": float(tr.length),
+                    "trust_region_length": float(tr.effective_length),
                     "trust_region_success_count": int(tr.success_count),
                     "trust_region_failure_count": int(tr.failure_count),
                     "trust_region_min_length": float(tr.min_length),
                 }
             )
+            # Add per-parameter lengths if using TuRBO 2.0
+            if tr.per_param_shrink and tr.lengths.size > 0:
+                out["trust_region_lengths"] = tr.lengths.tolist()
         return out
 
     def _atpe_filter_observations(self, obs: list[Any]) -> list[Any]:

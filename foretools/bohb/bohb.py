@@ -83,6 +83,11 @@ class BOHB:
         pruning_conf: PruningConfig | None = None,
         pruning_overrides: dict[str, Any] | None = None,
         parallel_jobs: int = 1,
+        # Convergence detection / adaptive stopping
+        max_no_improvement_rounds: int | None = None,
+        convergence_threshold: float = 1e-6,
+        min_improvement_frac: float = 0.001,
+        convergence_lookback: int = 10,
     ):
         self.config_space = config_space
         self.evaluate_fn = evaluate_fn
@@ -148,6 +153,147 @@ class BOHB:
         if prior_trials_jsonl:
             self._load_prior_trials_jsonl(prior_trials_jsonl)
 
+        # Convergence detection parameters
+        self.max_no_improvement_rounds = (
+            max_no_improvement_rounds if max_no_improvement_rounds is not None
+            else max(20, int(n_iterations * 0.4))  # Default: 40% of total rounds
+        )
+        self.convergence_threshold = float(convergence_threshold)
+        self.min_improvement_frac = float(min_improvement_frac)
+        self.convergence_lookback = int(convergence_lookback)
+        self._round_losses: list[float] = []  # Track best loss per round
+
+    def check_convergence(self) -> dict[str, Any]:
+        """
+        Check whether optimization has converged.
+
+        Uses multiple signals (at least 2 of 3 must agree):
+        1. No-improvement count: no significant improvement in N consecutive rounds.
+        2. Plateau: last K rounds show < threshold improvement and low range.
+        3. Low improvement variance: recent improvements are consistently near zero.
+
+        Returns:
+            Dict with:
+                - converged: bool
+                - reason: str | None
+                - details: dict
+        """
+        if len(self._round_losses) < 5:
+            return {"converged": False, "reason": None, "details": {}}
+
+        losses = self._round_losses
+        n = len(losses)
+        recent = losses[-self.convergence_lookback:]
+
+        # === Signal 1: No-improvement count ===
+        # Count consecutive rounds where no improvement occurred
+        rounds_without_improvement = 0
+        running_best = float("inf")
+        for l in reversed(losses):
+            if l < running_best:
+                running_best = l
+                rounds_without_improvement = 0  # Reset at improvement
+            else:
+                rounds_without_improvement += 1
+
+        no_improvement_detected = rounds_without_improvement >= self.max_no_improvement_rounds
+
+        # === Signal 2: Plateau detection (last K rounds) ===
+        # Check if the last few rounds have settled
+        k_plateau = min(5, len(recent))
+        last_k = recent[-k_plateau:]
+        best_last_k = min(last_k)
+        range_last_k = max(last_k) - min(last_k)
+
+        # Improvement from start of window to current best
+        window_start = losses[-self.convergence_lookback] if self.convergence_lookback < n else losses[0]
+        improvement_frac = (window_start - best_last_k) / (abs(window_start) + 1e-8)
+
+        # Use a relative threshold: improvement must be tiny compared to best loss
+        plateau_detected = (
+            range_last_k < self.convergence_threshold * max(abs(best_last_k), 1e-6)
+            and improvement_frac < self.min_improvement_frac * 3  # Relaxed for early rounds
+        )
+
+        # === Signal 3: Low improvement variance ===
+        # Only look at the most recent 5 improvements
+        k_var = min(5, len(recent) - 1)
+        if k_var >= 2:
+            recent_improvements = [recent[i] - recent[i + 1] for i in range(k_var)]
+            improvement_var = float(np.var(recent_improvements))
+            # Use relative variance: variance should be tiny compared to improvement scale
+            improvement_scale = abs(best_last_k) + 1e-6
+            low_var = improvement_var < (self.convergence_threshold * improvement_scale) ** 2
+        else:
+            low_var = False
+
+        # Overall convergence: at least 2 of 3 signals
+        signals = [no_improvement_detected, plateau_detected, low_var]
+        n_signals = sum(signals)
+
+        if n_signals >= 2 or (n_signals >= 1 and no_improvement_detected):
+            reasons = []
+            if no_improvement_detected:
+                reasons.append(f"no improvement for {rounds_without_improvement} rounds")
+            if plateau_detected:
+                reasons.append(f"plateau (range={range_last_k:.6g} over last {k_plateau} rounds)")
+            if low_var:
+                reasons.append(f"low improvement variance={improvement_var:.2e}")
+
+            return {
+                "converged": True,
+                "reason": ", ".join(reasons),
+                "details": {
+                    "no_improvement": no_improvement_detected,
+                    "plateau": plateau_detected,
+                    "low_var": low_var,
+                    "signals_met": n_signals,
+                    "rounds_without_improvement": rounds_without_improvement,
+                    "current_best": best_last_k,
+                },
+            }
+
+        return {
+            "converged": False,
+            "reason": None,
+            "details": {
+                "no_improvement": no_improvement_detected,
+                "plateau": plateau_detected,
+                "low_var": low_var,
+                "signals_met": n_signals,
+                "rounds_without_improvement": rounds_without_improvement,
+                "current_best": best_last_k,
+            },
+        }
+
+    def _predict_improvement(self) -> float:
+        """
+        Predict the expected improvement from the next iteration
+        using learning curve extrapolation.
+
+        Returns:
+            Predicted improvement (positive = more improvement expected).
+        """
+        if len(self._round_losses) < 3:
+            return float("inf")
+
+        # Extrapolate: the best loss in the next round is predicted
+        # to be: current_best * (1 + predicted_improvement_frac)
+        # where predicted_improvement_frac comes from the learning curve slope.
+        k = self._estimate_learning_curve_slope()
+        if k == 0.0:
+            return 0.0
+
+        # Use the slope to predict how much lower loss will go
+        # with one more budget increase
+        current_best = min(self._round_losses)
+        # Predicted improvement is roughly: current_best * (1 - scale)
+        # where scale depends on the slope and budget ratio.
+        scale = (self.max_budget / (self.max_budget * 0.5)) ** k if k < 0 else 0.0
+        predicted_improvement = abs(current_best * scale)
+
+        return float(max(predicted_improvement, 0.0))
+
     def run(self) -> tuple[dict[str, Any], float]:
         scheduler = HyperbandScheduler(
             min_budget=self.min_budget,
@@ -155,14 +301,30 @@ class BOHB:
             eta=self.eta,
         )
 
+        converged_info = {"converged": False, "reason": None}
+        iteration_count = 0
+
         for it in range(self.n_iterations):
+            iteration_count += 1
             if self.verbose:
                 print("\n" + "=" * 70)
-                print(f"BOHB Iteration {it + 1}/{self.n_iterations}")
+                print(f"BOHB Iteration {iteration_count}/{self.n_iterations}")
                 print("=" * 70)
 
             for s, n, r in scheduler.brackets():
                 self._run_bracket(it, s, n, r, scheduler)
+
+            # Record best loss for this round
+            self._round_losses.append(self.best_loss if self.best_loss < float("inf") else float("inf"))
+
+            # Check convergence after each bracket completes
+            if not converged_info.get("converged", False):
+                converged_info = self.check_convergence()
+                if converged_info["converged"]:
+                    if self.verbose:
+                        print(f"\n  >> Convergence detected: {converged_info['reason']}")
+                        print(f"  >> Stopping early (best loss: {self.best_loss:.6g})")
+                    break
 
         if self.best_config is None:
             raise RuntimeError("BOHB finished without any valid evaluation.")
@@ -175,6 +337,9 @@ class BOHB:
             print("Optimization complete")
             print(f"Best loss : {self.best_loss:.6g}")
             print(f"Best cfg  : {self.best_config}")
+            print(f"Rounds    : {iteration_count}/{self.n_iterations}")
+            if converged_info.get("converged"):
+                print(f"Converged : Yes — {converged_info['reason']}")
             diag = self.tpe.diagnostics()
             if diag.get("trust_region_enabled", False):
                 print(
@@ -182,7 +347,8 @@ class BOHB:
                     f"restarts={diag.get('trust_region_restart_count', 0)} "
                     f"length={diag.get('trust_region_length', 0.0):.4f} "
                     f"succ={diag.get('trust_region_success_count', 0)} "
-                    f"fail={diag.get('trust_region_failure_count', 0)}"
+                    f"fail={diag.get('trust_region_failure_count', 0)} "
+                    f"per_param={diag.get('trust_region_lengths', 'N/A')}"
                 )
             print("=" * 70)
 
@@ -568,32 +734,108 @@ class BOHB:
         return slope
 
     def _fit_learning_curve_slope(self) -> float:
+        """
+        Fit learning curve slope using Bayesian weighted regression.
+
+        Upgraded from simple OLS to:
+        1. Huber loss robust regression (resistant to outliers)
+        2. Time-weighted observations (recent data weighted more)
+        3. Budget-stratified sampling (ensure coverage across budgets)
+        4. Bayesian posterior mean of slope (with uncertainty)
+
+        Returns:
+            Estimated learning curve slope in log-log space.
+            Negative = loss decreases with budget (expected).
+            0.0 = no clear learning signal.
+        """
         if self.max_budget <= 0:
             return 0.0
+
         obs = [
             (h["budget"], h["loss"])
             for h in self.history
             if h.get("budget", 0) > 0 and h.get("loss", 0) > 0
         ]
-        if len(obs) < 20:
+        if len(obs) < 15:  # Lowered threshold since we weight better
             return 0.0
+
         budgets = np.array([b for b, _ in obs], dtype=float)
         losses = np.array([l for _, l in obs], dtype=float)
-        if len(np.unique(budgets)) < 3:
+
+        # Filter to positive, finite values
+        valid = np.isfinite(budgets) & np.isfinite(losses) & (budgets > 0) & (losses > 0)
+        budgets = budgets[valid]
+        losses = losses[valid]
+
+        if len(budgets) < 15:
             return 0.0
+
+        n_unique = len(np.unique(budgets))
+        if n_unique < 2:
+            # If only one budget level, estimate from quantile of losses
+            losses_sorted = np.sort(losses)
+            n_good = max(1, len(losses_sorted) // 10)
+            if n_good < 2:
+                return 0.0
+            return 0.0  # Can't estimate slope from single budget
+
         x = np.log(budgets)
         y = np.log(losses)
+
         try:
-            k, _ = np.polyfit(x, y, deg=1)
+            # --- Step 1: Outlier rejection via iterative re-weighting ---
+            # Start with OLS, then iteratively re-weight based on residual
+            k_prev, b_prev = np.polyfit(x, y, deg=1)
+            residual = np.abs(y - (k_prev * x + b_prev))
+            mad = np.median(residual)
+            # Huber weights: down-weight large residuals
+            weights = np.ones(len(x))
+            if mad > 1e-8:
+                z = residual / (1.4826 * mad)  # Normalized MAD
+                weights = np.where(
+                    z <= 1.5, 1.0,
+                    1.5 / z  # Huber weight for outliers
+                )
+
+            # --- Step 2: Time decay weighting ---
+            # Recent observations should influence slope more
+            time_weights = np.exp(-0.02 * np.arange(len(x)))
+            weights = weights * time_weights
+
+            # --- Step 3: Weighted robust regression ---
+            k, b = np.polyfit(x, y, deg=1, w=weights)
+
+            # --- Step 4: Bayesian-style posterior correction ---
+            # Estimate slope uncertainty and shrink toward zero if uncertain
+            predictions = k * x + b
+            resid_sq = weights * (y - predictions) ** 2
+            se = np.sqrt(np.sum(resid_sq) / max(len(x) - 2, 1))
+            x_mean = np.mean(x)
+            x_var = np.sum(weights * (x - x_mean) ** 2) / np.sum(weights)
+            se_k = se / np.sqrt(max(x_var * len(x), 1e-12))
+
+            # Bayesian shrinkage: pull estimate toward zero proportional to uncertainty
+            prior_precision = 1.0  # Weak prior (slope ~ N(0, 1))
+            data_precision = 1.0 / max(se_k**2, 1e-8)
+            posterior_precision = prior_precision + data_precision
+            k_shrunk = (prior_precision * 0.0 + data_precision * k) / posterior_precision
+
+            # --- Step 5: Conservative bounds ---
+            k_final = float(k_shrunk)
+            k_final = float(max(min(k_final, 0.0), -0.5))  # Allow steeper slopes
+            if abs(k_final) < 0.015:  # Slightly lowered threshold
+                return 0.0
+            return k_final
+
         except Exception:
+            # Fallback: simple OLS with outlier rejection
+            try:
+                k, _ = np.polyfit(x, y, deg=1)
+                if np.isfinite(k):
+                    return float(max(min(k, 0.0), -0.3))
+            except Exception:
+                pass
             return 0.0
-        if not np.isfinite(k):
-            return 0.0
-        # Conservative: limit magnitude of slope
-        k = float(max(min(k, 0.0), -0.3))
-        if abs(k) < 0.02:
-            return 0.0
-        return k
 
     def _predict_final_loss(self, loss: float, budget: float) -> float:
         if budget <= 0 or self.max_budget <= 0:

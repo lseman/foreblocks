@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pyfftw.interfaces.numpy_fft as fftw_np
 
-from .emd import EMDVariants
+from ..emd import EMDVariants
 
 
 class ModeProcessor:
@@ -56,9 +56,37 @@ class ModeProcessor:
         return [modes[i] for i in order], [float(dom[i]) for i in order]
 
     @staticmethod
-    def cost_signal(modes: list[np.ndarray], signal: np.ndarray, fs: float) -> float:
+    def cost_signal(
+        modes: list[np.ndarray],
+        signal: np.ndarray,
+        fs: float,
+        weights: dict[str, float] | None = None,
+    ) -> float:
+        """
+        Composite cost for a set of candidate modes.
+
+        Parameters
+        ----------
+        weights : dict or None
+            Keys ``"residual"``, ``"overlap"``, ``"entropy"``,
+            ``"orthogonality"`` with values in [0, 1].  Defaults to
+            ``{"residual": 0.5, "overlap": 0.2, "entropy": 0.1,
+            "orthogonality": 0.2}``.
+        """
         if len(modes) == 0:
             return 10.0
+
+        if weights is None:
+            w_res = 0.5
+            w_olap = 0.2
+            w_ent = 0.1
+            w_orth = 0.2
+        else:
+            w_res  = float(weights.get("residual", 0.5))
+            w_olap = float(weights.get("overlap", 0.2))
+            w_ent  = float(weights.get("entropy", 0.1))
+            w_orth = float(weights.get("orthogonality", 0.2))
+
         x = np.asarray(signal, dtype=np.float64)
         total_energy = np.sum(x**2) + 1e-12
         recon = np.sum(modes, axis=0)
@@ -83,7 +111,10 @@ class ModeProcessor:
 
         avg_entropy = float(np.mean(entropy_vals))
         return float(
-            0.5 * residual_energy + 0.2 * overlap_penalty + 0.1 * avg_entropy + 0.2 * oi
+            w_res * residual_energy
+            + w_olap * overlap_penalty
+            + w_ent * avg_entropy
+            + w_orth * oi
         )
 
     @staticmethod

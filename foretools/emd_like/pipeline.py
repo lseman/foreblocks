@@ -256,6 +256,7 @@ class VMDOptimizer:
             ),
             "use_anderson": bool(getattr(p, "use_anderson", False)),
             "anderson_m": int(getattr(p, "anderson_m", 5)),
+            "anderson_beta": float(getattr(p, "anderson_beta", 1.0)),
             "gram_schmidt_every": int(getattr(p, "gram_schmidt_every", 0)),
             "fft_backend": str(getattr(p, "fft_backend", "fftw")),
             "fft_device": str(getattr(p, "fft_device", "auto")),
@@ -365,6 +366,7 @@ class VMDOptimizer:
             "enforce_uncorrelated": bool(p.enforce_uncorrelated),
             "use_anderson": bool(getattr(p, "use_anderson", False)),
             "anderson_m": int(getattr(p, "anderson_m", 5)),
+            "anderson_beta": float(getattr(p, "anderson_beta", 1.0)),
             "fft_backend": str(getattr(p, "fft_backend", "fftw")),
             "fft_device": str(getattr(p, "fft_device", "auto")),
         }
@@ -711,7 +713,13 @@ class VMDOptimizer:
             trial=trial,
         )
         modes_list, freqs_list = self._postprocess_modes(u, signal, fs, p)
-        cost = float(self.proc.cost_signal(modes_list, signal, fs))
+        weights = {
+            "residual": float(getattr(p, "cost_w_residual", 0.5)),
+            "overlap": float(getattr(p, "cost_w_overlap", 0.2)),
+            "entropy": float(getattr(p, "cost_w_entropy", 0.1)),
+            "orthogonality": float(getattr(p, "cost_w_orthogonality", 0.2)),
+        }
+        cost = float(self.proc.cost_signal(modes_list, signal, fs, weights=weights))
         raw_out = np.asarray(u, dtype=np.float64).copy() if return_raw_u else None
 
         if allow_cache and cacheable_alpha and len(self._cache) < 80:
@@ -740,11 +748,17 @@ class VMDOptimizer:
         all_freqs: list[float] = []
         channel_costs: list[float] = []
 
+        weights = {
+            "residual": float(getattr(p, "cost_w_residual", 0.5)),
+            "overlap": float(getattr(p, "cost_w_overlap", 0.2)),
+            "entropy": float(getattr(p, "cost_w_entropy", 0.1)),
+            "orthogonality": float(getattr(p, "cost_w_orthogonality", 0.2)),
+        }
         for ch in range(C):
             modes_ch, freqs_ch = self._postprocess_modes(U[ch], X[ch], fs, p)
             all_modes.extend([np.asarray(m, dtype=np.float64).copy() for m in modes_ch])
             all_freqs.extend([float(f) for f in freqs_ch])
-            channel_costs.append(float(self.proc.cost_signal(modes_ch, X[ch], fs)))
+            channel_costs.append(float(self.proc.cost_signal(modes_ch, X[ch], fs, weights=weights)))
 
         if not all_modes:
             return [], [], float(np.mean(channel_costs) if channel_costs else 10.0)

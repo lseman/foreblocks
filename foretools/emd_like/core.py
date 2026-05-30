@@ -29,6 +29,14 @@ from scipy.signal import find_peaks, hilbert, spectrogram, welch
 from scipy.sparse import bmat, csc_matrix, diags, eye
 from scipy.sparse.linalg import factorized, spsolve
 
+try:
+    from ..config import VMDOptions, VMDParameters
+except Exception:
+    try:
+        from vmd_config import VMDOptions, VMDParameters
+    except Exception:
+        VMDOptions = None
+        VMDParameters = None
 
 try:
     from .common import BoundaryHandler, FFTWManager
@@ -623,12 +631,15 @@ class VMDCore:
         # ── new parameters ─────────────────────────────────────────────────
         use_anderson: bool = False,
         anderson_m: int = 5,
+        anderson_beta: float = 1.0,
         gram_schmidt_every: int = 0,  # 0 = disabled; N → apply every N iters
         omega_tol: float = 1e-8,  # secondary convergence gate on max|Δω|
         warm_start_state: dict[str, Any] | None = None,  # used when init=5
         random_seed: int | None = None,
         fft_backend: str = "fftw",
         fft_device: str = "auto",
+        # ── VMDOptions bundling ────────────────────────────────────────────
+        options: VMDOptions | None = None,  # optional bundled config
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         VMD decomposition with ADMM over-relaxation, optional Anderson mixing,
@@ -655,7 +666,43 @@ class VMDCore:
         relative changes, so its magnitude scales roughly with ``K``. In
         practice, larger decompositions may require a looser ``tol`` than
         single-mode runs.
+
+        ``options`` – when supplied, its fields are used to override the
+        corresponding keyword arguments *only* when the caller did not
+        explicitly pass a non-default value.  This lets you write::
+
+            opts = VMDOptions(use_anderson=True, gram_schmidt_every=10,
+                              tol=1e-7)
+            u, uh, omega = core.decompose(signal, alpha=2000, K=3,
+                                          options=opts)
+
+        Individual keyword arguments always take precedence over ``options``.
         """
+        # ── Apply VMDOptions if provided ──────────────────────────────────
+        if options is not None:
+            boundary_method    = getattr(options, 'boundary_method', boundary_method)
+            use_soft_junction  = getattr(options, 'use_soft_junction', use_soft_junction)
+            window_alpha       = getattr(options, 'window_alpha', window_alpha)
+            fft_backend        = getattr(options, 'fft_backend', fft_backend)
+            fft_device         = getattr(options, 'fft_device', fft_device)
+            enforce_uncorrelated = getattr(options, 'enforce_uncorrelated', enforce_uncorrelated)
+            corr_rho           = getattr(options, 'corr_rho', corr_rho)
+            corr_update_every  = getattr(options, 'corr_update_every', corr_update_every)
+            corr_ema           = getattr(options, 'corr_ema', corr_ema)
+            admm_over_relax    = getattr(options, 'admm_over_relax', admm_over_relax)
+            use_anderson       = getattr(options, 'use_anderson', use_anderson)
+            anderson_m         = getattr(options, 'anderson_m', anderson_m)
+            anderson_beta      = getattr(options, 'anderson_beta', anderson_beta)
+            gram_schmidt_every = getattr(options, 'gram_schmidt_every', gram_schmidt_every)
+            omega_tol          = getattr(options, 'omega_tol', omega_tol)
+            omega_momentum     = getattr(options, 'omega_momentum', omega_momentum)
+            omega_shrinkage    = getattr(options, 'omega_shrinkage', omega_shrinkage)
+            omega_max_step     = getattr(options, 'omega_max_step', omega_max_step)
+            tau                = getattr(options, 'tau', tau)
+            if getattr(options, 'if_tracking', False):
+                # VNCMD params are handled by decompose_vncmd; skip here.
+                pass
+
         x = np.asarray(signal, dtype=np.float64)
 
         if precomputed_fft is None:
@@ -1520,6 +1567,7 @@ class VMDCore:
         enforce_uncorrelated: bool = False,
         use_anderson: bool = False,
         anderson_m: int = 5,
+        anderson_beta: float = 1.0,
         fft_backend: str = "fftw",
         fft_device: str = "auto",
         random_seed: int | None = None,
@@ -1601,7 +1649,7 @@ class VMDCore:
         lam = np.zeros((C, T), dtype=np.complex128)
         u_hat_prev = np.zeros((C, T, K), dtype=np.complex128)
         over_relax = float(np.clip(float(admm_over_relax), 0.0, 2.0))
-        mixer = AndersonMixer(m=anderson_m) if use_anderson else None
+        mixer = AndersonMixer(m=anderson_m, beta=anderson_beta) if use_anderson else None
         if enforce_uncorrelated:
             warnings.warn(
                 "MVMD enforce_uncorrelated uses per-channel frequency-domain "

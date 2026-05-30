@@ -1,0 +1,12 @@
+# Per-package build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Package-specific runtime files
+*.egg-info/
+*.egg

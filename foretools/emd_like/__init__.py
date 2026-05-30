@@ -10,7 +10,7 @@ from .common import (
     box_counting_dimension,
     fractal_dimension,
 )
-from .config import HierarchicalParameters, VMDParameters
+from .config import HierarchicalParameters, VMDOptions, VMDParameters
 from .core import (
     CrossModeRefiner,
     InformerRefiner,
@@ -29,6 +29,7 @@ __all__ = [
     "fractal_dimension",
     "box_counting_dimension",
     "VMDParameters",
+    "VMDOptions",
     "HierarchicalParameters",
     "FFTWManager",
     "BoundaryHandler",

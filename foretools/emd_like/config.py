@@ -58,6 +58,11 @@ class VMDParameters:
     apply_tapering: bool = True
     mode_energy_floor: float = 0.01
     merge_freq_tol: float = 0.15
+    # cost-function weights (used by ModeProcessor.cost_signal)
+    cost_w_residual: float = 0.5
+    cost_w_overlap: float = 0.2
+    cost_w_entropy: float = 0.1
+    cost_w_orthogonality: float = 0.2
 
     # extras
     use_fs_vmd: bool = False
@@ -100,7 +105,85 @@ class VMDParameters:
     corr_ema: float = 0.8  # EMA smoothing for corr estimates
     corr_floor: float = 1e-12
     use_anderson: bool = False
+    anderson_m: int = 5
+    anderson_beta: float = 1.0
     gram_schmidt_every: int = 0
+
+
+@dataclass
+class VMDOptions:
+    """
+    Bundled options for ``VMDCore.decompose()`` and ``VMDCore.decompose_vncmd()``.
+
+    Replaces the 25+ individual keyword arguments with a single named
+    structure.  All fields default to the values that ``decompose()`` used
+    before this class existed, so existing code that passes keyword
+    arguments directly continues to work.
+
+    Usage
+    -----
+    ```python
+    opts = VMDOptions(tol=1e-6, use_anderson=True, gram_schmidt_every=10)
+    u, uh, omega = core.decompose(signal, alpha=2000, K=3, options=opts)
+    ```
+    """
+    # ── Convergence ─────────────────────────────────────────────────────
+    tol: float = 1e-6
+    omega_tol: float = 1e-8
+    max_iter: int = 300
+
+    # ── ADMM / solver acceleration ─────────────────────────────────────
+    admm_over_relax: float = 1.6
+    tau: float = 0.0
+    use_anderson: bool = False
+    anderson_m: int = 5
+    anderson_beta: float = 1.0
+
+    # ── Gram-Schmidt orthogonalisation ─────────────────────────────────
+    gram_schmidt_every: int = 0  # 0 = disabled; N → apply every N iters
+
+    # ── Omega update stabilisation ─────────────────────────────────────
+    omega_momentum: float = 0.0
+    omega_shrinkage: float = 0.0
+    omega_max_step: float = 0.0
+
+    # ── Boundary handling ──────────────────────────────────────────────
+    boundary_method: str = "mirror"
+    use_soft_junction: bool = False
+    window_alpha: float | None = None
+
+    # ── FFT backend ────────────────────────────────────────────────────
+    fft_backend: str = "fftw"  # "fftw" | "torch"
+    fft_device: str = "auto"  # "auto" | "cpu" | "cuda"
+
+    # ── Warm-start (streaming / rolling windows) ───────────────────────
+    warm_start_u_hat: np.ndarray | None = None
+    warm_start_omega: np.ndarray | None = None
+
+    # ── Non-stationary / chirp extension (VNCMD) ───────────────────────
+    if_tracking: bool = False
+    if_window_size: int = 256
+    if_hop_size: int = 128
+    if_center_smooth: float = 0.85
+    if_update_step: float = 1.0
+    vncmd_min_track_gap: float | None = None
+    vncmd_envelope_ridge_scale: float = 0.0
+
+    # ── Decorrelation (cross-mode penalty) ─────────────────────────────
+    enforce_uncorrelated: bool = False
+    corr_rho: float = 0.05
+    corr_update_every: int = 5
+    corr_ema: float = 0.8
+
+    # ── Post-processing defaults ───────────────────────────────────────
+    mode_energy_floor: float = 0.01
+    merge_freq_tol: float = 0.15
+
+    # ── Cost-function weights (used by ModeProcessor.cost_signal) ──────
+    cost_w_residual: float = 0.5
+    cost_w_overlap: float = 0.2
+    cost_w_entropy: float = 0.1
+    cost_w_orthogonality: float = 0.2
 
 
 @dataclass

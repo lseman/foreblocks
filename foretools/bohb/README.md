@@ -18,6 +18,18 @@ expensive and you want early stopping of bad configurations.
 - **Parallel evaluation**: `parallel_jobs > 1` runs candidates concurrently.
 - **Plotting helpers**: optimization history, budget-vs-loss, parameter
   importance, parallel coordinates.
+- **Convergence detection**: automatic early stopping when optimization
+  plateaus, based on no-improvement count, plateau detection, and variance.
+- **Per-parameter trust region** (TuRBO 2.0): individual exploration lengths
+  per parameter, shrinking only unproductive dimensions.
+- **qNEI batch acquisition**: Noisy Expected Improvement with GP noise model
+  for parallel batch selection.
+- **Thompson sampling**: proper Thompson sampling with uncertainty-aware
+  candidate selection.
+- **Adaptive bandwidth** (LOO CV): leave-one-out cross-validation for
+  per-parameter bandwidth optimization.
+- **GP-conditional Constant Liar**: temporal GP regression for realistic
+  pending evaluation estimation.
 
 ## Import surface
 
@@ -119,6 +131,10 @@ internally — you don't need to wrap it.
 | `history_export_jsonl`  | `None`         | Path to dump full history at end of `run()`.           |
 | `handle_errors`         | `True`         | Catch and record exceptions instead of crashing.       |
 | `verbose`               | `True`         | Print progress per iteration/bracket.                  |
+| `max_no_improvement_rounds` | `None`     | Early stop: no significant improvement in N rounds.    |
+| `convergence_threshold` | `1e-6`        | Threshold for convergence detection.                   |
+| `min_improvement_frac`  | `0.001`       | Minimum improvement fraction to avoid premature stop.  |
+| `convergence_lookback`  | `10`          | Number of recent rounds to check for convergence.      |
 
 ## Pruning
 
@@ -146,6 +162,61 @@ bohb_b.run()
 
 JSONL records include `config`, `budget`, `loss`, `iteration`, `bracket`,
 and `round` per trial.
+
+## Batch selection strategies
+
+Use `TPEConf.batch` to configure the batch selector:
+
+```python
+from foretools.bohb.tpe import TPEConf
+
+conf = TPEConf()
+conf.batch['batch_strategy'] = 'ts'  # Thompson sampling
+conf.batch['constant_liar'] = True
+conf.batch['liar_strategy'] = 'gp'   # GP-conditional liar
+```
+
+Available strategies:
+
+| Strategy | Description |
+| -------- | ----------- |
+| `diversity` / `greedy_diversity` | Greedy selection with diversity bonus (default) |
+| `ts` / `thompson` | Thompson sampling with uncertainty-aware selection |
+| `lp` / `local_penalization` | Distance-based local penalization |
+| `qnei` / `qnei_batch` | qNoisy Expected Improvement (greedy batch) |
+
+Additional batch options:
+- `constant_liar`: Inject fake values for pending evaluations
+- `liar_strategy`: `"mean"`, `"median"`, `"worst"`, `"gp"`, `"gp_median"`, `"gp_quantile"`
+- `n_fantasies`: MC samples for qNEI
+- `alpha`: Thompson sampling exploration strength
+- `n_samples`: Thompson sampling stochastic samples
+
+## Convergence detection
+
+BOHB can automatically detect when optimization has converged and stop early:
+
+```python
+bohb = BOHB(
+    config_space=config_space,
+    evaluate_fn=objective,
+    n_iterations=20,              # Planned max
+    max_no_improvement_rounds=5,  # Stop after 5 rounds without improvement
+    verbose=True,
+)
+best_config, best_loss = bohb.run()
+# If converged: "Rounds: 8/20" and "Converged: Yes — no improvement for 6 rounds"
+```
+
+Three signals are checked (at least 2 must agree):
+1. **No-improvement count**: rounds without significant improvement
+2. **Plateau**: recent rounds show near-zero range and tiny improvement
+3. **Low variance**: recent improvements are consistently near zero
+
+Access diagnostics:
+```python
+conv = bohb.check_convergence()  # Dict with 'converged', 'reason', 'details'
+```
 
 ## Results and plotting
 

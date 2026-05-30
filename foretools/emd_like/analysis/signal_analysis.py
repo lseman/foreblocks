@@ -4,7 +4,7 @@ import numpy as np
 import scipy.stats
 import pyfftw.interfaces.numpy_fft as fftw_np
 
-from .config import VMDParameters
+from ..config import VMDParameters
 
 
 class SignalAnalyzer:

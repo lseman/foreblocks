@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from .boundary import BoundaryHandler
-from .fft import FFTWManager, TORCH_AVAILABLE, torch
-from .fractal import FractalDimension, box_counting_dimension, fractal_dimension
-from .mode_processor import ModeProcessor
-from .signal_analysis import SignalAnalyzer
-from .utils import _energy
+from .support.boundary import BoundaryHandler
+from .support.fft import FFTWManager, TORCH_AVAILABLE, torch
+from .analysis.fractal import FractalDimension, box_counting_dimension, fractal_dimension
+from .analysis.mode_processor import ModeProcessor
+from .analysis.signal_analysis import SignalAnalyzer
+from .support.utils import _energy
 
 __all__ = [
     "_energy",
