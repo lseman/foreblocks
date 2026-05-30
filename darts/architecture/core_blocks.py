@@ -1247,7 +1247,7 @@ class DARTSCell(nn.Module):
         # forward pass; if an edge is gated out, it produces no loss signal and
         # its alphas can never recover.  The higher threshold (0.3) is only
         # used in the non-GDAS dense mode where all edges contribute.
-        gate_threshold = 0.05 if self.edges[0].op_gdas and self.training else 0.1
+        gate_threshold = 0.05 if getattr(self.edges[0], "op_gdas", False) and self.training else 0.1
 
         for node_idx in range(1, self.num_nodes):
             node_inputs, edge_indices = [], []

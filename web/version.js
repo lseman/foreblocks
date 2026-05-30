@@ -1,1 +1,1 @@
-window.__FOREBLOCKS_VERSION__ = "0.1.29";
+window.__FOREBLOCKS_VERSION__ = "0.1.30";
