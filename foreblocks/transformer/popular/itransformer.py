@@ -154,8 +154,8 @@ class ITransformerHeadCustom(nn.Module):
       3) Encode with VariableTokenEncoder (custom TransformerEncoderLayer / MultiAttention)
       4) Output mixing:
          - "pooled": pool tokens ("mean" | "last" | "cls") -> MLP -> [T_pred]
-         - "nonpool_linear": learn A∈R^{T_pred × N_eff}, H = A @ tokens -> per-horizon linear
-         - "nonpool_attn": learned horizon queries Q∈R^{T_pred×D}, cross-attend over tokens
+         - "nonpool_linear": learn A in R^{T_pred x N_eff}, H = A @ tokens -> per-horizon linear
+         - "nonpool_attn": learned horizon queries Q in R^{T_pred x D}, cross-attend over tokens
       5) Per-variable outputs -> [B, T_pred, C]; optional channel_mixer maps C->C_out
     """
 

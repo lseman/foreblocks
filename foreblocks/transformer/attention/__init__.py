@@ -6,5 +6,6 @@ from .modules.frequency_att import *  # noqa: F403
 from .modules.gated_delta import *  # noqa: F403
 from .modules.kimi_att import *  # noqa: F403
 from .modules.lin_att import *  # noqa: F403
+from .modules.modern_linear_attn import ModernLinearAttention  # noqa: F401
 from .multi_att import *  # noqa: F403
 from .utils.position import *  # noqa: F403

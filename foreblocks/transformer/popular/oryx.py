@@ -95,7 +95,6 @@ class OryxMixerBlock(nn.Module):
         gate: bool = True,
         norm_type: str = "rms",
         layer_norm_eps: float = 1e-5,
-        use_rotary: bool = True,
     ) -> None:
         super().__init__()
         self.d_model = d_model
@@ -112,7 +111,6 @@ class OryxMixerBlock(nn.Module):
             use_mla=False,
             use_paged_cache=False,
             use_swiglu=False,
-            use_rotary=use_rotary,
         )
         self._linear_mixer = None
         if self.linear_mode not in {"gdn", "gated_delta", "linear"}:
@@ -252,7 +250,6 @@ class OryxLayer(nn.Module):
         gate: bool = True,
         norm_type: str = "rms",
         layer_norm_eps: float = 1e-5,
-        use_rotary: bool = True,
     ) -> None:
         super().__init__()
         self.mixer = OryxMixerBlock(
@@ -266,7 +263,6 @@ class OryxLayer(nn.Module):
             gate=gate,
             norm_type=norm_type,
             layer_norm_eps=layer_norm_eps,
-            use_rotary=use_rotary,
         )
         self.norm1 = create_norm_layer(norm_type, d_model, eps=layer_norm_eps)
         self.norm2 = create_norm_layer(norm_type, d_model, eps=layer_norm_eps)
@@ -321,7 +317,6 @@ class OryxTransformer(nn.Module):
         gate: bool = True,
         norm_type: str = "rms",
         layer_norm_eps: float = 1e-5,
-        use_rotary: bool = True,
     ) -> None:
         super().__init__()
         if num_layers < 1:
@@ -339,7 +334,6 @@ class OryxTransformer(nn.Module):
                 gate=gate,
                 norm_type=norm_type,
                 layer_norm_eps=layer_norm_eps,
-                use_rotary=use_rotary,
             )
             for _ in range(num_layers)
         ])

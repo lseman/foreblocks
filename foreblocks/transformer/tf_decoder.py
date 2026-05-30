@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,7 +19,7 @@ from .attention.utils.residuals import (
 )
 from .embeddings import InformerTimeEmbedding
 from .mhc import mhc_init_streams
-from .patching import PatchInfo, patchify_padding_mask
+
 from .skip.gateskip import ResidualGate
 from .tf_base import (
     BaseTransformer,
@@ -34,7 +36,6 @@ from .tf_base import (
     _gather_square_mask,
     _init_attention_residual_state,
     _ModelLayerInvokeStrategy,
-    _patchify_gateskip_active_mask,
     _scatter_mixture_of_depths_output,
 )
 
@@ -83,9 +84,10 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         attention_matching_min_keep: int = 64,
         attention_matching_query_budget: int = 64,
         attention_matching_force_single_step: bool = False,
-        use_attention_residual: bool = True,
+        use_attention_residual: bool = False,  # True enables depth attention residuals (incompatible with ckpt/mHC/mod/gateskip)
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
+        pos_encoding_type: str = "rope",
     ):
         super().__init__(
             d_model=d_model,
@@ -108,13 +110,21 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             moe_latent_d_ff=moe_latent_d_ff,
         )
 
-        self.self_attn_std = MultiAttention(
-            d_model=d_model,
-            n_heads=nhead,
-            dropout=dropout,
+        # ── Lazy attention module placeholders (decoder uses 5 self-attn backends) ──
+        self.self_attn_std: Optional[nn.Module] = None
+        self.self_attn_lin: Optional[nn.Module] = None
+        self.self_attn_sype: Optional[nn.Module] = None
+        self.self_attn_kimi: Optional[nn.Module] = None
+        self.self_attn_gdn: Optional[nn.Module] = None
+
+        # Init parameters for lazy factories
+        self._attn_init_kwargs = {
+            "d_model": d_model, "n_heads": nhead, "dropout": dropout,
+            "cross_attention": False,
+        }
+        self._std_kwargs = dict(
             attention_type=att_type,
             freq_modes=freq_modes,
-            cross_attention=False,
             use_mla=not use_attention_matching_compaction,
             use_attention_matching_compaction=use_attention_matching_compaction,
             attention_matching_keep_ratio=attention_matching_keep_ratio,
@@ -123,19 +133,9 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_query_budget=attention_matching_query_budget,
             attention_matching_force_single_step=attention_matching_force_single_step,
         )
-        self.self_attn_lin = LinearAttention(
-            d_model=d_model,
-            n_heads=nhead,
-            dropout=dropout,
-            cross_attention=False,
-        )
-        self.self_attn_sype = MultiAttention(
-            d_model=d_model,
-            n_heads=nhead,
-            dropout=dropout,
+        self._sype_kwargs = dict(
             attention_type="sype",
             freq_modes=freq_modes,
-            cross_attention=False,
             use_mla=not use_attention_matching_compaction,
             use_attention_matching_compaction=use_attention_matching_compaction,
             attention_matching_keep_ratio=attention_matching_keep_ratio,
@@ -144,18 +144,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_query_budget=attention_matching_query_budget,
             attention_matching_force_single_step=attention_matching_force_single_step,
         )
-        self.self_attn_kimi = KimiAttention(
-            d_model=d_model,
-            n_heads=nhead,
-            dropout=dropout,
-            cross_attention=False,
-        )
-        self.self_attn_gdn = GatedDeltaNet(
-            d_model=d_model,
-            n_heads=nhead,
-            dropout=dropout,
-        )
         self.layer_attention_type = str(layer_attention_type)
+        self._pos_encoding_type = str(pos_encoding_type)
 
         self.cross_attn = MultiAttention(
             d_model=d_model,
@@ -164,6 +154,7 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_type=att_type,
             freq_modes=freq_modes,
             cross_attention=True,
+            pos_encoding_type=self._pos_encoding_type,
         )
 
         self.is_causal = not informer_like
@@ -205,17 +196,63 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
     def set_layer_attention_type(self, layer_attention_type: str) -> None:
         self.layer_attention_type = str(layer_attention_type)
 
+    # ── Lazy attention factories (decoder uses 5 self-attn backends) ──
+    def _build_std(self) -> MultiAttention:
+        if self.self_attn_std is None:
+            dev = next(self.parameters()).device
+            self.self_attn_std = MultiAttention(
+                **self._attn_init_kwargs, **self._std_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_std
+
+    def _build_lin(self) -> LinearAttention:
+        if self.self_attn_lin is None:
+            dev = next(self.parameters()).device
+            self.self_attn_lin = LinearAttention(
+                **self._attn_init_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_lin
+
+    def _build_sype(self) -> MultiAttention:
+        if self.self_attn_sype is None:
+            dev = next(self.parameters()).device
+            self.self_attn_sype = MultiAttention(
+                **self._attn_init_kwargs, **self._sype_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_sype
+
+    def _build_kimi(self) -> KimiAttention:
+        if self.self_attn_kimi is None:
+            dev = next(self.parameters()).device
+            self.self_attn_kimi = KimiAttention(
+                **self._attn_init_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_kimi
+
+    def _build_gdn(self) -> GatedDeltaNet:
+        if self.self_attn_gdn is None:
+            dev = next(self.parameters()).device
+            self.self_attn_gdn = GatedDeltaNet(
+                **self._attn_init_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_gdn
+
     def _self_attn(self) -> nn.Module:
         t = self.layer_attention_type
         if t == "linear":
-            return self.self_attn_lin
+            return self._build_lin()
         if t == "sype":
-            return self.self_attn_sype
+            return self._build_sype()
         if t == "kimi":
-            return self.self_attn_kimi
+            return self._build_kimi()
         if t == "gated_delta":
-            return self.self_attn_gdn
-        return self.self_attn_std
+            return self._build_gdn()
+        return self._build_std()
 
     def _ensure_mhc_mixers(self) -> None:
         if not self.use_mhc:
@@ -625,11 +662,6 @@ class TransformerDecoder(BaseTransformer):
 
         self.mod_aux_loss.zero_()
 
-        if self.patch_decoder and incremental_state is not None:
-            raise RuntimeError(
-                "patch_decoder=True is not compatible with incremental_state/KV-cached decoding. "
-                "Set patch_decoder=False (recommended) for autoregressive decoding."
-            )
         if self.use_mod and incremental_state is not None:
             raise RuntimeError(
                 "Mixture-of-Depths routing is currently implemented for full-sequence decoding only. "
@@ -648,63 +680,38 @@ class TransformerDecoder(BaseTransformer):
 
         x = self.input_adapter(tgt)  # [B, T, D]
 
-        patch_info: PatchInfo | None = None
-        if self.patch_decoder:
-            x, patch_info = self.patcher(x)  # [B, Np, D]
-            if x.shape[1] > self.max_seq_len:
-                raise ValueError(
-                    f"Decoder patch token length {x.shape[1]} exceeds max_seq_len={self.max_seq_len}. "
-                    f"Increase max_seq_len or adjust patch_len/patch_stride."
-                )
-            if tgt_key_padding_mask is not None:
-                tgt_key_padding_mask = patchify_padding_mask(
-                    tgt_key_padding_mask,
-                    T=T,
-                    patch_len=self.patch_len,
-                    stride=self.patch_stride,
-                    pad_end=self.patch_pad_end,
-                )
-            gateskip_active_mask = _patchify_gateskip_active_mask(
-                gateskip_active_mask,
-                T=T,
-                patch_len=self.patch_len,
-                stride=self.patch_stride,
-                pad_end=self.patch_pad_end,
-            )
-
-        if position_offset is None:
-            x = self.pos_encoder(x)
-        else:
-            if isinstance(position_offset, int):
-                pos = (
-                    torch.arange(
-                        position_offset,
-                        position_offset + x.shape[1],
-                        device=device,
-                        dtype=torch.long,
-                    )
-                    .unsqueeze(0)
-                    .expand(B, -1)
-                )
+        # Only apply input-level positional encoding for non-RoPE/ALiBi modes.
+        # RoPE and ALiBi handle position encoding internally inside attention.
+        if self.pos_encoding_type in ("sinusoidal", "learnable") and self.pos_encoder is not None:
+            if position_offset is None:
+                x = self.pos_encoder(x)
             else:
-                pos = position_offset.to(device=device, dtype=torch.long)
-                if pos.dim() == 0:
-                    pos = pos.view(1).expand(B)
-                if pos.dim() != 1 or pos.shape[0] != B:
-                    raise ValueError(
-                        f"position_offset tensor must be scalar or [B], got {tuple(pos.shape)}"
+                if isinstance(position_offset, int):
+                    pos = (
+                        torch.arange(
+                            position_offset,
+                            position_offset + x.shape[1],
+                            device=device,
+                            dtype=torch.long,
+                        )
+                        .unsqueeze(0)
+                        .expand(B, -1)
                     )
-                pos = pos.unsqueeze(1) + torch.arange(
-                    x.shape[1], device=device, dtype=torch.long
-                ).unsqueeze(0)
-            x = self.pos_encoder(x, pos=pos)
+                else:
+                    pos = position_offset.to(device=device, dtype=torch.long)
+                    if pos.dim() == 0:
+                        pos = pos.view(1).expand(B)
+                    if pos.dim() != 1 or pos.shape[0] != B:
+                        raise ValueError(
+                            f"position_offset tensor must be scalar or [B], got {tuple(pos.shape)}"
+                        )
+                    pos = pos.unsqueeze(1) + torch.arange(
+                        x.shape[1], device=device, dtype=torch.long
+                    ).unsqueeze(0)
+                x = self.pos_encoder(x, pos=pos)
 
-        # Time encoding only when decoder is timestep-level
-        if (
-            (not self.patch_decoder)
-            and (self.time_encoder is not None)
-            and (time_features is not None)
-        ):
+        # Time encoding
+        if (self.time_encoder is not None) and (time_features is not None):
             time_emb = self.time_encoder(time_features)  # [B, T, D]
             if time_emb.shape[:2] == x.shape[:2]:
                 x = x + time_emb
@@ -745,7 +752,7 @@ class TransformerDecoder(BaseTransformer):
             L = x.shape[1]
             tgt_mask = self._generate_causal_mask(L, device, dtype=x.dtype)
 
-        if tgt_key_padding_mask is None and (not self.patch_decoder):
+        if tgt_key_padding_mask is None:
             tgt_key_padding_mask = self._create_informer_padding_mask(B, T, device)
 
         if gateskip_active_mask is None:
@@ -753,9 +760,7 @@ class TransformerDecoder(BaseTransformer):
             # We intentionally derive this only from an actual padding mask, not
             # from the auto-generated Informer masking over the forecast horizon.
             gateskip_active_mask = _gateskip_active_mask_from_padding(
-                tgt_key_padding_mask
-                if self.patch_decoder
-                else user_tgt_key_padding_mask
+                user_tgt_key_padding_mask
             )
 
         if incremental_state is not None:
@@ -853,6 +858,7 @@ class TransformerDecoder(BaseTransformer):
                     routed_indices,
                     routed_slots,
                     router_logits,
+                    use_expert_choice=True,  # Standard Expert Choice: full replacement
                 )
                 continue
 
@@ -881,10 +887,6 @@ class TransformerDecoder(BaseTransformer):
         x = self._finalize_attention_residual_output(attention_residual_state, x)
         x = self.final_norm(x)
 
-        if self.patch_decoder:
-            assert patch_info is not None
-            x = self.unpatcher(x, patch_info)  # [B, T, D]
-
         out = self.output_projection(x)  # [B, T, output_size]
 
         if return_incremental_state:
@@ -904,10 +906,6 @@ class TransformerDecoder(BaseTransformer):
         memory_mask: torch.Tensor | None = None,
         memory_key_padding_mask: torch.Tensor | None = None,
     ):
-        if self.patch_decoder:
-            raise RuntimeError(
-                "forward_one_step requires patch_decoder=False (recommended default)."
-            )
         if self.use_mod:
             raise RuntimeError(
                 "forward_one_step does not yet support Mixture-of-Depths with KV caching. "

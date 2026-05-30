@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Transformer with Toggleable GateSkip + Hybrid Attention (+ PatchTST-style OPTIONAL patching)
 # Adds: Kimi linear attention as a selectable option:
-#   attention_mode ∈ {"standard","linear","hybrid","kimi","hybrid_kimi","kimi_3to1"}
+#   attention_mode in {"standard","linear","hybrid","kimi","hybrid_kimi","kimi_3to1"}
 #
 # NEW: Optional PatchTST-style patching
 #   - Best default for encoder-decoder forecasting: PATCH ENCODER ONLY.
@@ -448,13 +448,27 @@ def _scatter_mixture_of_depths_output(
     indices: torch.Tensor,
     slot_mask: torch.Tensor,
     router_logits: torch.Tensor,
+    use_expert_choice: bool = True,
 ) -> torch.Tensor:
+    """
+    Scatter MoD routed output back to the base tensor.
+
+    Args:
+        x_base: Original input [B, T, D]
+        x_routed_in: Routed tokens before processing [B, C, D]
+        x_routed_out: Routed tokens after processing [B, C, D]
+        indices: Token indices for each slot [B, C]
+        slot_mask: Boolean mask for valid slots [B, C]
+        router_logits: Router scores for routed tokens [B, C]
+        use_expert_choice: If True, use standard Expert Choice routing
+            (full replacement for routed tokens). If False, use gated delta
+            routing (x_base + sigmoid(logits) * delta).
+
+    Returns:
+        Scattered output [B, T, D]
+    """
     if indices.numel() == 0:
         return x_base
-
-    routed_delta = x_routed_out - x_routed_in
-    routed_scale = router_logits.gather(1, indices).unsqueeze(-1)
-    routed_update = routed_scale * routed_delta
 
     out = x_base.clone()
     for b in range(out.size(0)):
@@ -462,7 +476,14 @@ def _scatter_mixture_of_depths_output(
         if not bool(valid.any()):
             continue
         idx = indices[b, valid]
-        out[b, idx] = x_base[b, idx] + routed_update[b, valid]
+        if use_expert_choice:
+            # Standard Expert Choice: full replacement for routed tokens
+            out[b, idx] = x_routed_out[b, valid]
+        else:
+            # Legacy gated delta: residual connection with sigmoid gating
+            routed_delta = x_routed_out[b, valid] - x_routed_in[b, valid]
+            routed_scale = torch.sigmoid(router_logits[b, valid]).unsqueeze(-1)
+            out[b, idx] = x_base[b, idx] + routed_scale * routed_delta
     return out
 
 
@@ -866,6 +887,7 @@ class BaseTransformer(nn.Module, ABC):
         max_seq_len: int = 5000,
         pos_encoding_scale: float = 1.0,
         pos_encoder: Optional[nn.Module] = None,
+        pos_encoding_type: Literal["sinusoidal", "learnable", "rope", "alibi"] = "rope",
         use_gradient_checkpointing: bool = False,
         share_layers: bool = False,
         use_final_norm: bool = True,
@@ -890,6 +912,15 @@ class BaseTransformer(nn.Module, ABC):
             "gated_delta",
             "hybrid_gdn",
             "gdn_3to1",
+            "gla",
+            "gla_hybrid",
+            "gla_3to1",
+            "deltanet",
+            "deltanet_hybrid",
+            "deltanet_3to1",
+            "gated_deltanet",
+            "gated_deltanet_hybrid",
+            "gated_deltanet_3to1",
         ] = "standard",
         # mHC toggles
         use_mhc: bool = False,
@@ -898,7 +929,6 @@ class BaseTransformer(nn.Module, ABC):
         mhc_collapse: str = "first",  # "first" or "mean"
         # PatchTST-style patching (best default: patch encoder only)
         patch_encoder: bool = True,
-        patch_decoder: bool = False,
         patch_len: int = 16,
         patch_stride: int = 8,
         patch_pad_end: bool = True,
@@ -923,6 +953,7 @@ class BaseTransformer(nn.Module, ABC):
         self.use_gateskip = use_gateskip
         self.gate_budget = gate_budget
         self.gate_lambda = gate_lambda
+        self.pos_encoding_type = str(pos_encoding_type)
         # Backward-compatible behavior:
         # if caller sets att_type to a routed mode but leaves attention_mode default,
         # promote attention_mode so the intended path is used.
@@ -959,7 +990,6 @@ class BaseTransformer(nn.Module, ABC):
 
         # PatchTST-style patching knobs (subclasses decide whether to apply)
         self.patch_encoder = bool(patch_encoder)
-        self.patch_decoder = bool(patch_decoder)
         self.patch_len = int(patch_len)
         self.patch_stride = int(patch_stride)
         self.patch_pad_end = bool(patch_pad_end)
@@ -974,26 +1004,29 @@ class BaseTransformer(nn.Module, ABC):
         self.patcher = PatchTokenizer(
             self.d_model, self.patch_len, self.patch_stride, pad_end=self.patch_pad_end
         )
-        self.unpatcher = PatchDetokenizer(
-            self.d_model, self.patch_len, self.patch_stride
-        )
+
 
         self.input_adapter = nn.Linear(input_size, self.d_model)
+        # Only instantiate input-level positional encoding when pos_encoding_type
+        # demands it (sinusoidal / learnable). RoPE and ALiBi handle position
+        # encoding internally inside the attention module.
+        self.pos_encoder: nn.Module | None = None
         if pos_encoder is not None:
             self.pos_encoder = pos_encoder
-        elif self.attention_mode == "sype" or self.att_type == "sype":
-            self.pos_encoder = LearnablePositionalEncoding(
-                self.d_model,
-                max_len=max_seq_len,
-                dropout=dropout,
-                scale_strategy="fixed",
-                scale_value=pos_encoding_scale,
-                use_layer_norm=False,
-            )
-        else:
-            self.pos_encoder = PositionalEncoding(
-                self.d_model, max_len=max_seq_len, scale=pos_encoding_scale
-            )
+        elif self.pos_encoding_type in ("sinusoidal", "learnable"):
+            if self.attention_mode == "sype" or self.att_type == "sype":
+                self.pos_encoder = LearnablePositionalEncoding(
+                    self.d_model,
+                    max_len=max_seq_len,
+                    dropout=dropout,
+                    scale_strategy="fixed",
+                    scale_value=pos_encoding_scale,
+                    use_layer_norm=False,
+                )
+            else:
+                self.pos_encoder = PositionalEncoding(
+                    self.d_model, max_len=max_seq_len, scale=pos_encoding_scale
+                )
 
         self.register_buffer("_causal_mask", torch.empty(0, 0), persistent=False)
 
@@ -1026,6 +1059,7 @@ class BaseTransformer(nn.Module, ABC):
                 use_attention_residual=self.use_attention_residual,
                 attn_residual_type=self.attention_residual_mode,
                 attention_residual_block_size=self.attention_residual_block_size,
+                pos_encoding_type=self.pos_encoding_type,
                 **kwargs,
             )
             self.shared_layer = self._make_layer(**layer_kwargs)
@@ -1060,6 +1094,7 @@ class BaseTransformer(nn.Module, ABC):
                     use_attention_residual=self.use_attention_residual,
                     attn_residual_type=self.attention_residual_mode,
                     attention_residual_block_size=self.attention_residual_block_size,
+                    pos_encoding_type=self.pos_encoding_type,
                     **kwargs,
                 )
                 self.layers.append(self._make_layer(**layer_kwargs))
@@ -1153,6 +1188,31 @@ class BaseTransformer(nn.Module, ABC):
             return "gated_delta" if layer_idx < (self.num_layers - 1) else "standard"
         if mode == "gdn_3to1":
             return "gated_delta" if (layer_idx % 4) < 3 else "standard"
+
+        # GLA (Gated Linear Attention)
+        if mode == "gla":
+            return "gla"
+        if mode in ("gla_hybrid", "hybrid_gla"):
+            return "gla" if layer_idx < (self.num_layers - 1) else "standard"
+        if mode == "gla_3to1":
+            return "gla" if (layer_idx % 4) < 3 else "standard"
+
+        # DeltaNet
+        if mode == "deltanet":
+            return "deltanet"
+        if mode in ("deltanet_hybrid", "hybrid_deltanet"):
+            return "deltanet" if layer_idx < (self.num_layers - 1) else "standard"
+        if mode == "deltanet_3to1":
+            return "deltanet" if (layer_idx % 4) < 3 else "standard"
+
+        # GatedDeltaNet (Mamba-2 style)
+        if mode == "gated_deltanet":
+            return "gated_deltanet"
+        if mode in ("gated_deltanet_hybrid", "hybrid_gated_deltanet"):
+            return "gated_deltanet" if layer_idx < (self.num_layers - 1) else "standard"
+        if mode == "gated_deltanet_3to1":
+            return "gated_deltanet" if (layer_idx % 4) < 3 else "standard"
+
         raise ValueError(f"Unknown attention_mode: {mode}")
 
     def _build_layer_kwargs(
@@ -1183,6 +1243,7 @@ class BaseTransformer(nn.Module, ABC):
         use_attention_residual: bool,
         attn_residual_type: str,
         attention_residual_block_size: int,
+        pos_encoding_type: str = "sinusoidal",
         **kwargs,
     ):
         return {
@@ -1212,6 +1273,8 @@ class BaseTransformer(nn.Module, ABC):
             "use_attention_residual": use_attention_residual,
             "attn_residual_type": attn_residual_type,
             "attention_residual_block_size": attention_residual_block_size,
+            # Positional encoding
+            "pos_encoding_type": pos_encoding_type,
             **kwargs,
         }
 
@@ -1343,7 +1406,7 @@ class BaseTransformer(nn.Module, ABC):
             f"attnres={self.use_attention_residual}/{self.attention_residual_mode}"
             f"/block={self.attention_residual_block_size} | "
             f"mhc={self.use_mhc} streams={self.mhc_n_streams} collapse={self.mhc_collapse} | "
-            f"patch(enc={self.patch_encoder},dec={self.patch_decoder},len={self.patch_len},stride={self.patch_stride}) | "
+            f"patch(enc={self.patch_encoder},len={self.patch_len},stride={self.patch_stride}) | "
             f"mod={self.use_mod}/{self.mod_mode} | "
             f"shared_layers={share_layers} grad_ckpt={self.use_gradient_checkpointing}"
         )

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,6 +32,8 @@ class LinearAttention(nn.Module):
         cross_attention: bool = False,  # Ignored (separate Q/K/V projs anyway)
         feature_map: str = "elu",  # "elu" (default), "relu", or "rff" (random Fourier features)
         num_features: int | None = None,  # For "rff"; else uses d_head
+        # Positional encoding options
+        pos_encoding_type: str = "sinusoidal",
     ):
         super().__init__()
         self.d_model = d_model
@@ -40,12 +44,17 @@ class LinearAttention(nn.Module):
         self.num_features = num_features or self.d_head
         self.cross_attention = cross_attention  # For future incremental tweaks
         self.scale = self.d_head**-0.5
+        self.pos_encoding_type = pos_encoding_type
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
+
+        # Positional encoding modules (initialized on demand)
+        self._rotary_emb: nn.Module | None = None
+        self._alibi_bias: nn.Module | None = None
 
         if self.feature_map == "rff":
             # Random projection for unbiased softmax approx (Performer-style)
@@ -136,6 +145,22 @@ class LinearAttention(nn.Module):
         q = q * self.scale
         k = k * self.scale
 
+        # Apply positional encoding (RoPE on Q/K before feature map)
+        if self.pos_encoding_type == "rope":
+            if self._rotary_emb is None:
+                # Initialize rotary embedding on first use
+                from foreblocks.transformer.embeddings.rope_alibi_helpers import (
+                    create_rotary_embedding,
+                )
+                self._rotary_emb = create_rotary_embedding(
+                    head_dim=self.d_head, max_seq_len=max(Lq, Lk)
+                )
+            # Initialize cache (RotaryEmbedding computes lazily)
+            self._rotary_emb._update_cos_sin_cache(
+                max(Lq, Lk), device=q.device, dtype=q.dtype
+            )
+            q, k = _apply_rope_to_qk(q, k, self._rotary_emb)
+
         # Apply feature map
         q_prime = self._feature_map(q)  # B H Lq F (F= num_features or Dh)
         k_prime = self._feature_map(k)  # B H Lk F
@@ -188,8 +213,63 @@ class LinearAttention(nn.Module):
             numer = torch.matmul(q_prime, kv_sum)  # B H L Dh
             out_heads = numer / (denom + 1e-6)
 
+        # Apply ALiBi bias to attention scores (before softmax/normalization)
+        if self.pos_encoding_type == "alibi" and self._alibi_bias is not None:
+            # Linear attention doesn't have explicit attention scores,
+            # so ALiBi is not applicable here. The bias would need to be
+            # applied differently (e.g., as a multiplicative factor).
+            pass
+        elif self.pos_encoding_type == "alibi" and self._alibi_bias is None:
+            # Initialize ALiBi on first use
+            from foreblocks.transformer.embeddings.rope_alibi_helpers import (
+                create_alibi_bias,
+            )
+            self._alibi_bias = create_alibi_bias(
+                num_heads=self.n_heads, max_seq_len=max(Lq, Lk)
+            )
+
         # Reshape + project + dropout
         out = out_heads.transpose(1, 2).contiguous().view(B, Lq, self.d_model)  # B L D
         out = self.out_proj(out)
         out = self.dropout(out)
         return out, None, None
+
+
+def _apply_rope_to_qk(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    rotary_emb: nn.Module,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply rotary position embeddings to Q and K tensors.
+
+    Args:
+        q: Query tensor [B, H, L, D]
+        k: Key tensor [B, H, L, D]
+        rotary_emb: RotaryEmbedding module with cached cos/sin
+
+    Returns:
+        (q_rotated, k_rotated) same shapes as input
+    """
+    B, H, L, D = q.shape
+
+    # Get cached cos/sin from RotaryEmbedding
+    # rotary_emb._cos_cached: [seqlen, D/2] → [L, D/2]
+    cos = rotary_emb._cos_cached[:L].unsqueeze(0).unsqueeze(0)  # [1, 1, L, D/2]
+    sin = rotary_emb._sin_cached[:L].unsqueeze(0).unsqueeze(0)  # [1, 1, L, D/2]
+
+    def _rotate_half(x):
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
+
+    # Rotate the first D/2 dims, keep rest unchanged
+    q_rot = _rotate_half(q[..., : D // 2])
+    q_out = torch.cat(
+        [q[..., : D // 2] * cos + q_rot * sin, q[..., D // 2 :]], dim=-1
+    )
+
+    k_rot = _rotate_half(k[..., : D // 2])
+    k_out = torch.cat(
+        [k[..., : D // 2] * cos + k_rot * sin, k[..., D // 2 :]], dim=-1
+    )
+
+    return q_out, k_out

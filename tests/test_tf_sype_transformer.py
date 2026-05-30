@@ -63,6 +63,7 @@ class TestSyPETransformer(unittest.TestCase):
             dropout=0.0,
             att_type="sype",
             patch_encoder=False,
+            pos_encoding_type="learnable",
         )
         self.assertIsInstance(model.pos_encoder, LearnablePositionalEncoding)
 
@@ -75,6 +76,7 @@ class TestSyPETransformer(unittest.TestCase):
             dropout=0.0,
             att_type="standard",
             patch_encoder=False,
+            pos_encoding_type="sinusoidal",
         )
         self.assertIsInstance(model.pos_encoder, PositionalEncoding)
 

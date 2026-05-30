@@ -117,8 +117,8 @@ class PatchTSTHeadCustom(nn.Module):
       4) Encode with PatchTokenEncoder (uses your TransformerEncoderLayer + MultiAttention)
       5) Output mixing (choose via `output_mode`):
          - "pooled": pool tokens ("mean" | "last" | "cls"), then MLP -> [T]
-         - "nonpool_linear": learned A∈R^{T×N_eff}, H=A@tokens -> per-horizon linear -> [T]
-         - "nonpool_attn": learned horizon queries Q∈R^{T×D} with your MultiAttention (cross-attn)
+         - "nonpool_linear": learned A in R^{T x N_eff}, H=A@tokens -> per-horizon linear -> [T]
+         - "nonpool_attn": learned horizon queries Q in R^{T x D} with your MultiAttention (cross-attn)
       6) Reshape back to [B, T, C_in]; optional channel_mixer maps C_in->C_out
     """
 

@@ -32,10 +32,6 @@ __all__ = [
     "fused_dropout_add",
     "fused_dropout_add_norm",
     "fused_dropout_gateskip_norm",
-    # Convenience, module-based wrappers:
-    "fused_dropout_add_from_layer",
-    "fused_dropout_add_norm_from_layers",
-    "fused_dropout_gateskip_norm_from_layers",
 ]
 
 # Optional GateSkip import
@@ -389,80 +385,3 @@ def fused_dropout_gateskip_norm(
     return out, skip_mask
 
 
-# ---------------------------------------------------------------------------
-# Convenience wrappers (module-based)
-# ---------------------------------------------------------------------------
-
-
-def fused_dropout_add_from_layer(
-    residual: torch.Tensor,
-    update: torch.Tensor,
-    dropout: nn.Module | None,
-    training: bool,
-) -> torch.Tensor:
-    """
-    Convenience wrapper:
-
-        fused_dropout_add(residual, update, p=get_dropout_p(dropout), training=training)
-    """
-    p = get_dropout_p(dropout)
-    return fused_dropout_add(residual, update, p=p, training=training)
-
-
-def fused_dropout_add_norm_from_layers(
-    residual: torch.Tensor,
-    update: torch.Tensor,
-    dropout: nn.Module | None,
-    norm_layer: nn.Module | None,
-    training: bool,
-) -> torch.Tensor:
-    """
-    Convenience wrapper:
-
-        o = dropout(update)
-        residual = residual + o
-        residual = norm(residual)
-
-    but in one call, using the given dropout/norm modules directly.
-    """
-    p = get_dropout_p(dropout)
-    return fused_dropout_add_norm(
-        residual=residual,
-        update=update,
-        norm_layer=norm_layer,
-        p=p,
-        training=training,
-    )
-
-
-def fused_dropout_gateskip_norm_from_layers(
-    residual: torch.Tensor,
-    update: torch.Tensor,
-    gate: nn.Module | None,
-    use_gateskip: bool,
-    gate_budget: float | None,
-    aux_l2_terms: list[torch.Tensor] | None,
-    gate_lambda: float,
-    dropout: nn.Module | None,
-    norm_layer: nn.Module | None,
-    training: bool,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """
-    Convenience wrapper for the full GateSkip branch:
-
-        - Reads `p` from a Dropout-like module
-        - Applies dropout → GateSkip (if enabled) → Norm
-    """
-    p = get_dropout_p(dropout)
-    return fused_dropout_gateskip_norm(
-        residual=residual,
-        update=update,
-        gate=gate,
-        use_gateskip=use_gateskip,
-        gate_budget=gate_budget,
-        aux_l2_terms=aux_l2_terms,
-        gate_lambda=gate_lambda,
-        norm_layer=norm_layer,
-        p=p,
-        training=training,
-    )

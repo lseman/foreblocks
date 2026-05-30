@@ -7,9 +7,9 @@ https://arxiv.org/abs/2412.06464
 Architecture
 ------------
 The Gated Delta Network extends DeltaNet with:
- 1. **Per-head matrix state** S ∈ R^{Dk × Dv} maintained by the delta rule.
- 2. **Scalar forget gate α_t ∈ (0,1]** - element-wise decay of each row of S.
- 3. **Write strength β_t ∈ [0,1]** - controls how much the new (k,v) pair is written.
+ 1. **Per-head matrix state** S in R^{Dk x Dv} maintained by the delta rule.
+ 2. **Scalar forget gate** a_t in (0, 1] - element-wise decay of each row of S.
+ 3. **Write strength** b_t in [0, 1] - controls how much the new (k,v) pair is written.
  4. **Sigmoid output gate g_t** - data-dependent gating of retrieved memories.
  5. **Head-wise RMSNorm** before the output gate (stabilises large S values).
  6. **Optional short (causal) depthwise conv** on Q, K, V for local context.
@@ -271,6 +271,8 @@ class GatedDeltaNet(nn.Module):
         triton_block_i: int = 64,
         triton_block_j: int = 128,
         use_mamba_gate: bool = True,
+        # Positional encoding options
+        pos_encoding_type: str = "sinusoidal",
     ):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
@@ -288,6 +290,8 @@ class GatedDeltaNet(nn.Module):
 
         # Legacy compatibility: alpha_min is ignored when use_mamba_gate=True
         # (Mamba2 gating is inherently stable via exp(-positive))
+        self.pos_encoding_type = pos_encoding_type
+        self._rotary_emb: nn.Module | None = None
 
         # ── Projections ────────────────────────────────────────────────────
         self.q_proj = nn.Linear(d_model, self.h * self.dk, bias=False)
@@ -643,6 +647,29 @@ class GatedDeltaNet(nn.Module):
 
         return S.to(dtype)
 
+    # ── Positional encoding helpers ───────────────────────────────────────────
+
+    def _apply_rope_to_x(
+        self, x: torch.Tensor, seqlen: int
+    ) -> torch.Tensor:
+        """Apply rotary position embeddings to input tensor before recurrence.
+
+        NOTE: GatedDeltaNet is a recurrent attention mechanism. RoPE requires
+        Q and K projections to be rotated separately. For now, this is a no-op
+        placeholder. Full RoPE support requires modifying _forward_recurrent
+        to apply RoPE after q_proj and k_proj.
+
+        Args:
+            x: Input tensor [B, T, D]
+            seqlen: Sequence length
+
+        Returns:
+            Input tensor unchanged (RoPE not yet implemented for GDN)
+        """
+        # TODO: Implement RoPE for GatedDeltaNet
+        # RoPE requires rotating Q and K after projection, before recurrence
+        return x
+
     # ── Core recurrent forward (standalone, x-in)  ────────────────────────────
 
     def _forward_recurrent(
@@ -870,6 +897,10 @@ class GatedDeltaNet(nn.Module):
             # key_padding_mask: [B, T], True = ignore
             pad = key_padding_mask.unsqueeze(-1).to(dtype=x.dtype)  # [B, T, 1]
             x = x * (1.0 - pad)
+
+        # ── Apply RoPE to Q/K before recurrence ────────────────────────────
+        if self.pos_encoding_type == "rope":
+            x = self._apply_rope_to_x(x, Tq)
 
         # ── Incremental multi-step (carry state across calls) ─────────────
         if layer_state is not None:

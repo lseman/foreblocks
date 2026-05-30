@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
@@ -12,6 +12,7 @@ from foreblocks.ui.node_spec import node
 from .attention.modules.gated_delta import GatedDeltaNet
 from .attention.modules.kimi_att import KimiAttention
 from .attention.modules.lin_att import LinearAttention
+from .attention.modules.modern_linear_attn import ModernLinearAttention
 from .attention.multi_att import MultiAttention
 from .attention.utils.residuals import (
     AttentionResidual,
@@ -84,9 +85,10 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         attention_matching_min_keep: int = 64,
         attention_matching_query_budget: int = 64,
         attention_matching_force_single_step: bool = False,
-        use_attention_residual: bool = True,
+        use_attention_residual: bool = False,  # True enables depth attention residuals (incompatible with ckpt/mHC/mod/gateskip)
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
+        pos_encoding_type: str = "rope",
     ):
         super().__init__(
             d_model=d_model,
@@ -109,10 +111,22 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             moe_latent_d_ff=moe_latent_d_ff,
         )
 
-        self.self_attn_std = MultiAttention(
-            d_model=d_model,
-            n_heads=nhead,
-            dropout=dropout,
+        # ── Lazy attention module placeholders ──────────────────────────
+        # Only instantiated on first access (avoids ~22M dead params per 12-layer model).
+        self.self_attn_std: Optional[nn.Module] = None
+        self.self_attn_lin: Optional[nn.Module] = None
+        self.self_attn_gla: Optional[nn.Module] = None
+        self.self_attn_deltanet: Optional[nn.Module] = None
+        self.self_attn_gdn_modern: Optional[nn.Module] = None
+        self.self_attn_sype: Optional[nn.Module] = None
+        self.self_attn_kimi: Optional[nn.Module] = None
+        self.self_attn_gdn: Optional[nn.Module] = None
+
+        # Init parameters for lazy factories (captured once, reused)
+        self._attn_init_kwargs = {
+            "d_model": d_model, "n_heads": nhead, "dropout": dropout,
+        }
+        self._std_kwargs = dict(
             attention_type=att_type,
             freq_modes=freq_modes,
             use_mla=not use_attention_matching_compaction,
@@ -123,13 +137,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_query_budget=attention_matching_query_budget,
             attention_matching_force_single_step=attention_matching_force_single_step,
         )
-        self.self_attn_lin = LinearAttention(
-            d_model=d_model, n_heads=nhead, dropout=dropout
-        )
-        self.self_attn_sype = MultiAttention(
-            d_model=d_model,
-            n_heads=nhead,
-            dropout=dropout,
+        self._sype_kwargs = dict(
             attention_type="sype",
             freq_modes=freq_modes,
             use_mla=not use_attention_matching_compaction,
@@ -140,14 +148,17 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_query_budget=attention_matching_query_budget,
             attention_matching_force_single_step=attention_matching_force_single_step,
         )
-        self.self_attn_kimi = KimiAttention(
-            d_model=d_model, n_heads=nhead, dropout=dropout
+        self._gla_kwargs = dict(
+            backend="gla", mode="chunk", chunk_size=64,
         )
-        self.self_attn_gdn = GatedDeltaNet(
-            d_model=d_model, n_heads=nhead, dropout=dropout
+        self._deltanet_kwargs = dict(
+            backend="deltanet", mode="chunk", chunk_size=64,
         )
-
+        self._gdn_modern_kwargs = dict(
+            backend="gated_deltanet", mode="chunk", chunk_size=64,
+        )
         self.layer_attention_type = str(layer_attention_type)
+        self._pos_encoding_type = str(pos_encoding_type)
 
         self.attn_norm = NormWrapper(
             d_model, custom_norm, norm_strategy, dropout, layer_norm_eps
@@ -183,17 +194,98 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
     def set_layer_attention_type(self, layer_attention_type: str) -> None:
         self.layer_attention_type = str(layer_attention_type)
 
+    # ── Lazy attention factories ──────────────────────────────────────
+    # Each module is instantiated at most once, on first access.
+    # This eliminates ~22M dead params (88.3 MB fp32) per 12-layer model.
+    def _build_std(self) -> MultiAttention:
+        if self.self_attn_std is None:
+            dev = next(self.parameters()).device
+            self.self_attn_std = MultiAttention(
+                **self._attn_init_kwargs, **self._std_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_std
+
+    def _build_lin(self) -> LinearAttention:
+        if self.self_attn_lin is None:
+            dev = next(self.parameters()).device
+            self.self_attn_lin = LinearAttention(
+                **self._attn_init_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_lin
+
+    def _build_gla(self) -> ModernLinearAttention:
+        if self.self_attn_gla is None:
+            dev = next(self.parameters()).device
+            self.self_attn_gla = ModernLinearAttention(
+                **self._attn_init_kwargs, **self._gla_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_gla
+
+    def _build_deltanet(self) -> ModernLinearAttention:
+        if self.self_attn_deltanet is None:
+            dev = next(self.parameters()).device
+            self.self_attn_deltanet = ModernLinearAttention(
+                **self._attn_init_kwargs, **self._deltanet_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_deltanet
+
+    def _build_gdn_modern(self) -> ModernLinearAttention:
+        if self.self_attn_gdn_modern is None:
+            dev = next(self.parameters()).device
+            self.self_attn_gdn_modern = ModernLinearAttention(
+                **self._attn_init_kwargs, **self._gdn_modern_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_gdn_modern
+
+    def _build_sype(self) -> MultiAttention:
+        if self.self_attn_sype is None:
+            dev = next(self.parameters()).device
+            self.self_attn_sype = MultiAttention(
+                **self._attn_init_kwargs, **self._sype_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_sype
+
+    def _build_kimi(self) -> KimiAttention:
+        if self.self_attn_kimi is None:
+            dev = next(self.parameters()).device
+            self.self_attn_kimi = KimiAttention(
+                **self._attn_init_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_kimi
+
+    def _build_gdn(self) -> GatedDeltaNet:
+        if self.self_attn_gdn is None:
+            dev = next(self.parameters()).device
+            self.self_attn_gdn = GatedDeltaNet(
+                **self._attn_init_kwargs,
+                pos_encoding_type=self._pos_encoding_type,
+            ).to(dev)
+        return self.self_attn_gdn
+
     def _self_attn(self) -> nn.Module:
         t = self.layer_attention_type
         if t == "linear":
-            return self.self_attn_lin
+            return self._build_lin()
         if t == "sype":
-            return self.self_attn_sype
+            return self._build_sype()
         if t == "kimi":
-            return self.self_attn_kimi
+            return self._build_kimi()
         if t == "gated_delta":
-            return self.self_attn_gdn
-        return self.self_attn_std
+            return self._build_gdn()
+        if t == "gla":
+            return self._build_gla()
+        if t == "deltanet":
+            return self._build_deltanet()
+        if t == "gated_deltanet":
+            return self._build_gdn_modern()
+        return self._build_std()
 
     def _ensure_mhc_mixers(self) -> None:
         if not self.use_mhc:
@@ -527,7 +619,10 @@ class TransformerEncoder(BaseTransformer):
         self.last_memory_key_padding_mask = src_key_padding_mask
         self.last_patch_info = patch_info
 
-        x = self.pos_encoder(x)
+        # Only apply input-level positional encoding for non-RoPE/ALiBi modes.
+        # RoPE and ALiBi handle position encoding internally inside attention.
+        if self.pos_encoding_type in ("sinusoidal", "learnable"):
+            x = self.pos_encoder(x)
 
         # Time encoding only for timestep-space by default (encoder patching skips it)
         if (
@@ -607,6 +702,7 @@ class TransformerEncoder(BaseTransformer):
                     routed_indices,
                     routed_slots,
                     router_logits,
+                    use_expert_choice=True,  # Standard Expert Choice: full replacement
                 )
                 continue
 

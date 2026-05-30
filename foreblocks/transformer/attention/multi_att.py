@@ -102,9 +102,9 @@ class MultiAttention(nn.Module):
         attention_type: str = "standard",
         prob_sparse_factor: float = 0.4,
         freq_modes: int = 32,
-        use_rotary: bool = True,
         max_seq_len: int = 4096,  # kept for API, not used here
         cross_attention: bool = False,
+        pos_encoding_type: str = "rope",  # "rope" | "sinusoidal" | "alibi" | "learnable"
         softpick_chunk_size: int = 128,
         window_size: int = 64,
         global_attention_ratio: float = 0.1,  # kept for API
@@ -205,7 +205,7 @@ class MultiAttention(nn.Module):
 
         # Setup projections / type-specific modules
         self._setup_attention_modules(
-            attention_type, freq_modes, use_swiglu, use_rotary
+            attention_type, freq_modes, use_swiglu, pos_encoding_type
         )
         self.position_encoding_applier = self._build_position_encoding_applier()
         self._paged_stream_decode = paged_stream_decode_standard
@@ -292,7 +292,7 @@ class MultiAttention(nn.Module):
         attention_type: str,
         freq_modes: int,
         use_swiglu: bool,
-        use_rotary: bool,
+        pos_encoding_type: str = "rope",
     ):
         """Create QKV projections and attention-type-specific modules."""
         if attention_type in [
@@ -333,14 +333,29 @@ class MultiAttention(nn.Module):
                 self.k_up_proj = None
                 self.v_up_proj = None
 
+            # Positional encoding type (stored for reference)
+            self.pos_encoding_type = str(pos_encoding_type)
             # RoPE (self-attention only)
-            self.use_rotary = use_rotary and not self.cross_attention
+            self.use_rotary = (
+                (pos_encoding_type == "rope") and not self.cross_attention
+            )
             if self.use_rotary:
                 from ..embeddings.rotary import RotaryEmbedding  # local import
 
                 self.rotary_emb = RotaryEmbedding(self.head_dim)
             else:
                 self.rotary_emb = None
+
+            # ALiBi (self-attention only; not applicable to cross-attention)
+            self.use_alibi = (
+                (pos_encoding_type == "alibi") and not self.cross_attention
+            )
+            if self.use_alibi:
+                from ..embeddings.alibi_bias import ALiBiPositionalBias
+
+                self.alibi_bias = ALiBiPositionalBias(num_heads=self.n_heads)
+            else:
+                self.alibi_bias = None
 
             # SyPE (self-attention only)
             self.use_sype = (attention_type == "sype") and (not self.cross_attention)
@@ -359,6 +374,7 @@ class MultiAttention(nn.Module):
 
         else:
             # frequency / dwt / autocor
+            self.pos_encoding_type = str(pos_encoding_type)
             self.use_rotary = False
             self.rotary_emb = None
             self.use_sype = False
@@ -400,6 +416,7 @@ class MultiAttention(nn.Module):
         applier = PositionEncodingApplier()
         applier.add_transform("rope", self._rope_position_transform)
         applier.add_transform("sype", self._sype_position_transform)
+        # ALiBi is applied in _compute_attention, not here
         return applier
 
     def _create_impl(self) -> AttentionImpl:
@@ -1071,6 +1088,10 @@ class MultiAttention(nn.Module):
                 scores = scores.masked_fill(k_pos > q_pos, float("-inf"))
 
         scores = self._apply_masks(scores, attn_mask, key_padding_mask)
+
+        # ALiBi bias (applied after external masks, before softmax)
+        if self.use_alibi and self.alibi_bias is not None:
+            scores = scores + self.alibi_bias(T_q, T_k, device=q.device)
 
         weights = F.softmax(scores, dim=-1)
         weights = self._dropout_weights(weights)

@@ -138,12 +138,21 @@ if _TRITON_AVAILABLE:
             ctx.D = D
             ctx.S = S
             ctx.BLOCK_D = BLOCK_D
+            ctx.T_pad = T_pad
             return out
 
         @staticmethod
         def backward(ctx, grad_out):  # type: ignore[override]
-            Np, P, D, S, BLOCK_D = ctx.Np, ctx.P, ctx.D, ctx.S, ctx.BLOCK_D
+            Np, P, D, S, BLOCK_D, T_pad = (
+                ctx.Np, ctx.P, ctx.D, ctx.S, ctx.BLOCK_D, ctx.T_pad,
+            )
             B = grad_out.shape[0]
+
+            # grad_out has shape [B, T_orig, D] because the detokenizer slices
+            # the forward output to [:, :T_orig, :].  Zero-pad to [B, T_pad, D]
+            # so the kernel can safely read all positions 0..T_pad-1.
+            if grad_out.shape[1] < T_pad:
+                grad_out = F.pad(grad_out, (0, 0, 0, T_pad - grad_out.shape[1]))
             grad_out = grad_out.contiguous()
             grad_patches = torch.empty(
                 B, Np, P, D, dtype=grad_out.dtype, device=grad_out.device

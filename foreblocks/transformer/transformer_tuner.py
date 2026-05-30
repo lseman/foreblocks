@@ -684,7 +684,6 @@ class ModernTransformerTuner:
 
         model_kwargs = {
             "patch_encoder": patching_label != "weak",
-            "patch_decoder": False,
             "patch_len": int(rec_patch_len),
             "patch_stride": int(rec_stride),
             "attention_mode": attention_mode,

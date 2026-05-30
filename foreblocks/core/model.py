@@ -147,9 +147,7 @@ class ForecastingModel(nn.Module):
         self.model_type = model_type
         self.target_len = int(target_len)
         self.hidden_size = hidden_size
-        self.teacher_forcing_ratio = float(
-            max(0.0, min(1.0, teacher_forcing_ratio))
-        )
+        self.teacher_forcing_ratio = float(max(0.0, min(1.0, teacher_forcing_ratio)))
         self.scheduled_sampling_fn = scheduled_sampling_fn
         self.input_skip_connection = input_skip_connection
 
