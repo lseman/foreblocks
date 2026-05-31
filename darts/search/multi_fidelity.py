@@ -578,429 +578,43 @@ def run_multi_fidelity_search(
         except Exception as exc:
             logger.warning(f"[P5] discrete arch derivation failed: {exc}")
 
-    def _norm_choice(model_obj) -> str:
-        chosen = getattr(model_obj, "selected_norm", None)
-        if chosen:
-            return str(chosen)
-        alpha = getattr(model_obj, "norm_alpha", None)
-        if isinstance(alpha, torch.Tensor) and alpha.numel() >= 3:
-            names = ["revin", "instance_norm", "identity"]
-            idx = int(torch.argmax(alpha.detach()).item())
-            return names[idx] if 0 <= idx < len(names) else f"norm_{idx}"
-        return "unknown"
+    # ── Phase 5: print selected architecture (deduped via ArchitectureInspector) ──
+    from ..architecture.inspector import ArchitectureInspector
 
-    def _decomp_choice(module_obj) -> str:
-        if module_obj is None:
-            return "not used"
-        decomp = getattr(module_obj, "searchable_decomp", None)
-        if decomp is None:
-            return "disabled"
-        logits = getattr(decomp, "alpha_logits", None)
-        if not isinstance(logits, torch.Tensor) or logits.numel() == 0:
-            return "enabled (weights unavailable)"
-        modes = ["none", "moving_avg_trend", "seasonal_residual", "learnable_filter"]
-        probs = torch.softmax(logits.detach(), dim=0)
-        top_idx = int(torch.argmax(probs).item())
-        top_w = float(probs[top_idx].item())
-        mode = modes[top_idx] if 0 <= top_idx < len(modes) else f"mode_{top_idx}"
-        return f"{mode} (weight={top_w:.3f})"
-
-    def _cell_ops_summary(model_obj) -> list[str]:
-        out: list[str] = []
-        for ci, cell in enumerate(getattr(model_obj, "cells", [])):
-            edge_ops: list[str] = []
-            for edge in getattr(cell, "edges", []):
-                op_name = None
-                fixed_op = getattr(edge, "op", None)
-                if fixed_op is not None:
-                    op_name = type(fixed_op).__name__.replace("Op", "")
-                if op_name is None:
-                    edge_ops.append("mixed")
-                else:
-                    edge_ops.append(op_name)
-            if edge_ops:
-                counts: dict[str, int] = {}
-                for n in edge_ops:
-                    counts[n] = counts.get(n, 0) + 1
-                counts_txt = ", ".join(f"{k}:{v}" for k, v in sorted(counts.items()))
-                out.append(f"cell_{ci}: {counts_txt}")
-        return out
-
-    def _enc_dec_choice(model_obj, role: str) -> str:
-        item = final_discrete_arch.get(role)
-        if isinstance(item, dict) and "type" in item:
-            name = str(item["type"])
-            if name.startswith("op_"):
-                module_obj = getattr(model_obj, f"forecast_{role}", None)
-                rnn_type = (
-                    getattr(module_obj, "rnn_type", None)
-                    if module_obj is not None
-                    else None
-                )
-                if rnn_type:
-                    return str(rnn_type)
-            return name
-        module_obj = getattr(model_obj, f"forecast_{role}", None)
-        if module_obj is None:
-            return "not used"
-        rnn_type = getattr(module_obj, "rnn_type", None)
-        if rnn_type:
-            return str(rnn_type)
-        rnn_obj = getattr(module_obj, "rnn", None)
-        if rnn_obj is not None:
-            return type(rnn_obj).__name__
-        return type(module_obj).__name__
-
-    def _self_attention_choice(model_obj, role: str) -> str:
-        module_obj = getattr(model_obj, f"forecast_{role}", None)
-        if module_obj is None:
-            return "not used"
-
-        chosen = _enc_dec_choice(model_obj, role).lower()
-        if role == "encoder":
-            if "transformer" not in chosen and "patch" not in chosen:
-                return "not applicable"
-        else:
-            if "transformer" not in chosen:
-                return "not applicable"
-
-        submodule = getattr(module_obj, "rnn", None)
-        if submodule is None:
-            submodule = getattr(module_obj, "transformer", None)
-        if submodule is not None:
-            value = getattr(submodule, "self_attention_type", None)
-            if isinstance(value, str) and value and value != "auto":
-                return value
-            layers = getattr(submodule, "layers", None)
-            if layers and len(layers) > 0:
-                first = layers[0]
-                self_attn = None
-                if isinstance(first, dict):
-                    self_attn = first.get("self_attn")
-                elif hasattr(first, "get"):
-                    self_attn = first.get("self_attn")
-                elif hasattr(first, "__contains__") and "self_attn" in first:
-                    self_attn = first["self_attn"]
-                if self_attn is not None:
-                    attn_type = getattr(self_attn, "attention_type", None)
-                    if isinstance(attn_type, str) and attn_type and attn_type != "auto":
-                        return attn_type
-                    attn_alphas = getattr(self_attn, "attn_alphas", None)
-                    modes = getattr(
-                        self_attn,
-                        "MODES",
-                        ("sdp", "linear", "probsparse", "cosine", "local"),
-                    )
-                    if isinstance(
-                        attn_alphas, torch.Tensor
-                    ) and attn_alphas.numel() == len(modes):
-                        probs = torch.softmax(attn_alphas.detach(), dim=0)
-                        top_idx = int(torch.argmax(probs).item())
-                        if 0 <= top_idx < len(modes):
-                            return str(modes[top_idx])
-
-        direct = getattr(module_obj, "self_attention_type", None)
-        if isinstance(direct, str) and direct:
-            return direct
-
-        return str(getattr(model_obj, "transformer_self_attention_type", "unknown"))
-
-    def _encoder_patch_choice(model_obj) -> str:
-        enc = getattr(model_obj, "forecast_encoder", None)
-        if enc is None:
-            return "not used"
-
-        submodule = getattr(enc, "rnn", None)
-        if submodule is None:
-            submodule = getattr(enc, "transformer", None)
-        if submodule is None:
-            return "unknown"
-
-        direct = getattr(submodule, "patching_mode", None)
-        if isinstance(direct, str) and direct:
-            if direct != "auto":
-                return direct
-
-        logits = getattr(submodule, "patch_alpha_logits", None)
-        mode_names = getattr(submodule, "patch_mode_names", ("direct", "patch"))
-        if isinstance(logits, torch.Tensor) and logits.numel() == len(mode_names):
-            probs = torch.softmax(logits.detach(), dim=0)
-            top_idx = int(torch.argmax(probs).item())
-            if 0 <= top_idx < len(mode_names):
-                return str(mode_names[top_idx])
-
-        resolver = getattr(submodule, "resolve_patch_mode", None)
-        if callable(resolver):
-            try:
-                return str(resolver())
-            except Exception:
-                pass
-        return "unknown"
-
-    def _self_attention_position_choice(model_obj, role: str) -> str:
-        component = getattr(model_obj, f"forecast_{role}", None)
-        if component is None:
-            return "not used"
-        submodule = getattr(component, "rnn", None)
-        if submodule is None:
-            submodule = getattr(component, "transformer", None)
-        if submodule is None:
-            return "unknown"
-        layers = getattr(submodule, "layers", None)
-        if not layers:
-            return "unknown"
-        first = layers[0]
-        attn = None
-        if isinstance(first, dict):
-            attn = first.get("self_attn")
-        elif hasattr(first, "get"):
-            attn = first.get("self_attn")
-        elif hasattr(first, "__contains__") and "self_attn" in first:
-            attn = first["self_attn"]
-        if attn is None:
-            return "unknown"
-        direct = getattr(attn, "position_mode", None)
-        if isinstance(direct, str) and direct and direct != "auto":
-            return direct
-        logits = getattr(attn, "position_alphas", None)
-        modes = getattr(attn, "POSITION_MODES", ())
-        if (
-            isinstance(logits, torch.Tensor)
-            and logits.numel() == len(modes)
-            and len(modes) > 0
-        ):
-            probs = torch.softmax(logits.detach(), dim=0)
-            return str(modes[int(torch.argmax(probs).item())])
-        return "unknown"
-
-    def _decoder_style_choice(model_obj) -> str:
-        dec = getattr(model_obj, "forecast_decoder", None)
-        if dec is None:
-            return "not used"
-
-        direct = getattr(dec, "decode_style", None)
-        if isinstance(direct, str) and direct and direct != "auto":
-            return direct
-
-        logits = getattr(dec, "decode_style_alphas", None)
-        style_names = getattr(dec, "decode_style_names", ("autoregressive", "informer"))
-        if isinstance(logits, torch.Tensor) and logits.numel() == len(style_names):
-            probs = torch.softmax(logits.detach(), dim=0)
-            top_idx = int(torch.argmax(probs).item())
-            if 0 <= top_idx < len(style_names):
-                return str(style_names[top_idx])
-
-        resolver = getattr(dec, "resolve_decode_style", None)
-        if callable(resolver):
-            try:
-                return str(resolver())
-            except Exception:
-                pass
-        return "unknown"
-
-    def _decoder_query_choice(model_obj) -> str:
-        direct = getattr(model_obj, "decoder_query_mode", None)
-        if isinstance(direct, str) and direct and direct != "auto":
-            return direct
-        logits = getattr(model_obj, "decoder_query_alphas", None)
-        names = getattr(model_obj, "decoder_query_mode_names", ())
-        if (
-            isinstance(logits, torch.Tensor)
-            and logits.numel() == len(names)
-            and len(names) > 0
-        ):
-            probs = torch.softmax(logits.detach(), dim=0)
-            return str(names[int(torch.argmax(probs).item())])
-        resolver = getattr(model_obj, "resolve_decoder_query_mode", None)
-        if callable(resolver):
-            try:
-                return str(resolver())
-            except Exception:
-                pass
-        return "unknown"
-
-    def _attention_choice(model_obj) -> str:
-        return "not used"
-
-    def _decoder_cross_attention_choice(model_obj) -> str:
-        dec = getattr(model_obj, "forecast_decoder", None)
-        if dec is None:
-            return "not used"
-
-        dec_choice = _enc_dec_choice(model_obj, "decoder").lower()
-        internal = "not applicable"
-        if "transformer" in dec_choice:
-            submodule = getattr(dec, "rnn", None)
-            if submodule is None:
-                submodule = getattr(dec, "transformer", None)
-            internal = "unknown"
-            if submodule is not None:
-                layers = getattr(submodule, "layers", None)
-                if layers:
-                    first_layer = layers[0]
-                    cross_attn = None
-                    if isinstance(first_layer, dict):
-                        cross_attn = first_layer.get("cross_attn")
-                    elif hasattr(first_layer, "get"):
-                        cross_attn = first_layer.get("cross_attn")
-                    elif (
-                        hasattr(first_layer, "__contains__")
-                        and "cross_attn" in first_layer
-                    ):
-                        cross_attn = first_layer["cross_attn"]
-                    if cross_attn is not None:
-                        value = getattr(cross_attn, "attention_type", None)
-                        if isinstance(value, str) and value:
-                            if value != "auto":
-                                internal = value
-                            else:
-                                logits = getattr(cross_attn, "attn_alphas", None)
-                                modes = getattr(cross_attn, "MODES", ())
-                                if (
-                                    isinstance(logits, torch.Tensor)
-                                    and logits.numel() == len(modes)
-                                    and len(modes) > 0
-                                ):
-                                    probs = torch.softmax(logits.detach(), dim=0)
-                                    top_idx = int(torch.argmax(probs).item())
-                                    if 0 <= top_idx < len(modes):
-                                        internal = str(modes[top_idx])
-
-        return internal
-
-    def _decoder_cross_position_choice(model_obj) -> str:
-        dec = getattr(model_obj, "forecast_decoder", None)
-        if dec is None:
-            return "not used"
-        submodule = getattr(dec, "rnn", None)
-        if submodule is None:
-            submodule = getattr(dec, "transformer", None)
-        if submodule is None:
-            return "unknown"
-        layers = getattr(submodule, "layers", None)
-        if not layers:
-            return "unknown"
-        first = layers[0]
-        cross_attn = None
-        if isinstance(first, dict):
-            cross_attn = first.get("cross_attn")
-        elif hasattr(first, "get"):
-            cross_attn = first.get("cross_attn")
-        elif hasattr(first, "__contains__") and "cross_attn" in first:
-            cross_attn = first["cross_attn"]
-        if cross_attn is None:
-            return "unknown"
-        direct = getattr(cross_attn, "position_mode", None)
-        if isinstance(direct, str) and direct and direct != "auto":
-            return direct
-        logits = getattr(cross_attn, "position_alphas", None)
-        modes = getattr(cross_attn, "POSITION_MODES", ())
-        if (
-            isinstance(logits, torch.Tensor)
-            and logits.numel() == len(modes)
-            and len(modes) > 0
-        ):
-            probs = torch.softmax(logits.detach(), dim=0)
-            return str(modes[int(torch.argmax(probs).item())])
-        return "unknown"
-
-    def _ffn_choice(model_obj, role: str) -> str:
-        component = getattr(model_obj, f"forecast_{role}", None)
-        if component is None:
-            return "not used"
-        submodule = getattr(component, "rnn", None)
-        if submodule is None:
-            submodule = getattr(component, "transformer", None)
-        if submodule is None:
-            return "unknown"
-        layers = getattr(submodule, "layers", None)
-        if not layers:
-            return "unknown"
-        first = layers[0]
-        ffn = None
-        if isinstance(first, dict):
-            ffn = first.get("ffn")
-        elif hasattr(first, "get"):
-            ffn = first.get("ffn")
-        elif hasattr(first, "__contains__") and "ffn" in first:
-            ffn = first["ffn"]
-        if ffn is None:
-            return "unknown"
-        direct = getattr(ffn, "ffn_mode", None)
-        if isinstance(direct, str) and direct and direct != "auto":
-            return direct
-        logits = getattr(ffn, "ffn_alphas", None)
-        modes = getattr(ffn, "MODE_NAMES", ())
-        if (
-            isinstance(logits, torch.Tensor)
-            and logits.numel() == len(modes)
-            and len(modes) > 0
-        ):
-            probs = torch.softmax(logits.detach(), dim=0)
-            return str(modes[int(torch.argmax(probs).item())])
-        return "unknown"
-
-    def _transformer_summary(model_obj, sel_cfg: dict[str, Any]) -> str:
-        enc_choice = _enc_dec_choice(model_obj, "encoder").lower()
-        dec_choice = _enc_dec_choice(model_obj, "decoder").lower()
-        uses_transformer = ("transformer" in enc_choice) or (
-            "transformer" in dec_choice
-        )
-        if not uses_transformer:
-            return "not active"
-        attn_type = _self_attention_choice(model_obj, "encoder")
-        if attn_type in {"not used", "not applicable", "unknown"}:
-            attn_type = _self_attention_choice(model_obj, "decoder")
-        ffn_variant = _ffn_choice(model_obj, "encoder")
-        if ffn_variant in {"not used", "unknown"}:
-            ffn_variant = _ffn_choice(model_obj, "decoder")
-        tokenizer_mode = _encoder_patch_choice(model_obj)
-        return f"attn:{attn_type} ffn:{ffn_variant} enc_tok:{tokenizer_mode}"
-
-    # Print selected architecture before entering final training.
+    inspector = ArchitectureInspector(final_model)
+    summary = inspector.summary()
     sel = best_candidate.get("candidate", {})
-    arch_mode = sel.get("arch_mode", getattr(final_model, "arch_mode", "N/A"))
+
     p5_lines: list[str] = [
         "[P5] Selected architecture before final training:",
-        (
-            "[P5]   candidate_id="
-            f"{sel.get('candidate_id', 'N/A')} | arch_mode={arch_mode} | "
-            f"hidden_dim={sel.get('hidden_dim', getattr(final_model, 'hidden_dim', 'N/A'))} | "
-            f"cells={sel.get('num_cells', getattr(final_model, 'num_cells', 'N/A'))} | "
-            f"nodes={sel.get('num_nodes', getattr(final_model, 'num_nodes', 'N/A'))}"
-        ),
+        f"[P5]   candidate_id={sel.get('candidate_id', 'N/A')} | arch_mode={summary.get('arch_mode', 'N/A')} | "
+        f"hidden_dim={sel.get('hidden_dim', summary.get('hidden_dim', 'N/A'))} | "
+        f"cells={summary.get('cells', 'N/A')} | nodes={summary.get('nodes', 'N/A')}",
         f"[P5]   selected_ops={sel.get('selected_ops', 'N/A')}",
         f"[P5]   selected_families={sel.get('selected_families', 'N/A')}",
-        f"[P5]   transformer={_transformer_summary(final_model, sel)}",
-        f"[P5]   normalization={_norm_choice(final_model)}",
-        f"[P5]   encoder_decomposition={_decomp_choice(getattr(final_model, 'forecast_encoder', None))}",
-        f"[P5]   decoder_decomposition={_decomp_choice(getattr(final_model, 'forecast_decoder', None))}",
-        f"[P5]   encoder={_enc_dec_choice(final_model, 'encoder')}",
-        f"[P5]   decoder={_enc_dec_choice(final_model, 'decoder')}",
-        f"[P5]   attention={_attention_choice(final_model)}",
-        f"[P5]   decoder_cross_attention={_decoder_cross_attention_choice(final_model)}",
-        f"[P5]   decoder_cross_position={_decoder_cross_position_choice(final_model)}",
-        f"[P5]   decoder_style={_decoder_style_choice(final_model)}",
-        f"[P5]   decoder_query_generator={_decoder_query_choice(final_model)}",
+        f"[P5]   transformer={inspector.transformer_summary()}",
+        f"[P5]   normalization={summary.get('normalization', 'unknown')}",
+        f"[P5]   {summary.get('decomposition_encoder', '')}",
+        f"[P5]   {summary.get('decomposition_decoder', '')}",
+        f"[P5]   encoder={summary.get('encoder_type', 'N/A')}",
+        f"[P5]   decoder={summary.get('decoder_type', 'N/A')}",
+        f"[P5]   cross_attention={summary.get('cross_attention', 'N/A')}",
+        f"[P5]   cross_position={summary.get('cross_position', 'N/A')}",
+        f"[P5]   decoder_style={summary.get('decoder_style', 'N/A')}",
+        f"[P5]   decoder_query={summary.get('decoder_query', 'N/A')}",
     ]
-    enc_sa = _self_attention_choice(final_model, "encoder")
-    dec_sa = _self_attention_choice(final_model, "decoder")
-    if enc_sa not in {"not used", "not applicable"}:
+    enc_sa = summary.get("attention_encoder")
+    dec_sa = summary.get("attention_decoder")
+    if enc_sa and enc_sa not in {"not used", "not applicable"}:
         p5_lines.append(f"[P5]   encoder_self_attention={enc_sa}")
-        p5_lines.append(
-            f"[P5]   encoder_attention_position={_self_attention_position_choice(final_model, 'encoder')}"
-        )
-        p5_lines.append(
-            f"[P5]   encoder_tokenizer={_encoder_patch_choice(final_model)}"
-        )
-        p5_lines.append(f"[P5]   encoder_ffn={_ffn_choice(final_model, 'encoder')}")
-    if dec_sa not in {"not used", "not applicable"}:
+        p5_lines.append(f"[P5]   encoder_attention_position={summary.get('attention_position_encoder', 'N/A')}")
+        p5_lines.append(f"[P5]   encoder_tokenizer={summary.get('tokenizer', 'N/A')}")
+        p5_lines.append(f"[P5]   encoder_ffn={summary.get('ffn_encoder', 'N/A')}")
+    if dec_sa and dec_sa not in {"not used", "not applicable"}:
         p5_lines.append(f"[P5]   decoder_self_attention={dec_sa}")
-        p5_lines.append(
-            f"[P5]   decoder_attention_position={_self_attention_position_choice(final_model, 'decoder')}"
-        )
-        p5_lines.append(f"[P5]   decoder_ffn={_ffn_choice(final_model, 'decoder')}")
-    for cell_line in _cell_ops_summary(final_model):
+        p5_lines.append(f"[P5]   decoder_attention_position={summary.get('attention_position_decoder', 'N/A')}")
+        p5_lines.append(f"[P5]   decoder_ffn={summary.get('ffn_decoder', 'N/A')}")
+    for cell_line in summary.get("cells", []):
         p5_lines.append(f"[P5]   {cell_line}")
     if final_discrete_arch:
         for k in sorted(final_discrete_arch.keys()):
@@ -1008,7 +622,7 @@ def run_multi_fidelity_search(
             if k in {"encoder", "decoder"} and isinstance(v, dict) and "type" in v:
                 v_pretty = dict(v)
                 if str(v_pretty.get("type", "")).startswith("op_"):
-                    resolved = _enc_dec_choice(final_model, k)
+                    resolved = summary.get(f"{k}_type", v_pretty["type"])
                     v_pretty["type"] = resolved
                 p5_lines.append(f"[P5]   {k}={v_pretty}")
             else:

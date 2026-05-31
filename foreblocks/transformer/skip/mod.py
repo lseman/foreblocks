@@ -1,3 +1,29 @@
+"""Mixture-of-Depths (MoD) — router, routing, and budget scheduling.
+
+Implements the MoD architecture from Ritter et al. (2024), where a learned
+per-token router dynamically allocates FLOPs across transformer layers: only
+the highest-scoring ``keep_rate`` fraction of tokens is processed by each
+subsequent block's self-attention and MLP, while the rest route around it
+via a residual connection.
+
+Original paper:
+    Ritter, S., Richards, B., Lillicrap, T., Humphreys, P. C., & Santoro, A.
+    (2024).
+    "Mixture-of-Depths: Dynamically allocating compute in transformer-based
+    language models."
+    arXiv:2404.02258 [[arXiv]](https://arxiv.org/abs/2404.02258)
+
+Key ideas:
+    1. *Predictor*: a light MLP per token scores whether it needs a block's
+       self-attention and MLP.
+    2. *Expert-choice top-k*: the top-``keep_rate`` fraction of tokens per
+       batch are selected for each block (no hard capacity slots).
+    3. *Budget scheduler*: anneals the global keep-rate per layer over training
+       so the predictor learns progressively harder thresholds.
+    4. *Auxiliary loss*: a BCE term trains the causal (autoregressive) predictor
+       to match the non-causal top-k selections.
+"""
+
 import math
 from dataclasses import dataclass
 
@@ -10,12 +36,36 @@ import torch.nn.functional as F
 # Mixture-of-Depths (MoD)
 # =============================================================================
 class MoDRouter(nn.Module):
-    """
-    MoD router that emits a scalar score per token.
+    """Mixture-of-Depths per-token router.
 
-    mode:
-      - "token": scores [B,T,1]
-      - "seq":   scores [B,1,1] (legacy, not MoD-correct)
+    Predicts a scalar score for each token indicating whether it should be
+    routed to a deeper layer (high score) or exit early (low score).
+
+    The router is a light MLP: ``Norm(x) → Linear → GELU → Linear → 1``
+    (or a single linear layer when ``hidden=0``).  The bias is initialised
+    to ``init_bias`` so that the network starts biased towards / against
+    routing before training.
+
+    Reference:
+        Ritter et al. (2024) — arXiv:2404.02258
+        "Mixture-of-Depths: Dynamically allocating compute in
+        transformer-based language models."
+        See §3.2 "Routing around transformer blocks" for the router definition.
+
+    Parameters
+    ----------
+    d_model : int
+        Input feature dimension.
+    mode : str
+        ``"token"`` — scores per token ``[B,T,1]`` (MoD-correct).
+        ``"seq"``  — scores per sequence ``[B,1,1]`` (legacy).
+    hidden : int
+        Hidden dimension of the two-layer head.  ``0`` uses a single
+        linear layer.
+    use_norm : bool
+        Whether to apply LayerNorm before the head.
+    init_bias : float
+        Initial bias value (controls initial routing fraction).
     """
 
     def __init__(
@@ -94,11 +144,26 @@ def mod_topk_mask(
     keep_rate: float,
     active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """
-    Expert-choice top-k routing used by Mixture-of-Depths.
+    """Expert-choice top-k routing (MoD).  [Ritter et al., 2024, §3.3]
 
-    Returns a boolean keep mask [B, T] with exactly ceil(keep_rate * active_tokens)
-    routed positions per sample (clamped by the number of active tokens).
+    Returns a boolean keep mask ``[B,T]`` with exactly
+    ``ceil(keep_rate * n_active)`` routed positions per sample, selected by
+    the highest router scores.  Unlike fixed-capacity MoE dispatching this
+    does not drop tokens — it simply routes fewer to deeper layers.
+
+    Parameters
+    ----------
+    logits : torch.Tensor
+        Router scores ``[B,T,1]`` or ``[B,T]``.
+    keep_rate : float
+        Fraction of active tokens to route forward (0..1).
+    active_mask : torch.Tensor | None
+        Optional ``[B,T]`` bool mask; only ``True`` positions participate.
+
+    Returns
+    -------
+    torch.Tensor
+        Boolean keep mask ``[B,T]``, ``True`` for tokens routed to this layer.
     """
     scores = logits.squeeze(-1) if logits.dim() == 3 else logits
     active_mask = _normalize_active_mask(scores, active_mask)
@@ -127,7 +192,10 @@ def mod_topk_mask(
 def mod_capacity(
     keep_mask: torch.Tensor,
 ) -> int:
-    """Return the fixed routed capacity for the current batch."""
+    """Return the fixed routed capacity for the current batch.
+
+    Equal to ``max_b ceil(keep_rate * n_active_b)``.
+    """
     if keep_mask.dim() != 2:
         raise ValueError(f"keep_mask must be [B,T], got {tuple(keep_mask.shape)}")
     if keep_mask.numel() == 0:
@@ -139,8 +207,23 @@ def mod_routed_indices(
     keep_mask: torch.Tensor,
     capacity: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Convert a keep mask [B,T] into sorted routed indices [B,C] and slot mask [B,C].
+    """Convert a keep mask ``[B,T]`` into sorted routed indices ``[B,C]`` and slot mask ``[B,C]``.
+
+    Useful for gathering routed token embeddings before passing them through
+    the deeper layer.
+
+    Parameters
+    ----------
+    keep_mask : torch.Tensor
+        Boolean keep mask ``[B,T]``.
+    capacity : int | None
+        Fixed capacity.  If ``None``, uses ``mod_capacity(keep_mask)``.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        ``(indices, slot_mask)`` where ``indices[b,c]`` holds the original
+        token position and ``slot_mask[b,c]`` indicates a valid slot.
     """
     if keep_mask.dim() != 2:
         raise ValueError(f"keep_mask must be [B,T], got {tuple(keep_mask.shape)}")
@@ -171,9 +254,25 @@ def mod_router_aux_loss(
     keep_mask: torch.Tensor,
     active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """
-    BCE auxiliary used to train the causal router predictor from non-causal top-k
-    selections, following the paper's sampling workaround.
+    """BCE auxiliary loss for training the MoD causal router [Ritter et al., 2024, §3.5].
+
+    The predictor is a causal (autoregressive) MLP, but the top-k mask is
+    computed non-causally (over the whole sequence).  This auxiliary loss
+    trains the causal predictor to match the non-causal expert-choice mask.
+
+    Parameters
+    ----------
+    logits : torch.Tensor
+        Raw predictor scores ``[B,T,1]`` or ``[B,T]``.
+    keep_mask : torch.Tensor
+        Target boolean mask ``[B,T]`` (from non-causal top-k).
+    active_mask : torch.Tensor | None
+        Optional active token mask.
+
+    Returns
+    -------
+    torch.Tensor
+        Scalar BCE loss over active positions.
     """
     scores = logits.squeeze(-1) if logits.dim() == 3 else logits
     active_mask = _normalize_active_mask(scores, active_mask)
@@ -187,16 +286,38 @@ def mod_router_aux_loss(
 
 @dataclass
 class MoDBudgetScheduler:
-    """
-    Provides a target keep-rate per layer (0..1), optionally annealed.
+    """MoD layer-wise budget scheduler with per-layer profile annealing.
 
-    Typical use:
-      start_keep=1.0, end_keep=0.7, warmup then decay.
+    Provides a target keep-rate per layer (0..1), optionally annealed from
+    ``start_keep`` to ``end_keep`` over ``total_steps`` with a warmup period.
 
-    layer_profile:
-      - "flat": same keep-rate for all layers
-      - "deeper_more": keep deeper layers a bit more
-      - "deeper_less": keep deeper layers a bit less
+    The scheduler supports three layer-profile strategies:
+      - ``"flat"``       — identical keep-rate for all layers
+      - ``"deeper_more"`` — deeper layers keep *more* tokens (scales by depth)
+      - ``"deeper_less"`` — deeper layers keep *fewer* tokens
+
+    Reference:
+        Ritter et al. (2024) — arXiv:2404.02258
+        "Mixture-of-Depths: Dynamically allocating compute in
+        transformer-based language models."
+    ----------
+    num_layers : int
+        Number of transformer layers (depth of the network).
+    start_keep : float
+        Initial keep-rate before annealing begins (default 1.0 = all layers).
+    end_keep : float
+        Final keep-rate after annealing (default 0.85 = ~15% reduction).
+    warmup_steps : int
+        Steps during which keep-rate stays at ``start_keep`` (default 0).
+    total_steps : int
+        Total annealing steps (default 50 000).
+    layer_profile : str
+        ``"flat"``, ``"deeper_more"``, or ``"deeper_less"``.
+
+    Attributes
+    ----------
+    _step : int
+        Current global training step (incremented via ``.step()``).
     """
 
     num_layers: int

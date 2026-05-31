@@ -1,3 +1,25 @@
+"""GateSkip — gated skip connections with budget-constrained selection.
+
+Implements the GateSkip mechanism from Laitenberger et al. (2026): learnable
+sigmoid gates on residual-stream outputs that enable token-wise layer skipping
+in decoder-only language models.  A budget constraint forces only the
+highest-scoring fraction of tokens to pass through the gated (expensive)
+path.  Tokens that "fail" the budget simply copy their residual directly.
+
+Key design:
+    1. *ResidualGate*: ``g = σ(W·h)`` — a sigmoid-activated linear gate that
+       modulates the branch output before it re-enters the residual stream.
+    2. *Budget-constrained top-k*: only the top-``budget`` fraction of tokens
+       (by gate score) pass through; the rest copy the residual directly.
+    3. *Auxiliary losses*: optional sparsity, budget-tracking, and
+       smoothness regularisers.
+
+Original paper:
+    Laitenberger, F., Kopiczko, D., Snoek, C. G. M., & Asano, Y. M. (2026).
+    "What Layers When: Learning to Skip Compute in LLMs with Residual Gates."
+    arXiv:2510.13876v3 [[arXiv]](https://arxiv.org/abs/2510.13876)
+"""
+
 from dataclasses import dataclass
 
 import torch
@@ -6,8 +28,20 @@ import torch.nn as nn
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Budget Scheduler
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class BudgetScheduler:
+    """Simple linear budget scheduler (decreasing from start to end).
+
+    Parameters
+    ----------
+    b_start : float
+        Initial budget (fraction of tokens kept through gate), default 1.0.
+    b_end : float
+        Final budget after ``total_steps``, default 0.8.
+    total_steps : int | None
+        Number of steps over which to anneal.  ``None`` or ``<=0`` returns
+        ``b_end`` immediately.
+    """
     def __init__(
         self,
         b_start: float = 1.0,
@@ -40,6 +74,23 @@ class BudgetScheduler:
 # ──────────────────────────────────────────────────────────────────────────────
 @dataclass
 class GateStats:
+    """Diagnostics for the GateSkip mechanism.
+
+    Attributes
+    ----------
+    gate_mean : torch.Tensor
+        Mean of gate values over all tokens.
+    gate_active_mean : torch.Tensor
+        Mean of gate values over active (non-padding) tokens.
+    token_keep_ratio : torch.Tensor
+        Fraction of active tokens kept through the gated path.
+    token_skip_ratio : torch.Tensor
+        Fraction of active tokens that skip the gated path (1 − keep).
+    budget_error : torch.Tensor
+        ``token_keep_ratio − budget`` — deviation from target.
+    smoothness : torch.Tensor
+        Mean absolute temporal variation of gates over adjacent tokens.
+    """
     gate_mean: torch.Tensor
     gate_active_mean: torch.Tensor
     token_keep_ratio: torch.Tensor
@@ -52,16 +103,48 @@ class GateStats:
 # GateSkip primitives
 # ──────────────────────────────────────────────────────────────────────────────
 class ResidualGate(nn.Module):
-    """
-    Token-conditioned residual gate with scalar or per-feature gating.
+    """Sigmoid-activated residual gate with learned token-conditioned gate.
 
-    Gate:
-        g = σ(W2 φ(W1 Norm(x)))
+    Implements the gating formula from **GateSkip** (Laitenberger et al.,
+    2026, §3.1):
 
-    Residual:
+        g = σ(W · h_prev)
         h = h_prev + g ⊙ o
 
-    Default output is token-wise [B,T,1], which is the safest form of gating.
+    where ``o`` is the output of the downstream path (e.g. an Attention or
+    MLP block) and ``g ∈ [0,1]^{B×T×gate_dim}`` controls how much of ``o``
+    is incorporated into the residual stream.
+
+    The gate is followed by a budget-constrained top-k selection in
+    ``gateskip_apply``: only the top-``budget`` fraction of tokens
+    (by scalar importance score) actually receive the gated update;
+    the rest copy ``h_prev`` directly.
+
+    Reference:
+        Laitenberger et al. (2026) — arXiv:2510.13876v3
+        "What Layers When: Learning to Skip Compute in LLMs with
+        Residual Gates."
+        See §3.1 "Residual Gating Mechanism" and §3.3 "Token selection".
+
+    Parameters
+    ----------
+    d_model : int
+        Input (and residual) feature dimension.
+    gate_dim : int
+        Number of gate channels.  ``1`` gives a scalar gate per token
+        (safest).  ``d_model`` gives a per-feature gate.
+    hidden_dim : int | None
+        Hidden dimension of the gate MLP.  Defaults to ``d_model``.
+    norm_type : str
+        ``"layernorm"`` or ``"identity"``.
+    layer_norm_eps : float
+        LayerNorm epsilon.
+    init_bias : float
+        Initial bias on the final gate linear layer.  Positive values
+        bias the gate open (more tokens pass through).  Default 2.0
+        (~σ(2) ≈ 0.88 of tokens initially open).
+    init_std : float
+        Standard deviation for weight initialisation (Xavier-like).
     """
 
     def __init__(
@@ -151,6 +234,7 @@ def _normalize_active_mask(
     active_mask: torch.Tensor | None,
     ref: torch.Tensor,
 ) -> torch.Tensor:
+    """Normalise active_mask to ``[B,T]`` bool, defaulting to all-True."""
     B, T = ref.shape[:2]
     device = ref.device
     if active_mask is None:
@@ -169,15 +253,24 @@ def _exact_topk_keep_mask(
     keep: float,
     active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """
-    Returns a per-row boolean keep mask using exact top-k over active positions.
+    """Exact per-row top-k keep mask using the gate importance scores.
 
-    Args:
-        gbar:        [B,T] token scores (higher = keep)
-        keep:        fraction in [0,1]
-        active_mask: [B,T] bool; only True positions participate in budget
-    Returns:
-        keep_mask:   [B,T] bool, True where token is kept through the expensive path
+    For each batch row, selects the top ``round(keep * n_active)`` tokens
+    by ``gbar`` score among active positions.
+
+    Parameters
+    ----------
+    gbar : torch.Tensor
+        Token importance scores ``[B,T]`` (higher = keep).
+    keep : float
+        Fraction of active tokens to keep (0..1).
+    active_mask : torch.Tensor | None
+        Optional ``[B,T]`` bool; only True positions participate.
+
+    Returns
+    -------
+    torch.Tensor
+        Boolean keep mask ``[B,T]``, ``True`` for tokens passing the gate.
     """
     B, T = gbar.shape
     device = gbar.device
@@ -226,8 +319,11 @@ def _compute_gate_smoothness(
     gbar: torch.Tensor,
     active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """
-    Mean absolute temporal variation over adjacent active positions.
+    """Mean absolute temporal variation of gates over adjacent active positions.
+
+    Computes ``mean(|g[t] - g[t-1]|)`` over consecutive pairs where both
+    positions are active.  Low smoothness indicates stable gating across
+    adjacent tokens.
     """
     B, T = gbar.shape
     if T <= 1:
@@ -247,6 +343,24 @@ def _compute_gate_stats(
     budget: float | None,
     active_mask: torch.Tensor | None = None,
 ) -> GateStats:
+    """Compute GateStats diagnostics from gate scores, keep mask, and budget.
+
+    Parameters
+    ----------
+    gbar : torch.Tensor
+        Token importance scores ``[B,T]``.
+    keep_mask : torch.Tensor | None
+        Optional keep mask ``[B,T]``.
+    budget : float | None
+        Target budget fraction.
+    active_mask : torch.Tensor | None
+        Optional active token mask.
+
+    Returns
+    -------
+    GateStats
+        Diagnostics dataclass with gate means, ratios, budget error, smoothness.
+    """
     active_mask = _normalize_active_mask(active_mask, gbar)
 
     denom_active = active_mask.sum().clamp_min(1)
@@ -292,23 +406,61 @@ def gateskip_apply(
     lambda_smooth: float = 0.0,
     warmup_soft_only: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None, GateStats]:
-    """
-    Returns:
-        h_out,
-        skip_mask or None,
-        stats
+    """Apply a gated skip connection with budget-constrained selection.
 
-    Behavior:
-      - disabled: plain residual add
-      - enabled + budget is None: soft gate only
-      - enabled + budget in [0,1]: soft gate + exact top-k keep
-      - warmup_soft_only=True: ignore hard skipping even if budget is set
+    This is the core GateSkip primitive from Laitenberger et al. (2026,
+    §3).  It combines:
 
-    Regularization hooks appended to aux_terms:
-      - lambda_s      * mean(g)                 (sparsity / compute pressure)
-      - lambda_budget * (realized_keep-budget)^2
-      - lambda_smooth * temporal_gate_smoothness
+    1. **Soft gating** — a learned gate ``g`` modulates the downstream
+       output ``o``, producing ``h_gated = h_prev + g ⊙ o``.
+    2. **Budget-constrained top-k** — if ``budget ∈ (0,1)``, only the
+       top-``budget`` fraction of tokens (by gate importance ``gbar``)
+       actually keep ``h_gated``; the rest copy ``h_prev`` directly.
+    3. **Auxiliary regularisation** — optional sparsity, budget-tracking,
+       and smoothness terms appended to ``aux_terms``.
+
+    Reference:
+        Laitenberger et al. (2026) — arXiv:2510.13876v3
+        "What Layers When: Learning to Skip Compute in LLMs with
+        Residual Gates."
+        See §3.1 (gating), §3.2 (training objective), §3.3 (token selection).
+
+    Parameters
+    ----------
+    enabled : bool
+        Whether gating is active.  If ``False``, returns plain residual.
+    h_prev : torch.Tensor
+        Residual input ``[B,T,D]``.
+    o : torch.Tensor
+        Downstream path output (e.g. FFN) ``[B,T,D]``.
+    gate : ResidualGate
+        Learned gate module.
+    budget : float | None
+        Target fraction of tokens kept.  ``None`` → soft gate only.
+        ``0.0`` → all skip.  ``1.0`` → all keep.
+    aux_terms : list[torch.Tensor]
+        Accumulator for auxiliary loss terms (appended in-place).
+    lambda_s : float
+        Sparsity weight → ``λ_s * mean(g)``.
+    active_mask : torch.Tensor | None
+        ``[B,T]`` bool mask for valid tokens.
+    lambda_budget : float
+        Budget-tracking weight → ``λ_budget * (keep_ratio − budget)²``.
+    lambda_smooth : float
+        Smoothness weight → ``λ_smooth * |Δg|`` (temporal variation).
+    warmup_soft_only : bool
+        If ``True``, ignores hard skipping even when budget is set.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor | None, GateStats]
+        ``(h_out, skip_mask, stats)``
+        * ``h_out`` — ``[B,T,D]`` gated + budget-selected output.
+        * ``skip_mask`` — ``[B,T]`` bool, ``True`` where residual was copied
+          (``None`` when soft gate only).
+        * ``stats`` — ``GateStats`` diagnostics.
     """
+
     active_mask = _normalize_active_mask(active_mask, h_prev)
 
     if not enabled:
@@ -366,7 +518,7 @@ def gateskip_apply(
     if lambda_smooth > 0.0:
         aux_terms.append(lambda_smooth * stats.smoothness)
 
-    return h_out, skip_mask
+    return h_out, skip_mask, stats
 
 
 def apply_skip_to_kv(
@@ -375,17 +527,38 @@ def apply_skip_to_kv(
     prev_layer_state: dict[str, dict[str, torch.Tensor]] | None,
     attn_type: str,
 ) -> dict[str, torch.Tensor] | None:
-    """
-    For skipped tokens, copy KV from previous layer cache.
+    """Copy KV cache entries from the previous layer for skipped tokens.
+
+    When a token is "skipped" by the gate (i.e. it copies the residual
+    directly), its attention KV pairs can also be copied from the
+    previous layer's cache instead of being recomputed.  This is a
+    cache-level compute saving complementary to the skip connection.
 
     Shapes:
-        k,v:      [B, nh, T, hd]
-        skip_mask [B, T] bool  (True = skip / copy-through)
+        k, v  : ``[B, nh, T, hd]``
+        skip_mask : ``[B, T]`` bool  (``True`` = skip / copy-through)
 
-    Note:
-        This is a cache-level optimization. It should be validated per attention
-        variant, since some attention mechanisms may tolerate stale KV better
-        than others.
+    Parameters
+    ----------
+    updated : dict[str, torch.Tensor] | None
+        KV tensors from the current layer (``{"k": ..., "v": ...}``).
+    skip_mask : torch.Tensor
+        ``[B,T]`` boolean mask; ``True`` positions copy from prev cache.
+    prev_layer_state : dict[str, dict[str, torch.Tensor]] | None
+        Previous layer cache: ``{attn_type: {"k": ..., "v": ...}}``.
+    attn_type : str
+        Attention type key used in ``prev_layer_state``.
+
+    Returns
+    -------
+    dict[str, torch.Tensor] | None
+        Updated KV dict (or ``None`` if no cache available).  Skipped
+        tokens' K and V are replaced with previous-layer values.
+
+    Note
+    ----
+    Some attention mechanisms may tolerate stale KV from earlier layers
+    better than others.  Validate per-attention-variant.
     """
     if updated is None:
         return updated

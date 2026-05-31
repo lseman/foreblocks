@@ -28,7 +28,8 @@ def evaluate_zero_cost_metrics_raw(
     *,
     max_samples: int = 32,
     num_batches: int = 1,
-    fast_mode: bool = True,
+    fast_mode: bool | str = True,
+    preset: str = "smart_fast",
 ) -> dict[str, Any]:
     """
     Compute zero-cost proxies once and return the raw per-metric values.
@@ -43,13 +44,23 @@ def evaluate_zero_cost_metrics_raw(
         dataloader:  DataLoader providing input batches.
         max_samples: Maximum number of samples to use.
         num_batches: Number of batches to forward through the model.
-        fast_mode:   Use cheaper proxy settings (fewer Jacobian probes, etc.).
+        fast_mode:   Use cheaper proxy settings.  Accepts ``True`` (fast),
+                     ``False`` (full), or a preset name (``"smart_fast"``,
+                     ``"ultra_fast"``).
+        preset:      Named preset to use when ``fast_mode`` is truthy but
+                     not ``True``.  Ignored when ``fast_mode=True``.
 
     Returns:
         Dict with keys:
         ``raw_metrics``, ``success_rates``, ``errors``, ``base_weights``.
     """
-    cfg = _make_config(max_samples=max_samples, fast_mode=fast_mode)
+    if fast_mode is True:
+        cfg = _make_config(max_samples=max_samples, fast_mode=True)
+    elif fast_mode is False:
+        cfg = _make_config(max_samples=max_samples, fast_mode=False)
+    else:
+        # fast_mode is a preset name
+        cfg = _make_config_preset(max_samples=max_samples, preset=preset)
     nas_evaluator = ZeroCostNAS(config=cfg)
 
     out = nas_evaluator.evaluate_model_raw_metrics(
@@ -79,7 +90,8 @@ def evaluate_zero_cost_metrics(
     *,
     max_samples: int = 32,
     num_batches: int = 1,
-    fast_mode: bool = True,
+    fast_mode: bool | str = True,
+    preset: str = "smart_fast",
     ablation: bool = False,
     n_random: int = 20,
     random_sigma: float = 0.25,
@@ -89,8 +101,8 @@ def evaluate_zero_cost_metrics(
     Evaluate a model using zero-cost proxy metrics.
 
     When ``ablation=False`` (the default), a single aggregate score is
-    produced using the default weights from :class:`~search.metrics.Config`.
-    When ``ablation=True``, the model is evaluated under many weight schemes
+    produced using the weights from the selected preset.  When
+    ``ablation=True``, the model is evaluated under many weight schemes
     and the per-scheme results are returned alongside the default.
 
     Args:
@@ -99,7 +111,10 @@ def evaluate_zero_cost_metrics(
         dataloader:   Validation DataLoader.
         max_samples:  Max samples for metric computation.
         num_batches:  Batches to forward.
-        fast_mode:    Use cheaper proxy settings.
+        fast_mode:    Use cheaper proxy settings.  Accepts ``True`` (fast),
+                     ``False`` (full), or a preset name (``"smart_fast"``,
+                     ``"ultra_fast"``).
+        preset:       Named preset when ``fast_mode`` is a string.
         ablation:     Run weight-scheme ablation if ``True``.
         n_random:     Number of random weight perturbations to include.
         random_sigma: Standard deviation of Gaussian used for random schemes.
@@ -110,7 +125,12 @@ def evaluate_zero_cost_metrics(
         On ablation mode: dict with keys ``"ablation"``, ``"base_weights"``,
         ``"schemes"``, ``"per_scheme"``.
     """
-    cfg = _make_config(max_samples=max_samples, fast_mode=fast_mode)
+    if fast_mode is True:
+        cfg = _make_config(max_samples=max_samples, fast_mode=True)
+    elif fast_mode is False:
+        cfg = _make_config(max_samples=max_samples, fast_mode=False)
+    else:
+        cfg = _make_config_preset(max_samples=max_samples, preset=preset)
     nas_evaluator = ZeroCostNAS(config=cfg)
 
     if not ablation:
@@ -128,8 +148,18 @@ def evaluate_zero_cost_metrics(
 
     per_scheme: dict[str, Any] = {}
     for scheme_name, weights in schemes.items():
-        scheme_cfg = _make_config(max_samples=max_samples, fast_mode=fast_mode)
-        scheme_cfg.weights = weights
+        scheme_cfg = Config(max_samples=max_samples, max_outputs=cfg.max_outputs,
+                            weights=weights)
+        # Copy enabled flags from the base config
+        scheme_cfg.jacobian_probes = cfg.jacobian_probes
+        scheme_cfg.gradient_max_samples = cfg.gradient_max_samples
+        scheme_cfg.fisher_per_sample = cfg.fisher_per_sample
+        scheme_cfg.snip_mode = cfg.snip_mode
+        scheme_cfg.heavy_metrics_batches = cfg.heavy_metrics_batches
+        scheme_cfg.enable_grasp = cfg.enable_grasp
+        scheme_cfg.enable_jacobian = cfg.enable_jacobian
+        scheme_cfg.enable_synflow = cfg.enable_synflow
+        scheme_cfg.conditioning_every_n_layers = cfg.conditioning_every_n_layers
         ev = ZeroCostNAS(config=scheme_cfg)
         out = ev.evaluate_model(
             model, dataloader, trainer.device, num_batches=num_batches
@@ -176,4 +206,32 @@ def _make_config(*, max_samples: int, fast_mode: bool) -> Config:
             if k not in {"grasp", "jacobian", "synflow"}
         }
         cfg.conditioning_every_n_layers = max(2, cfg.conditioning_every_n_layers)
+    return cfg
+
+
+def _make_config_preset(*, max_samples: int, preset: str) -> Config:
+    """Build a config from a named preset (smart_fast, ultra_fast, full)."""
+    from .metrics import Config as _Config, _get_presets
+
+    presets = _get_presets()
+    if preset not in presets:
+        raise ValueError(
+            f"Unknown zero-cost preset {preset!r}. "
+            f"Available: {list(presets.keys())}"
+        )
+    base = presets[preset]
+    cfg = _Config(
+        max_samples=max_samples,
+        max_outputs=base.max_outputs,
+        jacobian_probes=base.jacobian_probes,
+        gradient_max_samples=base.gradient_max_samples,
+        fisher_per_sample=base.fisher_per_sample,
+        snip_mode=base.snip_mode,
+        heavy_metrics_batches=base.heavy_metrics_batches,
+        enable_grasp=base.enable_grasp,
+        enable_jacobian=base.enable_jacobian,
+        enable_synflow=base.enable_synflow,
+        conditioning_every_n_layers=base.conditioning_every_n_layers,
+        weights=dict(base.weights),
+    )
     return cfg

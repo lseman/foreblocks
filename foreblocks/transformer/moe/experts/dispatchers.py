@@ -44,6 +44,10 @@ class DroplessPackedDispatcher:
         topk_p: torch.Tensor,  # [T, K]
         topk_i: torch.Tensor,  # [T, K]
         capacity_factor: float | None = None,
+        soft_capacity: bool = False,
+        expert_usage: torch.Tensor | None = None,
+        soft_capacity_min: float = 0.5,
+        soft_capacity_max: float = 2.0,
     ):
         device = x_flat.device
         T, D = x_flat.shape
@@ -101,12 +105,39 @@ class DroplessPackedDispatcher:
         packed_x = x_flat.index_select(0, tokens_sorted)  # [S, D]
         packed_w = weights_sorted.unsqueeze(1)  # [S, 1]
 
-        # Vectorized capacity prune
-        total_capacity = math.ceil(T * K * (capacity_factor or self.capacity_factor))
-        per_expert_cap = max(1, math.ceil(total_capacity / self.num_experts))
+        # Capacity calculation: hard vs soft (elastic) mode
+        if soft_capacity and expert_usage is not None:
+            # Qwen2.5-MoE style soft capacity: scale per expert by utilization
+            total_capacity = math.ceil(T * K * (capacity_factor or self.capacity_factor))
+            base_per_expert = total_capacity / max(self.num_experts, 1)
+            # Clamp usage to avoid division issues; higher usage = higher capacity
+            usage = expert_usage.clamp(min=1e-6)
+            usage_ratio = usage / (usage.sum() + 1e-12)  # normalize to sum=1
+            # Scale factor per expert: 1.0 for average, >1 for over-represented
+            scale = usage_ratio * self.num_experts  # sum = num_experts
+            scale = scale.clamp(min=soft_capacity_min, max=soft_capacity_max)
+            per_expert_cap = (base_per_expert * scale).ceil().long()  # [E]
+        else:
+            # Standard hard capacity: fixed per expert
+            per_expert_cap = torch.full(
+                (self.num_experts,),
+                max(1, math.ceil(
+                    T * K * (capacity_factor or self.capacity_factor) / self.num_experts
+                )),
+                dtype=torch.long,
+                device=device,
+            )
 
-        idx_in_expert = self._arange_buffer[:S] - offsets[experts_sorted]  # type: ignore[index]
-        kept_mask = idx_in_expert < per_expert_cap
+        # Per-expert index tracking
+        cum_offsets = torch.cat([torch.zeros(1, device=device, dtype=torch.long), offsets[:-1]])
+        idx_in_expert = self._arange_buffer[:S] - cum_offsets[experts_sorted]  # type: ignore[index]
+
+        if soft_capacity and expert_usage is not None:
+            # Soft mode: per-expert capacity varies
+            kept_mask = idx_in_expert < per_expert_cap[experts_sorted]
+        else:
+            kept_mask = idx_in_expert < per_expert_cap[experts_sorted]
+
         kept = kept_mask.nonzero(as_tuple=True)[0]
         dropped = int(S - kept.numel())
 

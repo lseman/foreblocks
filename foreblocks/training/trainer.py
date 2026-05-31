@@ -1,5 +1,14 @@
-"""
-Enhanced Trainer with NAS support for HeadComposer
+"""Enhanced Trainer with NAS and conformal prediction support.
+
+This module is a thin orchestrator that delegates to focused submodules:
+
+* ``batch_io`` – batch unpacking and device transfer
+* ``training_loop`` – ``train_epoch``, ``evaluate``, forward/backward passes
+* ``logging`` – MLTracker and MoE logging helpers
+* ``conformal_trainer`` – conformal calibration, update, and prediction API
+* ``visualization`` – prediction and interval plots
+
+See the submodule docstrings for implementation details.
 """
 
 from __future__ import annotations
@@ -7,7 +16,6 @@ from __future__ import annotations
 import contextlib
 import copy
 import datetime
-import os
 import tempfile
 import warnings
 from collections.abc import Callable, Sequence
@@ -26,18 +34,23 @@ from foreblocks.evaluation.model_evaluator import ModelEvaluator
 from foreblocks.training.history import TrainingHistory
 from foreblocks.training.losses import LossComputer
 from foreblocks.training.nas import NASHelper
-from foreblocks.ui.node_spec import node
 
+from . import batch_io
+from . import logging as _log
+from . import training_loop
+from . import conformal_trainer as _conf
+from . import visualization as _viz
+
+
+# ── Optional imports ────────────────────────────────────────────────────
 
 try:
     import matplotlib.pyplot as plt
     from matplotlib.colors import ListedColormap
 except ImportError:
-    plt = None
-    ListedColormap = None
+    plt = None  # type: ignore[assignment]
+    ListedColormap = None  # type: ignore[assignment]
 
-
-# Optional: import your MoE classes and HeadComposer
 try:
     from foreblocks.transformer.moe.experts.moe import MoEFeedForwardDMoE
     from foreblocks.transformer.moe.experts.moe_logging import (
@@ -47,109 +60,41 @@ try:
     )
     from foreblocks.transformer.moe.ff import FeedForwardBlock
 except Exception:
-    MoELogger = None
-    ReportInputs = None
+    MoELogger = None  # type: ignore[assignment]
+    ReportInputs = None  # type: ignore[assignment]
 
-    def build_moe_report(*args, **kwargs):
+    def build_moe_report(*args, **kwargs: Any) -> Any:
         raise RuntimeError("MoE logging not available")
 
 
-def _require_matplotlib() -> None:
-    if plt is None or ListedColormap is None:
-        raise RuntimeError(
-            "Matplotlib is required for Trainer plotting utilities. "
-            "Install with: pip install foreblocks[plotting]"
-        )
+# ========================================================================
+# Trainer
+# ========================================================================
 
-
-# ============================================================
-# Conformal helpers (Trainer-side only)
-# ============================================================
-
-
-def _as_numpy(x) -> np.ndarray:
-    if isinstance(x, np.ndarray):
-        return x
-    if torch.is_tensor(x):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
-
-
-def _ensure_y_shape_like_intervals(y_np: np.ndarray, lower: np.ndarray) -> np.ndarray:
-    """
-    Make y shape match [N,H,D] like lower/upper.
-    Accepts y as [N,H], [N,H,1], [N,H,D].
-    """
-    if y_np.ndim == 2:
-        y_np = y_np[:, :, None]  # [N,H,1]
-    if y_np.ndim != 3:
-        raise ValueError(f"y must have shape [N,H] or [N,H,D], got {y_np.shape}")
-    if y_np.shape[-1] == 1 and lower.shape[-1] > 1:
-        y_np = np.repeat(y_np, lower.shape[-1], axis=-1)
-    if y_np.shape != lower.shape:
-        raise ValueError(f"Shape mismatch: y {y_np.shape} vs intervals {lower.shape}")
-    return y_np
-
-
-def _collect_xy_from_loader(cal_loader) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Collect (X, y) from a DataLoader.
-
-    IMPORTANT: if your dataset yields (X, y, time_feat), we intentionally ignore time_feat
-    because you requested to keep using model(X) only.
-    """
-    Xc, Yc = [], []
-    for batch in cal_loader:
-        if not isinstance(batch, (list, tuple)) or len(batch) < 2:
-            raise ValueError(
-                "Calibration loader must yield (X, y) or (X, y, ...) tuples."
-            )
-        xb, yb = batch[0], batch[1]
-        Xc.append(xb)
-        Yc.append(yb)
-
-    Xc_t = (
-        torch.cat(Xc, dim=0)
-        if torch.is_tensor(Xc[0])
-        else torch.tensor(np.concatenate(Xc, axis=0))
-    )
-    Yc_t = (
-        torch.cat(Yc, dim=0)
-        if torch.is_tensor(Yc[0])
-        else torch.tensor(np.concatenate(Yc, axis=0))
-    )
-
-    # Keep as numpy for your engine API
-    return Xc_t.detach().cpu().numpy(), Yc_t.detach().cpu().numpy()
-
-
-@node(
-    type_id="trainer",
-    name="Trainer",
-    category="Training",
-    inputs=["X_train", "Y_train", "model"],
-    outputs=["trained_model"],
-    infer=True,
-)
 class Trainer:
-    """Trainer for time series models with optional MoE logging and NAS support"""
+    """Unified training loop with NAS, conformal prediction, and MoE logging.
 
-    Config = TrainingConfig
+    Public API
+    ----------
+    train() – full training loop with optional validation and early stopping
+    evaluate() – quick validation loss
+    save() / load() – checkpointing
+    calibrate_conformal() / predict_with_intervals() / compute_coverage()
+    metrics() / cv() – evaluation helpers
+    plot_prediction() / plot_intervals() – visualization
+    """
+
+    # ── Device resolution ──────────────────────────────────────────────
 
     @staticmethod
     def _resolve_device(device: str | torch.device | None = None) -> torch.device:
-        """Resolve user/device defaults to a torch.device."""
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-        resolved = torch.device(device)
-        if resolved.type == "cuda" and not torch.cuda.is_available():
-            warnings.warn(
-                "CUDA was requested but is not available; falling back to CPU.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return torch.device("cpu")
-        return resolved
+        if isinstance(device, str):
+            device = torch.device(device)
+        return device
+
+    # ── Initialization ─────────────────────────────────────────────────
 
     def __init__(
         self,
@@ -161,51 +106,64 @@ class Trainer:
         device: str | None = None,
         use_wandb: bool = False,
         wandb_config: dict[str, Any] | None = None,
-        moe_meta_builder: None
-        | (
-            Callable[
-                [
-                    torch.Tensor,
-                    torch.Tensor | None,
-                    torch.Tensor | None,
-                    int,
-                    int,
-                ],
-                dict[str, Any] | None,
-            ]
-        ) = None,
+        moe_meta_builder: Callable[..., dict[str, Any] | None] | None = None,
         alpha_optimizer: torch.optim.Optimizer | None = None,
-        mltracker: Any | None = None,  # Pass an existing MLTracker instance
-        mltracker_uri: None
-        | (str) = None,  # DB directory; defaults to <project_root>/mltracker_data
-        auto_track: bool = True,  # Auto-create MLTracker when none is supplied
+        mltracker: Any | None = None,
+        mltracker_uri: str | None = None,
+        auto_track: bool = True,
     ) -> None:
+        """Initialize the Trainer.
 
+        Parameters
+        ----------
+        model : nn.Module
+            The PyTorch model to train.
+        config : TrainingConfig | dict | None
+            Training configuration.  If a dict, it is converted to
+            ``TrainingConfig`` and updated with the given keys.
+        optimizer : torch.optim.Optimizer | None
+            Custom optimizer.  Created automatically (AdamW) if *None*.
+        criterion : Callable | None
+            Deprecated – use ``config.loss_function`` or set via
+            ``self.criterion = ...`` after construction.
+        scheduler : Any | None
+            Deprecated – use ``config.scheduler_type`` instead.
+        device : str | None
+            Device string ("cpu", "cuda", …).  Auto-detected if *None*.
+        use_wandb : bool
+            Deprecated – WandB support has been removed.
+        wandb_config : dict | None
+            Deprecated.
+        moe_meta_builder : callable | None
+            Custom MoE metadata builder.  The default reads ``time_feat``
+            to derive an ``"hour"`` feature.
+        alpha_optimizer : torch.optim.Optimizer | None
+            Deprecated – NAS alpha optimization is handled internally.
+        mltracker : Any | None
+            Pre-existing MLTracker instance.  If *None* and *auto_track* is
+            True, one is auto-created from the DB path.
+        mltracker_uri : str | None
+            Path to the MLTracker SQLite DB.  Defaults to
+            ``<project_root>/mltracker/mltracker_data``.
+        auto_track : bool
+            When True and no *mltracker* is provided, auto-create one.
+        """
         self.device = self._resolve_device(device)
         self.model = model.to(self.device)
         self.use_wandb = use_wandb
 
-        # ------------------------------------------------------------------
-        # Resolve the DB path to an absolute location anchored at the project
-        # root (3 levels up from this file: training/ → foreblocks/ → root).
-        # This ensures the same DB is used regardless of notebook CWD.
-        # Priority: explicit argument > MLTRACKER_DIR env var > package-relative default
-        # ------------------------------------------------------------------
+        # ── MLTracker DB path ──────────────────────────────────────────
         import os as _os
 
         if mltracker_uri is None:
             mltracker_uri = _os.environ.get(
                 "MLTRACKER_DIR",
-                str(
-                    Path(__file__).resolve().parent.parent / "mltracker/mltracker_data"
-                ),
+                str(Path(__file__).resolve().parent.parent / "mltracker/mltracker_data"),
             )
+        self._mltracker_uri = mltracker_uri
+        self._last_run_id: Any = None
 
-        # ------------------------------------------------------------------
-        # Auto-tracking: create an MLTracker from the DB path when none is
-        # provided and auto_track=True.  The MLTracker writes directly to
-        # SQLite — no API server required.
-        # ------------------------------------------------------------------
+        # ── Auto-create MLTracker when none is supplied ────────────────
         if mltracker is not None:
             self.mltracker = mltracker
         elif auto_track:
@@ -214,137 +172,109 @@ class Trainer:
 
                 self.mltracker = MLTracker(tracking_uri=mltracker_uri)
             except Exception as _mt_err:
-                print(
-                    f"[MLTracker] Auto-track init failed, tracking disabled: {_mt_err}"
-                )
+                print(f"[MLTracker] Auto-track init failed, tracking disabled: {_mt_err}")
                 self.mltracker = None
         else:
             self.mltracker = None
-        self._mltracker_uri = mltracker_uri
-        self._last_run_id: str | None = None  # set each time train() starts a run
 
-        # -----------------------------------------
-        # Config init
-        # -----------------------------------------
+        # ── Config ─────────────────────────────────────────────────────
         if isinstance(config, dict):
             self.config = TrainingConfig()
             self.config.update(**config)
         else:
             self.config = config or TrainingConfig()
 
-        # -----------------------------------------
-        # NAS setup
-        # -----------------------------------------
+        # ── Device & AMP ───────────────────────────────────────────────
+        self._amp_enabled = getattr(self.config, "use_amp", False) and self.device.type == "cuda"
+        self.scaler: GradScaler | None = GradScaler() if self._amp_enabled else None
+
+        # ── Optimizer ──────────────────────────────────────────────────
         self.nas_helper = NASHelper(self.model, self.config)
 
-        if self.config.train_nas and self.nas_helper.has_nas:
-            weight_params = self.nas_helper.get_weight_parameters()
-            alpha_params = self.nas_helper.get_alpha_parameters()
-            self.alpha_params = alpha_params
-            self.weight_params = weight_params
+        if getattr(self.config, "train_nas", False) and self.nas_helper.has_nas:
+            _weight_params = self.nas_helper.get_weight_parameters()
+            _alpha_params = self.nas_helper.get_alpha_parameters()
+            self._alpha_params = _alpha_params
+            self._weight_params = _weight_params
             print(
-                f"[NAS] Training with NAS. Found {len(alpha_params)} architecture parameters."
+                f"[NAS] Training with NAS. Found {len(_alpha_params)} architecture parameters."
             )
-
             self.optimizer = optimizer or torch.optim.AdamW(
-                weight_params,
+                _weight_params,
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+            )
+        else:
+            self._alpha_params: list[torch.nn.Parameter] = []
+            self._weight_params = list(self.model.parameters())
+            self.optimizer = optimizer or torch.optim.AdamW(
+                self.model.parameters(),
                 lr=self.config.learning_rate,
                 weight_decay=self.config.weight_decay,
             )
 
-            self.alpha_optimizer = alpha_optimizer or torch.optim.Adam(
-                alpha_params,
-                lr=self.config.nas_alpha_lr,
-                weight_decay=self.config.nas_alpha_weight_decay,
-            )
-        else:
-            self.optimizer = optimizer or self._create_optimizer()
-            self.alpha_optimizer = None
+        # ── Scheduler ──────────────────────────────────────────────────
+        self.scheduler = self._create_scheduler()
 
-        # -----------------------------------------
-        # Scheduler, loss, AMP, history
-        # -----------------------------------------
-        self.scheduler = scheduler or self._create_scheduler()
+        # ── Loss ───────────────────────────────────────────────────────
         self.loss_computer = LossComputer(self.model, self.config, criterion)
-        self._amp_enabled = bool(self.config.use_amp and self.device.type == "cuda")
-        self.scaler = GradScaler("cuda", enabled=self._amp_enabled)
 
+        # ── History ────────────────────────────────────────────────────
         self.history = TrainingHistory()
-        self.best_val_loss = float("inf")
-        self.best_model_state = None
-        self.epochs_without_improvement = 0
+
+        # ── Current state ──────────────────────────────────────────────
         self.current_epoch = 0
-
-        # -----------------------------------------
-        # MoE logging setup
-        # -----------------------------------------
         self.global_step = 0
+        self.best_val_loss = float("inf")
+        self.epochs_without_improvement = 0
+        self.best_model_state: dict[str, Any] | None = None
+
+        # ── MoE logging ────────────────────────────────────────────────
         self.moe_log: MoELogger | None = None
-        self.moe_meta_builder = moe_meta_builder or self._default_moe_meta_builder
+        self.moe_meta_builder = (
+            moe_meta_builder if moe_meta_builder is not None else self._default_moe_meta_builder
+        )
+        self._wire_moe_logger(self.model, None, self._get_step, False)
 
-        if self.config.moe_logging and MoELogger is not None:
-            self.moe_log = MoELogger()
-            self._wire_moe_logger(
-                self.model,
-                self.moe_log,
-                lambda: self.global_step,
-                self.config.moe_log_latency,
-            )
-
-        # -----------------------------------------
-        # NEW — Conformal Prediction (FIXED)
-        # -----------------------------------------
-        self.conformal_engine = None
-        if self.config.conformal_enabled:
+        # ── Conformal ──────────────────────────────────────────────────
+        if getattr(self.config, "conformal_enabled", False):
             self.conformal_engine = self._create_conformal_engine()
+        else:
+            self.conformal_engine = None
 
-    # =====================================================================
-    # NEW — Conformal Engine Factory (passes all parameters)
-    # =====================================================================
-    def _create_conformal_engine(self):
+    # ── Conformal engine factory ───────────────────────────────────────
+
+    def _create_conformal_engine(self) -> Any:
         """Create conformal engine with all method-specific parameters from config."""
         from foreblocks.training.conformal import ConformalPredictionEngine
 
         return ConformalPredictionEngine(
             method=getattr(self.config, "conformal_method", "split"),
             quantile=getattr(self.config, "conformal_quantile", 0.9),
-            # Local method
             knn_k=getattr(self.config, "conformal_knn_k", 50),
             local_window=getattr(self.config, "conformal_local_window", 5000),
-            # Rolling/ACI
             rolling_alpha=getattr(self.config, "conformal_rolling_alpha", 0.05),
             aci_gamma=getattr(self.config, "conformal_aci_gamma", 0.01),
-            # AgACI
             agaci_gammas=getattr(self.config, "conformal_agaci_gammas", None),
-            # EnbPI
             enbpi_B=getattr(self.config, "conformal_enbpi_B", 20),
             enbpi_window=getattr(self.config, "conformal_enbpi_window", 500),
-            # TSP
             tsp_lambda=getattr(self.config, "conformal_tsp_lambda", 0.01),
             tsp_window=getattr(self.config, "conformal_tsp_window", 5000),
-            # CPTC
             cptc_window=getattr(self.config, "conformal_cptc_window", 500),
             cptc_tau=getattr(self.config, "conformal_cptc_tau", 1.0),
-            cptc_hard_state_filter=getattr(
-                self.config, "conformal_cptc_hard_state_filter", False
-            ),
-            # AFOCP
+            cptc_hard_state_filter=getattr(self.config, "conformal_cptc_hard_state_filter", False),
             afocp_feature_dim=getattr(self.config, "conformal_afocp_feature_dim", 128),
             afocp_attn_hidden=getattr(self.config, "conformal_afocp_attn_hidden", 64),
             afocp_window=getattr(self.config, "conformal_afocp_window", 500),
             afocp_tau=getattr(self.config, "conformal_afocp_tau", 1.0),
-            afocp_internal_feat_hidden=getattr(
-                self.config, "conformal_afocp_internal_feat_hidden", 256
-            ),
-            afocp_internal_feat_depth=getattr(
-                self.config, "conformal_afocp_internal_feat_depth", 3
-            ),
-            afocp_internal_feat_dropout=getattr(
-                self.config, "conformal_afocp_internal_feat_dropout", 0.1
-            ),
+            afocp_internal_feat_hidden=getattr(self.config, "conformal_afocp_internal_feat_hidden", 256),
+            afocp_internal_feat_depth=getattr(self.config, "conformal_afocp_internal_feat_depth", 3),
+            afocp_internal_feat_dropout=getattr(self.config, "conformal_afocp_internal_feat_dropout", 0.1),
             afocp_online_lr=getattr(self.config, "conformal_afocp_online_lr", 0.0),
             afocp_online_steps=getattr(self.config, "conformal_afocp_online_steps", 1),
         )
+
+    # ── MoE helpers ────────────────────────────────────────────────────
 
     @staticmethod
     def _default_moe_meta_builder(
@@ -356,7 +286,7 @@ class Trainer:
     ) -> dict[str, Any] | None:
         if time_feat is None:
             return None
-        meta = {}
+        meta: dict[str, Any] = {}
         if time_feat.dtype in (torch.int32, torch.int64) and time_feat.ndim >= 1:
             meta["hour"] = time_feat.view(-1).clamp_min(0).clamp_max(23)
         return meta or None
@@ -364,22 +294,18 @@ class Trainer:
     def _wire_moe_logger(
         self,
         module: nn.Module,
-        moe_logger: MoELogger,
+        moe_logger: MoELogger | None,
         step_getter: Callable[[], int],
         log_latency: bool,
-    ):
+    ) -> None:
+        if moe_logger is None:
+            return
         for child in module.modules():
             try:
                 is_moe = False
-                if MoEFeedForwardDMoE is not None and isinstance(
-                    child, MoEFeedForwardDMoE
-                ):
+                if MoEFeedForwardDMoE is not None and isinstance(child, MoEFeedForwardDMoE):
                     is_moe = True
-                if (
-                    FeedForwardBlock is not None
-                    and isinstance(child, FeedForwardBlock)
-                    and getattr(child, "use_moe", False)
-                ):
+                if FeedForwardBlock is not None and isinstance(child, FeedForwardBlock) and getattr(child, "use_moe", False):
                     is_moe = True
                     moe_block = getattr(child, "block", None)
                     if moe_block is not None:
@@ -394,13 +320,17 @@ class Trainer:
             except Exception:
                 pass
 
+    # ── Loss criterion property ────────────────────────────────────────
+
     @property
-    def criterion(self):
+    def criterion(self) -> Any:
         return self.loss_computer.criterion
 
     @criterion.setter
-    def criterion(self, value):
+    def criterion(self, value: Any) -> None:
         self.loss_computer.criterion = value
+
+    # ── Optimizer & scheduler factories ────────────────────────────────
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
         return torch.optim.AdamW(
@@ -410,29 +340,32 @@ class Trainer:
         )
 
     def _create_scheduler(self) -> Any | None:
-        if self.config.scheduler_type == "step":
+        stype = getattr(self.config, "scheduler_type", None)
+        if stype == "step":
             return torch.optim.lr_scheduler.StepLR(
                 self.optimizer,
-                step_size=self.config.lr_step_size,
-                gamma=self.config.lr_gamma,
+                step_size=getattr(self.config, "lr_step_size", 30),
+                gamma=getattr(self.config, "lr_gamma", 0.1),
             )
-        if self.config.scheduler_type == "plateau":
+        if stype == "plateau":
             return torch.optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
-                factor=self.config.lr_gamma,
-                patience=max(1, self.config.patience // 2),
-                min_lr=self.config.min_lr,
+                factor=getattr(self.config, "lr_gamma", 0.1),
+                patience=max(1, getattr(self.config, "patience", 10) // 2),
+                min_lr=getattr(self.config, "min_lr", 1e-6),
             )
-        if self.config.scheduler_type == "cosine":
+        if stype == "cosine":
             return torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_max=max(1, self.config.num_epochs),
-                eta_min=self.config.min_lr,
+                T_max=max(1, getattr(self.config, "num_epochs", 100)),
+                eta_min=getattr(self.config, "min_lr", 1e-6),
             )
         return None
 
+    # ── Training infrastructure helpers ────────────────────────────────
+
     @contextlib.contextmanager
-    def _amp_context(self):
+    def _amp_context(self) -> Any:
         if self._amp_enabled:
             with autocast("cuda"):
                 yield
@@ -449,589 +382,69 @@ class Trainer:
         else:
             self.scheduler.step()
 
-    @staticmethod
-    def _unpack_batch(
-        batch: Any,
-    ) -> tuple[Any, Any | None, Any | None, dict[str, Any]]:
-        """Normalize batch formats to (X, y, time_feat, graph_kwargs)."""
-        graph_keys = {"adj", "edge_index", "edge_weight"}
+    # ── Step getter (used by MoE logging) ──────────────────────────────
 
-        if isinstance(batch, dict):
-            X = batch.get("X", batch.get("x", batch.get("src", batch.get("input"))))
-            y = batch.get("y", batch.get("target", batch.get("targets")))
-            time_feat = batch.get(
-                "time_feat",
-                batch.get("time_features", batch.get("time_feature")),
-            )
-            graph_kwargs = {key: batch[key] for key in graph_keys if key in batch}
-            if X is None:
-                raise ValueError(
-                    "Batch dict must include one of: 'X', 'x', 'src', or 'input'."
-                )
-            return X, y, time_feat, graph_kwargs
+    def _get_step(self) -> int:
+        return self.global_step
 
-        if isinstance(batch, (list, tuple)):
-            graph_kwargs = {}
-            if batch and isinstance(batch[-1], dict):
-                maybe_graph = {
-                    key: value for key, value in batch[-1].items() if key in graph_keys
-                }
-                if maybe_graph:
-                    graph_kwargs = maybe_graph
-                    batch = batch[:-1]
-            if len(batch) == 3:
-                third = batch[2]
-                if isinstance(third, dict):
-                    graph_kwargs.update(
-                        {
-                            key: value
-                            for key, value in third.items()
-                            if key in graph_keys
-                        }
-                    )
-                    return batch[0], batch[1], None, graph_kwargs
-                return batch[0], batch[1], third, graph_kwargs
-            if len(batch) == 2:
-                return batch[0], batch[1], None, graph_kwargs
-            if len(batch) >= 1:
-                y = batch[1] if len(batch) > 1 else None
-                time_feat = batch[2] if len(batch) > 2 else None
-                return batch[0], y, time_feat, graph_kwargs
-            return batch, None, None, graph_kwargs
-        return batch, None, None, {}
+    # ── Alpha optimizer & parameter separation ─────────────────────────
 
-    def _move_batch_to_device(
-        self,
-        X: Any,
-        y: Any | None,
-        time_feat: Any | None = None,
-        graph_kwargs: dict[str, Any] | None = None,
-    ) -> tuple[Any, Any | None, Any | None, dict[str, Any]]:
-        """Move available tensors in a batch to the trainer device."""
-        X = self._to_device(X)
-        y = self._to_device(y)
-        time_feat = self._to_device(time_feat)
-        moved_graph_kwargs = {}
-        for key, value in (graph_kwargs or {}).items():
-            moved_graph_kwargs[key] = self._to_device(value)
-        return X, y, time_feat, moved_graph_kwargs
+    def _separate_alpha_optimizer(self) -> None:
+        """Separate architecture parameters (α) from weights (θ)."""
+        if not self.nas_helper.has_nas:
+            return
+        self._alpha_optimizer, self._weight_params, self._alpha_params = self.nas_helper._setup_optimizer(self.optimizer, self.model)
 
-    def _to_device(self, value: Any) -> Any:
-        """Move tensors or simple nested containers to the trainer device."""
-        if torch.is_tensor(value):
-            return value.to(self.device, non_blocking=True)
-        if isinstance(value, dict):
-            return {key: self._to_device(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [self._to_device(item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(self._to_device(item) for item in value)
-        return value
+    def _get_alpha_optimizer(self) -> torch.optim.Optimizer | None:
+        """Return the alpha optimizer (or the main optimizer if NAS is disabled)."""
+        return getattr(self, "_alpha_optimizer", None) or self.optimizer
 
-    def _forward_pass(
-        self,
-        X: torch.Tensor,
-        y: torch.Tensor,
-        time_feat: torch.Tensor | None = None,
-        batch_idx: int = 0,
-        graph_kwargs: dict[str, Any] | None = None,
-    ) -> tuple[torch.Tensor, dict[str, Any]]:
-        aux = {}
-        graph_kwargs = graph_kwargs or {}
-        meta = (
-            self.moe_meta_builder(X, y, time_feat, self.current_epoch, batch_idx)
-            if self.moe_log is not None
-            else None
+    @property
+    def weight_params(self) -> list[torch.nn.Parameter]:
+        return self._weight_params
+
+    @property
+    def alpha_params(self) -> list[torch.nn.Parameter]:
+        return self._alpha_params
+
+    @property
+    def alpha_optimizer(self) -> torch.optim.Optimizer | None:
+        """Return the NAS alpha optimizer, or the main optimizer if NAS is disabled."""
+        return getattr(self, "_alpha_optimizer", None)
+
+    @alpha_optimizer.setter
+    def alpha_optimizer(self, value: torch.optim.Optimizer | None) -> None:
+        self._alpha_optimizer = value
+
+    def train_epoch(self, train_loader: DataLoader, val_loader: DataLoader | None = None) -> tuple[float, dict[str, float]]:
+        """Train for one epoch (thin wrapper around ``training_loop.train_epoch``).
+
+        Returns ``(total_loss, avg_components)``.
+        """
+        _global_step = {"step": self.global_step}
+        train_loss, components, batches = training_loop.train_epoch(
+            model=self.model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=self.config,
+            loss_computer=self.loss_computer,
+            optimizer=self.optimizer,
+            global_step_ref=_global_step,
+            nas_helper=self.nas_helper,
+            scaler=self.scaler,
+            amp_context=self._amp_context,
+            moe_log=self.moe_log,
+            moe_meta_builder=self.moe_meta_builder,
+            current_epoch=self.current_epoch,
+            forward_pass_fn=training_loop.forward_pass,
+            backward_step_fn=training_loop.backward_step,
+            device=self.device,
         )
+        self.global_step = _global_step["step"]
+        return train_loss, components
 
-        if hasattr(self.model, "get_distillation_info"):
-            distill_info = self.model.get_distillation_info()
-            if distill_info.get("distillation_enabled", False):
-                try:
-                    result = self.model(
-                        X,
-                        y,
-                        time_feat,
-                        self.current_epoch,
-                        return_teacher_outputs=True,
-                        meta=meta,
-                    )
-                except TypeError:
-                    result = self.model(
-                        X, y, time_feat, self.current_epoch, return_teacher_outputs=True
-                    )
-                if isinstance(result, tuple) and len(result) == 2:
-                    outputs, aux["teacher_outputs"] = result[0], result[1]
-                else:
-                    outputs = result[0] if isinstance(result, tuple) else result
-                return outputs, aux
+    # ── Training loop ──────────────────────────────────────────────────
 
-        if graph_kwargs:
-            result = self.model(X, **graph_kwargs)
-            outputs = result[0] if isinstance(result, tuple) else result
-            return outputs, aux
-
-        try:
-            result = self.model(X, y, time_feat, self.current_epoch, meta=meta)
-        except TypeError:
-            try:
-                result = self.model(X, y, time_feat, self.current_epoch)
-            except TypeError:
-                result = self.model(X)
-
-        outputs = result[0] if isinstance(result, tuple) else result
-        return outputs, aux
-
-    @staticmethod
-    def _loader_len(dataloader: Any) -> int | None:
-        try:
-            return len(dataloader)
-        except TypeError:
-            return None
-
-    def _backward_step(
-        self,
-        loss: torch.Tensor,
-        batch_idx: int,
-        total_batches: int,
-        optimizer: torch.optim.Optimizer,
-    ):
-        """Backward step with gradient accumulation."""
-        loss = loss / self.config.gradient_accumulation_steps
-
-        if self.config.use_amp:
-            self.scaler.scale(loss).backward()
-            if (
-                (batch_idx + 1) % self.config.gradient_accumulation_steps == 0
-                or batch_idx + 1 == total_batches
-            ):
-                if self.config.gradient_clip_val:
-                    self.scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.config.gradient_clip_val
-                    )
-                self.scaler.step(optimizer)
-                self.scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-        else:
-            loss.backward()
-            if (
-                (batch_idx + 1) % self.config.gradient_accumulation_steps == 0
-                or batch_idx + 1 == total_batches
-            ):
-                if self.config.gradient_clip_val:
-                    nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.config.gradient_clip_val
-                    )
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-
-    def _alpha_step(self, dataloader: DataLoader, num_steps: int = 1) -> float:
-        assert self.alpha_optimizer is not None
-
-        total_loss = 0.0
-
-        weight_params = self.weight_params
-        alpha_params = self.alpha_params
-
-        # Freeze θ
-        for p in weight_params:
-            p.requires_grad_(False)
-        for p in alpha_params:
-            p.requires_grad_(True)
-
-        prev_mode = self.model.training
-        self.model.eval()
-
-        dataloader_iter = iter(dataloader)
-
-        try:
-            for step in range(num_steps):
-                try:
-                    batch = next(dataloader_iter)
-                except StopIteration:
-                    dataloader_iter = iter(dataloader)
-                    batch = next(dataloader_iter)
-
-                X, y, time_feat, graph_kwargs = self._unpack_batch(batch)
-                X, y, time_feat, graph_kwargs = self._move_batch_to_device(
-                    X,
-                    y,
-                    time_feat,
-                    graph_kwargs,
-                )
-
-                with torch.set_grad_enabled(True):
-                    with self._amp_context():
-                        outputs, aux = self._forward_pass(
-                            X,
-                            y,
-                            time_feat,
-                            0,
-                            graph_kwargs,
-                        )
-
-                        if y is None:
-                            target = outputs.detach().clone()
-                        else:
-                            target = y
-                        target.requires_grad_(False)
-
-                        loss = self.loss_computer.compute(outputs, target, aux)
-
-                # --- DEBUG / FAIL FAST (add inside _alpha_step right before backward) ---
-                if not alpha_params:
-                    raise RuntimeError(
-                        "[NAS] alpha_params is empty. NASHelper did not find "
-                        "architecture parameters."
-                    )
-
-                # ensure at least one alpha param requires grad
-                if not any(p.requires_grad for p in alpha_params):
-                    names = []
-                    for n, p in self.model.named_parameters():
-                        if p in set(alpha_params):
-                            names.append((n, p.requires_grad))
-                    raise RuntimeError(
-                        f"[NAS] No alpha params require grad. Found: {names[:20]}"
-                    )
-
-                # outputs/loss connectivity checks
-                if not torch.is_tensor(loss):
-                    raise RuntimeError(
-                        f"[NAS] LossComputer.compute returned non-tensor: {type(loss)}"
-                    )
-
-                if not outputs.requires_grad:
-                    # Key symptom: forward does not depend on alpha while theta is frozen.
-                    raise RuntimeError(
-                        "[NAS] outputs.requires_grad is False during alpha step. "
-                        "This means the forward pass is not connected to alpha parameters "
-                        "(likely using argmax/.item()/hard indexing on alphas, or alphas unused)."
-                    )
-
-                if not loss.requires_grad:
-                    raise RuntimeError(
-                        "[NAS] loss.requires_grad is False during alpha step. "
-                        "Either outputs are detached, LossComputer detaches internally, "
-                        "or alphas are not used differentiably in forward."
-                    )
-                # --- end DEBUG ---
-
-                self.alpha_optimizer.zero_grad(set_to_none=True)
-                if self.config.use_amp:
-                    self.scaler.scale(loss).backward()
-                    self.scaler.step(self.alpha_optimizer)
-                    self.scaler.update()
-                else:
-                    loss.backward()
-                    self.alpha_optimizer.step()
-
-                for p in weight_params:
-                    p.grad = None
-
-                total_loss += float(loss.detach())
-
-        finally:
-            self.model.train(prev_mode)
-            for p in weight_params:
-                p.requires_grad_(True)
-
-        return total_loss / max(num_steps, 1)
-
-    def train_epoch(
-        self, train_loader: DataLoader, val_loader: DataLoader | None = None
-    ) -> tuple[float, dict[str, float]]:
-        """Train for one epoch with optional NAS alpha optimization."""
-        self.model.train()
-        total_loss = 0.0
-        all_components: dict[str, list[float]] = {}
-
-        do_nas = (
-            self.config.train_nas
-            and self.nas_helper.has_nas
-            and self.current_epoch >= self.config.nas_warmup_epochs
-            and (val_loader is not None or not self.config.nas_use_val_for_alpha)
-        )
-
-        if do_nas and self.config.nas_use_val_for_alpha:
-            alpha_loss = self._alpha_step(
-                val_loader, num_steps=self.config.nas_alternate_steps
-            )
-            all_components.setdefault("alpha_loss", []).append(alpha_loss)
-
-        if do_nas:
-            for p in self.nas_helper.get_alpha_parameters():
-                p.requires_grad_(False)
-
-        total_batches = self._loader_len(train_loader)
-        if total_batches is None:
-            total_batches = 0
-
-        try:
-            for batch_idx, batch in enumerate(train_loader):
-                X, y, time_feat, graph_kwargs = self._unpack_batch(batch)
-                X, y, time_feat, graph_kwargs = self._move_batch_to_device(
-                    X,
-                    y,
-                    time_feat,
-                    graph_kwargs,
-                )
-
-                with self._amp_context():
-                    outputs, aux = self._forward_pass(
-                        X,
-                        y,
-                        time_feat,
-                        batch_idx,
-                        graph_kwargs,
-                    )
-                    if y is not None and outputs.ndim == 4 and y.ndim == 3:
-                        y = y.unsqueeze(-1)
-                    target = y if y is not None else outputs.detach() * 0
-                    loss = self.loss_computer.compute(outputs, target, aux)
-
-                self._backward_step(loss, batch_idx, total_batches, self.optimizer)
-                total_loss += float(loss.detach())
-                self.global_step += 1
-
-                for k, v in self.loss_computer.components.items():
-                    all_components.setdefault(k, []).append(v)
-        finally:
-            if do_nas:
-                for p in self.nas_helper.get_alpha_parameters():
-                    p.requires_grad_(True)
-
-        avg_components = {k: float(np.mean(v)) for k, v in all_components.items()}
-        batches_seen = max(1, batch_idx + 1) if "batch_idx" in locals() else 1
-        return total_loss / batches_seen, avg_components
-
-    @torch.no_grad()
-    def evaluate(self, dataloader: DataLoader) -> float:
-        if dataloader is None:
-            return float("nan")
-        self.model.eval()
-        total_loss = 0.0
-        n = 0
-
-        for batch in dataloader:
-            X, y, time_feat, graph_kwargs = self._unpack_batch(batch)
-            X, y, time_feat, graph_kwargs = self._move_batch_to_device(
-                X,
-                y,
-                time_feat,
-                graph_kwargs,
-            )
-
-            with self._amp_context():
-                outputs, _ = self._forward_pass(
-                    X,
-                    y,
-                    time_feat,
-                    0,
-                    graph_kwargs,
-                )
-
-                if y is None:
-                    continue
-                if outputs.ndim == 4 and y.ndim == 3:
-                    y = y.unsqueeze(-1)
-                loss = nn.MSELoss()(outputs, y)
-                bs = X.size(0)
-                total_loss += float(loss) * bs
-                n += bs
-
-        return (total_loss / max(n, 1)) if n > 0 else float("nan")
-
-    def _init_mltracker_run_context(
-        self, run_name: str | None
-    ) -> tuple[Any, str | None]:
-        run_context = contextlib.nullcontext()
-        if not self.mltracker:
-            return run_context, run_name
-
-        try:
-            exp_name = getattr(self.config, "experiment_name", "default_experiment")
-            if not run_name:
-                run_name = f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            run_context = self.mltracker.run(
-                experiment_name=exp_name, run_name=run_name
-            )
-        except Exception as e:
-            print(f"[MLTracker] Warning: Failed to initialize run context: {e}")
-        return run_context, run_name
-
-    def _get_mltracker_params(self) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if hasattr(self.config, "__dict__"):
-            params.update(self.config.__dict__)
-        elif isinstance(self.config, dict):
-            params.update(self.config)
-        return params
-
-    def _log_mltracker_params(self):
-        if not self.mltracker:
-            return
-        try:
-            self.mltracker.log_params(self._get_mltracker_params())
-        except Exception as e:
-            print(f"[MLTracker] Warning: Failed to log params: {e}")
-
-    @staticmethod
-    def _build_mltracker_metrics(
-        train_loss: float,
-        lr: float,
-        components: dict[str, float],
-        val_loss: float | None,
-    ) -> dict[str, float]:
-        metrics = {"train_loss": train_loss, "lr": lr}
-        if val_loss is not None:
-            metrics["val_loss"] = val_loss
-        for k, v in components.items():
-            metrics[f"comp/{k}"] = float(v)
-        return metrics
-
-    def _log_mltracker_metrics(
-        self,
-        epoch: int,
-        train_loss: float,
-        lr: float,
-        components: dict[str, float],
-        val_loss: float | None,
-    ):
-        if not self.mltracker:
-            return
-        try:
-            metrics = self._build_mltracker_metrics(
-                train_loss, lr, components, val_loss
-            )
-            self.mltracker.log_metrics(metrics, step=epoch)
-        except Exception as e:
-            print(f"[MLTracker] Warning: Failed to log metrics: {e}")
-
-    def _log_mltracker_model_info(self):
-        """Log model architecture metadata as params and system/git info as tags."""
-        if not self.mltracker:
-            return
-        try:
-            # Model summary
-            total_params = sum(p.numel() for p in self.model.parameters())
-            trainable_params = sum(
-                p.numel() for p in self.model.parameters() if p.requires_grad
-            )
-            self.mltracker.log_params(
-                {
-                    "model/class": type(self.model).__name__,
-                    "model/total_params": total_params,
-                    "model/trainable_params": trainable_params,
-                    "model/device": str(self.device),
-                }
-            )
-        except Exception as e:
-            print(f"[MLTracker] Warning: Failed to log model info: {e}")
-        # System + git tags (best-effort)
-        try:
-            from foreblocks.mltracker.mltracker import _maybe_git_info, _sys_info
-
-            self.mltracker.set_tags({f"sys:{k}": v for k, v in _sys_info().items()})
-            git = _maybe_git_info()
-            if git:
-                self.mltracker.set_tags({f"git:{k}": v for k, v in git.items()})
-        except Exception:
-            pass
-
-    def _log_mltracker_final(
-        self,
-        total_epochs: int,
-        stopped_early: bool,
-    ):
-        """Log end-of-training summary metrics and tags."""
-        if not self.mltracker:
-            return
-        try:
-            summary: dict[str, Any] = {"epochs_completed": total_epochs}
-            if self.best_val_loss < float("inf"):
-                summary["best_val_loss"] = self.best_val_loss
-            self.mltracker.log_metrics(summary, step=total_epochs)
-            self.mltracker.set_tags(
-                {
-                    "trainer/early_stopped": str(stopped_early),
-                    "trainer/device": str(self.device),
-                    "trainer/amp": str(self.config.use_amp),
-                }
-            )
-        except Exception as e:
-            print(f"[MLTracker] Warning: Failed to log final summary: {e}")
-
-    @contextlib.contextmanager
-    def _last_run_context(self):
-        """Temporarily route MLTracker calls to the most recent training run."""
-        if not self.mltracker or not self._last_run_id:
-            yield False
-            return
-        previous = self.mltracker._active_run
-        try:
-            self.mltracker._active_run = self._last_run_id
-            yield True
-        finally:
-            self.mltracker._active_run = previous
-
-    def _log_to_last_run(
-        self,
-        metrics: dict[str, float],
-        step: int | None = None,
-        prefix: str = "",
-    ) -> None:
-        """Log metrics to the most recently finished training run without re-opening it."""
-        try:
-            with self._last_run_context() as active:
-                if not active:
-                    return
-                prefixed = {f"{prefix}{k}": v for k, v in metrics.items()}
-                self.mltracker.log_metrics(
-                    prefixed,
-                    step=step if step is not None else 0,
-                )
-        except Exception as e:
-            print(f"[MLTracker] Warning: Failed to log eval metrics: {e}")
-
-    def _log_model_to_last_run(self, model_name: str = "model") -> None:
-        """Log model artifacts (including architecture) to the most recent run."""
-        try:
-            with self._last_run_context() as active:
-                if not active:
-                    return
-                self.mltracker.log_model(self.model, model_name=model_name)
-        except Exception as e:
-            print(f"[MLTracker] Warning: Failed to log model artifacts: {e}")
-
-    def _log_figure_to_last_run(
-        self,
-        fig: Any,
-        artifact_path: str = "plots",
-    ) -> None:
-        """Best-effort figure artifact logging for the most recent run."""
-        try:
-            with self._last_run_context() as active:
-                if not active:
-                    return
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                    tmp_path = tmp.name
-                try:
-                    fig.savefig(tmp_path, dpi=120, bbox_inches="tight")
-                    self.mltracker.log_artifact(
-                        tmp_path,
-                        artifact_path=artifact_path,
-                    )
-                finally:
-                    with contextlib.suppress(OSError):
-                        os.unlink(tmp_path)
-        except Exception:
-            pass
-
-    # =====================================================================
-    # TRAIN LOOP — REMOVED AUTO-CALIBRATION (data leakage)
-    # =====================================================================
     def train(
         self,
         train_loader: DataLoader,
@@ -1039,19 +452,35 @@ class Trainer:
         callbacks: list[Any] | None = None,
         epochs: int | None = None,
         moe_report_outdir: str | None = None,
-        run_name: str | None = None,  # New: Optional run name for MLTracker
+        run_name: str | None = None,
     ) -> TrainingHistory:
+        """Run the full training loop with optional validation and early stopping.
+
+        Parameters
+        ----------
+        train_loader : DataLoader
+            Training data loader.
+        val_loader : DataLoader | None
+            Optional validation loader.
+        callbacks : list[Any] | None
+            List of callback objects with ``on_epoch_begin`` / ``on_epoch_end``.
+        epochs : int | None
+            Override ``self.config.num_epochs``.
+        moe_report_outdir : str | None
+            Directory for MoE expert reports.
+        run_name : str | None
+            Optional name for the MLTracker run.
+        """
         callbacks = callbacks or []
         num_epochs = epochs if epochs is not None else self.config.num_epochs
 
-        run_context, run_name = self._init_mltracker_run_context(run_name)
+        run_context, run_name = _log.init_mltracker_run_context(self.mltracker, run_name)
 
         with run_context:
-            # capture run id so metrics() / plot_prediction() can log back to it
             if self.mltracker and self.mltracker._active_run:
                 self._last_run_id = self.mltracker._active_run
-            self._log_mltracker_params()
-            self._log_mltracker_model_info()
+            _log.log_mltracker_params(self.mltracker, self.config)
+            _log.log_mltracker_model_info(self.mltracker, self.model, self.device)
 
             completed_epochs = 0
             stopped_early = False
@@ -1064,276 +493,163 @@ class Trainer:
                         if hasattr(cb, "on_epoch_begin"):
                             cb.on_epoch_begin(self, epoch)
 
-                    train_loss, components = self.train_epoch(train_loader, val_loader)
+                    _global_step = {"step": self.global_step}
+                    train_loss, components, batches = training_loop.train_epoch(
+                        model=self.model,
+                        train_loader=train_loader,
+                        val_loader=val_loader,
+                        config=self.config,
+                        loss_computer=self.loss_computer,
+                        optimizer=self.optimizer,
+                        global_step_ref=_global_step,
+                        nas_helper=self.nas_helper,
+                        scaler=self.scaler,
+                        amp_context=self._amp_context,
+                        moe_log=self.moe_log,
+                        moe_meta_builder=self.moe_meta_builder,
+                        forward_pass_fn=training_loop.forward_pass,
+                        backward_step_fn=training_loop.backward_step,
+                        device=self.device,
+                    )
+                    self.global_step = _global_step["step"]
+
                     val_loss = self.evaluate(val_loader) if val_loader else None
 
                     lr = self.optimizer.param_groups[0]["lr"]
-                    model_info = (
-                        self.model.get_model_size()
-                        if hasattr(self.model, "get_model_size")
-                        else None
-                    )
+                    model_info = self.model.get_model_size() if hasattr(self.model, "get_model_size") else None
 
                     alpha_info = None
-                    if self.config.train_nas and self.nas_helper.has_nas:
+                    if getattr(self.config, "train_nas", False) and self.nas_helper.has_nas:
                         alpha_info = self.nas_helper.collect_alpha_report()
 
-                    self.history.record_epoch(
-                        train_loss, val_loss, lr, components, model_info, alpha_info
-                    )
+                    self.history.record_epoch(train_loss, val_loss, lr, components, model_info, alpha_info)
 
                     if val_loader:
-                        if val_loss + self.config.min_delta < self.best_val_loss:
+                        if val_loss + getattr(self.config, "min_delta", 0) < self.best_val_loss:
                             self.best_val_loss = val_loss
                             self.epochs_without_improvement = 0
-                            self.best_model_state = copy.deepcopy(
-                                self.model.state_dict()
-                            )
+                            self.best_model_state = copy.deepcopy(self.model.state_dict())
                         else:
                             self.epochs_without_improvement += 1
-                        if self.epochs_without_improvement >= self.config.patience:
-                            print(f"\\nEarly stopping at epoch {epoch + 1}")
+                        if self.epochs_without_improvement >= getattr(self.config, "patience", 10):
+                            print(f"\nEarly stopping at epoch {epoch + 1}")
                             completed_epochs = epoch + 1
                             stopped_early = True
                             break
 
                     pbar.set_postfix({"train": train_loss, "val": val_loss, "lr": lr})
-
                     self._step_scheduler(train_loss, val_loss)
 
                     for cb in callbacks:
                         if hasattr(cb, "on_epoch_end"):
-                            cb.on_epoch_end(
-                                self,
-                                epoch,
-                                {
-                                    "epoch": epoch,
-                                    "train_loss": train_loss,
-                                    "val_loss": val_loss,
-                                    "lr": lr,
-                                },
-                            )
+                            cb.on_epoch_end(self, epoch, {
+                                "epoch": epoch,
+                                "train_loss": train_loss,
+                                "val_loss": val_loss,
+                                "lr": lr,
+                            })
 
-                    self._log_mltracker_metrics(
-                        epoch=epoch,
-                        train_loss=train_loss,
-                        lr=lr,
-                        components=components,
-                        val_loss=val_loss,
+                    _log.log_mltracker_metrics(
+                        self.mltracker, epoch, train_loss, lr, components, val_loss,
                     )
                     completed_epochs = epoch + 1
 
-            self._log_mltracker_final(
-                total_epochs=completed_epochs,
-                stopped_early=stopped_early,
-            )
+            _log.log_mltracker_final(self.mltracker, completed_epochs, stopped_early, self.best_val_loss)
 
         if self.best_model_state is not None:
             self.model.load_state_dict(self.best_model_state)
 
-        # Persist final model + architecture artifacts to the completed run.
-        self._log_model_to_last_run(model_name="model")
+        _log.log_model_to_last_run(self.mltracker, self._last_run_id, self.model, model_name="model")
 
-        # NOTE: Auto-calibration REMOVED — call calibrate_conformal() manually
-        # with held-out data to avoid data leakage
-        if self.config.conformal_enabled and self.conformal_engine is not None:
-            print(
-                "\n[Conformal] Engine ready. Call calibrate_conformal(cal_loader) "
-                "with held-out data."
-            )
+        if getattr(self.config, "conformal_enabled", False) and self.conformal_engine is not None:
+            print("\n[Conformal] Engine ready. Call calibrate_conformal(cal_loader) with held-out data.")
 
         return self.history
 
-    # =====================================================================
-    # Conformal Calibration (FIXED)
-    # =====================================================================
+    # ── Evaluation ─────────────────────────────────────────────────────
+
+    def evaluate(self, dataloader: DataLoader) -> float:
+        """Evaluate model on *dataloader* and return mean loss."""
+        return training_loop.evaluate(
+            self.model, dataloader, self.device, self._amp_context,
+            self.moe_log, self.moe_meta_builder,
+        )
+
+    # ── Conformal API ──────────────────────────────────────────────────
 
     def calibrate_conformal(
         self,
-        cal_loader,
-        state_model: Callable | None = None,
-        feature_extractor: nn.Module | None = None,
-        jackknife_cv_models: Sequence[nn.Module] | None = None,
-        jackknife_cv_indices: Sequence[np.ndarray] | None = None,
-        enbpi_member_models: Sequence[nn.Module] | None = None,
-        enbpi_boot_indices: np.ndarray | None = None,
-    ):
-        """
-        Calibrate conformal engine with held-out calibration data.
-
-        Contract (since we keep model(xb)):
-        - self.model must support forward(X) for inference.
-        - Output must be [N,H,D] (or [N,H], which engine should handle consistently).
-        """
-        if self.conformal_engine is None:
-            raise RuntimeError("Conformal prediction not enabled in config.")
-        method = self.conformal_engine.method
-
-        # Method-specific hard requirements
-        if method == "cptc" and state_model is None:
-            raise ValueError("CPTC requires `state_model`.")
-        if (
-            method == "enbpi"
-            and enbpi_member_models is not None
-            and enbpi_boot_indices is None
-        ):
-            raise ValueError("EnbPI with member models requires `enbpi_boot_indices`.")
-
-        # If no extractor is passed, AFOCP creates an internal default one.
-        if method == "afocp" and feature_extractor is None:
-            warnings.warn(
-                "AFOCP without a feature_extractor will use an internal "
-                "(untrained) DefaultFeatureExtractor. "
-                "This is valid but may be weaker than a pretrained extractor."
-            )
-
-        Xc, Yc = _collect_xy_from_loader(cal_loader)
-        print(f"[Conformal] Calibrating with {len(Xc)} samples using method='{method}'")
-
-        self.conformal_engine.calibrate(
-            model=self.model,  # IMPORTANT: engine will call model(xb)
-            X_cal=Xc,
-            y_cal=Yc,
-            device=self.device,
-            batch_size=int(getattr(self.config, "batch_size", 256)),
-            state_model=state_model,
-            feature_extractor=feature_extractor,
-            enbpi_member_models=enbpi_member_models,
-            enbpi_boot_indices=enbpi_boot_indices,
-            jackknife_cv_models=jackknife_cv_models,
-            jackknife_cv_indices=jackknife_cv_indices,
-        )
-
-        print(
-            f"[Conformal] Calibration completed. Radii shape: {self.conformal_engine.radii.shape}"
+        cal_loader: DataLoader,
+        state_model: Any = None,
+        feature_extractor: Any = None,
+        jackknife_cv_models: Any = None,
+        jackknife_cv_indices: Any = None,
+        enbpi_member_models: Any = None,
+        enbpi_boot_indices: Any = None,
+    ) -> None:
+        """Calibrate conformal engine with held-out calibration data."""
+        _conf.calibrate_conformal(
+            self, cal_loader, state_model, feature_extractor,
+            jackknife_cv_models, jackknife_cv_indices,
+            enbpi_member_models, enbpi_boot_indices,
         )
 
     def update_conformal(
         self,
         X_new: torch.Tensor,
         y_new: torch.Tensor,
-        state_model: Callable | None = None,
-        feature_extractor: nn.Module | None = None,
-        sequential: bool = True,  # Process point-by-point within batch
-    ):
-        """
-        Online update for adaptive methods.
-
-        Args:
-            sequential: If True, update point-by-point within the batch (required for
-                    ACI/AgACI correctness). If False, batch update (faster but
-                    may be approximate for adaptive methods).
-        """
-        if self.conformal_engine is None:
-            raise RuntimeError("Conformal prediction not enabled in config.")
-        if self.conformal_engine.radii is None:
-            raise RuntimeError(
-                "Conformal engine not calibrated. Call calibrate_conformal() first."
-            )
-
-        X_np = _as_numpy(X_new)
-        y_np = _as_numpy(y_new)
-
-        method = self.conformal_engine.method
-
-        # For adaptive methods, we should update sequentially
-        if sequential and method in ("aci", "agaci", "rolling"):
-            for i in range(len(X_np)):
-                self.conformal_engine.update(
-                    model=self.model,
-                    X_new=X_np[i : i + 1],
-                    y_new=y_np[i : i + 1],
-                    device=self.device,
-                    batch_size=1,
-                    state_model=state_model,
-                    feature_extractor=feature_extractor,
-                )
-        else:
-            self.conformal_engine.update(
-                model=self.model,
-                X_new=X_np,
-                y_new=y_np,
-                device=self.device,
-                batch_size=int(getattr(self.config, "batch_size", 256)),
-                state_model=state_model,
-                feature_extractor=feature_extractor,
-            )
+        state_model: Any = None,
+        feature_extractor: Any = None,
+        sequential: bool = True,
+    ) -> None:
+        """Online update for adaptive conformal methods."""
+        _conf.update_conformal(self, X_new, y_new, state_model, feature_extractor, sequential)
 
     def predict_with_intervals(
         self,
         X: torch.Tensor,
         return_tensors: bool = False,
-    ):
-        """
-        Predict with conformal intervals.
-
-        Returns:
-        preds, lower, upper with shape [N,H,D] (or [N,H,1] if single target dim).
-        """
-        if self.conformal_engine is None:
-            raise RuntimeError("Conformal prediction not enabled in config.")
-        if self.conformal_engine.radii is None:
-            raise RuntimeError(
-                "Conformal engine not calibrated. Call calibrate_conformal() first."
-            )
-
-        X_np = _as_numpy(X)
-
-        preds, lower, upper = self.conformal_engine.predict(
-            model=self.model,  # engine calls model(xb)
-            X=X_np,
-            device=self.device,
-            batch_size=int(getattr(self.config, "batch_size", 256)),
-        )
-
-        # Normalize to [N,H,D] at the Trainer boundary for downstream consistency
-        if preds.ndim == 2:
-            preds = preds[:, :, None]
-            lower = lower[:, :, None]
-            upper = upper[:, :, None]
-
-        if return_tensors:
-            return (
-                torch.from_numpy(preds),
-                torch.from_numpy(lower),
-                torch.from_numpy(upper),
-            )
-        return preds, lower, upper
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Predict with conformal intervals."""
+        return _conf.predict_with_intervals(self, X, return_tensors)
 
     def compute_coverage(
         self,
         X: torch.Tensor,
         y: torch.Tensor,
     ) -> dict[str, float]:
-        """
-        Empirical coverage and basic interval stats.
+        """Empirical coverage and basic interval stats."""
+        return _conf.compute_coverage(self, X, y)
 
-        `coverage` is elementwise over all [N, H, D] entries. For multi-horizon
-        or multi-target forecasts we also expose `joint_coverage`, which counts
-        a sample as covered only if every horizon/target is inside its interval.
-        """
-        _, lower, upper = self.predict_with_intervals(X, return_tensors=False)
+    def predict_with_intervals_streaming(
+        self,
+        dataloader: DataLoader,
+        do_update: bool = True,
+        return_numpy: bool = True,
+        sequential: bool | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Streaming (rolling) prediction over a DataLoader."""
+        return _conf.predict_with_intervals_streaming(self, dataloader, do_update, return_numpy, sequential)
 
-        y_np = _as_numpy(y)
-        y_np = _ensure_y_shape_like_intervals(y_np, lower)
+    def compute_coverage_streaming(
+        self,
+        dataloader: DataLoader,
+        do_update: bool = True,
+        sequential: bool | None = None,
+    ) -> dict[str, Any]:
+        """Coverage diagnostics for streaming/rolling evaluation."""
+        return _conf.compute_coverage_streaming(self, dataloader, do_update, sequential)
 
-        return self._coverage_summary(
-            y_np,
-            lower,
-            upper,
-            target_coverage=float(self.conformal_engine.q),
-        )
+    # ── Saving / loading ───────────────────────────────────────────────
 
-    # =====================================================================
-    # Saving, loading
-    # =====================================================================
-    def save(self, path: str | Path):
+    def save(self, path: str | Path) -> None:
+        """Save a checkpoint (model, optimizer, config, history, conformal state)."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        save_dict = {
+        save_dict: dict[str, Any] = {
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "config": self.config.__dict__,
+            "config": self.config.__dict__ if hasattr(self.config, "__dict__") else dict(self.config),
             "history": {
                 "train_losses": self.history.train_losses,
                 "val_losses": self.history.val_losses,
@@ -1344,37 +660,34 @@ class Trainer:
         if self.alpha_optimizer is not None:
             save_dict["alpha_optimizer_state_dict"] = self.alpha_optimizer.state_dict()
 
-        # Save conformal state if calibrated
-        if (
-            self.conformal_engine is not None
-            and self.conformal_engine.radii is not None
-        ):
+        if self.conformal_engine is not None and getattr(self.conformal_engine, "radii", None) is not None:
             save_dict["conformal_radii"] = self.conformal_engine.radii
             save_dict["conformal_method"] = self.conformal_engine.method
 
         torch.save(save_dict, path)
 
-    def load(self, path: str | Path):
+    def load(self, path: str | Path) -> None:
+        """Load a checkpoint (model, optimizer, config, conformal state)."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.to(self.device)
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if (
-            "alpha_optimizer_state_dict" in checkpoint
-            and self.alpha_optimizer is not None
-        ):
-            self.alpha_optimizer.load_state_dict(
-                checkpoint["alpha_optimizer_state_dict"]
-            )
+        if "alpha_optimizer_state_dict" in checkpoint and self.alpha_optimizer is not None:
+            self.alpha_optimizer.load_state_dict(checkpoint["alpha_optimizer_state_dict"])
         if "config" in checkpoint:
-            self.config.update(**checkpoint["config"])
+            if hasattr(self.config, "update"):
+                self.config.update(**checkpoint["config"])
+            elif hasattr(self.config, "__dict__"):
+                self.config.__dict__.update(checkpoint["config"])
 
-        # Restore conformal state
         if "conformal_radii" in checkpoint and self.conformal_engine is not None:
             self.conformal_engine.radii = checkpoint["conformal_radii"]
 
+    # ── Model utilities ────────────────────────────────────────────────
+
     @staticmethod
     def _infer_num_experts(model: nn.Module) -> int | None:
+        """Walk the model tree to find the first ``num_experts`` attribute."""
         for m in model.modules():
             if hasattr(m, "num_experts"):
                 try:
@@ -1385,116 +698,37 @@ class Trainer:
                     pass
         return None
 
-    @staticmethod
-    def _flatten_forecast_array(values: torch.Tensor | np.ndarray) -> np.ndarray:
-        arr = (
-            values.detach().cpu().numpy()
-            if torch.is_tensor(values)
-            else np.asarray(values)
-        )
-        if arr.ndim == 2:
-            return arr[:, :, None]
-        if arr.ndim == 3:
-            return arr
-        if arr.ndim > 3:
-            return arr.reshape(arr.shape[0], arr.shape[1], -1)
-        raise ValueError(
-            f"Expected forecast array with at least 2 dims, got {arr.shape}."
-        )
+    # ── Evaluation wrappers ────────────────────────────────────────────
 
-    @staticmethod
-    def _forecast_channel_names(
-        values: torch.Tensor | np.ndarray,
-        names: str | list | None,
-    ) -> list[str]:
-        arr = (
-            values.detach().cpu().numpy()
-            if torch.is_tensor(values)
-            else np.asarray(values)
-        )
-        if arr.ndim <= 3:
-            channels = 1 if arr.ndim == 2 else arr.shape[-1]
-            if isinstance(names, str):
-                return [names]
-            if names is not None and len(names) == channels:
-                return list(names)
-            return [f"Feature {idx}" for idx in range(channels)]
+    def metrics(
+        self,
+        X_val: torch.Tensor,
+        y_val: torch.Tensor,
+        batch_size: int = 256,
+        graph_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, float]:
+        """Compute evaluation metrics via ``ModelEvaluator``."""
+        evaluator = ModelEvaluator(self)
+        result = evaluator.compute_metrics(X_val, y_val, batch_size, graph_kwargs=graph_kwargs)
+        _log.log_to_last_run(self.mltracker, self._last_run_id, result, step=None, prefix="eval/")
+        return result
 
-        nodes = arr.shape[2]
-        features = int(np.prod(arr.shape[3:]))
-        channels = nodes * features
-        if isinstance(names, str):
-            names = [names]
-        if names is not None and len(names) == nodes:
-            return [
-                f"{names[node]} feature {feat}"
-                for node in range(nodes)
-                for feat in range(features)
-            ]
-        if names is not None and len(names) == channels:
-            return list(names)
-        return [
-            f"node {node} feature {feat}"
-            for node in range(nodes)
-            for feat in range(features)
-        ]
-
-    @staticmethod
-    def _flatten_series_array(
-        values: torch.Tensor | np.ndarray,
-    ) -> np.ndarray:
-        arr = (
-            values.detach().cpu().numpy()
-            if torch.is_tensor(values)
-            else np.asarray(values)
-        )
-        if arr.ndim == 1:
-            return arr[:, None]
-        if arr.ndim == 2:
-            return arr
-        return arr.reshape(arr.shape[0], -1)
-
-    @staticmethod
-    def _coverage_summary(
-        y_true: np.ndarray,
-        lower: np.ndarray,
-        upper: np.ndarray,
-        target_coverage: float,
-        *,
-        include_breakdowns: bool = False,
+    def cv(
+        self,
+        X: torch.Tensor,
+        y: torch.Tensor,
+        n_windows: int,
+        horizon: int,
+        step_size: int | None = None,
+        batch_size: int = 256,
+        graph_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Compute shared conformal coverage statistics."""
-        covered = (y_true >= lower) & (y_true <= upper)
-        joint_covered = covered.all(axis=(1, 2))
-        widths = upper - lower
+        """K-fold cross-validation via ``ModelEvaluator``."""
+        evaluator = ModelEvaluator(self)
+        return evaluator.cross_validation(X, y, n_windows, horizon, step_size, batch_size, graph_kwargs=graph_kwargs)
 
-        summary: dict[str, Any] = {
-            "coverage": float(covered.mean()),
-            "joint_coverage": float(joint_covered.mean()),
-            "target_coverage": float(target_coverage),
-            "coverage_gap": float(covered.mean() - target_coverage),
-            "joint_coverage_gap": float(joint_covered.mean() - target_coverage),
-            "mean_interval_width": float(widths.mean()),
-            "std_interval_width": float(widths.std()),
-            "min_interval_width": float(widths.min()),
-            "max_interval_width": float(widths.max()),
-        }
-        if include_breakdowns:
-            summary.update(
-                {
-                    "per_horizon_coverage": covered.mean(axis=(0, 2)),
-                    "per_feature_coverage": covered.mean(axis=(0, 1)),
-                    "per_feature_joint_coverage": covered.all(axis=1).mean(axis=0),
-                    "per_horizon_all_feature_coverage": covered.all(axis=2).mean(
-                        axis=0
-                    ),
-                }
-            )
-        return summary
+    # ── Visualization ──────────────────────────────────────────────────
 
-    # =====================================================================
-    # Visualization
-    # =====================================================================
     def plot_prediction(
         self,
         X_val: torch.Tensor,
@@ -1509,159 +743,16 @@ class Trainer:
         pred_color: str = "orange",
         series_color: str = "blue",
         save_path: str | None = None,
-    ) -> plt.Figure:
-        _require_matplotlib()
-        evaluator = ModelEvaluator(self)
-        predictions = evaluator.predict(X_val, graph_kwargs=graph_kwargs)
-        pred_np = self._flatten_forecast_array(predictions)
-        y_np = self._flatten_forecast_array(y_val)
-        N, H = pred_np.shape[0], pred_np.shape[1]
-        D = pred_np.shape[2] if pred_np.ndim >= 3 else 1
-        channel_names = self._forecast_channel_names(predictions, names)
-
-        if full_series is not None:
-            series = self._flatten_series_array(full_series)
-            T, S_dim = series.shape
-            D_plot = S_dim
-            if len(channel_names) != D_plot:
-                channel_names = [f"Feature {i}" for i in range(D_plot)]
-            seq_len = X_val.shape[1]
-            starts = offset + seq_len + np.arange(N) * stride
-            coverage_end = min(T, int(starts[-1] + H)) if N > 0 else 0
-
-            fig, axes = plt.subplots(
-                D_plot, 1, figsize=(figsize[0], figsize[1] * D_plot), sharex=True
-            )
-            axes = np.atleast_1d(axes)
-            for j in range(D_plot):
-                ax = axes[j]
-                acc = np.zeros(T)
-                cnt = np.zeros(T)
-                for k in range(N):
-                    s = int(starts[k])
-                    if s >= T:
-                        continue
-                    e = min(s + H, T)
-                    if e > s:
-                        pred_col = j if D > j else 0
-                        acc[s:e] += pred_np[k, : e - s, pred_col]
-                        cnt[s:e] += 1
-                have = cnt > 0
-                mean_pred = np.zeros(T)
-                mean_pred[have] = acc[have] / cnt[have]
-                x = np.arange(coverage_end)
-                ax.plot(
-                    series[:coverage_end, j],
-                    label=f"Actual {channel_names[j]}",
-                    alpha=0.8,
-                )
-                if have[:coverage_end].any():
-                    ax.plot(
-                        x[have[:coverage_end]],
-                        mean_pred[:coverage_end][have[:coverage_end]],
-                        label=f"Predicted {channel_names[j]}",
-                        linestyle="--",
-                        color=pred_color,
-                    )
-                ax.axvline(
-                    offset + seq_len,
-                    color="gray",
-                    linestyle="--",
-                    alpha=0.5,
-                    label="First forecast",
-                )
-                ax.set_title(f"{channel_names[j]}: Prediction vs Actual")
-                ax.legend(loc="upper left")
-                ax.grid(True, alpha=0.3)
-
-            axes[-1].set_xlabel("Time Step")
-            plt.tight_layout()
-            if save_path:
-                fig.savefig(save_path, dpi=120, bbox_inches="tight")
-            if show:
-                plt.show()
-            self._log_figure_to_last_run(fig)
-            return fig
-
-        pred_mean = pred_np.mean(axis=0)
-        y_mean = y_np.mean(axis=0)
-        if pred_mean.ndim == 1:
-            pred_mean = pred_mean[:, None]
-            y_mean = y_mean[:, None]
-        D_plot = pred_mean.shape[1]
-        if len(channel_names) != D_plot:
-            channel_names = [f"Feature {i}" for i in range(D_plot)]
-
-        fig, axes = plt.subplots(
-            D_plot, 1, figsize=(figsize[0], figsize[1] * D_plot), sharex=True
+    ) -> plt.Figure:  # type: ignore[name-defined]
+        """Plot model predictions against actual values."""
+        _viz._require_matplotlib()
+        fig = _viz.plot_prediction(
+            self, X_val, y_val, graph_kwargs, full_series, offset, stride,
+            figsize, show, names, pred_color, series_color, save_path,
         )
-        axes = np.atleast_1d(axes)
-        for j in range(D_plot):
-            ax = axes[j]
-            horizon = np.arange(len(pred_mean))
-            ax.plot(
-                horizon,
-                y_mean[:, j],
-                label=f"Actual {channel_names[j]}",
-                marker="o",
-                alpha=0.7,
-            )
-            ax.plot(
-                horizon,
-                pred_mean[:, j],
-                label=f"Predicted {channel_names[j]}",
-                marker="s",
-                linestyle="--",
-                alpha=0.7,
-            )
-            ax.set_title(f"{channel_names[j]}: Average Forecast")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-        axes[-1].set_xlabel("Forecast Horizon")
-        plt.tight_layout()
-        if show:
-            plt.show()
-        self._log_figure_to_last_run(fig)
+        if self.mltracker and self._last_run_id:
+            _log.log_figure_to_last_run(self.mltracker, self._last_run_id, fig)
         return fig
-
-    def metrics(
-        self,
-        X_val: torch.Tensor,
-        y_val: torch.Tensor,
-        batch_size: int = 256,
-        graph_kwargs: dict[str, Any] | None = None,
-    ) -> dict[str, float]:
-        evaluator = ModelEvaluator(self)
-        result = evaluator.compute_metrics(
-            X_val,
-            y_val,
-            batch_size,
-            graph_kwargs=graph_kwargs,
-        )
-        # Log each metric back to the last training run (prefixed with "eval/")
-        self._log_to_last_run(result, prefix="eval/")
-        return result
-
-    def cv(
-        self,
-        X: torch.Tensor,
-        y: torch.Tensor,
-        n_windows: int,
-        horizon: int,
-        step_size: int | None = None,
-        batch_size: int = 256,
-        graph_kwargs: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        evaluator = ModelEvaluator(self)
-        return evaluator.cross_validation(
-            X,
-            y,
-            n_windows,
-            horizon,
-            step_size,
-            batch_size,
-            graph_kwargs=graph_kwargs,
-        )
 
     def plot_intervals(
         self,
@@ -1679,46 +770,19 @@ class Trainer:
         interval_color: str = "blue",
         aggregation: str = "envelope",
         show_width_plot: bool = True,
-        min_count: int = 1,  # NEW: minimum overlapping windows to include a point
+        min_count: int = 1,
         do_update: bool = False,
-    ) -> plt.Figure:
-        _require_matplotlib()
-        """
-        Plot predictions with conformal intervals.
+    ) -> plt.Figure:  # type: ignore[name-defined]
+        """Plot predictions with conformal intervals."""
+        _viz._require_matplotlib()
+        from foreblocks.training.conformal import _as_numpy
 
-        Args:
-            time_index: Optional x-axis values aligned with `full_series`. Length must
-                cover the plotted region so custom integer, float, or datetime-like
-                indexes can be used instead of raw time steps.
-            aggregation: How to aggregate overlapping intervals
-                - "envelope": Use min(lower), max(upper) - most conservative
-                - "mean": Average all overlapping intervals
-                - "last": Use the most recent prediction for each point
-                - "min_width": Use the interval with smallest width
-            show_width_plot: If True, add subplot showing interval widths over time
-            min_count: Minimum number of overlapping windows required to plot a point.
-                       Set higher (e.g., H//2) to remove edge effects at forecast boundaries.
-            do_update: If True, update adaptive conformal state while iterating over
-                       `X_val, y_val`. Defaults to False so plotting does not mutate
-                       the calibrated engine.
+        if self.conformal_engine is None or getattr(self.conformal_engine, "radii", None) is None:
+            raise RuntimeError("Conformal engine not calibrated. Call calibrate_conformal() first.")
 
-        Notes:
-            This plot is a visualization of aggregated overlapping forecast windows.
-            For quantitative conformal diagnostics, prefer `compute_coverage()` or
-            `compute_coverage_streaming()`.
-        """
-        if self.conformal_engine is None or self.conformal_engine.radii is None:
-            raise RuntimeError(
-                "Conformal engine not calibrated. Call calibrate_conformal() first."
-            )
-
-        val_loader = DataLoader(
-            TensorDataset(X_val, y_val), batch_size=256, shuffle=False
-        )
-        # Get predictions with intervals
+        val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=256, shuffle=False)
         preds, lower, upper, y_stream = self.predict_with_intervals_streaming(
-            val_loader,
-            do_update=do_update,
+            val_loader, do_update=do_update, return_numpy=True,
         )
 
         N, H, D = preds.shape
@@ -1727,12 +791,7 @@ class Trainer:
         if full_series is None:
             raise ValueError("full_series must be provided for time-aligned plotting.")
 
-        # Convert series
-        series = (
-            full_series.detach().cpu().numpy()
-            if isinstance(full_series, torch.Tensor)
-            else full_series
-        )
+        series = full_series.detach().cpu().numpy() if isinstance(full_series, torch.Tensor) else full_series
         if series.ndim == 1:
             series = series[:, None]
 
@@ -1740,7 +799,6 @@ class Trainer:
         D_plot = min(D, S_dim)
         names = names or [f"Feature {i}" for i in range(D_plot)]
 
-        # Rolling alignment
         starts = offset + seq_len + np.arange(N) * stride
         coverage_end = min(int(starts[-1] + H), T)
         if time_index is None:
@@ -1752,20 +810,13 @@ class Trainer:
             if xs_full.ndim != 1:
                 raise ValueError("time_index must be 1-dimensional.")
             if len(xs_full) < coverage_end:
-                raise ValueError(
-                    "time_index must have at least coverage_end elements "
-                    f"({coverage_end}), got {len(xs_full)}."
-                )
+                raise ValueError(f"time_index must have at least {coverage_end} elements, got {len(xs_full)}.")
             if offset + seq_len >= len(xs_full):
-                raise ValueError(
-                    "time_index must include the first forecast boundary at "
-                    f"position {offset + seq_len}."
-                )
+                raise ValueError(f"time_index must include the first forecast boundary at {offset + seq_len}.")
             xs = xs_full[:coverage_end]
             first_forecast_x = xs_full[offset + seq_len]
             xlabel = "Time"
 
-        # Track count for all aggregation methods (needed for min_count filter)
         count = np.zeros((T,))
 
         # Initialize based on aggregation method
@@ -1773,7 +824,6 @@ class Trainer:
             agg_pred = np.zeros((T, D_plot))
             agg_low = np.full((T, D_plot), np.inf)
             agg_up = np.full((T, D_plot), -np.inf)
-
             for k in range(N):
                 start = int(starts[k])
                 if start >= T:
@@ -1782,19 +832,13 @@ class Trainer:
                 h = end - start
                 if h <= 0:
                     continue
-
                 for j in range(D_plot):
                     pred_col = j if D > j else 0
                     agg_pred[start:end, j] += preds[k, :h, pred_col]
-                    agg_low[start:end, j] = np.minimum(
-                        agg_low[start:end, j], lower[k, :h, pred_col]
-                    )
-                    agg_up[start:end, j] = np.maximum(
-                        agg_up[start:end, j], upper[k, :h, pred_col]
-                    )
+                    agg_low[start:end, j] = np.minimum(agg_low[start:end, j], lower[k, :h, pred_col])
+                    agg_up[start:end, j] = np.maximum(agg_up[start:end, j], upper[k, :h, pred_col])
                 count[start:end] += 1
-
-            have = count >= min_count  # CHANGED: use min_count threshold
+            have = count >= min_count
             mean_pred = np.zeros_like(agg_pred)
             mean_pred[have] = agg_pred[have] / count[have, None]
             mean_low = np.where(agg_low == np.inf, 0, agg_low)
@@ -1804,7 +848,6 @@ class Trainer:
             mean_pred = np.full((T, D_plot), np.nan)
             mean_low = np.full((T, D_plot), np.nan)
             mean_up = np.full((T, D_plot), np.nan)
-
             for k in range(N):
                 start = int(starts[k])
                 if start >= T:
@@ -1813,22 +856,19 @@ class Trainer:
                 h = end - start
                 if h <= 0:
                     continue
-
                 for j in range(D_plot):
                     pred_col = j if D > j else 0
                     mean_pred[start:end, j] = preds[k, :h, pred_col]
                     mean_low[start:end, j] = lower[k, :h, pred_col]
                     mean_up[start:end, j] = upper[k, :h, pred_col]
                 count[start:end] += 1
-
-            have = (~np.isnan(mean_pred[:, 0])) & (count >= min_count)  # CHANGED
+            have = (~np.isnan(mean_pred[:, 0])) & (count >= min_count)
 
         elif aggregation == "min_width":
             mean_pred = np.full((T, D_plot), np.nan)
             mean_low = np.full((T, D_plot), np.nan)
             mean_up = np.full((T, D_plot), np.nan)
             min_width = np.full((T, D_plot), np.inf)
-
             for k in range(N):
                 start = int(starts[k])
                 if start >= T:
@@ -1837,11 +877,9 @@ class Trainer:
                 h = end - start
                 if h <= 0:
                     continue
-
                 for j in range(D_plot):
                     pred_col = j if D > j else 0
                     width_k = upper[k, :h, pred_col] - lower[k, :h, pred_col]
-
                     for t_idx, t in enumerate(range(start, end)):
                         if width_k[t_idx] < min_width[t, j]:
                             min_width[t, j] = width_k[t_idx]
@@ -1849,14 +887,12 @@ class Trainer:
                             mean_low[t, j] = lower[k, t_idx, pred_col]
                             mean_up[t, j] = upper[k, t_idx, pred_col]
                 count[start:end] += 1
-
-            have = (~np.isnan(mean_pred[:, 0])) & (count >= min_count)  # CHANGED
+            have = (~np.isnan(mean_pred[:, 0])) & (count >= min_count)
 
         else:  # "mean"
             acc_pred = np.zeros((T, D_plot))
             acc_low = np.zeros((T, D_plot))
             acc_up = np.zeros((T, D_plot))
-
             for k in range(N):
                 start = int(starts[k])
                 if start >= T:
@@ -1865,111 +901,49 @@ class Trainer:
                 h = end - start
                 if h <= 0:
                     continue
-
                 for j in range(D_plot):
                     pred_col = j if D > j else 0
                     acc_pred[start:end, j] += preds[k, :h, pred_col]
                     acc_low[start:end, j] += lower[k, :h, pred_col]
                     acc_up[start:end, j] += upper[k, :h, pred_col]
                 count[start:end] += 1
-
-            have = count >= min_count  # CHANGED: use min_count threshold
+            have = count >= min_count
             mean_pred = np.zeros_like(acc_pred)
             mean_low = np.zeros_like(acc_low)
             mean_up = np.zeros_like(acc_up)
-
             for j in range(D_plot):
                 mean_pred[have, j] = acc_pred[have, j] / count[have]
                 mean_low[have, j] = acc_low[have, j] / count[have]
                 mean_up[have, j] = acc_up[have, j] / count[have]
 
-        # Compute interval widths for the width subplot
         interval_widths = mean_up - mean_low
-
-        # Determine subplot layout
         n_rows = D_plot + (1 if show_width_plot else 0)
 
-        fig, axes = plt.subplots(
-            n_rows,
-            1,
-            figsize=(figsize[0], figsize[1] * n_rows),
-            sharex=True,
-        )
+        fig, axes = plt.subplots(n_rows, 1, figsize=(figsize[0], figsize[1] * n_rows), sharex=True)
         axes = np.atleast_1d(axes)
 
-        # Plot each feature
         for j in range(D_plot):
             ax = axes[j]
-
-            # Actual series
-            ax.plot(
-                xs,
-                series[:coverage_end, j],
-                label=f"Actual {names[j]}",
-                alpha=0.8,
-                linewidth=1,
-            )
-
-            # Predictions + intervals
+            ax.plot(xs, series[:coverage_end, j], label=f"Actual {names[j]}", alpha=0.8, linewidth=1)
             mask = have[:coverage_end]
-
             if mask.any():
                 yp = mean_pred[:coverage_end, j]
                 yl = mean_low[:coverage_end, j]
                 yu = mean_up[:coverage_end, j]
-
-                ax.plot(
-                    xs[mask],
-                    yp[mask],
-                    label=f"Predicted {names[j]}",
-                    linestyle="--",
-                    color=pred_color,
-                    linewidth=1,
-                )
-
-                ax.fill_between(
-                    xs[mask],
-                    yl[mask],
-                    yu[mask],
-                    color=interval_color,
-                    alpha=interval_alpha,
-                    label=f"Interval ({aggregation})",
-                )
-
-            ax.axvline(
-                first_forecast_x,
-                color="gray",
-                linestyle="--",
-                alpha=0.5,
-                label="First forecast",
-            )
-
+                ax.plot(xs[mask], yp[mask], label=f"Predicted {names[j]}", linestyle="--", color=pred_color, linewidth=1)
+                ax.fill_between(xs[mask], yl[mask], yu[mask], color=interval_color, alpha=interval_alpha, label=f"Interval ({aggregation})")
+            ax.axvline(first_forecast_x, color="gray", linestyle="--", alpha=0.5, label="First forecast")
             ax.set_title(f"{names[j]} — Forecast with Conformal Intervals")
             ax.legend(loc="upper left", fontsize=8)
             ax.grid(True, alpha=0.3)
 
-        # Add interval width subplot
         if show_width_plot:
             ax_width = axes[-1]
-
             for j in range(D_plot):
                 mask = have[:coverage_end]
                 widths_j = interval_widths[:coverage_end, j]
-                ax_width.plot(
-                    xs[mask],
-                    widths_j[mask],
-                    label=f"Width {names[j]}",
-                    alpha=0.8,
-                    linewidth=1,
-                )
-
-            ax_width.axvline(
-                first_forecast_x,
-                color="gray",
-                linestyle="--",
-                alpha=0.5,
-            )
-
+                ax_width.plot(xs[mask], widths_j[mask], label=f"Width {names[j]}", alpha=0.8, linewidth=1)
+            ax_width.axvline(first_forecast_x, color="gray", linestyle="--", alpha=0.5)
             ax_width.set_ylabel("Interval Width")
             ax_width.set_title("Adaptive Interval Widths Over Time")
             ax_width.legend(loc="upper left", fontsize=8)
@@ -1980,100 +954,7 @@ class Trainer:
 
         if show:
             plt.show()
-
         return fig
-
-    def predict_with_intervals_streaming(
-        self,
-        dataloader: DataLoader,
-        do_update: bool = True,
-        return_numpy: bool = True,
-        sequential: bool | None = None,  # ADD THIS
-    ):
-        """
-        Streaming (rolling) prediction over a DataLoader.
-
-        - Assumes dataloader yields (X, y) or (X, y, ...)
-        - Predicts intervals batch-by-batch in chronological order.
-          The dataloader should have shuffle=False.
-        - If do_update=True, performs online update AFTER predicting each batch (leakage-safe).
-        - If sequential=None, auto-enables for ACI methods (rolling/agaci).
-
-        Returns:
-            preds, lower, upper, y_true   (all concatenated, shapes [N,H,D])
-        """
-        if self.conformal_engine is None or self.conformal_engine.radii is None:
-            raise RuntimeError(
-                "Conformal engine not calibrated. Call calibrate_conformal() first."
-            )
-
-        self.model.eval()
-
-        preds_all, low_all, up_all, y_all = [], [], [], []
-
-        for batch in dataloader:
-            if not isinstance(batch, (list, tuple)) or len(batch) < 2:
-                raise ValueError("Dataloader must yield (X, y) or (X, y, ...) tuples.")
-            xb, yb = batch[0], batch[1]
-
-            # 1) Predict intervals (no leakage)
-            preds_b, low_b, up_b = self.predict_with_intervals(xb, return_tensors=False)
-
-            preds_all.append(preds_b)
-            low_all.append(low_b)
-            up_all.append(up_b)
-
-            y_np = _as_numpy(yb)
-            if y_np.ndim == 2:
-                y_np = y_np[:, :, None]
-            y_all.append(y_np)
-
-            # 2) Online update AFTER observing label (this is the "rolling" part)
-            if do_update:
-                self.update_conformal(xb, yb, sequential=sequential)
-
-        preds = np.concatenate(preds_all, axis=0)
-        low = np.concatenate(low_all, axis=0)
-        up = np.concatenate(up_all, axis=0)
-        y_true = np.concatenate(y_all, axis=0)
-
-        if return_numpy:
-            return preds, low, up, y_true
-        else:
-            return (
-                torch.from_numpy(preds),
-                torch.from_numpy(low),
-                torch.from_numpy(up),
-                torch.from_numpy(y_true),
-            )
-
-    def compute_coverage_streaming(
-        self,
-        dataloader: DataLoader,
-        do_update: bool = True,
-        sequential: bool | None = None,
-    ) -> dict[str, Any]:
-        """
-        Coverage diagnostics for streaming/rolling evaluation.
-
-        `coverage` is elementwise over all [N, H, D] entries. `joint_coverage`
-        marks a window covered only when every horizon/target is inside the
-        interval.
-        """
-        _, lower, upper, y_true = self.predict_with_intervals_streaming(
-            dataloader=dataloader,
-            do_update=do_update,
-            return_numpy=True,
-            sequential=sequential,
-        )
-
-        return self._coverage_summary(
-            y_true,
-            lower,
-            upper,
-            target_coverage=float(self.conformal_engine.q),
-            include_breakdowns=True,
-        )
 
     def plot_violation_heatmap_streaming(
         self,
@@ -2083,32 +964,15 @@ class Trainer:
         figsize: tuple[int, int] = (10, 4),
         show: bool = True,
         sequential: bool | None = None,
-    ) -> plt.Figure:
-        _require_matplotlib()
-        """
-        Heatmap of conformal misses (outside interval) for streaming/rolling evaluation.
+    ) -> plt.Figure:  # type: ignore[name-defined]
+        """Heatmap of conformal misses (outside interval) for streaming evaluation."""
+        _viz._require_matplotlib()
 
-        Rows: window index n (batch-concatenated sample index)
-        Cols: horizon h
-        Value: 1 if y_true is outside [L, U], else 0
-
-        IMPORTANT:
-        - dataloader must have shuffle=False
-        - do_update=True makes it a true rolling (online) conformal evaluation
-        - sequential=None auto-enables for ACI methods
-        - for quantitative coverage summaries, prefer `compute_coverage_streaming()`
-        """
-
-        if self.conformal_engine is None or self.conformal_engine.radii is None:
-            raise RuntimeError(
-                "Conformal engine not calibrated. Call calibrate_conformal() first."
-            )
+        if self.conformal_engine is None or getattr(self.conformal_engine, "radii", None) is None:
+            raise RuntimeError("Conformal engine not calibrated. Call calibrate_conformal() first.")
 
         preds, L, U, y_true = self.predict_with_intervals_streaming(
-            dataloader=dataloader,
-            do_update=do_update,
-            return_numpy=True,
-            sequential=sequential,
+            dataloader, do_update=do_update, return_numpy=True, sequential=sequential,
         )
 
         N, H, D = L.shape
@@ -2120,34 +984,20 @@ class Trainer:
         miss = ~covered[:, :, j]
 
         fig, ax = plt.subplots(figsize=figsize)
-
-        # Binary colormap: green for covered (0), red for miss (1)
-        binary_cmap = ListedColormap(["white", "black"])  # white=covered, black=miss
-
-        im = ax.imshow(
-            miss.astype(float),
-            aspect="auto",
-            interpolation="nearest",
-            cmap=binary_cmap,
-            vmin=0,
-            vmax=1,
-        )
+        binary_cmap = ListedColormap(["white", "black"])
+        im = ax.imshow(miss.astype(float), aspect="auto", interpolation="nearest", cmap=binary_cmap, vmin=0, vmax=1)
 
         ax.set_xlabel("Horizon")
         ax.set_ylabel("Window index (stream order)")
-
         ax.set_title(f"Conformal Misses — feature={j}")
-
         ax.set_xticks(np.arange(H))
         ax.set_xticklabels([str(h + 1) for h in range(H)])
 
-        # Binary colorbar with discrete ticks and labels
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_ticks([0.25, 0.75])  # Center of each color band
+        cbar.set_ticks([0.25, 0.75])
         cbar.set_ticklabels(["Covered", "Miss"])
 
         plt.tight_layout()
-
         if show:
             plt.show()
         return fig

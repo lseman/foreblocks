@@ -124,6 +124,70 @@ class Config:
     )
 
 
+
+
+# ─── Lazy presets ───────────────────────────────────────────────────────
+# Built once on first access to avoid recursion during class definition.
+
+def _get_presets() -> dict[str, "Config"]:
+    """Return the named preset dict (built lazily on first call)."""
+    return {
+        "full": Config(),
+        "smart_fast": Config(
+            max_samples=32,
+            max_outputs=10,
+            jacobian_probes=1,
+            gradient_max_samples=4,
+            fisher_per_sample=False,
+            enable_grasp=False,
+            enable_jacobian=False,
+            enable_synflow=True,
+            snip_mode="current",
+            conditioning_every_n_layers=3,
+            heavy_metrics_batches=1,
+            weights={
+                "synflow": 0.20,
+                "grasp": 0.0,
+                "fisher": 0.18,
+                "jacobian": 0.0,
+                "naswot": 0.15,
+                "snip": 0.18,
+                "params": -0.05,
+                "flops": -0.05,
+                "conditioning": -0.05,
+                "sensitivity": 0.12,
+                "activation_diversity": 0.07,
+            },
+        ),
+        "ultra_fast": Config(
+            max_samples=16,
+            max_outputs=5,
+            jacobian_probes=1,
+            gradient_max_samples=2,
+            fisher_per_sample=False,
+            enable_grasp=False,
+            enable_jacobian=False,
+            enable_synflow=True,
+            snip_mode="current",
+            conditioning_every_n_layers=10,
+            heavy_metrics_batches=1,
+            weights={
+                "synflow": 0.30,
+                "grasp": 0.0,
+                "fisher": 0.0,
+                "jacobian": 0.0,
+                "naswot": 0.0,
+                "snip": 0.25,
+                "params": -0.10,
+                "flops": 0.0,
+                "conditioning": 0.0,
+                "sensitivity": 0.0,
+                "activation_diversity": 0.0,
+            },
+        ),
+    }
+
+
 @dataclass
 class Result:
     """Metric computation result"""

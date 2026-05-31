@@ -30,6 +30,7 @@ from .config import (
     DEFAULT_ARCH_MODES,
     DEFAULT_ATTENTION_VARIANTS,
     DEFAULT_FFN_VARIANTS,
+    DARTSTrainConfig,
 )
 from .config import (
     DEFAULT_OPS as SEARCH_DEFAULT_OPS,
@@ -478,170 +479,214 @@ class DARTSTrainer:
         train_loader,
         val_loader,
         *,
-        epochs: int = 50,
-        arch_learning_rate: float = 3e-3,
-        model_learning_rate: float = 1e-3,
-        # ── weight-decay ────────────────────────────────────────────────
-        model_weight_decay: float = 1e-4,
-        arch_weight_decay: float = 1e-3,
-        # legacy alias kept for backward compatibility
-        weight_decay: float | None = None,
-        # ── bilevel / optimization ───────────────────────────────────────
-        use_swa: bool = False,
-        use_bilevel_optimization: bool = True,
-        gradient_accumulation_steps: int = 1,
-        use_amp: bool = False,
-        loss_type: str = "huber",
-        patience: int = 15,
-        verbose: bool = True,
-        warmup_epochs: int = 2,
-        architecture_update_freq: int = 3,
-        # ── regularization ───────────────────────────────────────────────
+        train_config: DARTSTrainConfig | None = None,
+        # Deprecated: positional/keyword params absorbed into train_config.
+        # Kept for backward compat but deprecated — pass a DARTSTrainConfig instead.
+        epochs: int | None = None,
+        arch_learning_rate: float | None = None,
+        model_learning_rate: float | None = None,
+        model_weight_decay: float | None = None,
+        arch_weight_decay: float | None = None,
+        use_swa: bool | None = None,
+        use_bilevel_optimization: bool | None = None,
+        gradient_accumulation_steps: int | None = None,
+        use_amp: bool | None = None,
+        loss_type: str | None = None,
+        patience: int | None = None,
+        verbose: bool | None = None,
+        warmup_epochs: int | None = None,
+        architecture_update_freq: int | None = None,
         regularization_types: list[str] | None = None,
         regularization_weights: list[float] | None = None,
-        # legacy: if False, disables regularization entirely
-        use_regularization: bool = True,
-        # ── temperature ──────────────────────────────────────────────────
-        temperature_schedule: str = "cosine",
-        # ── hessian penalty ──────────────────────────────────────────────
-        hessian_penalty_weight: float = 0.0,
-        hessian_fd_eps: float = 1e-2,
-        hessian_update_freq: int = 1,
-        # ── edge diversity / identity cap ────────────────────────────────
-        edge_diversity_weight: float = 0.03,
-        edge_usage_balance_weight: float = 0.04,
-        edge_identity_cap: float = 0.45,
-        edge_identity_cap_weight: float = 0.02,
-        # legacy aliases
-        identity_dominance_cap: float | None = None,
-        # ── edge sharpening ──────────────────────────────────────────────
-        edge_sharpening_max_weight: float = 0.03,
-        edge_sharpening_start_frac: float = 0.35,
-        # legacy aliases
-        edge_sharpening_strength: float | None = None,
-        edge_sharpening_start_epoch: int | None = None,
-        # ── progressive shrinking / pruning ──────────────────────────────
-        progressive_shrinking: bool = True,
-        hybrid_pruning_start_epoch: int = 20,
-        hybrid_pruning_interval: int = 10,
-        hybrid_pruning_base_threshold: float = 0.15,
-        hybrid_pruning_strategy: str = "performance",
-        hybrid_pruning_freeze_logit: float = -20.0,
-        # legacy aliases
-        use_progressive_training: bool | None = None,
-        pruning_enabled: bool | None = None,
-        pruning_start_epoch: int | None = None,
-        pruning_threshold: float | None = None,
-        # ── misc ─────────────────────────────────────────────────────────
-        bilevel_split_seed: int = 42,
-        state_mix_ortho_reg_weight: float = 1e-3,
-        arch_grad_ema_beta: float = 0.0,
-        beta_darts_weight: float = 0.0,
-        moe_balance_weight: float = 5e-3,
-        transformer_exploration_weight: float = 1e-2,
-        # silently absorbed legacy-only kwargs
-        temperature: float = 1.0,  # noqa: ARG002
-        pruning_hard_epoch: int | None = None,  # noqa: ARG002
-        log_arch_gradients: bool = False,  # noqa: ARG002
-        op_gdas: bool = True,
+        temperature_schedule: str | None = None,
+        hessian_penalty_weight: float | None = None,
+        hessian_fd_eps: float | None = None,
+        hessian_update_freq: int | None = None,
+        edge_diversity_weight: float | None = None,
+        edge_usage_balance_weight: float | None = None,
+        edge_identity_cap: float | None = None,
+        edge_identity_cap_weight: float | None = None,
+        edge_sharpening_max_weight: float | None = None,
+        edge_sharpening_start_frac: float | None = None,
+        progressive_shrinking: bool | None = None,
+        hybrid_pruning_start_epoch: int | None = None,
+        hybrid_pruning_interval: int | None = None,
+        hybrid_pruning_base_threshold: float | None = None,
+        hybrid_pruning_strategy: str | None = None,
+        hybrid_pruning_freeze_logit: float | None = None,
+        bilevel_split_seed: int | None = None,
+        state_mix_ortho_reg_weight: float | None = None,
+        arch_grad_ema_beta: float | None = None,
+        beta_darts_weight: float | None = None,
+        moe_balance_weight: float | None = None,
+        transformer_exploration_weight: float | None = None,
+        op_gdas: bool | None = None,
         variant_gdas: bool | None = None,
         compute_metrics: bool = True,
         max_train_batches: int | None = None,
         max_val_batches: int | None = None,
+        # Legacy aliases (deprecated):
+        weight_decay: float | None = None,  # noqa: ARG002
+        identity_dominance_cap: float | None = None,  # noqa: ARG002
+        edge_sharpening_strength: float | None = None,  # noqa: ARG002
+        use_regularization: bool = True,  # noqa: ARG002
+        use_progressive_training: bool | None = None,  # noqa: ARG002
+        pruning_enabled: bool | None = None,  # noqa: ARG002
+        pruning_start_epoch: int | None = None,  # noqa: ARG002
+        pruning_threshold: float | None = None,  # noqa: ARG002
+        temperature: float = 1.0,  # noqa: ARG002
+        pruning_hard_epoch: int | None = None,  # noqa: ARG002
+        log_arch_gradients: bool = False,  # noqa: ARG002
     ) -> dict[str, Any]:
         """
         Run DARTS bilevel architecture search training.
+
+        Prefer passing a :class:`~darts.config.DARTSTrainConfig` as
+        ``train_config``.  Legacy keyword arguments are still accepted but
+        deprecated — they will be removed in a future release.
 
         Returns dict with ``model``, ``best_val_loss``, ``train_losses``,
         ``val_losses``, ``alpha_values``, ``diversity_scores``,
         ``training_time``, ``final_metrics``.
         """
-        # ── resolve legacy aliases ────────────────────────────────────────
-        eff_model_wd = weight_decay if weight_decay is not None else model_weight_decay
-        eff_edge_id_cap = (
-            identity_dominance_cap
-            if identity_dominance_cap is not None
-            else edge_identity_cap
-        )
-        eff_sharpen_w = (
-            edge_sharpening_strength
-            if edge_sharpening_strength is not None
-            else edge_sharpening_max_weight
-        )
-        eff_progressive = (
-            progressive_shrinking
-            if use_progressive_training is None
-            else bool(use_progressive_training)
-        )
-        if pruning_enabled is not None and not pruning_enabled:
-            eff_progressive = False
-        eff_prune_start = (
-            pruning_start_epoch
-            if pruning_start_epoch is not None
-            else hybrid_pruning_start_epoch
-        )
-        eff_prune_thresh = (
-            pruning_threshold
-            if pruning_threshold is not None
-            else hybrid_pruning_base_threshold
-        )
-        if edge_sharpening_start_epoch is not None and epochs > 0:
-            eff_sharpen_frac = float(edge_sharpening_start_epoch) / float(epochs)
-        else:
-            eff_sharpen_frac = edge_sharpening_start_frac
-
-        if not use_regularization:
-            regularization_types = []
-            regularization_weights = []
+        # Merge legacy kwargs into config (deprecated path)
+        if train_config is None:
+            train_config = DARTSTrainConfig()
+            # Apply any non-None legacy overrides
+            if epochs is not None:
+                train_config.epochs = epochs
+            if arch_learning_rate is not None:
+                train_config.arch_learning_rate = arch_learning_rate
+            if model_learning_rate is not None:
+                train_config.model_learning_rate = model_learning_rate
+            if model_weight_decay is not None:
+                train_config.model_weight_decay = model_weight_decay
+            if arch_weight_decay is not None:
+                train_config.arch_weight_decay = arch_weight_decay
+            if use_swa is not None:
+                train_config.use_swa = use_swa
+            if use_bilevel_optimization is not None:
+                train_config.use_bilevel_optimization = use_bilevel_optimization
+            if gradient_accumulation_steps is not None:
+                train_config.gradient_accumulation_steps = gradient_accumulation_steps
+            if use_amp is not None:
+                train_config.use_amp = use_amp
+            if loss_type is not None:
+                train_config.loss_type = loss_type
+            if patience is not None:
+                train_config.patience = patience
+            if verbose is not None:
+                train_config.verbose = verbose
+            if warmup_epochs is not None:
+                train_config.warmup_epochs = warmup_epochs
+            if architecture_update_freq is not None:
+                train_config.architecture_update_freq = architecture_update_freq
+            if regularization_types is not None:
+                train_config.regularization_types = regularization_types
+            if regularization_weights is not None:
+                train_config.regularization_weights = regularization_weights
+            if temperature_schedule is not None:
+                train_config.temperature_schedule = temperature_schedule
+            if hessian_penalty_weight is not None:
+                train_config.hessian_penalty_weight = hessian_penalty_weight
+            if hessian_fd_eps is not None:
+                train_config.hessian_fd_eps = hessian_fd_eps
+            if hessian_update_freq is not None:
+                train_config.hessian_update_freq = hessian_update_freq
+            if edge_diversity_weight is not None:
+                train_config.edge_diversity_weight = edge_diversity_weight
+            if edge_usage_balance_weight is not None:
+                train_config.edge_usage_balance_weight = edge_usage_balance_weight
+            if edge_identity_cap is not None:
+                train_config.edge_identity_cap = edge_identity_cap
+            if edge_identity_cap_weight is not None:
+                train_config.edge_identity_cap_weight = edge_identity_cap_weight
+            if edge_sharpening_max_weight is not None:
+                train_config.edge_sharpening_max_weight = edge_sharpening_max_weight
+            if edge_sharpening_start_frac is not None:
+                train_config.edge_sharpening_start_frac = edge_sharpening_start_frac
+            if progressive_shrinking is not None:
+                train_config.progressive_shrinking = progressive_shrinking
+            if hybrid_pruning_start_epoch is not None:
+                train_config.hybrid_pruning_start_epoch = hybrid_pruning_start_epoch
+            if hybrid_pruning_interval is not None:
+                train_config.hybrid_pruning_interval = hybrid_pruning_interval
+            if hybrid_pruning_base_threshold is not None:
+                train_config.hybrid_pruning_base_threshold = hybrid_pruning_base_threshold
+            if hybrid_pruning_strategy is not None:
+                train_config.hybrid_pruning_strategy = hybrid_pruning_strategy
+            if hybrid_pruning_freeze_logit is not None:
+                train_config.hybrid_pruning_freeze_logit = hybrid_pruning_freeze_logit
+            if bilevel_split_seed is not None:
+                train_config.bilevel_split_seed = bilevel_split_seed
+            if state_mix_ortho_reg_weight is not None:
+                train_config.state_mix_ortho_reg_weight = state_mix_ortho_reg_weight
+            if arch_grad_ema_beta is not None:
+                train_config.arch_grad_ema_beta = arch_grad_ema_beta
+            if beta_darts_weight is not None:
+                train_config.beta_darts_weight = beta_darts_weight
+            if moe_balance_weight is not None:
+                train_config.moe_balance_weight = moe_balance_weight
+            if transformer_exploration_weight is not None:
+                train_config.transformer_exploration_weight = transformer_exploration_weight
+            if op_gdas is not None:
+                train_config.op_gdas = op_gdas
+            if variant_gdas is not None:
+                train_config.variant_gdas = variant_gdas
+            if max_train_batches is not None:
+                train_config.max_train_batches = max_train_batches
+            if max_val_batches is not None:
+                train_config.max_val_batches = max_val_batches
 
         return _dl_mod.train_darts_model(
             self,
             model,
             train_loader,
             val_loader,
-            epochs=epochs,
-            arch_learning_rate=arch_learning_rate,
-            model_learning_rate=model_learning_rate,
-            model_weight_decay=eff_model_wd,
-            arch_weight_decay=arch_weight_decay,
-            use_swa=use_swa,
-            use_bilevel_optimization=use_bilevel_optimization,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            use_amp=use_amp,
-            loss_type=loss_type,
-            patience=patience,
-            verbose=verbose,
-            warmup_epochs=warmup_epochs,
-            architecture_update_freq=architecture_update_freq,
-            regularization_types=regularization_types,
-            regularization_weights=regularization_weights,
-            temperature_schedule=temperature_schedule,
-            hessian_penalty_weight=hessian_penalty_weight,
-            hessian_fd_eps=hessian_fd_eps,
-            hessian_update_freq=hessian_update_freq,
-            edge_diversity_weight=edge_diversity_weight,
-            edge_usage_balance_weight=edge_usage_balance_weight,
-            edge_identity_cap=eff_edge_id_cap,
-            edge_identity_cap_weight=edge_identity_cap_weight,
-            edge_sharpening_max_weight=eff_sharpen_w,
-            edge_sharpening_start_frac=eff_sharpen_frac,
-            progressive_shrinking=eff_progressive,
-            hybrid_pruning_start_epoch=eff_prune_start,
-            hybrid_pruning_interval=hybrid_pruning_interval,
-            hybrid_pruning_base_threshold=eff_prune_thresh,
-            hybrid_pruning_strategy=hybrid_pruning_strategy,
-            hybrid_pruning_freeze_logit=hybrid_pruning_freeze_logit,
-            bilevel_split_seed=bilevel_split_seed,
-            state_mix_ortho_reg_weight=state_mix_ortho_reg_weight,
-            arch_grad_ema_beta=arch_grad_ema_beta,
-            beta_darts_weight=beta_darts_weight,
-            moe_balance_weight=moe_balance_weight,
-            transformer_exploration_weight=transformer_exploration_weight,
-            op_gdas=op_gdas,
-            variant_gdas=variant_gdas,
+            epochs=train_config.epochs,
+            arch_learning_rate=train_config.arch_learning_rate,
+            model_learning_rate=train_config.model_learning_rate,
+            arch_weight_decay=train_config.arch_weight_decay,
+            model_weight_decay=train_config.model_weight_decay,
+            patience=train_config.patience,
+            loss_type=train_config.loss_type,
+            use_swa=train_config.use_swa,
+            warmup_epochs=train_config.warmup_epochs,
+            architecture_update_freq=train_config.architecture_update_freq,
+            diversity_check_freq=train_config.diversity_check_freq,
+            progressive_shrinking=train_config.progressive_shrinking,
+            hybrid_pruning_start_epoch=train_config.hybrid_pruning_start_epoch,
+            hybrid_pruning_interval=train_config.hybrid_pruning_interval,
+            hybrid_pruning_base_threshold=train_config.hybrid_pruning_base_threshold,
+            hybrid_pruning_strategy=train_config.hybrid_pruning_strategy,
+            hybrid_pruning_freeze_logit=train_config.hybrid_pruning_freeze_logit,
+            use_bilevel_optimization=train_config.use_bilevel_optimization,
+            use_amp=train_config.use_amp,
+            gradient_accumulation_steps=train_config.gradient_accumulation_steps,
+            verbose=train_config.verbose,
+            regularization_types=train_config.regularization_types,
+            regularization_weights=train_config.regularization_weights,
+            temperature_schedule=train_config.temperature_schedule,
+            edge_sharpening_max_weight=train_config.edge_sharpening_max_weight,
+            edge_sharpening_start_frac=train_config.edge_sharpening_start_frac,
+            hessian_penalty_weight=train_config.hessian_penalty_weight,
+            hessian_fd_eps=train_config.hessian_fd_eps,
+            hessian_update_freq=train_config.hessian_update_freq,
+            bilevel_split_seed=train_config.bilevel_split_seed,
+            state_mix_ortho_reg_weight=train_config.state_mix_ortho_reg_weight,
+            edge_diversity_weight=train_config.edge_diversity_weight,
+            edge_usage_balance_weight=train_config.edge_usage_balance_weight,
+            edge_identity_cap=train_config.edge_identity_cap,
+            edge_identity_cap_weight=train_config.edge_identity_cap_weight,
+            arch_grad_ema_beta=train_config.arch_grad_ema_beta,
+            beta_darts_weight=train_config.beta_darts_weight,
+            moe_balance_weight=train_config.moe_balance_weight,
+            transformer_exploration_weight=train_config.transformer_exploration_weight,
+            op_gdas=train_config.op_gdas,
+            variant_gdas=train_config.variant_gdas,
             compute_metrics=compute_metrics,
-            max_train_batches=max_train_batches,
-            max_val_batches=max_val_batches,
+            max_train_batches=train_config.max_train_batches,
+            max_val_batches=train_config.max_val_batches,
         )
 
     # ── Final model training ──────────────────────────────────────────────

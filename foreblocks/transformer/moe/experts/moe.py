@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from typing import Any
@@ -123,6 +124,13 @@ class MoEFeedForwardDMoE(nn.Module):
         moe_use_latent: bool = False,
         moe_latent_dim: int | None = None,
         moe_latent_d_ff: int | None = None,
+        # ── SOTA: load balancing, soft capacity, entropy ─────────────────────
+        moe_aux_loss_weight: float = 1e-2,
+        moe_num_groups: int = 1,
+        moe_soft_capacity: bool = False,
+        moe_entropy_reg_weight: float = 0.0,
+        moe_capacity_min: float = 0.5,
+        moe_capacity_max: float = 2.0,
     ):
         super().__init__()
         num_experts = int(num_experts)
@@ -213,17 +221,30 @@ class MoEFeedForwardDMoE(nn.Module):
         else:
             latent_dim = int(d_model)
             latent_d_ff = int(d_ff)
+        # ── SOTA validation ───────────────────────────────────────────────
+        moe_num_groups = int(moe_num_groups)
+        if moe_num_groups < 1:
+            raise ValueError("moe_num_groups must be >= 1")
+        if num_routed % moe_num_groups != 0:
+            raise ValueError(
+                f"num_routed ({num_routed}) must be divisible by moe_num_groups ({moe_num_groups})"
+            )
+        moe_aux_loss_weight = float(moe_aux_loss_weight)
+        moe_entropy_reg_weight = float(moe_entropy_reg_weight)
         ec_tokens_desc = (
             str(int(expert_choice_tokens_per_expert))
             if expert_choice_tokens_per_expert is not None
             else "auto"
         )
+        aux_status = f"lb_w={moe_aux_loss_weight}" if moe_aux_loss_weight > 0 else "off"
+        soft_cap = "elastic" if moe_soft_capacity else f"hard({moe_capacity_factor})"
         print(
             f"MoEFeedForwardDMoE: E={num_experts} (shared={num_shared}, routed={num_routed}), "
             f"K={top_k}, routing={routing_mode}, ec_tokens={ec_tokens_desc}, "
             f"swiglu={use_swiglu}, shared={shared_combine}, "
-            f"cap={moe_capacity_factor}, router={router_type}, "
-            f"aux_lb=off, bias_lr={router_bias_update_rate}, "
+            f"cap={soft_cap}, groups={moe_num_groups}, router={router_type}, "
+            f"aux_lb={aux_status}, z_loss={z_loss_weight}, "
+            f"entropy_reg={moe_entropy_reg_weight}, bias_lr={router_bias_update_rate}, "
             f"latent={latent_enabled} latent_dim={latent_dim if latent_enabled else 'off'}"
         )
         self.d_model = d_model
@@ -255,6 +276,13 @@ class MoEFeedForwardDMoE(nn.Module):
         self.router_bias_update_rate = float(router_bias_update_rate)
         self.router_bias_clip = float(router_bias_clip)
         self.mtp_loss_weight = float(mtp_loss_weight)
+        # ── SOTA params ───────────────────────────────────────────────────
+        self.moe_aux_loss_weight = moe_aux_loss_weight
+        self.moe_num_groups = moe_num_groups
+        self.moe_soft_capacity = bool(moe_soft_capacity)
+        self.moe_entropy_reg_weight = moe_entropy_reg_weight
+        self.moe_capacity_min = float(moe_capacity_min)
+        self.moe_capacity_max = float(moe_capacity_max)
 
         self.moe_logger = moe_logger
         self.step_getter = step_getter
@@ -431,6 +459,15 @@ class MoEFeedForwardDMoE(nn.Module):
         self.register_buffer("_eps", torch.tensor(1e-8))
         self.register_buffer("expert_usage", torch.zeros(num_routed))
         self.register_buffer("momentum", torch.tensor(0.999))
+        # Expert group index: [num_routed] -> group id per expert
+        if moe_num_groups > 1 and num_routed % moe_num_groups == 0:
+            group_size = num_routed // moe_num_groups
+            self.register_buffer("_expert_group", torch.cat([
+                torch.full((group_size,), g, dtype=torch.long)
+                for g in range(moe_num_groups)
+            ]))
+        else:
+            self.register_buffer("_expert_group", torch.zeros(num_routed, dtype=torch.long))
         self.aux_loss = torch.tensor(0.0)
 
         # Prepacked expert weights cache (optional fast path)
@@ -482,12 +519,20 @@ class MoEFeedForwardDMoE(nn.Module):
         torch.Tensor | None,
         torch.Tensor | None,
         torch.Tensor | None,
+        float,
     ]:
         """
         Unified router output parser.
+        Always calls the router with return_raw_logits=True and extracts
+        named fields from the RouterOutput dataclass.  Falls back to the
+        old tuple path only when torch.compile wraps the module and the
+        output deviates from the contract.
+
         Returns:
-          logits, per_token_k, k_logits, k_probs, precomputed_top_p, precomputed_top_i
+          logits, per_token_k, k_logits, k_probs, precomputed_top_p, precomputed_top_i, router_entropy
         """
+        from .routers import RouterOutput
+
         out = None
         try:
             out = self.router(x_flat, return_raw_logits=True, tau=tau)
@@ -496,27 +541,29 @@ class MoEFeedForwardDMoE(nn.Module):
                 out = self.router(x_flat, return_raw_logits=True)
             except TypeError:
                 out = self.router(x_flat)
-        per_token_k = None
-        k_logits = None
-        k_probs = None
-        top_p = None
-        top_i = None
-        if isinstance(out, tuple):
-            if len(out) >= 2:
-                logits = out[1]
-            else:
-                logits = out[0]
-            if len(out) >= 5:
-                k_logits = out[3]
-                per_token_k = out[4]
-            if len(out) >= 6:
-                k_probs = out[5]
-            if len(out) >= 8:
-                top_p = out[6]
-                top_i = out[7]
+
+        # --- Prefer named fields from RouterOutput ---
+        router_entropy = 0.0
+        if hasattr(out, "logits"):
+            logits = out.logits
+            per_token_k = out.per_token_k
+            k_logits = out.k_logits
+            k_probs = out.k_probs
+            top_p = out.top_p
+            top_i = out.top_i
+            router_entropy = out.router_entropy
+        elif isinstance(out, tuple) and len(out) >= 9:
+            logits, raw, sparse, k_logits, per_token_k, k_probs, top_p, top_i, router_entropy = out
+        elif isinstance(out, tuple) and len(out) >= 8:
+            logits, raw, sparse, k_logits, per_token_k, k_probs, top_p, top_i = out
+        elif isinstance(out, tuple):
+            # Legacy: some compiled wrappers return 2-tuple (logits, sparse)
+            logits = out[0]
+            per_token_k = k_logits = k_probs = top_p = top_i = None
         else:
             logits = out
-        return logits, per_token_k, k_logits, k_probs, top_p, top_i
+            per_token_k = k_logits = k_probs = top_p = top_i = None
+        return logits, per_token_k, k_logits, k_probs, top_p, top_i, router_entropy
 
     def _adaptive_topk_routing(
         self, logits: torch.Tensor, per_token_k: torch.Tensor
@@ -730,7 +777,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 shared_out = None
                 shared_cat = None
 
-            logits, per_token_k, _k_logits, _k_probs, _router_top_p, _router_top_i = (
+            logits, per_token_k, _k_logits, _k_probs, _router_top_p, _router_top_i, router_entropy = (
                 self._compute_router_outputs(routed_x, tau=tau)
             )  # [T, E]
             if self.routing_mode == "expert_choice":
@@ -809,6 +856,10 @@ class MoEFeedForwardDMoE(nn.Module):
                         top_p,
                         top_i,
                         capacity_factor=self.moe_capacity_factor,
+                        soft_capacity=self.moe_soft_capacity,
+                        expert_usage=self.expert_usage,
+                        soft_capacity_min=self.moe_capacity_min,
+                        soft_capacity_max=self.moe_capacity_max,
                     )
                 )
             self._last_num_assignments = int(experts_seq.numel())
@@ -835,6 +886,7 @@ class MoEFeedForwardDMoE(nn.Module):
                     latency_ms,
                     meta,
                     per_token_k=per_token_k,
+                    router_entropy=router_entropy,
                 )
                 self._maybe_log_router(
                     logits,
@@ -844,6 +896,7 @@ class MoEFeedForwardDMoE(nn.Module):
                     latency_ms,
                     meta,
                     per_token_k=per_token_k,
+                    router_entropy=router_entropy,
                 )
                 return (out, aux) if return_aux_loss else out
 
@@ -956,6 +1009,7 @@ class MoEFeedForwardDMoE(nn.Module):
             latency_ms,
             meta,
             per_token_k=per_token_k,
+            router_entropy=router_entropy,
         )
         self._maybe_log_router(
             logits,
@@ -965,6 +1019,7 @@ class MoEFeedForwardDMoE(nn.Module):
             latency_ms,
             meta,
             per_token_k=per_token_k,
+            router_entropy=router_entropy,
         )
 
         return (out, aux) if return_aux_loss else out
@@ -978,14 +1033,49 @@ class MoEFeedForwardDMoE(nn.Module):
         num_assignments: int | None = None,
     ):
         aux = logits.new_zeros(())
+        num_routed = self.num_routed_experts
 
-        # Z-loss
+        # ── 1. Z-loss (Qwen2.5 / DeepSeek style) ────────────────────────
         if self.z_loss_weight > 0:
-            log_z = torch.logsumexp(logits.view(-1, self.num_routed_experts), dim=-1)
+            log_z = torch.logsumexp(logits.view(-1, num_routed), dim=-1)
             aux = aux + self.z_loss_weight * 0.5 * (log_z**2).mean()
 
-        # Classic load-balance auxiliary loss intentionally removed.
-        # Expert utilization is handled via router expert-bias adaptation.
+        # ── 2. Standard load-balancing auxiliary loss (GShard / Mixtral) ─
+        if self.moe_aux_loss_weight > 0:
+            # Gate probs over experts: [T, E]
+            gate_probs = F.softmax(logits, dim=-1)  # [T, E]
+            # Fraction of tokens routed to each expert (from top-k assignments)
+            expert_freq = torch.zeros(num_routed, device=logits.device, dtype=logits.dtype)
+            if experts_seq.numel() > 0:
+                expert_freq = torch.bincount(
+                    experts_seq, minlength=num_routed
+                ).to(dtype=logits.dtype)
+            expert_freq = expert_freq / max(num_tokens * self.top_k, 1)  # [E]
+            # Average gate probability per expert: [E]
+            avg_gate = gate_probs.mean(dim=0)  # [E]
+            if self.moe_num_groups > 1:
+                # Group-wise: balance within each group
+                group_size = num_routed // self.moe_num_groups
+                group_aux = 0.0
+                for g in range(self.moe_num_groups):
+                    start = g * group_size
+                    end = start + group_size
+                    freq_g = expert_freq[start:end]
+                    gate_g = avg_gate[start:end]
+                    group_aux = group_aux + (freq_g * gate_g).sum()
+                aux = aux + self.moe_aux_loss_weight * group_aux
+            else:
+                # Standard (global) load-balancing loss
+                aux = aux + self.moe_aux_loss_weight * (expert_freq * avg_gate).sum()
+
+        # ── 3. Router entropy regularization (encourages diverse routing) ─
+        if self.moe_entropy_reg_weight > 0:
+            gate_probs = F.softmax(logits, dim=-1)
+            log_probs = F.log_softmax(logits, dim=-1)
+            token_entropy = -(gate_probs * log_probs).sum(dim=-1).mean()  # scalar
+            max_entropy = math.log(num_routed)
+            # Encourage high entropy: penalty = max_entropy - actual_entropy
+            aux = aux - self.moe_entropy_reg_weight * (max_entropy - token_entropy)
 
         return aux
 
@@ -1025,7 +1115,7 @@ class MoEFeedForwardDMoE(nn.Module):
         bias = self._get_router_expert_bias()
         if bias is None:
             bias = torch.zeros_like(usage)
-        return {
+        stats: dict[str, torch.Tensor] = {
             "expert_usage": self.expert_usage.clone(),
             "usage_entropy": entropy,
             "max_usage": self.expert_usage.max(),
@@ -1033,6 +1123,18 @@ class MoEFeedForwardDMoE(nn.Module):
             "usage_uniform_mse": uniform_mse,
             "router_expert_bias": bias.detach().clone(),
         }
+        # ── Group-wise stats (Qwen2.5-MoE style) ────────────────────────
+        if self.moe_num_groups > 1:
+            group_usage = torch.zeros(self.moe_num_groups, device=usage.device, dtype=usage.dtype)
+            group_size = self.num_routed_experts // self.moe_num_groups
+            for g in range(self.moe_num_groups):
+                start = g * group_size
+                end = start + group_size
+                group_usage[g] = usage[start:end].mean()
+            stats["group_usage"] = group_usage
+            group_target = torch.full_like(group_usage, 1.0 / self.moe_num_groups)
+            stats["group_uniform_mse"] = (group_usage - group_target).pow(2).mean()
+        return stats
 
     @torch.no_grad()
     def reset_stats(self):
@@ -1050,11 +1152,10 @@ class MoEFeedForwardDMoE(nn.Module):
         latency_ms: float,
         meta: dict[str, Any] | None,
         per_token_k: torch.Tensor | None = None,
+        router_entropy: float = 0.0,
     ):
         r = self.router
         try:
-            # Not all router variants necessarily have these fields,
-            # so we guard with try/except.
             r.last_gate_logits = logits.detach()
             r.last_topk_idx = topk_idx.detach()
             if per_token_k is not None:
@@ -1063,6 +1164,7 @@ class MoEFeedForwardDMoE(nn.Module):
             r.last_aux_loss = float(aux_loss)
             r.last_latency_ms = float(latency_ms)
             r.last_meta = meta
+            r.last_router_entropy = float(router_entropy)
         except Exception:
             pass
 
@@ -1075,6 +1177,7 @@ class MoEFeedForwardDMoE(nn.Module):
         latency_ms: float,
         meta: dict[str, Any] | None,
         per_token_k: torch.Tensor | None = None,
+        router_entropy: float = 0.0,
     ):
         if self.moe_logger is None or MoELogger is None:
             return
@@ -1092,5 +1195,9 @@ class MoEFeedForwardDMoE(nn.Module):
                 latency_ms=float(latency_ms),
                 meta=meta,
             )
+            # Store router entropy for reporting
+            if hasattr(self.moe_logger, 'buff'):
+                self.moe_logger.buff.setdefault('router_entropy', []).append(float(router_entropy))
         except Exception:
             pass
+

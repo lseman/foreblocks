@@ -100,73 +100,94 @@ class DARTSSearchSpaceConfig:
 
 @dataclass
 class DARTSTrainConfig:
-    """Hyperparameters for the DARTS bilevel training phase."""
+    """Hyperparameters for the DARTS bilevel training phase.
 
+    This is the single source of truth for all bilevel-DARTS knobs.  Use it as
+    the sole argument to ``trainer.train_darts_model()`` — positional and
+    keyword overrides on the old API surface are kept for backward compatibility
+    but are deprecated.
+
+    Grouped by concern for readability.  See each field for defaults.
+    """
+
+    # ── Epochs / schedule ─────────────────────────────────────────────────
     epochs: int = 50
+    warmup_epochs: int = 2
+    patience: int = 10
+    loss_type: str = "huber"
+    verbose: bool = True
+    use_amp: bool = True
+    use_swa: bool = False
+
+    # ── Learning rates ────────────────────────────────────────────────────
     arch_learning_rate: float = 1e-2
     model_learning_rate: float = 1e-3
     arch_weight_decay: float = 1e-3
     model_weight_decay: float = 1e-4
-    patience: int = 10
-    loss_type: str = "huber"
-    use_swa: bool = False
-    warmup_epochs: int = 2
+
+    # ── Optimisation ──────────────────────────────────────────────────────
+    use_bilevel_optimization: bool = True
+    bilevel_split_seed: int = 42
+    gradient_accumulation_steps: int = 1
     architecture_update_freq: int = 3
     diversity_check_freq: int = 1
+
+    # ── Temperature / sampling ────────────────────────────────────────────
+    temperature_schedule: str = "cosine"
+
+    # ── Progressive shrinking & pruning ───────────────────────────────────
     progressive_shrinking: bool = True
     hybrid_pruning_start_epoch: int = 20
     hybrid_pruning_interval: int = 10
     hybrid_pruning_base_threshold: float = 0.15
     hybrid_pruning_strategy: str = "performance"
     hybrid_pruning_freeze_logit: float = -20.0
-    use_bilevel_optimization: bool = True
-    use_amp: bool = True
-    gradient_accumulation_steps: int = 1
-    verbose: bool = True
-    regularization_types: list[str] | None = (
-        None  # defaults to ["kl_divergence", "efficiency"]
-    )
+
+    # ── Architecture regularisation ───────────────────────────────────────
+    regularization_types: list[str] | None = None  # defaults to ["kl_divergence", "efficiency"]
     regularization_weights: list[float] | None = None  # defaults to [0.05, 0.01]
-    temperature_schedule: str = "cosine"
-    edge_sharpening_max_weight: float = 0.03
-    edge_sharpening_start_frac: float = 0.35
-    hessian_penalty_weight: float = 0.0
-    hessian_fd_eps: float = 1e-2
-    hessian_update_freq: int = 1
-    bilevel_split_seed: int = 42
+    beta_darts_weight: float = 0.0  # L2 on raw arch logits
     state_mix_ortho_reg_weight: float = 1e-3
+    moe_balance_weight: float = 5e-3
+    transformer_exploration_weight: float = 1e-2
+    arch_grad_ema_beta: float = 0.0  # EMA on arch gradients [0.7, 0.9] recommended for noisy bilevel
+
+    # ── Edge-level regularisation ─────────────────────────────────────────
     edge_diversity_weight: float = 0.03
     edge_usage_balance_weight: float = 0.04
     edge_identity_cap: float = 0.45
     edge_identity_cap_weight: float = 0.02
-    # EMA smoothing for arch gradients (0.0 = disabled).  Values in [0.7, 0.9]
-    # reduce variance from the noisy bilevel validation estimate and are
-    # recommended when the validation split is small.
-    arch_grad_ema_beta: float = 0.0
-    # β-DARTS: L2 regularization weight on raw arch logits.  Prevents premature
-    # commitment / skip-connection dominance by penalising large logit magnitudes.
-    # Values in [5e-4, 2e-3] are a good starting range; 0.0 disables.
-    beta_darts_weight: float = 0.0
-    # GDAS over DARTS-cell primitive ops: when True, each MixedOp forward
-    # samples exactly one operation (TimeConv, Fourier, …) via Gumbel-Softmax
-    # (hard=True) with a straight-through gradient estimator. Reduces peak
-    # memory (only one op runs per edge) and shrinks the discretization gap
-    # between the mixed and the final fixed architecture. Mutually exclusive
-    # with use_drnas — op_gdas takes precedence when both are set.
-    # Sibling knob: ``variant_gdas`` (on DARTSModelConfig) — GDAS over
-    # block-level variant choices (attention kernel, FFN mode, etc.).
-    # Defaults to True: single-path sampling runs one op per edge per forward
-    # instead of all of them, the dominant search-time speedup. Set False to
-    # restore dense DrNAS-style mixed-op forwards.
-    op_gdas: bool = True
-    # Lightweight DARTS-local MoE routing balance regularizer. Encourages
-    # routed experts to be used more evenly without adding full MoE aux-loss
-    # machinery.
-    moe_balance_weight: float = 5e-3
-    # Early-phase entropy bonus on transformer choice logits (attention kernels,
-    # FFN dense/MoE, tokenizer/query choices). This counteracts premature
-    # collapse to easy defaults like SDP before weights stabilize.
-    transformer_exploration_weight: float = 1e-2
+    edge_sharpening_max_weight: float = 0.03
+    edge_sharpening_start_frac: float = 0.35
+
+    # ── Hessian / second-order ────────────────────────────────────────────
+    hessian_penalty_weight: float = 0.0
+    hessian_fd_eps: float = 1e-2
+    hessian_update_freq: int = 1
+
+    # ── GDAS / DrNAS ──────────────────────────────────────────────────────
+    op_gdas: bool = True  # single-path sampling per edge (dominant speedup)
+    variant_gdas: bool | None = None  # mirrors op_gdas unless explicitly set
+
+    # ── Batching overrides ────────────────────────────────────────────────
+    max_train_batches: int | None = None
+    max_val_batches: int | None = None
+
+    def resolve_device(self) -> str:
+        """Resolve to a concrete device string (used when wrapping in DARTSConfig)."""
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
+    # -- Deprecated aliases (kept for backward compat) --
+    # The following fields were renamed; the old names are absorbed in the
+    # trainer method.  They remain here so code that reads config fields
+    # by name does not break.
+    identity_dominance_cap: float = 0.45  # noqa: ERA001  # → edge_identity_cap
+    edge_sharpening_strength: float = 0.03  # noqa: ERA001  # → edge_sharpening_max_weight
+    progressive_training: bool = True  # noqa: ERA001  # → progressive_shrinking
+    pruning_enabled: bool = True  # noqa: ERA001  # → derived from progressive_shrinking
+    pruning_start_epoch: int = 20  # noqa: ERA001  # → hybrid_pruning_start_epoch
+    pruning_threshold: float = 0.15  # noqa: ERA001  # → hybrid_pruning_base_threshold
+    log_arch_gradients: bool = False  # noqa: ERA001  # absorbed
 
 
 # ---------------------------------------------------------------------------

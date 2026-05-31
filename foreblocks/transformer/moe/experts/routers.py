@@ -2,22 +2,52 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-RouterOutput = tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor | None,
-    torch.Tensor | None,
-    torch.Tensor | None,
-    torch.Tensor | None,
-    torch.Tensor | None,
-]
+def _compute_router_entropy(logits: torch.Tensor) -> float:
+    """Compute mean per-token Shannon entropy of gate softmax probabilities."""
+    probs = F.softmax(logits, dim=-1)
+    log_probs = F.log_softmax(logits, dim=-1)
+    entropy = -(probs * log_probs).sum(dim=-1).mean()
+    return float(entropy.item())
+
+
+@dataclass
+class RouterOutput:
+    """Unified return type for all routers.
+
+    Always returned regardless of ``return_raw_logits``.
+    Fields that are only populated in certain modes are ``None`` otherwise.
+    """
+
+    logits: torch.Tensor
+    raw_logits: torch.Tensor | None = None
+    sparse_assignments: torch.Tensor | None = None
+    k_logits: torch.Tensor | None = None
+    per_token_k: torch.Tensor | None = None
+    k_probs: torch.Tensor | None = None
+    top_p: torch.Tensor | None = None
+    top_i: torch.Tensor | None = None
+    router_entropy: float = 0.0  # mean per-token entropy of gate probs [T, E]
+
+    def __iter__(self):
+        """Yield fields positionally for backward-compatible tuple unpacking."""
+        yield self.logits
+        yield self.raw_logits
+        yield self.sparse_assignments
+        yield self.k_logits
+        yield self.per_token_k
+        yield self.k_probs
+        yield self.top_p
+        yield self.top_i
+
+    def __len__(self):
+        return 8
 
 
 class Router(nn.Module, ABC):
@@ -37,12 +67,14 @@ class Router(nn.Module, ABC):
 
     def _empty_out(
         self, x: torch.Tensor, return_raw_logits: bool = False
-    ) -> RouterOutput | tuple[torch.Tensor, torch.Tensor]:
+    ) -> RouterOutput:
         shp = (*x.shape[:-1], self.num_experts)
         z = x.new_zeros(shp)
-        if return_raw_logits:
-            return z, z, z, None, None, None, None, None
-        return z, z
+        raw = z if return_raw_logits else None
+        return RouterOutput(
+            logits=z, raw_logits=raw, sparse_assignments=raw, k_logits=raw,
+            per_token_k=None, k_probs=None, top_p=None, top_i=None,
+        )
 
     @abstractmethod
     def forward(
@@ -69,14 +101,14 @@ class LinearRouter(Router):
         x: torch.Tensor,
         return_raw_logits: bool = False,
         tau: float | None = None,
-    ):
+    ) -> RouterOutput:
         del tau
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
         logits = self.router(x)
-        if return_raw_logits:
-            return logits, logits, logits, None, None, None, None, None
-        return logits, logits
+        raw = logits if return_raw_logits else None
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        return RouterOutput(logits=logits, raw_logits=raw, sparse_assignments=raw, router_entropy=entropy)
 
 
 class NoisyTopKRouter(Router):
@@ -127,14 +159,14 @@ class NoisyTopKRouter(Router):
         x: torch.Tensor,
         return_raw_logits: bool = False,
         tau: float | None = None,
-    ):
+    ) -> RouterOutput:
         del tau
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
         raw, logits = self._compute_logits(x)
-        if return_raw_logits:
-            return raw, logits, logits, None, None, None, None, None
-        return logits, logits
+        sparse = logits if return_raw_logits else None
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        return RouterOutput(logits=logits, raw_logits=raw if return_raw_logits else None, sparse_assignments=sparse, router_entropy=entropy)
 
 
 class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
@@ -175,7 +207,7 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
         x: torch.Tensor,
         return_raw_logits: bool = False,
         tau: float | None = None,
-    ):
+    ) -> RouterOutput:
         if x.numel() == 0:
             if return_raw_logits:
                 shp = (*x.shape[:-1], self.num_experts)
@@ -183,7 +215,11 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
                 k_shp = (*x.shape[:-1], self.max_k)
                 kz = x.new_zeros(k_shp)
                 k_idx = x.new_zeros((*x.shape[:-1],), dtype=torch.long)
-                return z, z, z, kz, k_idx, kz, None, None
+                return RouterOutput(
+                    logits=z, raw_logits=z, sparse_assignments=z,
+                    k_logits=kz, per_token_k=k_idx, k_probs=kz,
+                    top_p=None, top_i=None,
+                )
             return self._empty_out(x, return_raw_logits=False)
 
         raw, logits = self._compute_logits(x)
@@ -203,9 +239,18 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
         self.last_k = per_token_k.detach()
         self.last_k_probs = k_probs.detach()
 
-        if return_raw_logits:
-            return raw, logits, logits, k_logits, per_token_k, k_probs, None, None
-        return logits, logits, per_token_k
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        return RouterOutput(
+            logits=logits,
+            raw_logits=raw if return_raw_logits else None,
+            sparse_assignments=logits if return_raw_logits else None,
+            k_logits=k_logits if return_raw_logits else None,
+            per_token_k=per_token_k,
+            k_probs=k_probs if return_raw_logits else None,
+            top_p=None,
+            top_i=None,
+            router_entropy=entropy,
+        )
 
 
 class StraightThroughTopKRouter(NoisyTopKRouter):
@@ -240,7 +285,7 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
         x: torch.Tensor,
         return_raw_logits: bool = False,
         tau: float | None = None,
-    ):
+    ) -> RouterOutput:
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
 
@@ -256,9 +301,18 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
         st_sparse = hard_sparse + (soft - soft.detach())
         top_p = st_sparse.gather(1, top_i)
 
-        if return_raw_logits:
-            return raw, logits, st_sparse, None, None, None, top_p, top_i
-        return logits, st_sparse
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        return RouterOutput(
+            logits=logits,
+            raw_logits=raw if return_raw_logits else None,
+            sparse_assignments=st_sparse,
+            k_logits=None,
+            per_token_k=None,
+            k_probs=None,
+            top_p=top_p if return_raw_logits else None,
+            top_i=top_i if return_raw_logits else None,
+            router_entropy=entropy,
+        )
 
 
 class ContinuousTopKRouter(NoisyTopKRouter):
@@ -295,7 +349,7 @@ class ContinuousTopKRouter(NoisyTopKRouter):
         x: torch.Tensor,
         return_raw_logits: bool = False,
         tau: float | None = None,
-    ):
+    ) -> RouterOutput:
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
 
@@ -312,9 +366,18 @@ class ContinuousTopKRouter(NoisyTopKRouter):
         top_p, top_i = torch.topk(soft_probs, k_eff, dim=-1, sorted=False)
         top_p = top_p / (top_p.sum(dim=-1, keepdim=True) + 1e-12)
 
-        if return_raw_logits:
-            return raw, logits, soft_probs, None, None, None, top_p, top_i
-        return logits, soft_probs
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        return RouterOutput(
+            logits=logits,
+            raw_logits=raw if return_raw_logits else None,
+            sparse_assignments=soft_probs,
+            k_logits=None,
+            per_token_k=None,
+            k_probs=None,
+            top_p=top_p if return_raw_logits else None,
+            top_i=top_i if return_raw_logits else None,
+            router_entropy=entropy,
+        )
 
 
 class HashTopKRouter(NoisyTopKRouter):
@@ -402,7 +465,7 @@ class HashTopKRouter(NoisyTopKRouter):
         x: torch.Tensor,
         return_raw_logits: bool = False,
         tau: float | None = None,
-    ):
+    ) -> RouterOutput:
         del tau
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
@@ -418,9 +481,18 @@ class HashTopKRouter(NoisyTopKRouter):
         expv = torch.exp(top_v - m)
         top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
 
-        if return_raw_logits:
-            return raw, logits, logits, None, None, None, top_p, top_i
-        return logits, logits
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        return RouterOutput(
+            logits=logits,
+            raw_logits=raw if return_raw_logits else None,
+            sparse_assignments=logits if return_raw_logits else None,
+            k_logits=None,
+            per_token_k=None,
+            k_probs=None,
+            top_p=top_p if return_raw_logits else None,
+            top_i=top_i if return_raw_logits else None,
+            router_entropy=entropy,
+        )
 
 
 __all__ = [

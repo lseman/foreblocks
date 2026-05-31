@@ -11,6 +11,7 @@ from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
+from .inspector import _softmax_top, _mean_softmax_top
 from .operation_blocks import FixedOp
 
 
@@ -72,27 +73,8 @@ def derive_final_architecture(
                 out.append(item)
         return out
 
-    def _mean_mode_probs(components, *, direct_attr: str, logits_attr: str, mode_names):
-        probs = []
-        mode_names = tuple(mode_names)
-        for component in components:
-            direct = getattr(component, direct_attr, None)
-            if isinstance(direct, str) and direct in mode_names and direct != "auto":
-                ref = next(component.parameters(), None)
-                p = (
-                    ref.new_zeros(len(mode_names))
-                    if ref is not None
-                    else torch.zeros(len(mode_names))
-                )
-                p[mode_names.index(direct)] = 1.0
-                probs.append(p)
-                continue
-            logits = getattr(component, logits_attr, None)
-            if isinstance(logits, torch.Tensor) and logits.numel() == len(mode_names):
-                probs.append(F.softmax(logits.detach(), dim=0))
-        if not probs:
-            return None
-        return torch.stack(probs, dim=0).mean(dim=0)
+    # Reuse shared helper from inspector (kept here as closure for legacy compat).
+    _mean_mode_probs = staticmethod(_mean_softmax_top)
 
     def _edge_selection_weights(edge):
         if hasattr(edge, "_get_weights") and hasattr(edge, "ops"):
@@ -133,16 +115,14 @@ def derive_final_architecture(
                 "MODES",
                 ("sdp", "linear", "probsparse", "cosine", "local"),
             )
-            probs = _mean_mode_probs(
+            top = _mean_mode_probs(
                 components,
                 direct_attr="attention_type",
                 logits_attr="attn_alphas",
                 mode_names=modes,
             )
-            if probs is not None:
-                top_idx = int(torch.argmax(probs).item())
-                if 0 <= top_idx < len(modes):
-                    return str(modes[top_idx])
+            if top is not None:
+                return str(top)
 
         return "unknown"
 
@@ -177,18 +157,14 @@ def derive_final_architecture(
         components = _collect_layer_components(module_obj, "self_attn")
         if not components:
             return "unknown"
-        modes = getattr(
-            components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")
-        )
-        probs = _mean_mode_probs(
+        modes = tuple(getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")))
+        top = _mean_mode_probs(
             components,
             direct_attr="position_mode",
             logits_attr="position_alphas",
             mode_names=modes,
         )
-        if probs is not None:
-            return str(modes[int(torch.argmax(probs).item())])
-        return "unknown"
+        return str(top) if top is not None else "unknown"
 
     def _extract_ffn_mode(module_obj) -> str:
         if module_obj is None:
@@ -196,16 +172,14 @@ def derive_final_architecture(
         components = _collect_layer_components(module_obj, "ffn")
         if not components:
             return "unknown"
-        modes = getattr(components[0], "MODE_NAMES", ("swiglu", "moe"))
-        probs = _mean_mode_probs(
+        modes = tuple(getattr(components[0], "MODE_NAMES", ("swiglu", "moe")))
+        top = _mean_mode_probs(
             components,
             direct_attr="ffn_mode",
             logits_attr="ffn_alphas",
             mode_names=modes,
         )
-        if probs is not None:
-            return str(modes[int(torch.argmax(probs).item())])
-        return "unknown"
+        return str(top) if top is not None else "unknown"
 
     def _extract_decoder_style(module_obj) -> str:
         if module_obj is None:
@@ -216,14 +190,12 @@ def derive_final_architecture(
             return direct
 
         logits = getattr(module_obj, "decode_style_alphas", None)
-        style_names = getattr(
-            module_obj, "decode_style_names", ("autoregressive", "informer")
+        style_names = tuple(
+            getattr(module_obj, "decode_style_names", ("autoregressive", "informer"))
         )
-        if isinstance(logits, torch.Tensor) and logits.numel() == len(style_names):
-            probs = F.softmax(logits.detach(), dim=0)
-            top_idx = int(torch.argmax(probs).item())
-            if 0 <= top_idx < len(style_names):
-                return str(style_names[top_idx])
+        top = _softmax_top(logits, style_names)
+        if top is not None:
+            return top
 
         resolver = getattr(module_obj, "resolve_decode_style", None)
         if callable(resolver):
@@ -251,23 +223,14 @@ def derive_final_architecture(
         components = _collect_layer_components(submodule, "cross_attn")
         if not components:
             return "unknown"
-        modes = getattr(
-            components[0],
-            "MODES",
-            ("none", "sdp", "linear", "probsparse", "cosine", "local"),
-        )
-        probs = _mean_mode_probs(
+        modes = tuple(getattr(components[0], "MODES", ("none", "sdp", "linear", "probsparse", "cosine", "local")))
+        top = _mean_mode_probs(
             components,
             direct_attr="attention_type",
             logits_attr="attn_alphas",
             mode_names=modes,
         )
-        if probs is not None:
-            top_idx = int(torch.argmax(probs).item())
-            if 0 <= top_idx < len(modes):
-                return str(modes[top_idx])
-
-        return "unknown"
+        return str(top) if top is not None else "unknown"
 
     def _extract_cross_attention_position(module_obj) -> str:
         if module_obj is None:
@@ -280,18 +243,14 @@ def derive_final_architecture(
         components = _collect_layer_components(submodule, "cross_attn")
         if not components:
             return "unknown"
-        modes = getattr(
-            components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")
-        )
-        probs = _mean_mode_probs(
+        modes = tuple(getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")))
+        top = _mean_mode_probs(
             components,
             direct_attr="position_mode",
             logits_attr="position_alphas",
             mode_names=modes,
         )
-        if probs is not None:
-            return str(modes[int(torch.argmax(probs).item())])
-        return "unknown"
+        return str(top) if top is not None else "unknown"
 
     def _extract_decoder_query_mode(model_obj) -> str:
         if model_obj is None:

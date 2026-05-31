@@ -167,6 +167,13 @@ class FeedForwardBlock(nn.Module):
         moe_use_latent: bool = False,
         moe_latent_dim: int | None = None,
         moe_latent_d_ff: int | None = None,
+        # ── SOTA: load balancing, soft capacity, entropy ─────────────────────
+        moe_aux_loss_weight: float = 1e-2,
+        moe_num_groups: int = 1,
+        moe_soft_capacity: bool = False,
+        moe_entropy_reg_weight: float = 0.0,
+        moe_capacity_min: float = 0.5,
+        moe_capacity_max: float = 2.0,
     ):
         super().__init__()
         self.use_moe = bool(use_moe)
@@ -224,6 +231,12 @@ class FeedForwardBlock(nn.Module):
                 moe_use_latent=moe_use_latent,
                 moe_latent_dim=moe_latent_dim,
                 moe_latent_d_ff=moe_latent_d_ff,
+                moe_aux_loss_weight=moe_aux_loss_weight,
+                moe_num_groups=moe_num_groups,
+                moe_soft_capacity=moe_soft_capacity,
+                moe_entropy_reg_weight=moe_entropy_reg_weight,
+                moe_capacity_min=moe_capacity_min,
+                moe_capacity_max=moe_capacity_max,
             )
             self._supports_aux = True
         else:
