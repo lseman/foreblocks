@@ -310,7 +310,19 @@ def derive_final_architecture(
 
         unique_pool = [name for name in available_names if name != "Identity"]
         pool_size = len(unique_pool) if len(unique_pool) > 0 else len(available_names)
-        target_unique = min(max(2, int(math.ceil(n_edges * 0.5))), max(pool_size, 1))
+
+        # Target unique ops: use a sub-linear scaling that avoids over-diversifying
+        # small cells (where n_edges=2 forces 100% unique) and under-diversifying
+        # large cells (where n_edges=12 only gets 6 unique).
+        # Formula: sqrt(pool_size) clamped to [2, n_edges], giving ~3 for
+        # small cells and ~5 for medium cells.
+        target_unique = min(
+            max(2, int(math.sqrt(pool_size))),
+            max(pool_size, 1),
+            n_edges,
+        )
+        # But never more than 70% of edges (reserve room for repetition).
+        target_unique = min(target_unique, max(2, int(n_edges * 0.7)))
 
         # Pass 1: cover unique operations with highest-confidence (edge, op) pairs.
         candidates = []
@@ -356,6 +368,8 @@ def derive_final_architecture(
             reverse=True,
         )
 
+        # Max copies per op: divide edges evenly across unique ops, with a
+        # floor of 1 so every op gets at least one chance.
         max_per_op = max(1, int(math.ceil(n_edges / max(target_unique, 1))))
         repeat_penalty = 0.30
         identity_extra_penalty = 0.40
@@ -391,7 +405,8 @@ def derive_final_architecture(
 
         # Pass 3: hard cap repeated operations per cell by reassigning the weakest
         # edges first to their best alternatives.
-        max_repeat = max(1, int(math.ceil(n_edges * 0.40)))
+        # Max repeat should not exceed max_per_op and should scale with target_unique.
+        max_repeat = min(max_per_op, max(1, int(math.ceil(n_edges * 0.5))))
         for _ in range(n_edges * 2):
             changed = False
             by_freq = sorted(

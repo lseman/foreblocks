@@ -364,7 +364,7 @@ def fused_dropout_gateskip_norm(
                 "GateSkip requested but ResidualGate/gateskip_apply not available."
             )
         aux = aux_l2_terms if aux_l2_terms is not None else []
-        out, skip_mask = gateskip_apply(
+        out, skip_mask, _ = gateskip_apply(
             use_gateskip,
             residual,
             update,

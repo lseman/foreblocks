@@ -30,7 +30,9 @@ from .config import (
     DEFAULT_ARCH_MODES,
     DEFAULT_ATTENTION_VARIANTS,
     DEFAULT_FFN_VARIANTS,
+    DARTSEngineConfig,
     DARTSTrainConfig,
+    DARTSVariant,
 )
 from .config import (
     DEFAULT_OPS as SEARCH_DEFAULT_OPS,
@@ -159,7 +161,9 @@ class DARTSTrainer:
         self.training_history: list[dict[str, Any]] = []
         self.final_model: nn.Module | None = None
 
-        print(f"DARTSTrainer initialised on {device}")
+        # Resolve default engine variant (R_DARTS).
+        _default_engine = DARTSEngineConfig(variant=DARTSVariant.R_DARTS)
+        print(f"DARTSTrainer initialised on {device}  [DARTS variant={_default_engine.resolve_variant().value}]")
         print(f"  input_dim={input_dim}  forecast_horizon={forecast_horizon}")
         print(f"  operations available: {len(self.all_ops)}")
         print(f"  op families: {list(self.op_families.keys())}")
@@ -525,6 +529,7 @@ class DARTSTrainer:
         compute_metrics: bool = True,
         max_train_batches: int | None = None,
         max_val_batches: int | None = None,
+        engine: DARTSEngineConfig | None = None,
         # Legacy aliases (deprecated):
         weight_decay: float | None = None,  # noqa: ARG002
         identity_dominance_cap: float | None = None,  # noqa: ARG002
@@ -687,6 +692,7 @@ class DARTSTrainer:
             compute_metrics=compute_metrics,
             max_train_batches=train_config.max_train_batches,
             max_val_batches=train_config.max_val_batches,
+            engine=engine if engine is not None else train_config.engine,
         )
 
     # ── Final model training ──────────────────────────────────────────────

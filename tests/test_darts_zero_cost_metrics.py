@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import pytest
 
-from foreblocks.darts.search.metrics import Config, MetricsComputer
-from foreblocks.darts.search.metrics.grasp import compute_grasp
+from darts.search.metrics import Config, MetricsComputer
+from darts.search.metrics.grasp import compute_grasp
 
 
 class TinyReluNet(nn.Module):

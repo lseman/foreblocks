@@ -7,11 +7,12 @@ highest-scoring fraction of tokens to pass through the gated (expensive)
 path.  Tokens that "fail" the budget simply copy their residual directly.
 
 Key design:
-    1. *ResidualGate*: ``g = σ(W·h)`` — a sigmoid-activated linear gate that
-       modulates the branch output before it re-enters the residual stream.
+    1. *ResidualGate*: ``g = σ(W·h + b)`` — a **single linear projection**
+       with sigmoid activation (no hidden MLP).  The paper ablated MLP gates
+       and found them strictly worse than the linear gate (§4.4).
     2. *Budget-constrained top-k*: only the top-``budget`` fraction of tokens
        (by gate score) pass through; the rest copy the residual directly.
-    3. *Auxiliary losses*: optional sparsity, budget-tracking, and
+    3. *Auxiliary losses*: optional L2 sparsity, budget-tracking, and
        smoothness regularisers.
 
 Original paper:
@@ -108,12 +109,14 @@ class ResidualGate(nn.Module):
     Implements the gating formula from **GateSkip** (Laitenberger et al.,
     2026, §3.1):
 
-        g = σ(W · h_prev)
+        g = σ(W · h_prev + b)
         h = h_prev + g ⊙ o
 
     where ``o`` is the output of the downstream path (e.g. an Attention or
     MLP block) and ``g ∈ [0,1]^{B×T×gate_dim}`` controls how much of ``o``
-    is incorporated into the residual stream.
+    is incorporated into the residual stream.  The gate is a **single linear
+    projection** — no hidden MLP — as the paper's ablations (§4.4) show
+    linear gates strictly outperform MLP-based gates (23.2% vs 18.5%).
 
     The gate is followed by a budget-constrained top-k selection in
     ``gateskip_apply``: only the top-``budget`` fraction of tokens
@@ -130,92 +133,57 @@ class ResidualGate(nn.Module):
     ----------
     d_model : int
         Input (and residual) feature dimension.
-    gate_dim : int
-        Number of gate channels.  ``1`` gives a scalar gate per token
-        (safest).  ``d_model`` gives a per-feature gate.
-    hidden_dim : int | None
-        Hidden dimension of the gate MLP.  Defaults to ``d_model``.
-    norm_type : str
-        ``"layernorm"`` or ``"identity"``.
-    layer_norm_eps : float
-        LayerNorm epsilon.
+    gate_dim : int | None
+        Number of gate channels.  Defaults to ``d_model`` (vector gate).
+        The paper's default is per-feature gating — scalar gates (``1``)
+        underperform by ~2.8% accuracy at 15% savings (§4.4).
     init_bias : float
-        Initial bias on the final gate linear layer.  Positive values
-        bias the gate open (more tokens pass through).  Default 2.0
-        (~σ(2) ≈ 0.88 of tokens initially open).
+        Initial bias on the gate linear layer.  Positive values bias the
+        gate open.  Default **5.0** so ``σ(5) ≈ 0.993``, making the model
+        initially nearly identical to the unmodified backbone (§3.4).
     init_std : float
-        Standard deviation for weight initialisation (Xavier-like).
+        Standard deviation for weight initialisation.  Default **0.01**
+        to keep gates near the bias at init (§3.4).
     """
 
     def __init__(
         self,
         d_model: int,
-        gate_dim: int = 1,
-        hidden_dim: int | None = None,
-        norm_type: str = "layernorm",
-        layer_norm_eps: float = 1e-5,
-        init_bias: float = 2.0,
-        init_std: float = 0.02,
+        gate_dim: int | None = None,
+        init_bias: float = 5.0,
+        init_std: float = 0.01,
     ):
         super().__init__()
+        if gate_dim is None:
+            gate_dim = d_model
         if gate_dim not in (1, d_model):
             raise ValueError("ResidualGate gate_dim must be 1 or equal to d_model")
-        if norm_type not in ("layernorm", "identity"):
-            raise ValueError("norm_type must be 'layernorm' or 'identity'")
 
         self.d_model = int(d_model)
         self.gate_dim = int(gate_dim)
-        self.hidden_dim = int(hidden_dim) if hidden_dim is not None else int(d_model)
 
-        if norm_type == "layernorm":
-            self.norm = nn.LayerNorm(d_model, eps=layer_norm_eps)
-        else:
-            self.norm = nn.Identity()
-
-        self.fc1 = nn.Linear(d_model, self.hidden_dim, bias=True)
-        self.act = nn.GELU()
-        self.fc2 = nn.Linear(self.hidden_dim, self.gate_dim, bias=True)
-
-        nn.init.normal_(self.fc1.weight, mean=0.0, std=init_std)
-        nn.init.constant_(self.fc1.bias, 0.0)
-
-        # Safer than 5.0: starts mostly open, but not fully saturated.
-        nn.init.normal_(self.fc2.weight, mean=0.0, std=init_std)
-        nn.init.constant_(self.fc2.bias, float(init_bias))
-
-        self.register_buffer("_last_gate_mean", torch.tensor(0.0), persistent=False)
-        self.register_buffer(
-            "_last_gate_active_mean", torch.tensor(0.0), persistent=False
-        )
+        # Single linear projection: g = σ(W·h + b)
+        self.fc = nn.Linear(d_model, self.gate_dim, bias=True)
+        nn.init.normal_(self.fc.weight, mean=0.0, std=init_std)
+        nn.init.constant_(self.fc.bias, float(init_bias))  # σ(5) ≈ 0.993
 
     def gate_scores(
         self,
         h_prev: torch.Tensor,
         active_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
+        """Returns gate values and scalar importance scores.
+
         Returns:
             g:    [B,T,gate_dim]
             gbar: [B,T] token-level scalar importance
         """
-        x = self.norm(h_prev)
-        x = self.act(self.fc1(x))
-        g = torch.sigmoid(self.fc2(x))
+        g = torch.sigmoid(self.fc(h_prev))
 
         if self.gate_dim == 1:
             gbar = g.squeeze(-1)
         else:
             gbar = g.mean(dim=-1)
-
-        with torch.no_grad():
-            self._last_gate_mean.copy_(g.mean().detach())
-            if active_mask is None:
-                self._last_gate_active_mean.copy_(gbar.mean().detach())
-            else:
-                am = active_mask.to(device=gbar.device, dtype=torch.bool)
-                denom = am.sum().clamp_min(1)
-                active_mean = gbar.masked_select(am).sum() / denom
-                self._last_gate_active_mean.copy_(active_mean.detach())
 
         return g, gbar
 
@@ -441,7 +409,7 @@ def gateskip_apply(
     aux_terms : list[torch.Tensor]
         Accumulator for auxiliary loss terms (appended in-place).
     lambda_s : float
-        Sparsity weight → ``λ_s * mean(g)``.
+        Sparsity weight → ``λ_s * L2(g)`` (mean of squared gate values).
     active_mask : torch.Tensor | None
         ``[B,T]`` bool mask for valid tokens.
     lambda_budget : float
@@ -510,7 +478,9 @@ def gateskip_apply(
     )
 
     if lambda_s > 0.0:
-        aux_terms.append(lambda_s * stats.gate_active_mean)
+        # L2 sparsity loss: encourages gate values to stay near zero.
+        # The paper's ablation (§4.4) shows L2 outperforms L1.
+        aux_terms.append(lambda_s * (gbar**2).mean())
 
     if lambda_budget > 0.0 and budget is not None:
         aux_terms.append(lambda_budget * (stats.budget_error**2))

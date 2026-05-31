@@ -41,6 +41,9 @@ class TestResidualGate(unittest.TestCase):
         self.assertEqual(gbar.shape, (2, 4))
         self.assertTrue(torch.all(g >= 0))
         self.assertTrue(torch.all(g <= 1))
+        # Gate bias defaults to 5.0: σ(5) ≈ 0.993
+        self.assertAlmostEqual(gate.fc.bias[0].item(), 5.0)
+        self.assertAlmostEqual(torch.sigmoid(gate.fc.bias[0]).item(), 0.993, places=2)
 
     def test_gateskip_apply_masks_inactive_tokens(self):
         """gateskip_apply returns 3-tuple and masks inactive tokens via skip_mask."""
@@ -120,6 +123,28 @@ class TestResidualGate(unittest.TestCase):
 
         self.assertEqual(g.shape, (2, 4, 8))
         self.assertEqual(gbar.shape, (2, 4))  # mean over features
+
+    def test_gateskip_vector_gate_default(self):
+        """ResidualGate defaults to vector gate (gate_dim=d_model)."""
+        torch.manual_seed(0)
+        gate = ResidualGate(d_model=8)
+        self.assertEqual(gate.gate_dim, 8)
+        x = torch.randn(2, 4, 8)
+        o = torch.randn(2, 4, 8)
+        out, g, gbar = gate(x, o)
+        self.assertEqual(g.shape, (2, 4, 8))
+
+    def test_gateskip_init_defaults(self):
+        """ResidualGate init: bias=5.0, std=0.01, single linear gate."""
+        gate = ResidualGate(d_model=8, gate_dim=1)
+        self.assertAlmostEqual(gate.fc.bias[0].item(), 5.0)
+        # Should have exactly one Linear, no fc1/fc2 or norm
+        self.assertFalse(hasattr(gate, 'fc1'))
+        self.assertFalse(hasattr(gate, 'fc2'))
+        self.assertFalse(hasattr(gate, 'act'))
+        self.assertFalse(hasattr(gate, 'norm'))
+        gate2 = ResidualGate(d_model=8, gate_dim=1, init_bias=2.0)
+        self.assertAlmostEqual(gate2.fc.bias[0].item(), 2.0)
 
 
 class TestBudgetScheduler(unittest.TestCase):

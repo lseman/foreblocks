@@ -8,6 +8,143 @@ single object instead of long keyword-argument lists.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+from typing import Literal
+
+
+class DARTSVariant(str, Enum):
+    """DARTS algorithm variant.
+
+    Each variant addresses a different flaw in the original DARTS bilevel
+    optimisation.  The same MixedOp / cell / training loop can be switched
+    between variants simply by changing this enum value — no code changes
+    are needed in downstream callers.
+
+    | Variant       | Key Improvement                                           | Default |
+    |---------------|-----------------------------------------------------------|---------|
+    | ``DARTS``     | Baseline bilevel optimisation (Gumbel-Softmax + Adam)     |         |
+    | ``GD_DARTS``  | Straight-through softmax; no Gumbel noise                 |         |
+    | ``R_DARTS``   | AdamW + gradient-norm balancing for arch params           | ✓       |
+    | ``PC_DARTS``  | Permutation-consistent weight sharing across edges        |         |
+    | ``BI_DARTS``  | Bidirectional (forward + backward) cell training          |         |
+    | ``AUTO``      | Pick best default for your dataset size (see below)       |         |
+
+    AUTO resolution:
+
+    | Dataset samples | Selected variant |
+    |-----------------|------------------|
+    | < 10 000        | R_DARTS (small data → needs stable arch gradients) |
+    | 10 000 – 100k   | PC_DARTS (medium data → needs fair weight sharing) |
+    | > 100 000       | R_DARTS (large data → AdamW + norm balancing wins) |
+    """
+
+    DARTS = "darts"
+    GD_DARTS = "gd_darts"
+    R_DARTS = "r_darts"
+    PC_DARTS = "pc_darts"
+    BI_DARTS = "bi_darts"
+    AUTO = "auto"
+
+    @classmethod
+    def resolve_auto(cls, n_samples: int = 0) -> "DARTSVariant":
+        """Resolve AUTO to a concrete variant based on dataset size."""
+        if n_samples < 10_000:
+            return cls.R_DARTS
+        if n_samples < 100_000:
+            return cls.PC_DARTS
+        return cls.R_DARTS
+
+
+# ---------------------------------------------------------------------------
+# DARTS Engine variant hyperparameters
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GD_DARTSEngineConfig:
+    """Configuration for GD-DARTS (gradient-descent DARTS)."""
+
+    # Replace Gumbel-Softmax with pure straight-through softmax.
+    # No temperature annealing needed — the softmax is the sampling distribution.
+    replace_gumbel_softmax: bool = True
+    # Use a fixed, low temperature during the commitment phase.
+    commitment_temperature: float = 0.1
+
+
+@dataclass
+class R_DARTSEngineConfig:
+    """Configuration for R-DARTS (reweighted DARTS)."""
+
+    # Use AdamW (decoupled weight decay) for architecture params.
+    use_adamw_arch: bool = True
+    # Balance arch and weight gradient norms before each update.
+    balance_gradient_norms: bool = True
+    # Scaling factor applied to arch-gradient norm before the update.
+    # 1.0 = full arch gradient, <1.0 = scaled down.
+    arch_grad_scale: float = 1.0
+    # Warmup epochs where arch-gradient balancing is disabled (model weights
+    # are too unstable to give a useful reference signal).
+    norm_balance_warmup: int = 2
+
+
+@dataclass
+class PC_DARTSEngineConfig:
+    """Configuration for PC-DARTS (permutation-consistent DARTS)."""
+
+    # Enable permutation-consistent weight sharing.
+    # When two edges share the same underlying op weights, permute them
+    # so that swapping edge order does not change the forward output.
+    enable_permutation_consistency: bool = True
+    # Apply a small L2 regularizer on the permutation matrix to keep
+    # it close to the identity (encourages discrete selection).
+    perm_l2_weight: float = 1e-4
+
+
+@dataclass
+class BI_DARTSEngineConfig:
+    """Configuration for Bi-DARTS (bidirectional DARTS)."""
+
+    # Train both forward and backward through the cell.
+    bidirectional_training: bool = True
+    # Weight given to the backward-pass loss relative to the forward pass.
+    backward_loss_weight: float = 0.5
+    # Number of backward passes through the cell (usually 1 is enough).
+    backward_passes: int = 1
+
+
+@dataclass
+class DARTSEngineConfig:
+    """Variant-specific configuration for the DARTS engine.
+
+    All variant configs can be enabled simultaneously; the engine picks
+    the relevant fields based on ``variant``.  Fields from *other* variants
+    are silently ignored.
+
+    Example::
+
+        cfg = DARTSEngineConfig(
+            variant=DARTSVariant.R_DARTS,
+            r_darts=R_DARTSEngineConfig(balance_gradient_norms=True),
+        )
+    """
+
+    variant: DARTSVariant = DARTSVariant.R_DARTS
+    # Dataset size hint (used when variant=AUTO)
+    n_samples: int = 0
+    # GD-DARTS settings
+    gd_darts: GD_DARTSEngineConfig = field(default_factory=GD_DARTSEngineConfig)
+    # R-DARTS settings
+    r_darts: R_DARTSEngineConfig = field(default_factory=R_DARTSEngineConfig)
+    # PC-DARTS settings
+    pc_darts: PC_DARTSEngineConfig = field(default_factory=PC_DARTSEngineConfig)
+    # Bi-DARTS settings
+    bi_darts: BI_DARTSEngineConfig = field(default_factory=BI_DARTSEngineConfig)
+
+    def resolve_variant(self) -> DARTSVariant:
+        if self.variant == DARTSVariant.AUTO:
+            return DARTSVariant.resolve_auto(self.n_samples)
+        return self.variant
+
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +305,13 @@ class DARTSTrainConfig:
     # ── GDAS / DrNAS ──────────────────────────────────────────────────────
     op_gdas: bool = True  # single-path sampling per edge (dominant speedup)
     variant_gdas: bool | None = None  # mirrors op_gdas unless explicitly set
+
+    # ── DARTS engine variant ──────────────────────────────────────────────
+    engine: DARTSEngineConfig = field(
+        default_factory=lambda: DARTSEngineConfig(
+            variant=DARTSVariant.R_DARTS,
+        )
+    )  # DARTS algorithm variant (R_DARTS, PC_DARTS, GD_DARTS, BI_DARTS)
 
     # ── Batching overrides ────────────────────────────────────────────────
     max_train_batches: int | None = None

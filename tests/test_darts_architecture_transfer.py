@@ -3,7 +3,7 @@ import warnings
 import torch
 import torch.nn.functional as F
 
-from foreblocks.darts.architecture.base_blocks import (
+from darts.architecture.base_blocks import (
     ArchitectureConverter,
     BaseMixedSequenceBlock,
     MixedEncoder,
