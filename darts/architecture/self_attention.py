@@ -32,7 +32,10 @@ class SelfAttention(nn.Module):
     """
 
     MODES: tuple[str, ...] = ("sdp", "linear", "probsparse", "cosine", "local")
-    POSITION_MODES: tuple[str, ...] = ("rope", "alibi", "none", "seasonal")
+    POSITION_MODES: tuple[str, ...] = (
+        "rope", "alibi", "none", "seasonal",
+        "sinusoidal", "learned", "relative",
+    )
     LOCAL_WINDOW_RATIO: float = 0.25
     PROBSPARSE_C: int = 5
 
@@ -103,6 +106,17 @@ class SelfAttention(nn.Module):
         # in [-1,1]; without rescaling the softmax is near-uniform. Init at
         # log(head_dim ** 0.5) so exp(.) matches the SDP scale at start.
         self.cos_log_scale = nn.Parameter(torch.tensor(math.log(self.head_dim**0.5)))
+
+        # --- New position-encoding parameters (sinusoidal, learned, relative) ---
+        # Learnable per-position embeddings (max_seq_len): for "learned" mode.
+        self.learned_pos = nn.Parameter(
+            torch.randn(rope_max_seq_len, self.head_dim) * 0.02
+        )
+        # Learnable relative-position bias table: (2*T-1) x heads
+        # Scalar bias per relative displacement per head, added to scores.
+        self.relative_pos_bias = nn.Parameter(
+            torch.zeros(2 * rope_max_seq_len - 1, self.heads)
+        )
         # Deterministic generator for ProbSparse sampling: reduces variance in
         # the architecture gradient since alphas are trying to estimate which
         # kernel is best.
@@ -182,6 +196,53 @@ class SelfAttention(nn.Module):
             except AttributeError:
                 pass
 
+    def _apply_sinusoidal_pos(
+        self, q: torch.Tensor, k: torch.Tensor, query_len: int, key_len: int
+    ) -> tuple:
+        """Sinusoidal positional encoding (Vaswani et al. 2017)."""
+        pos_q = _sinusoidal_features(
+            query_len, self.head_dim, device=q.device, dtype=q.dtype
+        ).reshape(1, 1, query_len, self.head_dim)
+        pos_k = _sinusoidal_features(
+            key_len, self.head_dim, device=k.device, dtype=k.dtype
+        ).reshape(1, 1, key_len, self.head_dim)
+        scale = self.positional_scale.to(dtype=q.dtype)
+        q = q + scale * pos_q
+        k = k + scale * pos_k
+        return q, k, None
+
+    def _apply_learned_pos(
+        self, q: torch.Tensor, k: torch.Tensor, query_len: int, key_len: int
+    ) -> tuple:
+        """Learned positional embeddings."""
+        max_len = self.learned_pos.size(0)
+        pos_q = self.learned_pos[:query_len].unsqueeze(0).unsqueeze(0).to(dtype=q.dtype)
+        pos_k = self.learned_pos[:key_len].unsqueeze(0).unsqueeze(0).to(dtype=k.dtype)
+        q = q + pos_q
+        k = k + pos_k
+        return q, k, None
+
+    def _apply_relative_pos(
+        self, q: torch.Tensor, k: torch.Tensor,
+        query_len: int, key_len: int, device, dtype
+    ) -> tuple:
+        """DeiT-style relative position bias (Touvron et al. 2021).
+
+        Returns (q, k, bias) where bias has shape [1, heads, Q, K]
+        for direct addition to attention scores.
+        """
+        # Relative displacement: rel[j] = j - i for k_pos=j, q_pos=i
+        # Shape: [Q, K], range [-(K-1), Q-1]
+        rel_idx = torch.arange(key_len, device=device).unsqueeze(0) - \
+                  torch.arange(query_len, device=device).unsqueeze(1)
+        offset = key_len - 1  # shift to [0, Q+K-2]
+        rel_idx = (rel_idx + offset).clamp(0, query_len + key_len - 2)
+        # Gather per-head bias: rel_idx [Q,K] x bias [max_rel,heads] -> [Q,K,heads]
+        bias = self.relative_pos_bias[rel_idx]  # [Q, K, heads]
+        # Transpose to [heads, Q, K] and add batch dim -> [1, heads, Q, K]
+        bias = bias.permute(2, 0, 1).unsqueeze(0).to(dtype=dtype)
+        return q, k, bias
+
     def _build_relative_bias(
         self, position_mode: str, query_len: int, key_len: int, device, dtype
     ) -> torch.Tensor | None:
@@ -211,6 +272,17 @@ class SelfAttention(nn.Module):
         if position_mode == "rope":
             q, k = self._apply_rotary_pair(q, k, query_len, key_len)
             return q, k, None
+        if position_mode == "sinusoidal":
+            q, k, _ = self._apply_sinusoidal_pos(q, k, query_len, key_len)
+            return q, k, None
+        if position_mode == "learned":
+            q, k, _ = self._apply_learned_pos(q, k, query_len, key_len)
+            return q, k, None
+        if position_mode == "relative":
+            q, k, bias = self._apply_relative_pos(
+                q, k, query_len, key_len, q.device, q.dtype
+            )
+            return q, k, bias
         if position_mode == "none":
             return q, k, None
         if position_mode == "seasonal":

@@ -1,8 +1,28 @@
+"""Sliding-window (local) attention — each query attends to a fixed-size window.
+
+Restricts attention to a local neighbourhood of ``window_size`` keys around
+each query instead of the full sequence, giving linear rather than quadratic
+cost in sequence length. This is the standard local-attention pattern used by:
+
+    Beltagy, I., Peters, M. E., & Cohan, A. (2020).
+    "Longformer: The Long-Document Transformer."
+    arXiv:2004.05150 [[arXiv]](https://arxiv.org/abs/2004.05150)
+
+and the sliding-window attention of Mistral (Jiang et al., 2023,
+arXiv:2310.06825).
+
+In addition to serving as a standalone attention type, this implementation is
+reused as the sliding-window branch of :class:`NSAImpl` (its ``manual`` method
+is called directly with ``apply_gate=False``).
+"""
+
 import torch
 import torch.nn.functional as F
 
 
 class SlidingWindowAttentionImpl:
+    """Sliding-window (local) attention implementation (see module docstring)."""
+
     def __init__(self, parent):
         self.parent = parent
 

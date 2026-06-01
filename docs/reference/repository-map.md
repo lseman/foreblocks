@@ -28,11 +28,11 @@ This page gives a quick path through the repository for contributors and power u
 | `foreblocks/evaluation/` | Evaluation and metrics |
 | `foreblocks/data/` | Dataset and dataloader helpers |
 | `foreblocks/ts_handler/` | Preprocessing and sequence construction |
-| `foreblocks/tf/` | Transformer stack and advanced attention |
+| `foreblocks/transformer/` | Transformer stack and advanced attention |
 | `foreblocks/mltracker/` | Experiment tracking |
 | `foreblocks/custom_mamba/` | Hybrid Mamba SSM blocks (HybridMambaBlock, HybridMamba2Block, SSD) |
 | `foreblocks/mamba/` | Original Mamba backbone with MoE, positional encoding, and eval tools |
-| `foreblocks/kan/` | Kolmogorov-Arnold Network backbone |
+| `foreblocks/kan/` | Kolmogorov-Arnold Network backbone (see [KAN Backbone](../kan.md)) |
 
 ## `foretools/`
 
@@ -55,7 +55,7 @@ This page gives a quick path through the repository for contributors and power u
 | Configuring runs | [`foreblocks/config.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/config.py) |
 | Building dataloaders | [`foreblocks/data/dataset.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/data/dataset.py) |
 | Adding preprocessing logic | [`foreblocks/ts_handler/preprocessing.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/ts_handler/preprocessing.py) |
-| Exploring transformer internals | [`foreblocks/tf/transformer.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/tf/transformer.py) |
+| Exploring transformer internals | [`foreblocks/transformer/transformer.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/transformer/transformer.py) |
 | Working on architecture search | [`darts/`](https://github.com/lseman/foreblocks/tree/main/darts) |
 | Using SSM / Mamba-style blocks | [`foreblocks/custom_mamba/layers.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/custom_mamba/layers.py) |
 | Generating synthetic data | [`foretools/tsgen/`](https://github.com/lseman/foreblocks/tree/main/foretools/tsgen) |

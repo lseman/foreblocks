@@ -85,6 +85,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         attention_matching_min_keep: int = 64,
         attention_matching_query_budget: int = 64,
         attention_matching_force_single_step: bool = False,
+        moba_block_size: int | None = None,
+        moba_topk: int = 4,
         use_attention_residual: bool = False,  # True enables depth attention residuals (incompatible with ckpt/mHC/mod/gateskip)
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
@@ -124,7 +126,9 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
 
         # Init parameters for lazy factories (captured once, reused)
         self._attn_init_kwargs = {
-            "d_model": d_model, "n_heads": nhead, "dropout": dropout,
+            "d_model": d_model,
+            "n_heads": nhead,
+            "dropout": dropout,
         }
         self._std_kwargs = dict(
             attention_type=att_type,
@@ -136,6 +140,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_min_keep=attention_matching_min_keep,
             attention_matching_query_budget=attention_matching_query_budget,
             attention_matching_force_single_step=attention_matching_force_single_step,
+            moba_block_size=moba_block_size,
+            moba_topk=moba_topk,
         )
         self._sype_kwargs = dict(
             attention_type="sype",
@@ -147,15 +153,23 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_min_keep=attention_matching_min_keep,
             attention_matching_query_budget=attention_matching_query_budget,
             attention_matching_force_single_step=attention_matching_force_single_step,
+            moba_block_size=moba_block_size,
+            moba_topk=moba_topk,
         )
         self._gla_kwargs = dict(
-            backend="gla", mode="chunk", chunk_size=64,
+            backend="gla",
+            mode="chunk",
+            chunk_size=64,
         )
         self._deltanet_kwargs = dict(
-            backend="deltanet", mode="chunk", chunk_size=64,
+            backend="deltanet",
+            mode="chunk",
+            chunk_size=64,
         )
         self._gdn_modern_kwargs = dict(
-            backend="gated_deltanet", mode="chunk", chunk_size=64,
+            backend="gated_deltanet",
+            mode="chunk",
+            chunk_size=64,
         )
         self.layer_attention_type = str(layer_attention_type)
         self._pos_encoding_type = str(pos_encoding_type)
@@ -201,7 +215,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         if self.self_attn_std is None:
             dev = next(self.parameters()).device
             self.self_attn_std = MultiAttention(
-                **self._attn_init_kwargs, **self._std_kwargs,
+                **self._attn_init_kwargs,
+                **self._std_kwargs,
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_std
@@ -219,7 +234,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         if self.self_attn_gla is None:
             dev = next(self.parameters()).device
             self.self_attn_gla = ModernLinearAttention(
-                **self._attn_init_kwargs, **self._gla_kwargs,
+                **self._attn_init_kwargs,
+                **self._gla_kwargs,
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_gla
@@ -228,7 +244,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         if self.self_attn_deltanet is None:
             dev = next(self.parameters()).device
             self.self_attn_deltanet = ModernLinearAttention(
-                **self._attn_init_kwargs, **self._deltanet_kwargs,
+                **self._attn_init_kwargs,
+                **self._deltanet_kwargs,
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_deltanet
@@ -237,7 +254,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         if self.self_attn_gdn_modern is None:
             dev = next(self.parameters()).device
             self.self_attn_gdn_modern = ModernLinearAttention(
-                **self._attn_init_kwargs, **self._gdn_modern_kwargs,
+                **self._attn_init_kwargs,
+                **self._gdn_modern_kwargs,
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_gdn_modern
@@ -246,7 +264,8 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         if self.self_attn_sype is None:
             dev = next(self.parameters()).device
             self.self_attn_sype = MultiAttention(
-                **self._attn_init_kwargs, **self._sype_kwargs,
+                **self._attn_init_kwargs,
+                **self._sype_kwargs,
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_sype

@@ -157,7 +157,8 @@ def derive_final_architecture(
         components = _collect_layer_components(module_obj, "self_attn")
         if not components:
             return "unknown"
-        modes = tuple(getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")))
+        modes = tuple(getattr(components[0], "POSITION_MODES",
+            ("rope", "alibi", "none", "seasonal", "sinusoidal", "learned", "relative")))
         top = _mean_mode_probs(
             components,
             direct_attr="position_mode",
@@ -191,7 +192,8 @@ def derive_final_architecture(
 
         logits = getattr(module_obj, "decode_style_alphas", None)
         style_names = tuple(
-            getattr(module_obj, "decode_style_names", ("autoregressive", "informer"))
+            getattr(module_obj, "decode_style_names",
+                ("autoregressive", "informer", "autoformer"))
         )
         top = _softmax_top(logits, style_names)
         if top is not None:
@@ -243,7 +245,8 @@ def derive_final_architecture(
         components = _collect_layer_components(submodule, "cross_attn")
         if not components:
             return "unknown"
-        modes = tuple(getattr(components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")))
+        modes = tuple(getattr(components[0], "POSITION_MODES",
+            ("rope", "alibi", "none", "seasonal", "sinusoidal", "learned", "relative")))
         top = _mean_mode_probs(
             components,
             direct_attr="position_mode",

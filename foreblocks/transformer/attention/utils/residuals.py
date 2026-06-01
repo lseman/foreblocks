@@ -89,6 +89,11 @@ class AttentionResidual(nn.Module):
     ----------
     dim : int
         Hidden dimension (also used for the learnable depth query ``q``).
+    scale : float | None
+        Factor applied to the depth logits ``q^T K`` before the softmax. The
+        raw dot product grows with ``dim``, which makes the depth-softmax
+        saturate toward a one-hot distribution; scaling keeps the logits in a
+        stable range. Defaults to ``dim ** -0.5``.
 
     Attributes
     ----------
@@ -98,12 +103,13 @@ class AttentionResidual(nn.Module):
         Per-token RMSNorm applied to the stacked history before attention.
     """
 
-    def __init__(self, dim):
+    def __init__(self, dim, scale=None):
         super().__init__()
         self.query = nn.Parameter(torch.zeros(dim))  # w_l
         self.norm = RMSNorm(dim)
+        self.scale = dim ** -0.5 if scale is None else scale
 
-    def forward(self, history):
+    def forward(self, history, return_weights=False):
         r"""Aggregate previous layer outputs via softmax attention over depth.
 
         Parameters
@@ -111,11 +117,16 @@ class AttentionResidual(nn.Module):
         history : list[torch.Tensor]
             Layer outputs ``[v_0, v_1, ..., v_{l-1}]``, each shaped
             ``[B, T, D]``.
+        return_weights : bool
+            If ``True``, also return the depth-softmax weights ``α`` shaped
+            ``[L, B, T]``. Default: ``False``.
 
         Returns
         -------
         torch.Tensor
             Weighted sum of history, shaped ``[B, T, D]``.
+        torch.Tensor
+            Depth-softmax weights ``[L, B, T]``, only if ``return_weights``.
 
         Notes
         -----
@@ -123,7 +134,7 @@ class AttentionResidual(nn.Module):
 
         1. Stack history into ``V ∈ R^{L×B×T×D}``.
         2. Apply RMSNorm to keys: ``K = Norm(V)``.
-        3. Compute logits ``q^T K ∈ R^{L×B×T}``.
+        3. Compute scaled logits ``scale · q^T K ∈ R^{L×B×T}``.
         4. Softmax over the depth dimension ``L``.
         5. Weighted sum ``h = Σ_i α_i · v_i``.
         """
@@ -134,9 +145,9 @@ class AttentionResidual(nn.Module):
         # normalize keys
         K = self.norm(V)
 
-        # compute logits: q^T k
+        # compute scaled logits: scale * q^T k
         # [L, B, T]
-        logits = torch.einsum("d, l b t d -> l b t", self.query, K)
+        logits = torch.einsum("d, l b t d -> l b t", self.query, K) * self.scale
 
         # softmax over depth (L dimension)
         attn = F.softmax(logits, dim=0)
@@ -144,6 +155,8 @@ class AttentionResidual(nn.Module):
         # weighted sum
         h = torch.einsum("l b t, l b t d -> b t d", attn, V)
 
+        if return_weights:
+            return h, attn
         return h
 
 
@@ -173,6 +186,11 @@ class BlockAttentionResidual(nn.Module):
     ----------
     dim : int
         Hidden dimension (also used for the learnable depth query ``q``).
+    scale : float | None
+        Factor applied to the depth logits ``q^T K`` before the softmax. The
+        raw dot product grows with ``dim``, which makes the depth-softmax
+        saturate toward a one-hot distribution; scaling keeps the logits in a
+        stable range. Defaults to ``dim ** -0.5``.
 
     Attributes
     ----------
@@ -182,12 +200,13 @@ class BlockAttentionResidual(nn.Module):
         Per-token RMSNorm applied to the stacked block history.
     """
 
-    def __init__(self, dim):
+    def __init__(self, dim, scale=None):
         super().__init__()
         self.query = nn.Parameter(torch.zeros(dim))
         self.norm = RMSNorm(dim)
+        self.scale = dim ** -0.5 if scale is None else scale
 
-    def forward(self, blocks, partial=None):
+    def forward(self, blocks, partial=None, return_weights=False):
         r"""Aggregate block-level representations via softmax attention over depth.
 
         Parameters
@@ -198,11 +217,16 @@ class BlockAttentionResidual(nn.Module):
         partial : torch.Tensor | None
             Current block's running accumulation, or ``None`` if this is
             the first sub-layer in a block (only completed blocks visible).
+        return_weights : bool
+            If ``True``, also return the depth-softmax weights ``α`` shaped
+            ``[L, B, T]``. Default: ``False``.
 
         Returns
         -------
         torch.Tensor
             Weighted sum, shaped ``[B, T, D]``.
+        torch.Tensor
+            Depth-softmax weights ``[L, B, T]``, only if ``return_weights``.
 
         Raises
         ------
@@ -216,7 +240,7 @@ class BlockAttentionResidual(nn.Module):
         1. Stack ``blocks`` (and optionally ``partial``) into ``V ∈
            R^{L×B×T×D}``.
         2. Apply RMSNorm to keys: ``K = Norm(V)``.
-        3. Compute logits ``q^T K ∈ R^{L×B×T}``.
+        3. Compute scaled logits ``scale · q^T K ∈ R^{L×B×T}``.
         4. Softmax over the depth dimension ``L``.
         5. Weighted sum ``h = Σ_i α_i · v_i``.
         """
@@ -232,9 +256,11 @@ class BlockAttentionResidual(nn.Module):
         V = torch.stack(values, dim=0)
         K = self.norm(V)
 
-        logits = torch.einsum("d, l b t d -> l b t", self.query, K)
+        logits = torch.einsum("d, l b t d -> l b t", self.query, K) * self.scale
         attn = F.softmax(logits, dim=0)
 
         h = torch.einsum("l b t, l b t d -> b t d", attn, V)
 
+        if return_weights:
+            return h, attn
         return h

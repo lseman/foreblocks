@@ -17,14 +17,14 @@ That structure makes it easier to debug, benchmark, and reason about the search 
 
 | Phase | Main code location | Role |
 | --- | --- | --- |
-| search-space definition | `foreblocks/darts/config.py` | defines architecture modes, op pools, and search budgets |
-| candidate generation | `foreblocks/darts/search/orchestrator.py` | samples candidate configs and coordinates evaluation |
-| zero-cost ranking | `foreblocks/darts/search/zero_cost.py` | computes cheap pre-training metrics |
-| bilevel search training | `foreblocks/darts/training/darts_loop.py` | runs the mixed-architecture DARTS phase |
-| multi-fidelity orchestration | `foreblocks/darts/search/multi_fidelity.py` | promotes top candidates and manages staged budgets |
-| final fixed-model retraining | `foreblocks/darts/training/final_trainer.py` | retrains the derived architecture |
-| result analysis | `foreblocks/darts/evaluation/analyzer.py` | builds search-result summaries and plots |
-| public entry surface | `foreblocks/darts/trainer.py` | exposes the staged workflow as `DARTSTrainer` methods |
+| search-space definition | `darts/config.py` | defines architecture modes, op pools, and search budgets |
+| candidate generation | `darts/search/orchestrator.py` | samples candidate configs and coordinates evaluation |
+| zero-cost ranking | `darts/search/zero_cost.py` | computes cheap pre-training metrics |
+| bilevel search training | `darts/training/darts_loop.py` | runs the mixed-architecture DARTS phase |
+| multi-fidelity orchestration | `darts/search/multi_fidelity.py` | promotes top candidates and manages staged budgets |
+| final fixed-model retraining | `darts/training/final_trainer.py` | retrains the derived architecture |
+| result analysis | `darts/evaluation/analyzer.py` | builds search-result summaries and plots |
+| public entry surface | `darts/trainer.py` | exposes the staged workflow as `DARTSTrainer` methods |
 
 ## Public control flow
 

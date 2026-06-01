@@ -13,7 +13,7 @@ pip install "foreblocks[darts]"
 ## Step 1: create the trainer
 
 ```python
-from foreblocks.darts import DARTSTrainer
+from darts import DARTSTrainer
 
 trainer = DARTSTrainer(
     input_dim=6,
@@ -124,7 +124,7 @@ final_run = trainer.train_final_model(
 With `foreblocks[darts]` installed:
 
 ```python
-from foreblocks.darts import StreamlinedDARTSAnalyzer
+from darts import StreamlinedDARTSAnalyzer
 
 analyzer = StreamlinedDARTSAnalyzer(results)
 print(analyzer.analysis_df.head())

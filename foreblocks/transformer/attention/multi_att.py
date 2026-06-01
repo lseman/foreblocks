@@ -133,6 +133,9 @@ class MultiAttention(nn.Module):
         # NEW: NSA-specific knobs
         nsa_block_size: int | None = None,
         nsa_topk_ratio: float | None = None,
+        # NEW: MoBA-specific knobs
+        moba_block_size: int | None = None,
+        moba_topk: int = 4,
     ):
         super().__init__()
 
@@ -202,6 +205,14 @@ class MultiAttention(nn.Module):
             if nsa_topk_ratio is not None
             else float(prob_sparse_factor)
         )
+        self.moba_block_size = (
+            int(moba_block_size) if moba_block_size is not None else int(chunk_size)
+        )
+        self.moba_topk = int(moba_topk)
+        if self.moba_block_size <= 0:
+            raise ValueError("moba_block_size must be > 0")
+        if self.moba_topk <= 0:
+            raise ValueError("moba_topk must be > 0")
 
         # Setup projections / type-specific modules
         self._setup_attention_modules(
@@ -302,6 +313,7 @@ class MultiAttention(nn.Module):
             "softpick",
             "sliding_window",
             "nsa",
+            "moba",
         ]:
             # QKV projections
             self.q_proj = nn.Linear(self.d_model, self.d_model, bias=False)
@@ -336,9 +348,7 @@ class MultiAttention(nn.Module):
             # Positional encoding type (stored for reference)
             self.pos_encoding_type = str(pos_encoding_type)
             # RoPE (self-attention only)
-            self.use_rotary = (
-                (pos_encoding_type == "rope") and not self.cross_attention
-            )
+            self.use_rotary = (pos_encoding_type == "rope") and not self.cross_attention
             if self.use_rotary:
                 from ..embeddings.rotary import RotaryEmbedding  # local import
 
@@ -347,9 +357,7 @@ class MultiAttention(nn.Module):
                 self.rotary_emb = None
 
             # ALiBi (self-attention only; not applicable to cross-attention)
-            self.use_alibi = (
-                (pos_encoding_type == "alibi") and not self.cross_attention
-            )
+            self.use_alibi = (pos_encoding_type == "alibi") and not self.cross_attention
             if self.use_alibi:
                 from ..embeddings.alibi_bias import ALiBiPositionalBias
 
@@ -421,6 +429,7 @@ class MultiAttention(nn.Module):
 
     def _create_impl(self) -> AttentionImpl:
         from .variants import (
+            MoBAAttentionImpl,
             NSAImpl,
             ProbSparseAttentionImpl,
             SlidingWindowAttentionImpl,
@@ -435,6 +444,8 @@ class MultiAttention(nn.Module):
             return ProbSparseAttentionImpl(self)
         if self.attention_type == "nsa":
             return NSAImpl(self)
+        if self.attention_type == "moba":
+            return MoBAAttentionImpl(self)
         if self.attention_type == "sliding_window":
             return SlidingWindowAttentionImpl(self)
         if self.attention_type == "softpick":
@@ -591,24 +602,28 @@ class MultiAttention(nn.Module):
                 raise RuntimeError("MLA projections are not initialized.")
             kv_latent = self.kv_down_proj(key)  # [B, T_k, L]
             k = (
-                self.k_up_proj(kv_latent)
+                self
+                .k_up_proj(kv_latent)
                 .view(B, T_k, self.n_kv_heads, self.head_dim)
                 .transpose(1, 2)
             )
             v = (
-                self.v_up_proj(kv_latent)
+                self
+                .v_up_proj(kv_latent)
                 .view(B, T_k, self.n_kv_heads, self.head_dim)
                 .transpose(1, 2)
             )
             return q, k, v, kv_latent
 
         k = (
-            self.k_proj(key)
+            self
+            .k_proj(key)
             .view(B, T_k, self.n_kv_heads, self.head_dim)
             .transpose(1, 2)
         )
         v = (
-            self.v_proj(value)
+            self
+            .v_proj(value)
             .view(B, T_k, self.n_kv_heads, self.head_dim)
             .transpose(1, 2)
         )

@@ -189,3 +189,127 @@ class InvertedAttentionOp(nn.Module):
         return self.norm(y)
 
 
+class SwiGLUFFNOp(nn.Module):
+    """SwiGLU FFN operation - state-of-the-art FFN variant with gated activation.
+
+    First projects input_dim → latent_dim, then applies SwiGLU gating internally.
+    SwiGLU(x) = SiLU(xW) ⊗ (xV) where W, V are split from a single projection.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        latent_dim: int,
+        hidden_ratio: float = 2.0,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+
+        # Project to latent dim first
+        self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
+        self.norm = nn.LayerNorm(latent_dim)
+
+        # Gated FFN: split hidden into gate and value
+        hidden = int(latent_dim * hidden_ratio)
+        self.gate_value = nn.Linear(latent_dim, hidden * 2, bias=False)
+
+        # Output projection
+        self.output_proj = nn.Linear(hidden, latent_dim, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_proj(x)
+        x = self.norm(x)
+        gv = self.gate_value(x)
+        gate, value = gv.chunk(2, dim=-1)
+        # SwiGLU: SiLU(gate) ⊗ value
+        out = F.silu(gate) * value
+        out = self.dropout(out)
+        return self.output_proj(out) + x
+
+
+class GeGLUFFNOp(nn.Module):
+    """GeGLU FFN operation - gated variant with GELU activation.
+
+    First projects input_dim → latent_dim, then applies GeGLU gating.
+    GeGLU(x) = GELU(xW) ⊗ (xV)
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        latent_dim: int,
+        hidden_ratio: float = 2.0,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+
+        # Project to latent dim first
+        self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
+        self.norm = nn.LayerNorm(latent_dim)
+
+        # Gated FFN: split hidden into gate and value
+        hidden = int(latent_dim * hidden_ratio)
+        self.gate_value = nn.Linear(latent_dim, hidden * 2, bias=False)
+
+        # Output projection
+        self.output_proj = nn.Linear(hidden, latent_dim, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_proj(x)
+        x = self.norm(x)
+        gv = self.gate_value(x)
+        gate, value = gv.chunk(2, dim=-1)
+        # GeGLU: GELU(gate) ⊗ value
+        out = F.gelu(gate) * value
+        out = self.dropout(out)
+        return self.output_proj(out) + x
+
+
+class GatedGeLUFFNOp(nn.Module):
+    """Gated GELU FFN - a simpler gated variant.
+
+    First projects input_dim → latent_dim, then applies GELU gating.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        latent_dim: int,
+        hidden_ratio: float = 2.0,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+
+        # Project to latent dim first
+        self.input_proj = nn.Linear(input_dim, latent_dim, bias=False)
+        self.norm = nn.LayerNorm(latent_dim)
+
+        hidden = int(latent_dim * hidden_ratio)
+        self.hidden_proj = nn.Linear(latent_dim, hidden, bias=False)
+        self.gate = nn.Sequential(
+            nn.Linear(latent_dim, hidden),
+            nn.GELU(),
+        )
+
+        # Output projection
+        self.output_proj = nn.Linear(hidden, latent_dim, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_proj(x)
+        x = self.norm(x)
+        hidden = self.hidden_proj(x)
+        gate = self.gate(x)
+        out = hidden * gate
+        out = self.dropout(out)
+        return self.output_proj(out) + x
+
+

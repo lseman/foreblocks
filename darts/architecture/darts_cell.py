@@ -7,17 +7,17 @@ edge importance gating, progressive stage scheduling, and hierarchical search.
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .mixed_op import MixedOp
 from .bb_primitives import RMSNorm
+from .mixed_op import MixedOp
 
 __all__ = ["DARTSCell"]
+
 
 class DARTSCell(nn.Module):
     """Enhanced DARTS cell with progressive search and better aggregation"""
@@ -48,8 +48,21 @@ class DARTSCell(nn.Module):
         drnas_concentration: float = 8.0,
         use_fair_darts_hierarchical: bool = True,
         op_gdas: bool = True,
+        residual_pattern: str = "auto",  # "additive", "gated", "skip", "auto"
     ):
         super().__init__()
+        self.residual_pattern = residual_pattern
+        self.residual_searchable = residual_pattern == "auto"
+        # Searchable residual pattern: 0=additive, 1=gated, 2=skip
+        self.residual_pattern_names = ("additive", "gated", "skip")
+        if self.residual_searchable:
+            self.residual_pattern_alphas = nn.Parameter(
+                0.01 * torch.randn(len(self.residual_pattern_names))
+            )
+            # Pre-register gates for each node to avoid CPU/CUDA mismatches
+            self.gate_weights = nn.ParameterList([
+                nn.Parameter(torch.zeros(1)) for _ in range(num_nodes)
+            ])
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.seq_length = seq_length
@@ -302,9 +315,33 @@ class DARTSCell(nn.Module):
         else:  # mean
             return torch.mean(stacked, dim=0)
 
-    def _apply_residual(self, node_output, residual_input, node_idx):
-        """Apply learnable residual connection with proper dimension handling"""
-        residual_weight = torch.sigmoid(self.residual_weights[node_idx])
+    def _get_residual_pattern(self) -> str:
+        """Resolve the residual pattern (searchable during training)."""
+        if not self.residual_searchable:
+            return self.residual_pattern
+        tau = max(float(self.temperature), 1e-3)
+        if self.training:
+            probs = F.gumbel_softmax(
+                self.residual_pattern_alphas,
+                tau=tau,
+                hard=False,
+                dim=0,
+            )
+        else:
+            probs = F.softmax(self.residual_pattern_alphas / tau, dim=0)
+        idx = int(torch.argmax(probs).item())
+        return self.residual_pattern_names[idx]
+
+    def _apply_residual(self, node_output, residual_input, node_idx, pattern=None):
+        """Apply residual connection with proper dimension handling.
+
+        Patterns:
+        - "additive": residual_weight * output + (1 - residual_weight) * skip
+        - "gated":    sigmoid(gate) * output + skip
+        - "skip":     output + skip (no weighting)
+        """
+        if pattern is None:
+            pattern = self._get_residual_pattern()
 
         # Handle dimension mismatches
         if node_output.shape != residual_input.shape:
@@ -328,6 +365,14 @@ class DARTSCell(nn.Module):
                     residual_input
                 )
 
+        if pattern == "gated":
+            # Use pre-registered gate weight (avoids CPU/CUDA device mismatch)
+            gate_weight = torch.sigmoid(self.gate_weights[node_idx])
+            return gate_weight * node_output + residual_input
+        if pattern == "skip":
+            return node_output + residual_input
+        # Default: additive (current behavior)
+        residual_weight = torch.sigmoid(self.residual_weights[node_idx])
         return residual_weight * node_output + (1 - residual_weight) * residual_input
 
     def forward(self, x):
@@ -414,6 +459,22 @@ class DARTSCell(nn.Module):
         # Apply final residual and normalization
         final = self._apply_residual(nodes[-1], x_proj, 0)
         result = self.out_norm(final)
+        return result
+
+    def get_residual_pattern_probs(self) -> torch.Tensor | None:
+        """Get the residual pattern probabilities for analysis."""
+        if self.residual_searchable and hasattr(self, "residual_pattern_alphas"):
+            return F.softmax(self.residual_pattern_alphas.detach(), dim=0)
+        return None
+
+    def resolve_residual_pattern(self) -> str:
+        """Resolve the residual pattern to a hard choice."""
+        if self.residual_searchable:
+            probs = self.get_residual_pattern_probs()
+            if probs is not None:
+                idx = int(torch.argmax(probs).item())
+                return self.residual_pattern_names[idx]
+        return self.residual_pattern
 
         return result
 
@@ -468,4 +529,3 @@ class DARTSCell(nn.Module):
                 "top_ops": edge.describe(top_k=2),
             }
         return stats
-

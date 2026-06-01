@@ -1,3 +1,42 @@
+"""Native Sparse Attention (NSA) — hardware-aligned hierarchical sparse attention.
+
+Implements the inference-time NSA mechanism from:
+
+    Yuan, J., Gao, H., Dai, D., Luo, J., Zhao, L., Zhang, Z., … Liang, W.
+    (2025).
+    "Native Sparse Attention: Hardware-Aligned and Natively Trainable Sparse
+    Attention."
+    arXiv:2502.11089 [[arXiv]](https://arxiv.org/abs/2502.11089)
+
+NSA replaces dense attention with three parallel branches whose outputs are
+combined per-token by independent learned gates (paper Eq. 5):
+
+    o* = Σ_{c ∈ {cmp, slc, win}} g_c · Attn(q, K̃_c, Ṽ_c)
+
+where each gate ``g_c ∈ [0, 1]`` comes from an MLP + sigmoid on the input
+features (they are independent sigmoids, not a softmax over branches):
+
+    * **Compression** (cmp): keys/values are pooled into block-level
+      representations and attended over coarsely. The paper uses a learnable
+      MLP φ with intra-block position encoding; this implementation uses
+      (padding-aware) mean pooling per block as a lightweight substitute.
+    * **Selection** (slc): the compression attention scores are reused as
+      block-importance scores (paper Eq. 9, ``p_cmp = softmax(qᵀ K̃_cmp)``);
+      the top-n blocks are selected and dense attention is computed over only
+      the tokens in those blocks. Here the budget is parameterized as
+      ``nsa_topk_ratio`` (fraction of blocks) rather than a fixed count.
+    * **Sliding window** (win): local attention over a fixed recent window,
+      delegated to :class:`SlidingWindowAttentionImpl`.
+
+Notes
+-----
+This is a pure-PyTorch implementation intended for correctness and training,
+not the fused Triton ``parallel_nsa`` kernel. It mean-pools for compression
+rather than learning φ, and does not share block selection across GQA head
+groups; otherwise the branch structure, score reuse, masking and gating follow
+the paper.
+"""
+
 import math
 
 import torch
@@ -7,6 +46,14 @@ from .sliding_window import SlidingWindowAttentionImpl
 
 
 class NSAImpl:
+    """Native Sparse Attention implementation (see module docstring).
+
+    Wraps a parent multi-head attention module, reusing its projections,
+    scale, masking helpers and output gating. ``parent.nsa_gate_proj`` is the
+    ``Linear(head_dim, 3)`` producing the three branch gate logits; when it is
+    ``None`` the layer falls back to the parent's dense attention.
+    """
+
     def __init__(self, parent):
         self.parent = parent
 
@@ -88,8 +135,11 @@ class NSAImpl:
             apply_gate=False,
         )
 
+        # Per-branch independent sigmoid gates g_c ∈ [0, 1] (paper Eq. 5).
+        # Each branch contributes independently, so the gates do not sum to 1
+        # (this is a sigmoid, not a softmax over branches).
         gate_logits = self.parent.nsa_gate_proj(q)
-        gates = F.softmax(gate_logits, dim=-1)
+        gates = torch.sigmoid(gate_logits)
         out = (
             gates[..., 0:1] * compressed_out
             + gates[..., 1:2] * selected_out

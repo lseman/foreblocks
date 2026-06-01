@@ -2,7 +2,7 @@
 
 `foretools/bohb` provides budgeted black-box optimization built around Hyperband-style successive halving and a configurable TPE proposer.
 
-Use it when you want to tune hyperparameters, compare search strategies, or benchmark objective functions outside the differentiable architecture-search flow covered by `foreblocks.darts`.
+Use it when you want to tune hyperparameters, compare search strategies, or benchmark objective functions outside the differentiable architecture-search flow covered by `darts`.
 
 ## Import surface
 
@@ -223,7 +223,7 @@ Use `foretools/bohb` when:
 - the objective is an arbitrary training script or evaluation function
 - you want multi-fidelity tuning across epochs, data size, or training budget
 
-Use `foreblocks.darts` when:
+Use `darts` when:
 
 - you are searching over differentiable neural architecture choices inside the model stack
 - you need bilevel architecture optimization rather than outer-loop black-box tuning

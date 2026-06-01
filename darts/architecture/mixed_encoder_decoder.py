@@ -179,10 +179,10 @@ class MixedDecoder(nn.Module):
         self.variant_gdas = bool(variant_gdas)
         self.arch_path_keep_prob = float(min(max(arch_path_keep_prob, 0.0), 1.0))
         self.rnn_type = "transformer"
-        self.decode_style_names = ("autoregressive", "informer")
+        self.decode_style_names = ("autoregressive", "informer", "autoformer")
         self.decode_style = "auto"
         self.register_parameter(
-            "decode_style_alphas", nn.Parameter(0.01 * torch.randn(2))
+            "decode_style_alphas", nn.Parameter(0.01 * torch.randn(3))
         )
 
         self.use_attention_bridge = False

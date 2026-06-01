@@ -21,6 +21,9 @@ from foreblocks import (
     TransformerEncoder,
     TransformerDecoder,
     AttentionLayer,
+    GraphForecastingModel,
+    TransformerTuner,
+    ModernTransformerTuner,
 )
 ```
 
@@ -83,6 +86,14 @@ Use it when your raw data starts as `[T, D]` and you want the library to build t
 - `TransformerEncoder`
 - `TransformerDecoder`
 - `AttentionLayer`
+
+### Graph forecasting
+
+- `GraphForecastingModel` — forecasting stack over `[B, T, N, F]` graph-structured tensors (multiple related series / nodes).
+
+### Tuning helpers
+
+- `TransformerTuner` / `ModernTransformerTuner` — analyze a series and recommend transformer tokenization and preprocessing choices.
 
 ## Utility exports
 

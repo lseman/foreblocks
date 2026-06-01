@@ -19,25 +19,31 @@ import torch.nn.functional as F
 from foreblocks.transformer.norms import RevIN
 
 from .base_blocks import MixedDecoder, MixedEncoder
+from .norms import RMSNorm
 from .bb_moe import DARTSFeedForward
 from .darts_cell import DARTSCell
 from .mixed_op import MixedOp
 
 __all__ = ["TimeSeriesDARTS"]
 
+NORM_NAMES = ("revin", "instance_norm", "rms_norm", "identity")
+
+
 class SearchableNorm(nn.Module):
-    """Searchable normalization: RevIN vs InstanceNorm vs passthrough"""
+    """Searchable normalization: RevIN / InstanceNorm / RMSNorm / passthrough"""
 
     def __init__(self, num_features):
         super().__init__()
         self.revin = RevIN(num_features)
         self.inst_norm = nn.InstanceNorm1d(num_features, affine=True)
+        self.rms_norm = RMSNorm(num_features, eps=1e-8)
 
     def forward(self, x, alpha):  # x: [B, L, C]
         w = F.softmax(alpha, dim=0)
         rev = self.revin(x, mode="norm")
         inst = self.inst_norm(x.transpose(1, 2)).transpose(1, 2)
-        return w[0] * rev + w[1] * inst + w[2] * x
+        rms = self.rms_norm(x)
+        return w[0] * rev + w[1] * inst + w[2] * rms + w[3] * x
 
     def apply_output_denorm(
         self, y: torch.Tensor, alpha: torch.Tensor, selected_norm: str | None = None
@@ -232,7 +238,7 @@ class TimeSeriesDARTS(nn.Module):
 
         # Searchable normalization
         self.norm_strategy = SearchableNorm(self.input_dim)
-        self.norm_alpha = nn.Parameter(torch.zeros(3))
+        self.norm_alpha = nn.Parameter(torch.zeros(len(NORM_NAMES)))
 
         # Pruning state tracking
         self.pruning_history = []
@@ -454,6 +460,12 @@ class TimeSeriesDARTS(nn.Module):
                 torch.zeros(1, self.forecast_horizon, self.input_dim)
             )
             nn.init.trunc_normal_(self.learned_horizon_queries, std=0.02)
+            # Autoformer decoder needs input_dim -> latent_dim projection
+            if self.input_dim != self.latent_dim:
+                self._autoformer_proj = nn.Linear(self.input_dim, self.latent_dim, bias=False)
+            else:
+                self._autoformer_proj = nn.Identity()
+
         else:
             self.decoder_query_mode = "repeat_last"
 
@@ -651,23 +663,8 @@ class TimeSeriesDARTS(nn.Module):
         return forecasts_tensor
 
     def _get_decoder_style_weights(self, decoder) -> torch.Tensor | None:
-        if decoder is None:
-            return None
-        getter = getattr(decoder, "get_decode_style_weights", None)
-        if callable(getter):
-            try:
-                return getter()
-            except Exception:
-                pass
-
-        style = getattr(decoder, "decode_style", None)
-        if isinstance(style, str):
-            ref = next(decoder.parameters(), None)
-            if ref is not None:
-                weights = ref.new_zeros(2)
-                weights[1 if style == "informer" else 0] = 1.0
-                return weights
-        return None
+        """Legacy alias for _build_decoder_style_weights."""
+        return self._build_decoder_style_weights(decoder)
 
     def _get_decoder_query_mode_weights(self) -> torch.Tensor | None:
         logits = getattr(self, "decoder_query_alphas", None)
@@ -798,11 +795,12 @@ class TimeSeriesDARTS(nn.Module):
     def _decode_autoregressive_path(
         self,
         x_seq: torch.Tensor,
-        decoder_targets: torch.Tensor | None,
-        teacher_forcing_ratio: float,
-        memory: torch.Tensor,
-        encoder_output: torch.Tensor,
-        decoder_hidden,
+        x_future: torch.Tensor | None = None,
+        decoder_targets: torch.Tensor | None = None,
+        teacher_forcing_ratio: float = 0.5,
+        memory: torch.Tensor | None = None,
+        encoder_output: torch.Tensor | None = None,
+        decoder_hidden=None,
     ) -> torch.Tensor:
         forecasts = []
         decoder_input = self._ensure_dtype(x_seq[:, -1:, :])
@@ -869,6 +867,127 @@ class TimeSeriesDARTS(nn.Module):
         prediction = self.output_layer(out)
         return prediction[:, -self.forecast_horizon :, :]
 
+    def _get_decoder_layers(self):
+        """Get the underlying transformer layers from forecast_decoder."""
+        dec = self.forecast_decoder
+        if dec is None:
+            return None
+        # Direct transformer has .layers
+        if hasattr(dec, "layers"):
+            return dec.layers
+        # MixedDecoder wraps it in .transformer
+        if hasattr(dec, "transformer") and hasattr(dec.transformer, "layers"):
+            return dec.transformer.layers
+        return None
+
+    def _decode_autoformer_path(
+        self,
+        x_seq: torch.Tensor,
+        x_future: torch.Tensor | None,
+        decoder_targets: torch.Tensor | None,
+        teacher_foring_ratio: float,
+        memory: torch.Tensor,
+        encoder_output: torch.Tensor,
+        decoder_hidden,
+    ) -> torch.Tensor:
+        """Autoformer-style decoder with moving-average decomposition (Wu et al. 2021).
+
+        Each decoder layer decomposes the input into trend + seasonal components
+        using a moving average, then processes them separately through the
+        transformer.
+        """
+        horizon = self.forecast_horizon
+
+        # Build decoder input: last token repeated horizon times
+        decoder_input = x_seq[:, -1:, :].expand(-1, horizon, -1)
+
+        # Get layers from decoder (handles both MixedDecoder and direct transformer)
+        layers = self._get_decoder_layers()
+        if layers is None:
+            return self._decode_autoregressive_path(
+                x_seq, None, decoder_targets, teacher_foring_ratio,
+                memory, encoder_output, decoder_hidden,
+            )
+
+        # Project decoder input to latent dim (transformer layers expect latent_dim)
+        out = self._ensure_dtype(decoder_input)
+        if out.shape[-1] != self.latent_dim:
+            out = self._autoformer_proj(out)
+
+        # Apply decomposition at each decoder layer
+        out = self._ensure_dtype(out)
+        for layer in layers:
+            # Moving-average decomposition
+            kernel_size = max(1, horizon // 4)
+            pad_len = kernel_size - 1
+            if pad_len > 0:
+                padded = F.pad(out, (0, 0, pad_len, 0))
+                trend = F.avg_pool1d(
+                    padded.transpose(1, 2), kernel_size, stride=1
+                ).transpose(1, 2)
+                seasonal = out - trend
+            else:
+                trend = out
+                seasonal = out * 0
+
+            # Self-attention on seasonal component
+            if hasattr(layer, "self_attn"):
+                seasonal = layer["norm1"](seasonal)
+                seasonal = layer["self_attn"](seasonal)
+
+            # Self-attention on trend component (inner correlation)
+            if hasattr(layer, "self_attn_trend"):
+                trend = layer["norm1_trend"](trend)
+                trend = layer["self_attn_trend"](trend)
+            else:
+                trend_out = layer["norm2"](trend)
+                trend_out = layer["self_attn"](trend_out) if hasattr(layer, "self_attn") else trend_out
+                trend = trend + trend_out
+
+            # Combine
+            out = seasonal + trend
+
+            # FFN
+            if hasattr(layer, "ffn"):
+                out = layer["norm3"](out)
+                out = layer["ffn"](out)
+
+        prediction = self.output_layer(out)
+        return prediction[:, -horizon:, :]
+
+    def _build_decoder_style_weights(self, decoder) -> torch.Tensor | None:
+        """Get decoder style weights for 3 styles: ar, informer, autoformer."""
+        if decoder is None:
+            return None
+        getter = getattr(decoder, "get_decode_style_weights", None)
+        if callable(getter):
+            try:
+                weights = getter()
+                if weights is not None and weights.numel() >= 3:
+                    return weights
+            except Exception:
+                pass
+
+        # Check for 3-element alphas
+        alphas = getattr(decoder, "decode_style_alphas", None)
+        if isinstance(alphas, torch.Tensor) and alphas.numel() == 3:
+            return alphas
+
+        # Check for 2-element (legacy: ar + informer), extend to 3
+        style = getattr(decoder, "decode_style", None)
+        if isinstance(style, str):
+            ref = next(decoder.parameters(), None)
+            if ref is not None:
+                weights = ref.new_zeros(3)
+                if style == "informer":
+                    weights[1] = 1.0
+                elif style == "autoformer":
+                    weights[2] = 1.0
+                else:
+                    weights[0] = 1.0
+                return weights
+        return None
+
     def _decode_with_style(
         self,
         *,
@@ -891,44 +1010,18 @@ class TimeSeriesDARTS(nn.Module):
                 decoder_hidden,
             )
 
-        if self.training and bool(getattr(self, "variant_gdas", False)):
-            # Decode-style GDAS is one-hot in the forward pass. Avoid paying for
-            # both autoregressive and parallel decoding on every search step.
-            idx = int(torch.argmax(style_weights.detach()).item())
-            if idx == 1:
-                return self._decode_parallel_informer_path(
-                    x_seq,
-                    x_future,
-                    decoder_targets,
-                    teacher_forcing_ratio,
-                    memory,
-                    encoder_output,
-                    decoder_hidden,
-                )
-            return self._decode_autoregressive_path(
-                x_seq,
-                decoder_targets,
-                teacher_forcing_ratio,
-                memory,
-                encoder_output,
-                decoder_hidden,
-            )
-
-        # Eval mode: select the best style via hard argmax instead of averaging
-        # both paths (averaging doubles compute with no benefit at inference).
+        # Resolve decoder style: select best path via argmax
         idx = int(torch.argmax(style_weights.detach()).item())
-        if idx == 1:
-            return self._decode_parallel_informer_path(
-                x_seq,
-                x_future,
-                decoder_targets,
-                teacher_forcing_ratio,
-                memory,
-                encoder_output,
-                decoder_hidden,
-            )
-        return self._decode_autoregressive_path(
+        decode_methods = [
+            self._decode_autoregressive_path,
+            self._decode_parallel_informer_path,
+            self._decode_autoformer_path,
+        ]
+        # Clamp to available methods
+        idx = min(idx, len(decode_methods) - 1)
+        return decode_methods[idx](
             x_seq,
+            x_future,
             decoder_targets,
             teacher_forcing_ratio,
             memory,
@@ -1169,7 +1262,7 @@ class TimeSeriesDARTS(nn.Module):
 
         # Normalization weights
         if hasattr(self, "norm_alpha"):
-            norm_names = ["revin", "instance_norm", "identity"]
+            norm_names = list(NORM_NAMES)
             soft_norm = F.softmax(self.norm_alpha, dim=0)
             weights["norm"] = {
                 name: weight.item()

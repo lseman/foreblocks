@@ -46,7 +46,7 @@ pip install -e ".[dev]"
 | `mltracker` | Experiment tracking API, local dashboard, and CLI TUI |
 | `studio` | Studio frontend launcher and bundled server command |
 | `vmd` | VMD decomposition and analysis helpers |
-| `wavelets` | Wavelet preprocessing and attention utilities |
+| `wavelets` | Wavelet preprocessing and multiwavelet feature extraction |
 | `benchmark` | External forecasting baselines and spreadsheet readers |
 | `foreminer` | Changepoint detection and dataset mining |
 | `all` | All runtime extras |

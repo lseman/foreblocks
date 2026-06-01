@@ -5,8 +5,9 @@
   <h1>Modular time-series forecasting for PyTorch</h1>
   <p class="hero-lead">
     <code>foreblocks</code> provides forecasting models, training, evaluation, and preprocessing.
+    <code>darts</code> is a standalone differentiable neural-architecture-search package.
     <code>foretools</code> offers companion utilities for synthetic data, feature engineering, decomposition, and hyperparameter search.
-    The docs guide you from a simple baseline to advanced architectures and architecture search.
+    All three ship in the same <code>foreblocks</code> wheel. The docs guide you from a simple baseline to advanced architectures and architecture search.
   </p>
   <div class="hero-actions">
     <a class="md-button md-button--primary" href="getting-started/">Run your first model</a>
@@ -87,7 +88,7 @@
 | Architecture search (DARTS) | `pip install "foreblocks[darts]"` | [DARTS Guide](darts.md) |
 | Experiment tracking (MLTracker) | `pip install "foreblocks[mltracker]"` | [Web UI](webui.md) |
 | VMD decomposition | `pip install "foreblocks[vmd]"` | [VMD Guide](foretools/vmd.md) |
-| Wavelet utilities | `pip install "foreblocks[wavelets]"` | Coming soon |
+| Wavelet preprocessing | `pip install "foreblocks[wavelets]"` | [Preprocessor Guide](preprocessor.md) |
 | All runtime extras | `pip install "foreblocks[all]"` | [Overview](overview.md) |
 
 ## Documentation map
@@ -111,6 +112,7 @@ Topic-based deep dives:
 - [Transformer](transformer.md)
 - [Mixture of Experts](moe.md)
 - [Custom Mamba](hybrid-mamba.md)
+- [KAN Backbone](kan.md)
 - [DARTS](darts.md)
 - [Evaluation & Metrics](evaluation.md)
 - [Uncertainty Quantification](uncertainty.md)
@@ -163,7 +165,7 @@ from darts import (
     DARTSConfig,
     DARTSTrainConfig,
     FinalTrainConfig,
-    MultiFildelitySearchConfig,
+    MultiFidelitySearchConfig,
 )
 ```
 
@@ -183,12 +185,22 @@ from foreblocks.custom_mamba import (
 )
 ```
 
-### Wavelet utilities (coming soon)
+### Wavelet & frequency attention
+
+Spectral attention is available today through the transformer stack rather than a
+standalone import — select it with the `att_type` argument:
 
 ```python
-from foreblocks.blocks import WaveletAttention
-from foreblocks.blocks import WaveletConv1d
+from foreblocks import TransformerEncoder
+
+# Wavelet-domain (Haar DWT) attention
+enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="dwt")
+
+# Frequency-domain (FEDformer-style) attention
+enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="frequency")
 ```
+
+See the [Transformer Guide](transformer.md) for the full list of attention variants.
 
 
 <div class="docs-callout">

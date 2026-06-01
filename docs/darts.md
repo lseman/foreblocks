@@ -19,12 +19,12 @@ pip install "foreblocks[darts]"
 ## Public imports
 
 ```python
-from foreblocks.darts import (
+from darts import (
     DARTSTrainer,
     DARTSConfig,
     DARTSTrainConfig,
     FinalTrainConfig,
-    MultiFildelitySearchConfig,
+    MultiFidelitySearchConfig,
     AblationSearchConfig,
     RobustPoolSearchConfig,
 )
@@ -47,7 +47,7 @@ Do not start here if:
 ## Quick start
 
 ```python
-from foreblocks.darts import DARTSTrainer
+from darts import DARTSTrainer
 
 trainer = DARTSTrainer(
     input_dim=5,
@@ -78,11 +78,11 @@ This is the highest-level API. It runs candidate generation, ranking, short DART
 
 The public entry point is `DARTSTrainer`, but the implementation is intentionally split into focused modules:
 
-- `foreblocks/darts/search/zero_cost.py`: cheap candidate scoring
-- `foreblocks/darts/training/darts_loop.py`: bilevel search training
-- `foreblocks/darts/training/final_trainer.py`: fixed-model retraining
-- `foreblocks/darts/search/multi_fidelity.py`: staged orchestration
-- `foreblocks/darts/evaluation/analyzer.py`: post-search analysis
+- `darts/search/zero_cost.py`: cheap candidate scoring
+- `darts/training/darts_loop.py`: bilevel search training
+- `darts/training/final_trainer.py`: fixed-model retraining
+- `darts/search/multi_fidelity.py`: staged orchestration
+- `darts/evaluation/analyzer.py`: post-search analysis
 
 That means you can use the trainer in two styles:
 
@@ -211,14 +211,14 @@ In practice, the most useful objects to inspect are:
 
 ## Configuration surface
 
-The config dataclasses in `foreblocks.darts.config` map cleanly onto the staged workflow:
+The config dataclasses in `darts.config` map cleanly onto the staged workflow:
 
 | Config | What it controls |
 | --- | --- |
 | `DARTSSearchSpaceConfig` | op pool, architecture modes, hidden dims, cells, nodes, family grouping |
 | `DARTSTrainConfig` | bilevel search phase, regularization, pruning, temperature schedule |
 | `FinalTrainConfig` | fixed-model retraining budget and optimizer behavior |
-| `MultiFildelitySearchConfig` | candidate count, promotion size, epoch budgets, worker/stats settings |
+| `MultiFidelitySearchConfig` | candidate count, promotion size, epoch budgets, worker/stats settings |
 | `AblationSearchConfig` | zero-cost weighting ablations |
 | `RobustPoolSearchConfig` | sensitivity to alternative op-pool definitions |
 

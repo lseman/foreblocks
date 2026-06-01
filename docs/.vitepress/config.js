@@ -33,6 +33,7 @@ const docsSidebar = [
             { text: 'Transformer', link: '/transformer' },
             { text: 'Mixture Of Experts', link: '/moe' },
             { text: 'Hybrid Mamba', link: '/hybrid-mamba' },
+            { text: 'KAN Backbone', link: '/kan' },
             { text: 'DARTS', link: '/darts' },
             { text: 'Evaluation & Metrics', link: '/evaluation' },
             { text: 'Uncertainty Quantification', link: '/uncertainty' },

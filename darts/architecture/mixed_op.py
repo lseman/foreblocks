@@ -34,6 +34,7 @@ from .operation_blocks import (
     TimesNetOp,
     WaveletOp,
 )
+from .advanced_ops import SwiGLUFFNOp, GeGLUFFNOp, GatedGeLUFFNOp
 
 __all__ = ["MixedOp"]
 
@@ -112,6 +113,9 @@ class MixedOp(nn.Module):
             "DLinear": lambda: DLinearOp(input_dim, latent_dim),
             "NBeats": lambda: NBeatsOp(input_dim, latent_dim),
             "TimesNet": lambda: TimesNetOp(input_dim, latent_dim),
+            "SwiGLU": lambda: SwiGLUFFNOp(input_dim, latent_dim),
+            "GeGLU": lambda: GeGLUFFNOp(input_dim, latent_dim),
+            "GatedGELU": lambda: GatedGeLUFFNOp(input_dim, latent_dim),
         }
 
         # Group operations by complexity/type for hierarchical search
@@ -134,6 +138,11 @@ class MixedOp(nn.Module):
             "attention": [
                 "PatchEmbed",
                 "InvertedAttention",
+            ],
+            "gated_ffn": [
+                "SwiGLU",
+                "GeGLU",
+                "GatedGELU",
             ],
         }
 

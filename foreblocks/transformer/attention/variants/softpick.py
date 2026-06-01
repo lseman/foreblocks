@@ -1,9 +1,31 @@
+"""Softpick attention — rectified-softmax replacement for the attention softmax.
+
+Implements Softpick attention from:
+
+    Zuhri, Z. M. K., Fuadi, E. H., & Aji, A. F. (2025).
+    "Softpick: No Attention Sink, No Massive Activations with Rectified
+    Softmax."
+    arXiv:2504.20966 [[arXiv]](https://arxiv.org/abs/2504.20966)
+
+Softpick replaces the softmax normalisation in attention with a *rectified*
+variant whose weights need not sum to one, removing the forced allocation of
+probability mass that produces attention sinks and massive activations while
+matching softmax-attention quality.
+
+This wrapper dispatches to the fused Triton ``parallel_softpick_attn`` kernel
+from the bundled third-party implementation (handling both packed and
+``cu_seqlens`` var-length layouts). If the backend is unavailable or raises,
+it falls back to the parent's standard attention.
+"""
+
 import warnings
 
 import torch
 
 
 class SoftpickAttentionImpl:
+    """Softpick attention implementation (see module docstring)."""
+
     def __init__(self, parent):
         self.parent = parent
 

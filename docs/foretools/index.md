@@ -20,26 +20,35 @@ Use `foreblocks` when you are building and training forecasting models. Use `for
 
 `foreminer` is an exploratory-analysis toolkit for understanding your time series before modelling.
 
-Key capabilities:
+Key capabilities (each is a registered analysis key — see `get_available_analyses()`):
 
-- **Changepoint detection** — locate structural breaks in long series
-- **Cluster analysis** — group series or windows by similarity
-- **Dimensionality diagnostics** — PCA and UMAP projections of window embeddings
-- **Group-level summaries** — aggregate statistics and seasonal decomposition across cohorts
-- **Stationarity checks** — ADF and KPSS tests with automated reporting
+- **Distributions & outliers** — per-feature distribution and anomaly diagnostics
+- **Correlations & graph analysis** — pairwise correlations and correlation-network structure
+- **Clustering & dimensionality** — group series/windows by similarity; PCA/UMAP projections
+- **Patterns & timeseries** — seasonality, trend, and temporal-structure diagnostics
+- **Feature engineering & SHAP** — candidate features and SHAP-based importance explanations
+- **Missingness & categorical groups** — gap analysis and cohort-level summaries
 
 Quick import path:
 
 ```python
-from foretools.foreminer import ForeMiner
+import pandas as pd
+from foretools.foreminer.foreminer import DatasetAnalyzer
 
-miner = ForeMiner(series)          # series: [T, D] numpy array
-report = miner.run()               # returns a dict of diagnostic frames
-miner.plot_changepoints()
-miner.plot_clusters(n_clusters=4)
+# df: a pandas DataFrame; pass time_col if you have an explicit timestamp column
+analyzer = DatasetAnalyzer(df, time_col="timestamp")
+
+# Discover the analysis keys registered in your build, then run a subset
+print(analyzer.get_available_analyses())
+# e.g. ['distributions', 'correlations', 'outliers', 'clusters', ...]
+results = analyzer.analyze(["correlations", "outliers"])
+
+# Run-and-plot in one step, or fetch a single analysis result
+analyzer.analyze_and_plot(["clusters"])
+corr = analyzer.get_results("correlations")
 ```
 
-`foreminer` is primarily notebook-oriented. It does not expose a stable training-time API and is best used in exploratory phases before committing to a preprocessing and model pipeline.
+`foreminer` is primarily notebook-oriented. It operates on a pandas DataFrame, does not expose a stable training-time API, and is best used in exploratory phases before committing to a preprocessing and model pipeline. Use `get_available_analyses()` to discover the analysis keys registered in your build.
 
 ### `foretools/foraug` (tsaug)
 
@@ -54,7 +63,7 @@ Data augmentation utilities. See [AutoDA Augmentation](tsaug.md) for the full gu
 ## Recommended reading
 
 1. [Time Series Generator](tsgen.md) if you need synthetic datasets or decomposition examples.
-2. [BOHB Search](bohb.md) if you need hyperparameter optimization outside the `foreblocks.darts` neural architecture search stack.
+2. [BOHB Search](bohb.md) if you need hyperparameter optimization outside the `darts` neural architecture search stack.
 3. [VMD Decomposition](vmd.md) if you need decomposition, denoising, or mode extraction workflows.
 4. [Feature Engineering](feature-engineering.md) if you need automated feature construction, mutual information selection, or RFECV-based pruning.
 5. [Repository Map](../reference/repository-map.md) if you want the broader code layout.

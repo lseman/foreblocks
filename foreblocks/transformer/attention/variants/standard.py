@@ -1,9 +1,27 @@
+"""Standard (dense) scaled dot-product attention.
+
+The canonical attention mechanism:
+
+    Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez,
+    A. N., Kaiser, Ł., & Polosukhin, I. (2017).
+    "Attention Is All You Need." NeurIPS 2017.
+    arXiv:1706.03762 [[arXiv]](https://arxiv.org/abs/1706.03762)
+
+Computes ``softmax(Q Kᵀ / √d) V`` over the full sequence. Beyond the core
+mechanism this implementation also handles the parent's production paths:
+grouped-query attention (KV-head broadcasting via ``_repeat_kv``) and a
+paged-KV-cache decode path (:class:`PagedKVProvider`) for incremental
+generation, including attention-matching cache compaction.
+"""
+
 import torch
 
 from ..cache.kv import PagedKVProvider
 
 
 class StandardAttentionImpl:
+    """Standard dense scaled dot-product attention (see module docstring)."""
+
     def __init__(self, parent):
         self.parent = parent
 

@@ -100,7 +100,8 @@ def _resolve_searchable_self_attention_position(
     if not components:
         return fallback
     modes = getattr(
-        components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")
+        components[0], "POSITION_MODES",
+        ("rope", "alibi", "none", "seasonal", "sinusoidal", "learned", "relative"),
     )
     probs = _mean_component_mode_probs(
         components,
@@ -118,6 +119,12 @@ def _resolve_searchable_self_attention_position(
 def _freeze_transformer_self_attention_position(module_obj, position_mode: str) -> None:
     if module_obj is None:
         return
+    valid_modes = ("rope", "alibi", "none", "seasonal", "sinusoidal", "learned", "relative")
+    resolved = str(position_mode).lower()
+    if resolved not in valid_modes:
+        resolved = "rope"
+    if hasattr(module_obj, "self_attention_position_mode"):
+        module_obj.self_attention_position_mode = resolved
     layers = getattr(module_obj, "layers", None)
     if not layers:
         return
@@ -133,9 +140,9 @@ def _freeze_transformer_self_attention_position(module_obj, position_mode: str) 
             continue
         freezer = getattr(self_attn, "freeze_position_mode", None)
         if callable(freezer):
-            freezer(position_mode)
+            freezer(resolved)
         else:
-            self_attn.position_mode = str(position_mode).lower()
+            self_attn.position_mode = resolved
 
 
 def _resolve_searchable_cross_attention_type(module_obj, fallback: str = "sdp") -> str:
@@ -208,7 +215,8 @@ def _resolve_searchable_cross_attention_position(
     if not components:
         return fallback
     modes = getattr(
-        components[0], "POSITION_MODES", ("rope", "alibi", "none", "seasonal")
+        components[0], "POSITION_MODES",
+        ("rope", "alibi", "none", "seasonal", "sinusoidal", "learned", "relative"),
     )
     probs = _mean_component_mode_probs(
         components,
@@ -228,6 +236,12 @@ def _freeze_transformer_cross_attention_position(
 ) -> None:
     if module_obj is None:
         return
+    valid_modes = ("rope", "alibi", "none", "seasonal", "sinusoidal", "learned", "relative")
+    resolved = str(position_mode).lower()
+    if resolved not in valid_modes:
+        resolved = "rope"
+    if hasattr(module_obj, "cross_attention_position_mode"):
+        module_obj.cross_attention_position_mode = resolved
     layers = getattr(module_obj, "layers", None)
     if not layers:
         return
@@ -243,9 +257,9 @@ def _freeze_transformer_cross_attention_position(
             continue
         freezer = getattr(cross_attn, "freeze_position_mode", None)
         if callable(freezer):
-            freezer(position_mode)
+            freezer(resolved)
         else:
-            cross_attn.position_mode = str(position_mode).lower()
+            cross_attn.position_mode = resolved
 
 
 def _resolve_searchable_ffn_mode(module_obj, fallback: str = "swiglu") -> str:
@@ -362,6 +376,9 @@ def _freeze_transformer_patch_mode(module_obj, patch_mode: str) -> None:
             pass
 
 
+DECODE_STYLE_NAMES = ("autoregressive", "informer", "autoformer")
+
+
 def _resolve_searchable_decoder_style(
     module_obj, fallback: str = "autoregressive"
 ) -> str:
@@ -374,7 +391,7 @@ def _resolve_searchable_decoder_style(
 
     logits = getattr(module_obj, "decode_style_alphas", None)
     style_names = getattr(
-        module_obj, "decode_style_names", ("autoregressive", "informer")
+        module_obj, "decode_style_names", DECODE_STYLE_NAMES
     )
     if isinstance(logits, torch.Tensor) and logits.numel() == len(style_names):
         probs = F.softmax(logits.detach(), dim=0)
@@ -396,9 +413,10 @@ def _freeze_transformer_decoder_style(module_obj, decode_style: str) -> None:
     if module_obj is None:
         return
 
-    resolved = (
-        "informer" if str(decode_style).lower() == "informer" else "autoregressive"
-    )
+    valid_styles = DECODE_STYLE_NAMES
+    resolved = str(decode_style).lower()
+    if resolved not in valid_styles:
+        resolved = "autoregressive"
     if hasattr(module_obj, "freeze_decode_style"):
         try:
             module_obj.freeze_decode_style(resolved)

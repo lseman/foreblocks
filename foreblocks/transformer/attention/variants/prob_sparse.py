@@ -1,3 +1,32 @@
+"""ProbSparse self-attention — sparse attention via query sparsity sampling.
+
+Implements the ProbSparse attention from Informer:
+
+    Zhou, H., Zhang, S., Peng, J., Zhang, S., Li, J., Xiong, H., & Zhang, W.
+    (2021).
+    "Informer: Beyond Efficient Transformer for Long Sequence Time-Series
+    Forecasting." AAAI 2021 (Best Paper).
+    arXiv:2012.07436 [[arXiv]](https://arxiv.org/abs/2012.07436)
+
+Key idea: only a small number of queries dominate the attention distribution.
+ProbSparse identifies those "active" queries cheaply and computes full
+attention only for them, replacing the rest with a uniform aggregate of the
+values.
+
+Algorithm (per head, query length ``L_q``, key length ``L_k``):
+    1. Sample ``sample_k ≈ ⌈c·ln L_k⌉`` keys and score every query against
+       them.
+    2. Rank queries by the sparsity measure ``M(q) = max_j s_j − mean_j s_j``
+       (the paper's max-mean approximation of the KL query-sparsity measure).
+    3. Take the top ``u ≈ c·ln L_q`` queries and compute full attention over
+       all keys for them only.
+    4. Fill the remaining query rows with the mean of ``V`` (the paper uses the
+       mean/cumsum of V as the default context for inactive queries).
+
+When the derived ``u`` / ``sample_k`` are not smaller than the sequence
+lengths (short sequences), this falls back to the parent's dense attention.
+"""
+
 import math
 
 import torch
@@ -5,6 +34,8 @@ import torch.nn.functional as F
 
 
 class ProbSparseAttentionImpl:
+    """ProbSparse self-attention implementation (see module docstring)."""
+
     def __init__(self, parent):
         self.parent = parent
 

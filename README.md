@@ -3,15 +3,15 @@
 [![PyPI Version](https://img.shields.io/pypi/v/foreblocks.svg)](https://pypi.org/project/foreblocks/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/foreblocks.svg)](https://pypi.org/project/foreblocks/)
 [![License](https://img.shields.io/github/license/lseman/foreblocks)](LICENSE)
+![ForeBlocks Logo](https://raw.githubusercontent.com/lseman/foreblocks/refs/heads/main/web/logo.svg#gh-light-mode-only)
+![ForeBlocks Logo](https://raw.githubusercontent.com/lseman/foreblocks/refs/heads/main/web/logo_dark.svg#gh-dark-mode-only)
 
-![ForeBlocks Logo](web/logo.svg#gh-light-mode-only)
-![ForeBlocks Logo](web/logo_dark.svg#gh-dark-mode-only)
+**foreBlocks** is a modular PyTorch toolkit for time-series forecasting, experiment management, and companion utilities, including configurable transformer backbones with modern attention variants such as MoBA.
 
-**foreBlocks** is a modular PyTorch toolkit for time-series forecasting, experiment management, and companion utilities.
+This repository is structured as three cooperating packages, all distributed in the same `foreblocks` wheel:
 
-This repository is structured as two cooperating packages:
-
-- `foreblocks`: forecasting models, training, evaluation, preprocessing, DARTS search, and conformal uncertainty.
+- `foreblocks`: forecasting models, training, evaluation, preprocessing, and conformal uncertainty.
+- `darts`: a standalone neural architecture search package for time-series forecasting (DARTS-style differentiable NAS), imported as `import darts`.
 - `foretools`: companion utilities for synthetic data, feature engineering, decomposition, and hyperparameter search.
 
 The recommended workflow is:
@@ -35,11 +35,11 @@ pip install foreblocks
 | Extra | Adds |
 | --- | --- |
 | `preprocessing` | `TimeSeriesHandler`, windowing, scaling, filtering, imputation, and time-feature generation |
-| `darts` | DARTS architecture search, evaluation, and NAS dependencies |
+| `darts` | dependencies for the standalone `darts` NAS package: search, evaluation, and analysis |
 | `mltracker` | experiment tracking API, local dashboard, and CLI TUI |
 | `studio` | Studio frontend launcher and bundled server command |
 | `vmd` | VMD decomposition, search support, and analysis helpers |
-| `wavelets` | wavelet preprocessing and attention-head utilities |
+| `wavelets` | wavelet preprocessing and multiwavelet feature extraction |
 | `benchmark` | external forecasting baselines and spreadsheet readers |
 | `foreminer` | changepoint detection, dataset mining, and analysis utilities |
 | `all` | all runtime extras above |
@@ -196,6 +196,47 @@ X, y, processed, time_feats = pre.fit_transform(raw_data, time_stamps=timestamps
 
 See [Preprocessor Guide](docs/preprocessor.md) for more details.
 
+## Architecture search with `darts`
+
+DARTS-style differentiable architecture search lives in its own top-level package, `darts`. It searches a cell-based space of time-series operations, then trains the discovered architecture. Install the extra and import from `darts`:
+
+```bash
+pip install "foreblocks[darts]"
+```
+
+```python
+from darts import DARTSTrainer
+
+trainer = DARTSTrainer(
+    input_dim=5,
+    hidden_dims=[32, 64, 128],
+    forecast_horizon=24,
+    seq_length=48,
+    device="auto",
+)
+
+# One call runs candidate generation, ranking, short DARTS training,
+# discrete derivation, and final retraining.
+results = trainer.multi_fidelity_search(
+    train_loader=train_loader,
+    val_loader=val_loader,
+    test_loader=test_loader,
+    num_candidates=20,
+    search_epochs=20,
+    final_epochs=80,
+    top_k=5,
+)
+
+best_model = results["final_model"]
+trainer.save_best_model("best_darts_model.pth")
+```
+
+`DARTSTrainer` is the high-level entry point; it builds the search model internally and exposes finer-grained steps (`train_darts_model`, `derive_final_architecture`, `train_final_model`, `evaluate_zero_cost_metrics`, …) for custom pipelines. `darts` ships in the same `foreblocks` wheel, so no separate install is required beyond the `darts` extra.
+
+The package also exposes (lazily, see `darts.__all__`) model components (`TimeSeriesDARTS`, `DARTSCell`), configuration dataclasses (`DARTSConfig`, `DARTSSearchSpaceConfig`, `DARTSTrainConfig`, `FinalTrainConfig`, `MultiFidelitySearchConfig`, `AblationSearchConfig`, `RobustPoolSearchConfig`), evaluation helpers (`compute_metrics`, `evaluate_on_loader`, `plot_alpha_evolution`, …), and `ArchitectureInspector`.
+
+See the [DARTS Guide](docs/darts.md) for the full search-space, multi-fidelity, and evaluation workflow.
+
 ## Public API
 
 The most stable first imports are exposed from the top-level `foreblocks` package:
@@ -210,7 +251,7 @@ The most stable first imports are exposed from the top-level `foreblocks` packag
 | `create_dataloaders` | Build train/validation PyTorch dataloaders from NumPy arrays |
 | `ModelConfig`, `TrainingConfig` | Lightweight configuration dataclasses |
 | `LSTMEncoder`, `LSTMDecoder`, `GRUEncoder`, `GRUDecoder` | Recurrent encoder/decoder blocks |
-| `TransformerEncoder`, `TransformerDecoder` | Transformer backbones and related advanced features |
+| `TransformerEncoder`, `TransformerDecoder` | Transformer backbones with advanced attention variants, MoE, residual routing, and sparse options such as MoBA |
 | `AttentionLayer` | Attention module for custom architectures |
 
 ## Repository map
@@ -221,15 +262,15 @@ The most stable first imports are exposed from the top-level `foreblocks` packag
 | `foreblocks/training` | `Trainer`, training loop, quantization utilities |
 | `foreblocks/evaluation` | `ModelEvaluator`, benchmarking helpers |
 | `foreblocks/ts_handler` | `TimeSeriesHandler`, imputation, filtering, outlier handling |
-| `foreblocks/tf` | transformer stack, attention variants, MoE, norms, embeddings |
-| `foreblocks/darts` | neural architecture search pipeline and evaluation |
+| `foreblocks/tf` | transformer stack, attention variants (including MoBA), MoE, norms, embeddings |
 | `foreblocks/mltracker` | experiment tracking server, logging, and TUI integration |
 | `foreblocks/kan` | Kolmogorov-Arnold Network backbone |
 | `foreblocks/mamba` | Mamba SSM backbone with MoE and positional encoding |
 | `foreblocks/custom_mamba` | Hybrid Mamba SSM blocks for forecasting |
 | `foreblocks/blocks` | Reusable building blocks: dropout, NBeats, popular blocks |
-| `foreblocks/wavelets` | Wavelet-based preprocessing and attention utilities |
+| `foreblocks/blocks/wavelets.py` | Multiwavelet feature extraction blocks |
 | `foreblocks/benchmark` | External forecasting baselines and spreadsheet readers |
+| `darts` | standalone DARTS NAS package: search space, search/training pipeline, evaluation, and architecture inspection |
 | `foretools` | synthetic time series, BOHB search, feature engineering, decomposition |
 | `examples/` | runnable demos and notebooks |
 | `web/` | static landing page assets for the published site root |
@@ -280,6 +321,7 @@ There is a repository-local docs navigation file at [`docs/.vitepress/config.js`
 - `Trainer` supports MLTracker and conformal prediction; use `auto_track=False` during local smoke tests.
 - Decoder-based seq2seq and transformer workflows have stricter dimension contracts than the direct forecasting path.
 - `TrainingConfig` now centralizes trainer, NAS, MLTracker, and conformal settings.
+- The transformer stack includes multiple attention backends, including dense, sparse, local-window, and MoBA-style block-routed attention.
 
 ## Contributing
 

@@ -99,9 +99,42 @@ decoder = TransformerDecoder(
 
 ### Attention selection
 
-- `att_type`
-- `attention_mode`
-- `freq_modes`
+Attention is configured along two independent axes:
+
+- `att_type` — **which attention algorithm** each layer computes.
+- `attention_mode` — **how attention is routed** across layers (dense vs. linear/hybrid schedules).
+- `freq_modes` — number of retained Fourier modes for the spectral variants.
+
+#### `att_type` — attention variant
+
+Each variant is a self-contained scaled-dot-product replacement. The published
+methods are cited below; see the per-variant docstrings under
+`foreblocks/transformer/attention/variants/` for the exact formulation.
+
+| `att_type` | Variant | Reference |
+| --- | --- | --- |
+| `standard` | Dense scaled dot-product (with GQA + paged-KV decode) | Vaswani et al., 2017 ([1706.03762](https://arxiv.org/abs/1706.03762)) |
+| `sype` | Standard attention with SyPE positional warping | — |
+| `prob_sparse` | ProbSparse query-sparsity attention | Informer, Zhou et al., 2021 ([2012.07436](https://arxiv.org/abs/2012.07436)) |
+| `nsa` | Native Sparse Attention (compression + selection + sliding window) | Yuan et al., 2025 ([2502.11089](https://arxiv.org/abs/2502.11089)) |
+| `moba` | Mixture of Block Attention | Lu et al., 2025 ([2502.13189](https://arxiv.org/abs/2502.13189)) |
+| `sliding_window` | Local windowed attention | Longformer ([2004.05150](https://arxiv.org/abs/2004.05150)) / Mistral ([2310.06825](https://arxiv.org/abs/2310.06825)) |
+| `softpick` | Rectified-softmax attention (no attention sink) | Zuhri et al., 2025 ([2504.20966](https://arxiv.org/abs/2504.20966)) |
+| `frequency` | Frequency-domain attention | FEDformer, Zhou et al., 2022 ([2201.12740](https://arxiv.org/abs/2201.12740)) |
+| `dwt` | Wavelet-coefficient-domain attention (Haar DWT) | — |
+| `autocor` | Autocorrelation-based attention | Autoformer, Wu et al., 2021 ([2106.13008](https://arxiv.org/abs/2106.13008)) |
+
+```python
+encoder = TransformerEncoder(
+    input_size=8,
+    d_model=256,
+    nhead=8,
+    num_layers=4,
+    att_type="nsa",   # any value from the table above
+)
+```
+
+#### `attention_mode` — routing schedule
 
 Supported `attention_mode` values currently include:
 

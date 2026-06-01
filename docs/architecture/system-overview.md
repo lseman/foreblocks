@@ -26,8 +26,8 @@ The main `foreblocks` training flow is:
 | `foreblocks/training` | training loop, optimizer/scheduler handling, NAS-aware training support |
 | `foreblocks/evaluation` | evaluation, prediction helpers, metrics, plotting |
 | `foreblocks/ts_handler` | preprocessing, normalization, filtering, imputation, window creation |
-| `foreblocks/tf` | transformer stack, attention variants, MoE, norms, embeddings |
-| `foreblocks/darts` | neural architecture search and finalization workflow |
+| `foreblocks/transformer` | transformer stack, attention variants, MoE, norms, embeddings |
+| `darts` | neural architecture search and finalization workflow |
 | `foreblocks/mltracker` | experiment tracking support |
 | `foretools/tsgen` | synthetic data generation |
 

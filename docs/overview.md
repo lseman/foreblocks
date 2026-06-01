@@ -1,8 +1,9 @@
 # Overview
 
-This repository has two layers that work well together but serve different purposes:
+This repository has three packages that work well together but serve different purposes (all distributed in the same `foreblocks` wheel):
 
 - `foreblocks`: the main forecasting library
+- `darts`: a standalone differentiable neural-architecture-search package (imported as `import darts`)
 - `foretools`: companion utilities for generation, search, decomposition, and analysis
 
 The docs are organized to make that split explicit while still showing how the pieces connect in a single workflow.
@@ -77,7 +78,7 @@ from foreblocks import (
 The DARTS stack has its own public namespace:
 
 ```python
-from foreblocks.darts import DARTSTrainer
+from darts import DARTSTrainer
 ```
 
 Treat deeper imports as subsystem-level APIs unless a topic guide explicitly tells you to use them directly.
@@ -121,8 +122,8 @@ Stable surfaces, configuration maps, and repository orientation.
 | `foreblocks/training` | trainer loop, optimizer/scheduler integration |
 | `foreblocks/evaluation` | evaluator, metrics, benchmark helpers |
 | `foreblocks/ts_handler` | preprocessing, filtering, imputation, window creation |
-| `foreblocks/tf` | transformer stack, attention variants, MoE, norms, embeddings |
-| `foreblocks/darts` | architecture search configs, search loops, analysis |
+| `foreblocks/transformer` | transformer stack, attention variants, MoE, norms, embeddings |
+| `darts` | architecture search configs, search loops, analysis |
 | `foreblocks/mltracker` | experiment tracking and local dashboards |
 | `foretools` | synthetic data, BOHB, VMD, exploratory tooling |
 

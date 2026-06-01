@@ -19,7 +19,6 @@ from .attention.utils.residuals import (
 )
 from .embeddings import InformerTimeEmbedding
 from .mhc import mhc_init_streams
-
 from .skip.gateskip import ResidualGate
 from .tf_base import (
     BaseTransformer,
@@ -84,6 +83,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         attention_matching_min_keep: int = 64,
         attention_matching_query_budget: int = 64,
         attention_matching_force_single_step: bool = False,
+        moba_block_size: int | None = None,
+        moba_topk: int = 4,
         use_attention_residual: bool = False,  # True enables depth attention residuals (incompatible with ckpt/mHC/mod/gateskip)
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
@@ -119,7 +120,9 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
 
         # Init parameters for lazy factories
         self._attn_init_kwargs = {
-            "d_model": d_model, "n_heads": nhead, "dropout": dropout,
+            "d_model": d_model,
+            "n_heads": nhead,
+            "dropout": dropout,
             "cross_attention": False,
         }
         self._std_kwargs = dict(
@@ -132,6 +135,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_min_keep=attention_matching_min_keep,
             attention_matching_query_budget=attention_matching_query_budget,
             attention_matching_force_single_step=attention_matching_force_single_step,
+            moba_block_size=moba_block_size,
+            moba_topk=moba_topk,
         )
         self._sype_kwargs = dict(
             attention_type="sype",
@@ -143,6 +148,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_min_keep=attention_matching_min_keep,
             attention_matching_query_budget=attention_matching_query_budget,
             attention_matching_force_single_step=attention_matching_force_single_step,
+            moba_block_size=moba_block_size,
+            moba_topk=moba_topk,
         )
         self.layer_attention_type = str(layer_attention_type)
         self._pos_encoding_type = str(pos_encoding_type)
@@ -155,6 +162,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             freq_modes=freq_modes,
             cross_attention=True,
             pos_encoding_type=self._pos_encoding_type,
+            moba_block_size=moba_block_size,
+            moba_topk=moba_topk,
         )
 
         self.is_causal = not informer_like
@@ -201,7 +210,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         if self.self_attn_std is None:
             dev = next(self.parameters()).device
             self.self_attn_std = MultiAttention(
-                **self._attn_init_kwargs, **self._std_kwargs,
+                **self._attn_init_kwargs,
+                **self._std_kwargs,
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_std
@@ -219,7 +229,8 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         if self.self_attn_sype is None:
             dev = next(self.parameters()).device
             self.self_attn_sype = MultiAttention(
-                **self._attn_init_kwargs, **self._sype_kwargs,
+                **self._attn_init_kwargs,
+                **self._sype_kwargs,
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_sype
@@ -682,13 +693,17 @@ class TransformerDecoder(BaseTransformer):
 
         # Only apply input-level positional encoding for non-RoPE/ALiBi modes.
         # RoPE and ALiBi handle position encoding internally inside attention.
-        if self.pos_encoding_type in ("sinusoidal", "learnable") and self.pos_encoder is not None:
+        if (
+            self.pos_encoding_type in ("sinusoidal", "learnable")
+            and self.pos_encoder is not None
+        ):
             if position_offset is None:
                 x = self.pos_encoder(x)
             else:
                 if isinstance(position_offset, int):
                     pos = (
-                        torch.arange(
+                        torch
+                        .arange(
                             position_offset,
                             position_offset + x.shape[1],
                             device=device,

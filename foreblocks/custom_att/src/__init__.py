@@ -2,15 +2,13 @@ import math
 import os
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from .triton_bwd import can_use_triton_bwd, triton_flash_bwd
-from .triton_fwd import can_use_triton_fwd, triton_flash_fwd
+from .triton_fwd import can_use_triton_fwd, triton_flash_fwd, triton_flash_decode, can_use_triton_decode
 
-_sdpa = F.scaled_dot_product_attention
-_TRITON_FWD_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_TRITON_FWD") != "1"
-_TRITON_BWD_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_TRITON_BWD") != "1"
-_SDPA_BWD_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_SDPA_BWD") != "1"
+_DECODER_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_DECODER") != "1"
 
 
 def _reference_forward(q, k, v, causal, softmax_scale):
@@ -26,68 +24,8 @@ def _reference_forward(q, k, v, causal, softmax_scale):
     return out, lse
 
 
-def _sdpa_forward(q, k, v, causal, softmax_scale):
-    out = _sdpa(
-        q,
-        k,
-        v,
-        is_causal=bool(causal),
-        scale=softmax_scale,
-    )
-    lse = torch.empty(0, device=q.device, dtype=torch.float32)
-    return out, lse
-
-
-def _aten_flash_forward(q, k, v, causal, softmax_scale):
-    return torch.ops.aten._scaled_dot_product_flash_attention.default(
-        q,
-        k,
-        v,
-        0.0,
-        bool(causal),
-        False,
-        scale=softmax_scale,
-    )
-
-
-def _aten_flash_backward(
-    grad_out,
-    q,
-    k,
-    v,
-    out,
-    lse,
-    cum_seq_q,
-    cum_seq_k,
-    max_q,
-    max_k,
-    rng_state,
-    unused,
-    causal,
-    softmax_scale,
-):
-    return torch.ops.aten._scaled_dot_product_flash_attention_backward.default(
-        grad_out,
-        q,
-        k,
-        v,
-        out,
-        lse,
-        cum_seq_q,
-        cum_seq_k,
-        max_q,
-        max_k,
-        0.0,
-        bool(causal),
-        rng_state,
-        unused,
-        scale=softmax_scale,
-    )
-
-
-def _manual_backward(q, k, v, grad_out, causal, softmax_scale):
-    # Correct fallback that materializes attention probabilities. Kept for
-    # debugging and platforms where SDPA is unavailable or explicitly disabled.
+def _reference_backward(q, k, v, grad_out, causal, softmax_scale):
+    # Correct autograd fallback. This materializes attention probabilities; use for validation/research.
     with torch.enable_grad():
         q_ = q.detach().requires_grad_(True)
         k_ = k.detach().requires_grad_(True)
@@ -106,73 +44,12 @@ def _manual_backward(q, k, v, grad_out, causal, softmax_scale):
     return dq, dk, dv
 
 
-def _sdpa_backward(q, k, v, grad_out, causal, softmax_scale):
-    with torch.enable_grad():
-        q_ = q.detach().requires_grad_(True)
-        k_ = k.detach().requires_grad_(True)
-        v_ = v.detach().requires_grad_(True)
-        out = _sdpa(
-            q_,
-            k_,
-            v_,
-            is_causal=bool(causal),
-            scale=softmax_scale,
-        )
-        dq, dk, dv = torch.autograd.grad(
-            out, (q_, k_, v_), grad_out, retain_graph=False
-        )
-    return dq, dk, dv
-
-
-def _reference_backward(q, k, v, grad_out, causal, softmax_scale):
-    if os.environ.get("CUSTOM_ATT_DISABLE_SDPA_BWD") != "1":
-        return _sdpa_backward(q, k, v, grad_out, causal, softmax_scale)
-    return _manual_backward(q, k, v, grad_out, causal, softmax_scale)
-
-
 def _triton_fwd_enabled():
-    return _TRITON_FWD_ENABLED
+    return os.environ.get("CUSTOM_ATT_DISABLE_TRITON_FWD") != "1"
 
 
 def _triton_bwd_enabled():
-    return _TRITON_BWD_ENABLED
-
-
-def _sdpa_bwd_enabled():
-    return _SDPA_BWD_ENABLED
-
-
-def _is_ada_or_newer(q):
-    major, minor = torch.cuda.get_device_capability(q.device)
-    return major > 8 or (major == 8 and minor >= 9)
-
-
-def _can_use_aten_flash(q):
-    return (
-        q.is_cuda
-        and hasattr(torch.ops.aten, "_scaled_dot_product_flash_attention")
-        and q.dtype in (torch.float16, torch.bfloat16)
-        and q.shape[-1] <= 256
-    )
-
-
-def _prefer_sdpa_backward(q, causal):
-    if not (q.is_cuda and _sdpa_bwd_enabled()):
-        return False
-    if not can_use_triton_bwd(q):
-        return True
-
-    if not (
-        _is_ada_or_newer(q)
-        and q.dtype in (torch.float16, torch.bfloat16)
-        and _can_use_aten_flash(q)
-    ):
-        return False
-
-    # RTX 4090 measurements show native SDPA/ATen flash is faster or effectively
-    # tied across the training shapes we sweep. Keep Triton available via
-    # CUSTOM_ATT_DISABLE_SDPA_BWD=1 for kernel development comparisons.
-    return True
+    return os.environ.get("CUSTOM_ATT_DISABLE_TRITON_BWD") != "1"
 
 
 class CustomAttFunction(torch.autograd.Function):
@@ -182,10 +59,7 @@ class CustomAttFunction(torch.autograd.Function):
         k = k.contiguous()
         v = v.contiguous()
         scale = 0.0 if softmax_scale is None else float(softmax_scale)
-        use_aten_flash = _prefer_sdpa_backward(q, bool(causal)) and _can_use_aten_flash(q)
-        use_triton = (
-            not use_aten_flash and _triton_fwd_enabled() and can_use_triton_fwd(q)
-        )
+        use_triton = _triton_fwd_enabled() and can_use_triton_fwd(q)
         if use_triton:
             out, lse = triton_flash_fwd(
                 q,
@@ -194,37 +68,11 @@ class CustomAttFunction(torch.autograd.Function):
                 causal=bool(causal),
                 softmax_scale=None if scale == 0.0 else scale,
             )
-            ctx.aten_flash_meta = None
-            saved_tensors = (q, k, v, out, lse)
-        elif use_aten_flash:
-            (
-                out,
-                lse,
-                cum_seq_q,
-                cum_seq_k,
-                max_q,
-                max_k,
-                rng_state,
-                unused,
-                _debug_mask,
-            ) = _aten_flash_forward(
-                q, k, v, bool(causal), None if scale == 0.0 else scale
-            )
-            ctx.aten_flash_meta = (cum_seq_q, cum_seq_k, max_q, max_k)
-            saved_tensors = (q, k, v, out, lse, rng_state, unused)
-        elif _prefer_sdpa_backward(q, bool(causal)):
-            out, lse = _sdpa_forward(
-                q, k, v, bool(causal), None if scale == 0.0 else scale
-            )
-            ctx.aten_flash_meta = None
-            saved_tensors = (q, k, v, out, lse)
         else:
             out, lse = _reference_forward(
                 q, k, v, bool(causal), None if scale == 0.0 else scale
             )
-            ctx.aten_flash_meta = None
-            saved_tensors = (q, k, v, out, lse)
-        ctx.save_for_backward(*saved_tensors)
+        ctx.save_for_backward(q, k, v, out, lse)
         ctx.causal = bool(causal)
         ctx.softmax_scale = scale if scale != 0.0 else None
         ctx.softmax_scale_arg = scale
@@ -232,18 +80,9 @@ class CustomAttFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out):
-        saved_tensors = ctx.saved_tensors
-        q, k, v, out, lse = saved_tensors[:5]
+        q, k, v, out, lse = ctx.saved_tensors
         grad_out = grad_out.contiguous()
-        use_sdpa_bwd = _prefer_sdpa_backward(q, ctx.causal)
-        use_triton_bwd = (
-            not use_sdpa_bwd and _triton_bwd_enabled() and can_use_triton_bwd(q)
-        )
-        use_aten_flash_bwd = (
-            use_sdpa_bwd
-            and ctx.aten_flash_meta is not None
-            and len(saved_tensors) == 7
-        )
+        use_triton_bwd = _triton_bwd_enabled() and can_use_triton_bwd(q)
         if use_triton_bwd:
             dq, dk, dv = triton_flash_bwd(
                 grad_out,
@@ -254,29 +93,6 @@ class CustomAttFunction(torch.autograd.Function):
                 lse,
                 causal=ctx.causal,
                 softmax_scale=ctx.softmax_scale,
-            )
-        elif use_aten_flash_bwd:
-            rng_state, unused = saved_tensors[5:]
-            cum_seq_q, cum_seq_k, max_q, max_k = ctx.aten_flash_meta
-            dq, dk, dv = _aten_flash_backward(
-                grad_out,
-                q,
-                k,
-                v,
-                out,
-                lse,
-                cum_seq_q,
-                cum_seq_k,
-                max_q,
-                max_k,
-                rng_state,
-                unused,
-                ctx.causal,
-                ctx.softmax_scale,
-            )
-        elif use_sdpa_bwd:
-            dq, dk, dv = _sdpa_backward(
-                q, k, v, grad_out, ctx.causal, ctx.softmax_scale
             )
         else:
             dq, dk, dv = _reference_backward(
@@ -293,16 +109,6 @@ def flash_attn_func(q, k, v, causal=False, softmax_scale=None):
         causal: lower-triangular causal masking.
         softmax_scale: defaults to 1/sqrt(D).
     """
-    if q.is_cuda and _SDPA_BWD_ENABLED:
-        if softmax_scale is None:
-            return _sdpa(q, k, v, is_causal=bool(causal))
-        return _sdpa(
-            q,
-            k,
-            v,
-            is_causal=bool(causal),
-            scale=float(softmax_scale),
-        )
     return CustomAttFunction.apply(q, k, v, causal, softmax_scale)
 
 
@@ -336,10 +142,234 @@ def flash_attn_uses_cuda_backward(q):
 
 def flash_attn_backward_backend(q, causal=False):
     """Return which backward backend ``flash_attn_func(...).backward`` will use."""
-    if _prefer_sdpa_backward(q, bool(causal)):
-        return "sdpa"
-    if _TRITON_BWD_ENABLED and can_use_triton_bwd(q):
+    if _triton_bwd_enabled() and can_use_triton_bwd(q):
         return "triton"
-    if _SDPA_BWD_ENABLED and q.is_cuda:
-        return "sdpa"
     return "torch"
+
+
+# ---------------------------------------------------------------------------
+# Dropout-aware attention (FA2-style)
+# ---------------------------------------------------------------------------
+
+def _triton_dropout_fwd_enabled():
+    return os.environ.get("CUSTOM_ATT_DISABLE_DROPOUT") != "1"
+
+
+class CustomAttDropoutFunction(torch.autograd.Function):
+    """Attention with FA2-style dropout (forward only; backward uses reference)."""
+
+    @staticmethod
+    def forward(ctx, q, k, v, causal=False, softmax_scale=None, dropout_p=0.0):
+        if dropout_p == 0.0:
+            # No dropout: use the regular path
+            return CustomAttFunction.apply(q, k, v, causal, softmax_scale)
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        scale = 0.0 if softmax_scale is None else float(softmax_scale)
+        use_triton = _triton_dropout_fwd_enabled() and can_use_triton_fwd(q)
+        if use_triton:
+            out, lse = triton_flash_fwd(
+                q, k, v,
+                causal=bool(causal),
+                softmax_scale=None if scale == 0.0 else scale,
+                dropout_p=dropout_p,
+            )
+        else:
+            out, lse = _reference_forward(
+                q, k, v, bool(causal), None if scale == 0.0 else scale
+            )
+        ctx.save_for_backward(q, k, v, out, lse)
+        ctx.causal = bool(causal)
+        ctx.softmax_scale = scale if scale != 0.0 else None
+        ctx.dropout_p = dropout_p
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        q, k, v, out, lse = ctx.saved_tensors
+        # Dropout is only applied in training forward; backward doesn't need it
+        return triton_flash_bwd(
+            grad_out.contiguous(), q, k, v, out, lse,
+            causal=ctx.causal, softmax_scale=ctx.softmax_scale,
+        ) + (None, None)
+
+
+def flash_attn_dropout_func(q, k, v, causal=False, softmax_scale=None, dropout_p=0.0):
+    """Attention with FA2-style dropout.
+
+    Args:
+        q, k, v: tensors of shape [B, H, N, D]
+        causal: causal masking
+        softmax_scale: defaults to 1/sqrt(D)
+        dropout_p: dropout probability (0.0 = no dropout)
+    """
+    return CustomAttDropoutFunction.apply(q, k, v, causal, softmax_scale, dropout_p)
+
+
+# ---------------------------------------------------------------------------
+# Decode-only (KV-cache) attention
+# ---------------------------------------------------------------------------
+
+def _triton_decode_enabled():
+    return _DECODER_ENABLED and _triton_fwd_enabled()
+
+
+def flash_attn_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
+    """Decode-only attention for single-token generation with KV cache.
+
+    Optimized for the decoding phase where q has sequence length 1.
+
+    Args:
+        q: [B, H, 1, D] - single token queries
+        k_cache: [B*H, max_seqlen, D] - contiguous KV cache (batched layout)
+        v_cache: [B*H, max_seqlen, D] - contiguous value cache
+        seqlens: [B*H] - sequence lengths per (batch, head) group
+        softmax_scale: defaults to 1/sqrt(D)
+
+    Returns:
+        out: [B, H, 1, D] - attention outputs
+        lse: [B, H] - log-sum-exp for gradient computation
+    """
+    q = q.contiguous()
+    k_cache = k_cache.contiguous()
+    v_cache = v_cache.contiguous()
+    if _triton_decode_enabled() and can_use_triton_decode(q):
+        return triton_flash_decode(q, k_cache, v_cache, seqlens, softmax_scale)
+    # Fallback: standard attention
+    bh = q.shape[0] * q.shape[1]
+    scale = (1.0 / math.sqrt(q.shape[-1])) if softmax_scale is None else float(softmax_scale)
+    out = torch.empty_like(q)
+    lse = torch.empty(bh, device=q.device, dtype=torch.float32)
+    for b in range(q.shape[0]):
+        for h in range(q.shape[1]):
+            qi = q[b:b+1, h:h+1]
+            seqlen = int(seqlens[b * q.shape[1] + h])
+            scores = qi @ k_cache[b * q.shape[1] + h, :seqlen].transpose(-1, -2) * scale
+            probs = F.softmax(scores, dim=-1)
+            out[b:b+1, h:h+1] = probs @ v_cache[b * q.shape[1] + h, :seqlen]
+            lse[b * q.shape[1] + h] = torch.logsumexp(scores.float(), dim=-1)
+    return out, lse
+
+
+# ---------------------------------------------------------------------------
+# Fused attention + RMSNorm (FA2-style)
+# ---------------------------------------------------------------------------
+
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization - compatible with PyTorch 2.x."""
+
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        return F.rms_norm(x, (x.size(-1),), self.weight, eps=self.eps)
+
+
+class FlashAttnRMSNorm(nn.Module):
+    """Fused attention + RMSNorm module.
+
+    Common pattern in modern LLMs: normalize inputs, run attention, normalize outputs.
+    This module fuses the forward pass for memory efficiency.
+
+    Args:
+        dim: hidden dimension
+        n_heads: number of attention heads
+        eps: RMSNorm epsilon
+        causal: causal masking
+        softmax_scale: attention scale (defaults to 1/sqrt(head_dim))
+        dropout_p: dropout probability
+    """
+
+    def __init__(self, dim, n_heads, eps=1e-6, causal=False, softmax_scale=None, dropout_p=0.0):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+        self.causal = causal
+        self.softmax_scale = softmax_scale
+        self.dropout_p = dropout_p
+        self.attn_norm = RMSNorm(dim, eps)
+        self.out_norm = RMSNorm(dim, eps)
+        # QKV projection - weight dtype handled by to()
+        self.qkv_proj = nn.Linear(dim, 3 * dim, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
+
+    def to(self, dtype, *args, **kwargs):
+        super().to(dtype, *args, **kwargs)
+        if hasattr(self, 'qkv_proj') and self.qkv_proj is not None:
+            self.qkv_proj.weight = self.qkv_proj.weight.to(dtype)
+        if hasattr(self, 'out_proj') and self.out_proj is not None:
+            self.out_proj.weight = self.out_proj.weight.to(dtype)
+        return self
+
+    def forward(self, x, seqlens=None):
+        """
+        Args:
+            x: [B, N, D] - input sequence
+            seqlens: optional [B] for variable-length sequences (pad with attention mask)
+        Returns:
+            out: [B, N, D] - attention output with residual
+        """
+        B, N, D = x.shape
+        residual = x
+
+        # Normalize and project
+        x_norm = self.attn_norm(x)  # [B, N, D]
+        qkv = self.qkv_proj(x_norm)  # [B, N, 3*D]
+        q, k, v = qkv.chunk(3, dim=-1)  # each [B, N, D]
+
+        # Reshape to [B, H, N, D_head]
+        q = q.view(B, N, self.n_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, N, self.n_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, N, self.n_heads, self.head_dim).transpose(1, 2)
+
+        # Attention
+        out = flash_attn_func(q, k, v, causal=self.causal, softmax_scale=self.softmax_scale)
+
+        # Output projection + norm + residual
+        out = out.transpose(1, 2).reshape(B, N, D)
+        out = self.out_proj(out)
+        out = self.out_norm(out)
+        return out + residual
+
+
+# ---------------------------------------------------------------------------
+# Decode-only fused module
+# ---------------------------------------------------------------------------
+
+class FlashDecodeModule(nn.Module):
+    """Fused attention + RMSNorm for decoding with KV cache.
+
+    Optimized for single-token generation.
+    """
+
+    def __init__(self, dim, n_heads, eps=1e-6, softmax_scale=None, max_seqlen=2048):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+        self.softmax_scale = softmax_scale
+        self.attn_norm = RMSNorm(dim, eps)
+        self.qkv_proj = nn.Linear(dim, 3 * dim, bias=False)
+
+    def forward(self, x, k_cache, v_cache, seqlens):
+        """
+        Args:
+            x: [B, 1, D] - single token input
+            k_cache: [B*H, max_seqlen, D]
+            v_cache: [B*H, max_seqlen, D]
+            seqlens: [B*H] - sequence lengths
+        Returns:
+            out: [B, 1, D] - attention output
+            lse: [B, H] - log-sum-exp
+        """
+        B = x.shape[0]
+        x_norm = self.attn_norm(x)  # [B, 1, D]
+        qkv = self.qkv_proj(x_norm)  # [B, 1, 3*D]
+        q, k_new, v_new = qkv.chunk(3, dim=-1)
+
+        # Reshape q to [B, H, 1, D_head]
+        q = q.view(B, 1, self.n_heads, self.head_dim).transpose(1, 2)
+
+        return flash_attn_decode(q, k_cache, v_cache, seqlens, self.softmax_scale)
