@@ -9,8 +9,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from foretools.foreminer.foreminer import DatasetAnalyzer
 
 def test_foreminer_sota():
-    print("🚀 Starting ForeMiner SOTA Verification...")
-    
     # 1. Create synthetic dataset with patterns
     n = 300
     t = np.arange(n)
@@ -28,25 +26,20 @@ def test_foreminer_sota():
     c[150] = -10
     
     df = pd.DataFrame({
-        "timestamp": pd.date_range("2023-01-01", periods=n, freq="H"),
+        "timestamp": pd.date_range("2023-01-01", periods=n, freq="h"),
         "feature_a": a,
         "feature_b": b,
         "feature_c": c
     })
     
-    print("🔧 Running DatasetAnalyzer...")
     analyzer = DatasetAnalyzer(df, time_col="timestamp", verbose=False)
-    
-    # Run intelligence summary
-    summary = analyzer.analyze_intelligent_summary()
-    print("\n--- Summary Output ---")
-    print(summary)
-    
-    # Run full insights
-    print("\n--- Detailed Insights ---")
-    analyzer.print_detailed_insights()
-    
-    print("\n✅ Verification Complete!")
+
+    results = analyzer.analyze(["distributions", "correlations", "missingness"])
+
+    assert {"distributions", "correlations", "missingness"} <= set(results)
+    assert analyzer.get_results("distributions") is results["distributions"]
+    assert analyzer.get_results("correlations") is results["correlations"]
+    assert analyzer.get_results("missingness") is results["missingness"]
 
 if __name__ == "__main__":
     test_foreminer_sota()

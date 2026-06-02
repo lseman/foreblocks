@@ -20,7 +20,7 @@ class TestMultiAttentionIncrementalDecode(unittest.TestCase):
             n_heads=8,
             dropout=0.0,
             use_mla=mla,
-            use_rotary=rope,
+            pos_encoding_type="rope" if rope else "sinusoidal",
             use_paged_cache=paged,
         ).eval()
         x = torch.randn(2, T, 64)

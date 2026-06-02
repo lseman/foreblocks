@@ -34,7 +34,9 @@ if HAS_TRITON:
         stride_bb,
         stride_tb,
         stride_db,
-        stride_c,
+        stride_bc,
+        stride_tc,
+        stride_dc,
         Dhidden: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
@@ -43,7 +45,7 @@ if HAS_TRITON:
         offs = tl.arange(0, BLOCK)
         pa = A + b * stride_ba + t * stride_ta + offs * stride_da
         pb = B + b * stride_bb + t * stride_tb + offs * stride_db
-        pc = C + b * stride_c + t * Dhidden + offs
+        pc = C + b * stride_bc + t * stride_tc + offs * stride_dc
         a = tl.load(pa, mask=offs < Dhidden, other=0.0)
         g = tl.load(pb, mask=offs < Dhidden, other=0.0)
         sig = 1.0 / (1.0 + tl.exp(-a))
@@ -102,7 +104,9 @@ if HAS_TRITON:
                 b.stride(0),
                 b.stride(1),
                 b.stride(2),
+                y.stride(0),
                 y.stride(1),
+                y.stride(2),
                 Dh,
                 BLOCK=BLOCK,
             )

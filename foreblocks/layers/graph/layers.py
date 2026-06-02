@@ -635,10 +635,7 @@ class SAGEConv(GraphConvBase, MessagePassing):
             A = normalize_row(add_self_loops(A))
             neigh = _dense_message_passing(x, A)
 
-        if self.fuse_linear:
-            y = F.linear(torch.cat([x, neigh], dim=-1), self.weight, self.bias)
-        else:
-            y = self.lin(torch.cat([x, neigh], dim=-1))
+        y = self.lin(torch.cat([x, neigh], dim=-1))
         residual = self.res_lin(x_res) if self.residual else None
         return self._apply_norm_act_drop(y, residual)
 
@@ -746,7 +743,7 @@ class GATConv(GraphConvBase, MessagePassing):
             attn_logits = attn_logits / math.sqrt(self.Dh)
             attn_logits = attn_logits + attn_bias
             attn = torch.softmax(attn_logits, dim=-1)
-            out = torch.einsum("bhtij,bhtjf->bhtif", attn, v)
+            out = torch.einsum("bhij,bhjf->bhif", attn, v)
             out = out.view(B, T, self.H, N, self.Dh).permute(0, 1, 3, 2, 4)
         else:
             out = F.scaled_dot_product_attention(

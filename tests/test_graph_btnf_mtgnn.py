@@ -1,7 +1,7 @@
 import torch
 
 from foreblocks.models import GraphForecastingModel
-from foreblocks.layers.graph.mtgnn import (
+from foreblocks.layers.graph import (
     GraphWaveNetBlock,
     MTGNNBlock,
     MTGNNDilatedInception,

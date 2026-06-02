@@ -382,5 +382,5 @@ def test_trainer_graph_metrics_and_plot_prediction() -> None:
     assert {"mse", "rmse", "mae", "mape"} <= set(metrics)
     assert fig is not None
     assert len(fig.axes) == 6
-    assert fig.axes[0].get_title().startswith("node 0 feature 0")
-    assert fig.axes[-1].get_title().startswith("node 2 feature 1")
+    assert fig.axes[0].get_title().startswith("n0 feature 0")
+    assert fig.axes[-1].get_title().startswith("n2 feature 1")

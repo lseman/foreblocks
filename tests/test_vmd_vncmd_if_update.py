@@ -86,6 +86,7 @@ class TestVNCMDIFUpdate(unittest.TestCase):
             if_smoother=_identity_smoother,
             if_center_smooth=0.0,
             if_step=1.0,
+            min_track_gap=0.0,
             DC=0,
         )[0]
 
@@ -110,6 +111,7 @@ class TestVNCMDIFUpdate(unittest.TestCase):
             if_smoother=_identity_smoother,
             if_center_smooth=0.0,
             if_step=1.0,
+            min_track_gap=0.0,
             DC=0,
         )[0]
 

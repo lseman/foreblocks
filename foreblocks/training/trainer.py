@@ -775,7 +775,6 @@ class Trainer:
     ) -> plt.Figure:  # type: ignore[name-defined]
         """Plot predictions with conformal intervals."""
         _viz._require_matplotlib()
-        from foreblocks.training.conformal import _as_numpy
 
         if self.conformal_engine is None or getattr(self.conformal_engine, "radii", None) is None:
             raise RuntimeError("Conformal engine not calibrated. Call calibrate_conformal() first.")

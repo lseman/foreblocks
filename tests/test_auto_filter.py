@@ -357,9 +357,9 @@ def test_vmd_based_filters_resize_off_by_one_reconstructions(monkeypatch) -> Non
             np.tile(np.arange(K, dtype=float), (2, 1)),
         )
 
-    monkeypatch.setattr(af, "EMD", DummyEMD)
-    monkeypatch.setattr(af, "CEEMDAN", DummyCEEMDAN)
-    monkeypatch.setattr(af, "VMD", fake_vmd)
+    monkeypatch.setattr(af, "EMD", DummyEMD, raising=False)
+    monkeypatch.setattr(af, "CEEMDAN", DummyCEEMDAN, raising=False)
+    monkeypatch.setattr(af, "VMD", fake_vmd, raising=False)
 
     ceemdan = af.ceemdan_vmd_filter(ts, K=4)
 
