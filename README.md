@@ -1,10 +1,14 @@
 # foreBlocks
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lseman/foreblocks/main/web/logo_dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/lseman/foreblocks/main/web/logo.svg">
+  <img alt="ForeBlocks Logo" src="https://raw.githubusercontent.com/lseman/foreblocks/main/web/logo.svg">
+</picture>
+
 [![PyPI Version](https://img.shields.io/pypi/v/foreblocks.svg)](https://pypi.org/project/foreblocks/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/foreblocks.svg)](https://pypi.org/project/foreblocks/)
 [![License](https://img.shields.io/github/license/lseman/foreblocks)](LICENSE)
-![ForeBlocks Logo](https://raw.githubusercontent.com/lseman/foreblocks/refs/heads/main/web/logo.svg#gh-light-mode-only)
-![ForeBlocks Logo](https://raw.githubusercontent.com/lseman/foreblocks/refs/heads/main/web/logo_dark.svg#gh-dark-mode-only)
 
 **foreBlocks** is a modular PyTorch toolkit for time-series forecasting, experiment management, and companion utilities, including configurable transformer backbones with modern attention variants such as MoBA.
 

@@ -10,7 +10,7 @@ from foreblocks.ui.node_spec import node
 
 from .attention.modules.gated_delta import GatedDeltaNet
 from .attention.modules.kimi_att import KimiAttention
-from .attention.modules.lin_att import LinearAttention
+from .attention.modules.modern_linear_attn import ModernLinearAttention
 from .attention.multi_att import MultiAttention
 from .attention.utils.residuals import (
     AttentionResidual,
@@ -216,11 +216,13 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             ).to(dev)
         return self.self_attn_std
 
-    def _build_lin(self) -> LinearAttention:
+    def _build_lin(self) -> ModernLinearAttention:
         if self.self_attn_lin is None:
             dev = next(self.parameters()).device
-            self.self_attn_lin = LinearAttention(
+            self.self_attn_lin = ModernLinearAttention(
                 **self._attn_init_kwargs,
+                backend="rda",
+                state="elu",
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_lin

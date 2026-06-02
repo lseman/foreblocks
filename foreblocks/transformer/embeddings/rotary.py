@@ -780,7 +780,7 @@ class RotaryEmbedding(torch.nn.Module):
             if self.inv_freq.dtype != torch.float32:
                 inv_freq = self._compute_inv_freq(device=device)
             else:
-                inv_freq = self.inv_freq
+                inv_freq = self.inv_freq.to(device)
 
             freqs = torch.outer(t, inv_freq)  # (seqlen, dim/2)
 

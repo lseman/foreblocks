@@ -14,9 +14,11 @@ from .ssd import (
 from .triton_ops import (
     TRITON_AVAILABLE,
     dt_prep,
+    dt_prep_bwd_triton,
     dt_prep_fallback,
     dt_prep_triton,
     fused_out,
+    fused_out_bwd_triton,
     fused_out_fallback,
     fused_out_triton,
 )
@@ -33,9 +35,11 @@ __all__ = [
     "grouped_ssd_scan_triton",
     "TRITON_AVAILABLE",
     "dt_prep",
+    "dt_prep_bwd_triton",
     "dt_prep_fallback",
     "dt_prep_triton",
     "fused_out",
+    "fused_out_bwd_triton",
     "fused_out_fallback",
     "fused_out_triton",
     "selective_scan",

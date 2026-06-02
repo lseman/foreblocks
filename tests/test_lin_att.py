@@ -3,15 +3,25 @@ import unittest
 import torch
 import torch.nn.functional as F
 
-from foreblocks.transformer.attention.modules.lin_att import LinearAttention
+from foreblocks.transformer.attention.modules.modern_linear_attn import (
+    ModernLinearAttention,
+)
+
+
+def _make(d_model=16, n_heads=2):
+    """RDA backend (ELU+1 feature map) — the consolidated linear attention."""
+    return ModernLinearAttention(
+        d_model=d_model, n_heads=n_heads, dropout=0.0, backend="rda", state="elu"
+    ).double().eval()
 
 
 def _manual_causal(m, x):
     """Reference causal linear attention with the same feature map + scale."""
+    impl = m.impl
     B, L, _ = x.shape
-    q = m.q_proj(x).view(B, L, m.n_heads, m.d_head).transpose(1, 2) * m.scale
-    k = m.k_proj(x).view(B, L, m.n_heads, m.d_head).transpose(1, 2) * m.scale
-    v = m.v_proj(x).view(B, L, m.n_heads, m.d_head).transpose(1, 2)
+    q = impl.q_proj(x).view(B, L, impl.n_heads, impl.d_head).transpose(1, 2) * impl.scale
+    k = impl.k_proj(x).view(B, L, impl.n_heads, impl.d_head).transpose(1, 2) * impl.scale
+    v = impl.v_proj(x).view(B, L, impl.n_heads, impl.d_head).transpose(1, 2)
     qp, kp = F.elu(q) + 1, F.elu(k) + 1
     out = torch.zeros_like(v)
     for t in range(L):
@@ -19,17 +29,16 @@ def _manual_causal(m, x):
         num = torch.einsum("bhf,bhfd->bhd", qp[:, :, t], kv)
         den = torch.einsum("bhf,bhf->bh", qp[:, :, t], kp[:, :, : t + 1].sum(2))
         out[:, :, t] = num / (den.unsqueeze(-1) + 1e-6)
-    return m.out_proj(out.transpose(1, 2).reshape(B, L, m.d_model))
+    return impl.out_proj(out.transpose(1, 2).reshape(B, L, impl.d_model))
 
 
-class TestLinearAttention(unittest.TestCase):
+class TestRDALinearAttention(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(0)
-        self.m = LinearAttention(d_model=16, n_heads=2, dropout=0.0).double().eval()
+        self.m = _make()
         self.x = torch.randn(2, 7, 16, dtype=torch.float64)
 
-    def test_causal_fallback_runs_and_matches_reference(self):
-        # Previously crashed (matmul dim mismatch); must run and be correct.
+    def test_causal_matches_reference(self):
         with torch.no_grad():
             out, _, _ = self.m(self.x, self.x, self.x, is_causal=True)
             ref = _manual_causal(self.m, self.x)
@@ -46,16 +55,17 @@ class TestLinearAttention(unittest.TestCase):
         self.assertLess((o1[:, :-1] - o2[:, :-1]).abs().max().item(), 1e-12)
 
     def test_causal_trains_with_grad(self):
-        m = LinearAttention(d_model=16, n_heads=2, dropout=0.0)
+        m = ModernLinearAttention(
+            d_model=16, n_heads=2, dropout=0.0, backend="rda", state="elu"
+        )
         x = torch.randn(2, 7, 16, requires_grad=True)
-        out, _, _ = m(x, x, x, is_causal=True)  # grad enabled -> fallback path
+        out, _, _ = m(x, x, x, is_causal=True)
         out.pow(2).mean().backward()
         self.assertTrue(torch.isfinite(x.grad).all().item())
 
     def test_incremental_matches_full_causal(self):
         with torch.no_grad():
             full, _, _ = self.m(self.x, self.x, self.x, is_causal=True)
-            # decode one token at a time, carrying state
             ls: dict = {}
             outs = []
             for t in range(self.x.size(1)):

@@ -1482,40 +1482,46 @@ def _use_persistent_dkdv(q, n_ctx, d_head, causal):
     return n_tiles_n < sm_count * 2 and n_tiles_n >= 4
 
 
+# NOTE: prescale_k (the trailing config field) is only correctly implemented in
+# the combined backward kernel (``_bwd_combined_*_inner``), which prescales the
+# K tile and compensates accordingly. The standalone dK/dV and dQ kernels load
+# K/Q raw and the prescale_k branch in their inner loops omits the qk_scale
+# multiply, which yields non-finite gradients. Until those kernels actually
+# prescale their tiles, the standalone configs must request prescale_k=False.
 def _select_bwd_dkdv_config(q, n_ctx, d_head, causal, fused_delta):
     if _is_ada_or_newer(q):
         if d_head <= 32:
-            return 128, 128, 4, 2 if fused_delta else 4, True
+            return 128, 128, 4, 2 if fused_delta else 4, False
         if d_head == 64:
             if causal:
-                return 128, 64, 4, 2 if fused_delta else 3, True
+                return 128, 64, 4, 2 if fused_delta else 3, False
             if n_ctx >= 1024:
-                return 64, 128, 4, 2 if fused_delta else 3, True
-            return 128, 64, 4, 2 if fused_delta else 3, True
+                return 64, 128, 4, 2 if fused_delta else 3, False
+            return 128, 64, 4, 2 if fused_delta else 3, False
         if d_head == 128:
-            return 64, 64, 4, 2, True
+            return 64, 64, 4, 2, False
     if d_head <= 64:
-        return 128, 64, 4, 3, True
-    return 64, 64, 4, 3, True
+        return 128, 64, 4, 3, False
+    return 64, 64, 4, 3, False
 
 
 def _select_bwd_dq_config(q, n_ctx, d_head, causal, fused_delta):
     if _is_ada_or_newer(q):
         if d_head <= 32:
-            return 128, 128, 4, 2 if fused_delta else 4, True
+            return 128, 128, 4, 2 if fused_delta else 4, False
         if d_head == 64:
             if causal:
-                return 128, 64, 4, 3, True
+                return 128, 64, 4, 3, False
             if n_ctx >= 1024:
-                return 128, 128, 4, 2, True
-            return 64, 128, 4, 3, True
+                return 128, 128, 4, 2, False
+            return 64, 128, 4, 3, False
         if d_head == 128:
             if causal:
-                return 32, 64, 4, 2, True
-            return 128, 32, 4, 2, True
+                return 32, 64, 4, 2, False
+            return 128, 32, 4, 2, False
     if d_head <= 64:
-        return 128, 64, 4, 3, True
-    return 64, 64, 4, 3, True
+        return 128, 64, 4, 3, False
+    return 64, 64, 4, 3, False
 
 
 def _use_fused_delta(n_ctx, d_head, causal):

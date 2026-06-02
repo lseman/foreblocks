@@ -55,7 +55,12 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
         stride_c_m, stride_c_n = C_packed.stride()
         acc_dtype = tl.float16 if use_fp16_acc else tl.float32
 
-        grid = (E,)
+        max_M = int(M_per.max().item()) if E > 0 else 0
+        grid = lambda meta: (  # noqa: E731
+            E,
+            triton.cdiv(max_M, meta["BLOCK_M"]),
+            triton.cdiv(N, meta["BLOCK_N"]),
+        )
         _grouped_gemm_varM_kernel[grid](
             A_packed,
             B_cat,
@@ -91,11 +96,17 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
 
         starts = offsets[:-1].to(torch.int32).contiguous()
         M_per = (offsets[1:] - offsets[:-1]).to(torch.int32).contiguous()
+        max_M = int(M_per.max().item()) if E > 0 else 0
 
         if TRITON_AVAILABLE and A_packed.is_cuda:
             grad_A = torch.zeros_like(A_packed) if needs_A else None
             if needs_A:
-                _grouped_gemm_varM_kernel[(E,)](
+                dA_grid = lambda meta: (  # noqa: E731
+                    E,
+                    triton.cdiv(max_M, meta["BLOCK_M"]),
+                    triton.cdiv(K, meta["BLOCK_N"]),  # kernel-N == original K
+                )
+                _grouped_gemm_varM_kernel[dA_grid](
                     grad_out,
                     B_cat,
                     grad_A,
@@ -115,7 +126,12 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
 
             grad_B = torch.zeros_like(B_cat) if needs_B else None
             if needs_B:
-                _grouped_gemm_bwd_dB_kernel[(E,)](
+                dB_grid = lambda meta: (  # noqa: E731
+                    E,
+                    triton.cdiv(K, meta["BLOCK_K"]),
+                    triton.cdiv(N, meta["BLOCK_N"]),
+                )
+                _grouped_gemm_bwd_dB_kernel[dB_grid](
                     A_packed,
                     grad_out,
                     grad_B,
@@ -198,64 +214,58 @@ if TRITON_AVAILABLE:
         BLOCK_K: tl.constexpr,
         ACC_DTYPE: tl.constexpr,
     ):
-        """One program per group g. Computes C_g = A_g @ B_g."""
+        """One program per (group g, m-tile, n-tile). Computes a C_g tile."""
         g = tl.program_id(0)
+        pid_m = tl.program_id(1)
+        pid_n = tl.program_id(2)
+
         start_g = tl.load(starts_ptr + g).to(tl.int32)
         M_g = tl.load(M_ptr + g).to(tl.int32)
 
+        m0 = pid_m * BLOCK_M
+        if m0 >= M_g:
+            return  # this m-tile is past the end of group g
+
+        n0 = pid_n * BLOCK_N
         b_base = B_ptr + g * stride_b_g
+        a_tile_base = A_ptr + (start_g + m0) * stride_a_m
+        c_tile_base = C_ptr + (start_g + m0) * stride_c_m
 
-        m0 = 0
-        while m0 < M_g:
-            a_tile_base = A_ptr + (start_g + m0) * stride_a_m
-            c_tile_base = C_ptr + (start_g + m0) * stride_c_m
+        offs_m = tl.arange(0, BLOCK_M)
+        offs_n = n0 + tl.arange(0, BLOCK_N)
+        offs_k = tl.arange(0, BLOCK_K)
 
-            n0 = 0
-            while n0 < N:
-                offs_m = tl.arange(0, BLOCK_M)
-                offs_n = n0 + tl.arange(0, BLOCK_N)
-                offs_k = tl.arange(0, BLOCK_K)
+        mask_m = offs_m < (M_g - m0)
+        mask_n = offs_n < N
 
-                mask_m = offs_m < (M_g - m0)
-                mask_n = offs_n < N
+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
 
-                acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
+        k0 = 0
+        while k0 < K:
+            k_ids = k0 + offs_k
+            k_mask = k_ids < K
 
-                k0 = 0
-                while k0 < K:
-                    k_ids = k0 + offs_k
-                    k_mask = k_ids < K
+            a_ptrs = (
+                a_tile_base
+                + offs_m[:, None] * stride_a_m
+                + k_ids[None, :] * stride_a_k
+            )
+            a = tl.load(a_ptrs, mask=mask_m[:, None] & k_mask[None, :], other=0.0)
 
-                    a_ptrs = (
-                        a_tile_base
-                        + offs_m[:, None] * stride_a_m
-                        + k_ids[None, :] * stride_a_k
-                    )
-                    a = tl.load(
-                        a_ptrs, mask=mask_m[:, None] & k_mask[None, :], other=0.0
-                    )
+            b_ptrs = (
+                b_base + k_ids[:, None] * stride_b_k + offs_n[None, :] * stride_b_n
+            )
+            b = tl.load(b_ptrs, mask=k_mask[:, None] & mask_n[None, :], other=0.0)
 
-                    b_ptrs = (
-                        b_base
-                        + k_ids[:, None] * stride_b_k
-                        + offs_n[None, :] * stride_b_n
-                    )
-                    b = tl.load(
-                        b_ptrs, mask=k_mask[:, None] & mask_n[None, :], other=0.0
-                    )
+            acc += tl.dot(a, b)
+            k0 += BLOCK_K
 
-                    acc += tl.dot(a, b)
-                    k0 += BLOCK_K
-
-                c_ptrs = (
-                    c_tile_base
-                    + offs_m[:, None] * stride_c_m
-                    + offs_n[None, :] * stride_c_n
-                )
-                tl.store(c_ptrs, acc, mask=mask_m[:, None] & mask_n[None, :])
-
-                n0 += BLOCK_N
-            m0 += BLOCK_M
+        c_ptrs = (
+            c_tile_base
+            + offs_m[:, None] * stride_c_m
+            + offs_n[None, :] * stride_c_n
+        )
+        tl.store(c_ptrs, acc, mask=mask_m[:, None] & mask_n[None, :])
 
     @triton.autotune(
         configs=[
@@ -301,62 +311,50 @@ if TRITON_AVAILABLE:
         BLOCK_M: tl.constexpr,
         ACC_DTYPE: tl.constexpr,
     ):
-        """One program per group g. Computes grad_B[g] = A_g.T @ dC_g."""
+        """One program per (group g, k-tile, n-tile). Tile of grad_B[g]=A_g.T @ dC_g."""
         g = tl.program_id(0)
+        pid_k = tl.program_id(1)
+        pid_n = tl.program_id(2)
+
         start_g = tl.load(starts_ptr + g).to(tl.int32)
         M_g = tl.load(M_ptr + g).to(tl.int32)
 
         db_base = dB_ptr + g * stride_db_g
 
-        k0 = 0
-        while k0 < K:
-            offs_k = k0 + tl.arange(0, BLOCK_K)
-            mask_k = offs_k < K
+        offs_k = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
+        offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+        mask_k = offs_k < K
+        mask_n = offs_n < N
 
-            n0 = 0
-            while n0 < N:
-                offs_n = n0 + tl.arange(0, BLOCK_N)
-                mask_n = offs_n < N
+        acc = tl.zeros((BLOCK_K, BLOCK_N), dtype=ACC_DTYPE)
 
-                acc = tl.zeros((BLOCK_K, BLOCK_N), dtype=ACC_DTYPE)
+        m0 = 0
+        while m0 < M_g:
+            offs_m = tl.arange(0, BLOCK_M)
+            mask_m = offs_m < (M_g - m0)
+            abs_m = start_g + m0
 
-                m0 = 0
-                while m0 < M_g:
-                    offs_m = tl.arange(0, BLOCK_M)
-                    mask_m = offs_m < (M_g - m0)
-                    abs_m = start_g + m0
+            a_T_ptrs = (
+                A_ptr
+                + (abs_m + offs_m[None, :]) * stride_a_m
+                + offs_k[:, None] * stride_a_k
+            )
+            a_T = tl.load(a_T_ptrs, mask=mask_k[:, None] & mask_m[None, :], other=0.0)
 
-                    a_T_ptrs = (
-                        A_ptr
-                        + (abs_m + offs_m[None, :]) * stride_a_m
-                        + offs_k[:, None] * stride_a_k
-                    )
-                    a_T = tl.load(
-                        a_T_ptrs, mask=mask_k[:, None] & mask_m[None, :], other=0.0
-                    )
+            dc_ptrs = (
+                dC_ptr
+                + (abs_m + offs_m[:, None]) * stride_dc_m
+                + offs_n[None, :] * stride_dc_n
+            )
+            dc = tl.load(dc_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0.0)
 
-                    dc_ptrs = (
-                        dC_ptr
-                        + (abs_m + offs_m[:, None]) * stride_dc_m
-                        + offs_n[None, :] * stride_dc_n
-                    )
-                    dc = tl.load(
-                        dc_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0.0
-                    )
+            acc += tl.dot(a_T, dc)
+            m0 += BLOCK_M
 
-                    acc += tl.dot(a_T, dc)
-
-                    m0 += BLOCK_M
-
-                db_ptrs = (
-                    db_base
-                    + offs_k[:, None] * stride_db_k
-                    + offs_n[None, :] * stride_db_n
-                )
-                tl.store(db_ptrs, acc, mask=mask_k[:, None] & mask_n[None, :])
-
-                n0 += BLOCK_N
-            k0 += BLOCK_K
+        db_ptrs = (
+            db_base + offs_k[:, None] * stride_db_k + offs_n[None, :] * stride_db_n
+        )
+        tl.store(db_ptrs, acc, mask=mask_k[:, None] & mask_n[None, :])
 
 
 # ============================== Python helpers ===============================
@@ -478,7 +476,13 @@ def grouped_mm_varM(
 
     acc_dtype = tl.float16 if use_fp16_acc else tl.float32
 
-    _grouped_gemm_varM_kernel[(E,)](
+    max_M = int(M_per.max().item()) if E > 0 else 0
+    grid = lambda meta: (  # noqa: E731
+        E,
+        triton.cdiv(max_M, meta["BLOCK_M"]),
+        triton.cdiv(N, meta["BLOCK_N"]),
+    )
+    _grouped_gemm_varM_kernel[grid](
         A_packed,
         B_cat,
         C_packed,

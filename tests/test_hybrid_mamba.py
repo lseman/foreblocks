@@ -8,6 +8,14 @@ from foreblocks.custom_mamba import (
     grouped_ssd_scan,
     grouped_ssd_scan_reference,
 )
+from foreblocks.custom_mamba.ops import (
+    dt_prep_bwd_triton,
+    dt_prep_fallback,
+    fused_out_bwd_triton,
+    fused_out_fallback,
+    selective_scan,
+    selective_scan_reference,
+)
 from foreblocks.custom_mamba.layers import (
     FeedForward,
     HybridMamba2Block,
@@ -19,6 +27,14 @@ from foreblocks.custom_mamba.layers import (
     TinyHybridMamba2LM,
     TinyHybridMambaLM,
 )
+
+
+def _clone_requires_grad(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.detach().clone().requires_grad_(True)
+
+
+def _assert_close(lhs: torch.Tensor, rhs: torch.Tensor, atol: float = 1e-5) -> None:
+    assert torch.allclose(lhs, rhs, atol=atol, rtol=atol)
 
 
 def test_custom_mamba_block_cpu_forward_uses_low_rank_dt() -> None:
@@ -164,6 +180,122 @@ def test_grouped_ssd_scan_matches_reference_on_cpu() -> None:
     y = grouped_ssd_scan(u, dt, A, Bpar, Cpar, Dskip, delta_gate=gate, use_triton=True)
 
     assert torch.allclose(y, y_ref, atol=1e-6, rtol=1e-6)
+
+
+def test_dt_prep_backward_matches_autograd_reference() -> None:
+    torch.manual_seed(11)
+    batch, seqlen, dim = 2, 5, 7
+    dt_raw = torch.randn(batch, seqlen, dim)
+    bias = torch.randn(dim)
+    grad_out = torch.randn_like(dt_raw)
+
+    d_dt_raw, d_bias = dt_prep_bwd_triton(grad_out, dt_raw, bias)
+
+    dt_raw_ref = _clone_requires_grad(dt_raw)
+    bias_ref = _clone_requires_grad(bias)
+    out_ref = dt_prep_fallback(dt_raw_ref, bias_ref)
+    out_ref.backward(grad_out)
+
+    _assert_close(d_dt_raw, dt_raw_ref.grad)
+    assert d_bias is not None
+    _assert_close(d_bias, bias_ref.grad)
+
+    _, skipped_bias = dt_prep_bwd_triton(
+        grad_out, dt_raw, bias, compute_bias_grad=False
+    )
+    assert skipped_bias is None
+
+
+def test_fused_out_backward_matches_autograd_reference() -> None:
+    torch.manual_seed(12)
+    batch, seqlen, dim = 2, 4, 9
+    y = torch.randn(batch, seqlen, dim)
+    z = torch.randn(batch, seqlen, dim)
+    residual = torch.randn(batch, seqlen, dim)
+    norm_weight = torch.randn(dim)
+    grad_out = torch.randn_like(y)
+
+    d_y, d_z, d_residual, d_norm_weight = fused_out_bwd_triton(
+        grad_out, y, z, residual, norm_weight
+    )
+
+    y_ref = _clone_requires_grad(y)
+    z_ref = _clone_requires_grad(z)
+    residual_ref = _clone_requires_grad(residual)
+    norm_weight_ref = _clone_requires_grad(norm_weight)
+    out_ref = fused_out_fallback(y_ref, z_ref, residual_ref, norm_weight_ref)
+    out_ref.backward(grad_out)
+
+    _assert_close(d_y, y_ref.grad)
+    _assert_close(d_z, z_ref.grad)
+    _assert_close(d_residual, residual_ref.grad)
+    assert d_norm_weight is not None
+    _assert_close(d_norm_weight, norm_weight_ref.grad)
+
+    skipped_weight = fused_out_bwd_triton(
+        grad_out,
+        y,
+        z,
+        residual,
+        norm_weight,
+        compute_norm_weight_grad=False,
+    )[3]
+    assert skipped_weight is None
+
+
+def test_selective_scan_backward_matches_reference_autograd() -> None:
+    torch.manual_seed(13)
+    batch, seqlen, dim, d_state = 2, 5, 4, 3
+    u = torch.randn(batch, seqlen, dim, requires_grad=True)
+    dt = (torch.rand(batch, seqlen, dim) * 0.1 + 1e-3).requires_grad_(True)
+    A = (-torch.exp(torch.randn(dim, d_state))).requires_grad_(True)
+    Bpar = (torch.randn(batch, seqlen, dim, d_state) * 0.1).requires_grad_(True)
+    Cpar = (torch.randn(batch, seqlen, dim, d_state) * 0.1).requires_grad_(True)
+    Dskip = torch.randn(dim, requires_grad=True)
+    grad_out = torch.randn(batch, seqlen, dim)
+
+    inputs = (u, dt, A, Bpar, Cpar, Dskip)
+    out = selective_scan(*inputs, use_cuda_kernel=False)
+    ref_inputs = tuple(_clone_requires_grad(tensor) for tensor in inputs)
+    out_ref = selective_scan_reference(*ref_inputs)
+
+    _assert_close(out, out_ref.detach(), atol=1e-6)
+    out.backward(grad_out)
+    out_ref.backward(grad_out)
+
+    for tensor, ref_tensor in zip(inputs, ref_inputs):
+        _assert_close(tensor.grad, ref_tensor.grad)
+
+
+def test_grouped_ssd_scan_backward_matches_reference_autograd() -> None:
+    torch.manual_seed(14)
+    batch, seqlen, num_heads, head_dim, d_state = 2, 5, 3, 4, 3
+    u = torch.randn(batch, seqlen, num_heads, head_dim, requires_grad=True)
+    dt = (torch.rand(batch, seqlen, num_heads) * 0.1 + 1e-3).requires_grad_(True)
+    A = (-torch.exp(torch.randn(num_heads, d_state))).requires_grad_(True)
+    Bpar = (
+        torch.randn(batch, seqlen, num_heads, d_state) * 0.1
+    ).requires_grad_(True)
+    Cpar = (
+        torch.randn(batch, seqlen, num_heads, d_state) * 0.1
+    ).requires_grad_(True)
+    Dskip = torch.randn(num_heads, head_dim, requires_grad=True)
+    gate = torch.randn(batch, seqlen, num_heads, requires_grad=True)
+    grad_out = torch.randn(batch, seqlen, num_heads, head_dim)
+
+    inputs = (u, dt, A, Bpar, Cpar, Dskip, gate)
+    out = grouped_ssd_scan(*inputs[:-1], delta_gate=gate, use_triton=False)
+    ref_inputs = tuple(_clone_requires_grad(tensor) for tensor in inputs)
+    out_ref = grouped_ssd_scan_reference(
+        *ref_inputs[:-1], delta_gate=ref_inputs[-1]
+    )
+
+    _assert_close(out, out_ref.detach(), atol=1e-6)
+    out.backward(grad_out)
+    out_ref.backward(grad_out)
+
+    for tensor, ref_tensor in zip(inputs, ref_inputs):
+        _assert_close(tensor.grad, ref_tensor.grad)
 
 
 def test_rotary_embedding_shape_and_causality() -> None:
@@ -502,15 +634,37 @@ def test_grouped_ssd_scan_triton_matches_reference_when_available() -> None:
 
     device = "cuda"
     dtype = torch.float32
-    u = torch.randn(2, 8, 4, 8, device=device, dtype=dtype)
-    dt = torch.rand(2, 8, 4, device=device, dtype=dtype) * 0.1 + 1e-3
-    A = -torch.exp(torch.randn(4, 8, device=device, dtype=dtype))
-    Bpar = torch.randn(2, 8, 4, 8, device=device, dtype=dtype) * 0.1
-    Cpar = torch.randn(2, 8, 4, 8, device=device, dtype=dtype) * 0.1
-    Dskip = torch.randn(4, 8, device=device, dtype=dtype)
-    gate = torch.randn(2, 8, 4, device=device, dtype=dtype)
+    u = torch.randn(2, 8, 4, 8, device=device, dtype=dtype, requires_grad=True)
+    dt = (torch.rand(2, 8, 4, device=device, dtype=dtype) * 0.1 + 1e-3)
+    dt = dt.requires_grad_(True)
+    A = (-torch.exp(torch.randn(4, 8, device=device, dtype=dtype))).requires_grad_(
+        True
+    )
+    Bpar = (
+        torch.randn(2, 8, 4, 8, device=device, dtype=dtype) * 0.1
+    ).requires_grad_(True)
+    Cpar = (
+        torch.randn(2, 8, 4, 8, device=device, dtype=dtype) * 0.1
+    ).requires_grad_(True)
+    Dskip = torch.randn(4, 8, device=device, dtype=dtype, requires_grad=True)
+    gate = torch.randn(2, 8, 4, device=device, dtype=dtype, requires_grad=True)
+    grad_out = torch.randn_like(u)
 
     y_ref = grouped_ssd_scan_reference(u, dt, A, Bpar, Cpar, Dskip, delta_gate=gate)
     y = grouped_ssd_scan(u, dt, A, Bpar, Cpar, Dskip, delta_gate=gate, use_triton=True)
 
     assert torch.allclose(y, y_ref, atol=5e-4, rtol=5e-4)
+
+    inputs = (u, dt, A, Bpar, Cpar, Dskip, gate)
+    ref_inputs = tuple(_clone_requires_grad(tensor) for tensor in inputs)
+    y_ref = grouped_ssd_scan_reference(
+        *ref_inputs[:-1], delta_gate=ref_inputs[-1]
+    )
+    y = grouped_ssd_scan(
+        *inputs[:-1], delta_gate=inputs[-1], use_triton=True
+    )
+    y.backward(grad_out)
+    y_ref.backward(grad_out)
+
+    for tensor, ref_tensor in zip(inputs, ref_inputs):
+        assert torch.allclose(tensor.grad, ref_tensor.grad, atol=5e-4, rtol=5e-4)

@@ -11,7 +11,6 @@ from foreblocks.ui.node_spec import node
 
 from .attention.modules.gated_delta import GatedDeltaNet
 from .attention.modules.kimi_att import KimiAttention
-from .attention.modules.lin_att import LinearAttention
 from .attention.modules.modern_linear_attn import ModernLinearAttention
 from .attention.multi_att import MultiAttention
 from .attention.utils.residuals import (
@@ -167,8 +166,6 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             chunk_size=64,
         )
         self._gdn_modern_kwargs = dict(
-            backend="gated_deltanet",
-            mode="chunk",
             chunk_size=64,
         )
         self.layer_attention_type = str(layer_attention_type)
@@ -221,11 +218,13 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             ).to(dev)
         return self.self_attn_std
 
-    def _build_lin(self) -> LinearAttention:
+    def _build_lin(self) -> ModernLinearAttention:
         if self.self_attn_lin is None:
             dev = next(self.parameters()).device
-            self.self_attn_lin = LinearAttention(
+            self.self_attn_lin = ModernLinearAttention(
                 **self._attn_init_kwargs,
+                backend="rda",
+                state="elu",
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_lin
@@ -250,12 +249,15 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             ).to(dev)
         return self.self_attn_deltanet
 
-    def _build_gdn_modern(self) -> ModernLinearAttention:
+    def _build_gdn_modern(self) -> GatedDeltaNet:
+        # "gated_deltanet" consolidated onto the standalone GatedDeltaNet:
+        # the modern backend's chunk path was numerically inconsistent with its
+        # recurrent path and slower. Same algorithm, correct + faster impl.
         if self.self_attn_gdn_modern is None:
             dev = next(self.parameters()).device
-            self.self_attn_gdn_modern = ModernLinearAttention(
+            self.self_attn_gdn_modern = GatedDeltaNet(
                 **self._attn_init_kwargs,
-                **self._gdn_modern_kwargs,
+                chunk_size=self._gdn_modern_kwargs["chunk_size"],
                 pos_encoding_type=self._pos_encoding_type,
             ).to(dev)
         return self.self_attn_gdn_modern

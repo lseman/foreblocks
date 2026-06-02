@@ -47,119 +47,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-try:
-    import triton
-    import triton.language as tl  # noqa: F401
-
-    _HAS_TRITON = True
-except Exception:
-    _HAS_TRITON = False
-
-
-if _HAS_TRITON:
-
-    @triton.jit
-    def _matvec_xt_kernel(
-        S_ptr,
-        x_ptr,
-        y_ptr,
-        Dk: tl.constexpr,
-        Dv: tl.constexpr,
-        strideSB,
-        strideSi,
-        strideSj,
-        stridexB,
-        stridexi,
-        strideyB,
-        strideyj,
-        BLOCK_I: tl.constexpr,
-        BLOCK_J: tl.constexpr,
-    ):
-        """y[b, j] = sum_i S[b, i, j] * x[b, i]."""
-        pid_b = tl.program_id(0)
-        pid_j = tl.program_id(1)
-        offs_j = pid_j * BLOCK_J + tl.arange(0, BLOCK_J)
-        mask_j = offs_j < Dv
-        acc = tl.zeros([BLOCK_J], dtype=tl.float32)
-
-        for i0 in range(0, Dk, BLOCK_I):
-            offs_i = i0 + tl.arange(0, BLOCK_I)
-            mask_i = offs_i < Dk
-            x_vec = tl.load(
-                x_ptr + pid_b * stridexB + offs_i * stridexi,
-                mask=mask_i,
-                other=0.0,
-            ).to(tl.float32)
-            S_tile = tl.load(
-                S_ptr
-                + pid_b * strideSB
-                + offs_i[:, None] * strideSi
-                + offs_j[None, :] * strideSj,
-                mask=mask_i[:, None] & mask_j[None, :],
-                other=0.0,
-            ).to(tl.float32)
-            acc += tl.sum(S_tile * x_vec[:, None], axis=0)
-
-        tl.store(y_ptr + pid_b * strideyB + offs_j * strideyj, acc, mask=mask_j)
-
-    @triton.jit
-    def _rank1_update_kernel(
-        S_ptr,
-        k_ptr,
-        d_ptr,
-        b_ptr,
-        Dk: tl.constexpr,
-        Dv: tl.constexpr,
-        strideSB,
-        strideSi,
-        strideSj,
-        stridekB,
-        strideki,
-        stridedB,
-        stridedj,
-        stridebB,
-        BLOCK_I: tl.constexpr,
-        BLOCK_J: tl.constexpr,
-    ):
-        """S[b] += beta[b] * k[b] ⊗ d[b]."""
-        pid_b = tl.program_id(0)
-        pid_j = tl.program_id(1)
-        offs_j = pid_j * BLOCK_J + tl.arange(0, BLOCK_J)
-        mask_j = offs_j < Dv
-
-        b_scalar = tl.load(b_ptr + pid_b * stridebB).to(tl.float32)
-        d_vec = tl.load(
-            d_ptr + pid_b * stridedB + offs_j * stridedj,
-            mask=mask_j,
-            other=0.0,
-        ).to(tl.float32)
-        d_scaled = b_scalar * d_vec
-
-        for i0 in range(0, Dk, BLOCK_I):
-            offs_i = i0 + tl.arange(0, BLOCK_I)
-            mask_i = offs_i < Dk
-            k_vec = tl.load(
-                k_ptr + pid_b * stridekB + offs_i * strideki,
-                mask=mask_i,
-                other=0.0,
-            ).to(tl.float32)
-            S_tile = tl.load(
-                S_ptr
-                + pid_b * strideSB
-                + offs_i[:, None] * strideSi
-                + offs_j[None, :] * strideSj,
-                mask=mask_i[:, None] & mask_j[None, :],
-                other=0.0,
-            ).to(tl.float32)
-            tl.store(
-                S_ptr
-                + pid_b * strideSB
-                + offs_i[:, None] * strideSi
-                + offs_j[None, :] * strideSj,
-                S_tile + k_vec[:, None] * d_scaled[None, :],
-                mask=mask_i[:, None] & mask_j[None, :],
-            )
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,9 +154,6 @@ class GatedDeltaNet(nn.Module):
         conv_kernel: int = 4,
         beta_max: float = 1.0,
         eps: float = 1e-6,
-        use_triton: bool = False,
-        triton_block_i: int = 64,
-        triton_block_j: int = 128,
         use_mamba_gate: bool = True,
         # Positional encoding options
         pos_encoding_type: str = "sinusoidal",
@@ -283,9 +167,6 @@ class GatedDeltaNet(nn.Module):
         self.dv = d_val or (d_model // n_heads)
         self.chunk_size = int(chunk_size) if chunk_size and chunk_size > 1 else 0
         self.beta_max = float(beta_max)
-        self.use_triton = bool(use_triton and _HAS_TRITON)
-        self.triton_block_i = int(triton_block_i)
-        self.triton_block_j = int(triton_block_j)
         self.use_mamba_gate = bool(use_mamba_gate)
 
         # Legacy compatibility: alpha_min is ignored when use_mamba_gate=True
@@ -423,105 +304,6 @@ class GatedDeltaNet(nn.Module):
             .permute(0, 2, 1, 3)  # [B, H, T, Dv]
             .contiguous()
         )
-
-    def _can_use_triton(self, S: torch.Tensor) -> bool:
-        return (
-            self.use_triton
-            and _HAS_TRITON
-            and (not self.training)
-            and S.is_cuda
-            and S.is_contiguous()
-            and S.dtype in (torch.float16, torch.bfloat16, torch.float32)
-        )
-
-    def _triton_matvec_xt(self, S: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        """Compute y = S^T @ x for batched [BH, Dk, Dv] and [BH, Dk]."""
-        BH, Dk, Dv = S.shape
-        y = torch.empty(BH, Dv, device=S.device, dtype=torch.float32)
-        grid = (BH, triton.cdiv(Dv, self.triton_block_j))
-        _matvec_xt_kernel[grid](
-            S,
-            x,
-            y,
-            Dk,
-            Dv,
-            S.stride(0),
-            S.stride(1),
-            S.stride(2),
-            x.stride(0),
-            x.stride(1),
-            y.stride(0),
-            y.stride(1),
-            BLOCK_I=self.triton_block_i,
-            BLOCK_J=self.triton_block_j,
-        )
-        return y
-
-    def _triton_rank1_update(
-        self,
-        S: torch.Tensor,
-        k_t: torch.Tensor,
-        delta: torch.Tensor,
-        beta_t: torch.Tensor,
-    ) -> None:
-        """In-place S += beta * k ⊗ delta (all batched over BH)."""
-        BH, Dk, Dv = S.shape
-        grid = (BH, triton.cdiv(Dv, self.triton_block_j))
-        _rank1_update_kernel[grid](
-            S,
-            k_t,
-            delta,
-            beta_t,
-            Dk,
-            Dv,
-            S.stride(0),
-            S.stride(1),
-            S.stride(2),
-            k_t.stride(0),
-            k_t.stride(1),
-            delta.stride(0),
-            delta.stride(1),
-            beta_t.stride(0),
-            BLOCK_I=self.triton_block_i,
-            BLOCK_J=self.triton_block_j,
-        )
-
-    def _delta_step_triton(
-        self,
-        S: torch.Tensor,
-        k_t: torch.Tensor,
-        v_t: torch.Tensor,
-        q_t: torch.Tensor,
-        alpha_t: torch.Tensor,
-        beta_t: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Inference-only Triton fast step; numerically aligned with _delta_step.
-
-        Matches paper formula: S_t = αS + βk⊗(v - αkS)
-        Order: decay → error from decayed state → outer-product update → readout
-        """
-        k32 = k_t.to(torch.float32).contiguous()
-        v32 = v_t.to(torch.float32).contiguous()
-        q32 = q_t.to(torch.float32).contiguous()
-        a32 = alpha_t.to(torch.float32).contiguous()
-        b32 = beta_t.to(torch.float32).contiguous()
-
-        S_work = S.contiguous().to(torch.float32)
-
-        # 1 Apply decay first: S' = α S
-        S_work.mul_(a32.unsqueeze(-1))
-
-        # 2 Prediction error from DECAYED state
-        v_hat = self._triton_matvec_xt(S_work, k32)
-        delta = v32 - v_hat  # error of decayed state prediction
-
-        # 3 Outer-product update: S += β k ⊗ delta
-        self._triton_rank1_update(S_work, k32, delta, b32.squeeze(-1))
-
-        # 4 Readout from updated state
-        o_t = self._triton_matvec_xt(S_work, q32).to(S.dtype)
-        S_new = S_work.to(S.dtype)
-        return o_t, S_new
 
     # ── Single recurrent step ─────────────────────────────────────────────────
 
@@ -727,7 +509,6 @@ class GatedDeltaNet(nn.Module):
 
         out = torch.zeros(BH, T, self.dv, device=device, dtype=dtype)
         C = self.chunk_size
-        use_triton = self._can_use_triton(S)
 
         if C and T > C:
             # ── Chunk-parallel mode (exact WY representation) ─────────────
@@ -736,14 +517,9 @@ class GatedDeltaNet(nn.Module):
             # ── Exact sequential mode ─────────────────────────────────────
             S = S.detach()
             for t in range(T):
-                if use_triton:
-                    out[:, t], S = self._delta_step_triton(
-                        S, K[:, t], V[:, t], Q[:, t], alpha[:, t], beta[:, t]
-                    )
-                else:
-                    out[:, t], S = self._delta_step(
-                        S, K[:, t], V[:, t], Q[:, t], alpha[:, t], beta[:, t]
-                    )
+                out[:, t], S = self._delta_step(
+                    S, K[:, t], V[:, t], Q[:, t], alpha[:, t], beta[:, t]
+                )
 
         # ── Output gate + head-wise RMSNorm (skip for Oryx) ───────────────
         out_h = out.reshape(B, self.h, T, self.dv)  # [B, H, T, Dv]
@@ -799,14 +575,9 @@ class GatedDeltaNet(nn.Module):
             else self._init_state(BH, device, dtype)
         )
 
-        if self._can_use_triton(S):
-            o_t, S_new = self._delta_step_triton(
-                S, K[:, 0], V[:, 0], Q[:, 0], alpha[:, 0], beta[:, 0]
-            )
-        else:
-            o_t, S_new = self._delta_step(
-                S, K[:, 0], V[:, 0], Q[:, 0], alpha[:, 0], beta[:, 0]
-            )  # o_t: [BH, Dv]
+        o_t, S_new = self._delta_step(
+            S, K[:, 0], V[:, 0], Q[:, 0], alpha[:, 0], beta[:, 0]
+        )  # o_t: [BH, Dv]
 
         # gate & norm (skip for Oryx: external GatedRMSNorm applied)
         out_h = o_t.reshape(B, self.h, 1, self.dv)  # [B, H, 1, Dv]
@@ -966,17 +737,11 @@ class GatedDeltaNet(nn.Module):
 
         # Build memory state (no decay: α=1 for full memory retention)
         S = self._init_state(BH, device, dtype)
-        use_triton = self._can_use_triton(S)
         for t in range(Tm):
             alpha_t = torch.ones(BH, 1, device=device, dtype=dtype)
-            if use_triton:
-                _, S = self._delta_step_triton(
-                    S, K_m[:, t], V_m[:, t], K_m[:, t], alpha_t, beta_m[:, t]
-                )
-            else:
-                _, S = self._delta_step(
-                    S, K_m[:, t], V_m[:, t], K_m[:, t], alpha_t, beta_m[:, t]
-                )
+            _, S = self._delta_step(
+                S, K_m[:, t], V_m[:, t], K_m[:, t], alpha_t, beta_m[:, t]
+            )
 
         # Project Q from query stream and retrieve
         q_raw = (

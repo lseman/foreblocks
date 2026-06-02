@@ -37,8 +37,10 @@ It is designed as a clean iteration surface for modern attention kernel tuning w
 
 - **FA2-style dropout**: Dropout applied to attention probabilities during training,
   with 1/(1-p) scaling for unbiased gradients.
-- **KV-cache decode**: Optimized single-token generation with KV cache via
-  PyTorch SDPA backend (already the fastest on modern GPUs).
+- **KV-cache decode**: Real flash-decoding Triton kernel for single-token
+  generation — splits the KV history across programs and reduces the partial
+  softmax states, so a single decode step fills the GPU instead of serializing
+  over `(batch, head)`. 10-90x faster than the previous per-`(b,h)` SDPA loop.
 - **Fused attention + RMSNorm**: `FlashAttnRMSNorm` module implementing the common
   LLM pattern of normalize -> attend -> norm -> add residual.
 - **PyTorch `autograd.Function` wrapper** with correct torch/SDPA fallback paths
@@ -134,6 +136,6 @@ The paper's core FA3 ideas are producer-consumer asynchrony, WGMMA/TMA overlap, 
 2. ~~Explore a persistent scheduler that maps multiple row/column tiles per CTA~~ ✅ Done
 3. Keep tuning forward tiles for causal `D=128`, where PyTorch SDPA still wins
    on RTX 4090.
-4. Add a true Triton decode kernel with block-tiled PV (pending Triton API improvements).
+4. ~~Add a true Triton decode kernel with block-tiled PV.~~ ✅ Done (flash-decoding with KV-split)
 5. Add Grouped Query Attention (GQA) / Multi-Query Attention (MQA) support.
 6. Add fused attention + dropout + RMSNorm end-to-end module.

@@ -15,6 +15,11 @@ from .ops import (
     causal_depthwise_conv1d,
     causal_depthwise_conv1d_reference,
     dt_prep,
+    dt_prep_bwd_triton,
+    dt_prep_fallback,
+    fused_out,
+    fused_out_bwd_triton,
+    fused_out_fallback,
     selective_scan,
     selective_scan_reference,
 )
@@ -187,6 +192,120 @@ def check_backward(
     print("Dskip.grad:", Dskip.grad.abs().mean().item())
 
 
+def check_dt_prep_backward_close(
+    B: int = 4,
+    T: int = 32,
+    D: int = 64,
+    dtype: torch.dtype = torch.float32,
+):
+    """Verify dt_prep backward against PyTorch autograd reference."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    forward_tol, grad_tol = _default_compare_tolerances(dtype)
+    torch.manual_seed(42)
+    dt_raw = torch.randn(B, T, D, device=device, dtype=dtype, requires_grad=True)
+    bias = torch.randn(D, device=device, dtype=dtype, requires_grad=True)
+    grad_out = torch.randn(B, T, D, device=device, dtype=dtype)
+    dt_min, dt_max = 1e-4, 1.0
+
+    d_dt_raw_fast, d_bias_fast = dt_prep_bwd_triton(
+        grad_out,
+        dt_raw.detach(),
+        bias.detach(),
+        dt_min=dt_min,
+        dt_max=dt_max,
+    )
+
+    y_ref = dt_prep_fallback(dt_raw, bias, dt_min=dt_min, dt_max=dt_max)
+    y_ref.backward(grad_out)
+
+    failures: list[str] = []
+    if (
+        _print_compare_metric("dt_prep grad[dt_raw]", d_dt_raw_fast, dt_raw.grad, grad_tol)
+        > grad_tol
+    ):
+        failures.append("grad[dt_raw]")
+    if d_bias_fast is not None and (
+        _print_compare_metric("dt_prep grad[bias]", d_bias_fast, bias.grad, grad_tol)
+        > grad_tol
+    ):
+        failures.append("grad[bias]")
+
+    no_bias_grad = dt_prep_bwd_triton(
+        grad_out,
+        dt_raw.detach(),
+        bias.detach(),
+        dt_min=dt_min,
+        dt_max=dt_max,
+        compute_bias_grad=False,
+    )[1]
+    if no_bias_grad is not None:
+        failures.append("skipped bias grad")
+
+    if failures:
+        raise AssertionError("dt_prep backward comparison failed for: " + ", ".join(failures))
+
+    path = "triton" if device == "cuda" and TRITON_AVAILABLE else "fallback"
+    print(f"[dt_prep bwd close] ok ({path}, forward_tol={forward_tol:.1e})")
+
+
+def check_fused_out_backward_close(
+    B: int = 2,
+    T: int = 16,
+    D: int = 64,
+    dtype: torch.dtype = torch.float32,
+):
+    """Verify fused_out backward against PyTorch autograd reference."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    _, grad_tol = _default_compare_tolerances(dtype)
+    torch.manual_seed(42)
+    y = torch.randn(B, T, D, device=device, dtype=dtype, requires_grad=True)
+    z = torch.randn(B, T, D, device=device, dtype=dtype, requires_grad=True)
+    residual = torch.randn(B, T, D, device=device, dtype=dtype, requires_grad=True)
+    norm_weight = torch.ones(D, device=device, dtype=dtype, requires_grad=True)
+    grad_out = torch.randn(B, T, D, device=device, dtype=dtype)
+
+    d_y_fast, d_z_fast, d_res_fast, d_w_fast = fused_out_bwd_triton(
+        grad_out,
+        y.detach(),
+        z.detach(),
+        residual.detach(),
+        norm_weight.detach(),
+    )
+
+    out_ref = fused_out_fallback(y, z, residual, norm_weight)
+    out_ref.backward(grad_out)
+
+    failures: list[str] = []
+    for name, lhs, rhs in (
+        ("y", d_y_fast, y.grad),
+        ("z", d_z_fast, z.grad),
+        ("residual", d_res_fast, residual.grad),
+        ("norm_weight", d_w_fast, norm_weight.grad),
+    ):
+        if lhs is None or rhs is None:
+            failures.append(f"grad[{name}] missing")
+            continue
+        if _print_compare_metric(f"fused_out grad[{name}]", lhs, rhs, grad_tol) > grad_tol:
+            failures.append(f"grad[{name}]")
+
+    no_weight_grad = fused_out_bwd_triton(
+        grad_out,
+        y.detach(),
+        z.detach(),
+        residual.detach(),
+        norm_weight.detach(),
+        compute_norm_weight_grad=False,
+    )[3]
+    if no_weight_grad is not None:
+        failures.append("skipped norm_weight grad")
+
+    if failures:
+        raise AssertionError("fused_out backward comparison failed for: " + ", ".join(failures))
+
+    path = "triton" if device == "cuda" and TRITON_AVAILABLE else "fallback"
+    print(f"[fused_out bwd close] ok ({path})")
+
+
 def _default_compare_tolerances(dtype: torch.dtype) -> tuple[float, float]:
     if dtype in {torch.float16, torch.bfloat16}:
         return 2e-3, 2e-2
@@ -204,7 +323,8 @@ def _print_compare_metric(
     max_abs, mean_abs = _error_stats(lhs, rhs)
     status = "ok" if max_abs <= tol else "FAIL"
     print(
-        f"[compare] {label}: max_abs={max_abs:.6e}, mean_abs={mean_abs:.6e}, tol={tol:.6e} [{status}]"
+        f"[compare] {label}: max_abs={max_abs:.6e}, "
+        f"mean_abs={mean_abs:.6e}, tol={tol:.6e} [{status}]"
     )
     return max_abs
 
@@ -527,6 +647,8 @@ def run_default_diagnostics() -> None:
     check_causal_conv_backward()
     check_forward_close()
     check_backward()
+    check_dt_prep_backward_close()
+    check_fused_out_backward_close()
     benchmark_causal_conv()
     benchmark_block()
     example_train_step()
@@ -599,6 +721,26 @@ def main(argv: list[str] | None = None) -> None:
     bench_block_parser.add_argument("--iters", type=int, default=50)
     bench_block_parser.add_argument("--warmup", type=int, default=10)
 
+    dt_bwd_parser = subparsers.add_parser(
+        "check-dt-prep-backward", help="Check dt_prep Triton backward close"
+    )
+    dt_bwd_parser.add_argument("--batch", type=int, default=4)
+    dt_bwd_parser.add_argument("--seqlen", type=int, default=32)
+    dt_bwd_parser.add_argument("--d-model", type=int, default=64)
+    dt_bwd_parser.add_argument(
+        "--dtype", choices=["float32", "float16", "bfloat16"], default="float32"
+    )
+
+    fused_bwd_parser = subparsers.add_parser(
+        "check-fused-out-backward", help="Check fused_out Triton backward close"
+    )
+    fused_bwd_parser.add_argument("--batch", type=int, default=2)
+    fused_bwd_parser.add_argument("--seqlen", type=int, default=16)
+    fused_bwd_parser.add_argument("--d-model", type=int, default=64)
+    fused_bwd_parser.add_argument(
+        "--dtype", choices=["float32", "float16", "bfloat16"], default="float32"
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "precompile":
@@ -650,6 +792,24 @@ def main(argv: list[str] | None = None) -> None:
             dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
             iters=args.iters,
             warmup=args.warmup,
+        )
+        return
+
+    if args.command == "check-dt-prep-backward":
+        check_dt_prep_backward_close(
+            B=args.batch,
+            T=args.seqlen,
+            D=args.d_model,
+            dtype=getattr(torch, args.dtype),
+        )
+        return
+
+    if args.command == "check-fused-out-backward":
+        check_fused_out_backward_close(
+            B=args.batch,
+            T=args.seqlen,
+            D=args.d_model,
+            dtype=getattr(torch, args.dtype),
         )
         return
 

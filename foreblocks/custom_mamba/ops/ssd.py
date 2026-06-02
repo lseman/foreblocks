@@ -76,6 +76,148 @@ def grouped_ssd_scan_reference(
     return torch.stack(ys, dim=1)
 
 
+def grouped_ssd_scan_backward_reference(
+    grad_y: torch.Tensor,
+    u: torch.Tensor,
+    dt: torch.Tensor,
+    A: torch.Tensor,
+    Bpar: torch.Tensor,
+    Cpar: torch.Tensor,
+    Dskip: torch.Tensor,
+    delta_gate: torch.Tensor | None = None,
+    needs_input_grad: tuple[bool, bool, bool, bool, bool, bool, bool] | None = None,
+) -> tuple[
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+]:
+    """Portable analytical backward for grouped_ssd_scan_reference."""
+    if needs_input_grad is None:
+        needs_input_grad = (True, True, True, True, True, True, delta_gate is not None)
+
+    batch_size, seqlen, num_heads, head_dim = u.shape
+    d_state = A.shape[1]
+    device = u.device
+
+    u32 = u.float()
+    dt32 = dt.float()
+    A32 = A.float()
+    B32 = Bpar.float()
+    C32 = Cpar.float()
+    D32 = Dskip.float()
+    gate32 = delta_gate.float() if delta_gate is not None else None
+
+    state = torch.zeros(
+        batch_size, num_heads, head_dim, d_state, device=device, dtype=torch.float32
+    )
+    states_before: list[torch.Tensor] = []
+    states_after: list[torch.Tensor] = []
+
+    for t in range(seqlen):
+        states_before.append(state)
+        u_t = u32[:, t]
+        dt_t = dt32[:, t]
+        B_t = B32[:, t]
+        decay = torch.exp(dt_t.unsqueeze(-1) * A32.unsqueeze(0))
+        delta = dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(-2) * u_t.unsqueeze(-1)
+        if gate32 is not None:
+            gate_t = torch.sigmoid(gate32[:, t]).unsqueeze(-1).unsqueeze(-1)
+            state = decay.unsqueeze(-2) * state + gate_t * delta
+        else:
+            state = decay.unsqueeze(-2) * state + delta
+        states_after.append(state)
+
+    du = torch.zeros_like(u32) if needs_input_grad[0] else None
+    ddt = torch.zeros_like(dt32) if needs_input_grad[1] else None
+    dA = torch.zeros_like(A32) if needs_input_grad[2] else None
+    dB = torch.zeros_like(B32) if needs_input_grad[3] else None
+    dC = torch.zeros_like(C32) if needs_input_grad[4] else None
+    dD = torch.zeros_like(D32) if needs_input_grad[5] else None
+    dgate = (
+        torch.zeros_like(gate32)
+        if gate32 is not None and needs_input_grad[6]
+        else None
+    )
+
+    grad_state = torch.zeros(
+        batch_size, num_heads, head_dim, d_state, device=device, dtype=torch.float32
+    )
+
+    for t in range(seqlen - 1, -1, -1):
+        gy_t = grad_y[:, t].float()
+        u_t = u32[:, t]
+        dt_t = dt32[:, t]
+        B_t = B32[:, t]
+        C_t = C32[:, t]
+        state_prev = states_before[t]
+        state_t = states_after[t]
+
+        if dC is not None:
+            dC[:, t] = (gy_t.unsqueeze(-1) * state_t).sum(dim=2)
+        if dD is not None:
+            dD += (gy_t * u_t).sum(dim=0)
+        if du is not None:
+            du[:, t] += gy_t * D32.unsqueeze(0)
+
+        grad_state = grad_state + gy_t.unsqueeze(-1) * C_t.unsqueeze(-2)
+
+        decay = torch.exp(dt_t.unsqueeze(-1) * A32.unsqueeze(0))
+        delta_base = dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(-2) * u_t.unsqueeze(-1)
+        if gate32 is not None:
+            gate_sig = torch.sigmoid(gate32[:, t])
+            gate_factor = gate_sig.unsqueeze(-1).unsqueeze(-1)
+            delta_grad = grad_state * gate_factor
+            if dgate is not None:
+                dgate[:, t] = (
+                    grad_state * delta_base * gate_factor * (1.0 - gate_factor)
+                ).sum(dim=(2, 3))
+        else:
+            delta_grad = grad_state
+
+        if du is not None:
+            du[:, t] += (
+                delta_grad * dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(-2)
+            ).sum(dim=-1)
+        if dB is not None:
+            dB[:, t] = (
+                delta_grad * dt_t.unsqueeze(-1).unsqueeze(-1) * u_t.unsqueeze(-1)
+            ).sum(dim=2)
+        if ddt is not None:
+            ddt[:, t] += (
+                delta_grad * B_t.unsqueeze(-2) * u_t.unsqueeze(-1)
+            ).sum(dim=(2, 3))
+
+        decay_grad = grad_state * state_prev
+        if dA is not None:
+            dA += (
+                decay_grad
+                * decay.unsqueeze(-2)
+                * dt_t.unsqueeze(-1).unsqueeze(-1)
+            ).sum(dim=(0, 2))
+        if ddt is not None:
+            ddt[:, t] += (
+                decay_grad * decay.unsqueeze(-2) * A32.unsqueeze(0).unsqueeze(-2)
+            ).sum(dim=(2, 3))
+
+        grad_state = grad_state * decay.unsqueeze(-2)
+
+    return (
+        du.to(u.dtype) if du is not None else None,
+        ddt.to(dt.dtype) if ddt is not None else None,
+        dA.to(A.dtype) if dA is not None else None,
+        dB.to(Bpar.dtype) if dB is not None else None,
+        dC.to(Cpar.dtype) if dC is not None else None,
+        dD.to(Dskip.dtype) if dD is not None else None,
+        dgate.to(delta_gate.dtype)
+        if dgate is not None and delta_gate is not None
+        else None,
+    )
+
+
 if GROUPED_SSD_TRITON_AVAILABLE:
 
     @triton.jit
@@ -232,45 +374,16 @@ class _GroupedSSDScanFn(torch.autograd.Function):
     def backward(ctx, grad_y):
         u, dt, A, Bpar, Cpar, Dskip, gate_tensor = ctx.saved_tensors
         delta_gate = gate_tensor if ctx.has_gate else None
-
-        with torch.enable_grad():
-            u_ = u.detach().requires_grad_(u.requires_grad)
-            dt_ = dt.detach().requires_grad_(dt.requires_grad)
-            A_ = A.detach().requires_grad_(A.requires_grad)
-            B_ = Bpar.detach().requires_grad_(Bpar.requires_grad)
-            C_ = Cpar.detach().requires_grad_(Cpar.requires_grad)
-            D_ = Dskip.detach().requires_grad_(Dskip.requires_grad)
-            if delta_gate is None:
-                gate_ = None
-            else:
-                gate_ = delta_gate.detach().requires_grad_(delta_gate.requires_grad)
-
-            y_ref = grouped_ssd_scan_reference(
-                u_,
-                dt_,
-                A_,
-                B_,
-                C_,
-                D_,
-                delta_gate=gate_,
-            )
-            all_inputs = (u_, dt_, A_, B_, C_, D_, gate_)
-            grad_inputs = tuple(
-                t for t in all_inputs if t is not None and t.requires_grad
-            )
-            grads_required = torch.autograd.grad(
-                outputs=y_ref,
-                inputs=grad_inputs,
-                grad_outputs=grad_y,
-                retain_graph=False,
-                create_graph=False,
-                allow_unused=True,
-            )
-
-        grads_iter = iter(grads_required)
-        grads = tuple(
-            next(grads_iter) if t is not None and t.requires_grad else None
-            for t in all_inputs
+        grads = grouped_ssd_scan_backward_reference(
+            grad_y,
+            u,
+            dt,
+            A,
+            Bpar,
+            Cpar,
+            Dskip,
+            delta_gate=delta_gate,
+            needs_input_grad=ctx.needs_input_grad[:7],
         )
         du, ddt, dA, dB, dC, dD, dgate = grads
         return du, ddt, dA, dB, dC, dD, dgate, None

@@ -319,23 +319,144 @@ def _use_persistent_fwd(q, n_ctx, d_head, causal):
 
 
 def can_use_triton_fwd(q):
-    """Check if Triton forward kernel can handle this tensor."""
+    """Check if Triton forward kernel can handle this tensor.
+
+    Only power-of-two head dims are supported: the TMA ``make_tensor_descriptor``
+    block shape must be a power of two, which rules out ``D=96``, and ``D=256``
+    exceeds Ada shared memory with the selected tiles. Both fall back to the
+    reference path. ``D=16/32/64/128`` are validated to compile and fit.
+    """
     return (
         q.is_cuda
         and q.dtype in (torch.float16, torch.bfloat16)
-        and q.shape[-1] in (16, 32, 64, 96, 128, 256)
+        and q.shape[-1] in (16, 32, 64, 128)
     )
 
 
 # ---------------------------------------------------------------------------
 # Decode-only (KV-cache) attention for single-token generation
 # ---------------------------------------------------------------------------
+#
+# Flash-decoding: a single (batch, head) decode step has one query row but a
+# long KV history, so one program cannot fill the GPU. We split each sequence's
+# KV range into ``n_splits`` chunks, compute a partial (out, m, l) per chunk in
+# parallel over a [BH, n_splits] grid, then a second kernel reduces the partials
+# with the standard online-softmax rescaling.
+
+
+@triton.jit
+def _flash_decode_split_kernel(
+    q,             # [BH, D]
+    k_cache,       # [BH, S, D]
+    v_cache,       # [BH, S, D]
+    seqlens,       # [BH] int32
+    part_o,        # [BH, n_splits, D] fp32
+    part_m,        # [BH, n_splits] fp32 (running max)
+    part_l,        # [BH, n_splits] fp32 (running sum)
+    scale: tl.constexpr,
+    max_seqlen: tl.constexpr,
+    d_head: tl.constexpr,
+    n_splits: tl.constexpr,
+    block_n: tl.constexpr,
+):
+    pid_bh = tl.program_id(0)
+    pid_s = tl.program_id(1)
+    log2e = 1.4426950408889634
+    qk_scale = scale * log2e
+
+    seqlen = tl.load(seqlens + pid_bh)
+    # Even split of the [0, seqlen) range across programs; ceil so the last
+    # split absorbs the remainder.
+    split_len = tl.cdiv(seqlen, n_splits)
+    start = pid_s * split_len
+    end = tl.minimum(start + split_len, seqlen)
+
+    offs_d = tl.arange(0, d_head)
+    q_tile = tl.load(q + pid_bh * d_head + offs_d).to(tl.float32) * qk_scale
+
+    m_i = -float("inf")
+    l_i = 0.0
+    acc = tl.zeros((d_head,), tl.float32)
+
+    kv_base = pid_bh * max_seqlen * d_head
+    offs_n = tl.arange(0, block_n)
+    for n in range(start, end, block_n):
+        cols = n + offs_n
+        col_mask = cols < end
+        # [block_n, D]
+        k = tl.load(
+            k_cache + kv_base + cols[:, None] * d_head + offs_d[None, :],
+            mask=col_mask[:, None], other=0.0,
+        ).to(tl.float32)
+        # [block_n] scores for the single query row
+        qk = tl.sum(q_tile[None, :] * k, axis=1)
+        qk = tl.where(col_mask, qk, -float("inf"))
+
+        m_new = tl.maximum(m_i, tl.max(qk, axis=0))
+        alpha = tl.math.exp2(m_i - m_new)
+        p = tl.math.exp2(qk - m_new)
+        l_i = l_i * alpha + tl.sum(p, axis=0)
+        v = tl.load(
+            v_cache + kv_base + cols[:, None] * d_head + offs_d[None, :],
+            mask=col_mask[:, None], other=0.0,
+        ).to(tl.float32)
+        acc = acc * alpha + tl.sum(p[:, None] * v, axis=0)
+        m_i = m_new
+
+    part_base = pid_bh * n_splits + pid_s
+    tl.store(part_o + part_base * d_head + offs_d, acc)
+    # Empty splits (start >= seqlen) keep m=-inf, l=0 so the reduction ignores them.
+    tl.store(part_m + part_base, m_i)
+    tl.store(part_l + part_base, l_i)
+
+
+@triton.jit
+def _flash_decode_reduce_kernel(
+    part_o,        # [BH, n_splits, D] fp32
+    part_m,        # [BH, n_splits] fp32 (log2-domain max)
+    part_l,        # [BH, n_splits] fp32
+    out,           # [BH, D] (q dtype)
+    lse,           # [BH] fp32 (natural-log)
+    d_head: tl.constexpr,
+    n_splits: tl.constexpr,
+):
+    pid_bh = tl.program_id(0)
+    log2e = 1.4426950408889634
+    offs_d = tl.arange(0, d_head)
+    offs_s = tl.arange(0, n_splits)
+
+    m = tl.load(part_m + pid_bh * n_splits + offs_s)        # [n_splits]
+    l = tl.load(part_l + pid_bh * n_splits + offs_s)        # [n_splits]
+    m_global = tl.max(m, axis=0)
+    # Rescale each split's (l, o) into the global max frame.
+    r = tl.math.exp2(m - m_global)                          # [n_splits]
+    r = tl.where(l > 0.0, r, 0.0)
+    l_global = tl.sum(l * r, axis=0)
+
+    o_parts = tl.load(part_o + (pid_bh * n_splits + offs_s)[:, None] * d_head + offs_d[None, :])
+    acc = tl.sum(o_parts * r[:, None], axis=0)              # [D]
+    acc = acc / l_global
+
+    tl.store(out + pid_bh * d_head + offs_d, acc.to(out.dtype.element_ty))
+    # natural-log LSE over scaled scores: (m_global + log2(l_global)) / log2e
+    tl.store(lse + pid_bh, (m_global + tl.math.log2(l_global)) / log2e)
+
+
+def _decode_n_splits(seqlen, sm_count, bh):
+    """Pick the KV-split count: enough splits to fill the SMs, capped so each
+    split has reasonable work and the reduction stays cheap."""
+    if seqlen <= 256:
+        return 1
+    target = max(1, (sm_count * 2) // max(bh, 1))
+    n = min(target, triton.cdiv(seqlen, 128), 64)
+    return max(1, int(triton.next_power_of_2(n)))
+
 
 def triton_flash_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
     """Decode-only attention for single-token generation with KV cache.
 
-    Uses PyTorch's highly-optimized SDPA backend for the decode phase,
-    which is already the fastest implementation on modern GPUs.
+    Real flash-decoding Triton kernel: parallelizes a single decode step over
+    KV-history splits, then reduces the partial softmax states.
 
     Args:
         q: [B, H, 1, D] - single token queries
@@ -346,28 +467,40 @@ def triton_flash_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
 
     Returns:
         out: [B, H, 1, D] - attention outputs
-        lse: [B, H] - log-sum-exp for gradient computation
+        lse: [B*H] - natural-log log-sum-exp over scaled scores
     """
-    import torch.nn.functional as F
-    bh = q.shape[0] * q.shape[1]
+    B, H = q.shape[0], q.shape[1]
+    bh = B * H
     d_head = q.shape[-1]
     max_seqlen = k_cache.shape[1]
     scale = softmax_scale if softmax_scale is not None else d_head**-0.5
-    out = torch.empty((q.shape[0], q.shape[1], 1, d_head), device=q.device, dtype=q.dtype)
-    lse = torch.empty(bh, device=q.device, dtype=torch.float32)
 
-    # Process each (batch, head) group with SDPA
-    for b in range(q.shape[0]):
-        for h in range(q.shape[1]):
-            seqlen = int(seqlens[b * q.shape[1] + h])
-            qi = q[b:b+1, h:h+1]  # [1, 1, D]
-            ki = k_cache[b * q.shape[1] + h, :seqlen]  # [seqlen, D]
-            vi = v_cache[b * q.shape[1] + h, :seqlen]  # [seqlen, D]
-            scores = qi @ ki.transpose(-1, -2) * scale  # [1, 1, seqlen]
-            probs = F.softmax(scores, dim=-1)
-            out[b:b+1, h:h+1] = probs @ vi  # [1, 1, D]
-            lse[b * q.shape[1] + h] = torch.logsumexp(scores.float(), dim=-1)
-    return out, lse
+    q2 = q.reshape(bh, d_head).contiguous()
+    seqlens_i = seqlens.to(torch.int32).contiguous()
+
+    sm_count = torch.cuda.get_device_properties(q.device).multi_processor_count
+    max_seqlen_val = int(seqlens.max().item()) if seqlens.numel() else 0
+    n_splits = _decode_n_splits(max_seqlen_val, sm_count, bh)
+
+    block_n = 64 if d_head >= 128 else 128
+    part_o = torch.empty((bh, n_splits, d_head), device=q.device, dtype=torch.float32)
+    part_m = torch.empty((bh, n_splits), device=q.device, dtype=torch.float32)
+    part_l = torch.empty((bh, n_splits), device=q.device, dtype=torch.float32)
+
+    _flash_decode_split_kernel[(bh, n_splits)](
+        q2, k_cache, v_cache, seqlens_i, part_o, part_m, part_l,
+        scale, max_seqlen, d_head, n_splits, block_n,
+        num_warps=4, num_stages=2,
+    )
+
+    out = torch.empty((bh, d_head), device=q.device, dtype=q.dtype)
+    lse = torch.empty(bh, device=q.device, dtype=torch.float32)
+    _flash_decode_reduce_kernel[(bh,)](
+        part_o, part_m, part_l, out, lse,
+        d_head, n_splits,
+        num_warps=4, num_stages=2,
+    )
+    return out.reshape(B, H, 1, d_head), lse
 
 
 def can_use_triton_decode(q):
@@ -376,5 +509,5 @@ def can_use_triton_decode(q):
         q.is_cuda
         and q.dtype in (torch.float16, torch.bfloat16)
         and q.shape[-2] == 1  # single-token decode
-        and q.shape[-1] in (64, 128)
+        and q.shape[-1] in (16, 32, 64, 128)
     )

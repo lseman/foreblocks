@@ -5,7 +5,7 @@ by covering, against autograd/eager references:
   - LayerNormTritonFunction: forward + dX/dW/dB
   - RMSNormTritonFunction: forward + dX/dW
   - fused_add_rmsnorm: forward + dResidual/dUpdate/dW
-  - triton_causal_linear_attn: forward vs the naive inclusive-cumsum scan
+  - chunked_causal_linear_attn: forward vs the naive inclusive-cumsum scan
 
 Skipped when CUDA/Triton is unavailable.
 """
@@ -22,7 +22,7 @@ from foreblocks.transformer.kernels.rms_norm import (
     RMSNormTritonFunction,
     fused_add_rmsnorm,
 )
-from foreblocks.transformer.kernels.linear_attention import triton_causal_linear_attn
+from foreblocks.transformer.kernels.linear_attention import chunked_causal_linear_attn
 
 DEV = "cuda"
 DT = torch.float32
@@ -96,7 +96,7 @@ def test_causal_linear_attention_matches_naive_scan():
     q = torch.rand(B, H, T, Fd, device=DEV) + 0.1  # feature-mapped (positive)
     k = torch.rand(B, H, T, Fd, device=DEV) + 0.1
     v = torch.randn(B, H, T, Dh, device=DEV)
-    out = triton_causal_linear_attn(q, k, v, eps=1e-6)
+    out = chunked_causal_linear_attn(q, k, v, eps=1e-6)
 
     KV = torch.zeros(B, H, Fd, Dh, device=DEV)
     ks = torch.zeros(B, H, Fd, device=DEV)

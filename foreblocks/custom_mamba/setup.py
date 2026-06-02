@@ -37,6 +37,10 @@ def _ensure_cuda_arch_list() -> None:
     if arch_list:
         os.environ["TORCH_CUDA_ARCH_LIST"] = arch_list
         return
+    if torch.cuda.is_available():
+        major, minor = torch.cuda.get_device_capability()
+        os.environ["TORCH_CUDA_ARCH_LIST"] = f"{major}.{minor}"
+        return
     if not torch.cuda.is_available():
         os.environ["TORCH_CUDA_ARCH_LIST"] = DEFAULT_ARCH_LIST
 
