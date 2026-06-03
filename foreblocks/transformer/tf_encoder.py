@@ -9,9 +9,9 @@ import torch.nn.functional as F
 
 from foreblocks.ui.node_spec import node
 
-from .attention.modules.gated_delta import GatedDeltaNet
-from .attention.modules.kimi_att import KimiAttention
-from .attention.modules.modern_linear_attn import ModernLinearAttention
+from .attention.modules.linear_att import ModernLinearAttention
+from .attention.modules.linear_att.gated_delta import GatedDeltaNet
+from .attention.modules.linear_att.kimi import KimiAttention
 from .attention.multi_att import MultiAttention
 from .attention.utils.residuals import (
     AttentionResidual,

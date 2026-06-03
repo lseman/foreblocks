@@ -2,7 +2,9 @@ import unittest
 
 import torch
 
-from foreblocks.transformer.attention.modules.gated_delta import GatedDeltaNet
+from foreblocks.transformer.attention.modules.linear_att.gated_delta import (
+    GatedDeltaNet,
+)
 
 
 class TestGatedDeltaChunkParallel(unittest.TestCase):

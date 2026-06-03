@@ -11,7 +11,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.transformer.attention.modules.gated_delta import GatedDeltaNet
+from foreblocks.transformer.attention.modules.linear_att.gated_delta import (
+    GatedDeltaNet,
+)
 from foreblocks.transformer.attention.multi_att import MultiAttention
 from foreblocks.transformer.norms import create_norm_layer
 

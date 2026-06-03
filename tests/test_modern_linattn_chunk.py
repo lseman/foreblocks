@@ -11,8 +11,12 @@ import unittest
 
 import torch
 
-from foreblocks.transformer.attention.modules.modern_linear_attn import (
+from foreblocks.transformer.attention.modules.linear_att import (
+    GatedDeltaBackend,
+    GatedDeltaNet,
     GLABackend,
+    KimiAttention,
+    KimiBackend,
     ModernLinearAttention,
     RDABackend,
 )
@@ -127,11 +131,118 @@ class TestModernLinearAttentionRoPE(unittest.TestCase):
         )
 
     def test_router_threads_pos_encoding_type_to_backend(self):
-        for backend_name in ("rda", "gla", "deltanet"):
+        for backend_name in ("rda", "gla", "deltanet", "gated_delta", "kimi"):
             attn = ModernLinearAttention(
                 32, 4, dropout=0.0, backend=backend_name, pos_encoding_type="rope"
             )
             self.assertEqual(attn.impl.pos_encoding_type, "rope")
+
+
+class TestModernLinearAttentionGatedDeltaWrapper(unittest.TestCase):
+    def test_gated_delta_exports_backend_alias(self):
+        self.assertIs(GatedDeltaBackend, GatedDeltaNet)
+
+    def test_gated_delta_backend_aliases_forward(self):
+        torch.manual_seed(0)
+        x = torch.randn(2, 12, 32)
+
+        for backend_name in ("gated_delta", "gated_deltanet"):
+            attn = ModernLinearAttention(
+                32,
+                4,
+                dropout=0.0,
+                backend=backend_name,
+                chunk_size=8,
+                use_short_conv=False,
+            ).eval()
+            out, weights, state = attn(x, x, x, is_causal=True)
+
+            self.assertEqual(out.shape, x.shape)
+            self.assertIsNone(weights)
+            self.assertIsNone(state)
+            self.assertEqual(attn.state_key, "gdn_state")
+
+    def test_gated_delta_uses_shared_backend_knobs(self):
+        chunk = ModernLinearAttention(
+            32,
+            4,
+            dropout=0.0,
+            backend="gated_delta",
+            mode="chunk",
+            chunk_size=8,
+            conv_size=3,
+            state="legacy",
+        )
+        recurrent = ModernLinearAttention(
+            32,
+            4,
+            dropout=0.0,
+            backend="gated_delta",
+            mode="recurrent",
+            chunk_size=8,
+            conv_size=3,
+            state="mamba2",
+        )
+
+        self.assertEqual(chunk.impl.chunk_size, 8)
+        self.assertEqual(recurrent.impl.chunk_size, 0)
+        self.assertFalse(chunk.impl.use_mamba_gate)
+        self.assertTrue(recurrent.impl.use_mamba_gate)
+        self.assertEqual(chunk.impl.q_conv.conv.kernel_size, (3,))
+
+
+class TestModernLinearAttentionKimiWrapper(unittest.TestCase):
+    def test_kimi_exports_backend_alias(self):
+        self.assertIs(KimiBackend, KimiAttention)
+
+    def test_kimi_backend_forward(self):
+        torch.manual_seed(0)
+        x = torch.randn(2, 12, 32)
+        attn = ModernLinearAttention(
+            32,
+            4,
+            dropout=0.0,
+            backend="kimi",
+            chunk_size=8,
+            use_short_conv=False,
+        ).eval()
+        out, weights, state = attn(x, x, x, is_causal=True)
+
+        self.assertEqual(out.shape, x.shape)
+        self.assertIsNone(weights)
+        self.assertEqual(set(state), {"S"})
+        self.assertEqual(attn.state_key, "S")
+
+    def test_kimi_uses_shared_backend_knobs(self):
+        chunk = ModernLinearAttention(
+            32,
+            4,
+            dropout=0.0,
+            backend="kimi",
+            mode="chunk",
+            chunk_size=8,
+            conv_size=3,
+            d_key=6,
+            d_val=10,
+            safe_updates=False,
+        )
+        recurrent = ModernLinearAttention(
+            32,
+            4,
+            dropout=0.0,
+            backend="kimi",
+            mode="recurrent",
+            chunk_size=8,
+            use_short_conv=False,
+        )
+
+        self.assertEqual(chunk.impl.kda.chunk_size, 8)
+        self.assertEqual(recurrent.impl.kda.chunk_size, 0)
+        self.assertFalse(chunk.impl.kda.safe_updates)
+        self.assertEqual(chunk.impl.kda.dk, 6)
+        self.assertEqual(chunk.impl.kda.dv, 10)
+        self.assertEqual(chunk.impl.kda.q_conv1d.conv.kernel_size, (3,))
+        self.assertFalse(recurrent.impl.kda.use_short_conv)
 
 
 if __name__ == "__main__":

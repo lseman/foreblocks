@@ -478,6 +478,7 @@ class _KDA_Fast(nn.Module):
         expand_v: float = 1.0,
         dropout: float = 0.0,
         shortconv_mode: str = "depthwise",
+        conv_kernel: int = 4,
         chunk_size: int = _DEFAULT_CHUNK_SIZE,
         safe_updates: bool = True,
         alpha_min: float = 0.1,
@@ -503,9 +504,24 @@ class _KDA_Fast(nn.Module):
         # ── Short convolutions (causal, mirrors fla.modules.ShortConvolution) ──
         self.use_short_conv = shortconv_mode != "off"
         if self.use_short_conv:
-            self.q_conv1d = _ShortConv1d(self.dk * self.h, kernel_size=4, bias=False, activation="silu")
-            self.k_conv1d = _ShortConv1d(self.dk * self.h, kernel_size=4, bias=False, activation="silu")
-            self.v_conv1d = _ShortConv1d(self.dv * self.h, kernel_size=4, bias=False, activation="silu")
+            self.q_conv1d = _ShortConv1d(
+                self.dk * self.h,
+                kernel_size=conv_kernel,
+                bias=False,
+                activation="silu",
+            )
+            self.k_conv1d = _ShortConv1d(
+                self.dk * self.h,
+                kernel_size=conv_kernel,
+                bias=False,
+                activation="silu",
+            )
+            self.v_conv1d = _ShortConv1d(
+                self.dv * self.h,
+                kernel_size=conv_kernel,
+                bias=False,
+                activation="silu",
+            )
         else:
             self.q_conv1d = self.k_conv1d = self.v_conv1d = None
 
@@ -765,8 +781,12 @@ class KimiAttention(nn.Module):
         n_heads: int,
         dropout: float = 0.0,
         cross_attention: bool = False,
+        d_key: int | None = None,
+        d_val: int | None = None,
+        expand_v: float = 1.0,
         shortconv_mode: str = "depthwise",
         chunk_size: int = _DEFAULT_CHUNK_SIZE,
+        conv_kernel: int = 4,
         safe_updates: bool = True,
         alpha_min: float = 0.1,
         use_triton: bool = False,
@@ -784,8 +804,12 @@ class KimiAttention(nn.Module):
         self.kda = _KDA_Fast(
             d_model=d_model,
             num_heads=n_heads,
+            d_k=d_key,
+            d_v=d_val,
+            expand_v=expand_v,
             dropout=dropout,
             shortconv_mode=shortconv_mode,
+            conv_kernel=conv_kernel,
             chunk_size=chunk_size,
             safe_updates=safe_updates,
             alpha_min=alpha_min,
