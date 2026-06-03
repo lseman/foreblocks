@@ -62,6 +62,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .gdn2_triton import can_use_gdn2_triton, gdn2_chunk_fwd_triton
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -370,8 +372,8 @@ class GatedDeltaNet2(nn.Module):
         Q: torch.Tensor,    # [BH, T, Dk]   normalised query
         K: torch.Tensor,    # [BH, T, Dk]   normalised key
         V: torch.Tensor,    # [BH, T, Dv]   value
-        b: torch.Tensor,    # [BH, T, 1, dk]  erase gate
-        w: torch.Tensor,    # [BH, T, 1, dv]  write gate
+        b: torch.Tensor,    # [BH, T, dk, 1]  erase gate
+        w: torch.Tensor,    # [BH, T, dv, 1]  write gate
         alpha: torch.Tensor,  # [BH, T, dk, 1]  channel-wise decay
         out: torch.Tensor,   # [BH, T, Dv]  output buffer
         C: int,
@@ -395,102 +397,74 @@ class GatedDeltaNet2(nn.Module):
         dtype = S0.dtype
         work = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
 
-        # Promote to working precision
+        # Promote to working precision and squeeze gate trailing dims.
+        # Gates arrive as [BH, T, dk|dv, 1]; squeeze the trailing singleton.
         Qf, Kf, Vf = Q.to(work), K.to(work), V.to(work)
-        bf, wf = b.to(work), w.to(work)  # [BH, T, 1, dk/dv]
-        af = alpha.to(work).unsqueeze(-1)  # [BH, T, dk, 1]
+        bf = b.to(work).squeeze(-1)         # [BH, T, dk]  erase gate
+        wf = w.to(work).squeeze(-1)         # [BH, T, dv]  write gate
+        af = alpha.to(work).squeeze(-1)     # [BH, T, dk]  channel-wise decay
 
         S0f = S0.to(work)
-        BH = Qf.shape[0]
+        eye_cache = torch.eye(C, device=Qf.device, dtype=work)
 
         for s in range(0, T, C):
             e = min(s + C, T)
             L = e - s
-            Qc, Kc, Vc = Qf[:, s:e], Kf[:, s:e], Vf[:, s:e]
-            bc, wc = bf[:, s:e], wf[:, s:e]
-            afc = af[:, s:e]  # [BH, L, dk, 1]
+            Qc, Kc, Vc = Qf[:, s:e], Kf[:, s:e], Vf[:, s:e]   # [BH, L, dk|dv]
+            bc, wc = bf[:, s:e], wf[:, s:e]                    # [BH, L, dk|dv]
+            ac = af[:, s:e]                                    # [BH, L, dk]
 
-            # ── 1. Cumulative decay ──────────────────────────────────────
-            # α in log-space: g_log = log(α)
-            log_alpha = afc.log().clamp_min(-50).squeeze(-1)  # [BH, L, dk]
-            log_gamma = torch.cumsum(log_alpha, dim=1)  # [BH, L, dk]
-            gamma = log_gamma.exp()  # [BH, L, dk]  cumulative decay
+            # ── 1. Cumulative within-chunk decay γ_r = ∏_{i≤r} α_i ─────────
+            # log-space cumsum for stability; γ is the decay from chunk start
+            # (exclusive of the token's own step is handled by indexing below).
+            log_alpha = ac.clamp_min(1e-12).log()           # [BH, L, dk]
+            log_gamma = torch.cumsum(log_alpha, dim=1)       # [BH, L, dk]  (inclusive)
+            gamma = log_gamma.exp()                          # [BH, L, dk]
 
-            # ── 2. Normalised key and erase ──────────────────────────────
-            # K̄_r = γ_r^{-1} ⊙ k_r
-            K_bar = Kc / gamma.unsqueeze(-1)  # [BH, L, dk]  (broadcast: dk vs dk)
-            # Wait — Kc is [BH, L, dk], gamma is [BH, L, dk]
-            # K_bar = Kc * gamma^{-1}
-            K_bar = Kc * gamma.rsqrt()
+            # Gated erase/write directions.
+            e_dir = bc * Kc                                  # e_r = b_r ⊙ k_r   [BH, L, dk]
+            z_tgt = wc * Vc                                  # z_r = w_r ⊙ v_r   [BH, L, dv]
 
-            # Ē_r = γ_r ⊙ (b_r ⊙ k_r)
-            b_e = bc.squeeze(1) * Kc  # [BH, L, dk]  (b is [BH, L, 1, dk])
-            E_bar = gamma.unsqueeze(-1) * b_e  # [BH, L, dk]
-            # Actually: Ē_r = γ_r ⊙ (b_r ⊙ k_r) — elementwise over dk
-            # gamma shape: [BH, L, dk], b_e shape: [BH, L, dk]
-            E_bar = gamma * b_e  # [BH, L, dk]
+            # ── 2. Decay-normalised vectors (Mamba2 / KDA trick) ───────────
+            # Pull all decay onto a common frame so cross-token interactions
+            # use bounded ratios γ_r/γ_j ∈ (0,1] for r ≥ j.
+            #   k̄_j = γ_j^{-1} ⊙ k_j ,  ē_r = γ_r ⊙ e_r ,  q̄_r = γ_r ⊙ q_r
+            inv_gamma = (-log_gamma).exp()                   # γ^{-1}            [BH, L, dk]
+            K_bar = Kc * inv_gamma                           # [BH, L, dk]
+            E_bar = e_dir * gamma                            # [BH, L, dk]
+            Q_bar = Qc * gamma                               # [BH, L, dk]
 
-            # ── 3. Write target ──────────────────────────────────────────
-            # Z_r = w_r ⊙ v_r
-            Z = wc.squeeze(1) * Vc  # [BH, L, dv]
-
-            # ── 4. Strictly lower triangular matrix T = tril(Ē · K̄^T, -1) ──
-            # E_bar @ K_bar^T: [BH, L, L]
-            EK = torch.einsum("bik,bjk->bij", E_bar, K_bar)
+            # ── 3. WY transform: A = (I + tril(Ē K̄ᵀ, -1))⁻¹ ───────────────
+            # The within-chunk delta interactions (token r erases content
+            # written by earlier tokens j<r along direction e_r).
+            EK = torch.einsum("bik,bjk->bij", E_bar, K_bar)  # [BH, L, L]
             Tmat = torch.tril(EK, diagonal=-1)
-            # A = (I + T)^{-1}
-            I_L = torch.eye(L, device=Kc.device, dtype=work)
-            A_mat = I_L + Tmat  # [BH, L, L]
+            I_L = eye_cache[:L, :L]
+            A_mat = I_L + Tmat                               # lower-tri, unit diag
 
-            # ── 5. Y = A · Ē,  U = A · Z ─────────────────────────────────
-            # For each head batch: solve (I + T) · Y_i = Ē_i
-            # and (I + T) · U_i = Z_i
-            # Use triangular solve: A_mat is lower triangular
-            Y = torch.linalg.solve_triangular(A_mat, E_bar.transpose(-1, -2), upper=False).transpose(-1, -2)  # [BH, L, dk]
-            U = torch.linalg.solve_triangular(A_mat, Z.transpose(-1, -2), upper=False).transpose(-1, -2)  # [BH, L, dv]
+            # Pseudo-write U = A·Z and pseudo-erase Y = A·(Ē·S0-readout coeff).
+            #   For each token r: w-update is z_r minus what e_r reads from S0
+            #   and from earlier in-chunk writes. Solve the triangular systems.
+            # Readout of S0 along the (decayed) erase direction:
+            E_S0 = torch.einsum("bik,bkd->bid", E_bar, S0f)  # [BH, L, dv]
+            rhs = z_tgt - E_S0                               # [BH, L, dv]
+            U = torch.linalg.solve_triangular(A_mat, rhs, upper=False)  # [BH, L, dv]
 
-            # ── 6. Correction: R = U − Y · S0 ───────────────────────────
-            Y_S0 = torch.einsum("bik,bkd->bid", Y, S0f)  # [BH, L, dv]
-            R = U - Y_S0  # [BH, L, dv]
+            # ── 4. Output O_r = q_r·S_r ───────────────────────────────────
+            # Inter-chunk part: q̄_r · S0  (decayed readout of incoming state)
+            O_inter = torch.einsum("bik,bkd->bid", Q_bar, S0f)  # [BH, L, dv]
+            # Intra-chunk part: causal attention over this chunk's pseudo-writes,
+            #   coeff_{rj} = 1_{r≥j} · (q̄_r · k̄_j)   (bounded decay ratios)
+            QK = torch.einsum("bik,bjk->bij", Q_bar, K_bar)  # [BH, L, L]
+            QK = torch.tril(QK, diagonal=0)
+            O_intra = torch.einsum("bij,bjd->bid", QK, U)    # [BH, L, dv]
+            out[:, s:e] = (O_inter + O_intra).to(dtype)
 
-            # ── 7. Output computation ────────────────────────────────────
-            # Q_γ = γ_r ⊙ q_r: [BH, L, dk]
-            Q_gamma = gamma.unsqueeze(-1) * Qc
-
-            # Output: O = Q_γ · S0 + A_qk · R
-            Q_gamma_S0 = torch.einsum("bik,bkd->bid", Q_gamma, S0f)  # [BH, L, dv]
-
-            # A_qk_{rs} = 1_{r≥s} · q_r^T · Diag(γ_r / γ_s) · k_s
-            # gamma_ratio_{rs} = γ_r / γ_s for r ≥ s
-            log_gamma_exp = log_gamma  # [BH, L, dk]
-            log_gamma_ratio = (log_gamma[:, :, :, None] - log_gamma[:, None, :, :])  # [BH, L, L, dk]
-            # For r < s this is positive → exp would overflow; mask below
-            log_gamma_ratio = torch.where(
-                torch.arange(L, device=Qc.device).unsqueeze(0) <= torch.arange(L, device=Qc.device).unsqueeze(1),
-                log_gamma_ratio,
-                float('-inf'),
-            )
-            gamma_ratio = log_gamma_ratio.exp()  # [BH, L, L, dk], 0 above diag
-            # A_qk: [BH, L, L]
-            qkt = torch.einsum("bik,bjk->bij", Qc, Kc)  # [BH, L, L]
-            # Apply gamma_ratio: for each (r,s), sum over dk: q_r^T · (gamma_r/gamma_s · k_s)
-            # = sum_k q_r[k] * gamma_ratio[r,s,k] * k_s[k]
-            weighted_qkt = (qkt.unsqueeze(-1) * gamma_ratio).sum(-1)  # [BH, L, L]
-            causal_weighted = torch.tril(weighted_qkt, diagonal=0)
-            Aqk_R = torch.einsum("bij,bjd->bid", causal_weighted, R)  # [BH, L, dv]
-
-            O = Q_gamma_S0 + Aqk_R  # [BH, L, dv]
-            out[:, s:e] = O.to(dtype)
-
-            # ── 8. State carry: S_C = Diag(γ_L) · S0 + K_tail^T · R ─────
-            # K_tail_r = (γ_C / γ_r) ⊙ k_r
-            gamma_end = gamma[:, -1, :]  # [BH, dk]
-            gamma_end_3d = gamma_end.unsqueeze(1)  # [BH, 1, dk]
-            k_tail = (gamma_end_3d / gamma) * Kc  # [BH, L, dk]  (γ_C / γ_r · k_r)
-            # K_tail^T @ R: [BH, dk, dv]
-            Kt_R = torch.einsum("bik,bjd->bkd", k_tail, R)
-            S0f = gamma_end_3d * S0f  # Diag(γ_C) · S0
-            S0f = S0f + Kt_R  # [BH, dk, dv]
+            # ── 5. State carry S_C = Diag(γ_L)·S0 + Σ_j (γ_L/γ_j ⊙ k_j) uⱼᵀ ─
+            gamma_end = gamma[:, -1:, :]                     # [BH, 1, dk]  γ at chunk end
+            K_tail = Kc * (gamma_end * inv_gamma)            # (γ_L/γ_j) ⊙ k_j  [BH, L, dk]
+            Kt_U = torch.einsum("bjk,bjd->bkd", K_tail, U)   # [BH, dk, dv]
+            S0f = gamma_end.transpose(1, 2) * S0f + Kt_U     # [BH, dk, dv]
 
         return S0f.to(dtype)
 
@@ -551,7 +525,15 @@ class GatedDeltaNet2(nn.Module):
         C = self.chunk_size
 
         if C and T > C:
-            S = self._chunk_parallel(S, Q, K, V, b, w, alpha, out, C)
+            use_triton = (
+                not torch.is_grad_enabled()
+                and can_use_gdn2_triton(S, Q, K, V, C)
+            )
+            if use_triton:
+                out_tr, S = gdn2_chunk_fwd_triton(S, Q, K, V, b, w, alpha, C)
+                out = out_tr
+            else:
+                S = self._chunk_parallel(S, Q, K, V, b, w, alpha, out, C)
         else:
             S = S.detach()
             for t in range(T):
@@ -645,7 +627,7 @@ class GatedDeltaNet2(nn.Module):
         layer_state: dict | None = None,
         skip_cross_attention: bool = False,
         skip_gate_norm: bool = False,
-    ) -> tuple[torch.Tensor, None, None]:
+    ) -> tuple[torch.Tensor, None, dict | None]:
         """
         Drop-in forward with optional Oryx compatibility.
 
@@ -697,11 +679,11 @@ class GatedDeltaNet2(nn.Module):
                 x, prev_s, skip_gate_norm=skip_gate_norm
             )
             layer_state["gdn2_state"] = next_s
-            return y, None, None
+            return y, None, {"gdn2_state": next_s}
 
         # ── Standard full-sequence forward ─────────────────────────────────
-        y, _ = self._forward_recurrent(x, state=None, skip_gate_norm=skip_gate_norm)
-        return y, None, None
+        y, next_s = self._forward_recurrent(x, state=None, skip_gate_norm=skip_gate_norm)
+        return y, None, {"gdn2_state": next_s}
 
     # ── Cross-attention approximation ────────────────────────────────────────
 
