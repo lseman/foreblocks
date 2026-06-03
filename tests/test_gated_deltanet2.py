@@ -19,6 +19,15 @@ class TestGatedDeltaNet2Basic:
         )
         assert GatedDeltaNet2 is not None
 
+    def test_kernel_imports(self):
+        from foreblocks.transformer.attention.kernels import (
+            can_use_gdn2_chunk,
+            chunk_gdn2,
+        )
+
+        assert callable(can_use_gdn2_chunk)
+        assert callable(chunk_gdn2)
+
     def test_construction_default(self, device):
         from foreblocks.transformer.attention.modules.linear_att import (
             GatedDeltaNet2,

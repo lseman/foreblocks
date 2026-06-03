@@ -16,6 +16,10 @@ It is designed as a clean iteration surface for modern attention kernel tuning w
 - Hybrid backward delta handling: launch-bound shapes fuse `sum(out * d_out)`
   into the dQ/dK/dV kernels, while larger shapes keep the precomputed-delta
   path to avoid redundant row reductions.
+- **tilelang backward** for `D=64/128` (fp16/bf16): ~1.4-1.5x faster than the
+  Triton backward on Ada (RTX 4090) and roughly SDPA-parity, so it is preferred
+  when available and falls back to Triton then reference. Disable with
+  `CUSTOM_ATT_DISABLE_TILELANG_BWD=1`.
 - FlashAttention-2-style combined backward launch for aligned `D=64/128`,
   `N>=2048` Ada workloads, with shape-specific dQ/dK-dV tile choices.
 

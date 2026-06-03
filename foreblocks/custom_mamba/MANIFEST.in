@@ -1,2 +1,1 @@
-include csrc/*.cpp
-include csrc/*.cu
+# No compiled extension sources are packaged.

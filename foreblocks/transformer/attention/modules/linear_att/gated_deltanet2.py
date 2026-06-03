@@ -62,7 +62,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .gdn2_triton import can_use_gdn2_triton, gdn2_chunk_fwd_triton
+from ...kernels import (
+    can_use_fused_rmsnorm_sigmoid_gate,
+    can_use_gdn2_chunk,
+    chunk_gdn2,
+    fused_rmsnorm_sigmoid_gate,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,15 +268,16 @@ class GatedDeltaNet2(nn.Module):
 
     def _gate_params(
         self, x: torch.Tensor, BH: int, T: int
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Compute erase (b), write (w), and decay (α) gates.
+        Compute erase (b), write (w), decay (α), and log-decay gates.
 
         Returns
         -------
         b : [BH, T, dk, 1]  channel-wise erase gate (per key channel)
         w : [BH, T, dv, 1]  channel-wise write gate (per value channel)
         alpha : [BH, T, dk, 1]  channel-wise decay
+        g_log : [BH, T, dk, 1]  log-decay for chunk kernels
         """
         B, T_local, _ = x.shape
 
@@ -305,8 +311,15 @@ class GatedDeltaNet2(nn.Module):
             .unsqueeze(-1)  # [BH, T, 1, 1]
             .expand(-1, -1, self.dk, 1)  # [BH, T, dk, 1]
         )
+        g_log = (
+            g_log.transpose(1, 2)  # [B, H, T]
+            .contiguous()
+            .view(BH, T_local, 1)  # [BH, T, 1]
+            .unsqueeze(-1)  # [BH, T, 1, 1]
+            .expand(-1, -1, self.dk, 1)  # [BH, T, dk, 1]
+        )
 
-        return b, w, alpha
+        return b, w, alpha, g_log
 
     def _output_gate(self, x: torch.Tensor) -> torch.Tensor:
         """Data-dependent sigmoid output gate [B, H, T, Dv]."""
@@ -512,7 +525,7 @@ class GatedDeltaNet2(nn.Module):
             .reshape(BH, T, self.dv)
         )
 
-        b, w, alpha = self._gate_params(x, BH, T)
+        b, w, alpha, g_log = self._gate_params(x, BH, T)
 
         # Initialise / reshape state
         S = (
@@ -525,13 +538,21 @@ class GatedDeltaNet2(nn.Module):
         C = self.chunk_size
 
         if C and T > C:
-            use_triton = (
-                not torch.is_grad_enabled()
-                and can_use_gdn2_triton(S, Q, K, V, C)
-            )
+            use_triton = can_use_gdn2_chunk(S, Q, K, V, C)
             if use_triton:
-                out_tr, S = gdn2_chunk_fwd_triton(S, Q, K, V, b, w, alpha, C)
-                out = out_tr
+                out, S = chunk_gdn2(
+                    Q,
+                    K,
+                    V,
+                    b.squeeze(-1),
+                    w.squeeze(-1),
+                    g_log.squeeze(-1),
+                    scale=1.0,
+                    initial_state=S,
+                    output_final_state=True,
+                    chunk_size=C,
+                )
+                S = S.to(dtype=dtype)
             else:
                 S = self._chunk_parallel(S, Q, K, V, b, w, alpha, out, C)
         else:
@@ -546,9 +567,17 @@ class GatedDeltaNet2(nn.Module):
         # Output gate + head-wise RMSNorm
         out_h = out.reshape(B, self.h, T, self.dv)
         if not skip_gate_norm:
-            out_h = self.h_rms(out_h)
             g = self._output_gate(x)
-            out_h = out_h * g
+            if (
+                not torch.is_grad_enabled()
+                and can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight)
+            ):
+                out_h = fused_rmsnorm_sigmoid_gate(
+                    out_h, g, self.h_rms.weight, self.h_rms.eps
+                )
+            else:
+                out_h = self.h_rms(out_h)
+                out_h = out_h * g
 
         y = out_h.permute(0, 2, 1, 3).contiguous().reshape(B, T, self.h * self.dv)
         y = self.drop(self.o_proj(y))
@@ -589,7 +618,7 @@ class GatedDeltaNet2(nn.Module):
             .reshape(BH, 1, self.dv)
         )
 
-        b, w, alpha = self._gate_params(x_t, BH, 1)
+        b, w, alpha, _ = self._gate_params(x_t, BH, 1)
 
         S = (
             state.reshape(BH, self.dk, self.dv).contiguous().to(dtype=dtype)
@@ -604,9 +633,17 @@ class GatedDeltaNet2(nn.Module):
 
         out_h = o_t.reshape(B, self.h, 1, self.dv)
         if not skip_gate_norm:
-            out_h = self.h_rms(out_h)
             g = self._output_gate(x_t)
-            out_h = out_h * g
+            if (
+                not torch.is_grad_enabled()
+                and can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight)
+            ):
+                out_h = fused_rmsnorm_sigmoid_gate(
+                    out_h, g, self.h_rms.weight, self.h_rms.eps
+                )
+            else:
+                out_h = self.h_rms(out_h)
+                out_h = out_h * g
 
         y = out_h.permute(0, 2, 1, 3).contiguous().reshape(B, 1, self.h * self.dv)
         y = self.drop(self.o_proj(y))

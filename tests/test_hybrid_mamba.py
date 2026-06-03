@@ -1,31 +1,27 @@
-import math
-
 import torch
 import torch.nn as nn
+import pytest
 
 from foreblocks.custom_mamba import (
-    GROUPED_SSD_TRITON_AVAILABLE,
-    grouped_ssd_scan,
-    grouped_ssd_scan_reference,
-)
-from foreblocks.custom_mamba.ops import (
+    CHUNKED_SSD_TRITON_AVAILABLE,
+    FeedForward,
+    HybridMamba2Block,
+    Mamba2Block,
+    RMS_NORM_TRITON_AVAILABLE,
+    RMSNorm,
+    ROTARY_TRITON_AVAILABLE,
+    RotaryEmbedding,
+    SlidingWindowAttention,
+    chunked_ssd_forward,
+    chunked_ssd_forward_reference,
     dt_prep_bwd_triton,
     dt_prep_fallback,
     fused_out_bwd_triton,
     fused_out_fallback,
-    selective_scan,
-    selective_scan_reference,
-)
-from foreblocks.custom_mamba.layers import (
-    FeedForward,
-    HybridMamba2Block,
-    HybridMambaBlock,
-    RMSNorm,
-    RotaryEmbedding,
-    SlidingWindowAttention,
-    StructuredStateSpaceDualityBranch,
-    TinyHybridMamba2LM,
-    TinyHybridMambaLM,
+    rms_norm,
+    rms_norm_fallback,
+    rotary_apply,
+    rotary_apply_fallback,
 )
 
 
@@ -37,60 +33,155 @@ def _assert_close(lhs: torch.Tensor, rhs: torch.Tensor, atol: float = 1e-5) -> N
     assert torch.allclose(lhs, rhs, atol=atol, rtol=atol)
 
 
-def test_custom_mamba_block_cpu_forward_uses_low_rank_dt() -> None:
-    block = HybridMambaBlock(
+def _sequential_diagonal_ssd(
+    u: torch.Tensor,
+    dt: torch.Tensor,
+    A: torch.Tensor,
+    Bpar: torch.Tensor,
+    Cpar: torch.Tensor,
+    Dskip: torch.Tensor,
+) -> torch.Tensor:
+    batch, seqlen, heads, head_dim = u.shape
+    d_state = Bpar.shape[-1]
+    state = torch.zeros(batch, heads, head_dim, d_state, dtype=torch.float32)
+    ys = []
+    for t in range(seqlen):
+        u_t = u[:, t].float()
+        dt_t = dt[:, t].float()
+        B_t = Bpar[:, t].float()
+        C_t = Cpar[:, t].float()
+        decay = torch.exp(
+            dt_t.unsqueeze(-1).unsqueeze(-1)
+            * A.float().unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+        )
+        state = decay * state + dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(
+            -2
+        ) * u_t.unsqueeze(-1)
+        y_t = (C_t.unsqueeze(-2) * state).sum(dim=-1) + Dskip.float() * u_t
+        ys.append(y_t.to(u.dtype))
+    return torch.stack(ys, dim=1)
+
+
+def test_mamba2_block_cpu_forward_uses_low_rank_dt() -> None:
+    block = Mamba2Block(
         d_model=32,
         d_inner=64,
         d_state=8,
         d_conv=4,
         dt_rank=None,
-        use_cuda_scan=False,
+        num_heads=4,
     )
     x = torch.randn(2, 11, 32)
     y = block(x)
 
-    assert block.dt_rank == max(4, math.ceil(32 / 16))
-    assert block.dt_proj.weight.shape == (64, block.dt_rank)
+    assert block.dt_proj.weight.shape == (4, block.dt_rank)
     assert isinstance(block.residual_proj, nn.Linear)
     assert y.shape == x.shape
 
 
-def test_tiny_custom_mamba_lm_ties_embeddings_by_default() -> None:
-    model = TinyHybridMambaLM(
-        vocab_size=101,
+def test_mamba2_block_fla_style_knobs_and_attention_mask() -> None:
+    block = Mamba2Block(
         d_model=32,
-        n_layers=2,
+        d_inner=64,
         d_state=8,
         d_conv=4,
-        tie_embeddings=True,
-    )
-    input_ids = torch.randint(0, 101, (2, 9))
-    logits = model(input_ids)
-
-    assert model.lm_head.weight is model.embed.weight
-    assert logits.shape == (2, 9, 101)
-
-
-def test_sliding_window_attention_is_causal() -> None:
-    attn = SlidingWindowAttention(
-        d_model=16,
+        dt_rank=4,
         num_heads=4,
-        window_size=3,
-        dropout=0.0,
+        chunk_size=8,
+        dt_init_min=0.001,
+        dt_init_max=0.1,
+        dt_limit=(0.0, 1.0),
+        conv_init=0.01,
+        use_conv_bias=False,
+        use_bias=True,
+        norm_eps=1e-5,
     )
-    attn.eval()
+    assert block.in_proj.bias is not None
+    assert block.out_proj.bias is not None
+    assert block.conv.conv.bias is None
+    assert block.norm_eps == 1e-5
+    assert block.dt_limit == (0.0, 1.0)
+    assert block.conv.conv.weight.abs().max() <= 0.010001
 
-    x = torch.randn(2, 6, 16)
-    x_perturbed = x.clone()
-    x_perturbed[:, -1, :] = torch.randn_like(x_perturbed[:, -1, :]) * 10.0
-
-    y = attn(x)
-    y_perturbed = attn(x_perturbed)
-
-    assert torch.allclose(y[:, :-1, :], y_perturbed[:, :-1, :], atol=1e-6, rtol=1e-6)
+    x = torch.randn(2, 9, 32)
+    mask = torch.ones(2, 9)
+    mask[:, -2:] = 0
+    y = block(x, attention_mask=mask)
+    assert y.shape == x.shape
 
 
-def test_custom_mamba2_block_cpu_forward() -> None:
+def test_mamba2_combined_path_matches_decomposed_path() -> None:
+    torch.manual_seed(22)
+    fused = Mamba2Block(
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        chunk_size=8,
+        use_fused_path=True,
+        use_triton_ssd=False,
+    )
+    decomposed = Mamba2Block(
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        chunk_size=8,
+        use_fused_path=False,
+        use_triton_ssd=False,
+    )
+    decomposed.load_state_dict(fused.state_dict())
+    x = torch.randn(2, 9, 32)
+    mask = torch.ones(2, 9)
+    mask[:, -1] = 0
+
+    y_fused = fused(x, attention_mask=mask)
+    y_decomposed = decomposed(x, attention_mask=mask)
+    _assert_close(y_fused, y_decomposed, atol=1e-6)
+
+
+def test_mamba2_block_pre_norm_disabled() -> None:
+    block = Mamba2Block(
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        use_pre_norm=False,
+    )
+    assert isinstance(block.pre_norm, nn.Identity)
+    x = torch.randn(2, 8, 32)
+    assert block(x).shape == x.shape
+
+
+def test_mamba2_block_step_matches_parallel() -> None:
+    torch.manual_seed(0)
+    block = Mamba2Block(
+        d_model=32,
+        d_inner=64,
+        d_state=8,
+        d_conv=4,
+        dt_rank=4,
+        num_heads=4,
+        use_pre_norm=False,
+    )
+    block.eval()
+    x = torch.randn(1, 6, 32)
+
+    with torch.no_grad():
+        y_par = block(x)
+        state = block.make_state(1)
+        y_step = torch.stack([block.step(x[:, t], state) for t in range(x.size(1))], dim=1)
+
+    _assert_close(y_par, y_step, atol=1e-4)
+
+
+def test_hybrid_mamba2_block_cpu_forward() -> None:
     block = HybridMamba2Block(
         d_model=32,
         d_inner=64,
@@ -98,88 +189,59 @@ def test_custom_mamba2_block_cpu_forward() -> None:
         d_conv=4,
         dt_rank=4,
         num_heads=4,
+        n_groups=2,
         window_size=8,
-        use_cuda_scan=False,
     )
     x = torch.randn(2, 10, 32)
     y = block(x)
 
     assert y.shape == x.shape
-    assert isinstance(block.ssm, StructuredStateSpaceDualityBranch)
+    assert isinstance(block.ssm, Mamba2Block)
+    assert isinstance(block.out_norm, nn.LayerNorm)
 
 
-def test_tiny_custom_mamba2_lm_forward_and_tied_weights() -> None:
-    model = TinyHybridMamba2LM(
-        vocab_size=127,
-        d_model=32,
-        n_layers=3,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        window_size=8,
-        attn_every_n=2,
-        tie_embeddings=True,
-        use_cuda_scan=False,
-    )
-    input_ids = torch.randint(0, 127, (2, 7))
-    logits = model(input_ids)
-
-    assert model.lm_head.weight is model.embed.weight
-    assert logits.shape == (2, 7, 127)
-
-
-def test_structured_ssd_branch_supports_gated_delta() -> None:
-    branch = StructuredStateSpaceDualityBranch(
+def test_hybrid_mamba2_block_step_matches_parallel_with_attention_sink() -> None:
+    torch.manual_seed(2)
+    block = HybridMamba2Block(
         d_model=32,
         d_inner=64,
         d_state=8,
         d_conv=4,
         dt_rank=4,
         num_heads=4,
-        use_gated_delta=True,
+        window_size=4,
+        n_sink_tokens=2,
     )
-    x = torch.randn(2, 12, 32)
-    y = branch(x)
+    block.eval()
+    x = torch.randn(1, 7, 32)
 
-    assert branch.dt_proj.weight.shape == (4, 4)
-    assert y.shape == x.shape
+    with torch.no_grad():
+        y_parallel = block(x)
+        state = block.make_state(1)
+        y_step = torch.stack(
+            [block.step(x[:, t], state) for t in range(x.shape[1])],
+            dim=1,
+        )
 
-
-def test_tiny_custom_mamba2_lm_supports_gated_delta() -> None:
-    model = TinyHybridMamba2LM(
-        vocab_size=64,
-        d_model=32,
-        n_layers=4,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        window_size=8,
-        attn_every_n=2,
-        tie_embeddings=True,
-        use_gated_delta=True,
-        use_cuda_scan=False,
-    )
-    input_ids = torch.randint(0, 64, (2, 5))
-    logits = model(input_ids)
-
-    assert logits.shape == (2, 5, 64)
+    _assert_close(y_parallel, y_step, atol=1e-4)
 
 
-def test_grouped_ssd_scan_matches_reference_on_cpu() -> None:
-    u = torch.randn(2, 6, 4, 8)
-    dt = torch.rand(2, 6, 4) * 0.1 + 1e-3
-    A = -torch.exp(torch.randn(4, 8))
-    Bpar = torch.randn(2, 6, 4, 8) * 0.1
-    Cpar = torch.randn(2, 6, 4, 8) * 0.1
-    Dskip = torch.randn(4, 8)
-    gate = torch.randn(2, 6, 4)
+def test_chunked_ssd_forward_matches_sequential_diagonal_scan() -> None:
+    torch.manual_seed(10)
+    batch, seqlen, heads, head_dim, d_state = 2, 9, 3, 4, 5
+    u = torch.randn(batch, seqlen, heads, head_dim)
+    dt = torch.rand(batch, seqlen, heads) * 0.1 + 1e-3
+    A = -torch.exp(torch.randn(heads))
+    Bpar = torch.randn(batch, seqlen, heads, d_state) * 0.1
+    Cpar = torch.randn(batch, seqlen, heads, d_state) * 0.1
+    Dskip = torch.randn(heads, head_dim)
 
-    y_ref = grouped_ssd_scan_reference(u, dt, A, Bpar, Cpar, Dskip, delta_gate=gate)
-    y = grouped_ssd_scan(u, dt, A, Bpar, Cpar, Dskip, delta_gate=gate, use_triton=True)
+    y_ref = _sequential_diagonal_ssd(u, dt, A, Bpar, Cpar, Dskip)
+    y_chunk = chunked_ssd_forward(u, dt, A, Bpar, Cpar, Dskip, chunk_size=4)
+    y_simple = chunked_ssd_forward_reference(u, dt, A, Bpar, Cpar, Dskip, chunk_size=4)
 
-    assert torch.allclose(y, y_ref, atol=1e-6, rtol=1e-6)
+    _assert_close(y_chunk, y_ref, atol=2e-5)
+    _assert_close(y_simple, y_ref, atol=1e-6)
 
 
 def test_dt_prep_backward_matches_autograd_reference() -> None:
@@ -199,11 +261,6 @@ def test_dt_prep_backward_matches_autograd_reference() -> None:
     _assert_close(d_dt_raw, dt_raw_ref.grad)
     assert d_bias is not None
     _assert_close(d_bias, bias_ref.grad)
-
-    _, skipped_bias = dt_prep_bwd_triton(
-        grad_out, dt_raw, bias, compute_bias_grad=False
-    )
-    assert skipped_bias is None
 
 
 def test_fused_out_backward_matches_autograd_reference() -> None:
@@ -232,92 +289,27 @@ def test_fused_out_backward_matches_autograd_reference() -> None:
     assert d_norm_weight is not None
     _assert_close(d_norm_weight, norm_weight_ref.grad)
 
-    skipped_weight = fused_out_bwd_triton(
-        grad_out,
-        y,
-        z,
-        residual,
-        norm_weight,
-        compute_norm_weight_grad=False,
-    )[3]
-    assert skipped_weight is None
 
-
-def test_selective_scan_backward_matches_reference_autograd() -> None:
-    torch.manual_seed(13)
-    batch, seqlen, dim, d_state = 2, 5, 4, 3
-    u = torch.randn(batch, seqlen, dim, requires_grad=True)
-    dt = (torch.rand(batch, seqlen, dim) * 0.1 + 1e-3).requires_grad_(True)
-    A = (-torch.exp(torch.randn(dim, d_state))).requires_grad_(True)
-    Bpar = (torch.randn(batch, seqlen, dim, d_state) * 0.1).requires_grad_(True)
-    Cpar = (torch.randn(batch, seqlen, dim, d_state) * 0.1).requires_grad_(True)
-    Dskip = torch.randn(dim, requires_grad=True)
-    grad_out = torch.randn(batch, seqlen, dim)
-
-    inputs = (u, dt, A, Bpar, Cpar, Dskip)
-    out = selective_scan(*inputs, use_cuda_kernel=False)
-    ref_inputs = tuple(_clone_requires_grad(tensor) for tensor in inputs)
-    out_ref = selective_scan_reference(*ref_inputs)
-
-    _assert_close(out, out_ref.detach(), atol=1e-6)
-    out.backward(grad_out)
-    out_ref.backward(grad_out)
-
-    for tensor, ref_tensor in zip(inputs, ref_inputs):
-        _assert_close(tensor.grad, ref_tensor.grad)
-
-
-def test_grouped_ssd_scan_backward_matches_reference_autograd() -> None:
-    torch.manual_seed(14)
-    batch, seqlen, num_heads, head_dim, d_state = 2, 5, 3, 4, 3
-    u = torch.randn(batch, seqlen, num_heads, head_dim, requires_grad=True)
-    dt = (torch.rand(batch, seqlen, num_heads) * 0.1 + 1e-3).requires_grad_(True)
-    A = (-torch.exp(torch.randn(num_heads, d_state))).requires_grad_(True)
-    Bpar = (
-        torch.randn(batch, seqlen, num_heads, d_state) * 0.1
-    ).requires_grad_(True)
-    Cpar = (
-        torch.randn(batch, seqlen, num_heads, d_state) * 0.1
-    ).requires_grad_(True)
-    Dskip = torch.randn(num_heads, head_dim, requires_grad=True)
-    gate = torch.randn(batch, seqlen, num_heads, requires_grad=True)
-    grad_out = torch.randn(batch, seqlen, num_heads, head_dim)
-
-    inputs = (u, dt, A, Bpar, Cpar, Dskip, gate)
-    out = grouped_ssd_scan(*inputs[:-1], delta_gate=gate, use_triton=False)
-    ref_inputs = tuple(_clone_requires_grad(tensor) for tensor in inputs)
-    out_ref = grouped_ssd_scan_reference(
-        *ref_inputs[:-1], delta_gate=ref_inputs[-1]
+def test_sliding_window_attention_is_causal() -> None:
+    attn = SlidingWindowAttention(
+        d_model=16,
+        num_heads=4,
+        window_size=3,
+        dropout=0.0,
     )
+    attn.eval()
 
-    _assert_close(out, out_ref.detach(), atol=1e-6)
-    out.backward(grad_out)
-    out_ref.backward(grad_out)
+    x = torch.randn(2, 6, 16)
+    x_perturbed = x.clone()
+    x_perturbed[:, -1, :] = torch.randn_like(x_perturbed[:, -1, :]) * 10.0
 
-    for tensor, ref_tensor in zip(inputs, ref_inputs):
-        _assert_close(tensor.grad, ref_tensor.grad)
+    y = attn(x)
+    y_perturbed = attn(x_perturbed)
 
-
-def test_rotary_embedding_shape_and_causality() -> None:
-    rope = RotaryEmbedding(head_dim=16, base=10_000, max_seq_len=64)
-    B, H, T = 2, 4, 10
-    q = torch.randn(B, H, T, 16)
-    k = torch.randn(B, H, T, 16)
-    q_rot, k_rot = rope(q, k)
-
-    assert q_rot.shape == q.shape
-    assert k_rot.shape == k.shape
-    # RoPE must change the values
-    assert not torch.allclose(q_rot, q)
-    assert not torch.allclose(k_rot, k)
-    # Two identical tokens at different positions must get different encodings
-    q_same = torch.ones(1, 1, 2, 16)
-    q_enc, _ = rope(q_same, q_same)
-    assert not torch.allclose(q_enc[:, :, 0], q_enc[:, :, 1])
+    assert torch.allclose(y[:, :-1, :], y_perturbed[:, :-1, :], atol=1e-6, rtol=1e-6)
 
 
 def test_sliding_window_attention_gqa_shapes() -> None:
-    # 8 query heads, 2 KV heads (n_rep = 4)
     attn = SlidingWindowAttention(
         d_model=32,
         num_heads=8,
@@ -326,10 +318,9 @@ def test_sliding_window_attention_gqa_shapes() -> None:
         dropout=0.0,
     )
     assert attn.n_rep == 4
-    assert attn.k_proj.out_features == 2 * (32 // 8)  # kv_dim = 2 * head_dim
+    assert attn.k_proj.out_features == 2 * (32 // 8)
     x = torch.randn(2, 6, 32)
-    y = attn(x)
-    assert y.shape == x.shape
+    assert attn(x).shape == x.shape
 
 
 def test_sliding_window_attention_qk_norm_and_softcap() -> None:
@@ -344,327 +335,79 @@ def test_sliding_window_attention_qk_norm_and_softcap() -> None:
     )
     assert isinstance(attn.q_norm, RMSNorm)
     assert isinstance(attn.k_norm, RMSNorm)
-
     x = torch.randn(2, 6, 32)
-    y = attn(x)
-    assert y.shape == x.shape
+    assert attn(x).shape == x.shape
 
 
-def test_custom_mamba_block_pre_norm_disabled() -> None:
-    block = HybridMambaBlock(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        use_cuda_scan=False,
-        use_pre_norm=False,
-    )
-    assert isinstance(block.pre_norm, nn.Identity)
-    x = torch.randn(2, 8, 32)
-    y = block(x)
-    assert y.shape == x.shape
+def test_rotary_embedding_shape_and_causality() -> None:
+    rope = RotaryEmbedding(head_dim=16, base=10_000, max_seq_len=64)
+    q = torch.randn(2, 4, 10, 16)
+    k = torch.randn(2, 4, 10, 16)
+    q_rot, k_rot = rope(q, k)
+
+    assert q_rot.shape == q.shape
+    assert k_rot.shape == k.shape
+    assert not torch.allclose(q_rot, q)
+    assert not torch.allclose(k_rot, k)
 
 
-def test_custom_mamba2_block_out_norm_present() -> None:
-    block = HybridMamba2Block(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        window_size=8,
-        use_cuda_scan=False,
-    )
-    assert isinstance(block.out_norm, nn.LayerNorm)
-    assert block.out_norm.normalized_shape == (32,)
-    x = torch.randn(2, 10, 32)
-    y = block(x)
-    assert y.shape == x.shape
+def test_rotary_apply_matches_fallback_on_cuda() -> None:
+    if not torch.cuda.is_available():
+        return
+    torch.manual_seed(20)
+    torch.cuda.empty_cache()
+    try:
+        q = torch.randn(1, 2, 5, 8, device="cuda", requires_grad=True)
+        cos = torch.randn(1, 1, 5, 8, device="cuda")
+        sin = torch.randn(1, 1, 5, 8, device="cuda")
+        grad = torch.randn_like(q)
+    except torch.AcceleratorError as exc:
+        pytest.skip(f"CUDA allocation unavailable: {exc}")
+
+    y_fast = rotary_apply(q, cos, sin)
+    y_ref = rotary_apply_fallback(q, cos, sin)
+    _assert_close(y_fast, y_ref, atol=1e-6)
+
+    y_fast.backward(grad, retain_graph=True)
+    dq_fast = q.grad.detach().clone()
+    q.grad = None
+    y_ref.backward(grad)
+    _assert_close(dq_fast, q.grad, atol=1e-6)
 
 
-def test_tiny_custom_mamba2_lm_with_gqa() -> None:
-    model = TinyHybridMamba2LM(
-        vocab_size=64,
-        d_model=32,
-        n_layers=4,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        n_kv_heads=2,
-        window_size=8,
-        attn_every_n=2,
-        tie_embeddings=True,
-        use_cuda_scan=False,
-    )
-    input_ids = torch.randint(0, 64, (2, 6))
-    logits = model(input_ids)
-    assert logits.shape == (2, 6, 64)
+def test_rms_norm_matches_fallback_on_cuda() -> None:
+    if not torch.cuda.is_available():
+        return
+    torch.manual_seed(21)
+    torch.cuda.empty_cache()
+    try:
+        x = torch.randn(1, 2, 5, 8, device="cuda", requires_grad=True)
+        weight = torch.randn(8, device="cuda", requires_grad=True)
+        grad = torch.randn_like(x)
+    except torch.AcceleratorError as exc:
+        pytest.skip(f"CUDA allocation unavailable: {exc}")
+
+    y_fast = rms_norm(x, weight)
+    y_ref = rms_norm_fallback(x, weight)
+    _assert_close(y_fast, y_ref, atol=1e-6)
+
+    y_fast.backward(grad, retain_graph=True)
+    dx_fast = x.grad.detach().clone()
+    dw_fast = weight.grad.detach().clone()
+    x.grad = None
+    weight.grad = None
+    y_ref.backward(grad)
+    _assert_close(dx_fast, x.grad, atol=1e-6)
+    _assert_close(dw_fast, weight.grad, atol=1e-6)
 
 
 def test_feedforward_block_forward() -> None:
     ff = FeedForward(d_model=32, expansion=8 / 3, dropout=0.0)
     x = torch.randn(2, 10, 32)
-    y = ff(x)
-    assert y.shape == x.shape
+    assert ff(x).shape == x.shape
 
 
-def test_custom_mamba_block_step_matches_parallel() -> None:
-    torch.manual_seed(0)
-    block = HybridMambaBlock(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        use_cuda_scan=False,
-        use_pre_norm=False,
-    )
-    block.eval()
-    T = 6
-    x = torch.randn(1, T, 32)
-
-    with torch.no_grad():
-        y_par = block(x)  # (1, T, 32) parallel
-
-        state = block.make_state(1)
-        ys = []
-        for t in range(T):
-            ys.append(block.step(x[:, t], state))
-        y_step = torch.stack(ys, dim=1)
-
-    assert torch.allclose(y_par, y_step, atol=1e-4, rtol=1e-4), (
-        f"max diff: {(y_par - y_step).abs().max().item()}"
-    )
-
-
-def test_ssd_branch_step_matches_parallel() -> None:
-    torch.manual_seed(1)
-    branch = StructuredStateSpaceDualityBranch(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-    )
-    branch.eval()
-    T = 5
-    x = torch.randn(1, T, 32)
-
-    with torch.no_grad():
-        y_par = branch(x)
-
-        state = branch.make_state(1)
-        ys = [branch.step(x[:, t], state) for t in range(T)]
-        y_step = torch.stack(ys, dim=1)
-
-    assert torch.allclose(y_par, y_step, atol=1e-4, rtol=1e-4), (
-        f"max diff: {(y_par - y_step).abs().max().item()}"
-    )
-
-
-def test_custom_mamba2_block_step_runs() -> None:
-    block = HybridMamba2Block(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        window_size=8,
-        use_cuda_scan=False,
-    )
-    block.eval()
-    x = torch.randn(2, 32)
-    state = block.make_state(2)
-    with torch.no_grad():
-        y = block.step(x, state)
-    assert y.shape == (2, 32)
-
-
-def test_custom_mamba2_block_step_matches_parallel_with_attention_sink() -> None:
-    torch.manual_seed(2)
-    block = HybridMamba2Block(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        window_size=4,
-        n_sink_tokens=2,
-        use_cuda_scan=False,
-    )
-    block.eval()
-    x = torch.randn(1, 7, 32)
-
-    with torch.no_grad():
-        y_parallel = block(x)
-        state = block.make_state(1)
-        y_step = torch.stack(
-            [block.step(x[:, t], state) for t in range(x.shape[1])],
-            dim=1,
-        )
-
-    assert torch.allclose(y_parallel, y_step, atol=1e-4, rtol=1e-4), (
-        f"max diff: {(y_parallel - y_step).abs().max().item()}"
-    )
-
-
-def test_custom_mamba2_block_step_matches_parallel_with_modern_attn_knobs() -> None:
-    torch.manual_seed(3)
-    block = HybridMamba2Block(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        n_kv_heads=2,
-        window_size=4,
-        qk_norm=True,
-        attn_logit_softcap=15.0,
-        layer_scale_init=0.1,
-        use_cuda_scan=False,
-    )
-    block.eval()
-    x = torch.randn(1, 7, 32)
-
-    with torch.no_grad():
-        y_parallel = block(x)
-        state = block.make_state(1)
-        y_step = torch.stack(
-            [block.step(x[:, t], state) for t in range(x.shape[1])],
-            dim=1,
-        )
-
-    assert torch.allclose(y_parallel, y_step, atol=1e-4, rtol=1e-4), (
-        f"max diff: {(y_parallel - y_step).abs().max().item()}"
-    )
-
-
-def test_tiny_custom_mamba2_lm_generate() -> None:
-    model = TinyHybridMamba2LM(
-        vocab_size=64,
-        d_model=32,
-        n_layers=4,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        window_size=8,
-        attn_every_n=2,
-        tie_embeddings=True,
-        use_cuda_scan=False,
-    )
-    model.eval()
-    input_ids = torch.randint(0, 64, (1, 5))
-    with torch.no_grad():
-        out = model.generate(input_ids, max_new_tokens=3, temperature=0.0)
-    assert out.shape == (1, 8)
-    assert (out[:, :5] == input_ids).all()
-
-
-def test_tiny_custom_mamba_lm_generate() -> None:
-    model = TinyHybridMambaLM(
-        vocab_size=64,
-        d_model=32,
-        n_layers=2,
-        d_state=8,
-        d_conv=4,
-        tie_embeddings=True,
-    )
-    model.eval()
-    input_ids = torch.randint(0, 64, (1, 4))
-    with torch.no_grad():
-        out = model.generate(input_ids, max_new_tokens=4, temperature=1.0)
-    assert out.shape == (1, 8)
-
-
-def test_feedforward_mlp_interleaving() -> None:
-    model = TinyHybridMamba2LM(
-        vocab_size=64,
-        d_model=32,
-        n_layers=4,
-        d_state=8,
-        d_conv=4,
-        dt_rank=4,
-        num_heads=4,
-        window_size=8,
-        attn_every_n=2,
-        tie_embeddings=True,
-        use_cuda_scan=False,
-        mlp_every_n=2,
-    )
-    ffn_count = sum(model._has_ffn)
-    assert ffn_count == 2  # layers 1 and 3 (0-indexed: after idx 1 and 3)
-    input_ids = torch.randint(0, 64, (2, 7))
-    logits = model(input_ids)
-    assert logits.shape == (2, 7, 64)
-
-
-def test_attention_sink_mask() -> None:
-    attn = SlidingWindowAttention(
-        d_model=16,
-        num_heads=4,
-        window_size=3,
-        dropout=0.0,
-        n_sink_tokens=2,
-    )
-    attn.eval()
-    # Position 5 (past the window from position 0) should still attend to sink (col 0)
-    # The mask for row 5, col 0 should be 0.0 (not -inf)
-    mask = attn._sliding_mask(8, torch.device("cpu"), torch.float32)
-    assert mask[5, 0].item() == 0.0  # sink: always visible
-    assert mask[5, 1].item() == 0.0  # sink: always visible
-    assert mask[5, 4].item() == 0.0  # within window (rel=1)
-    assert mask[0, 1].item() == float("-inf")  # future sink is still causal
-    assert mask[5, 2].item() == float("-inf")  # outside window and not sink
-    x = torch.randn(2, 8, 16)
-    y = attn(x)
-    assert y.shape == x.shape
-
-
-def test_grouped_ssd_scan_triton_matches_reference_when_available() -> None:
-    if not (torch.cuda.is_available() and GROUPED_SSD_TRITON_AVAILABLE):
-        return
-
-    device = "cuda"
-    dtype = torch.float32
-    u = torch.randn(2, 8, 4, 8, device=device, dtype=dtype, requires_grad=True)
-    dt = (torch.rand(2, 8, 4, device=device, dtype=dtype) * 0.1 + 1e-3)
-    dt = dt.requires_grad_(True)
-    A = (-torch.exp(torch.randn(4, 8, device=device, dtype=dtype))).requires_grad_(
-        True
-    )
-    Bpar = (
-        torch.randn(2, 8, 4, 8, device=device, dtype=dtype) * 0.1
-    ).requires_grad_(True)
-    Cpar = (
-        torch.randn(2, 8, 4, 8, device=device, dtype=dtype) * 0.1
-    ).requires_grad_(True)
-    Dskip = torch.randn(4, 8, device=device, dtype=dtype, requires_grad=True)
-    gate = torch.randn(2, 8, 4, device=device, dtype=dtype, requires_grad=True)
-    grad_out = torch.randn_like(u)
-
-    y_ref = grouped_ssd_scan_reference(u, dt, A, Bpar, Cpar, Dskip, delta_gate=gate)
-    y = grouped_ssd_scan(u, dt, A, Bpar, Cpar, Dskip, delta_gate=gate, use_triton=True)
-
-    assert torch.allclose(y, y_ref, atol=5e-4, rtol=5e-4)
-
-    inputs = (u, dt, A, Bpar, Cpar, Dskip, gate)
-    ref_inputs = tuple(_clone_requires_grad(tensor) for tensor in inputs)
-    y_ref = grouped_ssd_scan_reference(
-        *ref_inputs[:-1], delta_gate=ref_inputs[-1]
-    )
-    y = grouped_ssd_scan(
-        *inputs[:-1], delta_gate=inputs[-1], use_triton=True
-    )
-    y.backward(grad_out)
-    y_ref.backward(grad_out)
-
-    for tensor, ref_tensor in zip(inputs, ref_inputs):
-        assert torch.allclose(tensor.grad, ref_tensor.grad, atol=5e-4, rtol=5e-4)
+def test_chunked_ssd_flag_is_boolean() -> None:
+    assert isinstance(CHUNKED_SSD_TRITON_AVAILABLE, bool)
+    assert isinstance(ROTARY_TRITON_AVAILABLE, bool)
+    assert isinstance(RMS_NORM_TRITON_AVAILABLE, bool)

@@ -114,6 +114,13 @@ all = [
 # ── Development tools (not packaged) ─────────────────────────────────────
 dev = ["pytest>=7.0", "ipykernel>=6.0", "ruff", "basedpyright"]
 
+# Optional integration with the git submodule at third-party/flash-linear-attention.
+fla = [
+    "triton>=3.3",
+    "transformers>=4.45.0",
+    "einops>=0.6",
+]
+
 [project.urls]
 Homepage = "https://github.com/lseman/foreblocks"
 Repository = "https://github.com/lseman/foreblocks"

@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 try:
-    from foreblocks.transformer.kernels.triton_helpers import (
+    from foreblocks.transformer.attention.kernels.chunked_causal_linear_attention import (
         chunked_causal_linear_attn,
     )
 except Exception:
@@ -143,5 +143,3 @@ class RDABackend(RoPEMixin, nn.Module):
         out = out_heads.transpose(1, 2).contiguous().view(B, Lq, self.d_model)
         out = self.dropout(self.out_proj(out))
         return out, None, layer_state
-
-

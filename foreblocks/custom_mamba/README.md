@@ -1,13 +1,13 @@
 # custom_mamba
 
-A self-contained PyTorch module that implements **Hybrid Mamba** — a family of sequence-mixing blocks that combine a selective state-space model (SSM) branch with sliding-window attention inside a single residual layer.
+A self-contained PyTorch module that implements **Mamba2-style sequence mixing** with chunked SSD scan kernels and an optional sliding-window attention hybrid layer.
 
 Two hybrid flavours are provided:
 
 | Class | Mixing strategy |
 |---|---|
-| `HybridMambaBlock` | Pure Mamba-style selective scan (SSM only, no attention) |
-| `HybridMamba2Block` | SSD branch + sliding-window attention, gated mix output |
+| `Mamba2Block` | Mamba2-style diagonal-A chunked SSD (SSM only, no attention) |
+| `HybridMamba2Block` | Mamba2 SSD branch + sliding-window attention, gated mix output |
 
 Both blocks are ready to stack inside any encoder or autoregressive language model.
 
@@ -15,23 +15,14 @@ Both blocks are ready to stack inside any encoder or autoregressive language mod
 
 ## Installation
 
-The Python layers work with any recent PyTorch installation. The optional CUDA extension accelerates the selective-scan kernel; it is compiled on first use via `torch.utils.cpp_extension.load`.
+The Python layers work with any recent PyTorch installation. `custom_mamba`
+uses PyTorch reference code plus Triton kernels where available.
 
 ```bash
 # From the foreblocks root
 pip install -e foreblocks/custom_mamba
 
-# Optionally pre-compile the CUDA extension
-python -m custom_mamba --precompile
 ```
-
-Environment variables that control the CUDA build:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CUSTOM_MAMBA_BUILD_DIR` | `<package>/.build` | Where compiled artifacts are cached |
-| `CUSTOM_MAMBA_CUDA_ARCH_LIST` | `8.0;8.6;8.9;9.0` | Target GPU architectures |
-| `CUSTOM_MAMBA_FORCE_CUDA_VERSION` | `0` | Force a specific CUDA runtime version |
 
 ---
 
@@ -41,10 +32,15 @@ Environment variables that control the CUDA build:
 
 ```python
 import torch
-from foreblocks.custom_mamba import HybridMambaBlock, HybridMamba2Block
+from foreblocks.custom_mamba import HybridMamba2Block, Mamba2Block
 
-# Pure SSM block
-block = HybridMambaBlock(d_model=256, d_state=16, d_conv=4)
+# Pure Mamba2 SSM block
+block = Mamba2Block(
+    d_model=256,
+    d_state=16,
+    d_conv=4,
+    chunk_size=256,
+)
 x = torch.randn(2, 512, 256)   # (batch, seq_len, d_model)
 y = x + block(x)               # residual connection
 
@@ -55,24 +51,7 @@ block2 = HybridMamba2Block(
     num_heads=8,
     window_size=128,
 )
-y2 = block2(x)
-```
-
-### Complete language model
-
-```python
-from foreblocks.custom_mamba import TinyHybridMambaLM, TinyHybridMamba2LM
-
-model = TinyHybridMambaLM(
-    vocab_size=32_000,
-    d_model=256,
-    n_layers=6,
-    mlp_every_n=2,          # insert a FeedForward after every 2nd SSM layer
-)
-logits = model(input_ids)   # (batch, seq_len, vocab_size)
-
-# Autoregressive generation (uses fast recurrent step mode)
-output = model.generate(input_ids, max_new_tokens=128, temperature=0.8)
+y2 = x + block2(x)
 ```
 
 ---
@@ -82,8 +61,8 @@ output = model.generate(input_ids, max_new_tokens=128, temperature=0.8)
 ```
 Input x  (B, T, D)
     │
-    ├─ SSM branch (HybridMambaBlock / SSD branch)
-    │      in_proj → causal_conv1d → selective_scan → out_proj
+    ├─ SSM branch (Mamba2Block)
+    │      in_proj → causal_conv1d → chunked_ssd_forward → out_proj
     │
     ├─ Attention branch (HybridMamba2Block only)
     │      SlidingWindowAttention with RoPE + optional GQA + sink tokens
@@ -93,10 +72,10 @@ Input x  (B, T, D)
 
 ### Key components
 
-**`HybridMambaBlock`** (`blocks/ssm.py`)
-- Selective scan with dense per-feature `A` / `D` matrices.
-- Optional CUDA kernel via the compiled extension; falls back to a pure-Python reference implementation.
+**`Mamba2Block`** (`blocks/mamba2.py`)
+- Diagonal per-head `A`, grouped `B/C`, per-head `D`, and chunked SSD scan.
 - Causal depthwise conv1d gate before the scan.
+- FLA-style knobs for conv init/bias, projection bias, dt init range, runtime `dt_limit`, and padding masks.
 - Supports token-by-token recurrent inference via `make_state` / `step`.
 
 **`HybridMamba2Block`** (`blocks/hybrid.py`)
@@ -111,9 +90,6 @@ Input x  (B, T, D)
 - Attention sink tokens (StreamingLLM-style) to prevent boundary starvation.
 - Optional per-head QK-norm and logit softcap.
 
-**`StructuredStateSpaceDualityBranch`** (`blocks/ssd.py`)
-- Multi-head SSD scan with grouped heads and input-dependent `dt` / `B` / `C`.
-
 ---
 
 ## Ops layer
@@ -122,32 +98,21 @@ Low-level kernels live in `ops/` with three backends that are selected automatic
 
 | Op | Pure Python | Triton | CUDA ext |
 |---|---|---|---|
-| `selective_scan` | `selective_scan_reference` | — | `selective_scan` |
 | `causal_depthwise_conv1d` | `causal_depthwise_conv1d_reference` | `causal_depthwise_conv1d_triton` | — |
-| `grouped_ssd_scan` | `grouped_ssd_scan_reference` | `grouped_ssd_scan_triton` | — |
+| `chunked_ssd_forward` | `chunked_ssd_forward_reference` | `chunked_ssd_forward_triton` | — |
+| `mamba2_split_conv1d_scan_combined` | local composed fallback | conv/SSD/norm Triton subkernels | — |
 | `dt_prep` / `fused_out` | `*_fallback` | `*_triton` | — |
+| `rotary_apply` | `rotary_apply_fallback` | `rotary_apply` fast path | — |
+| `rms_norm` | `rms_norm_fallback` | `rms_norm` fast path | — |
 
-Triton availability is exposed as `TRITON_AVAILABLE`, `CAUSAL_CONV1D_TRITON_AVAILABLE`, and `GROUPED_SSD_TRITON_AVAILABLE`.
+Triton availability is exposed as `TRITON_AVAILABLE`, `CAUSAL_CONV1D_TRITON_AVAILABLE`, `CHUNKED_SSD_TRITON_AVAILABLE`, `ROTARY_TRITON_AVAILABLE`, and `RMS_NORM_TRITON_AVAILABLE`.
 
 ---
 
 ## Diagnostics
 
 ```python
-from foreblocks.custom_mamba import run_default_diagnostics
-
-run_default_diagnostics()   # forward/backward correctness + benchmark
-```
-
-Individual checks:
-
-```python
-from foreblocks.custom_mamba import (
-    check_forward_close,
-    check_backward,
-    benchmark_block,
-    compare_against_official,
-)
+pytest tests/test_hybrid_mamba.py
 ```
 
 ---
@@ -157,24 +122,20 @@ from foreblocks.custom_mamba import (
 ```
 custom_mamba/
 ├── __init__.py          Public API re-exports
-├── cuda.py              CUDA extension loader / pre-compiler
-├── diagnostics.py       Correctness checks and micro-benchmarks
-├── layers.py            Convenience layer wrappers
-├── build.py / setup.py  Extension build configuration
-├── csrc/                C++/CUDA source for selective scan kernel
+├── setup.py             Package metadata
 ├── blocks/
 │   ├── hybrid.py        HybridMamba2Block
-│   ├── ssm.py           HybridMambaBlock
+│   ├── mamba2.py        Mamba2Block
 │   ├── attention.py     SlidingWindowAttention
-│   ├── ssd.py           StructuredStateSpaceDualityBranch
 │   ├── conv.py          CausalDepthwiseConv1d
 │   ├── feedforward.py   FeedForward (SwiGLU)
 │   ├── norms.py         RMSNorm / RMSNormWeightOnly
-│   ├── rotary.py        RotaryEmbedding
-│   └── models.py        TinyHybridMambaLM / TinyHybridMamba2LM
+│   └── rotary.py        RotaryEmbedding
 └── ops/
-    ├── selective_scan.py   Selective scan (CUDA / reference)
     ├── causal_conv1d.py    Causal depthwise conv (Triton / reference)
-    ├── ssd.py              Grouped SSD scan (Triton / reference)
+    ├── mamba2_combined.py  FLA-style split/conv/scan combined path
+    ├── rms_norm.py         RMSNorm for attention Q/K norm
+    ├── rotary.py           RoPE apply kernel
+    ├── ssd.py              Diagonal-A chunked SSD scan
     └── triton_ops.py       dt_prep, fused_out Triton kernels
 ```

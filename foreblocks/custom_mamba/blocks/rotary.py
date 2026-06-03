@@ -3,6 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from ..ops import rotary_apply
+
 
 class RotaryEmbedding(nn.Module):
     """Rotary Position Embedding (Su et al. 2021, RoFormer).
@@ -54,8 +56,8 @@ class RotaryEmbedding(nn.Module):
         self._build_cache(seqlen)
         cos = self._cos_cached[:, :, :seqlen].to(dtype=q.dtype, device=q.device)
         sin = self._sin_cached[:, :, :seqlen].to(dtype=q.dtype, device=q.device)
-        q_rot = q * cos + self._rotate_half(q) * sin
-        k_rot = k * cos + self._rotate_half(k) * sin
+        q_rot = rotary_apply(q, cos, sin)
+        k_rot = rotary_apply(k, cos, sin)
         return q_rot, k_rot
 
     def apply_at_pos(

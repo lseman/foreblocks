@@ -7,6 +7,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ...kernels import (
+    can_use_fla_recurrent_delta_rule,
+    can_use_fused_recurrent_delta_rule,
+    fla_recurrent_delta_rule,
+    fused_recurrent_delta_rule,
+)
 from .base import _causal_conv1d
 
 
@@ -129,11 +135,22 @@ class DeltaNetBackend(nn.Module):
         if S is None:
             S = query.new_zeros((B, self.n_heads, self.d_head, self.d_head))
 
-        o, S_next = (
-            self._chunk_forward(q, k, v, S, beta)
-            if self.mode == "chunk"
-            else self._recurrent_forward(q, k, v, S, beta)
-        )
+        if (
+            not torch.is_grad_enabled()
+            and can_use_fla_recurrent_delta_rule(q, k, v, beta, S)
+        ):
+            o, S_next = fla_recurrent_delta_rule(q, k, v, beta, S, self.scale)
+        elif (
+            not torch.is_grad_enabled()
+            and can_use_fused_recurrent_delta_rule(q, k, v, beta, S)
+        ):
+            o, S_next = fused_recurrent_delta_rule(q, k, v, beta, S, self.scale)
+        else:
+            o, S_next = (
+                self._chunk_forward(q, k, v, S, beta)
+                if self.mode == "chunk"
+                else self._recurrent_forward(q, k, v, S, beta)
+            )
 
         # Output norm
         o = self.norm(o)
@@ -228,5 +245,3 @@ class DeltaNetBackend(nn.Module):
         # Crop to original sequence length
         o = o[:, :, :L]
         return o, S
-
-

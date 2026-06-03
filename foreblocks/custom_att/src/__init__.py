@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from .triton_bwd import can_use_triton_bwd, triton_flash_bwd
 from .triton_fwd import can_use_triton_fwd, triton_flash_fwd, triton_flash_decode, can_use_triton_decode
+from .tilelang_bwd import can_use_tilelang_bwd, tilelang_flash_bwd
 
 _DECODER_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_DECODER") != "1"
 
@@ -52,6 +53,12 @@ def _triton_bwd_enabled():
     return os.environ.get("CUSTOM_ATT_DISABLE_TRITON_BWD") != "1"
 
 
+def _tilelang_bwd_enabled():
+    # tilelang backward is ~1.4x faster than Triton on Ada (RTX 4090). Preferred
+    # when available; falls back to Triton then reference.
+    return os.environ.get("CUSTOM_ATT_DISABLE_TILELANG_BWD") != "1"
+
+
 class CustomAttFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, causal=False, softmax_scale=None):
@@ -59,19 +66,13 @@ class CustomAttFunction(torch.autograd.Function):
         k = k.contiguous()
         v = v.contiguous()
         scale = 0.0 if softmax_scale is None else float(softmax_scale)
-        use_triton = _triton_fwd_enabled() and can_use_triton_fwd(q)
-        if use_triton:
+        scale_arg = None if scale == 0.0 else scale
+        if _triton_fwd_enabled() and can_use_triton_fwd(q):
             out, lse = triton_flash_fwd(
-                q,
-                k,
-                v,
-                causal=bool(causal),
-                softmax_scale=None if scale == 0.0 else scale,
+                q, k, v, causal=bool(causal), softmax_scale=scale_arg
             )
         else:
-            out, lse = _reference_forward(
-                q, k, v, bool(causal), None if scale == 0.0 else scale
-            )
+            out, lse = _reference_forward(q, k, v, bool(causal), scale_arg)
         ctx.save_for_backward(q, k, v, out, lse)
         ctx.causal = bool(causal)
         ctx.softmax_scale = scale if scale != 0.0 else None
@@ -82,8 +83,18 @@ class CustomAttFunction(torch.autograd.Function):
     def backward(ctx, grad_out):
         q, k, v, out, lse = ctx.saved_tensors
         grad_out = grad_out.contiguous()
-        use_triton_bwd = _triton_bwd_enabled() and can_use_triton_bwd(q)
-        if use_triton_bwd:
+        if _tilelang_bwd_enabled() and can_use_tilelang_bwd(q):
+            dq, dk, dv = tilelang_flash_bwd(
+                grad_out,
+                q,
+                k,
+                v,
+                out,
+                lse,
+                causal=ctx.causal,
+                softmax_scale=ctx.softmax_scale,
+            )
+        elif _triton_bwd_enabled() and can_use_triton_bwd(q):
             dq, dk, dv = triton_flash_bwd(
                 grad_out,
                 q,
@@ -114,18 +125,13 @@ def flash_attn_func(q, k, v, causal=False, softmax_scale=None):
 
 def flash_attn_forward(q, k, v, causal=False, softmax_scale=None):
     scale = 0.0 if softmax_scale is None else float(softmax_scale)
+    scale_arg = None if scale == 0.0 else scale
     q = q.contiguous()
     k = k.contiguous()
     v = v.contiguous()
     if _triton_fwd_enabled() and can_use_triton_fwd(q):
-        return triton_flash_fwd(
-            q,
-            k,
-            v,
-            causal=bool(causal),
-            softmax_scale=None if scale == 0.0 else scale,
-        )
-    return _reference_forward(q, k, v, bool(causal), None if scale == 0.0 else scale)
+        return triton_flash_fwd(q, k, v, causal=bool(causal), softmax_scale=scale_arg)
+    return _reference_forward(q, k, v, bool(causal), scale_arg)
 
 
 def flash_attn_forward_backend(q):
@@ -142,6 +148,8 @@ def flash_attn_uses_cuda_backward(q):
 
 def flash_attn_backward_backend(q, causal=False):
     """Return which backward backend ``flash_attn_func(...).backward`` will use."""
+    if _tilelang_bwd_enabled() and can_use_tilelang_bwd(q):
+        return "tilelang"
     if _triton_bwd_enabled() and can_use_triton_bwd(q):
         return "triton"
     return "torch"

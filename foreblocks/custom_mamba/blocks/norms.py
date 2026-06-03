@@ -3,6 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from ..ops import rms_norm
+
 
 class RMSNormWeightOnly(nn.Module):
     def __init__(self, d_model: int):
@@ -22,5 +24,4 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return x * rms * self.weight
+        return rms_norm(x, self.weight, eps=self.eps)

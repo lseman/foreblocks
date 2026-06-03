@@ -7,7 +7,13 @@ from ..ops import causal_depthwise_conv1d
 
 
 class CausalDepthwiseConv1d(nn.Module):
-    def __init__(self, d_inner: int, kernel_size: int):
+    def __init__(
+        self,
+        d_inner: int,
+        kernel_size: int,
+        bias: bool = True,
+        conv_init: float | None = None,
+    ):
         super().__init__()
         self.d_inner = d_inner
         self.kernel_size = kernel_size
@@ -17,8 +23,10 @@ class CausalDepthwiseConv1d(nn.Module):
             out_channels=d_inner,
             kernel_size=kernel_size,
             groups=d_inner,
-            bias=True,
+            bias=bias,
         )
+        if conv_init is not None:
+            nn.init.uniform_(self.conv.weight, -conv_init, conv_init)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.transpose(1, 2)

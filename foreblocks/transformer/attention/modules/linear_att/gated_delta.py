@@ -46,6 +46,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ...kernels import can_use_fused_rmsnorm_sigmoid_gate, fused_rmsnorm_sigmoid_gate
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -524,9 +526,17 @@ class GatedDeltaNet(nn.Module):
         # ── Output gate + head-wise RMSNorm (skip for Oryx) ───────────────
         out_h = out.reshape(B, self.h, T, self.dv)  # [B, H, T, Dv]
         if not skip_gate_norm:
-            out_h = self.h_rms(out_h)
             g = self._output_gate(x)  # [B, H, T, Dv]
-            out_h = out_h * g
+            if (
+                not torch.is_grad_enabled()
+                and can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight)
+            ):
+                out_h = fused_rmsnorm_sigmoid_gate(
+                    out_h, g, self.h_rms.weight, self.h_rms.eps
+                )
+            else:
+                out_h = self.h_rms(out_h)
+                out_h = out_h * g
 
         y = out_h.permute(0, 2, 1, 3).contiguous().reshape(B, T, self.h * self.dv)
         y = self.drop(self.o_proj(y))
@@ -582,9 +592,17 @@ class GatedDeltaNet(nn.Module):
         # gate & norm (skip for Oryx: external GatedRMSNorm applied)
         out_h = o_t.reshape(B, self.h, 1, self.dv)  # [B, H, 1, Dv]
         if not skip_gate_norm:
-            out_h = self.h_rms(out_h)
             g = self._output_gate(x_t)  # [B, H, 1, Dv]
-            out_h = out_h * g
+            if (
+                not torch.is_grad_enabled()
+                and can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight)
+            ):
+                out_h = fused_rmsnorm_sigmoid_gate(
+                    out_h, g, self.h_rms.weight, self.h_rms.eps
+                )
+            else:
+                out_h = self.h_rms(out_h)
+                out_h = out_h * g
 
         y = out_h.permute(0, 2, 1, 3).contiguous().reshape(B, 1, self.h * self.dv)
         y = self.drop(self.o_proj(y))

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from .attention import SlidingWindowAttention
-from .ssd import StructuredStateSpaceDualityBranch
+from .mamba2 import Mamba2Block
 
 
 class HybridMamba2Block(nn.Module):
@@ -18,11 +18,18 @@ class HybridMamba2Block(nn.Module):
         d_conv: int = 4,
         dt_rank: int | None = None,
         num_heads: int = 8,
+        n_groups: int = 1,
         n_kv_heads: int | None = None,
         window_size: int = 128,
         attn_dropout: float = 0.0,
-        use_gated_delta: bool = False,
-        use_cuda_scan: bool = True,
+        conv_init: float | None = None,
+        use_conv_bias: bool = True,
+        use_bias: bool = False,
+        norm_eps: float = 1e-6,
+        dt_init_min: float | None = None,
+        dt_init_max: float | None = None,
+        dt_init_floor: float = 1e-4,
+        dt_limit: tuple[float, float] | None = None,
         rope_base: int = 10_000,
         max_seq_len: int = 8192,
         n_sink_tokens: int = 0,
@@ -33,21 +40,33 @@ class HybridMamba2Block(nn.Module):
     ):
         super().__init__()
         self.d_model = d_model
-        del use_cuda_scan
 
         self.ssm_norm = nn.LayerNorm(d_model)
         self.attn_norm = nn.LayerNorm(d_model)
         self.mix_norm = nn.LayerNorm(d_model)
         self.out_norm = nn.LayerNorm(d_model)
 
-        self.ssm = StructuredStateSpaceDualityBranch(
+        inner = d_inner or 2 * d_model
+        if inner % num_heads != 0:
+            raise ValueError("d_inner must be divisible by num_heads")
+
+        self.ssm = Mamba2Block(
             d_model=d_model,
-            d_inner=d_inner,
+            d_inner=inner,
             d_state=d_state,
             d_conv=d_conv,
             dt_rank=dt_rank,
             num_heads=num_heads,
-            use_gated_delta=use_gated_delta,
+            n_groups=n_groups,
+            conv_init=conv_init,
+            use_conv_bias=use_conv_bias,
+            use_bias=use_bias,
+            norm_eps=norm_eps,
+            dt_init_min=dt_init_min,
+            dt_init_max=dt_init_max,
+            dt_init_floor=dt_init_floor,
+            dt_limit=dt_limit,
+            use_pre_norm=False,
         )
         self.attn = SlidingWindowAttention(
             d_model=d_model,
@@ -77,8 +96,12 @@ class HybridMamba2Block(nn.Module):
         nn.init.zeros_(self.mix_gate.bias)
         nn.init.xavier_uniform_(self.out_proj.weight)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        ssm_out = self.ssm(self.ssm_norm(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        ssm_out = self.ssm(self.ssm_norm(x), attention_mask=attention_mask)
         attn_out = self.attn(self.attn_norm(x))
         gate = torch.sigmoid(self.mix_gate(self.mix_norm(x)))
         mixed = gate * ssm_out + (1.0 - gate) * attn_out
