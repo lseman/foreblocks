@@ -523,31 +523,19 @@ class GatedDeltaNet(nn.Module):
         out = torch.zeros(BH, T, self.dv, device=device, dtype=dtype)
         C = self.chunk_size
 
-        if C and T > C:
-            Qh = Q.reshape(B, self.h, T, self.dk)
-            Kh = K.reshape(B, self.h, T, self.dk)
-            Vh = V.reshape(B, self.h, T, self.dv)
-            gh = g_log.reshape(B, self.h, T)
-            bh = beta.reshape(B, self.h, T)
-            Sh = S.reshape(B, self.h, self.dk, self.dv)
-            if can_use_fla_gated_delta_rule(
-                Qh, Kh, Vh, gh, bh, Sh, C, recurrent=False
-            ):
-                out_h, S_h = fla_gated_delta_rule_forward(
-                    Qh,
-                    Kh,
-                    Vh,
-                    gh,
-                    bh,
-                    Sh,
-                    scale=1.0,
-                    chunk_size=C,
-                    recurrent=False,
-                )
-                out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
-                S = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
-            else:
-                S = self._chunk_parallel(S, Q, K, V, alpha, beta, out, C)
+        if C and T > 1:
+            # Multi-step path (T > 1): use the pure-torch chunk-parallel recurrence
+            # for both training and inference. It handles a single partial chunk
+            # (T <= C) correctly and promotes fp16/bf16 -> fp32 internally.
+            #
+            # We deliberately do NOT use FLA's chunk kernel here:
+            #   - its TileLang backward can fail to compile (breaks training),
+            #   - its Triton forward asserts on mixed fp16/fp32 under autocast,
+            #   - the first call JIT-compiles (~400ms stall) for only ~6% steady-
+            #     state gain over _chunk_parallel.
+            # The old `T > C` guard sent T <= C (e.g. Oryx at T=50) through the
+            # pure-Python per-step loop below, which was ~7x slower.
+            S = self._chunk_parallel(S, Q, K, V, alpha, beta, out, C)
         elif not torch.is_grad_enabled():
             Qh = Q.reshape(B, self.h, T, self.dk)
             Kh = K.reshape(B, self.h, T, self.dk)
@@ -555,7 +543,9 @@ class GatedDeltaNet(nn.Module):
             gh = g_log.reshape(B, self.h, T)
             bh = beta.reshape(B, self.h, T)
             Sh = S.reshape(B, self.h, self.dk, self.dv)
-            if can_use_fla_gated_delta_rule(Qh, Kh, Vh, gh, bh, Sh):
+            if not torch.is_autocast_enabled("cuda") and can_use_fla_gated_delta_rule(
+                Qh, Kh, Vh, gh, bh, Sh
+            ):
                 out_h, S_h = fla_gated_delta_rule_forward(
                     Qh,
                     Kh,
