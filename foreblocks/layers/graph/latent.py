@@ -7,8 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .common import Tensor, safe_eye, xavier_zero_bias
-from .norms import GraphNorm
+from foreblocks.layers.graph.common import Tensor, safe_eye, xavier_zero_bias
+from foreblocks.layers.graph.norms import GraphNorm
 
 
 class AdaptiveEdgeSparsifier(nn.Module):

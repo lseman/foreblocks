@@ -1,7 +1,7 @@
 """DARTS-local feed-forward / MoE blocks.
 
 This module intentionally keeps the DARTS transformer path independent from the
-generic ``foreblocks.transformer`` MoE stack. The implementation here is small and
+generic ``foreblocks.models.transformer`` MoE stack. The implementation here is small and
 predictable: top-k token routing over a bank of SwiGLU experts, with optional
 shared experts that are always evaluated.
 """

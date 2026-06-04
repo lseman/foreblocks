@@ -2,9 +2,9 @@ import torch
 
 import pytest
 
-from foreblocks.transformer.moe.ff import FeedForwardBlock
-from foreblocks.transformer.moe.experts import moe
-from foreblocks.transformer.moe.experts.routers import RouterOutput
+from foreblocks.modules.moe.ff import FeedForwardBlock
+from foreblocks.modules.moe.experts import moe
+from foreblocks.modules.moe.experts.routers import RouterOutput
 
 
 def test_latent_moe_preserves_output_shape_and_aux():
@@ -193,7 +193,7 @@ def test_moe_full_sota_combo():
 
 def test_moe_router_output_is_dataclass():
     """Router forward returns RouterOutput dataclass, not tuple."""
-    from foreblocks.transformer.moe.experts.routers import LinearRouter
+    from foreblocks.modules.moe.experts.routers import LinearRouter
     router = LinearRouter(d_model=16, num_experts=4)
     x = torch.randn(2, 8, 16)
     out = router(x)

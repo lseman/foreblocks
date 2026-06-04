@@ -7,20 +7,20 @@ training, evaluation, and model composition.
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from .blocks.enc_dec import GRUDecoder, GRUEncoder, LSTMDecoder, LSTMEncoder
-from .config import ModelConfig, TrainingConfig
-from .core.att import AttentionLayer
-from .data import TimeSeriesDataset, create_dataloaders
-from .models import ForecastingModel, GraphForecastingModel
-from .transformer.transformer import TransformerDecoder, TransformerEncoder
+from foreblocks.modules.blocks.enc_dec import GRUDecoder, GRUEncoder, LSTMDecoder, LSTMEncoder
+from foreblocks.config import ModelConfig, TrainingConfig
+from foreblocks.core.att import AttentionLayer
+from foreblocks.data import TimeSeriesDataset, create_dataloaders
+from foreblocks.models import ForecastingModel, GraphForecastingModel
+from foreblocks.models.transformer.transformer import TransformerDecoder, TransformerEncoder
 
 # from .pipeline import TimeSeriesSeq2Seq
-from .transformer.transformer_tuner import ModernTransformerTuner, TransformerTuner
+from foreblocks.models.transformer.transformer_tuner import ModernTransformerTuner, TransformerTuner
 
 if TYPE_CHECKING:
-    from .evaluation import ModelEvaluator
-    from .training import Trainer
-    from .ts_handler import TimeSeriesHandler
+    from foreblocks.core.evaluation import ModelEvaluator
+    from foreblocks.core.training import Trainer
+    from foreblocks.ts_handler import TimeSeriesHandler
 
 # Stable top-level public API
 __all__ = [
@@ -49,9 +49,9 @@ __all__ = [
 
 def __getattr__(name):
     lazy_exports = {
-        "ModelEvaluator": (".evaluation", "ModelEvaluator"),
+        "ModelEvaluator": (".core.evaluation", "ModelEvaluator"),
         "TimeSeriesHandler": (".ts_handler", "TimeSeriesHandler"),
-        "Trainer": (".training", "Trainer"),
+        "Trainer": (".core.training", "Trainer"),
     }
     if name in lazy_exports:
         module_name, attr_name = lazy_exports[name]

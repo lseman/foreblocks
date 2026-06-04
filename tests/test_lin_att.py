@@ -3,7 +3,7 @@ import unittest
 import torch
 import torch.nn.functional as F
 
-from foreblocks.transformer.attention.modules.linear_att import (
+from foreblocks.modules.attention.modules.linear_att import (
     ModernLinearAttention,
 )
 

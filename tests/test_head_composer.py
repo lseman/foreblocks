@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from foreblocks.core.heads.head_helper import HeadComposer, HeadSpec
+from foreblocks.modules.heads.head_helper import HeadComposer, HeadSpec
 
 
 class IdentityInvert(nn.Module):

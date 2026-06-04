@@ -6,8 +6,8 @@ from torch.utils.data import DataLoader, TensorDataset
 matplotlib.use("Agg")
 
 from foreblocks.config import TrainingConfig
-from foreblocks.training.conformal import ConformalPredictionEngine
-from foreblocks.training.trainer import Trainer
+from foreblocks.core.training.conformal import ConformalPredictionEngine
+from foreblocks.core.training.trainer import Trainer
 
 
 class ZeroForecastModel(torch.nn.Module):

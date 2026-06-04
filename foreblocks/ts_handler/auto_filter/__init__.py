@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys as _sys
 import types as _types
 
-from . import core as _core
+from foreblocks.ts_handler.auto_filter import core as _core
 
 __all__ = _core.__all__
 

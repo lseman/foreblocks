@@ -1,6 +1,6 @@
 import torch
 
-from foreblocks.core.heads.modules.multiscale_conv_head import MultiScaleConvHead
+from foreblocks.modules.heads.modules.multiscale_conv_head import MultiScaleConvHead
 
 
 def test_multiscale_conv_head_preserves_shape_in_legacy_mode():

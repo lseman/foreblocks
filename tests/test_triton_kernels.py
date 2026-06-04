@@ -19,14 +19,14 @@ pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Triton kernels require CUDA"
 )
 
-from foreblocks.transformer.attention.kernels.fused_rope import (
+from foreblocks.ops.attention.fused_rope import (
     triton_apply_rope,
     triton_apply_rope_bthd,
 )
-from foreblocks.transformer.embeddings.rotary import apply_rotary_emb
-from foreblocks.transformer.attention.kernels.paged_decode import triton_paged_decode
-from foreblocks.transformer.attention.cache.paged import PagedKVCache
-from foreblocks.transformer.attention.cache.decode_stream import (
+from foreblocks.layers.embeddings.rotary import apply_rotary_emb
+from foreblocks.ops.attention.paged_decode import triton_paged_decode
+from foreblocks.modules.attention.cache.paged import PagedKVCache
+from foreblocks.modules.attention.cache.decode_stream import (
     paged_stream_decode_standard,
 )
 

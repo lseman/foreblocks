@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.transformer.attention.modules.frequency_att import FrequencyAttention
+from foreblocks.modules.attention.modules.frequency_att import FrequencyAttention
 
 
 class TestFrequencyAttention(unittest.TestCase):

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import pytest
 
-from foreblocks.custom_mamba import (
+from foreblocks.sequence.mamba_hybrid import (
     CHUNKED_SSD_TRITON_AVAILABLE,
     FeedForward,
     HybridMamba2Block,

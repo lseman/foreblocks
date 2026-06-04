@@ -2,10 +2,10 @@ import unittest
 
 import torch
 
-from foreblocks.transformer.popular.crossformer import CrossFormerHeadCustom
-from foreblocks.transformer.popular.etsformer import ETSformerHeadCustom
-from foreblocks.transformer.popular.informer import InformerHeadCustom
-from foreblocks.transformer.popular.timesnet import TimesNetHeadCustom
+from foreblocks.models.popular.crossformer import CrossFormerHeadCustom
+from foreblocks.models.popular.etsformer import ETSformerHeadCustom
+from foreblocks.models.popular.informer import InformerHeadCustom
+from foreblocks.models.popular.timesnet import TimesNetHeadCustom
 
 
 class TestPopularHeads(unittest.TestCase):

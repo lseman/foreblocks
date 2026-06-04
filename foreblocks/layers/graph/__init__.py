@@ -1,5 +1,5 @@
-from .latent import AdaptiveEdgeSparsifier, CorrelationConfig, LatentCorrelationLearner
-from .layers import (
+from foreblocks.layers.graph.latent import AdaptiveEdgeSparsifier, CorrelationConfig, LatentCorrelationLearner
+from foreblocks.layers.graph.layers import (
     EdgeCondGCN,
     GATConv,
     GCNConv,
@@ -8,7 +8,7 @@ from .layers import (
     SAGEConv,
     StochasticDepth,
 )
-from .mtgnn import (
+from foreblocks.layers.graph.mtgnn import (
     MTGNNBlock,
     MTGNNDilatedInception,
     MTGNNGraphConstructor,
@@ -16,9 +16,9 @@ from .mtgnn import (
     MTGNNProp,
     MTGNNTemporalGatedUnit,
 )
-from .norms import GraphNorm
-from .spatio_temporal import GraphWaveNetBlock
-from .tggc import (
+from foreblocks.layers.graph.norms import GraphNorm
+from foreblocks.layers.graph.spatio_temporal import GraphWaveNetBlock
+from foreblocks.layers.graph.tggc import (
     ComplexLinearModes,
     FineTemporalSpectralFilter,
     GraphGegenbauerConv,

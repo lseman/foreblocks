@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.transformer.norms import RevIN
+from foreblocks.layers.norms import RevIN
 
 # Re-export from split modules for backward compatibility
 from .mixed_op import MixedOp

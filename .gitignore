@@ -89,3 +89,4 @@ ariadne.db
 *.svg
 *.tex
 scripts/
+papers_md/

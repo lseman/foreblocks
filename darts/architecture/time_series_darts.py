@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.transformer.norms import RevIN
+from foreblocks.layers.norms import RevIN
 
 from .base_blocks import MixedDecoder, MixedEncoder
 from .norms import RMSNorm

@@ -4,13 +4,13 @@ from collections.abc import Sequence
 
 import torch.nn as nn
 
-from .common import Tensor, crop_residual_to_match, ensure_adj, xavier_zero_bias
-from .mtgnn import (
+from foreblocks.layers.graph.common import Tensor, crop_residual_to_match, ensure_adj, xavier_zero_bias
+from foreblocks.layers.graph.mtgnn import (
     MTGNNGraphConstructor,
     MTGNNMixProp,
     MTGNNTemporalGatedUnit,
 )
-from .norms import make_feature_norm
+from foreblocks.layers.graph.norms import make_feature_norm
 
 
 class GraphWaveNetBlock(nn.Module):

@@ -51,10 +51,10 @@ from statsmodels.tsa.stattools import acf, adfuller, pacf
 from tabulate import tabulate
 from tqdm import tqdm
 
-from .ewt import apply_ewt_and_detrend_parallel
+from foreblocks.ts_handler.ewt import apply_ewt_and_detrend_parallel
 
 # ---- local deps (explicit) ---------------------------------------------------
-from .filters import (
+from foreblocks.ts_handler.filters import (
     adaptive_savgol_filter,
     emd_filter,
     kalman_filter,
@@ -63,8 +63,8 @@ from .filters import (
     stl_filter,
     wiener_filter,
 )
-from .impute import SAITSImputer
-from .outlier import _remove_outliers, _remove_outliers_parallel
+from foreblocks.ts_handler.impute import SAITSImputer
+from foreblocks.ts_handler.outlier import _remove_outliers, _remove_outliers_parallel
 
 Mode = Literal["fit", "transform"]
 

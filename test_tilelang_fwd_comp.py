@@ -43,10 +43,7 @@ def main():
         out_ref, lse_ref = ref(q, k, v, causal=causal)
 
         out_err = (out_tl - out_ref).abs().max().item()
-
-        # TileLang LSE is in log2-domain: lse_nat = lse_log2 * ln(2) = lse_log2 / log2(e)
-        lse_nat = lse_tl * 0.6931471805599453
-        lse_err = (lse_nat - lse_ref).abs().max().item()
+        lse_err = (lse_tl - lse_ref).abs().max().item()
 
         status = "PASS" if out_err < 0.1 and lse_err < 0.1 else "FAIL"
         print(f"out_err={out_err:.4e} lse_err={lse_err:.4e} {status}")

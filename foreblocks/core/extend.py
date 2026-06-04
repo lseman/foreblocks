@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.training.quantization import (
+from foreblocks.core.training.quantization import (
     DynamicQuantizedLinear,
     FakeQuantize,
     ManualDeQuantStub,
@@ -22,7 +22,7 @@ from foreblocks.training.quantization import (
     StaticQuantizedLinear,
 )
 
-from .model import ForecastingModel
+from foreblocks.core.model import ForecastingModel
 
 
 class DistilledForecastingModel(ForecastingModel):

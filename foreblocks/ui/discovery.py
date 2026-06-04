@@ -11,13 +11,13 @@ from foreblocks.ui.auto_spec import build_node_spec
 
 
 ALLOWED_PACKAGES = [
-    "foreblocks.blocks",
-    "foreblocks.blocks.enc_dec",
+    "foreblocks.modules.blocks",
+    "foreblocks.modules.blocks.enc_dec",
     "foreblocks.core",
-    "foreblocks.core.heads",
+    "foreblocks.modules.heads",
     "foreblocks.data",
-    "foreblocks.transformer.transformer",
-    "foreblocks.training",
+    "foreblocks.models.transformer.transformer",
+    "foreblocks.core.training",
 ]
 
 

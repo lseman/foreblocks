@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .common import Tensor, crop_residual_to_match, is_batched_adj, xavier_zero_bias
-from .norms import make_feature_norm
+from foreblocks.layers.graph.common import Tensor, crop_residual_to_match, is_batched_adj, xavier_zero_bias
+from foreblocks.layers.graph.norms import make_feature_norm
 
 
 def _default_node_idx(num_nodes: int, device: torch.device) -> torch.Tensor:

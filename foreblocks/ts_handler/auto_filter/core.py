@@ -20,7 +20,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     tqdm = None
 
-from .filters import (
+from foreblocks.ts_handler.auto_filter.filters import (
     _autocorr,
     _safe_corr,
     _valid_odd_window,
@@ -45,7 +45,7 @@ from .filters import (
     wavelet_denoise,
     whittaker_smoother,
 )
-from .registry import _FILTER_REGISTRY, _SLOW_FILTERS, register_filter
+from foreblocks.ts_handler.auto_filter.registry import _FILTER_REGISTRY, _SLOW_FILTERS, register_filter
 
 __all__ = [
     "auto_filter",

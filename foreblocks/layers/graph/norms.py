@@ -5,7 +5,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-from .common import ActivationType, Tensor
+from foreblocks.layers.graph.common import ActivationType, Tensor
 
 
 NormStrategy = Literal["pre_norm", "post_norm", "sandwich_norm", "none"]

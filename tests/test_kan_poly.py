@@ -1,6 +1,6 @@
 import torch
 
-from foreblocks.kan import (
+from foreblocks.models.kan import (
     DEFAULT_POLY_FAMILIES,
     POLY_FAMILIES,
     PolyLayerConfig,

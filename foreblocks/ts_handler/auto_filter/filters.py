@@ -18,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover - statsmodels ships this in supported envs.
     STL = None
 
-from .registry import register_filter
+from foreblocks.ts_handler.auto_filter.registry import register_filter
 
 try:  # Real-wavelet basis for wavelet_denoise; falls back to pure-NumPy Haar.
     import pywt

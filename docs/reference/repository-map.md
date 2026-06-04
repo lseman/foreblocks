@@ -21,57 +21,42 @@ This page gives a quick path through the repository for contributors and power u
 | --- | --- |
 | [`foreblocks/__init__.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/__init__.py) | Top-level public exports |
 | [`foreblocks/config.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/config.py) | Public configuration dataclasses (`ModelConfig`, `TrainingConfig`) |
-| `foreblocks/models/` | Model-level composition APIs (`ForecastingModel`, `GraphForecastingModel`) |
-| `foreblocks/blocks/` | Research-inspired building blocks and forecasting heads that can be composed into models |
-| `foreblocks/layers/` | Reusable lower-level layer families, currently focused on graph convolutions and graph construction |
-| `foreblocks/core/` | Core forecasting internals, model heads, and composition utilities |
-| `foreblocks/training/` | Trainer and training support |
-| `foreblocks/evaluation/` | Evaluation and metrics |
+| `foreblocks/ops/` | Low-level compute kernels (Triton/CUDA): `kernels/` (grouped_gemm, swiglu, norms), `attention/` (FLA, fused RoPE, paged/chunked), `mamba/` (SSD, conv1d), `raven/` |
+| `foreblocks/layers/` | Reusable `nn.Module` primitives: `norms/`, `embeddings/`, `graph/` |
+| `foreblocks/modules/` | Composable model modules: `attention/`, `moe/`, `blocks/`, `heads/`, `skip/` |
+| `foreblocks/models/` | Assembled models + composition APIs (`ForecastingModel`, `GraphForecastingModel`), `popular/` named models, `transformer/` stack, `kan/` (Kolmogorov-Arnold backbone) |
+| `foreblocks/sequence/` | Alternative sequence backbones: `mamba/` (original), `mamba_hybrid/` (formerly `custom_mamba`), `raven/` (formerly `custom_raven`) |
+| `foreblocks/core/` | Core forecasting internals (`model`, `att`, `sampling`, `extend`), plus `training/` (trainer) and `evaluation/` (metrics) |
 | `foreblocks/data/` | Dataset and dataloader helpers |
 | `foreblocks/ts_handler/` | Preprocessing and sequence construction |
-| `foreblocks/transformer/` | Transformer stack and advanced attention |
 | `foreblocks/mltracker/` | Experiment tracking |
-| `foreblocks/custom_mamba/` | Hybrid Mamba SSM blocks (HybridMambaBlock, HybridMamba2Block, SSD) |
-| `foreblocks/mamba/` | Original Mamba backbone with MoE, positional encoding, and eval tools |
-| `foreblocks/custom_raven/` | Experimental Raven/FLA-inspired sequence blocks |
-| `foreblocks/custom_att/` | Experimental custom attention kernels and benchmarks |
-| `foreblocks/kan/` | Kolmogorov-Arnold Network backbone (see [KAN Backbone](../kan.md)) |
+| `foreblocks/experimental/` | Not-yet-stable components: `attention_kernels/` (formerly `custom_att`, has own `setup.py`) |
 | `foreblocks/third_party/` | Small vendored compatibility helpers; larger external projects should stay outside the wheel |
 
-## Package organization notes
+## Package organization (post-reorg)
 
-The package currently has a few historical names that are worth preserving for
-compatibility but not copying for new code:
+The package was reorganized into a tiered layout. There are **no compatibility
+shims** — old import paths (`foreblocks.transformer.*`, `foreblocks.blocks.*`,
+`foreblocks.custom_mamba.*`, `foreblocks.custom_raven.*`, `foreblocks.custom_att.*`)
+were hard-renamed. See [Reorg Migration Map](reorg-migration.md) for the full
+old → new table.
 
-| Area | Current state | Recommended direction |
+| Tier | Package | What lives here |
 | --- | --- | --- |
-| `custom_mamba/`, `mamba/`, `custom_raven/` | Multiple sequence-model families live as sibling packages. `custom_mamba` is already public in docs and tests. | Keep existing imports as compatibility shims, but place future SSM-style families under a neutral namespace such as `foreblocks/sequence/` or `foreblocks/models/sequence/`. |
-| `custom_att/` | Kernel experiment package with its own `setup.py`, tests, and benchmarks under `foreblocks/`. | Move future kernel experiments under `foreblocks/experimental/` or `foreblocks/transformer/attention/kernels/` when they are production-ready. |
-| `blocks/` vs `layers/` | `blocks/` contains user-facing research blocks; `layers/graph/` contains lower-level graph layers. | Treat `blocks/` as composable model blocks and `layers/` as primitive reusable layers. Avoid adding one-off model heads directly to `layers/`. |
-| `transformer/popular/` and `blocks/popular/` | Some heads are re-exported from both places for registry convenience. | Keep the implementation in one package and make the other package a thin compatibility/registry wrapper. |
-| Frontend assets under `foreblocks/studio/` and `foreblocks/mltracker/dashboard_v2/` | Source, built assets, and local `node_modules` can coexist in working trees. | Package only built `dist` assets. Keep `node_modules`, runtime databases, and local tracker artifacts out of git and out of release archives. |
-| `mltracker/mltracker_data/` | Runtime experiment data can become very large if it lives under the Python package tree. | Prefer `.foreblocks/mltracker_data`, `~/.foreblocks/mltracker_data`, or an explicit user-configured run directory. |
+| compute | `foreblocks/ops/` | Triton/CUDA kernels, no `nn.Module` API surface |
+| primitives | `foreblocks/layers/` | Reusable `nn.Module` primitives (norms, embeddings, graph) |
+| modules | `foreblocks/modules/` | Composable model modules (attention, moe, blocks, heads, skip) |
+| models | `foreblocks/models/` | Fully assembled models + composition, incl. `popular/` and `transformer/` |
+| backbones | `foreblocks/sequence/` | Alternative sequence backbones (mamba, mamba_hybrid, raven) |
+| experimental | `foreblocks/experimental/` | Not-yet-stable sub-projects (e.g. attention_kernels) |
 
-## Suggested staged cleanup
+Conventions:
 
-1. **No-break cleanup**
-   - Keep public imports unchanged.
-   - Ensure generated frontend folders, `node_modules`, `__pycache__`, build logs, and tracker runtime data are ignored and absent from source distributions.
-   - Fix stale docs that reference removed compatibility paths.
-
-2. **Compatibility namespace**
-   - Add a neutral namespace for new sequence models, for example `foreblocks/sequence/`.
-   - Re-export existing `custom_mamba` and `custom_raven` objects from that namespace.
-   - Mark old `custom_*` names as compatibility paths in docs rather than primary homes.
-
-3. **Implementation moves**
-   - Move stable custom attention kernels into the existing transformer kernel layout.
-   - Move experimental kernels into `foreblocks/experimental/` until they have tests and a stable API.
-   - Keep import shims in the old locations for at least one minor release.
-
-4. **Breaking rename window**
-   - Only after shims and docs have existed for a release, consider renaming packages or removing old paths.
-   - Do this in a versioned migration with import warnings and a changelog entry.
+- `ops/` is pure compute. If it imports `torch.nn` as an API surface, it belongs in `layers/` or `modules/`.
+- `modules/blocks/` holds research blocks; `models/popular/` holds the named end-to-end models (NBEATS, Informer, …). The `transformer/popular/` and `blocks/popular/` split was merged into `models/popular/`.
+- `sequence/` drops the old `custom_` prefix; `custom_mamba` → `mamba_hybrid` to distinguish it from the original `mamba`.
+- Frontend assets under `foreblocks/studio/` and `foreblocks/mltracker/dashboard_v2/`: package only built `dist` assets; keep `node_modules`, runtime databases, and local tracker artifacts out of git and release archives.
+- `mltracker/mltracker_data/`: prefer `.foreblocks/mltracker_data`, `~/.foreblocks/mltracker_data`, or an explicit user-configured run directory rather than the package tree.
 
 ## `foretools/`
 
@@ -91,12 +76,13 @@ compatibility but not copying for new code:
 | Training a baseline model | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md), [Getting Started](../getting-started.md) |
 | Understanding architecture composition | [`foreblocks/models/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/models) |
 | Working with graph forecasting | [`foreblocks/models/graph_forecasting.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/models/graph_forecasting.py), [`foreblocks/layers/graph/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/layers/graph) |
+| Writing Triton kernels | [`foreblocks/ops/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/ops) |
 | Configuring runs | [`foreblocks/config.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/config.py) |
 | Building dataloaders | [`foreblocks/data/dataset.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/data/dataset.py) |
 | Adding preprocessing logic | [`foreblocks/ts_handler/preprocessing.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/ts_handler/preprocessing.py) |
-| Exploring transformer internals | [`foreblocks/transformer/transformer.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/transformer/transformer.py) |
+| Exploring transformer internals | [`foreblocks/models/transformer/transformer.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/models/transformer/transformer.py) |
 | Working on architecture search | [`darts/`](https://github.com/lseman/foreblocks/tree/main/darts) |
-| Using SSM / Mamba-style blocks | [`foreblocks/custom_mamba/blocks/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/custom_mamba/blocks) |
+| Using SSM / Mamba-style blocks | [`foreblocks/sequence/mamba_hybrid/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/sequence/mamba_hybrid) |
 | Generating synthetic data | [`foretools/tsgen/`](https://github.com/lseman/foreblocks/tree/main/foretools/tsgen) |
 | Running hyperparameter search | [`foretools/bohb/`](https://github.com/lseman/foreblocks/tree/main/foretools/bohb) |
 | Augmenting training data adaptively | [`foretools/tsaug/`](https://github.com/lseman/foreblocks/tree/main/foretools/tsaug) |

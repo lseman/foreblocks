@@ -2,24 +2,24 @@ import unittest
 
 import torch
 
-from foreblocks.transformer.skip.gateskip import (
+from foreblocks.modules.skip.gateskip import (
     ResidualGate,
     gateskip_apply,
     GateStats,
 )
-from foreblocks.transformer.skip.mod import (
+from foreblocks.modules.skip.mod import (
     MoDRouter,
     mod_topk_mask,
     mod_routed_indices,
     mod_router_aux_loss,
     MoDBudgetScheduler,
 )
-from foreblocks.transformer.skip.gateskip import (
+from foreblocks.modules.skip.gateskip import (
     BudgetScheduler,
     _exact_topk_keep_mask,
     _compute_gate_stats,
 )
-from foreblocks.transformer.attention.utils.residuals import (
+from foreblocks.modules.attention.utils.residuals import (
     AttentionResidual,
     BlockAttentionResidual,
     normalize_attention_residual_mode,

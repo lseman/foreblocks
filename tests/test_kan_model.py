@@ -1,6 +1,6 @@
 import torch
 
-from foreblocks.kan import KANModel, Model
+from foreblocks.models.kan import KANModel, Model
 
 
 def test_kan_model_returns_time_major_output_without_revin() -> None:

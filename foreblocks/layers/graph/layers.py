@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .common import (
+from foreblocks.layers.graph.common import (
     ActivationType,
     AggType,
     Tensor,
@@ -19,7 +19,7 @@ from .common import (
     normalize_row,
     xavier_zero_bias,
 )
-from .norms import make_activation, make_norm_pair
+from foreblocks.layers.graph.norms import make_activation, make_norm_pair
 
 try:
     from torch_scatter import (

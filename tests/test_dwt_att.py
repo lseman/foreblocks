@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.transformer.attention.modules.dwt_att import DWTAttention
+from foreblocks.modules.attention.modules.dwt_att import DWTAttention
 
 
 class TestDWTAttention(unittest.TestCase):
@@ -45,7 +45,7 @@ class TestDWTAttention(unittest.TestCase):
         self.assertTrue(torch.isfinite(out).all().item())
 
     def test_through_multiattention(self):
-        from foreblocks.transformer.attention.multi_att import MultiAttention
+        from foreblocks.modules.attention.multi_att import MultiAttention
 
         m = MultiAttention(
             d_model=32, n_heads=4, dropout=0.0, attention_type="dwt", freq_modes=8

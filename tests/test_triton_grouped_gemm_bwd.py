@@ -29,7 +29,7 @@ def _pytorch_forward(A_packed, offsets, B_list):
 
 
 def test_grad_A_matches_reference():
-    from foreblocks.transformer.kernels.grouped_gemm import grouped_mm_varM
+    from foreblocks.ops.kernels.grouped_gemm import grouped_mm_varM
 
     torch.manual_seed(3)
     E, K, N, Ms = 4, 16, 16, [3, 5, 2, 4]
@@ -46,7 +46,7 @@ def test_grad_A_matches_reference():
 
 
 def test_grad_B_matches_reference():
-    from foreblocks.transformer.kernels.grouped_gemm import grouped_mm_varM
+    from foreblocks.ops.kernels.grouped_gemm import grouped_mm_varM
 
     torch.manual_seed(4)
     E, K, N, Ms = 4, 16, 16, [3, 5, 2, 4]
@@ -64,7 +64,7 @@ def test_grad_B_matches_reference():
 
 
 def test_gradcheck_float32():
-    from foreblocks.transformer.kernels.grouped_gemm import _GroupedMMVarMFunction
+    from foreblocks.ops.kernels.grouped_gemm import _GroupedMMVarMFunction
 
     torch.manual_seed(5)
     E, K, N, Ms = 2, 8, 8, [2, 3]
@@ -82,7 +82,7 @@ def test_gradcheck_float32():
 
 
 def test_empty_expert_segment():
-    from foreblocks.transformer.kernels.grouped_gemm import grouped_mm_varM
+    from foreblocks.ops.kernels.grouped_gemm import grouped_mm_varM
 
     E, K, N = 3, 8, 8
     Ms = [4, 0, 3]
