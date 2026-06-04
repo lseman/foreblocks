@@ -39,9 +39,8 @@ class RotaryEmbedding(nn.Module):
             seq_len, device=self.inv_freq.device, dtype=self.inv_freq.dtype
         )
         freqs = torch.outer(t, self.inv_freq)
-        emb = torch.cat([freqs, freqs], dim=-1)
-        self._cos_cached = emb.cos()[None, None]  # (1, 1, T, head_dim)
-        self._sin_cached = emb.sin()[None, None]
+        self._cos_cached = freqs.cos()[None, None]  # (1, 1, T, head_dim // 2)
+        self._sin_cached = freqs.sin()[None, None]
 
     @staticmethod
     def _rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -70,6 +69,8 @@ class RotaryEmbedding(nn.Module):
         self._build_cache(pos + 1)
         cos = self._cos_cached[0, 0, pos].to(dtype=q.dtype, device=q.device)
         sin = self._sin_cached[0, 0, pos].to(dtype=q.dtype, device=q.device)
-        q_rot = q * cos + self._rotate_half(q) * sin
-        k_rot = k * cos + self._rotate_half(k) * sin
+        cos_full = torch.cat([cos, cos], dim=-1)
+        sin_full = torch.cat([sin, sin], dim=-1)
+        q_rot = q * cos_full + self._rotate_half(q) * sin_full
+        k_rot = k * cos_full + self._rotate_half(k) * sin_full
         return q_rot, k_rot

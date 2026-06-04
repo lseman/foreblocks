@@ -5,7 +5,7 @@
 - **`HybridMambaBlock`** — pure SSM (Mamba v1-style selective scan) with optional pre-norm
 - **`HybridMamba2Block`** — parallel SSM + sliding-window attention branches fused with a learned gate, RoPE, GQA, and output normalisation (Mamba-2 / SSD-based)
 
-Block implementations live under `foreblocks.custom_mamba.blocks`; package-level imports and the legacy `foreblocks.custom_mamba.layers` module remain supported for compatibility.
+Block implementations live under `foreblocks.custom_mamba.blocks`; package-level imports remain supported for compatibility.
 
 ## Installation requirements
 

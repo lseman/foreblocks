@@ -194,7 +194,11 @@ class MoBAAttentionImpl:
             )
 
         n_blocks = math.ceil(T_k / block_size)
-        if n_blocks <= 1:
+        if (
+            n_blocks <= 1
+            or self.parent.moba_topk <= 1
+            or self.parent.moba_topk >= n_blocks
+        ):
             return self.parent._compute_attention(
                 q,
                 k,
@@ -564,7 +568,8 @@ class MoBAAttentionImpl:
     ) -> torch.Tensor:
         B, H, _, _ = q.shape
         block_scores = (
-            torch.einsum("bhtd,bhnd->bhtn", q, block_keys) * self.parent.scale
+            torch.einsum("bhtd,bhnd->bhtn", q.float(), block_keys.float())
+            * self.parent.scale
         )
 
         block_mask = (~block_valid).view(B, 1, 1, n_blocks).expand(B, H, T_q, n_blocks)
@@ -589,10 +594,10 @@ class MoBAAttentionImpl:
 
         if extra_k > 0:
             remote_mask = block_mask | local_blocks
-            safe_scores = block_scores.masked_fill(remote_mask, -1e30)
+            safe_scores = block_scores.masked_fill(remote_mask, -float("inf"))
             top_idx = torch.topk(safe_scores, k=extra_k, dim=-1).indices
             remote_blocks = torch.zeros_like(selected_blocks)
-            valid_remote = ~safe_scores.gather(-1, top_idx).eq(-1e30)
+            valid_remote = torch.isfinite(safe_scores.gather(-1, top_idx))
             remote_blocks.scatter_(dim=-1, index=top_idx, src=valid_remote)
             selected_blocks = selected_blocks | remote_blocks
 

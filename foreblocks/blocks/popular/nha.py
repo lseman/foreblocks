@@ -1,3 +1,21 @@
+"""Neural Hierarchical Architecture (NHA) time-series block.
+
+This is a foreblocks-native hybrid rather than a direct reproduction of one
+paper. It combines ideas from hierarchical temporal modeling, dilated TCNs,
+Transformer-style attention, and N-BEATS-style backcast residual removal:
+
+    Bai, Kolter & Koltun, "An Empirical Evaluation of Generic Convolutional and
+    Recurrent Networks for Sequence Modeling", 2018. (TCN)
+    Paper: https://arxiv.org/abs/1803.01271
+
+    Vaswani et al., "Attention Is All You Need", NeurIPS 2017.
+    Paper: https://arxiv.org/abs/1706.03762
+
+    Oreshkin et al., "N-BEATS: Neural basis expansion analysis for
+    interpretable time series forecasting", ICLR 2020.
+    Paper: https://arxiv.org/abs/1905.10437
+"""
+
 import math
 
 import torch

@@ -46,8 +46,8 @@ if HAS_TRITON:
         pa = A + b * stride_ba + t * stride_ta + offs * stride_da
         pb = B + b * stride_bb + t * stride_tb + offs * stride_db
         pc = C + b * stride_bc + t * stride_tc + offs * stride_dc
-        a = tl.load(pa, mask=offs < Dhidden, other=0.0)
-        g = tl.load(pb, mask=offs < Dhidden, other=0.0)
+        a = tl.load(pa, mask=offs < Dhidden, other=0.0).to(tl.float32)
+        g = tl.load(pb, mask=offs < Dhidden, other=0.0).to(tl.float32)
         sig = 1.0 / (1.0 + tl.exp(-a))
         swish = a * sig
         y = swish * g
@@ -220,18 +220,24 @@ def grouped_mlp_swiglu(
                 "Prepacked tensors must be rank-3: [E, D, 2H] and [E, H, D]."
             )
         H = B3.shape[1]
-        w12_list = list(B12.unbind(0))
-        w3_list = list(B3.unbind(0))
+        w12_blocks: Sequence[torch.Tensor] | torch.Tensor = B12
+        w3_blocks: Sequence[torch.Tensor] | torch.Tensor = B3
     else:
         w12_list, w3_list, H = _weights_from_swiglu_experts(experts)
+        w12_blocks = w12_list
+        w3_blocks = w3_list
 
-    assert all(w.shape == (D, 2 * H) for w in w12_list), "All w12 must be [D, 2H]"
-    assert all(w.shape == (H, D) for w in w3_list), "All w3 must be [H, D]"
+    if isinstance(w12_blocks, torch.Tensor):
+        assert w12_blocks.shape[1:] == (D, 2 * H), "All w12 must be [D, 2H]"
+        assert w3_blocks.shape[1:] == (H, D), "All w3 must be [H, D]"
+    else:
+        assert all(w.shape == (D, 2 * H) for w in w12_blocks), "All w12 must be [D, 2H]"
+        assert all(w.shape == (H, D) for w in w3_blocks), "All w3 must be [H, D]"
 
     GU = grouped_mm_varM(
         A_packed=packed_x,
         offsets=offsets,
-        B_per_expert=w12_list,
+        B_per_expert=w12_blocks,
         out_dtype=packed_x.dtype,
         use_fp16_acc=use_fp16_acc,
         use_shared_b=use_shared_b,
@@ -259,7 +265,7 @@ def grouped_mlp_swiglu(
     Y = grouped_mm_varM(
         A_packed=H_act,
         offsets=offsets,
-        B_per_expert=w3_list,
+        B_per_expert=w3_blocks,
         out_dtype=out_dtype or packed_x.dtype,
         use_fp16_acc=use_fp16_acc,
         use_shared_b=use_shared_b,

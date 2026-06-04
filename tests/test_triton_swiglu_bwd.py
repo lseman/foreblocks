@@ -20,6 +20,17 @@ def test_forward_unchanged():
     torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
 
 
+def test_forward_fp16_matches_pytorch():
+    from foreblocks.transformer.kernels.triton_helpers import swiglu_gate
+
+    torch.manual_seed(11)
+    a = torch.randn(2, 8, 64, device="cuda", dtype=torch.float16)
+    b = torch.randn(2, 8, 64, device="cuda", dtype=torch.float16)
+    out = swiglu_gate(a, b)
+    ref = _ref_swiglu(a, b)
+    torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
+
+
 def test_backward_matches_pytorch():
     from foreblocks.transformer.kernels.triton_helpers import TritonSwiGLUGate
 

@@ -2,6 +2,15 @@
 
 This module provides dilated temporal convolutional layers and causal
 padding helpers for sequence modeling.
+
+The design is related to causal/dilated convolutional sequence models:
+
+    van den Oord et al., "WaveNet: A Generative Model for Raw Audio", 2016.
+    Paper: https://arxiv.org/abs/1609.03499
+
+    Bai, Kolter & Koltun, "An Empirical Evaluation of Generic Convolutional and
+    Recurrent Networks for Sequence Modeling", 2018. (TCN)
+    Paper: https://arxiv.org/abs/1803.01271
 """
 
 import torch

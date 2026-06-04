@@ -57,6 +57,34 @@ class TestMoBAAttention(unittest.TestCase):
 
         self.assertLess((out1[:, :8] - out2[:, :8]).abs().max().item(), 1e-5)
 
+    def test_dense_equivalent_topk_matches_standard_attention(self):
+        torch.manual_seed(0)
+        base = MultiAttention(
+            d_model=32,
+            n_heads=4,
+            dropout=0.0,
+            attention_type="standard",
+            use_mla=False,
+            chunk_size=4,
+        ).eval()
+        moba = MultiAttention(
+            d_model=32,
+            n_heads=4,
+            dropout=0.0,
+            attention_type="moba",
+            use_mla=False,
+            chunk_size=4,
+            moba_topk=4,
+        ).eval()
+        moba.load_state_dict(base.state_dict(), strict=False)
+
+        x = torch.randn(2, 12, 32)
+        with torch.no_grad():
+            out_std, _, _ = base(x, x, x, is_causal=True)
+            out_moba, _, _ = moba(x, x, x, is_causal=True)
+
+        self.assertLess((out_std - out_moba).abs().max().item(), 1e-5)
+
     def test_flash_backend_path_uses_varlen_ops(self):
         torch.manual_seed(0)
         call_count = {"value": 0}

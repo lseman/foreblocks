@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-
 try:
     import triton
     import triton.language as tl
@@ -17,6 +16,7 @@ except Exception:
 
 # ── helpers ──────────────────────────────────────────────────────────
 
+
 def segment_sum(x: torch.Tensor) -> torch.Tensor:
     """Exp(lower-triangular cumulative sum).
 
@@ -29,7 +29,9 @@ def segment_sum(x: torch.Tensor) -> torch.Tensor:
     cumsum_pad = F.pad(cumsum, (1, 0), value=0.0)  # [..., C+1]
     cumsum_pad = cumsum_pad[..., :-1]  # [..., C], cumsum_pad[j] = cumsum[j-1]
     diff = cumsum[..., :, None] - cumsum_pad[..., None, :]  # [..., C, C]
-    tril = torch.tril(torch.ones(x.shape[-1], x.shape[-1], device=x.device, dtype=torch.bool))
+    tril = torch.tril(
+        torch.ones(x.shape[-1], x.shape[-1], device=x.device, dtype=torch.bool)
+    )
     diff = diff.masked_fill(~tril, float("-inf"))
     return torch.exp(diff)  # [..., C, C]
 
@@ -133,8 +135,12 @@ def _chunked_ssd_forward_torch(
     # The state update applies decay before adding the current token, so the
     # source token j does not decay itself. This gives L[t, t] = 1.
     L_diff = cumsum_dtA.unsqueeze(-2) - cumsum_dtA.unsqueeze(-3)  # [B, nc, C, C, H]
-    tril = torch.tril(torch.ones(chunk_size, chunk_size, device=u.device, dtype=torch.bool))
-    L_diff = L_diff.masked_fill(~tril.unsqueeze(0).unsqueeze(0).unsqueeze(-1), float("-inf"))
+    tril = torch.tril(
+        torch.ones(chunk_size, chunk_size, device=u.device, dtype=torch.bool)
+    )
+    L_diff = L_diff.masked_fill(
+        ~tril.unsqueeze(0).unsqueeze(0).unsqueeze(-1), float("-inf")
+    )
     L = torch.exp(L_diff)  # [B, nc, C, C, H]
 
     # ── G[c, t, j, h] = sum_n C[c,t,n] * B[c,j,n] ────────────────
@@ -152,7 +158,9 @@ def _chunked_ssd_forward_torch(
     # state_end[c, h, p, n] = accumulated intra-chunk state at end of chunk
     # L_last[c, j, h] = exp(cumsum_dtA[c, C-1, h] - cumsum_dtA[c, j, h])
     cumsum_dtA_last = cumsum_dtA[:, :, -1:, None, :]  # [B, nc, 1, 1, H]
-    L_last = torch.exp(cumsum_dtA_last - cumsum_dtA[:, :, None, :, :])  # [B, nc, 1, C, H]
+    L_last = torch.exp(
+        cumsum_dtA_last - cumsum_dtA[:, :, None, :, :]
+    )  # [B, nc, 1, C, H]
     Ldt_last = L_last.squeeze(2) * dt_raw_c  # [B, nc, C, H]
     LB_last = Ldt_last.unsqueeze(-1) * B  # [B, nc, C, H, N]
     # state_end[c, h, p, n] = sum_j Ldt_last[c,j,h] * B[c,j,h,n] * u[c,j,h,p]
@@ -175,10 +183,9 @@ def _chunked_ssd_forward_torch(
     # ── Inter-chunk output ─────────────────────────────────────────
     # state_entered[c, t, h, p, n] = states_boundary[c, h, p, n] * decay_from_start[c, t, h]
     decay_from_start = torch.exp(cumsum_dtA)  # [B, nc, C, H]
-    state_entered = (
-        states_boundary.unsqueeze(2)
-        * decay_from_start.unsqueeze(-1).unsqueeze(-1)
-    )  # [B, nc, C, H, P, N]
+    state_entered = states_boundary.unsqueeze(2) * decay_from_start.unsqueeze(
+        -1
+    ).unsqueeze(-1)  # [B, nc, C, H, P, N]
     # y_inter[c, t, h, p] = sum_n C[c,t,h,n] * state_entered[c,t,h,p,n]
     y_inter = torch.einsum("bcthn,bcthpn->bcthp", C, state_entered)  # [B, nc, C, H, P]
 
@@ -227,7 +234,9 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
 
         state_base = ((b * H + h) * P + p_offs[:, None]) * N + n_offs[None, :]
         state_mask = p_mask[:, None] & n_mask[None, :]
-        state = tl.load(state_ptr + state_base, mask=state_mask, other=0.0).to(tl.float32)
+        state = tl.load(state_ptr + state_base, mask=state_mask, other=0.0).to(
+            tl.float32
+        )
 
         a_val = tl.load(A_ptr + h).to(tl.float32)
         d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(tl.float32)
@@ -281,7 +290,9 @@ def chunked_ssd_forward_triton(
     avoided on CUDA.
     """
     if not CHUNKED_SSD_TRITON_AVAILABLE:
-        raise RuntimeError("chunked_ssd_forward_triton called but Triton is unavailable")
+        raise RuntimeError(
+            "chunked_ssd_forward_triton called but Triton is unavailable"
+        )
     if not (
         u.is_cuda and dt.is_cuda and A.is_cuda and B.is_cuda and C.is_cuda and D.is_cuda
     ):
@@ -431,8 +442,13 @@ def chunked_ssd_forward_reference(
         B_t = B[:, t].float()  # [B, H, N]
         C_t = C[:, t].float()  # [B, H, N]
 
-        abar = torch.exp(dt_t.unsqueeze(-1).unsqueeze(-1) * A.unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
-        state = abar * state + dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(-2) * u_t.unsqueeze(-1)
+        abar = torch.exp(
+            dt_t.unsqueeze(-1).unsqueeze(-1)
+            * A.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+        )
+        state = abar * state + dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(
+            -2
+        ) * u_t.unsqueeze(-1)
         y_t = (C_t.unsqueeze(-2) * state).sum(dim=-1) + D.unsqueeze(0) * u_t
         ys.append(y_t.to(u.dtype))
 
@@ -488,8 +504,13 @@ def chunked_ssd_backward_reference(
         u_t = u32[:, t]
         dt_t = dt32[:, t]
         B_t = B32[:, t]
-        abar = torch.exp(dt_t.unsqueeze(-1).unsqueeze(-1) * A32.unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
-        state = abar * state + dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(-2) * u_t.unsqueeze(-1)
+        abar = torch.exp(
+            dt_t.unsqueeze(-1).unsqueeze(-1)
+            * A32.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+        )
+        state = abar * state + dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(
+            -2
+        ) * u_t.unsqueeze(-1)
         states_after.append(state)
 
     du = torch.zeros_like(u32) if needs_input_grad[0] else None
@@ -521,24 +542,31 @@ def chunked_ssd_backward_reference(
         grad_state = grad_state + gy_t.unsqueeze(-1) * C_t.unsqueeze(-2)
 
         if du is not None:
-            du[:, t] += (grad_state * dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(-2)).sum(dim=-1)
+            du[:, t] += (
+                grad_state * dt_t.unsqueeze(-1).unsqueeze(-1) * B_t.unsqueeze(-2)
+            ).sum(dim=-1)
         if dB is not None:
             dB[:, t] = (
-                grad_state
-                * dt_t.unsqueeze(-1).unsqueeze(-1)
-                * u_t.unsqueeze(-1)
+                grad_state * dt_t.unsqueeze(-1).unsqueeze(-1) * u_t.unsqueeze(-1)
             ).sum(dim=2)
         if ddt is not None:
-            ddt[:, t] += (grad_state * B_t.unsqueeze(-2) * u_t.unsqueeze(-1)).sum(dim=(2, 3))
+            ddt[:, t] += (grad_state * B_t.unsqueeze(-2) * u_t.unsqueeze(-1)).sum(
+                dim=(2, 3)
+            )
 
-        abar = torch.exp(dt_t.unsqueeze(-1).unsqueeze(-1) * A32.unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
+        abar = torch.exp(
+            dt_t.unsqueeze(-1).unsqueeze(-1)
+            * A32.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+        )
         decay_grad = grad_state * state_prev
         if dA is not None:
-            dA += (
-                decay_grad * abar * dt_t.unsqueeze(-1).unsqueeze(-1)
-            ).sum(dim=(0, 2, 3))
+            dA += (decay_grad * abar * dt_t.unsqueeze(-1).unsqueeze(-1)).sum(
+                dim=(0, 2, 3)
+            )
         if ddt is not None:
-            ddt[:, t] += (decay_grad * abar * A32.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)).sum(dim=(2, 3))
+            ddt[:, t] += (
+                decay_grad * abar * A32.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            ).sum(dim=(2, 3))
 
         grad_state = grad_state * abar
 

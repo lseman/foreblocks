@@ -45,6 +45,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ...kernels import can_use_fla_kda, fla_kda_forward
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -144,207 +146,6 @@ class _HeadwiseRMSNorm(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Triton kernels — INFERENCE ONLY (in-place ops break autograd)
-# ─────────────────────────────────────────────────────────────────────────────
-_HAS_TRITON = False
-_triton_module = None
-
-try:
-    import triton
-    import triton.language as tl
-
-    _HAS_TRITON = True
-
-    @triton.jit
-    def _kda_row_scale_kernel(
-        S_ptr, a_ptr,
-        BH: tl.constexpr, Dk: tl.constexpr, Dv: tl.constexpr,
-        strideSB, strideSi, strideSj,
-        strideaB, strideai,
-        BLOCK_I: tl.constexpr, BLOCK_J: tl.constexpr,
-    ):
-        """S[b, i, :] *= a[b, i]  (in-place row scale)."""
-        pid_b = tl.program_id(0)
-        pid_j = tl.program_id(1)
-        offs_j = pid_j * BLOCK_J + tl.arange(0, BLOCK_J)
-        mask_j = offs_j < Dv
-
-        for i0 in range(0, Dk, BLOCK_I):
-            offs_i = i0 + tl.arange(0, BLOCK_I)
-            mask_i = offs_i < Dk
-            a = tl.load(
-                a_ptr + pid_b * strideaB + offs_i * strideai,
-                mask=mask_i, other=1.0,
-            ).to(tl.float32)
-            S_tile = tl.load(
-                S_ptr + pid_b * strideSB
-                      + offs_i[:, None] * strideSi
-                      + offs_j[None, :] * strideSj,
-                mask=mask_i[:, None] & mask_j[None, :],
-                other=0.0,
-            ).to(tl.float32)
-            tl.store(
-                S_ptr + pid_b * strideSB
-                      + offs_i[:, None] * strideSi
-                      + offs_j[None, :] * strideSj,
-                S_tile * a[:, None],
-                mask=mask_i[:, None] & mask_j[None, :],
-            )
-
-    @triton.jit
-    def _kda_matvec_kernel(
-        S_ptr, x_ptr, y_ptr,
-        BH: tl.constexpr, Dk: tl.constexpr, Dv: tl.constexpr,
-        strideSB, strideSi, strideSj,
-        stridexB, stridexi,
-        strideyB, strideyj,
-        BLOCK_I: tl.constexpr, BLOCK_J: tl.constexpr,
-    ):
-        """y[b, j] = Σ_i S[b, i, j] · x[b, i]."""
-        pid_b = tl.program_id(0)
-        pid_j = tl.program_id(1)
-        offs_j = pid_j * BLOCK_J + tl.arange(0, BLOCK_J)
-        mask_j = offs_j < Dv
-        acc = tl.zeros([BLOCK_J], dtype=tl.float32)
-
-        for i0 in range(0, Dk, BLOCK_I):
-            offs_i = i0 + tl.arange(0, BLOCK_I)
-            mask_i = offs_i < Dk
-            x_vec = tl.load(
-                x_ptr + pid_b * stridexB + offs_i * stridexi,
-                mask=mask_i, other=0.0,
-            ).to(tl.float32)
-            S_tile = tl.load(
-                S_ptr + pid_b * strideSB
-                      + offs_i[:, None] * strideSi
-                      + offs_j[None, :] * strideSj,
-                mask=mask_i[:, None] & mask_j[None, :],
-                other=0.0,
-            ).to(tl.float32)
-            acc += tl.sum(S_tile * x_vec[:, None], axis=0)
-
-        tl.store(y_ptr + pid_b * strideyB + offs_j * strideyj, acc, mask=mask_j)
-
-    @triton.jit
-    def _kda_rank1_update_kernel(
-        S_ptr, k_ptr, v_ptr, kTS_ptr, b_ptr,
-        BH: tl.constexpr, Dk: tl.constexpr, Dv: tl.constexpr,
-        strideSB, strideSi, strideSj,
-        stridekB, strideki,
-        stridevB, stridevj,
-        strideyB, strideyj,
-        stridebB,
-        BLOCK_I: tl.constexpr, BLOCK_J: tl.constexpr,
-    ):
-        """S[b] += b_scalar · k[b] ⊗ (v[b] − kTS[b])."""
-        pid_b = tl.program_id(0)
-        pid_j = tl.program_id(1)
-        offs_j = pid_j * BLOCK_J + tl.arange(0, BLOCK_J)
-        mask_j = offs_j < Dv
-
-        b_scalar = tl.load(b_ptr + pid_b * stridebB).to(tl.float32)
-        v_vec = tl.load(
-            v_ptr + pid_b * stridevB + offs_j * stridevj,
-            mask=mask_j, other=0.0,
-        ).to(tl.float32)
-        kTS_vec = tl.load(
-            kTS_ptr + pid_b * strideyB + offs_j * strideyj,
-            mask=mask_j, other=0.0,
-        ).to(tl.float32)
-        delta_v = b_scalar * (v_vec - kTS_vec)
-
-        for i0 in range(0, Dk, BLOCK_I):
-            offs_i = i0 + tl.arange(0, BLOCK_I)
-            mask_i = offs_i < Dk
-            k_vec = tl.load(
-                k_ptr + pid_b * stridekB + offs_i * strideki,
-                mask=mask_i, other=0.0,
-            ).to(tl.float32)
-            S_tile = tl.load(
-                S_ptr + pid_b * strideSB
-                      + offs_i[:, None] * strideSi
-                      + offs_j[None, :] * strideSj,
-                mask=mask_i[:, None] & mask_j[None, :],
-                other=0.0,
-            ).to(tl.float32)
-            tl.store(
-                S_ptr + pid_b * strideSB
-                      + offs_i[:, None] * strideSi
-                      + offs_j[None, :] * strideSj,
-                S_tile + k_vec[:, None] * delta_v[None, :],
-                mask=mask_i[:, None] & mask_j[None, :],
-            )
-
-except Exception:
-    pass
-
-# ── Triton helper methods (attached at class creation time) ──────────────────
-
-def _make_triton_methods():
-    """Return dict of Triton helper methods (None if Triton unavailable)."""
-    if not _HAS_TRITON:
-        return None
-
-    class _TritonHelpers:
-        BLOCK_I = 64
-        BLOCK_J = 128
-
-        def row_scale(self, S: torch.Tensor, a: torch.Tensor) -> None:
-            BH, Dk, Dv = S.shape
-            S_f = S.to(torch.float32) if S.dtype != torch.float32 else S
-            a_f = a.float().contiguous()
-            grid = (BH, triton.cdiv(Dv, self.BLOCK_J))
-            _kda_row_scale_kernel[grid](
-                S_f, a_f,
-                BH, Dk, Dv,
-                S_f.stride(0), S_f.stride(1), S_f.stride(2),
-                a_f.stride(0), a_f.stride(1),
-                BLOCK_I=self.BLOCK_I, BLOCK_J=self.BLOCK_J,
-            )
-            if S.data_ptr() != S_f.data_ptr():
-                S.copy_(S_f.to(S.dtype))
-
-        def matvec(self, S: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-            BH, Dk, Dv = S.shape
-            S_f = S.float().contiguous()
-            x_f = x.float().contiguous()
-            y = torch.empty(BH, Dv, device=S.device, dtype=torch.float32)
-            grid = (BH, triton.cdiv(Dv, self.BLOCK_J))
-            _kda_matvec_kernel[grid](
-                S_f, x_f, y,
-                BH, Dk, Dv,
-                S_f.stride(0), S_f.stride(1), S_f.stride(2),
-                x_f.stride(0), x_f.stride(1),
-                y.stride(0), y.stride(1),
-                BLOCK_I=self.BLOCK_I, BLOCK_J=self.BLOCK_J,
-            )
-            return y.to(x.dtype)
-
-        def rank1_update(self, S, k, v, kTS, b):
-            BH, Dk, Dv = S.shape
-            S_f = S.float().contiguous() if S.dtype != torch.float32 else S
-            k_f = k.float().contiguous()
-            v_f = v.float().contiguous()
-            kTS_f = kTS.float().contiguous()
-            b_f = b.float().contiguous().view(BH)
-            grid = (BH, triton.cdiv(Dv, self.BLOCK_J))
-            _kda_rank1_update_kernel[grid](
-                S_f, k_f, v_f, kTS_f, b_f,
-                BH, Dk, Dv,
-                S_f.stride(0), S_f.stride(1), S_f.stride(2),
-                k_f.stride(0), k_f.stride(1),
-                v_f.stride(0), v_f.stride(1),
-                kTS_f.stride(0), kTS_f.stride(1),
-                b_f.stride(0),
-                BLOCK_I=self.BLOCK_I, BLOCK_J=self.BLOCK_J,
-            )
-            if S.data_ptr() != S_f.data_ptr():
-                S.copy_(S_f.to(S.dtype))
-
-    return _TritonHelpers
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # KDA Sequential Step — Kimi Linear recurrence
 # ─────────────────────────────────────────────────────────────────────────────
 def _kda_seq_step(
@@ -354,7 +155,6 @@ def _kda_seq_step(
     q_t: torch.Tensor,
     alpha_t: torch.Tensor,
     beta_t: torch.Tensor,
-    tri: Optional[_TritonHelpers] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     One KDA recurrence step (exact, autograd-safe PyTorch).
@@ -497,9 +297,7 @@ class _KDA_Fast(nn.Module):
         self.chunk_size = max(int(chunk_size), 0)
         self.safe_updates = bool(safe_updates)
         self.alpha_min = float(alpha_min)
-
-        self.use_triton = bool(use_triton) and _HAS_TRITON
-        self.tri = _make_triton_methods() if self.use_triton else None
+        self.use_triton = False
 
         # ── Short convolutions (causal, mirrors fla.modules.ShortConvolution) ──
         self.use_short_conv = shortconv_mode != "off"
@@ -617,7 +415,6 @@ class _KDA_Fast(nn.Module):
         """
         Returns:
             alpha_step [BH, T, Dk]  per-step decay in (0, 1]
-            alpha_cum  [BH, T, Dk]  cumulative decay in (0, 1]
             g_flat     [BH, T, Dk]  per-step log-decay
             beta       [BH, T, 1]
         """
@@ -649,16 +446,12 @@ class _KDA_Fast(nn.Module):
         # Per-step decay: α_step = exp(g) in (0, 1]
         alpha_step = g.exp()  # [B, T, H, K]
 
-        # Cumulative decay: α_cum = exp(cumsum(g)) in (0, 1]
-        alpha_cum = g.cumsum(dim=2).exp()  # [B, T, H, K]
-
         if self.safe_updates:
             alpha_step = alpha_step.clamp(min=self.alpha_min, max=1.0)
-            alpha_cum = alpha_cum.clamp(min=self.alpha_min, max=1.0)
+            g = alpha_step.clamp_min(1e-12).log()
 
         # Reshape to [BH, T, D*]
         alpha_step = alpha_step.permute(0, 2, 1, 3).reshape(BH, T, self.dk)
-        alpha_cum = alpha_cum.permute(0, 2, 1, 3).reshape(BH, T, self.dk)
         g_flat = g.permute(0, 2, 1, 3).reshape(BH, T, self.dk)  # [BH, T, Dk]
 
         # Beta: sigmoid(b_proj(x))
@@ -666,7 +459,7 @@ class _KDA_Fast(nn.Module):
         beta = torch.sigmoid(b_raw)  # [B, T, H]
         beta = beta.permute(0, 2, 1).contiguous().reshape(BH, T, 1)
 
-        return alpha_step, alpha_cum, g_flat, beta
+        return alpha_step, g_flat, beta
 
     # ── main forward ──────────────────────────────────────────────────────────
 
@@ -678,7 +471,6 @@ class _KDA_Fast(nn.Module):
         """
         Returns:
             alpha_step [BH, T, Dk]  per-step decay in (0, 1]
-            alpha_cum  [BH, T, Dk]  cumulative decay in (0, 1]
             g_flat     [BH, T, Dk]  per-step log-decay
             beta       [BH, T, 1]
         """
@@ -691,14 +483,14 @@ class _KDA_Fast(nn.Module):
         BH = B * self.h
         Q = self._l2_norm(Q.reshape(BH, T, self.dk)).view(B, self.h, T, self.dk)
         K = self._l2_norm(K.reshape(BH, T, self.dk)).view(B, self.h, T, self.dk)
-        V = V.reshape(BH, T, self.dv)
+        V_heads = V.contiguous()
+        V = V_heads.reshape(BH, T, self.dv)
 
         # Cast gate params to input dtype (handles .double() / .half())
         A_log_cast = self.A_log.to(dtype)  # [H]
         dt_bias_cast = self.dt_bias.to(dtype)  # [H*K]
-        alpha_step, alpha_cum, g_flat, beta = self._compute_gate_params(x, BH, T, A_log_cast, dt_bias_cast)
+        alpha_step, g_flat, beta = self._compute_gate_params(x, BH, T, A_log_cast, dt_bias_cast)
         # alpha_step  [BH, T, Dk]  per-step decay in (0, 1]
-        # alpha_cum   [BH, T, Dk]  cumulative decay in (0, 1]
         # g_flat      [BH, T, Dk]  per-step log-decay (for chunk WY)
         # beta        [BH, T, 1]
 
@@ -714,15 +506,47 @@ class _KDA_Fast(nn.Module):
         C = self.chunk_size if self.chunk_size and self.chunk_size > 1 else 0
         S_final = None
 
-        if C:
-            # Chunk mode: process each chunk via sequential KDA recurrence
+        g_heads = g_flat.reshape(B, self.h, T, self.dk)
+        beta_heads = beta.reshape(B, self.h, T)
+        S_heads = S.reshape(B, self.h, self.dk, self.dv)
+        if C and can_use_fla_kda(
+            Q, K, V_heads, g_heads, beta_heads, S_heads, C, recurrent=False
+        ):
+            out_h, S_h = fla_kda_forward(
+                Q,
+                K,
+                V_heads,
+                g_heads,
+                beta_heads,
+                S_heads,
+                scale=1.0,
+                chunk_size=C,
+                recurrent=False,
+            )
+            out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
+            S_final = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
+        elif (not C) and (not torch.is_grad_enabled()) and can_use_fla_kda(
+            Q, K, V_heads, g_heads, beta_heads, S_heads, 0, recurrent=True
+        ):
+            out_h, S_h = fla_kda_forward(
+                Q,
+                K,
+                V_heads,
+                g_heads,
+                beta_heads,
+                S_heads,
+                scale=1.0,
+                chunk_size=0,
+                recurrent=True,
+            )
+            out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
+            S_final = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
+        elif C:
             S = _kda_chunk_parallel(S, Q, K, V, alpha_step, beta, out, C)
             S_final = S
         else:
             # Exact sequential mode: use per-step decay
             S = S.detach()
-            tri = self.tri
-            use_tri = tri is not None and (not self.training)
             # Flatten Q, K, V from [B, H, T, D*] to [BH, T, D*]
             Q_flat = Q.reshape(BH, T, self.dk)
             K_flat = K.reshape(BH, T, self.dk)
@@ -735,7 +559,6 @@ class _KDA_Fast(nn.Module):
                     Q_flat[:, t, :],
                     alpha_step[:, t, :],
                     beta[:, t, :],
-                    tri=tri,
                 )
                 out[:, t, :] = o_t
             S_final = S

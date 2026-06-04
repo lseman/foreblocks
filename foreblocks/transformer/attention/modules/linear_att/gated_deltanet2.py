@@ -63,9 +63,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...kernels import (
+    can_use_fla_gdn2,
+    can_use_fla_gdn2_chunk,
     can_use_fused_rmsnorm_sigmoid_gate,
-    can_use_gdn2_chunk,
-    chunk_gdn2,
+    fla_gdn2_forward,
+    fla_gdn2_chunk_forward,
     fused_rmsnorm_sigmoid_gate,
 )
 
@@ -538,23 +540,62 @@ class GatedDeltaNet2(nn.Module):
         C = self.chunk_size
 
         if C and T > C:
-            use_triton = can_use_gdn2_chunk(S, Q, K, V, C)
-            if use_triton:
-                out, S = chunk_gdn2(
-                    Q,
-                    K,
-                    V,
-                    b.squeeze(-1),
-                    w.squeeze(-1),
-                    g_log.squeeze(-1),
+            Qh = Q.reshape(B, self.h, T, self.dk)
+            Kh = K.reshape(B, self.h, T, self.dk)
+            Vh = V.reshape(B, self.h, T, self.dv)
+            gh = g_log.squeeze(-1).reshape(B, self.h, T, self.dk)
+            bh = b.squeeze(-1).reshape(B, self.h, T, self.dk)
+            wh = w.squeeze(-1).reshape(B, self.h, T, self.dv)
+            Sh = S.reshape(B, self.h, self.dk, self.dv)
+            if can_use_fla_gdn2_chunk(Qh, Kh, Vh, gh, bh, wh, Sh, C):
+                out_h, S_h = fla_gdn2_chunk_forward(
+                    Qh,
+                    Kh,
+                    Vh,
+                    gh,
+                    bh,
+                    wh,
+                    Sh,
                     scale=1.0,
-                    initial_state=S,
-                    output_final_state=True,
                     chunk_size=C,
                 )
-                S = S.to(dtype=dtype)
+                out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
+                S = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
             else:
                 S = self._chunk_parallel(S, Q, K, V, b, w, alpha, out, C)
+        elif not torch.is_grad_enabled():
+            Qh = Q.reshape(B, self.h, T, self.dk)
+            Kh = K.reshape(B, self.h, T, self.dk)
+            Vh = V.reshape(B, self.h, T, self.dv)
+            gh = g_log.squeeze(-1).reshape(B, self.h, T, self.dk)
+            bh = b.squeeze(-1).reshape(B, self.h, T, self.dk)
+            wh = w.squeeze(-1).reshape(B, self.h, T, self.dv)
+            Sh = S.reshape(B, self.h, self.dk, self.dv)
+            if can_use_fla_gdn2(
+                Qh, Kh, Vh, gh, bh, wh, Sh, 0, recurrent=True
+            ):
+                out_h, S_h = fla_gdn2_forward(
+                    Qh,
+                    Kh,
+                    Vh,
+                    gh,
+                    bh,
+                    wh,
+                    Sh,
+                    scale=1.0,
+                    chunk_size=0,
+                    recurrent=True,
+                )
+                out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
+                S = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
+            else:
+                S = S.detach()
+                for t in range(T):
+                    out[:, t], S = self._delta_step_gdn2(
+                        S,
+                        K[:, t], V[:, t], Q[:, t],
+                        b[:, t], w[:, t], alpha[:, t],
+                    )
         else:
             S = S.detach()
             for t in range(T):

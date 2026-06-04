@@ -96,14 +96,64 @@ def fla_fused_recurrent_delta_rule():
     return get_fla_attr("fla.ops.delta_rule", "fused_recurrent_delta_rule")
 
 
+def fla_chunk_gla():
+    return get_fla_attr("fla.ops.gla", "chunk_gla")
+
+
+def fla_fused_recurrent_gla():
+    return get_fla_attr("fla.ops.gla", "fused_recurrent_gla")
+
+
+def fla_chunk_linear_attn():
+    return get_fla_attr("fla.ops.linear_attn", "chunk_linear_attn")
+
+
+def fla_fused_recurrent_linear_attn():
+    return get_fla_attr("fla.ops.linear_attn", "fused_recurrent_linear_attn")
+
+
+def fla_chunk_gated_delta_rule():
+    return get_fla_attr("fla.ops.gated_delta_rule", "chunk_gated_delta_rule")
+
+
+def fla_fused_recurrent_gated_delta_rule():
+    return get_fla_attr("fla.ops.gated_delta_rule", "fused_recurrent_gated_delta_rule")
+
+
+def fla_chunk_kda():
+    return get_fla_attr("fla.ops.kda", "chunk_kda")
+
+
+def fla_fused_recurrent_kda():
+    return get_fla_attr("fla.ops.kda", "fused_recurrent_kda")
+
+
+def fla_chunk_gdn2():
+    return get_fla_attr("fla.ops.gdn2", "chunk_gdn2")
+
+
+def fla_fused_recurrent_gdn2():
+    return get_fla_attr("fla.ops.gdn2", "fused_recurrent_gdn2")
+
+
 def fla_rms_norm_gated():
     return get_fla_attr("fla.modules.layernorm_gated", "RMSNormGated")
 
 
 __all__ = [
     "fla_chunk_delta_rule",
+    "fla_chunk_gated_delta_rule",
+    "fla_chunk_gla",
+    "fla_chunk_gdn2",
+    "fla_chunk_kda",
+    "fla_chunk_linear_attn",
+    "fla_fused_recurrent_gdn2",
     "fla_fused_chunk_delta_rule",
+    "fla_fused_recurrent_gated_delta_rule",
     "fla_fused_recurrent_delta_rule",
+    "fla_fused_recurrent_gla",
+    "fla_fused_recurrent_kda",
+    "fla_fused_recurrent_linear_attn",
     "fla_import_path",
     "fla_path",
     "fla_rms_norm_gated",

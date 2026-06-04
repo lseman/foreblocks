@@ -257,27 +257,28 @@ def evaluate(
     total_loss = 0.0
     n = 0
 
-    for batch in dataloader:
-        X, y, time_feat, graph_kwargs = unpack_batch(batch)
-        X, y, time_feat, graph_kwargs = move_batch_to_device(
-            X, y, time_feat, graph_kwargs, device
-        )
-
-        with amp_context():
-            outputs, _ = forward_pass_fn(
-                model, X, y, time_feat,
-                0, moe_log, moe_meta_builder, graph_kwargs,
-                amp_context, device,
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(dataloader):
+            X, y, time_feat, graph_kwargs = unpack_batch(batch)
+            X, y, time_feat, graph_kwargs = move_batch_to_device(
+                X, y, time_feat, graph_kwargs, device
             )
 
-            if y is None:
-                continue
-            if outputs.ndim == 4 and y.ndim == 3:
-                y = y.unsqueeze(-1)
-            loss = nn.MSELoss()(outputs, y)
-            bs = X.size(0)
-            total_loss += float(loss) * bs
-            n += bs
+            with amp_context():
+                outputs, _ = forward_pass_fn(
+                    model, X, y, time_feat,
+                    0, batch_idx, moe_log, moe_meta_builder, graph_kwargs,
+                    amp_context, device,
+                )
+
+                if y is None:
+                    continue
+                if outputs.ndim == 4 and y.ndim == 3:
+                    y = y.unsqueeze(-1)
+                loss = nn.MSELoss()(outputs, y)
+                bs = X.size(0)
+                total_loss += float(loss.detach()) * bs
+                n += bs
 
     return (total_loss / max(n, 1)) if n > 0 else float("nan")
 
@@ -339,7 +340,7 @@ def _alpha_step(
             with torch.set_grad_enabled(True):
                 with amp_context():
                     outputs, aux = forward_pass_fn(
-                        model, X, y, time_feat, 0, None, None, graph_kwargs,
+                        model, X, y, time_feat, 0, step, None, None, graph_kwargs,
                         amp_context, device,
                     )
 

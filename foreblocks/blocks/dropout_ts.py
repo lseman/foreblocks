@@ -1,4 +1,19 @@
-# dropout_ts.py
+"""DropoutTS sample-adaptive dropout for noisy time series.
+
+This module builds a spectral noise score from detrending, FFT amplitudes, and
+spectral flatness, then maps that score to a per-sample dropout probability.
+
+Based on:
+
+    Zhong et al., "DropoutTS: Sample-Adaptive Dropout for Robust Time Series
+    Forecasting", arXiv 2026.
+    Paper: https://arxiv.org/abs/2601.21726
+
+The paper's core idea is to estimate instance-level noise from spectral
+sparsity/reconstruction residuals, then adapt dropout strength per sample so
+noisier windows receive stronger regularization.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,7 +39,6 @@ def _ols_detrend(x: Tensor, eps: float = 1e-8) -> tuple[Tensor, Tensor]:
       xdetrend = x - xtrend
     x: [B, L, C]
     Returns: xdetrend [B, L, C], xtrend [B, L, C]
-    Implements Eq. (2). :contentReference[oaicite:5]{index=5}
     """
     B, L, C = x.shape
     device = x.device
@@ -50,7 +64,7 @@ def _ols_detrend(x: Tensor, eps: float = 1e-8) -> tuple[Tensor, Tensor]:
 
 def _spectral_flatness(a: Tensor, eps: float = 1e-8) -> Tensor:
     """
-    Spectral Flatness Measure (SFM), Eq. (5). :contentReference[oaicite:6]{index=6}
+    Spectral Flatness Measure (SFM).
     a: nonnegative amplitude spectrum, shape [B, F, C]
     Returns: [B, C]
     """
@@ -65,9 +79,8 @@ def _spectral_flatness(a: Tensor, eps: float = 1e-8) -> Tensor:
 # ----------------------------
 class SpectralNoiseScorer(nn.Module):
     """
-    Implements Sec 4.1:
-      detrend -> rFFT -> log-norm -> SFM-anchored soft mask -> iFFT -> residual MAE score.
-    Produces a per-sample noise score s (Eq. 7). :contentReference[oaicite:7]{index=7}
+    Estimate per-sample noise:
+      detrend -> rFFT -> log-norm -> SFM-anchored soft mask -> iFFT -> residual MAE.
     """
 
     def __init__(
@@ -78,7 +91,7 @@ class SpectralNoiseScorer(nn.Module):
         eps: float = 1e-8,
     ):
         super().__init__()
-        # Learnable parameters in Eq. (6) and threshold in Eq. (5->6). :contentReference[oaicite:8]{index=8}
+        # Learnable mask sharpness and SFM-to-threshold affine parameters.
         self.alpha = nn.Parameter(torch.tensor(float(alpha_init)))
         self.ws = nn.Parameter(torch.tensor(float(ws_init)))
         self.bs = nn.Parameter(torch.tensor(float(bs_init)))
@@ -88,37 +101,37 @@ class SpectralNoiseScorer(nn.Module):
         """
         x: [B, L, C]
         Returns:
-          s: [B] noise score (residual MAE) Eq. (7)
+          s: [B] noise score (residual MAE)
           p_debug: dict-like Tensor pack (optional usage) -> here we return Ahat.mean for quick debugging
         """
         assert x.dim() == 3, "Expected x as [B, L, C]"
         B, L, C = x.shape
 
-        # (1) Detrend (Eq. 2) :contentReference[oaicite:9]{index=9}
+        # (1) Detrend.
         xdetrend, xtrend = _ols_detrend(x, eps=self.eps)
 
-        # (2) FFT + amplitude (Eq. 3) :contentReference[oaicite:10]{index=10}
+        # (2) FFT + amplitude.
         Z = torch.fft.rfft(xdetrend, dim=1)  # [B, F, C], F = L//2 + 1
         A = torch.abs(Z)  # [B, F, C]
 
-        # (3) Log-scale + instance min-max (Eq. 4) :contentReference[oaicite:11]{index=11}
+        # (3) Log-scale + instance min-max.
         Lspec = torch.log1p(A)  # log(1 + A)
         Ahat = _safe_minmax(Lspec, dim=1, eps=self.eps)  # [B,F,C] in [0,1]
 
-        # (4) SFM anchor + dynamic threshold tau (Eq. 5) :contentReference[oaicite:12]{index=12}
+        # (4) SFM anchor + dynamic threshold tau.
         sfm = _spectral_flatness(A, eps=self.eps)  # [B,C]
         tau = torch.sigmoid(self.ws * sfm + self.bs)  # [B,C]
         tau = tau.unsqueeze(1)  # [B,1,C] broadcast to [B,F,C]
 
-        # Soft mask (Eq. 6) :contentReference[oaicite:13]{index=13}
+        # Soft spectral mask.
         sharp = F.softplus(self.alpha)  # positive
         M = torch.sigmoid(sharp * (Ahat - tau))  # [B,F,C]
 
-        # (5) Reconstruct: iFFT of masked spectrum + add trend back (Sec 4.1) :contentReference[oaicite:14]{index=14}
+        # (5) Reconstruct: iFFT of masked spectrum + add trend back.
         xd_rec = torch.fft.irfft(Z * M, n=L, dim=1)  # [B,L,C]
         x_rec = xd_rec + xtrend  # [B,L,C]
 
-        # (6) Residual MAE as noise score s (Eq. 7) :contentReference[oaicite:15]{index=15}
+        # (6) Residual MAE as noise score.
         s = (x - x_rec).abs().mean(dim=(1, 2))  # [B]
         # Provide a small extra tensor for debugging/monitoring if desired
         debug = Ahat.mean(dim=(1, 2))  # [B]
@@ -132,10 +145,9 @@ class SampleAdaptiveDropout(nn.Module):
     """
     Implements Sec 4.2:
       - batch-wise min-max normalize s -> ŝ in [0,1]
-      - sensitivity curve: s~ = tanh(ŝ * softplus(gamma)) (Eq. 8)
-      - p = pmin + (pmax-pmin)*s~ (Eq. 9)
-      - STE Bernoulli mask and rescale (Eq. 10-11)
-    :contentReference[oaicite:16]{index=16}
+      - sensitivity curve: s~ = tanh(ŝ * softplus(gamma))
+      - p = pmin + (pmax-pmin)*s~
+      - STE Bernoulli mask and inverted-dropout rescale
     """
 
     def __init__(
@@ -157,16 +169,16 @@ class SampleAdaptiveDropout(nn.Module):
         s: [B] positive
         returns p: [B] in [pmin, pmax]
         """
-        # Batch min-max (Sec 4.2) :contentReference[oaicite:17]{index=17}
+        # Batch min-max.
         s_min = s.min()
         s_max = s.max()
         shat = (s - s_min) / (s_max - s_min + self.eps)  # [B] in [0,1]
 
-        # Sensitivity curve (Eq. 8) :contentReference[oaicite:18]{index=18}
+        # Sensitivity curve.
         sens = F.softplus(self.gamma)
         stilde = torch.tanh(shat * sens)
 
-        # Bound p (Eq. 9) :contentReference[oaicite:19]{index=19}
+        # Bound p.
         p = self.p_min + (self.p_max - self.p_min) * stilde
         return p.clamp(self.p_min, self.p_max)
 
@@ -188,11 +200,11 @@ class SampleAdaptiveDropout(nn.Module):
 
         keep = (1.0 - p_view).clamp_min(self.eps)
 
-        # Bernoulli sampling (discrete) + STE (Eq. 10) :contentReference[oaicite:20]{index=20}
+        # Bernoulli sampling with a straight-through estimator.
         b = torch.bernoulli(keep)  # [B,...] broadcasted
         mdrop = b + (keep - keep.detach())
 
-        # Rescale (Eq. 11) :contentReference[oaicite:21]{index=21}
+        # Inverted-dropout rescale.
         return h * (mdrop / keep)
 
 
@@ -213,7 +225,7 @@ class DropoutTS(nn.Module):
       - Given raw input window x: [B,L,C], compute noise score s
       - Map to per-sample dropout prob p
       - Provide an `apply(h, p)` that you can use wherever you'd normally call nn.Dropout
-    This keeps the task objective unchanged and backprops through p via STE. :contentReference[oaicite:22]{index=22}
+    This keeps the task objective unchanged and backprops through p via STE.
     """
 
     def __init__(

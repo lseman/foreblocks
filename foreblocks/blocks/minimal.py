@@ -2,6 +2,28 @@
 
 This module contains compact graph neural network primitives and
 pre-normalization helpers used throughout the library.
+
+Related work represented by the small operators in this file includes:
+
+    Defferrard et al., "Convolutional Neural Networks on Graphs with Fast
+    Localized Spectral Filtering", NeurIPS 2016. (ChebNet)
+    Paper: https://arxiv.org/abs/1606.09375
+
+    Hamilton et al., "Inductive Representation Learning on Large Graphs",
+    NeurIPS 2017. (GraphSAGE)
+    Paper: https://arxiv.org/abs/1706.02216
+
+    Brody et al., "How Attentive are Graph Attention Networks?", ICLR 2022.
+    (GATv2)
+    Paper: https://arxiv.org/abs/2105.14491
+
+    Klicpera et al., "Predict then Propagate: Graph Neural Networks meet
+    Personalized PageRank", ICLR 2019. (APPNP)
+    Paper: https://arxiv.org/abs/1810.05997
+
+    Abu-El-Haija et al., "MixHop: Higher-Order Graph Convolutional
+    Architectures via Sparsified Neighborhood Mixing", ICML 2019.
+    Paper: https://arxiv.org/abs/1905.00067
 """
 
 import torch

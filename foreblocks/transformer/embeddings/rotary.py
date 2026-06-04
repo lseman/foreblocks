@@ -207,25 +207,33 @@ def _apply_rotary_batch(
     batch, seqlen, nheads, headdim = x.shape
     device = x.device
 
-    # Fast path: no offset, cos/sin 2D, same for all batch
+    if cos.dim() == 2:
+        if (
+            x.is_cuda
+            and _TRITON_AVAILABLE
+            and triton_apply_rope_bthd is not None
+            and cos.is_cuda
+            and sin.is_cuda
+            and x.dtype == cos.dtype
+            and x.dtype == sin.dtype
+        ):
+            try:
+                return triton_apply_rope_bthd(
+                    x,
+                    cos,
+                    sin,
+                    seqlen_offset=seqlen_offsets,
+                    interleaved=interleaved,
+                    inplace=inplace,
+                    conjugate=conjugate,
+                )
+            except Exception:
+                pass
+
+    # Fast eager path: no offset, cos/sin 2D, same for all batch
     if isinstance(seqlen_offsets, int) and seqlen_offsets == 0 and cos.dim() == 2:
         if conjugate:
             sin = -sin
-
-        # Triton fast path: non-interleaved, full rotation, non-inplace, CUDA
-        if (
-            not interleaved
-            and ro_dim == headdim
-            and not inplace
-            and x.is_cuda
-            and _TRITON_AVAILABLE
-            and triton_apply_rope_bthd is not None
-        ):
-            return triton_apply_rope_bthd(
-                x.contiguous(),
-                cos[:seqlen].contiguous(),
-                sin[:seqlen].contiguous(),
-            )
 
         cos_ = cos[:seqlen].unsqueeze(0)  # (1, seqlen, d/2)
         sin_ = sin[:seqlen].unsqueeze(0)

@@ -46,7 +46,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ...kernels import can_use_fused_rmsnorm_sigmoid_gate, fused_rmsnorm_sigmoid_gate
+from ...kernels import (
+    can_use_fla_gated_delta_rule,
+    can_use_fused_rmsnorm_sigmoid_gate,
+    fla_gated_delta_rule_forward,
+    fused_rmsnorm_sigmoid_gate,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -262,7 +267,7 @@ class GatedDeltaNet(nn.Module):
 
     def _gate_params(
         self, x: torch.Tensor, BH: int, T: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute forget (α) and write (β) gates.
 
@@ -283,6 +288,7 @@ class GatedDeltaNet(nn.Module):
         else:
             # Legacy: α = sigmoid(alpha_proj(x))
             alpha = torch.sigmoid(self.alpha_proj(x)).clamp(max=1.0)  # [B, T, H]
+            g_log = alpha.clamp_min(1e-12).log()
         alpha = (
             alpha.transpose(1, 2)  # [B, H, T]
             .contiguous()
@@ -295,7 +301,12 @@ class GatedDeltaNet(nn.Module):
             .contiguous()
             .reshape(BH, T, 1)
         )
-        return alpha, beta
+        g_log = (
+            g_log.transpose(1, 2)
+            .contiguous()
+            .reshape(BH, T, 1)
+        )
+        return alpha, beta, g_log
 
     def _output_gate(self, x: torch.Tensor) -> torch.Tensor:
         """Data-dependent sigmoid output gate [B, H, T, Dv]."""
@@ -500,7 +511,7 @@ class GatedDeltaNet(nn.Module):
             .reshape(BH, T, self.dv)
         )
 
-        alpha, beta = self._gate_params(x, BH, T)  # [BH, T, 1]
+        alpha, beta, g_log = self._gate_params(x, BH, T)  # [BH, T, 1]
 
         # Initialise / reshape state
         S = (
@@ -513,8 +524,55 @@ class GatedDeltaNet(nn.Module):
         C = self.chunk_size
 
         if C and T > C:
-            # ── Chunk-parallel mode (exact WY representation) ─────────────
-            S = self._chunk_parallel(S, Q, K, V, alpha, beta, out, C)
+            Qh = Q.reshape(B, self.h, T, self.dk)
+            Kh = K.reshape(B, self.h, T, self.dk)
+            Vh = V.reshape(B, self.h, T, self.dv)
+            gh = g_log.reshape(B, self.h, T)
+            bh = beta.reshape(B, self.h, T)
+            Sh = S.reshape(B, self.h, self.dk, self.dv)
+            if can_use_fla_gated_delta_rule(
+                Qh, Kh, Vh, gh, bh, Sh, C, recurrent=False
+            ):
+                out_h, S_h = fla_gated_delta_rule_forward(
+                    Qh,
+                    Kh,
+                    Vh,
+                    gh,
+                    bh,
+                    Sh,
+                    scale=1.0,
+                    chunk_size=C,
+                    recurrent=False,
+                )
+                out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
+                S = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
+            else:
+                S = self._chunk_parallel(S, Q, K, V, alpha, beta, out, C)
+        elif not torch.is_grad_enabled():
+            Qh = Q.reshape(B, self.h, T, self.dk)
+            Kh = K.reshape(B, self.h, T, self.dk)
+            Vh = V.reshape(B, self.h, T, self.dv)
+            gh = g_log.reshape(B, self.h, T)
+            bh = beta.reshape(B, self.h, T)
+            Sh = S.reshape(B, self.h, self.dk, self.dv)
+            if can_use_fla_gated_delta_rule(Qh, Kh, Vh, gh, bh, Sh):
+                out_h, S_h = fla_gated_delta_rule_forward(
+                    Qh,
+                    Kh,
+                    Vh,
+                    gh,
+                    bh,
+                    Sh,
+                    scale=1.0,
+                )
+                out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
+                S = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
+            else:
+                S = S.detach()
+                for t in range(T):
+                    out[:, t], S = self._delta_step(
+                        S, K[:, t], V[:, t], Q[:, t], alpha[:, t], beta[:, t]
+                    )
         else:
             # ── Exact sequential mode ─────────────────────────────────────
             S = S.detach()
@@ -577,7 +635,7 @@ class GatedDeltaNet(nn.Module):
             .reshape(BH, 1, self.dv)
         )
 
-        alpha, beta = self._gate_params(x_t, BH, 1)  # [BH, 1, 1]
+        alpha, beta, _ = self._gate_params(x_t, BH, 1)  # [BH, 1, 1]
 
         S = (
             state.reshape(BH, self.dk, self.dv).contiguous().to(dtype=dtype)

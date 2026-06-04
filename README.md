@@ -266,14 +266,17 @@ The most stable first imports are exposed from the top-level `foreblocks` packag
 | `foreblocks/training` | `Trainer`, training loop, quantization utilities |
 | `foreblocks/evaluation` | `ModelEvaluator`, benchmarking helpers |
 | `foreblocks/ts_handler` | `TimeSeriesHandler`, imputation, filtering, outlier handling |
-| `foreblocks/tf` | transformer stack, attention variants (including MoBA), MoE, norms, embeddings |
+| `foreblocks/transformer` | Transformer stack, attention variants (including MoBA), MoE, fused norms, and embeddings |
 | `foreblocks/mltracker` | experiment tracking server, logging, and TUI integration |
 | `foreblocks/kan` | Kolmogorov-Arnold Network backbone |
-| `foreblocks/mamba` | Mamba SSM backbone with MoE and positional encoding |
-| `foreblocks/custom_mamba` | Hybrid Mamba SSM blocks for forecasting |
-| `foreblocks/blocks` | Reusable building blocks: dropout, NBeats, popular blocks |
+| `foreblocks/mamba` | Original Mamba SSM backbone with MoE and positional encoding |
+| `foreblocks/custom_mamba` | Hybrid Mamba / Mamba-2 style SSM blocks for forecasting |
+| `foreblocks/custom_raven` | Raven-inspired recurrent sequence blocks |
+| `foreblocks/custom_att` | Experimental attention kernels and benchmarks |
+| `foreblocks/blocks` | Higher-level reusable blocks: dropout, N-BEATS, popular model blocks, graph blocks, and forecasting heads |
+| `foreblocks/layers` | Lower-level neural network layers, currently graph-focused primitives |
 | `foreblocks/blocks/wavelets.py` | Multiwavelet feature extraction blocks |
-| `foreblocks/benchmark` | External forecasting baselines and spreadsheet readers |
+| `foreblocks/evaluation/benchmark.py` | External forecasting baselines and spreadsheet readers |
 | `darts` | standalone DARTS NAS package: search space, search/training pipeline, evaluation, and architecture inspection |
 | `foretools` | synthetic time series, BOHB search, feature engineering, decomposition |
 | `examples/` | runnable demos and notebooks |

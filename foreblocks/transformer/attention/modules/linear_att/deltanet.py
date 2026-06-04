@@ -8,10 +8,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...kernels import (
+    can_use_fla_delta_rule,
     can_use_fla_recurrent_delta_rule,
-    can_use_fused_recurrent_delta_rule,
+    fla_delta_rule_forward,
     fla_recurrent_delta_rule,
-    fused_recurrent_delta_rule,
 )
 from .base import _causal_conv1d
 
@@ -135,16 +135,15 @@ class DeltaNetBackend(nn.Module):
         if S is None:
             S = query.new_zeros((B, self.n_heads, self.d_head, self.d_head))
 
-        if (
+        if self.mode == "chunk" and can_use_fla_delta_rule(q, k, v, beta, S):
+            o, S_next = fla_delta_rule_forward(
+                q, k, v, beta, S, self.scale, recurrent=False
+            )
+        elif (
             not torch.is_grad_enabled()
             and can_use_fla_recurrent_delta_rule(q, k, v, beta, S)
         ):
             o, S_next = fla_recurrent_delta_rule(q, k, v, beta, S, self.scale)
-        elif (
-            not torch.is_grad_enabled()
-            and can_use_fused_recurrent_delta_rule(q, k, v, beta, S)
-        ):
-            o, S_next = fused_recurrent_delta_rule(q, k, v, beta, S, self.scale)
         else:
             o, S_next = (
                 self._chunk_forward(q, k, v, S, beta)

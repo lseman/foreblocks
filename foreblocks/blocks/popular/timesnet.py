@@ -2,6 +2,16 @@
 
 This module contains the core TimesNet building blocks used for periodicity
 extraction and local-global temporal modeling.
+
+Based on:
+
+    Wu et al., "TimesNet: Temporal 2D-Variation Modeling for General Time
+    Series Analysis", ICLR 2023.
+    Paper: https://arxiv.org/abs/2210.02186
+
+This implementation keeps TimesNet's period discovery and 1D-to-2D folding
+idea, with additional normalization and period-selection options for
+foreblocks forecasting heads.
 """
 
 import math

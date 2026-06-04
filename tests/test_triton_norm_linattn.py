@@ -26,10 +26,9 @@ from foreblocks.transformer.attention.kernels.chunked_causal_linear_attention im
     chunked_causal_linear_attn,
     fused_recurrent_causal_linear_attn,
 )
-from foreblocks.transformer.attention.kernels.delta_rule import (
+from foreblocks.transformer.attention.kernels.fla_delta_rule import (
     can_use_fla_recurrent_delta_rule,
     fla_recurrent_delta_rule,
-    fused_recurrent_delta_rule,
 )
 from foreblocks.transformer.attention.kernels.fla_backend import (
     fla_path,
@@ -38,6 +37,22 @@ from foreblocks.transformer.attention.kernels.fla_backend import (
 )
 from foreblocks.transformer.attention.kernels.fused_norm_gate import (
     fused_rmsnorm_sigmoid_gate,
+)
+from foreblocks.transformer.attention.kernels.fla_linear_attention import (
+    fla_recurrent_linear_attn_forward,
+)
+from foreblocks.transformer.attention.kernels.fla_gated_delta_rule import (
+    can_use_fla_gated_delta_rule,
+    fla_gated_delta_rule_forward,
+)
+from foreblocks.transformer.attention.kernels.fla_gdn2 import (
+    can_use_fla_gdn2_chunk,
+    fla_gdn2_chunk_forward,
+)
+from foreblocks.transformer.attention.kernels.fla_gla import fla_gla_forward
+from foreblocks.transformer.attention.kernels.fla_kda import (
+    can_use_fla_kda,
+    fla_kda_forward,
 )
 
 DEV = "cuda"
@@ -75,6 +90,26 @@ def test_layernorm_fwd_bwd_matches_torch():
     torch.testing.assert_close(b.grad, br.grad, atol=1e-3, rtol=0)
 
 
+def test_layernorm_wide_hidden_matches_torch():
+    torch.manual_seed(10)
+    M, N = 8, 4096
+    x = torch.randn(M, N, device=DEV, dtype=torch.float16, requires_grad=True)
+    w = torch.randn(N, device=DEV, dtype=torch.float16, requires_grad=True)
+    b = torch.randn(N, device=DEV, dtype=torch.float16, requires_grad=True)
+    y = LayerNormTritonFunction.apply(x, w, b, 1e-5)
+
+    xr, wr, br = (t.detach().clone().requires_grad_(True) for t in (x, w, b))
+    yr = torch.nn.functional.layer_norm(xr, (N,), wr, br, 1e-5)
+    torch.testing.assert_close(y, yr, atol=2e-3, rtol=1e-3)
+
+    g = torch.randn_like(y)
+    y.backward(g)
+    yr.backward(g)
+    torch.testing.assert_close(x.grad, xr.grad, atol=2e-3, rtol=1e-3)
+    torch.testing.assert_close(w.grad, wr.grad, atol=2e-3, rtol=1e-3)
+    torch.testing.assert_close(b.grad, br.grad, atol=2e-3, rtol=1e-3)
+
+
 def test_rmsnorm_fwd_bwd_matches_reference():
     torch.manual_seed(1)
     M, N = 64, 256
@@ -91,6 +126,24 @@ def test_rmsnorm_fwd_bwd_matches_reference():
     yr.backward(g)
     torch.testing.assert_close(x.grad, xr.grad, atol=1e-3, rtol=0)
     torch.testing.assert_close(w.grad, wr.grad, atol=1e-3, rtol=0)
+
+
+def test_rmsnorm_wide_hidden_matches_reference():
+    torch.manual_seed(11)
+    M, N = 8, 4096
+    x = torch.randn(M, N, device=DEV, dtype=torch.float16, requires_grad=True)
+    w = torch.randn(N, device=DEV, dtype=torch.float16, requires_grad=True)
+    y = RMSNormTritonFunction.apply(x, w, 1e-5)
+
+    xr, wr = (t.detach().clone().requires_grad_(True) for t in (x, w))
+    yr = _rms_ref(xr, wr, 1e-5)
+    torch.testing.assert_close(y, yr, atol=2e-3, rtol=1e-3)
+
+    g = torch.randn_like(y)
+    y.backward(g)
+    yr.backward(g)
+    torch.testing.assert_close(x.grad, xr.grad, atol=1e-2, rtol=2e-3)
+    torch.testing.assert_close(w.grad, wr.grad, atol=1e-2, rtol=2e-3)
 
 
 def test_fused_add_rmsnorm_fwd_bwd_matches_reference():
@@ -158,31 +211,6 @@ def test_fused_rmsnorm_sigmoid_gate_matches_reference():
     torch.testing.assert_close(out, ref, atol=1e-4, rtol=0)
 
 
-def test_fused_recurrent_delta_rule_matches_reference():
-    torch.manual_seed(6)
-    B, H, T, D = 2, 3, 9, 16
-    q = torch.randn(B, H, T, D, device=DEV, dtype=DT)
-    k = torch.randn(B, H, T, D, device=DEV, dtype=DT)
-    v = torch.randn(B, H, T, D, device=DEV, dtype=DT)
-    beta = torch.sigmoid(torch.randn(B, H, T, 1, device=DEV, dtype=DT))
-    state = torch.randn(B, H, D, D, device=DEV, dtype=DT) * 0.01
-
-    out, final_state = fused_recurrent_delta_rule(q, k, v, beta, state, D ** -0.5)
-
-    ref_state = state.clone()
-    ref_out = torch.empty_like(v)
-    for t in range(T):
-        pred = torch.einsum("bhvk,bhk->bhv", ref_state, k[:, :, t])
-        delta = beta[:, :, t] * (v[:, :, t] - pred)
-        ref_state = ref_state + torch.einsum("bhv,bhk->bhvk", delta, k[:, :, t])
-        ref_out[:, :, t] = torch.einsum(
-            "bhvk,bhk->bhv", ref_state, q[:, :, t] * (D ** -0.5)
-        )
-
-    torch.testing.assert_close(out, ref_out, atol=1e-4, rtol=0)
-    torch.testing.assert_close(final_state, ref_state, atol=2e-4, rtol=0)
-
-
 def test_fla_recurrent_delta_rule_matches_reference_when_available():
     if not is_fla_available("fla.ops.delta_rule"):
         pytest.skip("flash-linear-attention delta_rule ops are unavailable")
@@ -210,6 +238,164 @@ def test_fla_recurrent_delta_rule_matches_reference_when_available():
 
     torch.testing.assert_close(out, ref_out, atol=1e-4, rtol=0)
     torch.testing.assert_close(final_state, ref_state, atol=2e-4, rtol=0)
+
+
+def test_fla_gla_forward_matches_reference_when_available():
+    if not is_fla_available("fla.ops.gla"):
+        pytest.skip("flash-linear-attention GLA ops are unavailable")
+
+    torch.manual_seed(8)
+    B, H, T, D = 2, 3, 9, 16
+    q = torch.randn(B, H, T, D, device=DEV, dtype=DT)
+    k = torch.randn(B, H, T, D, device=DEV, dtype=DT)
+    v = torch.randn(B, H, T, D, device=DEV, dtype=DT)
+    g = torch.nn.functional.logsigmoid(
+        torch.randn(B, H, T, D, device=DEV, dtype=DT)
+    ) / 16.0
+    state = torch.randn(B, H, D, D, device=DEV, dtype=DT) * 0.01
+    scale = D ** -0.5
+
+    out, final_state = fla_gla_forward(q, k, v, g, state, scale, mode="recurrent")
+
+    ref_state = state.clone()
+    ref_out = torch.empty_like(v)
+    for t in range(T):
+        ref_state = torch.exp(g[:, :, t]).unsqueeze(-1) * ref_state
+        ref_state = ref_state + torch.einsum("bhk,bhv->bhkv", k[:, :, t], v[:, :, t])
+        ref_out[:, :, t] = torch.einsum(
+            "bhk,bhkv->bhv", q[:, :, t] * scale, ref_state
+        )
+
+    torch.testing.assert_close(out, ref_out, atol=1e-4, rtol=0)
+    torch.testing.assert_close(final_state, ref_state, atol=2e-4, rtol=0)
+
+
+def test_fla_recurrent_linear_attention_matches_reference_when_available():
+    if not is_fla_available("fla.ops.linear_attn"):
+        pytest.skip("flash-linear-attention linear_attn ops are unavailable")
+
+    torch.manual_seed(9)
+    B, H, T, Fd, Dh = 2, 3, 17, 16, 32
+    q = torch.rand(B, H, T, Fd, device=DEV, dtype=DT) + 0.1
+    k = torch.rand(B, H, T, Fd, device=DEV, dtype=DT) + 0.1
+    v = torch.randn(B, H, T, Dh, device=DEV, dtype=DT)
+    out = fla_recurrent_linear_attn_forward(q, k, v, eps=1e-6)
+
+    KV = torch.zeros(B, H, Fd, Dh, device=DEV, dtype=DT)
+    ks = torch.zeros(B, H, Fd, device=DEV, dtype=DT)
+    ref = torch.empty(B, H, T, Dh, device=DEV, dtype=DT)
+    for t in range(T):
+        KV = KV + k[:, :, t, :, None] * v[:, :, t, None, :]
+        ks = ks + k[:, :, t, :]
+        numer = (KV * q[:, :, t, :, None]).sum(2)
+        denom = (q[:, :, t, :] * ks).sum(-1, keepdim=True) + 1e-10
+        ref[:, :, t, :] = numer / denom
+
+    torch.testing.assert_close(out, ref, atol=1e-4, rtol=0)
+
+
+def test_fla_gated_delta_rule_matches_reference_when_available():
+    if not is_fla_available("fla.ops.gated_delta_rule"):
+        pytest.skip("flash-linear-attention gated_delta_rule ops are unavailable")
+
+    torch.manual_seed(10)
+    B, H, T, Dk, Dv = 2, 3, 9, 16, 24
+    q = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
+    k = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
+    v = torch.randn(B, H, T, Dv, device=DEV, dtype=DT)
+    g = torch.nn.functional.logsigmoid(
+        torch.randn(B, H, T, device=DEV, dtype=DT)
+    )
+    beta = torch.sigmoid(torch.randn(B, H, T, device=DEV, dtype=DT))
+    state = torch.randn(B, H, Dk, Dv, device=DEV, dtype=DT) * 0.01
+
+    assert can_use_fla_gated_delta_rule(q, k, v, g, beta, state)
+    out, final_state = fla_gated_delta_rule_forward(
+        q, k, v, g, beta, state, scale=1.0
+    )
+
+    ref_state = state.clone()
+    ref_out = torch.empty_like(v)
+    for t in range(T):
+        decayed = g[:, :, t].exp().view(B, H, 1, 1) * ref_state
+        pred = torch.einsum("bhkv,bhk->bhv", decayed, k[:, :, t])
+        err = v[:, :, t] - pred
+        write = torch.einsum("bhk,bhv->bhkv", k[:, :, t], err)
+        ref_state = decayed + beta[:, :, t].view(B, H, 1, 1) * write
+        ref_out[:, :, t] = torch.einsum("bhkv,bhk->bhv", ref_state, q[:, :, t])
+
+    torch.testing.assert_close(out, ref_out, atol=1e-4, rtol=0)
+    torch.testing.assert_close(final_state, ref_state, atol=2e-4, rtol=0)
+
+
+def test_fla_gdn2_chunk_matches_reference_when_available():
+    if not is_fla_available("fla.ops.gdn2"):
+        pytest.skip("flash-linear-attention GDN-2 ops are unavailable")
+
+    torch.manual_seed(11)
+    B, H, T, Dk, Dv = 2, 3, 64, 16, 24
+    q = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
+    k = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
+    v = torch.randn(B, H, T, Dv, device=DEV, dtype=DT)
+    g = torch.nn.functional.logsigmoid(
+        torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
+    )
+    b = torch.sigmoid(torch.randn(B, H, T, Dk, device=DEV, dtype=DT))
+    w = torch.sigmoid(torch.randn(B, H, T, Dv, device=DEV, dtype=DT))
+    state = torch.randn(B, H, Dk, Dv, device=DEV, dtype=torch.float32) * 0.01
+    q = torch.nn.functional.normalize(q.float(), p=2, dim=-1).to(DT)
+    k = torch.nn.functional.normalize(k.float(), p=2, dim=-1).to(DT)
+
+    assert can_use_fla_gdn2_chunk(q, k, v, g, b, w, state, chunk_size=64)
+    out, final_state = fla_gdn2_chunk_forward(
+        q, k, v, g, b, w, state, scale=1.0, chunk_size=64
+    )
+
+    ref_state = state.clone()
+    ref_out = torch.empty_like(v)
+    for t in range(T):
+        decayed = g[:, :, t].exp().unsqueeze(-1) * ref_state
+        erase = b[:, :, t] * k[:, :, t]
+        read = torch.einsum("bhkv,bhk->bhv", decayed, erase)
+        write = w[:, :, t] * v[:, :, t] - read
+        ref_state = decayed + torch.einsum("bhk,bhv->bhkv", k[:, :, t], write)
+        ref_out[:, :, t] = torch.einsum("bhkv,bhk->bhv", ref_state, q[:, :, t])
+
+    torch.testing.assert_close(out, ref_out, atol=5e-3, rtol=0)
+    torch.testing.assert_close(final_state, ref_state, atol=5e-3, rtol=0)
+
+
+def test_fla_kda_chunk_matches_reference_when_available():
+    if not is_fla_available("fla.ops.kda"):
+        pytest.skip("flash-linear-attention KDA ops are unavailable")
+
+    torch.manual_seed(12)
+    B, H, T, Dk, Dv = 2, 3, 64, 16, 24
+    q = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
+    k = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
+    v = torch.randn(B, H, T, Dv, device=DEV, dtype=DT)
+    q = torch.nn.functional.normalize(q.float(), p=2, dim=-1).to(DT)
+    k = torch.nn.functional.normalize(k.float(), p=2, dim=-1).to(DT)
+    g = torch.empty(B, H, T, Dk, device=DEV, dtype=DT).uniform_(-5.0, -0.1)
+    beta = torch.sigmoid(torch.randn(B, H, T, device=DEV, dtype=DT))
+    state = torch.randn(B, H, Dk, Dv, device=DEV, dtype=torch.float32) * 0.01
+
+    assert can_use_fla_kda(q, k, v, g, beta, state, chunk_size=64)
+    out, final_state = fla_kda_forward(
+        q, k, v, g, beta, state, scale=1.0, chunk_size=64
+    )
+
+    ref_state = state.clone()
+    ref_out = torch.empty_like(v)
+    for t in range(T):
+        ref_state = g[:, :, t].exp().unsqueeze(-1) * ref_state
+        pred = torch.einsum("bhkv,bhk->bhv", ref_state, k[:, :, t])
+        delta = beta[:, :, t].unsqueeze(-1) * (v[:, :, t] - pred)
+        ref_state = ref_state + torch.einsum("bhk,bhv->bhkv", k[:, :, t], delta)
+        ref_out[:, :, t] = torch.einsum("bhkv,bhk->bhv", ref_state, q[:, :, t])
+
+    torch.testing.assert_close(out, ref_out, atol=5e-3, rtol=0)
+    torch.testing.assert_close(final_state, ref_state, atol=5e-3, rtol=0)
 
 
 if __name__ == "__main__":

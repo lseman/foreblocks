@@ -1,7 +1,14 @@
-"""
-MultiWavelet Transform (MWT) based neural operator layer
-Inspired by: "Multiwavelet-based Operator Learning for Differential Equations" (NeurIPS 2021)
-Cleaned-up, fixed and modernized version (2025/2026 style)
+"""MultiWavelet Transform (MWT) neural operator layers.
+
+Inspired by:
+
+    Gupta et al., "Multiwavelet-based Operator Learning for Differential
+    Equations", NeurIPS 2021.
+    Paper: https://arxiv.org/abs/2109.13459
+
+This file implements Legendre/Chebyshev multiwavelet filter construction,
+Fourier-domain sparse kernels, and a compact feature extractor for time-series
+models.
 """
 
 import math

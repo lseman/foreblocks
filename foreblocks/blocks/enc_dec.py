@@ -1,7 +1,16 @@
-"""Encoder and decoder abstractions for sequence modeling.
+"""Recurrent encoder and decoder abstractions for sequence modeling.
 
 This module defines the LSTM/GRU encoder and decoder classes used by
 foreblocks forecasting models and builder APIs.
+
+The recurrent cells are PyTorch implementations of the standard architectures:
+
+    Hochreiter & Schmidhuber, "Long Short-Term Memory", Neural Computation 1997.
+    Paper: https://www.bioinf.jku.at/publications/older/2604.pdf
+
+    Cho et al., "Learning Phrase Representations using RNN Encoder-Decoder for
+    Statistical Machine Translation", EMNLP 2014.
+    Paper: https://arxiv.org/abs/1406.1078
 """
 
 import torch

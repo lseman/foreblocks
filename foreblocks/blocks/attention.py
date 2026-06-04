@@ -1,7 +1,14 @@
-"""Hierarchical attention module for time series forecasting.
+"""Attention-style blocks for time-series forecasting.
 
-This module exposes a hierarchical attention layer with multi-scale
-processing and cross-level information flow.
+The multi-scale ``HierarchicalAttention`` layer combines Transformer-style
+multi-head attention (Vaswani et al., "Attention Is All You Need", NeurIPS
+2017; https://arxiv.org/abs/1706.03762) with coarse-to-fine pooling paths in
+the spirit of hierarchical sequence models. The ``AutoCorrelationBlock`` below
+is inspired by Autoformer's FFT-based Auto-Correlation mechanism:
+
+    Zhou et al., "Autoformer: Decomposition Transformers with Auto-Correlation
+    for Long-Term Series Forecasting", NeurIPS 2021.
+    Paper: https://arxiv.org/abs/2106.13008
 """
 
 import math

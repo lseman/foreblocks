@@ -2,6 +2,20 @@
 
 This module contains frequency-domain and Fourier feature layers used by
 foreblocks models for time-series applications.
+
+The spectral convolution and ``FNO1dLayer`` follow the Fourier Neural Operator
+family:
+
+    Li et al., "Fourier Neural Operator for Parametric Partial Differential
+    Equations", ICLR 2021.
+    Paper: https://arxiv.org/abs/2010.08895
+
+The random/learned Fourier features are related to positional/Fourier feature
+embeddings used in implicit neural representations:
+
+    Tancik et al., "Fourier Features Let Networks Learn High Frequency
+    Functions in Low Dimensional Domains", NeurIPS 2020.
+    Paper: https://arxiv.org/abs/2006.10739
 """
 
 import math

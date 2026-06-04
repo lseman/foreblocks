@@ -2,6 +2,15 @@
 
 This module implements sLSTM layers and multi-layer recurrent building blocks
 for long-context time series prediction.
+
+Inspired by:
+
+    Beck et al., "xLSTM: Extended Long Short-Term Memory", 2024.
+    Paper: https://arxiv.org/abs/2405.04517
+
+The implementation exposes scalar-LSTM and matrix-LSTM style cells as
+encoder/decoder blocks compatible with the rest of the foreblocks recurrent
+interfaces.
 """
 
 import math

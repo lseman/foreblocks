@@ -1,3 +1,14 @@
+"""Neural ODE layer for continuous-time sequence modeling.
+
+Inspired by:
+
+    Chen et al., "Neural Ordinary Differential Equations", NeurIPS 2018.
+    Paper: https://arxiv.org/abs/1806.07366
+
+The module can use ``torchdiffeq``'s adjoint solver when available, and also
+keeps lightweight fixed/adaptive fallback solvers for local use.
+"""
+
 import torch
 import torch.nn as nn
 

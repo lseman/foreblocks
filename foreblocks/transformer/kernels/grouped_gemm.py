@@ -392,7 +392,7 @@ __SHARED_B_WARNED = False
 def grouped_mm_varM(
     A_packed: torch.Tensor,
     offsets: torch.Tensor,
-    B_per_expert: Sequence[torch.Tensor],
+    B_per_expert: Sequence[torch.Tensor] | torch.Tensor,
     out_dtype: torch.dtype | None = None,
     use_fp16_acc: bool = False,
     use_shared_b: bool = False,
@@ -406,7 +406,7 @@ def grouped_mm_varM(
 
     A_packed: concat_e A_e along M, shape [S, K]
     offsets: starts/ends per expert in A_packed/C_packed, shape [E+1]
-    B_per_expert: list of [K, N] (one per expert, same K and N)
+    B_per_expert: list of [K, N] or prepacked tensor [E, K, N]
     Returns C_packed: [S, N]
     """
     global __SHARED_B_WARNED
@@ -424,14 +424,23 @@ def grouped_mm_varM(
     if not offsets.is_contiguous():
         offsets = offsets.contiguous()
 
+    packed_B_input = isinstance(B_per_expert, torch.Tensor)
     requires_grad = torch.is_grad_enabled() and (
-        A_packed.requires_grad or any(b.requires_grad for b in B_per_expert)
+        A_packed.requires_grad
+        or (
+            B_per_expert.requires_grad
+            if packed_B_input
+            else any(b.requires_grad for b in B_per_expert)
+        )
     )
 
     if (not TRITON_AVAILABLE) or (not A_packed.is_cuda):
         A_blocks = _split_by_offsets(A_packed, offsets)
-        Y = _foreach_mm(A_blocks, list(B_per_expert))
-        N = B_per_expert[0].shape[1] if len(B_per_expert) else 0
+        B_blocks = (
+            list(B_per_expert.unbind(0)) if packed_B_input else list(B_per_expert)
+        )
+        Y = _foreach_mm(A_blocks, B_blocks)
+        N = B_blocks[0].shape[1] if B_blocks else 0
         C_packed = torch.empty((A_packed.shape[0], N), device=device, dtype=out_dtype)
         for y, s, t in zip(Y, offsets[:-1], offsets[1:]):
             s_i, t_i = int(s.item()), int(t.item())
@@ -439,11 +448,25 @@ def grouped_mm_varM(
                 C_packed[s_i:t_i] = y.to(out_dtype)
         return C_packed
 
-    K = B_per_expert[0].shape[0]
-    N = B_per_expert[0].shape[1]
-    B_cat = torch.stack([b.contiguous() for b in B_per_expert], dim=0).to(
-        A_packed.dtype
-    )
+    if packed_B_input:
+        if B_per_expert.ndim != 3:
+            raise ValueError("Prepacked B_per_expert must have shape [E, K, N].")
+        if B_per_expert.shape[0] != E:
+            raise ValueError(
+                f"Expected {E} expert matrices from offsets, got {B_per_expert.shape[0]}."
+            )
+        B_cat = B_per_expert.contiguous()
+        if B_cat.dtype != A_packed.dtype:
+            B_cat = B_cat.to(A_packed.dtype)
+    else:
+        K = B_per_expert[0].shape[0]
+        N = B_per_expert[0].shape[1]
+        B_cat = torch.stack([b.contiguous() for b in B_per_expert], dim=0).to(
+            A_packed.dtype
+        )
+
+    K = B_cat.shape[1]
+    N = B_cat.shape[2]
 
     if requires_grad and allow_triton_training:
         C = _GroupedMMVarMFunction.apply(A_packed, offsets, B_cat, use_fp16_acc)
@@ -451,7 +474,10 @@ def grouped_mm_varM(
 
     if requires_grad:
         A_blocks = _split_by_offsets(A_packed, offsets)
-        Y = _foreach_mm(A_blocks, list(B_per_expert))
+        B_blocks = (
+            list(B_per_expert.unbind(0)) if packed_B_input else list(B_per_expert)
+        )
+        Y = _foreach_mm(A_blocks, B_blocks)
         C_packed = torch.empty((A_packed.shape[0], N), device=device, dtype=out_dtype)
         for y, s, t in zip(Y, offsets[:-1], offsets[1:]):
             s_i, t_i = int(s.item()), int(t.item())

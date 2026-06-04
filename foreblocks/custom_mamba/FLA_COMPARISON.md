@@ -111,6 +111,11 @@ for t in range(T):
 - a full parallel prefix scan over chunk boundary states using FLA-style log-space `segment_sum`
 - an optional Triton recurrent per-chunk kernel (`chunked_ssd_forward_triton`) for CUDA experiments
 
+`Mamba2Block` now defaults training to the full parallel-prefix path and reserves
+the per-chunk recurrent Triton SSD path for eval/inference. This matches the
+current trade-off: training benefits more from parallel chunk-boundary
+propagation, while inference benefits from avoiding the larger prefix tensors.
+
 **Impact:** Chunked scan enables:
 1. **Parallelism across chunks** — different chunks can be processed concurrently
 2. **Lower memory bandwidth** — state passes between chunks are materialized once

@@ -136,6 +136,9 @@ class MultiAttention(nn.Module):
         # NEW: MoBA-specific knobs
         moba_block_size: int | None = None,
         moba_topk: int = 4,
+        # Dilated sliding-window knobs
+        attention_dilation: int = 2,
+        dilated_window_size: int | None = None,
     ):
         super().__init__()
 
@@ -195,6 +198,12 @@ class MultiAttention(nn.Module):
         self.prob_sparse_factor = prob_sparse_factor
         self.window_size = window_size
         self.chunk_size = chunk_size
+        self.attention_dilation = int(attention_dilation)
+        self.dilated_window_size = (
+            int(dilated_window_size)
+            if dilated_window_size is not None
+            else int(window_size) * max(1, self.attention_dilation)
+        )
         self.use_flash_sliding = use_flash_sliding
         self.softpick_chunk_size = softpick_chunk_size
         self.nsa_block_size = (
@@ -213,6 +222,10 @@ class MultiAttention(nn.Module):
             raise ValueError("moba_block_size must be > 0")
         if self.moba_topk <= 0:
             raise ValueError("moba_topk must be > 0")
+        if self.attention_dilation <= 0:
+            raise ValueError("attention_dilation must be > 0")
+        if self.dilated_window_size <= 0:
+            raise ValueError("dilated_window_size must be > 0")
 
         # Setup projections / type-specific modules
         self._setup_attention_modules(
@@ -228,7 +241,15 @@ class MultiAttention(nn.Module):
         self.backends = (
             _get_available_backends()
             if attention_type
-            in ["standard", "prob_sparse", "softpick", "sliding_window", "nsa"]
+            in [
+                "standard",
+                "prob_sparse",
+                "softpick",
+                "sliding_window",
+                "dilated_sliding_window",
+                "dilated_window",
+                "nsa",
+            ]
             else {}
         )
 
@@ -312,6 +333,8 @@ class MultiAttention(nn.Module):
             "prob_sparse",
             "softpick",
             "sliding_window",
+            "dilated_sliding_window",
+            "dilated_window",
             "nsa",
             "moba",
         ]:
@@ -430,6 +453,7 @@ class MultiAttention(nn.Module):
     def _create_impl(self) -> AttentionImpl:
         from .variants import (
             MoBAAttentionImpl,
+            DilatedSlidingWindowAttentionImpl,
             NSAImpl,
             ProbSparseAttentionImpl,
             SlidingWindowAttentionImpl,
@@ -448,6 +472,8 @@ class MultiAttention(nn.Module):
             return MoBAAttentionImpl(self)
         if self.attention_type == "sliding_window":
             return SlidingWindowAttentionImpl(self)
+        if self.attention_type in {"dilated_sliding_window", "dilated_window"}:
+            return DilatedSlidingWindowAttentionImpl(self)
         if self.attention_type == "softpick":
             return SoftpickAttentionImpl(self)
         if self.attention_type in {"frequency", "dwt", "autocor"}:

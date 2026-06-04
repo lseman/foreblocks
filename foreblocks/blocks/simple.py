@@ -2,6 +2,18 @@
 
 This module provides lightweight normalization, gated residual network, and
 activation factory helpers used across foreblocks models.
+
+``GRN`` follows the Gated Residual Network pattern popularized in Temporal
+Fusion Transformers:
+
+    Lim et al., "Temporal Fusion Transformers for Interpretable Multi-horizon
+    Time Series Forecasting", International Journal of Forecasting 2021.
+    Paper: https://arxiv.org/abs/1912.09363
+
+The local ``RMSNorm`` helper is based on:
+
+    Zhang & Sennrich, "Root Mean Square Layer Normalization", NeurIPS 2019.
+    Paper: https://arxiv.org/abs/1910.07467
 """
 
 import math

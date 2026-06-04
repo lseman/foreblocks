@@ -9,8 +9,14 @@ try:
     from foreblocks.transformer.attention.kernels.chunked_causal_linear_attention import (
         chunked_causal_linear_attn,
     )
+    from foreblocks.transformer.attention.kernels.fla_linear_attention import (
+        can_use_fla_linear_attn,
+        fla_recurrent_linear_attn_forward,
+    )
 except Exception:
     chunked_causal_linear_attn = None  # type: ignore[assignment]
+    can_use_fla_linear_attn = None  # type: ignore[assignment]
+    fla_recurrent_linear_attn_forward = None  # type: ignore[assignment]
 
 from .base import FeatureMapRegistry, RoPEMixin
 
@@ -91,7 +97,16 @@ class RDABackend(RoPEMixin, nn.Module):
 
         # ── Causal global ───────────────────────────────────────────────
         if is_causal:
-            if chunked_causal_linear_attn is not None and not torch.jit.is_scripting():
+            if (
+                not torch.is_grad_enabled()
+                and can_use_fla_linear_attn is not None
+                and fla_recurrent_linear_attn_forward is not None
+                and can_use_fla_linear_attn(q_prime, k_prime, v)
+            ):
+                out_heads = fla_recurrent_linear_attn_forward(
+                    q_prime, k_prime, v, eps=1e-6
+                )
+            elif chunked_causal_linear_attn is not None and not torch.jit.is_scripting():
                 # Chunk-parallel scan: differentiable, no O(B·H·T·F·Dh) intermediate.
                 out_heads = chunked_causal_linear_attn(
                     q_prime, k_prime, v, chunk_size=128, eps=1e-6

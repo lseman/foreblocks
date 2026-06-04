@@ -21,12 +21,12 @@ class TestGatedDeltaNet2Basic:
 
     def test_kernel_imports(self):
         from foreblocks.transformer.attention.kernels import (
-            can_use_gdn2_chunk,
-            chunk_gdn2,
+            can_use_fla_gdn2_chunk,
+            fla_gdn2_chunk_forward,
         )
 
-        assert callable(can_use_gdn2_chunk)
-        assert callable(chunk_gdn2)
+        assert callable(can_use_fla_gdn2_chunk)
+        assert callable(fla_gdn2_chunk_forward)
 
     def test_construction_default(self, device):
         from foreblocks.transformer.attention.modules.linear_att import (

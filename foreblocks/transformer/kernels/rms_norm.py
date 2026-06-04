@@ -18,6 +18,8 @@ except Exception:
 
 
 def _should_use_triton(x: torch.Tensor, min_numel: int = 4096) -> bool:
+    if not _supports_fused_row_width(x.shape[-1], x.element_size()):
+        return False
     return (
         TRITON_AVAILABLE
         and x.is_cuda
@@ -25,6 +27,23 @@ def _should_use_triton(x: torch.Tensor, min_numel: int = 4096) -> bool:
         and x.numel() >= min_numel
         and not torch.jit.is_scripting()
     )
+
+
+def _supports_fused_row_width(n_cols: int, element_size: int) -> bool:
+    if not TRITON_AVAILABLE:
+        return False
+    return n_cols <= 65536 // element_size
+
+
+def _block_size_for_num_cols(n_cols: int, element_size: int) -> int:
+    max_fused_size = 65536 // element_size
+    block_size = triton.next_power_of_2(n_cols)
+    if block_size > max_fused_size:
+        raise RuntimeError(
+            f"Triton RMSNorm only supports feature dims up to {max_fused_size} "
+            f"for element size {element_size}; got {n_cols}."
+        )
+    return block_size
 
 
 # =============================== Triton kernels ===============================
@@ -109,44 +128,59 @@ if TRITON_AVAILABLE:
         W,
         Rms,
         DX,
-        DW,
+        DWPartial,
         stride_dy_row,
         stride_x_row,
         stride_dx_row,
+        stride_dw_row,
+        n_rows,
         n_cols,
         eps,
         HAS_WEIGHT: tl.constexpr,
-        COMPUTE_DW: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
+        ROWS_PER_PROGRAM: tl.constexpr,
+        COMPUTE_DW: tl.constexpr,
     ):
-        row_idx = tl.program_id(0)
-
+        row_block = tl.program_id(0)
+        row_start = row_block * ROWS_PER_PROGRAM
         col = tl.arange(0, BLOCK_SIZE)
         mask = col < n_cols
 
-        dy_ptrs = DY + row_idx * stride_dy_row + col
-        x_ptrs = X + row_idx * stride_x_row + col
-
-        dy = tl.load(dy_ptrs, mask=mask, other=0.0).to(tl.float32)
-        x = tl.load(x_ptrs, mask=mask, other=0.0).to(tl.float32)
-
-        rms = tl.load(Rms + row_idx)
-
         if HAS_WEIGHT:
             w = tl.load(W + col, mask=mask, other=1.0).to(tl.float32)
-            dy_scaled = dy * w
-        else:
-            dy_scaled = dy
+        if COMPUTE_DW:
+            dw = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
-        sum_dy_x = tl.sum(dy_scaled * x, axis=0)
-        dx = rms * (dy_scaled - x * sum_dy_x * rms * rms / n_cols)
+        for row_offset in range(0, ROWS_PER_PROGRAM):
+            row_idx = row_start + row_offset
+            row_mask = row_idx < n_rows
 
-        dx_ptrs = DX + row_idx * stride_dx_row + col
-        tl.store(dx_ptrs, dx, mask=mask)
+            dy = tl.load(
+                DY + row_idx * stride_dy_row + col,
+                mask=row_mask & mask,
+                other=0.0,
+            ).to(tl.float32)
+            x = tl.load(
+                X + row_idx * stride_x_row + col,
+                mask=row_mask & mask,
+                other=0.0,
+            ).to(tl.float32)
+            rms = tl.load(Rms + row_idx, mask=row_mask, other=0.0).to(tl.float32)
+
+            dy_scaled = dy * w if HAS_WEIGHT else dy
+            sum_dy_x = tl.sum(dy_scaled * x, axis=0)
+            dx = rms * (dy_scaled - x * sum_dy_x * rms * rms / n_cols)
+
+            tl.store(
+                DX + row_idx * stride_dx_row + col,
+                dx,
+                mask=row_mask & mask,
+            )
+            if COMPUTE_DW:
+                dw += tl.where(row_mask & mask, dy * x * rms, 0.0)
 
         if COMPUTE_DW:
-            x_normed = x * rms
-            tl.atomic_add(DW + col, tl.where(mask, dy * x_normed, 0.0))
+            tl.store(DWPartial + row_block * stride_dw_row + col, dw, mask=mask)
 
     @triton.jit
     def scale_bias_kernel(
@@ -220,6 +254,22 @@ if TRITON_AVAILABLE:
 # ============================== Autograd functions ===========================
 
 
+def _new_grad_weight_partials(
+    weight: torch.Tensor,
+    n_row_blocks: int,
+) -> torch.Tensor:
+    return torch.empty(
+        (n_row_blocks, weight.numel()),
+        device=weight.device,
+        dtype=torch.float32,
+    )
+
+
+def _num_backward_row_blocks(x: torch.Tensor, n_rows: int) -> int:
+    sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
+    return max(1, min(sm_count, n_rows))
+
+
 class RMSNormTritonFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, eps):
@@ -237,7 +287,7 @@ class RMSNormTritonFunction(torch.autograd.Function):
         y = torch.empty_like(x)
         rms = torch.empty((M,), dtype=torch.float32, device=x.device)
 
-        BLOCK_SIZE = min(triton.next_power_of_2(N), 2048)
+        BLOCK_SIZE = _block_size_for_num_cols(N, x.element_size())
 
         rmsnorm_fwd_kernel[(M,)](
             x,
@@ -274,26 +324,32 @@ class RMSNormTritonFunction(torch.autograd.Function):
         M = grad_output.shape[0]
 
         grad_input = torch.empty_like(x)
-        grad_weight = torch.zeros_like(weight)
 
-        BLOCK_SIZE = min(triton.next_power_of_2(N), 2048)
-        rmsnorm_bwd_kernel[(M,)](
+        BLOCK_SIZE = _block_size_for_num_cols(N, x.element_size())
+        n_row_blocks = _num_backward_row_blocks(x, M)
+        rows_per_program = triton.cdiv(M, n_row_blocks)
+        grad_weight_partials = _new_grad_weight_partials(weight, n_row_blocks)
+        rmsnorm_bwd_kernel[(n_row_blocks,)](
             grad_output,
             x,
             weight,
             rms,
             grad_input,
-            grad_weight,
+            grad_weight_partials,
             grad_output.stride(0),
             x.stride(0),
             grad_input.stride(0),
+            grad_weight_partials.stride(0),
+            M,
             N,
             eps,
             True,
-            True,
             BLOCK_SIZE,
+            rows_per_program,
+            True,
         )
 
+        grad_weight = grad_weight_partials.sum(dim=0).to(weight.dtype)
         return grad_input.reshape(orig_shape), grad_weight, None
 
 
@@ -302,7 +358,8 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
     Single-kernel fused (residual + update) + RMSNorm.
 
     Saves one [*, D] intermediate tensor vs. the two-kernel sequence.
-    Only valid for D <= 2048, CUDA, dtype in {float16, bfloat16, float32}.
+    Only valid for CUDA dtypes in {float16, bfloat16, float32} and rows
+    that fit in Triton's 64KB fused-row limit.
     """
 
     @staticmethod
@@ -322,7 +379,7 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
         y = torch.empty_like(residual_2d)
         rms = torch.empty((M,), dtype=torch.float32, device=residual.device)
 
-        BLOCK_SIZE = min(triton.next_power_of_2(N), 2048)
+        BLOCK_SIZE = _block_size_for_num_cols(N, residual.element_size())
 
         fused_add_rmsnorm_fwd_kernel[(M,)](
             residual_2d,
@@ -356,27 +413,40 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
         M = grad_output_2d.shape[0]
 
         grad_input = torch.empty_like(out_2d)
-        grad_weight = torch.zeros_like(weight) if weight is not None else None
 
-        BLOCK_SIZE = min(triton.next_power_of_2(N), 2048)
+        BLOCK_SIZE = _block_size_for_num_cols(N, out_2d.element_size())
+        compute_dw = weight is not None
+        n_row_blocks = _num_backward_row_blocks(out_2d, M)
+        rows_per_program = triton.cdiv(M, n_row_blocks)
+        grad_weight_partials = (
+            _new_grad_weight_partials(weight, n_row_blocks) if compute_dw else out_2d
+        )
 
-        rmsnorm_bwd_kernel[(M,)](
+        rmsnorm_bwd_kernel[(n_row_blocks,)](
             grad_output_2d,
             out_2d,
             weight,
             rms,
             grad_input,
-            grad_weight if grad_weight is not None else weight,
+            grad_weight_partials,
             grad_output_2d.stride(0),
             out_2d.stride(0),
             grad_input.stride(0),
+            grad_weight_partials.stride(0),
+            M,
             N,
             eps,
             weight is not None,
-            grad_weight is not None,
             BLOCK_SIZE,
+            rows_per_program,
+            compute_dw,
         )
 
+        grad_weight = (
+            grad_weight_partials.sum(dim=0).to(weight.dtype)
+            if compute_dw
+            else None
+        )
         dx = grad_input.reshape(orig_shape)
         return dx, dx, grad_weight, None
 
@@ -390,7 +460,7 @@ def fused_add_rmsnorm(
     weight: torch.Tensor,
     eps: float,
 ) -> torch.Tensor:
-    """Single-kernel fused (residual + update) + RMSNorm. Only for D <= 2048 and CUDA."""
+    """Single-kernel fused (residual + update) + RMSNorm for supported CUDA row widths."""
     return FusedAddRMSNormFunction.apply(residual, update, weight, eps)
 
 
@@ -404,7 +474,7 @@ def triton_scale_bias(
     x_flat = x.reshape(-1, H).contiguous()
     y_flat = torch.empty_like(x_flat)
 
-    BLOCK_SIZE = min(triton.next_power_of_2(H), 2048)
+    BLOCK_SIZE = _block_size_for_num_cols(H, x.element_size())
     grid = (x_flat.shape[0],)
 
     scale_bias_kernel[grid](
@@ -436,7 +506,7 @@ def triton_fused_rmsnorm_scale_bias(
     x_flat = x.reshape(-1, H).contiguous()
     y_flat = torch.empty_like(x_flat)
 
-    BLOCK_SIZE = min(triton.next_power_of_2(H), 2048)
+    BLOCK_SIZE = _block_size_for_num_cols(H, x.element_size())
     grid = (x_flat.shape[0],)
 
     fused_rmsnorm_scale_bias_kernel[grid](
@@ -460,6 +530,7 @@ def triton_fused_rmsnorm_scale_bias(
 __all__ = [
     "TRITON_AVAILABLE",
     "_should_use_triton",
+    "_supports_fused_row_width",
     "RMSNormTritonFunction",
     "FusedAddRMSNormFunction",
     "fused_add_rmsnorm",

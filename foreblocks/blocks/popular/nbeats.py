@@ -1,7 +1,13 @@
-"""Popular forecasting block implementations for foreblocks.
+"""N-BEATS forecasting blocks.
 
 This module provides N-BEATS blocks for interpretable time series forecasting
 and related basis/block components.
+
+Based on:
+
+    Oreshkin et al., "N-BEATS: Neural basis expansion analysis for
+    interpretable time series forecasting", ICLR 2020.
+    Paper: https://arxiv.org/abs/1905.10437
 """
 
 import math

@@ -23,6 +23,7 @@ from foreblocks.transformer.attention.kernels.fused_rope import (
     triton_apply_rope,
     triton_apply_rope_bthd,
 )
+from foreblocks.transformer.embeddings.rotary import apply_rotary_emb
 from foreblocks.transformer.attention.kernels.paged_decode import triton_paged_decode
 from foreblocks.transformer.attention.cache.paged import PagedKVCache
 from foreblocks.transformer.attention.cache.decode_stream import (
@@ -47,6 +48,33 @@ def _rope_ref(x, cos, sin):
     x1, x2 = x[..., :half], x[..., half:]
     rot = torch.cat([-x2, x1], dim=-1)
     return x * cos.view(1, 1, *cos.shape) + rot * sin.view(1, 1, *sin.shape)
+
+
+def _rotate_half(x, interleaved=False):
+    if not interleaved:
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
+    x1, x2 = x[..., ::2], x[..., 1::2]
+    return torch.stack((-x2, x1), dim=-1).flatten(-2)
+
+
+def _rope_ref_bthd(x, cos, sin, interleaved=False):
+    """RoPE reference for x:[B,T,H,D], cos/sin:[B,T,R] or [T,R]."""
+    ro_dim = cos.shape[-1] * 2
+    x_rot = x[..., :ro_dim]
+    if not interleaved:
+        cos_full = torch.cat([cos, cos], dim=-1)
+        sin_full = torch.cat([sin, sin], dim=-1)
+    else:
+        cos_full = torch.stack([cos, cos], dim=-1).flatten(-2)
+        sin_full = torch.stack([sin, sin], dim=-1).flatten(-2)
+    while cos_full.dim() < x_rot.dim():
+        cos_full = cos_full.unsqueeze(-2)
+        sin_full = sin_full.unsqueeze(-2)
+    rotated = x_rot * cos_full + _rotate_half(x_rot, interleaved) * sin_full
+    if ro_dim == x.shape[-1]:
+        return rotated
+    return torch.cat([rotated, x[..., ro_dim:]], dim=-1)
 
 
 def test_triton_apply_rope_bhtd_matches_reference():
@@ -81,6 +109,48 @@ def test_triton_apply_rope_bthd_matches_reference():
     out = triton_apply_rope_bthd(x, cos[:, : D // 2], sin[:, : D // 2], block_t=16)
     ref = _rope_ref(x.transpose(1, 2), cos, sin).transpose(1, 2)
     torch.testing.assert_close(out, ref, atol=ATOL, rtol=0)
+
+
+def test_triton_apply_rope_bthd_partial_interleaved_tensor_offsets():
+    torch.manual_seed(4)
+    B, T, H, D, R = 3, 5, 2, 16, 4
+    x = torch.randn(B, T, H, D, device=DEV)
+    offsets = torch.tensor([0, 2, 4], device=DEV, dtype=torch.int32)
+    angles = torch.randn(T + int(offsets.max().item()), R, device=DEV)
+    cos, sin = angles.cos(), angles.sin()
+
+    out = triton_apply_rope_bthd(
+        x,
+        cos,
+        sin,
+        seqlen_offset=offsets,
+        interleaved=True,
+        block_t=16,
+    )
+    pos = offsets[:, None] + torch.arange(T, device=DEV)
+    ref = _rope_ref_bthd(x, cos[pos], sin[pos], interleaved=True)
+    torch.testing.assert_close(out, ref, atol=ATOL, rtol=0)
+
+
+def test_apply_rotary_emb_backward_with_triton_general_path():
+    torch.manual_seed(5)
+    B, T, H, D, R = 2, 6, 3, 16, 4
+    offsets = torch.tensor([1, 3], device=DEV, dtype=torch.int64)
+    angles = torch.randn(T + int(offsets.max().item()), R, device=DEV)
+    cos, sin = angles.cos(), angles.sin()
+    grad = torch.randn(B, T, H, D, device=DEV)
+
+    x = torch.randn(B, T, H, D, device=DEV, requires_grad=True)
+    y = apply_rotary_emb(x, cos, sin, interleaved=True, seqlen_offsets=offsets)
+    y.backward(grad)
+
+    x_ref = x.detach().clone().requires_grad_(True)
+    pos = offsets[:, None] + torch.arange(T, device=DEV)
+    y_ref = _rope_ref_bthd(x_ref, cos[pos], sin[pos], interleaved=True)
+    y_ref.backward(grad)
+
+    torch.testing.assert_close(y, y_ref, atol=ATOL, rtol=0)
+    torch.testing.assert_close(x.grad, x_ref.grad, atol=ATOL, rtol=0)
 
 
 @pytest.mark.parametrize(

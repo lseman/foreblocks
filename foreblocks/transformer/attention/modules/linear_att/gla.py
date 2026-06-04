@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ...kernels import can_use_fla_gla, fla_gla_forward
 from .base import RoPEMixin
 
 
@@ -201,11 +202,14 @@ class GLABackend(RoPEMixin, nn.Module):
         if S is None:
             S = query.new_zeros((B, self.n_heads, self.d_head, self.d_head))
 
-        o, S_next = (
-            self._chunk_forward(q, k, v, gk, S)
-            if self.mode == "chunk"
-            else self._recurrent_forward(q, k, v, gk, S)
-        )
+        if can_use_fla_gla(q, k, v, gk, S):
+            o, S_next = fla_gla_forward(q, k, v, gk, S, self.scale, self.mode)
+        else:
+            o, S_next = (
+                self._chunk_forward(q, k, v, gk, S)
+                if self.mode == "chunk"
+                else self._recurrent_forward(q, k, v, gk, S)
+            )
         # o: [B, H, L, D]
 
         # Output gate
@@ -222,5 +226,4 @@ class GLABackend(RoPEMixin, nn.Module):
         out = self.dropout(self.out_proj(out))
 
         return out, None, {"gla_S": S_next} if is_causal else {"gla_S": S_next}
-
 
