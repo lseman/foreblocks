@@ -2,10 +2,9 @@
 import type { CategoryMap, NodeTypeMap } from "../types/types";
 
 export const getApiBase = (): string => {
-  const fromVite = (import.meta as any)?.env?.VITE_API_BASE?.trim?.() || "";
-  const fromNext = typeof process !== "undefined" ? (process.env?.NEXT_PUBLIC_API_BASE || "").trim() : "";
+  const fromVite = import.meta.env.VITE_API_BASE?.trim?.() || "";
   const fromWindow = typeof window !== "undefined" ? ((window as any).__API_BASE__ || "").trim() : "";
-  const pick = fromVite || fromNext || fromWindow;
+  const pick = fromVite || fromWindow;
   if (pick) return pick.replace(/\/+$/, "");
   if (typeof window !== "undefined") {
     const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);

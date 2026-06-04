@@ -44,7 +44,9 @@ export function useExecution() {
         if (wsRef.current) {
             try {
                 wsRef.current.ws.close();
-            } catch { }
+            } catch {
+                // WebSocket may already be closed by the browser.
+            }
             wsRef.current = null;
         }
         if (pollRef.current) {
@@ -111,7 +113,9 @@ export function useExecution() {
                         setTaskId(null);
                         closeWs();
                     }
-                } catch { }
+                } catch {
+                    // Status polling is best-effort; the next interval will retry.
+                }
             }, 1000);
         },
         [nodes, setProgressMsg, updateExecutionResults, updateExecutionState, setExecutionLogs, setShowResultsPanel, setIsExecuting, setTaskId, closeWs]
@@ -144,7 +148,9 @@ export function useExecution() {
                     if (msg.event === "ping") {
                         try {
                             ws.send(JSON.stringify({ event: "pong" }));
-                        } catch { }
+                        } catch {
+                            // Ignore failed pong writes; fallback polling handles liveness.
+                        }
                         return;
                     }
                         switch (msg.event) {
@@ -347,7 +353,7 @@ export function useExecution() {
             setTaskId(null);
             setIsExecuting(false);
         }
-    }, [nodes, connections, nodeTypes, closeWs, setIsExecuting, setProgressMsg, setExecutionState, setExecutionResults, setExecutionLogs, setExecutionArtifacts, setTaskId, openWebSocket, setShowResultsPanel, updateExecutionState, updateExecutionResults, setPreflightIssues, setShowPreflightPanel, clearExecutionTrace]);
+    }, [nodes, connections, nodeTypes, closeWs, setIsExecuting, setProgressMsg, setExecutionState, setExecutionResults, setExecutionLogs, setExecutionArtifacts, setTaskId, openWebSocket, setShowResultsPanel, updateExecutionState, setPreflightIssues, setShowPreflightPanel, clearExecutionTrace]);
 
     return { executeWorkflow, isExecuting, closeWs };
 }

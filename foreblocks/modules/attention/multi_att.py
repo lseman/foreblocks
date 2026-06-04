@@ -3,14 +3,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.models.transformer.sype import AdaptiveWarp, SyPERotator
-from foreblocks.modules.attention.cache.decode_stream import paged_stream_decode_standard
-from foreblocks.modules.attention.cache.kv import DenseKVProvider, KVProvider, PagedKVProvider
+from foreblocks.modules.attention.cache.decode_stream import (
+    paged_stream_decode_standard,
+)
+from foreblocks.modules.attention.cache.kv import (
+    DenseKVProvider,
+    KVProvider,
+    PagedKVProvider,
+)
 from foreblocks.modules.attention.cache.paged import PagedKVCache
-from foreblocks.ops.attention import triton_apply_rope, triton_paged_decode
-from foreblocks.modules.attention.utils.compaction import AttentionMatchingCompactor, AttentionMatchingConfig
+from foreblocks.modules.attention.utils.compaction import (
+    AttentionMatchingCompactor,
+    AttentionMatchingConfig,
+)
 from foreblocks.modules.attention.utils.position import PositionEncodingApplier
 from foreblocks.modules.attention.variants.base import AttentionImpl
 from foreblocks.modules.attention.variants.standard import StandardAttentionImpl
+from foreblocks.ops.attention import triton_apply_rope, triton_paged_decode
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -51,7 +60,7 @@ def _get_available_backends() -> dict[str, bool]:
     # PyTorch scaled_dot_product_attention
     backends["sdp"] = hasattr(F, "scaled_dot_product_attention")
 
-    # Optional third-party SoftPick
+    # Optional third_party SoftPick
     try:
         from foreblocks.third_party.flash_softpick_attn import (  # noqa: F401
             parallel_softpick_attn,
@@ -85,7 +94,7 @@ class MultiAttention(nn.Module):
         * PyTorch SDPA
         * FlashAttn
         * xFormers
-        * SoftPick (optional third-party)
+        * SoftPick (optional third_party)
     - Boolean mask semantics (True = masked/disallowed)
     - Paged KV cache for causal self-attention decode (no growing torch.cat; no gather)
     """
@@ -139,6 +148,9 @@ class MultiAttention(nn.Module):
         # Dilated sliding-window knobs
         attention_dilation: int = 2,
         dilated_window_size: int | None = None,
+        # NEW: QK normalization (stabilises attention scores)
+        qk_norm: bool = False,
+        qk_norm_type: str = "rms",  # "rms" | "l2"
     ):
         super().__init__()
 
@@ -205,6 +217,19 @@ class MultiAttention(nn.Module):
             else int(window_size) * max(1, self.attention_dilation)
         )
         self.use_flash_sliding = use_flash_sliding
+
+        # ── QK Normalization ───────────────────────────────────────────────
+        self.qk_norm = bool(qk_norm)
+        assert qk_norm_type in {"rms", "l2"}, (
+            f"qk_norm_type must be 'rms' or 'l2', got {qk_norm_type}"
+        )
+        self.qk_norm_type = qk_norm_type
+        if self.qk_norm and self.qk_norm_type == "rms":
+            self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
+            self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
+        else:
+            self.q_norm = None
+            self.k_norm = None
         self.softpick_chunk_size = softpick_chunk_size
         self.nsa_block_size = (
             int(nsa_block_size) if nsa_block_size is not None else int(cache_block_size)
@@ -291,7 +316,8 @@ class MultiAttention(nn.Module):
                 f"backends={self.backends}, rotary={self.use_rotary}, "
                 f"paged_cache={self.use_paged_cache}, "
                 f"mla={self.use_mla}(latent={self.kv_latent_dim}), "
-                f"attn_match_compact={self.use_attention_matching_compaction}"
+                f"attn_match_compact={self.use_attention_matching_compaction}, "
+                f"qk_norm={self.qk_norm}({self.qk_norm_type})"
             )
 
     def _apply_gated_attention(self, out_bhtd: torch.Tensor) -> torch.Tensor:
@@ -373,7 +399,9 @@ class MultiAttention(nn.Module):
             # RoPE (self-attention only)
             self.use_rotary = (pos_encoding_type == "rope") and not self.cross_attention
             if self.use_rotary:
-                from foreblocks.layers.embeddings.rotary import RotaryEmbedding  # local import
+                from foreblocks.layers.embeddings.rotary import (
+                    RotaryEmbedding,  # local import
+                )
 
                 self.rotary_emb = RotaryEmbedding(self.head_dim)
             else:
@@ -417,7 +445,9 @@ class MultiAttention(nn.Module):
             self.nsa_gate_proj = None
 
             if attention_type == "frequency":
-                from foreblocks.modules.attention.modules.frequency_att import FrequencyAttention
+                from foreblocks.modules.attention.modules.frequency_att import (
+                    FrequencyAttention,
+                )
 
                 self.freq_attention = FrequencyAttention(
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
@@ -429,7 +459,10 @@ class MultiAttention(nn.Module):
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
                 )
             elif attention_type == "autocor":
-                from foreblocks.modules.attention.modules.autocor_att import AutoCorrelation, AutoCorrelationLayer
+                from foreblocks.modules.attention.modules.autocor_att import (
+                    AutoCorrelation,
+                    AutoCorrelationLayer,
+                )
 
                 autocorr = AutoCorrelation(
                     mask_flag=True,
@@ -452,8 +485,8 @@ class MultiAttention(nn.Module):
 
     def _create_impl(self) -> AttentionImpl:
         from foreblocks.modules.attention.variants import (
-            MoBAAttentionImpl,
             DilatedSlidingWindowAttentionImpl,
+            MoBAAttentionImpl,
             NSAImpl,
             ProbSparseAttentionImpl,
             SlidingWindowAttentionImpl,
@@ -1009,6 +1042,18 @@ class MultiAttention(nn.Module):
         q_start_pos: torch.Tensor | None = None
         if not self.cross_attention:
             q_start_pos = provider.get_start_positions(B, q.device)
+
+        # QK Normalization: applied after projection, before RoPE
+        # (matches FLA's order; stabilises attention scores)
+        if self.qk_norm:
+            if self.q_norm is not None:
+                # RMSNorm mode: learnable per-channel scaling
+                q = self.q_norm(q)  # [B, H, T, D]
+                k = self.k_norm(k)  # [B, H, T, D]
+            else:
+                # L2 mode: pure normalisation (no params)
+                q = F.normalize(q, p=2.0, dim=-1)
+                k = F.normalize(k, p=2.0, dim=-1)
 
         q, k = self.position_encoding_applier.apply(
             q,

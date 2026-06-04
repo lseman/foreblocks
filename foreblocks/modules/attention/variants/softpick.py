@@ -13,7 +13,7 @@ probability mass that produces attention sinks and massive activations while
 matching softmax-attention quality.
 
 This wrapper dispatches to the fused Triton ``parallel_softpick_attn`` kernel
-from the bundled third-party implementation (handling both packed and
+from the bundled third_party implementation (handling both packed and
 ``cu_seqlens`` var-length layouts). If the backend is unavailable or raises,
 it falls back to the parent's standard attention.
 """
@@ -59,10 +59,14 @@ class SoftpickAttentionImpl:
             )
 
         try:
-            from foreblocks.models.transformer.third_party.flash_softpick_attn import parallel_softpick_attn
+            from foreblocks.models.transformer.third_party.flash_softpick_attn import (
+                parallel_softpick_attn,
+            )
 
             B, T_q, _ = query.shape
-            q, k, v, _ = self.parent._prepare_qkv_attention(query, key, value, layer_state)
+            q, k, v, _ = self.parent._prepare_qkv_attention(
+                query, key, value, layer_state
+            )
 
             if cu_seqlens is None:
                 out = parallel_softpick_attn(
@@ -88,7 +92,8 @@ class SoftpickAttentionImpl:
                     head_first=True,
                 )
                 out = (
-                    out.view(B, T_q, self.parent.n_heads, self.parent.head_dim)
+                    out
+                    .view(B, T_q, self.parent.n_heads, self.parent.head_dim)
                     .contiguous()
                     .view(B, T_q, self.parent.d_model)
                 )

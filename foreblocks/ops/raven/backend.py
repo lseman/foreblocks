@@ -10,7 +10,7 @@ from typing import Iterator
 
 def fla_path() -> Path:
     repo_root = Path(__file__).resolve().parents[3]
-    submodule = repo_root / "third-party" / "flash-linear-attention"
+    submodule = repo_root / "third_party" / "flash-linear-attention"
     if submodule.exists():
         return submodule
     return repo_root / "flash-linear-attention"

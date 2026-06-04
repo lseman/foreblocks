@@ -1,7 +1,10 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
+  ChevronDown,
+  ChevronRight,
   Clock3,
   FolderKanban,
+  Info,
   Layers3,
   PanelLeftClose,
   PanelLeftOpen,
@@ -33,6 +36,43 @@ type WorkspaceSidebarProps = {
   onSectionChange: (section: SidebarSection) => void;
 };
 
+function getRequiredInputCount(_type: string, info: NodeTypeMap[string]): number {
+  const optionalInputs = new Set(info.optional_inputs || []);
+  return (info.inputs || []).filter((input) => !optionalInputs.has(input)).length;
+}
+
+function getNodeRole(type: string, info: NodeTypeMap[string]): string {
+  const category = (info.category || "").toLowerCase();
+  const role = info.py?.role || "";
+  if (role) return role;
+  if (type.includes("trainer") || category.includes("train")) return "trainer";
+  if (type.includes("data") || type.includes("csv") || category.includes("data")) return "data";
+  if (type.includes("model") || category.includes("model")) return "model";
+  if (type.includes("head") || category.includes("head")) return "head";
+  if (category.includes("encoder")) return "encoder";
+  if (category.includes("decoder")) return "decoder";
+  return category || "block";
+}
+
+function roleBadgeClass(role: string): string {
+  switch (role) {
+    case "trainer":
+      return "bg-amber-500/10 text-amber-200 ring-1 ring-amber-400/20";
+    case "data":
+      return "bg-blue-500/10 text-blue-200 ring-1 ring-blue-400/20";
+    case "model":
+      return "bg-cyan-500/10 text-cyan-200 ring-1 ring-cyan-400/20";
+    case "head":
+      return "bg-fuchsia-500/10 text-fuchsia-200 ring-1 ring-fuchsia-400/20";
+    case "encoder":
+      return "bg-emerald-500/10 text-emerald-200 ring-1 ring-emerald-400/20";
+    case "decoder":
+      return "bg-violet-500/10 text-violet-200 ring-1 ring-violet-400/20";
+    default:
+      return "bg-white/[0.05] text-slate-300 ring-1 ring-white/10";
+  }
+}
+
 export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
   nodeSearch,
   setNodeSearch,
@@ -50,6 +90,9 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
   onToggleCollapsed,
   onSectionChange,
 }) => {
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(() => new Set());
+  const [selectedLibraryType, setSelectedLibraryType] = useState<string | null>(null);
+
   const recentNodes = useMemo(
     () =>
       recentNodeTypes
@@ -57,6 +100,8 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
         .filter((item) => item.def),
     [nodeTypes, recentNodeTypes],
   );
+
+  const selectedLibraryInfo = selectedLibraryType ? nodeTypes[selectedLibraryType] : null;
 
   const sections: Array<{
     id: SidebarSection;
@@ -190,48 +235,140 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
           />
         </div>
 
+        {selectedLibraryInfo && selectedLibraryType && (
+          <div className="mb-4 rounded-2xl bg-white/[0.035] px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                  <Info size={12} />
+                  Node
+                </div>
+                <div className="mt-1 truncate text-sm font-semibold text-white">
+                  {selectedLibraryInfo.name || selectedLibraryType}
+                </div>
+              </div>
+              <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${roleBadgeClass(getNodeRole(selectedLibraryType, selectedLibraryInfo))}`}>
+                {getNodeRole(selectedLibraryType, selectedLibraryInfo)}
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[10px] uppercase tracking-[0.12em] text-slate-500">
+              <div className="rounded-xl bg-black/20 px-2 py-2">
+                <div className="text-sm font-semibold text-slate-100">{getRequiredInputCount(selectedLibraryType, selectedLibraryInfo)}</div>
+                <div>Required</div>
+              </div>
+              <div className="rounded-xl bg-black/20 px-2 py-2">
+                <div className="text-sm font-semibold text-slate-100">{selectedLibraryInfo.optional_inputs?.length || 0}</div>
+                <div>Optional</div>
+              </div>
+              <div className="rounded-xl bg-black/20 px-2 py-2">
+                <div className="text-sm font-semibold text-slate-100">{selectedLibraryInfo.outputs?.length || 0}</div>
+                <div>Outputs</div>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {(selectedLibraryInfo.outputs || []).slice(0, 5).map((port) => (
+                <span key={port} className="rounded-full bg-cyan-500/10 px-2 py-1 text-[10px] text-cyan-200">
+                  {port}
+                </span>
+              ))}
+              {(selectedLibraryInfo.py?.ctor || selectedLibraryInfo.py?.role) && (
+                <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] text-slate-300">
+                  {selectedLibraryInfo.py?.ctor || selectedLibraryInfo.py?.role}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          {Object.entries(groups).map(([category, nodeTypeIds]) => (
-            <section key={category} className="mb-5">
-              <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                <Sparkles size={11} />
-                {category}
-              </div>
-              <div className="space-y-2">
-                {nodeTypeIds.map((type) => {
-                  const info = nodeTypes[type] || {};
-                  return (
-                    <button
-                      key={type}
-                      type="button"
-                      onClick={() => onAddNode(type)}
-                      className="w-full rounded-3xl bg-white/[0.03] px-3 py-3 text-left transition hover:bg-cyan-500/[0.07]"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold text-white">
-                            {info.name || type}
-                          </div>
-                          <div className="mt-1 text-[11px] text-slate-400">
-                            {info.inputs?.length || 0} in · {info.outputs?.length || 0} out
-                          </div>
-                        </div>
-                        <span
-                          className="h-3 w-3 shrink-0 rounded-full shadow-[0_0_14px_rgba(56,189,248,0.25)]"
-                          style={{
-                            background:
-                              typeof info.color === "string" && info.color.startsWith("#")
-                                ? info.color
-                                : "#38bdf8",
+          {Object.entries(groups).map(([category, nodeTypeIds]) => {
+            const isCollapsed = collapsedCategories.has(category);
+            return (
+              <section key={category} className="mb-4">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCollapsedCategories((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(category)) next.delete(category);
+                      else next.add(category);
+                      return next;
+                    })
+                  }
+                  className="mb-2 flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 transition hover:bg-white/[0.04] hover:text-slate-300"
+                >
+                  <span className="flex items-center gap-2">
+                    <Sparkles size={11} />
+                    {category}
+                  </span>
+                  <span className="flex items-center gap-2">
+                    {nodeTypeIds.length}
+                    {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                  </span>
+                </button>
+
+                {!isCollapsed && (
+                  <div className="space-y-2">
+                    {nodeTypeIds.map((type) => {
+                      const info = nodeTypes[type] || {};
+                      const optionalInputs = new Set(info.optional_inputs || []);
+                      const requiredInputCount = getRequiredInputCount(type, info);
+                      const optionalInputCount = optionalInputs.size;
+                      const role = getNodeRole(type, info);
+                      const selected = selectedLibraryType === type;
+                      return (
+                        <button
+                          key={type}
+                          type="button"
+                          draggable
+                          onClick={() => onAddNode(type)}
+                          onFocus={() => setSelectedLibraryType(type)}
+                          onMouseEnter={() => setSelectedLibraryType(type)}
+                          onDragStart={(event) => {
+                            setSelectedLibraryType(type);
+                            event.dataTransfer.setData("application/x-foreblocks-node-type", type);
+                            event.dataTransfer.effectAllowed = "copy";
                           }}
-                        />
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
+                          className={`w-full rounded-2xl px-3 py-3 text-left transition ${
+                            selected
+                              ? "bg-cyan-500/[0.08] shadow-[inset_0_0_0_1px_rgba(56,189,248,0.18)]"
+                              : "bg-white/[0.03] hover:bg-cyan-500/[0.07]"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span className="truncate text-sm font-semibold text-white">
+                                  {info.name || type}
+                                </span>
+                                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${roleBadgeClass(role)}`}>
+                                  {role}
+                                </span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+                                <span>{requiredInputCount} required</span>
+                                {optionalInputCount > 0 && <span>{optionalInputCount} optional</span>}
+                                <span>{info.outputs?.length || 0} out</span>
+                              </div>
+                            </div>
+                            <span
+                              className="mt-1 h-3 w-3 shrink-0 rounded-full shadow-[0_0_14px_rgba(56,189,248,0.25)]"
+                              style={{
+                                background:
+                                  typeof info.color === "string" && info.color.startsWith("#")
+                                    ? info.color
+                                    : "#38bdf8",
+                              }}
+                            />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
       </div>
     );

@@ -456,6 +456,7 @@ export const ConfigPanel: React.FC<{ variant?: "overlay" | "dock" }> = ({ varian
                                         <div className="p-4 space-y-4 border-t border-white/5">
                                             {grouped.groups[groupName].map((field) => {
                                                 const value = effectiveConfig[field.key];
+                                                const booleanValue = Boolean(value);
                                                 return (
                                                     <div key={field.key} className="space-y-1.5">
                                                     <div className="flex items-center justify-between px-1">
@@ -473,14 +474,14 @@ export const ConfigPanel: React.FC<{ variant?: "overlay" | "dock" }> = ({ varian
 
                                                         {field.type === "boolean" ? (
                                                         <button
-                                                                onClick={() => updateNodeConfig(field.key, !Boolean(value))}
+                                                                onClick={() => updateNodeConfig(field.key, !booleanValue)}
                                                             className={`
                                                                 flex items-center justify-between w-full px-4 py-2.5 rounded-xl border transition-all text-sm
-                                                                    ${Boolean(value) ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-neutral-800/30 border-white/5 text-neutral-500'}
+                                                                    ${booleanValue ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-neutral-800/30 border-white/5 text-neutral-500'}
                                                             `}
                                                         >
-                                                                <span className="font-medium">{Boolean(value) ? "Enabled" : "Disabled"}</span>
-                                                                <div className={`w-2 h-2 rounded-full ${Boolean(value) ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]' : 'bg-neutral-600'}`} />
+                                                                <span className="font-medium">{booleanValue ? "Enabled" : "Disabled"}</span>
+                                                                <div className={`w-2 h-2 rounded-full ${booleanValue ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]' : 'bg-neutral-600'}`} />
                                                         </button>
                                                         ) : field.type === "enum" && (field.options?.length || 0) > 0 ? (
                                                             <select
@@ -542,7 +543,11 @@ export const ConfigPanel: React.FC<{ variant?: "overlay" | "dock" }> = ({ varian
                                                                 <textarea
                                                                     value={getJsonDraft(field.key, value, field.type)}
                                                                     onChange={(e) =>
-                                                                        updateJsonField(field.key, e.target.value, field.type)
+                                                                        updateJsonField(
+                                                                            field.key,
+                                                                            e.target.value,
+                                                                            field.type as "json" | "array",
+                                                                        )
                                                                     }
                                                                     rows={5}
                                                                     className="w-full bg-neutral-800/30 border border-white/5 rounded-xl px-4 py-2.5 text-xs font-mono text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all hover:bg-neutral-800/50"

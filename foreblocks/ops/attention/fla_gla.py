@@ -44,7 +44,8 @@ def fla_gla_forward(
     k_fla = k.transpose(1, 2).contiguous()
     v_fla = v.transpose(1, 2).contiguous()
     g_fla = g.transpose(1, 2).contiguous()
-    state = initial_state.contiguous()
+    # FLA chunk_gla asserts a float32 initial_state (matches the gated_delta/gdn2/kda wrappers).
+    state = initial_state.contiguous().to(torch.float32)
     if mode == "recurrent":
         fn = fla_fused_recurrent_gla()
     else:

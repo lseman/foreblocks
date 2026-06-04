@@ -212,8 +212,15 @@ export const ConfigWindow: React.FC<{
                                     {key === "model_type" &&
                                         [
                                             "lstm",
+                                            "gru",
                                             "transformer",
                                             "informer-like",
+                                            "mamba",
+                                            "mamba2",
+                                            "mamba3",
+                                            "hybrid_mamba",
+                                            "raven",
+                                            "head_only",
                                         ].map((o) => (
                                             <option key={o} value={o}>
                                                 {o}

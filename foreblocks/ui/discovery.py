@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import os
 import pkgutil
 from collections.abc import Iterable
 
@@ -12,11 +13,13 @@ from foreblocks.ui.auto_spec import build_node_spec
 
 ALLOWED_PACKAGES = [
     "foreblocks.modules.blocks",
-    "foreblocks.modules.blocks.enc_dec",
     "foreblocks.core",
     "foreblocks.modules.heads",
     "foreblocks.data",
+    "foreblocks.models.popular",
+    "foreblocks.models.transformer",
     "foreblocks.models.transformer.transformer",
+    "foreblocks.sequence.forecast_blocks",
     "foreblocks.core.training",
 ]
 
@@ -33,14 +36,23 @@ def _iter_modules(package_name: str) -> Iterable[str]:
 
 def _all_candidate_classes() -> Iterable[type]:
     """Yield all classes found under allowed packages/modules."""
+    seen_modules: set[str] = set()
+    seen_classes: set[tuple[str, str]] = set()
     for root in ALLOWED_PACKAGES:
         for modname in _iter_modules(root):
+            if modname in seen_modules:
+                continue
+            seen_modules.add(modname)
             try:
                 mod = importlib.import_module(modname)
             except Exception:
                 continue
             for _, obj in inspect.getmembers(mod, inspect.isclass):
                 if obj.__module__ == mod.__name__:
+                    key = (obj.__module__, obj.__qualname__)
+                    if key in seen_classes:
+                        continue
+                    seen_classes.add(key)
                     yield obj
 
 
@@ -55,7 +67,8 @@ def _discover_node_specs() -> dict[str, dict]:
         if "__is_node__" not in cls.__dict__:
             continue
 
-        print(f"[Discovery] Found node class: {cls.__name__} in {cls.__module__}")
+        if os.environ.get("FOREBLOCKS_UI_DISCOVERY_DEBUG"):
+            print(f"[Discovery] Found node class: {cls.__name__} in {cls.__module__}")
 
         opts = getattr(cls, "__node_options__", {}) or {}
 
@@ -103,6 +116,7 @@ def discover_nodes() -> dict[str, dict]:
             "name": spec.get("name"),
             "category": spec.get("category"),
             "inputs": spec.get("inputs", []),
+            "optional_inputs": spec.get("optional_inputs", []),
             "outputs": spec.get("outputs", []),
             "config": spec.get("config", {}),
             "subtypes": spec.get("subtypes", []),
@@ -127,6 +141,7 @@ def discover_nodes_payload() -> dict[str, dict]:
             "color": s.get("color"),
             "subtypes": s.get("subtypes", []),
             "inputs": s.get("inputs", []),
+            "optional_inputs": s.get("optional_inputs", []),
             "outputs": s.get("outputs", []),
             "config": s.get("config", {}),
             "py": s.get("py", {}),  # <── include codegen metadata

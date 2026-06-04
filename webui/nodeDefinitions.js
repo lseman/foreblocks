@@ -31,6 +31,7 @@ const NODE_TYPES = {
     category: 'Visualization',
     color: 'bg-gradient-to-br from-green-600 to-green-700',
     inputs: ['trained_model', 'X_val', 'Y_val'],
+    optional_inputs: ['X_val', 'Y_val'],
     config: { 
       plot: true,
       metrics: true
@@ -47,6 +48,36 @@ const NODE_TYPES = {
           X_val: '@input:X_val',
           Y_val: '@input:Y_val'
         }
+      }
+    }
+  },
+
+  trainer: {
+    name: 'Trainer',
+    category: 'Training',
+    color: 'bg-gradient-to-br from-amber-600 to-orange-700',
+    inputs: ['model', 'X_train', 'Y_train'],
+    optional_inputs: ['X_train', 'Y_train'],
+    outputs: ['trained_model'],
+    config: {
+      epochs: 5,
+      batch_size: 64,
+      learning_rate: 0.001,
+      weight_decay: 0.0,
+      use_amp: true
+    },
+    py: {
+      imports: ['from foreblocks.core.training.trainer import Trainer'],
+      ctor: 'Trainer',
+      var_prefix: 'trainer',
+      role: 'trainer',
+      bind: {
+        kwargs: {
+          model: '@input:model'
+        }
+      },
+      output_map: {
+        trained_model: '@self'
       }
     }
   },

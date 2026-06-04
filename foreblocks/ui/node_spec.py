@@ -20,6 +20,7 @@ def node(
     subtypes: list[str] | None = None,
     # Optional hard overrides (skip inference for these fields if provided)
     inputs: list[str] | None = None,
+    optional_inputs: list[str] | None = None,
     outputs: list[str] | None = None,
     config: dict[str, Any] | None = None,
     config_sources: list[type] | None = None,
@@ -46,6 +47,7 @@ def node(
                 "subtypes": subtypes or [],
                 "overrides": {
                     "inputs": inputs,
+                    "optional_inputs": optional_inputs,
                     "outputs": outputs,
                     "config": config,
                     "config_sources": config_sources or [],

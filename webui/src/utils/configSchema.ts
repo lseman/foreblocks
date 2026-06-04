@@ -20,12 +20,17 @@ export interface ResolvedConfigField {
 }
 
 const KEY_OPTIONS: Record<string, string[]> = {
-  forecasting_strategy: ["seq2seq", "direct", "recursive", "multioutput"],
+  forecasting_strategy: ["seq2seq", "autoregressive", "direct", "transformer_seq2seq"],
   model_type: [
     "informer-like",
     "transformer",
     "lstm",
     "gru",
+    "mamba",
+    "mamba2",
+    "mamba3",
+    "hybrid_mamba",
+    "raven",
     "tcn",
     "timesnet",
     "nbeats",

@@ -94,13 +94,21 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
           <Save size={14} />
           Save
         </button>
-        <button
-          type="button"
-          onClick={() => loadTemplate("basic_transformer")}
+        <select
+          defaultValue=""
+          onChange={(event) => {
+            if (!event.target.value) return;
+            loadTemplate(event.target.value);
+            event.target.value = "";
+          }}
           className="rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08]"
         >
-          Template
-        </button>
+          <option value="" disabled>
+            Template
+          </option>
+          <option value="basic_transformer">Transformer</option>
+          <option value="basic_mamba">Mamba Direct</option>
+        </select>
         <button
           type="button"
           onClick={() => autoLayout("LR")}

@@ -195,7 +195,10 @@ class Mamba2Block(nn.Module):
                 dt_limit=self.dt_limit,
                 norm_eps=self.norm_eps,
                 attention_mask=attention_mask,
-                use_triton_ssd=self.use_triton_ssd and not self.training,
+                # Triton SSD forward is safe in training: its autograd backward
+                # (vectorised chunked, in ssd.py) recomputes from saved inputs and
+                # is independent of which forward ran.
+                use_triton_ssd=self.use_triton_ssd,
             )
 
         z, conv_input, dt_hidden = torch.split(
@@ -227,7 +230,7 @@ class Mamba2Block(nn.Module):
             C=Craw,
             D=self.Dskip,
             chunk_size=chunk_size,
-            use_triton=self.use_triton_ssd and not self.training,
+            use_triton=self.use_triton_ssd,
         ).reshape(u.shape[0], u.shape[1], self.d_inner)
 
         # ── norm + gate + out ────────────────────────────────────────

@@ -3,6 +3,7 @@ import type {
   Connection,
   NodeData,
   NodeTypeMap,
+  WorkflowIssue,
   WorkflowPreflightResult,
 } from "../types/types";
 
@@ -30,6 +31,32 @@ export function topoSort(nodes: NodeData[], connections: Connection[]): NodeData
   const seen = new Set(order.map(n => n.id));
   for (const n of nodes) if (!seen.has(n.id)) order.push(n);
   return order;
+}
+
+function requiredInputsForNode(
+  node: NodeData,
+  definedInputs: string[],
+  nodes: NodeData[],
+  nodeTypes: NodeTypeMap,
+): string[] {
+  if (node.type === "forecasting_model") {
+    const strategy = String(node.config?.forecasting_strategy || "seq2seq");
+    if (strategy === "direct") return [];
+    if (strategy === "seq2seq" || strategy === "transformer_seq2seq") {
+      return definedInputs.filter((port) => port === "encoder" || port === "decoder");
+    }
+    return definedInputs.filter((port) => port === "decoder");
+  }
+
+  if (node.type === "output") {
+    const hasGeneratedValidationData = nodes.some((item) => item.type === "data_input");
+    return definedInputs.filter(
+      (port) => port === "trained_model" || (!hasGeneratedValidationData && (port === "X_val" || port === "Y_val")),
+    );
+  }
+
+  const optionalInputs = new Set(nodeTypes[node.type]?.optional_inputs || []);
+  return definedInputs.filter((port) => !optionalInputs.has(port));
 }
 
 export function validateWorkflow(
@@ -174,7 +201,8 @@ export function validateWorkflow(
       const definedInputs = def.inputs || [];
       if (definedInputs.length > 0) {
         const incomingPorts = new Set((incoming.get(node.id) || []).map((c) => c.toPort));
-        const missing = definedInputs.filter((port) => !incomingPorts.has(port));
+        const requiredInputs = requiredInputsForNode(node, definedInputs, nodes, nodeTypes);
+        const missing = requiredInputs.filter((port) => !incomingPorts.has(port));
         if (missing.length > 0) {
           warnings.push({
             code: "MISSING_INPUTS",

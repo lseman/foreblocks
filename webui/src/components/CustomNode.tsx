@@ -154,7 +154,6 @@ const TimeseriesRFNodeBase: React.FC<CardProps> = ({ data, selected }) => {
         node,
         nodeTypes,
         execState,
-        result,
         onDelete,
         onDoubleOpenConfig,
     } = data;

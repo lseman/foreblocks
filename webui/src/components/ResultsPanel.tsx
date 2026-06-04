@@ -263,37 +263,38 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ onShowResultModal })
                           <div className="text-sm text-slate-500">Node outputs and generated plots will appear here.</div>
                         )}
                       </div>
+                    </div>
                   )}
 
-                      {activeTab === "artifacts" && (
-                        <div className="space-y-3">
-                          {executionArtifacts.length > 0 ? (
-                            executionArtifacts.map((artifact) => (
-                              <a
-                                key={artifact}
-                                href={taskId ? `${getApiBase()}/artifact/${taskId}/${artifact}` : "#"}
-                                target="_blank"
-                                rel="noreferrer"
-                                onClick={(event) => {
-                                  if (!taskId) {
-                                    event.preventDefault();
-                                  }
-                                }}
-                                className="flex items-center justify-between rounded-2xl bg-white/[0.03] px-4 py-3 text-sm text-slate-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:bg-cyan-500/[0.06]"
-                              >
-                                <span className="flex items-center gap-2">
-                                  <FolderKanban size={15} className="text-cyan-300" />
-                                  {artifact}
-                                </span>
-                                <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Download</span>
-                              </a>
-                            ))
-                          ) : (
-                            <div className="text-sm text-slate-500">Saved plots and files from workflow execution will appear here.</div>
-                          )}
-                        </div>
+                  {activeTab === "artifacts" && (
+                    <div className="space-y-3">
+                      {executionArtifacts.length > 0 ? (
+                        executionArtifacts.map((artifact) => (
+                          <a
+                            key={artifact}
+                            href={taskId ? `${getApiBase()}/artifact/${taskId}/${artifact}` : "#"}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => {
+                              if (!taskId) {
+                                event.preventDefault();
+                              }
+                            }}
+                            className="flex items-center justify-between rounded-2xl bg-white/[0.03] px-4 py-3 text-sm text-slate-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:bg-cyan-500/[0.06]"
+                          >
+                            <span className="flex items-center gap-2">
+                              <FolderKanban size={15} className="text-cyan-300" />
+                              {artifact}
+                            </span>
+                            <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Download</span>
+                          </a>
+                        ))
+                      ) : (
+                        <div className="text-sm text-slate-500">Saved plots and files from workflow execution will appear here.</div>
                       )}
                     </div>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}

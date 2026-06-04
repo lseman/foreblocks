@@ -29,8 +29,10 @@ export interface ConfigFieldSchema {
 
 export interface NodeTypeDef {
   name?: string;
+  category?: string;
   color?: string;             // Tailwind-like bg/gradient class
   inputs?: string[];
+  optional_inputs?: string[];
   outputs?: string[];
   subtypes?: string[];
   config?: Record<string, any>;

@@ -4,6 +4,7 @@ from __future__ import annotations
 import collections.abc as cabc
 import enum
 import inspect
+import types
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
@@ -59,7 +60,9 @@ def _unwrap_annotated(tp):
 
 
 def _ann_is_optional(tp) -> bool:
-    return get_origin(tp) is Union and any(a is type(None) for a in get_args(tp))
+    return get_origin(tp) in (Union, types.UnionType) and any(
+        a is type(None) for a in get_args(tp)
+    )
 
 
 def _ann_is_callable(tp) -> bool:
@@ -86,7 +89,7 @@ def _ann_is_module_like(tp) -> bool:
         return isinstance(x, type) and nn is not None and issubclass(x, nn.Module)
 
     # Optional/Union
-    if origin is Union and args:
+    if origin in (Union, types.UnionType) and args:
         for a in args:
             if a is type(None):
                 continue
@@ -193,6 +196,8 @@ def _collect_config_from_signature(sig: inspect.Signature) -> dict[str, Any]:
         if name in ("self", "args", "kwargs", "*args", "**kwargs"):
             continue
         if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        if name == "layer_factory":
             continue
         if p.default is not inspect._empty:
             cfg[name] = p.default
@@ -382,6 +387,31 @@ def infer_inputs(cls) -> list[str]:
     return ins
 
 
+def infer_optional_inputs(cls, inputs: list[str]) -> list[str]:
+    """Infer which discovered input ports are optional constructor hooks."""
+    if hasattr(cls, "__optional_inputs__"):
+        return [name for name in getattr(cls, "__optional_inputs__") if name in inputs]
+
+    optional: list[str] = []
+    try:
+        sig_init = inspect.signature(cls.__init__)
+    except (TypeError, ValueError):
+        return optional
+
+    try:
+        init_hints = get_type_hints(cls.__init__, include_extras=True)
+    except Exception:
+        init_hints = {}
+
+    for name, p in sig_init.parameters.items():
+        if name not in inputs:
+            continue
+        ann = init_hints.get(name, p.annotation)
+        if _ann_is_optional(_unwrap_annotated(ann)) or p.default is None:
+            optional.append(name)
+    return optional
+
+
 def infer_outputs(cls) -> list[str]:
     """
     - If class defines __outputs__, use that.
@@ -514,6 +544,9 @@ def build_node_spec(cls: type, options: dict[str, Any]) -> dict[str, Any]:
     inferred_out = infer_outputs(cls) if do_infer else []
 
     inputs = ov.get("inputs") or inferred_in
+    optional_inputs = ov.get("optional_inputs") or (
+        infer_optional_inputs(cls, inputs) if do_infer else []
+    )
     outputs = ov.get("outputs") or inferred_out
     override_cfg = ov.get("config") or {}
     config = {**inferred_cfg, **override_cfg}
@@ -547,6 +580,7 @@ def build_node_spec(cls: type, options: dict[str, Any]) -> dict[str, Any]:
         or "bg-gradient-to-br from-slate-700 to-slate-800",
         "subtypes": list(options.get("subtypes") or []),
         "inputs": list(inputs or []),
+        "optional_inputs": list(optional_inputs or []),
         "outputs": list(outputs or []),
         "config": dict(config or {}),
         "py": dict(py or {}),

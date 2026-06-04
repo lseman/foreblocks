@@ -271,7 +271,9 @@ export const TimeSeriesNodeEditor: React.FC = () => {
                 const info = nodeTypes[t] || {};
                 return (
                     (info.name || t).toLowerCase().includes(q) ||
-                    t.toLowerCase().includes(q)
+                    t.toLowerCase().includes(q) ||
+                    (info.category || "").toLowerCase().includes(q) ||
+                    (info.py?.role || "").toLowerCase().includes(q)
                 );
             });
             if (filtered.length) out[cat] = filtered;
@@ -528,7 +530,7 @@ export const TimeSeriesNodeEditor: React.FC = () => {
     const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(rfEdges);
 
     useEffect(() => {
-        setFlowNodes((prev) =>
+        setFlowNodes(() =>
             rfNodes.map((newNode) => ({
                 ...newNode,
                 selected: selectedNodes.has(newNode.id),
@@ -749,6 +751,52 @@ export const TimeSeriesNodeEditor: React.FC = () => {
             nodeIdCounter.current = 10;
             setTimeout(() => autoLayout("LR"), 50);
         }
+        if (name === "basic_mamba") {
+            const safe = (k: string) => ({ ...(nodeTypes[k]?.config || {}) });
+            const blockType = nodeTypes.mamba2_model_block
+                ? "mamba2_model_block"
+                : nodeTypes.mamba3_model_block
+                    ? "mamba3_model_block"
+                    : "hybrid_mamba_model_block";
+            const n: NodeData[] = [
+                { id: "data_1", type: "data_input", position: { x: 50, y: 120 }, config: safe("data_input"), subtype: null },
+                {
+                    id: "block_1",
+                    type: blockType,
+                    position: { x: 350, y: 120 },
+                    config: {
+                        ...safe(blockType),
+                        input_size: 1,
+                    },
+                    subtype: null,
+                },
+                {
+                    id: "model_1",
+                    type: "forecasting_model",
+                    position: { x: 650, y: 120 },
+                    config: {
+                        ...safe("forecasting_model"),
+                        forecasting_strategy: "direct",
+                        model_type: "mamba2",
+                        target_len: 10,
+                        output_size: 1,
+                    },
+                    subtype: null,
+                },
+                { id: "trainer_1", type: "trainer", position: { x: 950, y: 120 }, config: safe("trainer"), subtype: null },
+                { id: "output_1", type: "output", position: { x: 1250, y: 120 }, config: safe("output"), subtype: null },
+            ].filter((x) => nodeTypes[x.type]);
+            const c: Connection[] = [
+                { id: "c1", from: "data_1", fromPort: "X_train", to: "trainer_1", toPort: "X_train" },
+                { id: "c2", from: "data_1", fromPort: "Y_train", to: "trainer_1", toPort: "Y_train" },
+                { id: "c3", from: "block_1", fromPort: "encoder", to: "model_1", toPort: "encoder" },
+                { id: "c4", from: "model_1", fromPort: "model", to: "trainer_1", toPort: "model" },
+                { id: "c5", from: "trainer_1", fromPort: "trained_model", to: "output_1", toPort: "trained_model" },
+            ].filter((cc) => n.find((nn) => nn.id === cc.from) && n.find((nn) => nn.id === cc.to));
+            setGraph(n, c);
+            nodeIdCounter.current = 10;
+            setTimeout(() => autoLayout("LR"), 50);
+        }
     }, [nodeTypes, setGraph, autoLayout]);
 
     useEffect(() => {
@@ -895,6 +943,7 @@ export const TimeSeriesNodeEditor: React.FC = () => {
                             deleteNode={deleteNode}
                             openResult={(id, r) => setShowResultModal({ nodeId: id, result: r })}
                             openNodeConfig={openNodeConfig}
+                            onDropNodeType={addNode}
                             autoFitTick={autoFitTick}
                             focusNodeId={focusNodeId}
                             focusNodeTick={focusNodeTick}

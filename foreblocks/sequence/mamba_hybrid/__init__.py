@@ -3,6 +3,7 @@ from foreblocks.sequence.mamba_hybrid.conv import CausalDepthwiseConv1d
 from foreblocks.sequence.mamba_hybrid.feedforward import FeedForward
 from foreblocks.sequence.mamba_hybrid.hybrid import HybridMamba2Block
 from foreblocks.sequence.mamba_hybrid.mamba2 import Mamba2Block
+from foreblocks.sequence.mamba_hybrid.mamba3 import Mamba3Block
 from foreblocks.sequence.mamba_hybrid.norms import RMSNorm, RMSNormWeightOnly
 from foreblocks.sequence.mamba_hybrid.rotary import RotaryEmbedding
 from foreblocks.ops.mamba import (
@@ -69,6 +70,7 @@ __all__ = [
     "CHUNKED_SSD_TRITON_AVAILABLE",
     "HybridMamba2Block",
     "Mamba2Block",
+    "Mamba3Block",
     "RMSNorm",
     "RMSNormWeightOnly",
     "SlidingWindowAttention",

@@ -1,7 +1,7 @@
 """Lazy adapter for the optional flash-linear-attention submodule.
 
 The FLA repository is vendored as a git submodule under
-``third-party/flash-linear-attention``.  This module keeps it out of the default
+``third_party/flash-linear-attention``.  This module keeps it out of the default
 Foreblocks import path and exposes explicit helpers for kernels that want to use
 the upstream implementation when the optional dependencies are installed.
 """
@@ -16,8 +16,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Iterator
 
-
-_SUBMODULE_REL = Path("third-party") / "flash-linear-attention"
+_SUBMODULE_REL = Path("third_party") / "flash-linear-attention"
 _FALLBACK_REL = Path("flash-linear-attention")
 
 

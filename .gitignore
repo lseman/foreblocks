@@ -51,6 +51,10 @@ ml-pararnn/
 foreblocks/mltracker/mltracker_data/
 mltracker_data/
 foreblocks/mltracker/dashboard_v2/node_modules/
+webui/artifacts/
+webui/dist/
+webui/server.log
+webui/nodeDefinitions*_debug.json
 
 # Working and temporary directories
 work/
@@ -59,7 +63,7 @@ working/
 old/
 foretree.old/
 agent/
-third-party/
+third_party/
 .openclaude/
 
 # Generated or runtime scripts
@@ -85,6 +89,7 @@ estudo_rebeca/
 ariadne.db
 .codex-ariadne-mcp.toml
 .cursor
+webui/nodeDefinitions_debug.json
 
 *.svg
 *.tex

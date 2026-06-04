@@ -95,7 +95,19 @@ class ForecastingModel(nn.Module):
     """
 
     VALID_STRATEGIES = ("seq2seq", "autoregressive", "direct", "transformer_seq2seq")
-    VALID_MODEL_TYPES = ("lstm", "transformer", "informer-like", "head_only")
+    BACKBONE_MODEL_TYPES = ("mamba", "mamba2", "mamba3", "hybrid_mamba", "raven")
+    VALID_MODEL_TYPES = (
+        "lstm",
+        "gru",
+        "transformer",
+        "informer-like",
+        "head_only",
+        "mamba",
+        "mamba2",
+        "mamba3",
+        "hybrid_mamba",
+        "raven",
+    )
 
     def __init__(
         self,
@@ -197,6 +209,7 @@ class ForecastingModel(nn.Module):
         # Aux (kept for backward compatibility)
         self._kl: torch.Tensor | None = None
         self._mem_model_bridge: nn.Module | None = None
+        self._direct_backbone_projection: nn.Module | None = None
 
         # Small cache for causal masks to avoid re-allocating every step
         self._mask_cache: dict[tuple[int, torch.device], torch.Tensor] = {}
@@ -879,12 +892,61 @@ class ForecastingModel(nn.Module):
         epoch: int | None = None,
     ) -> torch.Tensor:
         """Direct prediction strategy (no autoregression)."""
+        if self.model_type in self.BACKBONE_MODEL_TYPES and self.encoder is not None:
+            return self._forward_backbone_direct(src, time_features=time_features)
+
         out = self.head(src)
         if out.dim() == 2 and self.output_size is not None:
             expected = self.target_len * self.output_size
             if out.size(-1) == expected:
                 out = out.reshape(out.size(0), self.target_len, self.output_size)
         return out  # RAW
+
+    def _forward_backbone_direct(
+        self,
+        src: torch.Tensor,
+        time_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run an encoder-like sequence backbone and project it to the horizon."""
+        if self.encoder is None:
+            raise RuntimeError(
+                f"Model type '{self.model_type}' requires an encoder/backbone module."
+            )
+        if self.output_size is None:
+            raise ValueError(
+                f"Model type '{self.model_type}' requires output_size for direct forecasting."
+            )
+
+        if time_features is not None:
+            try:
+                encoded = self.encoder(src, time_features=time_features)
+            except TypeError:
+                encoded = self.encoder(src)
+        else:
+            encoded = self.encoder(src)
+
+        memory = encoded[0] if isinstance(encoded, tuple) else encoded
+        features = memory[:, -1, :] if memory.dim() == 3 else memory
+        out_dim = self.target_len * self.output_size
+
+        if (
+            self._direct_backbone_projection is None
+            or not isinstance(self._direct_backbone_projection, nn.Linear)
+            or self._direct_backbone_projection.in_features != features.size(-1)
+            or self._direct_backbone_projection.out_features != out_dim
+        ):
+            self._direct_backbone_projection = nn.Linear(features.size(-1), out_dim).to(
+                device=features.device,
+                dtype=features.dtype,
+            )
+        else:
+            self._direct_backbone_projection = self._direct_backbone_projection.to(
+                device=features.device,
+                dtype=features.dtype,
+            )
+
+        out = self._direct_backbone_projection(features)
+        return out.view(features.size(0), self.target_len, self.output_size)
 
     def _forward_autoregressive(
         self,

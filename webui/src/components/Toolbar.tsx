@@ -13,7 +13,7 @@ export const Toolbar: React.FC<{
   isExecuting: boolean;
   nodesCount: number;
   canRun?: boolean;
-}> = ({ onLoadTemplate, onToggleMenu, onRun, onViewCode, onExport, onAutoAlign, onClear, isExecuting, nodesCount, canRun = true }) => (
+}> = ({ onLoadTemplate, onToggleMenu, onRun, onViewCode, onExport, onAutoAlign, onClear, isExecuting, canRun = true }) => (
   <div className="bg-slate-900/80 backdrop-blur-xl border-b border-slate-700/50 p-3 flex items-center justify-between shadow-lg">
     <div className="flex items-center gap-3">
       <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg">
@@ -30,6 +30,7 @@ export const Toolbar: React.FC<{
         >
           <option value="" disabled>📋 Templates</option>
           <option value="basic_transformer">Basic Transformer</option>
+          <option value="basic_mamba">Mamba Direct</option>
           <option value="with_heads">With HeadComposer</option>
         </select>
       </div>

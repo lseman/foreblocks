@@ -14,8 +14,6 @@ import {
     MarkerType,
     MiniMap,
     ReactFlow,
-    useEdgesState,
-    useNodesState,
     useReactFlow,
     type Connection as RFConnection,
     type Edge as RFEdge,
@@ -104,6 +102,7 @@ export type GraphCanvasProps = React.PropsWithChildren<{
     deleteNode: (id: string) => void;
     openResult: (id: string, r: ExecutionResult) => void;
     openNodeConfig: (nodeId: string) => void;
+    onDropNodeType: (type: string, position: { x: number; y: number }) => void;
     autoFitTick: number; // triggers fitView
     focusNodeId: string | null;
     focusNodeTick: number;
@@ -121,12 +120,14 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     deleteNode,
     openResult,
     openNodeConfig,
+    onDropNodeType,
     autoFitTick,
     focusNodeId,
     focusNodeTick,
     children
 }) => {
-    const { fitView, getViewport, setViewport, getNode, setCenter, getZoom } = useReactFlow();
+    const reactFlow = useReactFlow();
+    const { fitView, getViewport, setViewport, getNode, setCenter, getZoom } = reactFlow;
 
     // Debounced, gentle fit
     const fitTimer = useRef<number | null>(null);
@@ -197,7 +198,32 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     );
 
     return (
-        <div className="absolute inset-0" onContextMenu={contextMenuHandler}>
+        <div
+            className="absolute inset-0"
+            onContextMenu={contextMenuHandler}
+            onDragOver={(event) => {
+                if (event.dataTransfer.types.includes("application/x-foreblocks-node-type")) {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "copy";
+                }
+            }}
+            onDrop={(event) => {
+                const type = event.dataTransfer.getData("application/x-foreblocks-node-type");
+                if (!type) return;
+                event.preventDefault();
+                const bounds = event.currentTarget.getBoundingClientRect();
+                const screenPoint = { x: event.clientX, y: event.clientY };
+                const screenToFlowPosition = (reactFlow as any).screenToFlowPosition;
+                const position =
+                    typeof screenToFlowPosition === "function"
+                        ? screenToFlowPosition(screenPoint)
+                        : {
+                            x: (event.clientX - bounds.left - getViewport().x) / getViewport().zoom,
+                            y: (event.clientY - bounds.top - getViewport().y) / getViewport().zoom,
+                        };
+                onDropNodeType(type, position);
+            }}
+        >
             <ReactFlow
                 nodes={mappedNodes}
                 edges={flowEdges}

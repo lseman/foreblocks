@@ -5,10 +5,17 @@ import torch.nn as nn
 
 from foreblocks.sequence.mamba_hybrid.attention import SlidingWindowAttention
 from foreblocks.sequence.mamba_hybrid.mamba2 import Mamba2Block
+from foreblocks.sequence.mamba_hybrid.mamba3 import Mamba3Block
 
 
 class HybridMamba2Block(nn.Module):
-    """Hybrid block that fuses an SSD branch with sliding-window attention."""
+    """Hybrid block that fuses an SSM branch with sliding-window attention.
+
+    Parameters
+    ----------
+    mamba_mode : str
+        ``"mamba2"`` (default) or ``"mamba3"`` — selects the SSM block type.
+    """
 
     def __init__(
         self,
@@ -37,9 +44,15 @@ class HybridMamba2Block(nn.Module):
         qk_norm_eps: float = 1e-6,
         attn_logit_softcap: float | None = None,
         layer_scale_init: float | None = None,
+        # NEW: SSM mode selection
+        mamba_mode: str = "mamba2",
+        # Mamba3-specific knobs (only used when mamba_mode == "mamba3")
+        rope_fraction: float = 0.5,
+        A_floor: float = 1e-4,
     ):
         super().__init__()
         self.d_model = d_model
+        self.mamba_mode = mamba_mode
 
         self.ssm_norm = nn.LayerNorm(d_model)
         self.attn_norm = nn.LayerNorm(d_model)
@@ -50,24 +63,52 @@ class HybridMamba2Block(nn.Module):
         if inner % num_heads != 0:
             raise ValueError("d_inner must be divisible by num_heads")
 
-        self.ssm = Mamba2Block(
-            d_model=d_model,
-            d_inner=inner,
-            d_state=d_state,
-            d_conv=d_conv,
-            dt_rank=dt_rank,
-            num_heads=num_heads,
-            n_groups=n_groups,
-            conv_init=conv_init,
-            use_conv_bias=use_conv_bias,
-            use_bias=use_bias,
-            norm_eps=norm_eps,
-            dt_init_min=dt_init_min,
-            dt_init_max=dt_init_max,
-            dt_init_floor=dt_init_floor,
-            dt_limit=dt_limit,
-            use_pre_norm=False,
-        )
+        if mamba_mode == "mamba2":
+            ssm_cls = Mamba2Block
+            ssm_kwargs = dict(
+                d_model=d_model,
+                d_inner=inner,
+                d_state=d_state,
+                d_conv=d_conv,
+                dt_rank=dt_rank,
+                num_heads=num_heads,
+                n_groups=n_groups,
+                conv_init=conv_init,
+                use_conv_bias=use_conv_bias,
+                use_bias=use_bias,
+                norm_eps=norm_eps,
+                dt_init_min=dt_init_min,
+                dt_init_max=dt_init_max,
+                dt_init_floor=dt_init_floor,
+                dt_limit=dt_limit,
+                use_pre_norm=False,
+            )
+        elif mamba_mode == "mamba3":
+            ssm_cls = Mamba3Block
+            ssm_kwargs = dict(
+                d_model=d_model,
+                d_inner=inner,
+                d_state=d_state,
+                d_conv=d_conv,  # unused but kept for API compat
+                dt_rank=dt_rank,
+                head_dim=inner // num_heads,
+                num_heads=num_heads,
+                n_groups=n_groups,
+                rope_fraction=rope_fraction,
+                norm_eps=norm_eps,
+                dt_min=1e-4,
+                dt_max=1.0,
+                dt_init_min=dt_init_min,
+                dt_init_max=dt_init_max,
+                dt_init_floor=dt_init_floor,
+                A_floor=A_floor,
+                use_bias=use_bias,
+                use_pre_norm=False,
+            )
+        else:
+            raise ValueError(f"mamba_mode must be 'mamba2' or 'mamba3', got {mamba_mode!r}")
+
+        self.ssm = ssm_cls(**ssm_kwargs)
         self.attn = SlidingWindowAttention(
             d_model=d_model,
             num_heads=num_heads,
@@ -95,6 +136,13 @@ class HybridMamba2Block(nn.Module):
         nn.init.xavier_uniform_(self.mix_gate.weight)
         nn.init.zeros_(self.mix_gate.bias)
         nn.init.xavier_uniform_(self.out_proj.weight)
+
+    def __repr__(self) -> str:
+        return (
+            f"HybridMambaBlock(mode={self.mamba_mode!r}, "
+            f"d_model={self.d_model}, d_inner={self.d_inner}, "
+            f"heads={self.ssm.num_heads}, state={self.ssm.d_state}, "
+            f"rope_frac={getattr(self, 'rope_fraction', None)})")
 
     def forward(
         self,
@@ -192,11 +240,18 @@ class HybridMamba2Block(nn.Module):
 
     def step(self, x: torch.Tensor, state: dict) -> torch.Tensor:
         """Single-token recurrent forward."""
-        ssm_out = self.ssm.step(self.ssm_norm(x), state)
-        attn_out = self._attn_step(self.attn_norm(x), state)
-        gate = torch.sigmoid(self.mix_gate(self.mix_norm(x)))
+        # Mamba3.step needs [B, 1, D]; Mamba2.step needs [B, D]
+        x_squeeze = x.squeeze(1)
+        if self.mamba_mode == "mamba3":
+            ssm_out = self.ssm.step(self.ssm_norm(x), state)
+        else:
+            ssm_out = self.ssm.step(self.ssm_norm(x_squeeze), state)
+        # Squeeze ssm_out to match attention output shape [B, D]
+        ssm_out = ssm_out.squeeze(1)
+        attn_out = self._attn_step(self.attn_norm(x_squeeze), state)
+        gate = torch.sigmoid(self.mix_gate(self.mix_norm(x_squeeze)))
         mixed = gate * ssm_out + (1.0 - gate) * attn_out
-        out = self.out_proj(self.out_norm(mixed))
+        out = self.out_proj(self.out_norm(mixed)).unsqueeze(1)  # [B, D] → [B, 1, D]
         if self.layer_scale is not None:
             out = out * self.layer_scale
         return out
