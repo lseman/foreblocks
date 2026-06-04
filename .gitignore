@@ -90,3 +90,4 @@ ariadne.db
 *.tex
 scripts/
 papers_md/
+darts_figures/

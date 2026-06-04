@@ -133,8 +133,9 @@ foreblocks-studio = "foreblocks.studio_server:main"
 [tool.setuptools]
 include-package-data = false
 
-[tool.setuptools.package-data]
-foreblocks = ["studio/dist/*", "studio/dist/assets/*"]
+# Studio frontend assets now live at web/studio/dist (served by foreblocks.studio_server
+# from a source checkout). They are no longer bundled as foreblocks package-data, so
+# `foreblocks-studio` requires the repo (not a bare wheel install).
 
 [tool.setuptools.packages.find]
 where = ["."]

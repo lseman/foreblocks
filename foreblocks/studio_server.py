@@ -20,11 +20,12 @@ LOCAL_BROWSER_HOSTS = {"127.0.0.1", "localhost"}
 
 
 def _studio_dist_dir() -> Path:
-    dist_dir = Path(__file__).resolve().parent / "studio" / "dist"
+    repo_root = Path(__file__).resolve().parent.parent
+    dist_dir = repo_root / "web" / "studio" / "dist"
     if not dist_dir.exists():
         raise RuntimeError(
-            "Studio frontend assets were not found in the installed package. "
-            "Reinstall foreblocks with the studio extra or build the Studio assets first."
+            "Studio frontend assets were not found at web/studio/dist. "
+            "Build the Studio assets first (npm run build in web/studio/src)."
         )
     return dist_dir
 

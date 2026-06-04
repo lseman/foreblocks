@@ -3,9 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STUDIO_DIR="$ROOT/foreblocks/studio"
+STUDIO_DIR="$ROOT/web/studio/src"
 STUDIO_DIST="$STUDIO_DIR/dist"
-TARGET_DIR="$ROOT/web/studio"
+TARGET_DIR="$ROOT/web/studio/dist"
 
 if [[ ! -d "$STUDIO_DIR" ]]; then
   echo "❌ Studio directory not found: $STUDIO_DIR"

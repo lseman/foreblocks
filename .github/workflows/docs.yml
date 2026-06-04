@@ -7,7 +7,7 @@ on:
       - "web/**"
       - "package.json"
       - "package-lock.json"
-      - "foreblocks/studio/**"
+      - "web/studio/src/**"
       - "build_studio_web.sh"
       - ".github/workflows/docs.yml"
   push:
@@ -18,7 +18,7 @@ on:
       - "web/**"
       - "package.json"
       - "package-lock.json"
-      - "foreblocks/studio/**"
+      - "web/studio/src/**"
       - "build_studio_web.sh"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -99,7 +99,7 @@ jobs:
           cp web/logo.svg site/logo.svg
           cp -R web/imgs site/imgs
           if [ -f web/CNAME ]; then cp web/CNAME site/CNAME; fi
-          if [ -d web/studio ]; then cp -a web/studio site/studio; fi
+          if [ -d web/studio/dist ]; then cp -a web/studio/dist site/studio; fi
           touch site/.nojekyll
 
       - name: Upload Pages artifact
