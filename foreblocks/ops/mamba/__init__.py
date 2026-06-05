@@ -6,8 +6,13 @@ from foreblocks.ops.mamba.causal_conv1d import (
     causal_depthwise_conv1d_triton,
 )
 from foreblocks.ops.mamba.mamba2_combined import mamba2_split_conv1d_scan_combined
-from foreblocks.ops.mamba.rms_norm import RMS_NORM_TRITON_AVAILABLE, rms_norm, rms_norm_fallback
-from foreblocks.ops.mamba.rotary import ROTARY_TRITON_AVAILABLE, rotary_apply, rotary_apply_fallback
+from foreblocks.ops.mamba.rms_norm import (
+    RMS_NORM_TRITON_AVAILABLE,
+    rms_norm,
+    rms_norm_fallback,
+)
+
+# from foreblocks.ops.mamba.rotary import ROTARY_TRITON_AVAILABLE, rotary_apply, rotary_apply_fallback
 from foreblocks.ops.mamba.ssd import (
     CHUNKED_SSD_TRITON_AVAILABLE,
     chunked_ssd_backward_reference,
@@ -28,11 +33,10 @@ from foreblocks.ops.mamba.triton_ops import (
     fused_out_triton,
 )
 
-
 __all__ = [
     "CAUSAL_CONV1D_TRITON_AVAILABLE",
     "RMS_NORM_TRITON_AVAILABLE",
-    "ROTARY_TRITON_AVAILABLE",
+    # "ROTARY_TRITON_AVAILABLE",
     "causal_depthwise_conv1d",
     "causal_depthwise_conv1d_bwd_triton",
     "causal_depthwise_conv1d_reference",
@@ -55,6 +59,6 @@ __all__ = [
     "fused_out_triton",
     "rms_norm",
     "rms_norm_fallback",
-    "rotary_apply",
-    "rotary_apply_fallback",
+    # "rotary_apply",
+    # "rotary_apply_fallback",
 ]

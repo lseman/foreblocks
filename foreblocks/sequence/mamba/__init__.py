@@ -2,7 +2,7 @@ from foreblocks.ops.mamba import (
     CAUSAL_CONV1D_TRITON_AVAILABLE,
     CHUNKED_SSD_TRITON_AVAILABLE,
     RMS_NORM_TRITON_AVAILABLE,
-    ROTARY_TRITON_AVAILABLE,
+    # ROTARY_TRITON_AVAILABLE,
     TRITON_AVAILABLE,
     causal_depthwise_conv1d,
     causal_depthwise_conv1d_bwd_triton,
@@ -23,17 +23,20 @@ from foreblocks.ops.mamba import (
     mamba2_split_conv1d_scan_combined,
     rms_norm,
     rms_norm_fallback,
-    rotary_apply,
-    rotary_apply_fallback,
+    # rotary_apply,
+    # rotary_apply_fallback,
 )
-from foreblocks.sequence.mamba.attention import SlidingWindowAttention
+
+# from foreblocks.sequence.mamba.attention import SlidingWindowAttention
 from foreblocks.sequence.mamba.conv import CausalDepthwiseConv1d
 from foreblocks.sequence.mamba.feedforward import FeedForward
-from foreblocks.sequence.mamba.hybrid import HybridMamba2Block
+
+# from foreblocks.sequence.mamba.hybrid import HybridMamba2Block
 from foreblocks.sequence.mamba.mamba2 import Mamba2Block
 from foreblocks.sequence.mamba.mamba3 import Mamba3Block
 from foreblocks.sequence.mamba.norms import RMSNorm, RMSNormWeightOnly
-from foreblocks.sequence.mamba.rotary import RotaryEmbedding
+
+# from foreblocks.sequence.mamba.rotary import RotaryEmbedding
 
 _HAS_TRITON = TRITON_AVAILABLE
 __all__ = [
@@ -42,7 +45,7 @@ __all__ = [
     "_HAS_TRITON",
     "CAUSAL_CONV1D_TRITON_AVAILABLE",
     "RMS_NORM_TRITON_AVAILABLE",
-    "ROTARY_TRITON_AVAILABLE",
+    # "ROTARY_TRITON_AVAILABLE",
     "CausalDepthwiseConv1d",
     "FeedForward",
     "causal_depthwise_conv1d",
@@ -64,13 +67,13 @@ __all__ = [
     "mamba2_split_conv1d_scan_combined",
     "rms_norm",
     "rms_norm_fallback",
-    "rotary_apply",
-    "rotary_apply_fallback",
+    # "rotary_apply",
+    # "rotary_apply_fallback",
     "CHUNKED_SSD_TRITON_AVAILABLE",
-    "HybridMamba2Block",
+    # "HybridMamba2Block",
     "Mamba2Block",
     "Mamba3Block",
     "RMSNorm",
     "RMSNormWeightOnly",
-    "SlidingWindowAttention",
+    # "SlidingWindowAttention",
 ]
