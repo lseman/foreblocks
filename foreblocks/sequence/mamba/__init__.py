@@ -1,11 +1,3 @@
-from foreblocks.sequence.mamba_hybrid.attention import SlidingWindowAttention
-from foreblocks.sequence.mamba_hybrid.conv import CausalDepthwiseConv1d
-from foreblocks.sequence.mamba_hybrid.feedforward import FeedForward
-from foreblocks.sequence.mamba_hybrid.hybrid import HybridMamba2Block
-from foreblocks.sequence.mamba_hybrid.mamba2 import Mamba2Block
-from foreblocks.sequence.mamba_hybrid.mamba3 import Mamba3Block
-from foreblocks.sequence.mamba_hybrid.norms import RMSNorm, RMSNormWeightOnly
-from foreblocks.sequence.mamba_hybrid.rotary import RotaryEmbedding
 from foreblocks.ops.mamba import (
     CAUSAL_CONV1D_TRITON_AVAILABLE,
     CHUNKED_SSD_TRITON_AVAILABLE,
@@ -34,7 +26,14 @@ from foreblocks.ops.mamba import (
     rotary_apply,
     rotary_apply_fallback,
 )
-
+from foreblocks.sequence.mamba.attention import SlidingWindowAttention
+from foreblocks.sequence.mamba.conv import CausalDepthwiseConv1d
+from foreblocks.sequence.mamba.feedforward import FeedForward
+from foreblocks.sequence.mamba.hybrid import HybridMamba2Block
+from foreblocks.sequence.mamba.mamba2 import Mamba2Block
+from foreblocks.sequence.mamba.mamba3 import Mamba3Block
+from foreblocks.sequence.mamba.norms import RMSNorm, RMSNormWeightOnly
+from foreblocks.sequence.mamba.rotary import RotaryEmbedding
 
 _HAS_TRITON = TRITON_AVAILABLE
 __all__ = [

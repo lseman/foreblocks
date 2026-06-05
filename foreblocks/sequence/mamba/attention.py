@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.sequence.mamba_hybrid.norms import RMSNorm
-from foreblocks.sequence.mamba_hybrid.rotary import RotaryEmbedding
+from foreblocks.sequence.mamba.norms import RMSNorm
+from foreblocks.sequence.mamba.rotary import RotaryEmbedding
 
 
 class SlidingWindowAttention(nn.Module):

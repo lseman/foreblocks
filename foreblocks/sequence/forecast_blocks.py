@@ -154,7 +154,7 @@ class Mamba2ModelBlock(_SequenceModelBlock):
             )
             preferred_device = device
         else:
-            from foreblocks.sequence.mamba_hybrid.mamba2 import Mamba2Block
+            from foreblocks.sequence.mamba.mamba2 import Mamba2Block
 
             layer_factory = lambda _: Mamba2Block(
                 d_model=hidden_size,
@@ -201,7 +201,7 @@ class Mamba3ModelBlock(_SequenceModelBlock):
         rope_fraction: float = 0.5,
         use_triton_ssd: bool = True,
     ) -> None:
-        from foreblocks.sequence.mamba_hybrid.mamba3 import Mamba3Block
+        from foreblocks.sequence.mamba.mamba3 import Mamba3Block
 
         super().__init__(
             input_size=input_size,
@@ -246,7 +246,7 @@ class HybridMambaModelBlock(_SequenceModelBlock):
         window_size: int = 128,
         mamba_mode: str = "mamba2",
     ) -> None:
-        from foreblocks.sequence.mamba_hybrid.hybrid import HybridMamba2Block
+        from foreblocks.sequence.mamba.hybrid import HybridMamba2Block
 
         super().__init__(
             input_size=input_size,

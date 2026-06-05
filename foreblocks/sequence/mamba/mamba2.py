@@ -8,10 +8,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.ops.mamba import chunked_ssd_forward, dt_prep, fused_out, mamba2_split_conv1d_scan_combined
-from foreblocks.sequence.mamba_hybrid.conv import CausalDepthwiseConv1d
-from foreblocks.sequence.mamba_hybrid.norms import RMSNormWeightOnly
-from foreblocks.sequence.mamba_hybrid.utils import auto_dt_rank, conv_step, fused_out_2d, inverse_softplus
+from foreblocks.ops.mamba import (
+    chunked_ssd_forward,
+    dt_prep,
+    fused_out,
+    mamba2_split_conv1d_scan_combined,
+)
+from foreblocks.sequence.mamba.conv import CausalDepthwiseConv1d
+from foreblocks.sequence.mamba.norms import RMSNormWeightOnly
+from foreblocks.sequence.mamba.utils import auto_dt_rank, conv_step, fused_out_2d
 
 
 class Mamba2Block(nn.Module):
@@ -171,7 +176,11 @@ class Mamba2Block(nn.Module):
         residual_inner = self.residual_proj(residual)
         if self.use_fused_path:
             weight = self.conv.conv.weight.view(self.conv_dim, self.d_conv).contiguous()
-            bias = self.conv.conv.bias.contiguous() if self.conv.conv.bias is not None else None
+            bias = (
+                self.conv.conv.bias.contiguous()
+                if self.conv.conv.bias is not None
+                else None
+            )
             return mamba2_split_conv1d_scan_combined(
                 p,
                 residual_inner,
@@ -282,11 +291,19 @@ class Mamba2Block(nn.Module):
     def make_state(self, batch: int, device=None, dtype=None) -> dict:
         return {
             "conv": torch.zeros(
-                batch, self.conv_dim, self.d_conv - 1, device=device, dtype=dtype,
+                batch,
+                self.conv_dim,
+                self.d_conv - 1,
+                device=device,
+                dtype=dtype,
             ),
             "ssm": torch.zeros(
-                batch, self.num_heads, self.head_dim, self.d_state,
-                device=device, dtype=dtype,
+                batch,
+                self.num_heads,
+                self.head_dim,
+                self.d_state,
+                device=device,
+                dtype=dtype,
             ),
         }
 
@@ -311,19 +328,17 @@ class Mamba2Block(nn.Module):
         h = state["ssm"].to(dtype=torch.float32)
         u_heads = u.reshape(B, self.num_heads, self.head_dim)
         abar = torch.exp(
-            dt.unsqueeze(-1).unsqueeze(-1)
-            * A.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            dt.unsqueeze(-1).unsqueeze(-1) * A.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         )
-        h = (
-            abar * h
-            + dt.unsqueeze(-1).unsqueeze(-1)
-            * Bpar.unsqueeze(-2)
-            * u_heads.unsqueeze(-1)
-        )
+        h = abar * h + dt.unsqueeze(-1).unsqueeze(-1) * Bpar.unsqueeze(
+            -2
+        ) * u_heads.unsqueeze(-1)
         y = (Cpar.unsqueeze(-2) * h).sum(dim=-1) + self.Dskip * u_heads
         y = y.reshape(B, self.d_inner)
         state["ssm"] = h.detach()
 
         residual_inner = self.residual_proj(x)
-        y_normed = fused_out_2d(y, z, residual_inner, self.norm.weight, eps=self.norm_eps)
+        y_normed = fused_out_2d(
+            y, z, residual_inner, self.norm.weight, eps=self.norm_eps
+        )
         return self.out_proj(y_normed)

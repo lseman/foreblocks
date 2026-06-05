@@ -1,15 +1,15 @@
+import pytest
 import torch
 import torch.nn as nn
-import pytest
 
-from foreblocks.sequence.mamba_hybrid import (
+from foreblocks.sequence.mamba import (
     CHUNKED_SSD_TRITON_AVAILABLE,
+    RMS_NORM_TRITON_AVAILABLE,
+    ROTARY_TRITON_AVAILABLE,
     FeedForward,
     HybridMamba2Block,
     Mamba2Block,
-    RMS_NORM_TRITON_AVAILABLE,
     RMSNorm,
-    ROTARY_TRITON_AVAILABLE,
     RotaryEmbedding,
     SlidingWindowAttention,
     chunked_ssd_forward,
@@ -176,7 +176,9 @@ def test_mamba2_block_step_matches_parallel() -> None:
     with torch.no_grad():
         y_par = block(x)
         state = block.make_state(1)
-        y_step = torch.stack([block.step(x[:, t], state) for t in range(x.size(1))], dim=1)
+        y_step = torch.stack(
+            [block.step(x[:, t], state) for t in range(x.size(1))], dim=1
+        )
 
     _assert_close(y_par, y_step, atol=1e-4)
 

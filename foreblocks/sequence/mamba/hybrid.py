@@ -3,9 +3,9 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from foreblocks.sequence.mamba_hybrid.attention import SlidingWindowAttention
-from foreblocks.sequence.mamba_hybrid.mamba2 import Mamba2Block
-from foreblocks.sequence.mamba_hybrid.mamba3 import Mamba3Block
+from foreblocks.sequence.mamba.attention import SlidingWindowAttention
+from foreblocks.sequence.mamba.mamba2 import Mamba2Block
+from foreblocks.sequence.mamba.mamba3 import Mamba3Block
 
 
 class HybridMamba2Block(nn.Module):
@@ -106,7 +106,9 @@ class HybridMamba2Block(nn.Module):
                 use_pre_norm=False,
             )
         else:
-            raise ValueError(f"mamba_mode must be 'mamba2' or 'mamba3', got {mamba_mode!r}")
+            raise ValueError(
+                f"mamba_mode must be 'mamba2' or 'mamba3', got {mamba_mode!r}"
+            )
 
         self.ssm = ssm_cls(**ssm_kwargs)
         self.attn = SlidingWindowAttention(
@@ -142,7 +144,8 @@ class HybridMamba2Block(nn.Module):
             f"HybridMambaBlock(mode={self.mamba_mode!r}, "
             f"d_model={self.d_model}, d_inner={self.d_inner}, "
             f"heads={self.ssm.num_heads}, state={self.ssm.d_state}, "
-            f"rope_frac={getattr(self, 'rope_fraction', None)})")
+            f"rope_frac={getattr(self, 'rope_fraction', None)})"
+        )
 
     def forward(
         self,

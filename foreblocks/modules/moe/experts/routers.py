@@ -9,12 +9,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _compute_router_entropy(logits: torch.Tensor) -> float:
-    """Compute mean per-token Shannon entropy of gate softmax probabilities."""
+def _compute_router_entropy(logits: torch.Tensor) -> torch.Tensor:
+    """Mean per-token Shannon entropy of gate softmax probs (detached 0-dim tensor).
+
+    Returns a tensor rather than a python float so it does not force a device
+    sync (``.item()``) inside compiled router forwards — the sync is deferred to
+    the logging/reporting sites, which call ``float(...)`` on it.
+    """
     probs = F.softmax(logits, dim=-1)
     log_probs = F.log_softmax(logits, dim=-1)
     entropy = -(probs * log_probs).sum(dim=-1).mean()
-    return float(entropy.item())
+    return entropy.detach()
 
 
 @dataclass

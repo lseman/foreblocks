@@ -26,8 +26,8 @@ Relative imports were first normalized to absolute `foreblocks.…` form so move
 | `foreblocks.core.heads` | `foreblocks.modules.heads` | head families + head modules |
 | `foreblocks.transformer.popular` | `foreblocks.models.popular` | informer, autoformer, … (merged with blocks.popular) |
 | `foreblocks.transformer` | `foreblocks.models.transformer` | transformer, tf_*, patching, fusions, sype, mhc, transformer_tuner |
-| `foreblocks.custom_mamba.blocks` | `foreblocks.sequence.mamba_hybrid` | HybridMamba family |
-| `foreblocks.custom_mamba` | `foreblocks.sequence.mamba_hybrid` | package root |
+| `foreblocks.custom_mamba.blocks` | `foreblocks.sequence.mamba` | HybridMamba family |
+| `foreblocks.custom_mamba` | `foreblocks.sequence.mamba` | package root |
 | `foreblocks.mamba` | `foreblocks.sequence.mamba` | older Mamba backbone |
 | `foreblocks.custom_raven` | `foreblocks.sequence.raven` | raven blocks + configuration |
 | `foreblocks.kan` | `foreblocks.kan` | **unchanged** (kept top-level per decision) |

@@ -10,9 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.ops.mamba import chunked_ssd_forward, dt_prep, fused_out, rms_norm
-from foreblocks.sequence.mamba_hybrid.norms import RMSNormWeightOnly
-from foreblocks.sequence.mamba_hybrid.utils import auto_dt_rank, fused_out_2d, inverse_softplus
-
+from foreblocks.sequence.mamba.norms import RMSNormWeightOnly
+from foreblocks.sequence.mamba.utils import fused_out_2d
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -158,8 +157,7 @@ class Mamba3Block(nn.Module):
 
         # ── dt_bias (inverse softplus) ─────────────────────────────────
         dt = torch.exp(
-            torch.rand(self.num_heads)
-            * (math.log(dt_max) - math.log(dt_min))
+            torch.rand(self.num_heads) * (math.log(dt_max) - math.log(dt_min))
             + math.log(dt_min)
         )
         if dt_init_min is not None and dt_init_max is not None:
@@ -272,7 +270,9 @@ class Mamba3Block(nn.Module):
         # A = -softplus(...) is negative; clamp the NEGATED value so A <= -A_floor.
         # (Parenthesised: `-softplus(x).clamp(max=-f)` would clamp the positive
         # softplus to <= -f, collapsing every A to +f — a non-decaying scan.)
-        dd_A = (-F.softplus(dd_A_raw.float() + self.A_bias)).clamp(max=-self.A_floor_val)  # [B, L, H]
+        dd_A = (-F.softplus(dd_A_raw.float() + self.A_bias)).clamp(
+            max=-self.A_floor_val
+        )  # [B, L, H]
         trap = torch.sigmoid(trap_raw)  # [B, L, H]
         # ADT = A * dt (element-wise, both [B, L, H])
         adt = dd_A * dt  # [B, L, H]
@@ -310,30 +310,40 @@ class Mamba3Block(nn.Module):
         # y: [B, L, H*P], z: [B, L, H*P] (reshape back from [H, P])
         y_reshaped = y.reshape(y.shape[0], y.shape[1], self.d_inner)
         z_reshaped = z.reshape(z.shape[0], z.shape[1], self.d_inner)
-        y = fused_out(y_reshaped, z_reshaped, residual_inner, self.norm.weight, eps=self.norm_eps)
+        y = fused_out(
+            y_reshaped, z_reshaped, residual_inner, self.norm.weight, eps=self.norm_eps
+        )
         return self.out_proj(y)
 
     # ── helpers ───────────────────────────────────────────────────────
 
     def _expand_groups(self, flat: torch.Tensor) -> torch.Tensor:
         """Expand [B, L, ng*N] → [B, L, H, N] by repeating groups."""
-        return flat.view(flat.shape[0], flat.shape[1], self.n_groups, self.d_state).repeat_interleave(
-            self.num_heads // self.n_groups, dim=2
-        )
+        return flat.view(
+            flat.shape[0], flat.shape[1], self.n_groups, self.d_state
+        ).repeat_interleave(self.num_heads // self.n_groups, dim=2)
 
     # ── state management (for autoregressive decoding) ────────────────
 
     def make_state(self, batch: int, device=None, dtype=None) -> dict:
         return {
             "ssm": torch.zeros(
-                batch, self.num_heads, self.head_dim, self.d_state,
-                device=device, dtype=dtype,
+                batch,
+                self.num_heads,
+                self.head_dim,
+                self.d_state,
+                device=device,
+                dtype=dtype,
             ),
             # previous-token rank-1 injection k_{t-1} = B_{t-1} ⊗ u_{t-1}, kept
             # for the trapezoidal blend (zero before the first token).
             "k_prev": torch.zeros(
-                batch, self.num_heads, self.head_dim, self.d_state,
-                device=device, dtype=torch.float32,
+                batch,
+                self.num_heads,
+                self.head_dim,
+                self.d_state,
+                device=device,
+                dtype=torch.float32,
             ),
         }
 
@@ -374,11 +384,20 @@ class Mamba3Block(nn.Module):
         # ── dt / A / trap ──────────────────────────────────────────────
         dt = dt_prep(dd_dt_raw, self.dt_bias, dt_min=self.dt_min, dt_max=self.dt_max)
         # [B, 1, H]
-        dd_A = (-F.softplus(dd_A_raw.float() + self.A_bias)).clamp(max=-self.A_floor_val)
+        dd_A = (-F.softplus(dd_A_raw.float() + self.A_bias)).clamp(
+            max=-self.A_floor_val
+        )
         trap = torch.sigmoid(trap_raw)  # [B, 1, H]
 
         # ── Blockwise rotary on B/C ────────────────────────────────────
-        angles = angles_raw.squeeze(1).view(Bsz, self.num_rope_angles).unsqueeze(1).unsqueeze(2).expand(-1, 1, self.num_heads, self.num_rope_angles)
+        angles = (
+            angles_raw
+            .squeeze(1)
+            .view(Bsz, self.num_rope_angles)
+            .unsqueeze(1)
+            .unsqueeze(2)
+            .expand(-1, 1, self.num_heads, self.num_rope_angles)
+        )
         B, C = blockwise_rotary(B, C, angles)
 
         # ── RMSNormGated on B/C ────────────────────────────────────────
@@ -395,7 +414,9 @@ class Mamba3Block(nn.Module):
         C_h = C.transpose(1, 2).squeeze(2)  # [B, H, N]
         u_h = u.transpose(1, 2).squeeze(2)  # [B, H, P]
 
-        abar = torch.exp(dt_h[:, :, :, None, None] * dd_A_h[:, :, :, None, None])  # [B, H, 1, 1, 1]
+        abar = torch.exp(
+            dt_h[:, :, :, None, None] * dd_A_h[:, :, :, None, None]
+        )  # [B, H, 1, 1, 1]
 
         # k_t = B_t ⊗ u_t (rank-1 injection, pre-dt) — [B, H, P, N]
         k_cur = B_h[:, :, None, :] * u_h[:, :, :, None]
@@ -410,7 +431,8 @@ class Mamba3Block(nn.Module):
         # y = C*h + D*u — both must have 4 dims for correct broadcasting
         y = (
             (C_h[:, :, None, :] * h).sum(dim=-1).unsqueeze(1)
-            + self.D[None, None, :, None] * u  # [1, 1, H, 1] * [B, 1, H, P] → [B, 1, H, P]
+            + self.D[None, None, :, None]
+            * u  # [1, 1, H, 1] * [B, 1, H, P] → [B, 1, H, P]
         )
         state["ssm"] = h.detach()
         # y: [B, H, P] → [B, 1, H*P]
@@ -418,7 +440,10 @@ class Mamba3Block(nn.Module):
         # ── norm + gate + out ──────────────────────────────────────────
         y = y.reshape(Bsz, 1, self.d_inner)
         y_normed = fused_out_2d(
-            y, z.reshape(Bsz, 1, self.d_inner), residual_inner,
-            self.norm.weight, eps=self.norm_eps,
+            y,
+            z.reshape(Bsz, 1, self.d_inner),
+            residual_inner,
+            self.norm.weight,
+            eps=self.norm_eps,
         )
         return self.out_proj(y_normed)
