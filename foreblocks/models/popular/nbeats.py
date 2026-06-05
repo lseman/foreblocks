@@ -178,8 +178,12 @@ class NBEATS(nn.Module):
         share_weights_in_block: bool = False,
         dropout: float = 0.0,
         use_layernorm: bool = False,
+        naive_level: bool = True,
     ):
         super().__init__()
+        # Naive1 level init: forecast starts at the last observed value and blocks
+        # learn residual corrections (matches Nixtla/neuralforecast).
+        self.naive_level = naive_level
         self.blocks = nn.ModuleList([
             NBEATSBlock(
                 input_size=input_size,
@@ -203,7 +207,8 @@ class NBEATS(nn.Module):
             forecast: [B, horizon]
         """
         residual = x
-        forecast = 0.0
+        # Naive1 level: start from the last observed value (else from zero).
+        forecast = x[:, -1:] if self.naive_level else x.new_zeros(x.shape[0], 1)
 
         for block in self.blocks:
             backcast, block_forecast = block(residual)
@@ -314,10 +319,12 @@ class NBEATSInterpretable(nn.Module):
         n_layers: int = 4,
         activation: str = "relu",
         dropout: float = 0.0,
+        naive_level: bool = True,
     ):
         super().__init__()
         self.input_size = input_size
         self.horizon = horizon
+        self.naive_level = naive_level
 
         trend_bc = _trend_basis(input_size, trend_degree)
         trend_fc = _trend_basis(horizon, trend_degree)
@@ -340,7 +347,9 @@ class NBEATSInterpretable(nn.Module):
 
     def _run(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         residual = x
-        trend_fc = x.new_zeros(x.shape[0], self.horizon)
+        # Naive1 level init (Nixtla): folded into the trend component.
+        level = x[:, -1:] if self.naive_level else x.new_zeros(x.shape[0], 1)
+        trend_fc = level.expand(-1, self.horizon).clone()
         season_fc = x.new_zeros(x.shape[0], self.horizon)
         for blk in self.trend_stack:
             backcast, fc = blk(residual)
@@ -518,11 +527,13 @@ class NBEATSx(nn.Module):
         n_layers: int = 4,
         activation: str = "relu",
         dropout: float = 0.0,
+        naive_level: bool = True,
     ):
         super().__init__()
         self.input_size = input_size
         self.horizon = horizon
         self.n_exog = n_exog
+        self.naive_level = naive_level
 
         trend_bc = _trend_basis(input_size, trend_degree)
         trend_fc = _trend_basis(horizon, trend_degree)
@@ -553,7 +564,9 @@ class NBEATSx(nn.Module):
 
     def _run(self, y, exog_in, exog_out):
         residual = y
-        total = y.new_zeros(y.shape[0], self.horizon)
+        # Naive1 level init (Nixtla): forecast starts at the last observed value.
+        level = y[:, -1:] if self.naive_level else y.new_zeros(y.shape[0], 1)
+        total = level.expand(-1, self.horizon).clone()
         comps: dict[str, torch.Tensor] = {}
 
         ein = exog_in.transpose(1, 2) if len(self.exog_stack) > 0 else None
@@ -565,6 +578,8 @@ class NBEATSx(nn.Module):
             + [(b, "seasonality", False) for b in self.season_stack]
             + [(b, "exogenous", True) for b in self.exog_stack]
         )
+        if self.naive_level:
+            comps["level"] = level.expand(-1, self.horizon)
         for blk, name, is_exog in schedule:
             bc, fc = blk(residual, ein, eout) if is_exog else blk(residual)
             residual = residual - bc

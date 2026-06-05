@@ -1,5 +1,113 @@
+from typing import Literal
+
 import torch
 import torch.nn as nn
+
+from foreblocks.layers.norms import create_norm_layer
+
+
+class FourierModeSelector(nn.Module):
+    """Select frequency modes in the FEDformer Fourier block style."""
+
+    def __init__(
+        self,
+        modes: int = 32,
+        mode_select: Literal["topk", "fixed"] = "topk",
+        skip_dc: bool = True,
+    ):
+        super().__init__()
+        if mode_select not in ("topk", "fixed"):
+            raise ValueError("mode_select must be 'topk' or 'fixed'")
+        self.modes = int(modes)
+        self.mode_select = mode_select
+        self.skip_dc = skip_dc
+
+    def forward(self, spectrum: torch.Tensor) -> torch.Tensor:
+        """
+        Return selected frequency indices.
+
+        Args:
+            spectrum: Complex rFFT tensor with shape ``[B, F, C]``.
+
+        Returns:
+            Index tensor with shape ``[B, K]``.
+        """
+        if spectrum.dim() != 3:
+            raise ValueError("spectrum must have shape [B, F, C]")
+
+        B, F, _ = spectrum.shape
+        start = 1 if self.skip_dc and F > 1 else 0
+        available = F - start
+        if available <= 0:
+            return torch.zeros(B, 0, dtype=torch.long, device=spectrum.device)
+
+        K = min(self.modes, available)
+        if self.mode_select == "fixed":
+            return torch.arange(start, start + K, device=spectrum.device).expand(B, K)
+
+        magnitude = spectrum[:, start:, :].abs().pow(2).sum(dim=-1)
+        return magnitude.topk(K, dim=-1, largest=True).indices + start
+
+
+class FourierBlock(nn.Module):
+    """
+    FEDformer-style frequency-domain mixing block.
+
+    This is the encoder-side Fourier block from FEDformer: rFFT over time,
+    select a small set of modes, apply learnable complex weights per selected
+    mode/channel, scatter back into the full spectrum, then irFFT.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        modes: int = 32,
+        mode_select: Literal["topk", "fixed"] = "topk",
+        dropout: float = 0.0,
+        custom_norm: str = "rms",
+        eps: float = 1e-5,
+        skip_dc: bool = True,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.modes = int(modes)
+        self.selector = FourierModeSelector(
+            modes=modes,
+            mode_select=mode_select,
+            skip_dc=skip_dc,
+        )
+        self.weight = nn.Parameter(torch.randn(max(1, self.modes), d_model, 2) * 0.02)
+        self.dropout = nn.Dropout(dropout)
+        self.norm = create_norm_layer(custom_norm, d_model, eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Time-domain input with shape ``[B, T, C]``.
+        """
+        if x.dim() != 3:
+            raise ValueError("x must have shape [B, T, C]")
+        B, T, C = x.shape
+        if C != self.d_model:
+            raise ValueError(f"expected last dim {self.d_model}, got {C}")
+
+        spectrum = torch.fft.rfft(x, dim=1)  # [B, F, C]
+        idx = self.selector(spectrum)  # [B, K]
+        K = idx.size(1)
+        if K == 0:
+            return self.norm(self.dropout(torch.zeros_like(x)))
+
+        gather_idx = idx[:, :, None].expand(B, K, C)
+        selected = spectrum.gather(dim=1, index=gather_idx)
+
+        weight = torch.view_as_complex(self.weight[:K].contiguous())
+        mixed = selected * weight.unsqueeze(0)
+
+        out_spectrum = torch.zeros_like(spectrum)
+        out_spectrum.scatter_(dim=1, index=gather_idx, src=mixed)
+
+        y = torch.fft.irfft(out_spectrum, n=T, dim=1)
+        return self.norm(self.dropout(y))
 
 
 class FrequencyAttention(nn.Module):
@@ -50,8 +158,8 @@ class FrequencyAttention(nn.Module):
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         if activation not in ("tanh", "softmax"):
             raise ValueError("activation must be 'tanh' or 'softmax'")
-        if mode_select not in ("low", "random"):
-            raise ValueError("mode_select must be 'low' or 'random'")
+        if mode_select not in ("low", "fixed", "random"):
+            raise ValueError("mode_select must be 'low', 'fixed', or 'random'")
 
         self.d_model = d_model
         self.n_heads = n_heads

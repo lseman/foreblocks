@@ -1,18 +1,35 @@
-# tft_head_custom.py
+# tft.py
 
 """Temporal Fusion Transformer components.
 
 Based on: Lim et al., "Temporal Fusion Transformers for Interpretable Multi-horizon
-Time Series Forecasting", NeurIPS 2020.
+Time Series Forecasting", IJF 2021.
 Paper: https://arxiv.org/abs/1912.09363
+
+Faithful pieces: Gated Linear Units, Gated Residual Networks (context via a
+separate projection, Eq. 2-4), per-step Variable Selection Networks, static
+enrichment context, temporal self-attention fusion, and quantile outputs.
+
+Deviations from the paper (intentional, for the foreblocks transformer stack):
+  * The LSTM seq2seq "locality enhancement" layer is replaced by the project's
+    Transformer encoder/decoder (this is the *Temporal Fusion Transformer*; the
+    attention backbone subsumes the locality role).
+  * A single static context vector feeds the enrichment GRNs, rather than the
+    paper's four separate static contexts (VSN / LSTM-cell / LSTM-hidden /
+    enrichment).
+  * Standard multi-head attention is used (not the shared-value interpretable
+    variant); variable-selection weights are still returned for interpretability.
 """
 
 import torch
 import torch.nn as nn
 
-from foreblocks.models.popular.embeddings import PositionalEncoding
-from foreblocks.models.popular.transformer import TransformerDecoder, TransformerEncoder
-from foreblocks.models.popular.transformer_aux import create_norm_layer
+from foreblocks.layers.embeddings import PositionalEncoding
+from foreblocks.layers.norms import create_norm_layer
+from foreblocks.models.transformer.transformer import (
+    TransformerDecoder,
+    TransformerEncoder,
+)
 
 # ---------------------------
 # Core TFT building blocks
@@ -32,7 +49,11 @@ class GLU(nn.Module):
 
 class GRN(nn.Module):
     """
-    Gated Residual Network (TFT). Supports optional context concat.
+    Gated Residual Network (TFT, Eq. 2-4).
+
+    η2 = ELU(W2·x + W3·c)   (context c added via its own projection, not concat)
+    η1 = W1·η2
+    out = LayerNorm(skip(x) + GLU(η1))
     """
 
     def __init__(
@@ -43,10 +64,15 @@ class GRN(nn.Module):
         dropout: float = 0.0,
         custom_norm: str = "rms",
         eps: float = 1e-5,
+        d_context: int | None = None,
     ):
         super().__init__()
         self.fc1 = nn.Linear(d_in, d_hidden)
         self.fc2 = nn.Linear(d_hidden, d_out)
+        # Context enters through its own projection (no bias), summed before ELU.
+        self.ctx_proj = (
+            nn.Linear(d_context, d_hidden, bias=False) if d_context else None
+        )
         self.elu = nn.ELU()
         self.glu = GLU(d_out, dropout=dropout)
         self.skip = nn.Linear(d_in, d_out) if d_in != d_out else nn.Identity()
@@ -55,10 +81,14 @@ class GRN(nn.Module):
     def forward(self, x: torch.Tensor, context: torch.Tensor | None = None):
         """
         x: [B, *, d_in]
-        context (optional): [B, *, d_in] or broadcastable to x
+        context (optional): [B, *, d_context], broadcastable to x's leading dims.
         """
-        y = x if context is None else torch.cat([x, context], dim=-1)
-        h = self.fc2(self.elu(self.fc1(y)))
+        a = self.fc1(x)
+        if context is not None:
+            if self.ctx_proj is None:
+                raise ValueError("GRN received context but was built without d_context")
+            a = a + self.ctx_proj(context)
+        h = self.fc2(self.elu(a))
         z = self.glu(h)
         return self.norm(self.skip(x) + z)
 
@@ -161,11 +191,11 @@ class GateAddNorm(nn.Module):
 
 
 # ---------------------------
-# Temporal Fusion Transformer Head
+# Temporal Fusion Transformer
 # ---------------------------
 
 
-class TemporalFusionTransformerHead(nn.Module):
+class TemporalFusionTransformer(nn.Module):
     """
     TFT-style forecasting head using your custom Transformer encoder/decoder backbone.
 
@@ -341,6 +371,7 @@ class TemporalFusionTransformerHead(nn.Module):
             dropout=dropout,
             custom_norm=custom_norm,
             eps=layer_norm_eps,
+            d_context=d_model,  # static enrichment context
         )
         self.enrich_dec = GRN(
             d_in=d_model,
@@ -349,6 +380,7 @@ class TemporalFusionTransformerHead(nn.Module):
             dropout=dropout,
             custom_norm=custom_norm,
             eps=layer_norm_eps,
+            d_context=d_model,
         )
 
         d_out = out_channels if quantiles is None else out_channels * len(quantiles)

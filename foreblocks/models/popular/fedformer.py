@@ -1,4 +1,4 @@
-# fedformer_head_custom.py
+# fedformer.py
 """FEDformer-style frequency-enhanced decomposed transformer components.
 
 Based on: Zhou et al., "FEDformer: Frequency Enhanced Decomposed Transformer for
@@ -11,9 +11,8 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-from foreblocks.models.popular.transformer_aux import (
-    create_norm_layer,  # your helper (rms/layer/batch norm etc.)
-)
+from foreblocks.layers.norms import create_norm_layer
+from foreblocks.modules.attention.modules.frequency_att import FourierBlock
 
 # ---------------------------
 # 1) Series decomposition
@@ -57,101 +56,7 @@ class SeriesDecomp(nn.Module):
 
 
 # ---------------------------
-# 2) Fourier (frequency) block
-# ---------------------------
-
-
-def _complex_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    # (re, im) multiplication on last dim size=2
-    ar, ai = a[..., 0], a[..., 1]
-    br, bi = b[..., 0], b[..., 1]
-    return torch.stack([ar * br - ai * bi, ar * bi + ai * br], dim=-1)
-
-
-class FourierModeSelector(nn.Module):
-    """
-    Select top-K frequency modes (by magnitude) per sample for efficiency.
-    If mode_select='fixed', take lowest K frequencies (excluding DC).
-    """
-
-    def __init__(self, modes: int = 32, mode_select: Literal["topk", "fixed"] = "topk"):
-        super().__init__()
-        self.modes = modes
-        self.mode_select = mode_select
-
-    def forward(self, Xf: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Xf: [B, F, C, 2] complex spectrum (one-sided real FFT representation)
-        Returns selected (Xf_sel, idx) with shape [B, K, C, 2], idx [B, K]
-        """
-        B, F, C, _ = Xf.shape
-        # Skip DC (0) to keep shapes nice — paper often ignores it or handles separately
-        freqs = Xf[:, 1:, :, :]  # [B, F-1, C, 2]
-        mag = freqs.pow(2).sum(dim=-1).sum(dim=-1)  # [B, F-1] magnitude across channels
-        K = min(self.modes, freqs.size(1))
-        if self.mode_select == "topk":
-            idx = mag.topk(K, dim=-1, largest=True).indices + 1  # shift back
-        else:
-            idx = torch.arange(1, K + 1, device=Xf.device).unsqueeze(0).expand(B, -1)
-        # Gather
-        Xf_sel = Xf.gather(dim=1, index=idx[:, :, None, None].expand(B, K, C, 2))
-        return Xf_sel, idx
-
-
-class FourierBlock(nn.Module):
-    """
-    Frequency-domain mixing:
-      - FFT over time
-      - select K modes
-      - learnable complex weights W_k for each mode and channel
-      - IFFT back
-    """
-
-    def __init__(
-        self,
-        d_model: int,
-        modes: int = 32,
-        mode_select: Literal["topk", "fixed"] = "topk",
-        dropout: float = 0.0,
-        custom_norm: str = "rms",
-        eps: float = 1e-5,
-    ):
-        super().__init__()
-        self.selector = FourierModeSelector(modes=modes, mode_select=mode_select)
-        # Learnable complex weights per (mode, channel)
-        self.weight = nn.Parameter(torch.randn(modes, d_model, 2) * 0.02)
-        self.dropout = nn.Dropout(dropout)
-        self.norm = create_norm_layer(custom_norm, d_model, eps)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, T, C] (C=d_model)
-        """
-        B, T, C = x.shape
-        # FFT (one-sided real-to-complex): shape [B, F, C, 2]
-        Xf = torch.view_as_real(torch.fft.rfft(x, dim=1))  # [B, F, C, 2]
-
-        Xf_sel, idx = self.selector(Xf)  # [B, K, C, 2], [B, K]
-        K = Xf_sel.size(1)
-
-        # Slice learnable weights to K (first K rows)
-        W = self.weight[:K, :, :]  # [K, C, 2]
-        W = W.unsqueeze(0).expand(B, K, C, 2)  # [B, K, C, 2]
-
-        # Complex multiply selected modes
-        Yf_sel = _complex_mul(Xf_sel, W)  # [B, K, C, 2]
-        # Scatter back into full spectrum buffer
-        Yf = torch.zeros_like(Xf)
-        Yf.scatter_(1, idx[:, :, None, None].expand(B, K, C, 2), Yf_sel)
-
-        # IFFT to time domain
-        y = torch.fft.irfft(torch.view_as_complex(Yf), n=T, dim=1)  # [B, T, C]
-        y = self.dropout(y)
-        return self.norm(y)
-
-
-# ---------------------------
-# 3) FEDformer encoder/decoder blocks
+# 2) FEDformer encoder/decoder blocks
 # ---------------------------
 
 
@@ -247,11 +152,11 @@ class FEDDecoderLayer(nn.Module):
 
 
 # ---------------------------
-# 4) Full FEDformer Head
+# 3) Full FEDformer Head
 # ---------------------------
 
 
-class FEDformerHeadCustom(nn.Module):
+class FEDformer(nn.Module):
     """
     Minimal, faithful FEDformer head with seasonal–trend decomposition and
     frequency-enhanced encoder/decoder mixing.

@@ -1,4 +1,4 @@
-# dlinear_head_custom.py
+# dlinear.py
 
 """DLinear-style time series forecasting head.
 
@@ -13,7 +13,7 @@ import torch.nn.functional as F
 # Use your project modules
 
 
-class DLinearHeadCustom(nn.Module):
+class DLinear(nn.Module):
     """
     DLinear-style head.
     Input : x [B, L, C_in]

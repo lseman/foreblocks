@@ -9,9 +9,12 @@ Based on:
     Series Analysis", ICLR 2023.
     Paper: https://arxiv.org/abs/2210.02186
 
-This implementation keeps TimesNet's period discovery and 1D-to-2D folding
-idea, with additional normalization and period-selection options for
-foreblocks forecasting heads.
+This implementation follows TimesNet's TimesBlock: FFT period discovery,
+1D→2D folding per period, a parameter-efficient Inception 2D conv, and
+**adaptive aggregation of the k period-branches by softmax of the selected
+frequencies' amplitudes** (Eq. in §3.2 of the paper). It adds optional
+period-selection methods (amplitude / autocorrelation / hybrid), normalization
+choices, and a custom multi-pool forecasting readout for foreblocks heads.
 """
 
 import math
@@ -46,19 +49,25 @@ def _topk_periods_amplitude(
     min_period: int = 2,
     max_period: int | None = None,
     max_period_frac: float = 0.5,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     x: [B, L, C]
-    Returns: periods [B, k] (int64), selected from dominant FFT amplitudes.
+    Returns:
+        periods [B, k] (int64), selected from dominant FFT amplitudes.
+        amps    [B, k] (float), the (per-sample) amplitude of each selected
+                 frequency — used for the paper's softmax-amplitude aggregation.
     """
     B, L, C = x.shape
     if k <= 0:
-        return torch.empty(B, 0, dtype=torch.long, device=x.device)
+        return (
+            torch.empty(B, 0, dtype=torch.long, device=x.device),
+            torch.empty(B, 0, dtype=torch.float32, device=x.device),
+        )
 
     x0 = x - x.mean(dim=1, keepdim=True)
     Xf = torch.fft.rfft(x0.float(), dim=1)  # [B, L//2+1, C]
-    amp = Xf.abs().mean(dim=-1)  # [B, L//2+1], avg over channels
-    spec = amp.mean(dim=0)  # [L//2+1], avg over batch
+    amp = Xf.abs().mean(dim=-1)  # [B, L//2+1], avg over channels (per sample)
+    spec = amp.mean(dim=0)  # [L//2+1], avg over batch — used for freq SELECTION
 
     lo, hi = _period_bounds(
         L, min_period=min_period, max_period=max_period, max_period_frac=max_period_frac
@@ -76,6 +85,7 @@ def _topk_periods_amplitude(
     band = spec[f_lo : f_hi + 1]
     if band.numel() == 0:
         periods = torch.full((k,), lo, dtype=torch.long, device=x.device)
+        top_freq = torch.full((k,), f_lo, dtype=torch.long, device=x.device)
     else:
         k_eff = min(k, band.numel())
         top_freq = torch.topk(band, k=k_eff, dim=0, largest=True).indices + f_lo
@@ -83,8 +93,12 @@ def _topk_periods_amplitude(
         periods = periods.to(torch.long).clamp(min=lo, max=hi)
         if k_eff < k:
             periods = torch.cat([periods, periods[-1:].expand(k - k_eff)], dim=0)
+            top_freq = torch.cat([top_freq, top_freq[-1:].expand(k - k_eff)], dim=0)
 
-    return periods.unsqueeze(0).expand(B, -1).contiguous()
+    # Per-sample amplitude at the selected frequencies (the paper weights by the
+    # per-window amplitude A_{f_i}, not the batch-averaged spectrum).
+    amps = amp[:, top_freq]  # [B, k]
+    return periods.unsqueeze(0).expand(B, -1).contiguous(), amps.contiguous()
 
 
 def _topk_periods_autocorr(
@@ -93,14 +107,19 @@ def _topk_periods_autocorr(
     min_period: int = 2,
     max_period: int | None = None,
     max_period_frac: float = 0.5,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     x: [B, L, C]
-    Returns: periods [B, k] (int64), selected from FFT-based autocorrelation peaks.
+    Returns:
+        periods [B, k] (int64), selected from FFT-based autocorrelation peaks.
+        amps    [B, k] (float), the autocorrelation peak height (aggregation weight).
     """
     B, L, C = x.shape
     if k <= 0:
-        return torch.empty(B, 0, dtype=torch.long, device=x.device)
+        return (
+            torch.empty(B, 0, dtype=torch.long, device=x.device),
+            torch.empty(B, 0, dtype=torch.float32, device=x.device),
+        )
 
     lo, hi = _period_bounds(
         L, min_period=min_period, max_period=max_period, max_period_frac=max_period_frac
@@ -113,14 +132,19 @@ def _topk_periods_autocorr(
     band = ac[:, lo : hi + 1]
 
     if band.numel() == 0:
-        return torch.full((B, k), lo, dtype=torch.long, device=x.device)
+        return (
+            torch.full((B, k), lo, dtype=torch.long, device=x.device),
+            torch.ones(B, k, dtype=torch.float32, device=x.device),
+        )
 
     k_eff = min(k, band.size(1))
-    idx = torch.topk(band, k=k_eff, dim=1, largest=True).indices + lo  # [B, k_eff]
-    idx = idx.to(torch.long).clamp(min=lo, max=hi)
+    top = torch.topk(band, k=k_eff, dim=1, largest=True)
+    idx = (top.indices + lo).to(torch.long).clamp(min=lo, max=hi)  # [B, k_eff]
+    amps = top.values  # [B, k_eff]
     if k_eff < k:
         idx = torch.cat([idx, idx[:, -1:].expand(B, k - k_eff)], dim=1)
-    return idx
+        amps = torch.cat([amps, amps[:, -1:].expand(B, k - k_eff)], dim=1)
+    return idx, amps
 
 
 def _topk_periods(
@@ -130,50 +154,46 @@ def _topk_periods(
     max_period: int | None = None,
     max_period_frac: float = 0.5,
     method: str = "amplitude",
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Returns (periods [B, k], amps [B, k]); amps are the per-sample selection
+    strengths used for the paper's softmax-amplitude aggregation."""
     if method == "amplitude":
         return _topk_periods_amplitude(
-            x,
-            k,
-            min_period=min_period,
-            max_period=max_period,
+            x, k, min_period=min_period, max_period=max_period,
             max_period_frac=max_period_frac,
         )
     if method in ("autocorr", "autocorrelation"):
         return _topk_periods_autocorr(
-            x,
-            k,
-            min_period=min_period,
-            max_period=max_period,
+            x, k, min_period=min_period, max_period=max_period,
             max_period_frac=max_period_frac,
         )
     if method in ("hybrid", "ensemble", "amp_autocorr"):
         # Keep total selection budget at k while mixing both selectors.
-        # Duplicate periods naturally receive larger weights later via multiplicity counts.
         if k <= 0:
-            return torch.empty(x.size(0), 0, dtype=torch.long, device=x.device)
+            empty = torch.empty(x.size(0), 0, device=x.device)
+            return empty.long(), empty.float()
 
         k_amp = (k + 1) // 2
         k_ac = k - k_amp
 
-        p_amp = _topk_periods_amplitude(
-            x,
-            k_amp,
-            min_period=min_period,
-            max_period=max_period,
+        p_amp, a_amp = _topk_periods_amplitude(
+            x, k_amp, min_period=min_period, max_period=max_period,
             max_period_frac=max_period_frac,
         )
         if k_ac <= 0:
-            return p_amp
+            return p_amp, a_amp
 
-        p_ac = _topk_periods_autocorr(
-            x,
-            k_ac,
-            min_period=min_period,
-            max_period=max_period,
+        p_ac, a_ac = _topk_periods_autocorr(
+            x, k_ac, min_period=min_period, max_period=max_period,
             max_period_frac=max_period_frac,
         )
-        return torch.cat([p_amp, p_ac], dim=1).contiguous()
+        # Normalise each selector's amps to comparable scale before mixing, so
+        # neither selection method dominates purely due to magnitude units.
+        a_amp = a_amp / (a_amp.amax(dim=1, keepdim=True) + 1e-9)
+        a_ac = a_ac / (a_ac.amax(dim=1, keepdim=True) + 1e-9)
+        periods = torch.cat([p_amp, p_ac], dim=1).contiguous()
+        amps = torch.cat([a_amp, a_ac], dim=1).contiguous()
+        return periods, amps
     raise ValueError(
         "Unsupported period method "
         f"'{method}'. Use 'amplitude', 'autocorr', or 'hybrid'."
@@ -338,47 +358,47 @@ class TimesBlock(nn.Module):
             h = self.glu(self.glu_proj(h))  # → [B,L,d_model]
         h = self.proj_in(h)
 
-        periods = _topk_periods(
+        periods, amps = _topk_periods(
             h,
             k=self.k,
             min_period=2,
             max_period_frac=self.max_period_frac,
             method=self.period_method,
-        )  # [B, k]
+        )  # [B, k], [B, k]
 
         n_periods = periods.size(1)
         if n_periods == 0:
             agg = torch.zeros_like(h)
         else:
-            # Build unique (sample, period) pairs with multiplicities in one pass.
-            # This avoids O(U * B * k) repeated equality scans when many periods are active.
+            # Paper's adaptive aggregation: weight each period-branch by
+            # softmax over the selected frequencies' amplitudes (per sample).
             p_all = periods.clamp(min=2, max=max(2, L))  # [B, k]
-            denom = float(n_periods)
+            weights = torch.softmax(amps.float(), dim=1)  # [B, k]
             agg = torch.zeros_like(h, dtype=torch.float32)
 
             sample_ids = (
-                torch
-                .arange(B, device=h.device)
-                .unsqueeze(1)
-                .expand(B, n_periods)
-                .reshape(-1)
+                torch.arange(B, device=h.device)
+                .unsqueeze(1).expand(B, n_periods).reshape(-1)
             )  # [B*k]
             period_flat = p_all.reshape(-1)  # [B*k]
+            weight_flat = weights.reshape(-1)  # [B*k]
 
+            # Collapse duplicate (sample, period) pairs, summing their softmax
+            # weights, so each unique period is folded/conv'd once.
             key_stride = int(L + 1)  # periods are in [2, L]
             pair_key = sample_ids * key_stride + period_flat
+            uniq_key, inv = torch.unique(pair_key, sorted=False, return_inverse=True)
+            w_unique = torch.zeros(uniq_key.numel(), device=h.device, dtype=torch.float32)
+            w_unique.scatter_add_(0, inv, weight_flat)
 
-            uniq_key, mult = torch.unique(pair_key, sorted=False, return_counts=True)
-            idx_unique = torch.div(uniq_key, key_stride, rounding_mode="floor").to(
-                torch.long
-            )
+            idx_unique = torch.div(uniq_key, key_stride, rounding_mode="floor").to(torch.long)
             period_unique = (uniq_key % key_stride).to(torch.long)
 
-            # Sort once by period so each contiguous bucket can be processed with one fold+conv.
+            # Sort by period so each contiguous bucket is one fold+conv.
             order = torch.argsort(period_unique)
             idx_unique = idx_unique.index_select(0, order)
             period_unique = period_unique.index_select(0, order)
-            mult = mult.index_select(0, order)
+            w_unique = w_unique.index_select(0, order)
 
             unique_p, group_sizes = torch.unique_consecutive(
                 period_unique, return_counts=True
@@ -388,15 +408,14 @@ class TimesBlock(nn.Module):
             for p_t, gsize in zip(unique_p, group_sizes):
                 end = start + int(gsize.item())
                 idx = idx_unique[start:end]
-                mult_g = mult[start:end]
+                w_g = w_unique[start:end]
                 p = int(p_t.item())
 
                 Xp, pad = self._fold(h.index_select(0, idx), p)  # [Bg, C, Np, p]
                 Yp = self.inception(Xp)
                 y = self._unfold(Yp, pad, L).to(agg.dtype)  # [Bg, L, C]
 
-                w = mult_g.to(agg.dtype).view(-1, 1, 1) / denom
-                agg.index_add_(0, idx, y * w)
+                agg.index_add_(0, idx, y * w_g.view(-1, 1, 1))
                 start = end
 
             agg = agg.to(h.dtype)
@@ -414,7 +433,7 @@ class TimesBlock(nn.Module):
     category="Backbone",
     color="bg-gradient-to-br from-rose-600 to-rose-800",
 )
-class TimesNetHeadCustom(nn.Module):
+class TimesNet(nn.Module):
     def __init__(
         self,
         pred_len: int,

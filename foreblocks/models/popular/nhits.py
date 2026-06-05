@@ -116,7 +116,7 @@ class NHiTSBlock(nn.Module):
         return backcast, forecast
 
 
-class NHiTSHeadCustom(nn.Module):
+class NHiTS(nn.Module):
     """N-HiTS forecasting head.
 
     Input : x [B, L, C]

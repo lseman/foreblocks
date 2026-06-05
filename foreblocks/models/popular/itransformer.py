@@ -1,4 +1,4 @@
-# itransformer_head_custom.py
+# itransformer.py
 """iTransformer-style variable-token transformer head for time series.
 
 Based on: iTransformer, a variable-token transformer design for improved
@@ -11,10 +11,10 @@ from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from foreblocks.models.transformer.transformer_att import MultiAttention
 
 from foreblocks.layers.embeddings import PositionalEncoding
 from foreblocks.layers.norms import create_norm_layer
+from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 class _TemporalCompressor(nn.Module):
@@ -144,7 +144,7 @@ class VariableTokenEncoder(nn.Module):
         return self.final_norm(h)
 
 
-class ITransformerHeadCustom(nn.Module):
+class ITransformer(nn.Module):
     """
     iTransformer-style head using your own Transformer blocks.
 
@@ -177,7 +177,6 @@ class ITransformerHeadCustom(nn.Module):
         use_moe: bool = False,
         num_experts: int = 8,
         top_k: int = 2,
-        moe_capacity_factor: float = 1.25,
         layer_norm_eps: float = 1e-5,
         use_final_norm: bool = True,
         pooling: Literal["mean", "last", "cls"] = "mean",
@@ -247,7 +246,6 @@ class ITransformerHeadCustom(nn.Module):
             use_moe=use_moe,
             num_experts=num_experts,
             top_k=top_k,
-            moe_capacity_factor=moe_capacity_factor,
             layer_norm_eps=layer_norm_eps,
             use_final_norm=use_final_norm,
         )

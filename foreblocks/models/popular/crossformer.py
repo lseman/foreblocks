@@ -1,8 +1,9 @@
-# crossformer_head_custom.py
+# crossformer.py
 
 """CrossFormer-style time series forecasting head.
 
 Based on: CrossFormer, a cross-scale attention architecture for time series.
+Paper: https://openreview.net/pdf?id=vSVLM2j9eie
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import torch.nn as nn
 from foreblocks.modules.attention.multi_att import MultiAttention
 
 
-class CrossFormerHeadCustom(nn.Module):
+class CrossFormer(nn.Module):
     """A lightweight cross-scale transformer head for time series."""
 
     def __init__(

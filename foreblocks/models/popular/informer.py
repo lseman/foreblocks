@@ -1,4 +1,4 @@
-# informer_head_custom.py
+# informer.py
 
 """Informer-style time series forecasting head.
 
@@ -15,7 +15,7 @@ import torch.nn as nn
 from foreblocks.models.transformer.transformer import TransformerEncoder
 
 
-class InformerHeadCustom(nn.Module):
+class Informer(nn.Module):
     """Minimal Informer-style forecasting head."""
 
     def __init__(

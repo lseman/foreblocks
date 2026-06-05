@@ -1,4 +1,4 @@
-# etsformer_head_custom.py
+# etsformer.py
 
 """ETSformer-style time series forecasting head.
 
@@ -17,7 +17,7 @@ from foreblocks.layers.norms import create_norm_layer
 from foreblocks.models.transformer.transformer import TransformerEncoderLayer
 
 
-class ETSformerHeadCustom(nn.Module):
+class ETSformer(nn.Module):
     """ETSformer-style head with decomposition and transformer encoding."""
 
     def __init__(

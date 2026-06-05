@@ -1,4 +1,4 @@
-# autoformer_head_custom.py
+# autoformer.py
 
 """Autoformer-style series decomposition and auto-correlation attention.
 
@@ -10,8 +10,10 @@ Paper: https://arxiv.org/abs/2206.05440
 import torch
 import torch.nn as nn
 
-from foreblocks.models.popular.transformer_aux import (
-    create_norm_layer,  # uses your fast Layer/RMS/Temporal/RevIN, etc.
+from foreblocks.layers.norms import create_norm_layer
+from foreblocks.modules.attention.modules.autocor_att import (
+    AutoCorrelation as AutoCorrelationImpl,
+    AutoCorrelationLayer,
 )
 
 
@@ -38,108 +40,22 @@ class SeriesDecomp(nn.Module):
         return s, t
 
 
-# =========================================================
-# 2) Auto-Correlation (multi-head) per Autoformer
-#    Efficient FFT-based correlation + top-k delays.
-# =========================================================
-def _topk_delays(corr: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    corr: [B, Hh, Lq, Lk] correlation map (time-delay domain).
-    Returns:
-      idx: [B, Hh, K]   (best delays)
-      w:   [B, Hh, K]   (normalized weights)
-    """
-    B, Hh, Lq, Lk = corr.shape
-    # mean over query length to get global importance per delay
-    score = corr.mean(dim=2)  # [B,Hh,Lk]
-    K = min(k, Lk)
-    vals, idx = torch.topk(score, k=K, dim=-1, largest=True)
-    w = (vals / (vals.sum(dim=-1, keepdim=True) + 1e-12)).detach()
-    return idx, w
-
-
-class AutoCorrelation(nn.Module):
-    """
-    Auto-Correlation attention:
-      - compute correlation via FFT: Corr(q,k)(τ) = IFFT(FFT(q) * conj(FFT(k)))
-      - aggregate V shifted by top-k delays weighted by correlation
-    Shapes use standard MH projections with head dim dh = d_model // n_heads.
-    """
-
-    def __init__(
-        self, d_model: int, n_heads: int, dropout: float = 0.0, k_delays: int = 8
-    ):
-        super().__init__()
-        assert d_model % n_heads == 0
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.dh = d_model // n_heads
-        self.k_delays = k_delays
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        self.o_proj = nn.Linear(d_model, d_model)
-        self.drop = nn.Dropout(dropout)
-
-    @staticmethod
-    def _fft_corr(q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        """
-        q,k: [B, Hh, L, dh] -> corr over delays: [B, Hh, L, L]
-        """
-        B, Hh, L, Dh = q.shape
-        # zero-mean along time to stabilize
-        qz = q - q.mean(dim=2, keepdim=True)
-        kz = k - k.mean(dim=2, keepdim=True)
-        Qf = torch.fft.rfft(qz, dim=2)  # [B,Hh,F,dh]
-        Kf = torch.fft.rfft(kz, dim=2)
-        # IFFT of elementwise product with conjugate
-        S = Qf * torch.conj(Kf)  # [B,Hh,F,dh]
-        corr = torch.fft.irfft(
-            S, n=L, dim=2
-        ).real  # [B,Hh,L,dh] correlation over lags 0..L-1 per feature
-        # aggregate over feature dim to get scalar correlation map per head
-        corr = corr.mean(dim=-1)  # [B,Hh,L]
-        # Build [B,Hh,Lq,Lk] by broadcasting over queries (use same L)
-        return corr[:, :, None, :].expand(B, Hh, L, L)
-
-    @staticmethod
-    def _shift(v: torch.Tensor, delay: int) -> torch.Tensor:
-        # circular shift to align with correlation delay (as in Autoformer)
-        return torch.roll(v, shifts=-delay, dims=2)
-
-    def forward(self, x_q: torch.Tensor, x_kv: torch.Tensor) -> torch.Tensor:
-        """
-        x_q, x_kv: [B, L, D]
-        returns:   [B, L, D]
-        """
-        B, L, D = x_q.shape
-        Hh, Dh = self.n_heads, self.dh
-
-        q = self.q_proj(x_q).view(B, L, Hh, Dh).permute(0, 2, 1, 3)  # [B,Hh,L,Dh]
-        k = self.k_proj(x_kv).view(B, L, Hh, Dh).permute(0, 2, 1, 3)
-        v = self.v_proj(x_kv).view(B, L, Hh, Dh).permute(0, 2, 1, 3)
-
-        # FFT-based correlation over delays
-        corr = self._fft_corr(q, k)  # [B,Hh,L,L]
-        idx, w = _topk_delays(corr, self.k_delays)  # [B,Hh,K], [B,Hh,K]
-
-        # time-delay aggregation: sum_k w_k * shift(v, delay_k)
-        out = 0.0
-        for j in range(idx.size(-1)):
-            delay = idx[:, :, j]  # [B,Hh]
-            # shift per (B,Hh): vectorized by looping heads; light loop (K up to ~8)
-            v_shift = []
-            for h in range(Hh):
-                v_shift.append(
-                    self._shift(
-                        v[:, h : h + 1, :, :], delay[:, h].view(B, 1, 1, 1).item()
-                    )
-                )
-            v_shift = torch.cat(v_shift, dim=1)  # [B,Hh,L,Dh]
-            out = out + v_shift * w[:, :, j].view(B, Hh, 1, 1)
-
-        out = out.permute(0, 2, 1, 3).contiguous().view(B, L, D)
-        return self.o_proj(self.drop(out))
+def _make_auto_correlation(
+    d_model: int,
+    n_heads: int,
+    dropout: float,
+    k_delays: int,
+) -> AutoCorrelationLayer:
+    return AutoCorrelationLayer(
+        AutoCorrelationImpl(
+            mask_flag=False,
+            factor=max(1, int(k_delays)),
+            attention_dropout=dropout,
+            output_attention=False,
+        ),
+        d_model=d_model,
+        n_heads=n_heads,
+    )
 
 
 # =========================================================
@@ -160,7 +76,7 @@ class AutoformerEncoderLayer(nn.Module):
     ):
         super().__init__()
         self.decomp = SeriesDecomp(kernel_size)
-        self.attn = AutoCorrelation(d_model, n_heads, dropout, k_delays)
+        self.attn = _make_auto_correlation(d_model, n_heads, dropout, k_delays)
         self.drop = nn.Dropout(dropout)
         self.norm1 = create_norm_layer(norm_type, d_model, eps=eps)
         self.ff = nn.Sequential(
@@ -177,7 +93,8 @@ class AutoformerEncoderLayer(nn.Module):
         returns: seasonal_out, trend_residual
         """
         s, t = self.decomp(x)  # [B,L,D] each
-        s = s + self.drop(self.attn(self.norm1(s), self.norm1(s)))
+        h = self.norm1(s)
+        s = s + self.drop(self.attn(h, h, h)[0])
         s = s + self.drop(self.ff(self.norm2(s)))
         return s, t
 
@@ -197,8 +114,8 @@ class AutoformerDecoderLayer(nn.Module):
     ):
         super().__init__()
         self.decomp = SeriesDecomp(kernel_size)
-        self.self_attn = AutoCorrelation(d_model, n_heads, dropout, k_delays)
-        self.cross_attn = AutoCorrelation(d_model, n_heads, dropout, k_delays)
+        self.self_attn = _make_auto_correlation(d_model, n_heads, dropout, k_delays)
+        self.cross_attn = _make_auto_correlation(d_model, n_heads, dropout, k_delays)
         self.drop = nn.Dropout(dropout)
         self.norm1 = create_norm_layer(norm_type, d_model, eps=eps)
         self.norm2 = create_norm_layer(norm_type, d_model, eps=eps)
@@ -219,8 +136,9 @@ class AutoformerDecoderLayer(nn.Module):
         returns: seasonal_out, trend_residual
         """
         s, t = self.decomp(x)
-        s = s + self.drop(self.self_attn(self.norm1(s), self.norm1(s)))
-        s = s + self.drop(self.cross_attn(self.norm2(s), self.norm2(mem)))
+        h = self.norm1(s)
+        s = s + self.drop(self.self_attn(h, h, h)[0])
+        s = s + self.drop(self.cross_attn(self.norm2(s), self.norm2(mem), self.norm2(mem))[0])
         s = s + self.drop(self.ff(self.norm3(s)))
         return s, t
 
@@ -228,7 +146,7 @@ class AutoformerDecoderLayer(nn.Module):
 # =========================================================
 # 4) Full Autoformer Head
 # =========================================================
-class AutoformerHeadCustom(nn.Module):
+class Autoformer(nn.Module):
     """
     Autoformer forecasting head.
 

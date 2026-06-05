@@ -1,4 +1,4 @@
-# patch_head_custom.py
+# patch.py
 
 """PatchTST-style patch token transformer head.
 
@@ -101,7 +101,7 @@ class PatchTokenEncoder(nn.Module):
         return self.final_norm(h)
 
 
-class PatchTSTHeadCustom(nn.Module):
+class PatchTST(nn.Module):
     """
     PatchTST-style head built on your custom attention stack.
 
@@ -141,7 +141,6 @@ class PatchTSTHeadCustom(nn.Module):
         use_moe: bool = False,
         num_experts: int = 8,
         top_k: int = 2,
-        moe_capacity_factor: float = 1.25,
         layer_norm_eps: float = 1e-5,
         use_final_norm: bool = True,
         pooling: Literal["mean", "last", "cls"] = "mean",
