@@ -103,7 +103,19 @@ export default defineConfig({
     ],
     themeConfig: {
         logo: '/logo.svg',
-        nav: [],
+        nav: [
+            {
+                text: 'foreBlocks v' + version,
+                items: [
+                    { text: 'Getting Started', link: '/getting-started' },
+                    { text: 'Tutorials', link: '/tutorials/train-direct-model' },
+                    { text: 'Guides', link: '/overview' },
+                    { text: 'Foretools', link: '/foretools/index' },
+                    { text: 'API', link: '/reference/public-api' },
+                    { text: 'GitHub', link: 'https://github.com/lseman/foreblocks' },
+                ],
+            },
+        ],
         sidebar: docsSidebar,
         socialLinks: [
             { icon: 'github', link: 'https://github.com/lseman/foreblocks' },
@@ -115,6 +127,9 @@ export default defineConfig({
         footer: {
             message: 'MIT License',
             copyright: 'Copyright © 2026 foreBlocks',
+        },
+        search: {
+            provider: 'local',
         },
     },
     markdown: {

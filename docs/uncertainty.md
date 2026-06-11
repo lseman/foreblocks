@@ -1,3 +1,11 @@
+---
+title: Uncertainty Quantification
+description: Conformal prediction and uncertainty estimation for time-series forecasts.
+editLink: true
+---
+
+
+[[toc]]
 # Uncertainty Quantification
 
 `foreblocks.core.ConformalPredictionEngine` provides post-hoc prediction intervals for any trained `nn.Module`. It requires no model retraining — calibration uses a held-out set after training is complete.
@@ -42,20 +50,7 @@ engine.calibrate(model, X_cal, y_cal, device="cuda")
 # 3. Predict: returns point predictions + lower/upper bounds
 preds, lower, upper = engine.predict(model, X_test, device="cuda")
 # preds, lower, upper: numpy arrays, shape [N, H, D]
-```
-
-## Online update
-
-Adaptive methods (`rolling`, `agaci`, `enbpi`, `cptc`, `afocp`) can be updated incrementally as new labelled points arrive, without recalibrating from scratch:
-
-```python
-engine = ConformalPredictionEngine(method="rolling", quantile=0.9, aci_gamma=0.01)
-engine.calibrate(model, X_cal, y_cal, device="cuda")
-
-# During deployment, after each batch of new observations:
-engine.update(model, X_new, y_new, device="cuda")
-preds, lower, upper = engine.predict(model, X_next, device="cuda")
-```
+```toml
 
 `update()` for `rolling` and `agaci` defaults to sequential (point-by-point) update to maintain exact ACI guarantees. Pass `sequential=False` for a faster batch approximation.
 
@@ -67,20 +62,7 @@ Global radius: the `q`-quantile of absolute calibration residuals. Cheapest meth
 
 ```python
 engine = ConformalPredictionEngine(method="split", quantile=0.9)
-```
-
-### `local`
-
-Per-sample radius estimated via KNN in feature space. More expressive than split conformal when the input distribution is non-stationary.
-
-```python
-engine = ConformalPredictionEngine(
-    method="local",
-    quantile=0.9,
-    knn_k=50,
-    local_window=5000,   # max calibration samples to keep
-)
-```
+```toml
 
 ### `jackknife` (CV+)
 
@@ -96,17 +78,7 @@ engine.calibrate(
     jackknife_cv_indices=cv_indices,
 )
 preds, lower, upper = engine.predict(model, X_test)
-```
-
-### `quantile` (CQR)
-
-Conformalized Quantile Regression. The model must output two quantile predictions per step: `[lower_q, upper_q]` as the last dimension.
-
-```python
-engine = ConformalPredictionEngine(method="quantile", quantile=0.9)
-# model output shape must be [N, H, 2]
-engine.calibrate(quantile_model, X_cal, y_cal)
-```
+```toml
 
 ### `rolling` (ACI)
 
@@ -119,19 +91,7 @@ engine = ConformalPredictionEngine(
     rolling_alpha=0.05,
     aci_gamma=0.01,     # learning rate for α updates
 )
-```
-
-### `agaci`
-
-Aggregated ACI: maintains an expert pool with multiple γ values and aggregates their intervals. More robust than a single learning rate.
-
-```python
-engine = ConformalPredictionEngine(
-    method="agaci",
-    quantile=0.9,
-    agaci_gammas=[0.001, 0.005, 0.01, 0.05, 0.1],
-)
-```
+```toml
 
 ### `tsp`
 
@@ -144,25 +104,7 @@ engine = ConformalPredictionEngine(
     tsp_lambda=0.01,    # exponential decay rate
     tsp_window=5000,
 )
-```
-
-### `enbpi`
-
-Ensemble Batch Prediction Intervals. Calibrate with out-of-bag residuals from an ensemble; online update uses the same ensemble.
-
-```python
-engine = ConformalPredictionEngine(
-    method="enbpi",
-    quantile=0.9,
-    enbpi_B=20,
-    enbpi_window=500,
-)
-engine.calibrate(
-    model, X_cal, y_cal,
-    enbpi_member_models=ensemble_members,
-    enbpi_boot_indices=boot_indices,   # [B, N] bootstrap index array
-)
-```
+```toml
 
 ### `cptc`
 
@@ -176,26 +118,7 @@ engine = ConformalPredictionEngine(
     cptc_tau=1.0,
 )
 engine.calibrate(model, X_cal, y_cal, state_model=my_state_fn)
-```
-
-`state_model` is any callable that maps `X → state_features` (array/tensor).
-
-### `afocp`
-
-Attention-based Feature-weighted Online Conformal Prediction. Learns a weighting over calibration residuals using pairwise attention on input features. Optionally updates the attention network online.
-
-```python
-engine = ConformalPredictionEngine(
-    method="afocp",
-    quantile=0.9,
-    afocp_feature_dim=128,
-    afocp_attn_hidden=64,
-    afocp_window=500,
-    afocp_online_lr=1e-4,    # 0.0 disables online learning
-    afocp_online_steps=1,
-)
-engine.calibrate(model, X_cal, y_cal, feature_extractor=feat_fn)
-```
+```text
 
 ## Persistence
 
@@ -203,16 +126,6 @@ engine.calibrate(model, X_cal, y_cal, feature_extractor=feat_fn)
 engine.save("engine.pkl")
 engine2 = ConformalPredictionEngine(method="split")
 engine2.load("engine.pkl")
-```
-
-## Checking coverage
-
-After collecting predictions on a labelled test set:
-
 ```python
-in_interval = (y_test >= lower) & (y_test <= upper)
-empirical_coverage = in_interval.float().mean().item()
-print(f"Empirical coverage: {empirical_coverage:.3f}")
-```
 
 For a well-calibrated engine on exchangeable data, this should be ≥ `quantile`.

@@ -1,3 +1,9 @@
+---
+title: DARTS Search Pipeline
+description: Conceptual DARTS workflow mapped onto actual ForeBlocks modules.
+editLink: true
+---
+
 # DARTS Search Pipeline
 
 This page maps the conceptual DARTS workflow onto the actual ForeBlocks modules.
@@ -45,63 +51,3 @@ DARTSTrainer.multi_fidelity_search(...)
       -> training/darts_loop.py
       -> trainer.derive_final_architecture(...)
       -> training/final_trainer.py
-```
-
-## Result artifacts by phase
-
-### Candidate generation and zero-cost ranking
-
-Produces:
-
-- raw candidates
-- cheap ranking metrics
-- promoted `top_k` candidates
-
-This is the best phase for debugging search-space quality.
-
-### Bilevel DARTS phase
-
-Produces:
-
-- mixed searched model
-- training and validation losses
-- alpha histories
-- intermediate metrics
-
-This is the best phase for debugging collapse, instability, or bad promotion thresholds.
-
-### Final retraining phase
-
-Produces:
-
-- the fixed `final_model`
-- final metrics
-- training info
-
-This is the artifact that should matter most for downstream use.
-
-## The important design choice: fixed-model retraining
-
-ForeBlocks explicitly separates search-time mixed architectures from final deployment artifacts. That means the model you save after `derive_final_architecture(...)` is not just the same mixed model with a different label; it is a discrete architecture intended to be retrained and validated on its own merits.
-
-This separation matters because:
-
-- mixed-model performance can overestimate the final discrete architecture
-- retraining reveals whether the search signal really transfers
-- saving and sharing the final model becomes cleaner
-
-## Stats collection and benchmarking
-
-When `collect_stats=True`, the multi-fidelity pipeline stores timing and worker-parallelism artifacts. This is useful when you want to compare:
-
-- how expensive phase 1 really is
-- whether more workers help in practice
-- whether candidate generation or search training is the true bottleneck
-
-Treat this as an experiment-benchmarking feature, not something you need for every search run.
-
-## Related pages
-
-- [DARTS Guide](../darts.md)
-- [Run A DARTS Search](../tutorials/darts-multifidelity-search.md)
-- [Repository Map](../reference/repository-map.md)

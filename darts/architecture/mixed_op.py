@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from darts.search.metrics import _default_enable_flops
+
 from .operation_blocks import (
     ConvMixerOp,
     DLinearOp,
@@ -224,39 +226,14 @@ class MixedOp(nn.Module):
             self._flops_profiled = True
             return
 
+        if not _default_enable_flops():
+            self._apply_static_efficiency_priors()
+            return
+
         try:
             from fvcore.nn import FlopCountAnalysis
         except Exception:
-            # Fallback: use static efficiency scores that are more accurate
-            # than the generic defaults.  These are pre-computed from typical
-            # time-series shapes (seq_len=128, hidden=64) and represent
-            # relative computational cost (higher = more efficient).
-            static_priors = {
-                "Identity": 1.0,
-                "DLinear": 0.95,
-                "ResidualMLP": 0.80,
-                "NBeats": 0.78,
-                "PatchEmbed": 0.68,
-                "TimeMixer": 0.68,
-                "GRN": 0.65,
-                "TimesNet": 0.62,
-                "TimeConv": 0.60,
-                "ConvMixer": 0.58,
-                "InvertedAttention": 0.55,
-                "iTransformerBlock": 0.55,
-                "TCN": 0.50,
-                "Fourier": 0.45,
-                "Wavelet": 0.45,
-                "MultiScaleConv": 0.35,
-                "PyramidConv": 0.25,
-            }
-            # Merge with available operations
-            for op_name in self.available_ops:
-                if op_name in static_priors:
-                    self.op_efficiency[op_name] = static_priors[op_name]
-                else:
-                    self.op_efficiency[op_name] = 0.5  # unknown ops
-            self._flops_profiled = True
+            self._apply_static_efficiency_priors()
             return
 
         ref_param = next(self.parameters(), None)
@@ -294,6 +271,32 @@ class MixedOp(nn.Module):
             MixedOp._efficiency_cache[cache_key] = copy.deepcopy(profiled_eff)
             self._dynamic_efficiency_profiled = True
 
+        self._flops_profiled = True
+
+    def _apply_static_efficiency_priors(self):
+        # Pre-computed from typical time-series shapes; higher means cheaper.
+        static_priors = {
+            "Identity": 1.0,
+            "DLinear": 0.95,
+            "ResidualMLP": 0.80,
+            "NBeats": 0.78,
+            "PatchEmbed": 0.68,
+            "TimeMixer": 0.68,
+            "GRN": 0.65,
+            "TimesNet": 0.62,
+            "TimeConv": 0.60,
+            "ConvMixer": 0.58,
+            "InvertedAttention": 0.55,
+            "iTransformerBlock": 0.55,
+            "TCN": 0.50,
+            "Fourier": 0.45,
+            "Wavelet": 0.45,
+            "MultiScaleConv": 0.35,
+            "PyramidConv": 0.25,
+        }
+        for op_name in self.available_ops:
+            self.op_efficiency[op_name] = static_priors.get(op_name, 0.5)
+        self._dynamic_efficiency_profiled = False
         self._flops_profiled = True
 
     def _validate_ops(self, ops):
@@ -774,4 +777,3 @@ class MixedOp(nn.Module):
             }
         else:
             return {"alphas": self._alphas.detach()}
-

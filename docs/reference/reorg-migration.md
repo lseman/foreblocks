@@ -1,3 +1,9 @@
+---
+title: Package Reorganization — Migration Map
+description: Old → new import mappings for the ops/layers/modules/models/sequence reshape.
+editLink: true
+---
+
 # Package Reorganization — Migration Map
 
 This is the authoritative old → new mapping for the `ops / layers / modules / models / sequence`

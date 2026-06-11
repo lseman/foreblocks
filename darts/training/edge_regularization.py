@@ -7,6 +7,7 @@ The public entry-point is :func:`train_darts_model`.
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -74,8 +75,9 @@ def _add_edge_diversity_reg(
             ):
                 continue
 
-            probs = probs.clamp_min(1e-8)
-            probs = probs / probs.sum().clamp_min(1e-8)
+            probs = _safe_probability_vector(probs)
+            if probs is None:
+                continue
             prob_map = {}
             for op_idx, op_name in enumerate(edge.available_ops):
                 prob_map[op_name] = probs[op_idx]
@@ -92,20 +94,30 @@ def _add_edge_diversity_reg(
             vec = torch.stack(
                 [prob_map.get(n, base_zero) for n in union_op_names], dim=0
             )
-            vec = vec / vec.sum().clamp_min(1e-8)
+            vec = _safe_probability_vector(vec)
+            if vec is None:
+                continue
             aligned.append(vec)
+
+        if len(aligned) < 2:
+            continue
 
         for i in range(len(aligned)):
             vi = aligned[i] / aligned[i].norm(p=2).clamp_min(1e-8)
             for j in range(i + 1, len(aligned)):
                 vj = aligned[j] / aligned[j].norm(p=2).clamp_min(1e-8)
-                edge_diversity_loss = edge_diversity_loss + torch.dot(vi, vj)
+                # Elementwise sum avoids dispatching tiny vectors through a
+                # native dot kernel, which can SIGFPE on some server builds.
+                edge_diversity_loss = edge_diversity_loss + (vi * vj).sum()
                 edge_diversity_pairs += 1
 
         mean_probs = torch.stack(aligned, dim=0).mean(dim=0)
-        mean_probs = mean_probs / mean_probs.sum().clamp_min(1e-8)
+        mean_probs = _safe_probability_vector(mean_probs)
+        if mean_probs is None:
+            continue
         entropy = -(mean_probs * torch.log(mean_probs + 1e-8)).sum()
-        norm_entropy = entropy / np.log(max(mean_probs.numel(), 2))
+        log_denom = mean_probs.new_tensor(math.log(max(mean_probs.numel(), 2)))
+        norm_entropy = entropy / log_denom.clamp_min(1e-8)
         edge_usage_balance_loss = edge_usage_balance_loss + (1.0 - norm_entropy)
         edge_usage_cells += 1
 
@@ -131,6 +143,15 @@ def _add_edge_diversity_reg(
         )
 
     return total_arch_loss, edge_diversity_pairs
+
+
+def _safe_probability_vector(probs: torch.Tensor) -> torch.Tensor | None:
+    """Return a finite, normalized float32 probability vector or ``None``."""
+    if probs.numel() <= 0:
+        return None
+    probs = probs.float()
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0.0)
+    return probs / probs.sum().clamp_min(1e-8)
 
 
 def _add_edge_sharpening(
@@ -250,5 +271,3 @@ def _extract_edge_probs(edge) -> torch.Tensor | None:
         )
         return F.softmax(edge._alphas / temp, dim=0)
     return None
-
-

@@ -1,3 +1,10 @@
+---
+title: Home
+description: Modular time-series forecasting, architecture search, and companion utilities for PyTorch.
+lastUpdated: false
+editLink: true
+---
+
 # ForeBlocks Docs
 
 <div class="hero-panel">
@@ -83,13 +90,13 @@
 
 | Need | Command | Next page |
 | --- | --- | --- |
-| Core forecasting | `pip install foreblocks` | [Getting Started](getting-started.md) |
-| Raw-series preprocessing | `pip install "foreblocks[preprocessing]"` | [Preprocessor Guide](preprocessor.md) |
-| Architecture search (DARTS) | `pip install "foreblocks[darts]"` | [DARTS Guide](darts.md) |
-| Experiment tracking (MLTracker) | `pip install "foreblocks[mltracker]"` | [Web UI](webui.md) |
-| VMD decomposition | `pip install "foreblocks[vmd]"` | [VMD Guide](foretools/vmd.md) |
-| Wavelet preprocessing | `pip install "foreblocks[wavelets]"` | [Preprocessor Guide](preprocessor.md) |
-| All runtime extras | `pip install "foreblocks[all]"` | [Overview](overview.md) |
+| Core forecasting | `pip install foreblocks` | [Getting Started](getting-started) |
+| Raw-series preprocessing | `pip install "foreblocks[preprocessing]"` | [Preprocessor Guide](preprocessor) |
+| Architecture search (DARTS) | `pip install "foreblocks[darts]"` | [DARTS Guide](darts) |
+| Experiment tracking (MLTracker) | `pip install "foreblocks[mltracker]"` | [Web UI](webui) |
+| VMD decomposition | `pip install "foreblocks[vmd]"` | [VMD Guide](foretools/vmd) |
+| Wavelet preprocessing | `pip install "foreblocks[wavelets]"` | [Preprocessor Guide](preprocessor) |
+| All runtime extras | `pip install "foreblocks[all]"` | [Overview](overview) |
 
 ## Documentation map
 
@@ -97,46 +104,46 @@
 
 Step-by-step runnable paths:
 
-- [Getting Started](getting-started.md)
-- [Train a Direct Model](tutorials/train-direct-model.md)
-- [Run a DARTS Search](tutorials/darts-multifidelity-search.md)
-- [Generate Synthetic Series](tutorials/generate-synthetic-series.md)
-- [Optimize With BOHB](tutorials/optimize-with-bohb.md)
+- [Getting Started](getting-started)
+- [Train a Direct Model](tutorials/train-direct-model)
+- [Run a DARTS Search](tutorials/darts-multifidelity-search)
+- [Generate Synthetic Series](tutorials/generate-synthetic-series)
+- [Optimize With BOHB](tutorials/optimize-with-bohb)
 
 ### Guides
 
 Topic-based deep dives:
 
-- [Preprocessor](preprocessor.md)
-- [Custom Blocks](custom_blocks.md)
-- [Transformer](transformer.md)
-- [Mixture of Experts](moe.md)
-- [Custom Mamba](hybrid-mamba.md)
-- [KAN Backbone](kan.md)
-- [DARTS](darts.md)
-- [Evaluation & Metrics](evaluation.md)
-- [Uncertainty Quantification](uncertainty.md)
-- [Web UI](webui.md)
-- [Troubleshooting](troubleshooting.md)
+- [Preprocessor](preprocessor)
+- [Custom Blocks](custom_blocks)
+- [Transformer](transformer)
+- [Mixture of Experts](moe)
+- [Custom Mamba](hybrid-mamba)
+- [KAN Backbone](kan)
+- [DARTS](darts)
+- [Evaluation & Metrics](evaluation)
+- [Uncertainty Quantification](uncertainty)
+- [Web UI](webui)
+- [Troubleshooting](troubleshooting)
 
 ### Foretools
 
 Companion utilities and helpers:
 
-- [Foretools Overview](foretools/index.md)
-- [Time Series Generator](foretools/tsgen.md)
-- [BOHB Search](foretools/bohb.md)
-- [VMD Decomposition](foretools/vmd.md)
-- [AutoDA Augmentation](foretools/tsaug.md)
-- [Feature Engineering](foretools/feature-engineering.md)
+- [Foretools Overview](foretools/index)
+- [Time Series Generator](foretools/tsgen)
+- [BOHB Search](foretools/bohb)
+- [VMD Decomposition](foretools/vmd)
+- [AutoDA Augmentation](foretools/tsaug)
+- [Feature Engineering](foretools/feature-engineering)
 
 ### Architecture
 
 Internals and system notes:
 
-- [System Overview](architecture/system-overview.md)
-- [Forecasting Pipeline](architecture/forecasting-pipeline.md)
-- [DARTS Search Pipeline](architecture/darts-pipeline.md)
+- [System Overview](architecture/system-overview)
+- [Forecasting Pipeline](architecture/forecasting-pipeline)
+- [DARTS Search Pipeline](architecture/darts-pipeline)
 
 ## Stable public entry points
 
@@ -155,35 +162,13 @@ from foreblocks import (
     ModelConfig,
     TrainingConfig,
 )
-```
-
-### Architecture search
-
 ```python
-from darts import (
-    DARTSTrainer,
-    DARTSConfig,
-    DARTSTrainConfig,
-    FinalTrainConfig,
-    MultiFidelitySearchConfig,
-)
-```
 
 ### Uncertainty
 
 ```python
 from foreblocks.core import ConformalPredictionEngine
-```
-
-### Custom Mamba
-
 ```python
-from foreblocks.custom_mamba import (
-    HybridMambaBlock,
-    HybridMamba2Block,
-    TinyHybridMamba2LM,
-)
-```
 
 ### Wavelet & frequency attention
 
@@ -198,18 +183,3 @@ enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="dwt")
 
 # Frequency-domain (FEDformer-style) attention
 enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="frequency")
-```
-
-See the [Transformer Guide](transformer.md) for the full list of attention variants.
-
-
-<div class="docs-callout">
-  The docs now mirror the package split more intentionally: stable forecasting first,
-  optional extras second, and specialist subsystems framed as branches instead of default prerequisites.
-</div>
-
-## Notes
-
-- The canonical docs source lives in `docs/`.
-- The published versioned docs live under `/docs/`.
-- `foretools` utilities are documented here even when not re-exported from top-level `foreblocks`.

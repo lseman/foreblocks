@@ -1,3 +1,9 @@
+---
+title: Documentation Workflow
+description: How to write, edit, and maintain docs for foreblocks.
+editLink: true
+---
+
 # Documentation Workflow
 
 This repository uses in-repo, versioned documentation instead of a separate GitHub Wiki.
@@ -13,7 +19,7 @@ This repository uses in-repo, versioned documentation instead of a separate GitH
 
 The documentation system is organized as:
 
-- [`docs/index.md`](https://github.com/lseman/foreblocks/blob/main/docs/index.md): docs home
+- [`docs/index.md`](https://github.com/lseman/foreblocks/blob/main/docs/index): docs home
 - `docs/tutorials/`: runnable onboarding and practical workflows
 - `docs/architecture/`: internal structure and design pages
 - `docs/reference/`: API and repository reference
@@ -35,7 +41,7 @@ Update documentation whenever you:
 
 For any meaningful user-facing change, update:
 
-1. [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md) if the landing page should change
+1. [`README.md`](https://github.com/lseman/foreblocks/blob/main/README) if the landing page should change
 2. one relevant page under `docs/`
 3. one runnable example or notebook when the change affects workflows
 
@@ -54,22 +60,9 @@ This repository now uses VitePress for the versioned documentation site. Install
 
 ```bash
 npm install
-```
-
-Then serve the docs locally:
-
 ```bash
-npm run docs:dev
-```
 
 Or build a static site:
 
 ```bash
 npm run docs:build
-```
-
-## Related pages
-
-- [Home](../index.md)
-- [Overview](../overview.md)
-- [Repository Map](../reference/repository-map.md)

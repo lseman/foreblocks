@@ -1,3 +1,9 @@
+---
+title: System Overview
+description: High-level architecture, subsystem map, and design intent.
+editLink: true
+---
+
 # System Overview
 
 This page explains how the repository is organized at a subsystem level.
@@ -41,6 +47,41 @@ from foreblocks import ForecastingModel, Trainer, ModelEvaluator
 
 That boundary is safer than importing deep internal modules unless you are extending the library itself.
 
+## Dependency graph
+
+```text
+foreblocks (main)
+├── foreblocks/core          — ForecastingModel, heads, conformal
+├── foreblocks/training      — Trainer, optimizer/scheduler
+├── foreblocks/evaluation    — ModelEvaluator, metrics
+├── foreblocks/ts_handler    — TimeSeriesHandler, preprocessing
+├── foreblocks/transformer   — Transformer stack, attention, MoE
+├── foreblocks/custom_mamba  — Hybrid Mamba SSM blocks
+├── foreblocks/custom_raven  — Raven recurrent blocks
+├── foreblocks/kan           — Kolmogorov-Arnold Network
+├── foreblocks/mltracker     — Experiment tracking
+└── darts (standalone)       — Neural architecture search
+
+foretools (companion)
+├── foretools/tsgen          — Synthetic time-series generation
+├── foretools/bohb           — Bayesian hyperparameter search
+├── foretools/emd_like       — VMD / EMD decomposition
+├── foretools/tsaug          — AutoDA augmentation
+├── foretools/fengineer      — Feature engineering pipeline
+└── foretools/foreminer      — Changepoint detection & mining
+```
+
+## Choosing where to start
+
+| Your goal | Start here |
+| --- | --- |
+| Train a forecasting model from scratch | [Getting Started](../getting-started) |
+| Use raw `[T, D]` time-series data | [Preprocessor Guide](../preprocessor) |
+| Try different model architectures | [Transformer Guide](../transformer) or [DARTS Guide](../darts) |
+| Add uncertainty estimates | [Uncertainty Quantification](../uncertainty) |
+| Search for a better architecture | [Run A DARTS Search](../tutorials/darts-multifidelity-search) |
+| Generate synthetic test data | [Generate Synthetic Series](../tutorials/generate-synthetic-series) |
+
 ## Design intent
 
 The codebase is organized around modular composition:
@@ -54,5 +95,6 @@ The codebase is organized around modular composition:
 ## Related pages
 
 - [Forecasting Pipeline](forecasting-pipeline.md)
-- [Public API](../reference/public-api.md)
-- [Repository Map](../reference/repository-map.md)
+- [DARTS Search Pipeline](darts-pipeline.md)
+- [Public API](../reference/public-api)
+- [Repository Map](../reference/repository-map)

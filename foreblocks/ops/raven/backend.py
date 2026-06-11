@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
+from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
@@ -37,10 +38,17 @@ def fla_import_path() -> Iterator[None]:
                 pass
 
 
+@lru_cache(maxsize=None)
 def import_fla_module(module_name: str) -> ModuleType:
+    try:
+        return import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != module_name and not module_name.startswith(f"{exc.name}."):
+            raise
     if not has_fla_checkout():
         raise ModuleNotFoundError(
-            "flash-linear-attention checkout not found. Run "
+            "flash-linear-attention is not installed and checkout not found. "
+            "Install the `fla` extra or run "
             "`git submodule update --init --recursive` from the repository root."
         )
     with fla_import_path():

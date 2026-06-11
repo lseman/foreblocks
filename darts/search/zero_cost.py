@@ -159,6 +159,7 @@ def evaluate_zero_cost_metrics(
         scheme_cfg.enable_grasp = cfg.enable_grasp
         scheme_cfg.enable_jacobian = cfg.enable_jacobian
         scheme_cfg.enable_synflow = cfg.enable_synflow
+        scheme_cfg.enable_flops = cfg.enable_flops
         scheme_cfg.conditioning_every_n_layers = cfg.conditioning_every_n_layers
         ev = ZeroCostNAS(config=scheme_cfg)
         out = ev.evaluate_model(
@@ -181,6 +182,12 @@ def evaluate_zero_cost_metrics(
 # ---------------------------------------------------------------------------
 # Config factory
 # ---------------------------------------------------------------------------
+
+
+def _drop_disabled_metric_weights(cfg: Config) -> Config:
+    if not getattr(cfg, "enable_flops", True):
+        cfg.weights = {k: v for k, v in cfg.weights.items() if k != "flops"}
+    return cfg
 
 
 def _make_config(*, max_samples: int, fast_mode: bool) -> Config:
@@ -206,7 +213,7 @@ def _make_config(*, max_samples: int, fast_mode: bool) -> Config:
             if k not in {"grasp", "jacobian", "synflow"}
         }
         cfg.conditioning_every_n_layers = max(2, cfg.conditioning_every_n_layers)
-    return cfg
+    return _drop_disabled_metric_weights(cfg)
 
 
 def _make_config_preset(*, max_samples: int, preset: str) -> Config:
@@ -231,7 +238,8 @@ def _make_config_preset(*, max_samples: int, preset: str) -> Config:
         enable_grasp=base.enable_grasp,
         enable_jacobian=base.enable_jacobian,
         enable_synflow=base.enable_synflow,
+        enable_flops=base.enable_flops,
         conditioning_every_n_layers=base.conditioning_every_n_layers,
         weights=dict(base.weights),
     )
-    return cfg
+    return _drop_disabled_metric_weights(cfg)

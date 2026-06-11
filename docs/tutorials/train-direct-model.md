@@ -1,3 +1,9 @@
+---
+title: Train A Direct Model
+description: Shortest end-to-end path — MLP head, ForecastingModel, Trainer, ModelEvaluator.
+editLink: true
+---
+
 # Train A Direct Model
 
 This tutorial is the shortest end-to-end path through `foreblocks`.
@@ -78,24 +84,3 @@ metrics = evaluator.compute_metrics(torch.tensor(X_val), torch.tensor(y_val))
 
 print("final_train_loss:", history.train_losses[-1])
 print("metrics:", metrics)
-```
-
-## Expected shapes
-
-- `X_train`: `[N, T, F]`
-- `y_train`: any shape compatible with the head output
-- head output: should match the target tensor passed to the trainer
-
-In this example the head returns `[N, horizon]`, so `y_train` is also `[N, horizon]`.
-
-## What to change next
-
-- replace the MLP head with a larger direct projection
-- switch to `TimeSeriesHandler` if your source data starts as raw `[T, D]`
-- move to encoder/decoder or transformer-based strategies after this baseline works
-
-## Related pages
-
-- [Getting Started](../getting-started.md)
-- [Public API](../reference/public-api.md)
-- [Forecasting Pipeline](../architecture/forecasting-pipeline.md)

@@ -1,3 +1,11 @@
+---
+title: Transformer Guide
+description: Transformer stack — backbones, attention variants, MoE, norms, and embeddings.
+editLink: true
+---
+
+
+[[toc]]
 # Transformer Guide
 
 ForeBlocks ships a flexible encoder-decoder transformer stack centered on `TransformerEncoder` and `TransformerDecoder`.
@@ -16,54 +24,17 @@ The current implementation supports:
 
 Related docs:
 
-- [Documentation Overview](overview.md)
-- [Getting Started](getting-started.md)
-- [Custom Blocks](custom_blocks.md)
-- [MoE](moe.md)
-- [DARTS](darts.md)
+- [Documentation Overview](overview)
+- [Getting Started](getting-started)
+- [Custom Blocks](custom_blocks)
+- [MoE](moe)
+- [DARTS](darts)
 
 ## Import
 
 ```python
 from foreblocks import TransformerEncoder, TransformerDecoder
-```
-
-## Mental model
-
-The safest path is:
-
-1. start with a dense encoder-decoder transformer
-2. patch the encoder if the source sequence is long
-3. keep the decoder timestep-level
-4. verify full-sequence and autoregressive inference
-5. only then add MoE, GateSkip, MoD, or mHC
-
-For most time-series setups, the best default is:
-
-- `patch_encoder=True`
-- `patch_decoder=False`
-- `attention_mode="standard"`
-- `norm_strategy="pre_norm"`
-- `custom_norm="rms"`
-
-## Baseline encoder
-
-```python
-encoder = TransformerEncoder(
-    input_size=8,
-    d_model=256,
-    nhead=8,
-    num_layers=4,
-    dim_feedforward=1024,
-    dropout=0.1,
-    attention_mode="standard",
-    norm_strategy="pre_norm",
-    custom_norm="rms",
-    patch_encoder=True,
-    patch_len=16,
-    patch_stride=8,
-)
-```
+```text
 
 ## Baseline decoder
 
@@ -77,62 +48,7 @@ decoder = TransformerDecoder(
     patch_decoder=False,
     informer_like=False,
 )
-```
-
-## Constructor groups
-
-### Backbone
-
-- `d_model`
-- `nhead`
-- `num_layers`
-- `dim_feedforward`
-- `dropout`
-- `max_seq_len`
-
-### Normalization and FFN
-
-- `norm_strategy`: `pre_norm`, `post_norm`, or `sandwich_norm`
-- `custom_norm`: `rms`, `layer`, and other norm-factory variants
-- `use_final_norm`
-- `use_swiglu`
-
-### Attention selection
-
-Attention is configured along two independent axes:
-
-- `att_type` — **which attention algorithm** each layer computes.
-- `attention_mode` — **how attention is routed** across layers (dense vs. linear/hybrid schedules).
-- `freq_modes` — number of retained Fourier modes for the spectral variants.
-
-#### `att_type` — attention variant
-
-Each variant is a self-contained scaled-dot-product replacement. The published
-methods are cited below; see the per-variant docstrings under
-`foreblocks/transformer/attention/variants/` for the exact formulation.
-
-| `att_type` | Variant | Reference |
-| --- | --- | --- |
-| `standard` | Dense scaled dot-product (with GQA + paged-KV decode) | Vaswani et al., 2017 ([1706.03762](https://arxiv.org/abs/1706.03762)) |
-| `sype` | Standard attention with SyPE positional warping | — |
-| `prob_sparse` | ProbSparse query-sparsity attention | Informer, Zhou et al., 2021 ([2012.07436](https://arxiv.org/abs/2012.07436)) |
-| `nsa` | Native Sparse Attention (compression + selection + sliding window) | Yuan et al., 2025 ([2502.11089](https://arxiv.org/abs/2502.11089)) |
-| `moba` | Mixture of Block Attention | Lu et al., 2025 ([2502.13189](https://arxiv.org/abs/2502.13189)) |
-| `sliding_window` | Local windowed attention | Longformer ([2004.05150](https://arxiv.org/abs/2004.05150)) / Mistral ([2310.06825](https://arxiv.org/abs/2310.06825)) |
-| `softpick` | Rectified-softmax attention (no attention sink) | Zuhri et al., 2025 ([2504.20966](https://arxiv.org/abs/2504.20966)) |
-| `frequency` | Frequency-domain attention | FEDformer, Zhou et al., 2022 ([2201.12740](https://arxiv.org/abs/2201.12740)) |
-| `dwt` | Wavelet-coefficient-domain attention (Haar DWT) | — |
-| `autocor` | Autocorrelation-based attention | Autoformer, Wu et al., 2021 ([2106.13008](https://arxiv.org/abs/2106.13008)) |
-
-```python
-encoder = TransformerEncoder(
-    input_size=8,
-    d_model=256,
-    nhead=8,
-    num_layers=4,
-    att_type="nsa",   # any value from the table above
-)
-```
+```text
 
 #### `attention_mode` — routing schedule
 
@@ -210,30 +126,7 @@ encoder = TransformerEncoder(
     ct_patch_fuse="linear",  # or "mean"
     d_model=256,
 )
-```
-
-This path:
-
-- patchifies across time per channel
-- embeds each channel patch
-- fuses channels into transformer tokens
-
-Use it when timestep-level tokenization is too expensive for long multivariate histories.
-
-## Inference modes
-
-### Full-sequence encoder-decoder
-
-This is the default path for standard sequence-to-sequence forecasting:
-
-```python
-memory = encoder(src, src_key_padding_mask=src_kpm)
-out = decoder(
-    tgt,
-    memory,
-    memory_key_padding_mask=src_kpm_or_patchified_memory_kpm,
-)
-```
+```text
 
 ### Informer-like decoding
 
@@ -255,28 +148,7 @@ decoder = TransformerDecoder(
     nhead=8,
     num_layers=4,
 )
-```
-
-`label_len` controls how much of the decoder input is treated as observed prompt.
-
-Important behavior:
-
-- set `label_len` explicitly for true Informer-style masking
-- when `label_len <= 0`, the implementation now skips the automatic Informer padding mask instead of masking the whole decoder input
-
-### Autoregressive decoding
-
-`forward_one_step(...)` is intended for KV-cached autoregressive decoding.
-
-```python
-step_out, state = decoder.forward_one_step(tgt_prefix, memory)
-step_out, state = decoder.forward_one_step(
-    next_token,
-    memory,
-    incremental_state=state,
-    memory_key_padding_mask=memory_kpm,
-)
-```
+```text
 
 Recommended usage:
 
@@ -340,105 +212,11 @@ If you want GateSkip, MoD, or mHC, disable Attention Residuals explicitly:
 
 ```python
 use_attention_residual=False
-```
-
-## GateSkip
-
-GateSkip applies residual gating at the sublayer level.
-
-Controls:
-
-- `use_gateskip`
-- `gate_budget`
-- `gate_lambda`
-
-For time series, GateSkip budgets over valid positions rather than LM-style EOS handling.
-
-Recommendation:
-
-- keep it off until the dense baseline is stable
-- when using it, pass an explicit `gateskip_active_mask` if you want forecast-only gating rather than all valid positions
-
-Current compatibility rules:
-
-- not wired together with Attention Residuals
-- not wired together with MoD
-
-## Mixture-of-Depths
-
-The transformer supports paper-style MoD token routing.
-
-Controls:
-
-- `use_mod`
-- `mod_mode`
-- `mod_lambda`
-- `mod_budget_scheduler`
-
-Current behavior:
-
-- only `mod_mode="token"` is supported
-- routing is top-k over active positions
-- packed routed tokens are processed and scattered back
-
-For time series:
-
-- routing is timestep or patch-token routing
-- default active positions are all valid positions
-- if you want forecast-only routing, provide an explicit `gateskip_active_mask`
-
-Current compatibility rules:
-
-- not compatible with Attention Residuals
-- not compatible with GateSkip
-- not compatible with mHC
-- not supported in `forward_one_step(...)`
-
-## mHC residual streams
-
-mHC adds multiple residual streams and dynamic hyper-connections between them.
-
-Controls:
-
-- `use_mhc`
-- `mhc_n_streams`
-- `mhc_sinkhorn_iters`
-- `mhc_collapse`: `first` or `mean`
-
-Current behavior:
-
-- paper-style stream init is `(x, 0, ..., 0)`
-- stream read/write and residual mixing are token-wise and input-dependent
-- `mhc_collapse="first"` is the safest default
-
-Current compatibility rules:
-
-- not compatible with Attention Residuals
-- not compatible with MoD
-- not supported in decoder KV-cached autoregressive decoding
-
-Use it as a research feature rather than a first production default.
-
-## MoE in transformer layers
-
-MoE is enabled at the feedforward block level:
-
-```python
-encoder = TransformerEncoder(
-    input_size=8,
-    d_model=256,
-    nhead=8,
-    num_layers=4,
-    use_moe=True,
-    num_experts=8,
-    top_k=2,
-    moe_aux_lambda=1.0,
-)
-```
+```text
 
 See the dedicated guide for routing and auxiliary-loss details:
 
-- [MoE Guide](moe.md)
+- [MoE Guide](moe)
 
 ## Integration with `ForecastingModel`
 
@@ -473,23 +251,3 @@ model = ForecastingModel(
     target_len=24,
     output_size=1,
 )
-```
-
-## Recommended tuning order
-
-1. Get a plain encoder-decoder transformer running with `standard` attention.
-2. Enable encoder patching if source sequence length is large.
-3. Verify full-sequence and autoregressive inference.
-4. Explore `attention_mode` variants.
-5. Add MoE only after the dense baseline is stable.
-6. Add GateSkip, MoD, or mHC only for targeted experiments.
-
-## Troubleshooting
-
-- `Sequence length exceeds max_seq_len`: increase `max_seq_len` or enable patching.
-- Decoder/memory mask mismatch: the encoder may be patched while the memory padding mask was not patchified consistently.
-- `patch_decoder=True` with KV caching: unsupported; keep decoder patching off for autoregressive decoding.
-- `forward_one_step(...)` errors with MoD or mHC: those features are intentionally disabled in the incremental path.
-- Attention Residuals with GateSkip, MoD, or mHC: unsupported in the current implementation.
-- Informer-like mode behaving like plain decoding: set `label_len` explicitly.
-- OOM: reduce `d_model`, `num_layers`, `dim_feedforward`, or enable gradient checkpointing.

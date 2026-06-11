@@ -1,3 +1,9 @@
+---
+title: Generate Synthetic Series
+description: Use foretools/tsgen for testing models without external datasets.
+editLink: true
+---
+
 # Generate Synthetic Series
 
 `foretools/tsgen` provides a pedagogical synthetic time-series generator that is useful for:
@@ -16,7 +22,7 @@ The generator lives in:
 There is also a companion notebook:
 
 - `foretools/tsgen/ts_gen_complete_series.ipynb`
-- [Time Series Generator](../foretools/tsgen.md) documents the full API and component behavior
+- [Time Series Generator](../foretools/tsgen) documents the full API and component behavior
 
 ## Minimal example
 
@@ -55,25 +61,3 @@ df, meta = gen.make(
     add_calendar=True,
     return_components=True,
 )
-```
-
-## What you get back
-
-- `df`: tidy dataframe with `series`, `time`, `y`, and optional exogenous/calendar columns
-- `meta`: component-level ground truth such as trend, seasonality, cycle, noise, regime bias, and generator parameters
-
-This makes the generator especially useful for interpretability and teaching notebooks.
-
-## Recommended workflow
-
-1. Generate data with `return_components=True`.
-2. Plot the observed series and the underlying components.
-3. Train a small direct model from [Train A Direct Model](train-direct-model.md).
-4. Compare model behavior across different synthetic regimes.
-
-## Related pages
-
-- [Getting Started](../getting-started.md)
-- [Preprocessor Guide](../preprocessor.md)
-- [Time Series Generator](../foretools/tsgen.md)
-- [Repository Map](../reference/repository-map.md)

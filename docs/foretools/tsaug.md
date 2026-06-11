@@ -1,3 +1,9 @@
+---
+title: AutoDA Augmentation (tsaug)
+description: Automated time-series augmentation that learns which augmentations to apply.
+editLink: true
+---
+
 # AutoDA-Timeseries (tsaug)
 
 `foretools.tsaug` is an automated data augmentation framework for time series. It implements the AutoDA-Timeseries method, which jointly learns *which* augmentations to apply and *how strongly* to apply them, in a single end-to-end training pass.
@@ -43,19 +49,7 @@ model = AutoDATimeseries(
 # Standard training step
 trainer = AutoDATrainer(model, lr=1e-3)
 loss = trainer.step(x, y_target)
-```
-
-## `AugmentationLayer`
-
-A single differentiable augmentation step. Takes a batch and returns an augmented batch, where augmentation probabilities and intensities come from learned weights conditioned on input features.
-
 ```python
-from foretools.tsaug import AugmentationLayer
-
-layer = AugmentationLayer(feature_dim=32)
-
-x_aug = layer(x)  # (batch, length, channels)
-```
 
 ## `StackedAugmentationLayers`
 
@@ -66,18 +60,7 @@ from foretools.tsaug import StackedAugmentationLayers
 
 aug = StackedAugmentationLayers(num_layers=3, feature_dim=32)
 x_aug = aug(x)
-```
-
-## Feature extraction
-
-The policy network is conditioned on a fixed-size feature vector extracted from the input:
-
 ```python
-from foretools.tsaug import extract_features, FEATURE_DIM
-
-feats = extract_features(x)   # (batch, FEATURE_DIM)
-print(FEATURE_DIM)             # number of features extracted
-```
 
 Features include statistical moments, autocorrelation, spectral energy, and trend strength — computed per channel and aggregated across the batch dimension.
 
@@ -90,17 +73,6 @@ from foretools.tsaug import CompositeLoss
 
 criterion = CompositeLoss(task_loss=nn.MSELoss(), diversity_weight=0.01)
 loss = criterion(y_pred, y_true, aug_probs)
-```
-
-## Applying transformations directly
-
-Each transformation function is available standalone:
-
 ```python
-from foretools.tsaug import jittering, time_mask
-
-x_noisy = jittering(x, intensity=0.05)
-x_masked = time_mask(x, intensity=0.1)
-```
 
 The `intensity` argument can be a scalar or a `(batch,)` tensor for per-sample control.

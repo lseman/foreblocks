@@ -61,9 +61,14 @@ def fla_import_path() -> Iterator[Path]:
 @lru_cache(maxsize=None)
 def import_fla_module(module_name: str) -> ModuleType:
     """Import and cache an upstream FLA module by dotted name."""
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != module_name and not module_name.startswith(f"{exc.name}."):
+            raise
     if not has_fla_checkout():
         raise ModuleNotFoundError(
-            f"flash-linear-attention checkout not found at {fla_path()}"
+            f"flash-linear-attention is not installed and checkout not found at {fla_path()}"
         )
     with fla_import_path():
         return importlib.import_module(module_name)

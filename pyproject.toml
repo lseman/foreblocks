@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foreblocks"
-version = "0.1.33"
+version = "0.1.41"
 description = "Modular Time Series Forecasting Library"
 authors = [{ name = "Laio Seman", email = "laioseman@gmail.com" }]
 
@@ -115,8 +115,9 @@ all = [
 # ── Development tools (not packaged) ─────────────────────────────────────
 dev = ["pytest>=7.0", "ipykernel>=6.0", "ruff", "basedpyright"]
 
-# Optional integration with the git submodule at third_party/flash-linear-attention.
-fla = ["triton>=3.3", "transformers>=4.45.0", "einops>=0.6"]
+# Optional integration with flash-linear-attention, either installed from PyPI
+# or provided by the git submodule at third_party/flash-linear-attention.
+fla = ["flash-linear-attention>=0.5.0", "triton>=3.3", "transformers>=4.45.0", "einops>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/lseman/foreblocks"

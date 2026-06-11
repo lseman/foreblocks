@@ -1,3 +1,9 @@
+---
+title: Overview
+description: High-level overview of foreblocks, darts, and foretools packages.
+editLink: true
+---
+
 # Overview
 
 This repository has three packages that work well together but serve different purposes (all distributed in the same `foreblocks` wheel):
@@ -27,16 +33,16 @@ The docs are organized to make that split explicit while still showing how the p
 
 | Goal | Best starting page |
 | --- | --- |
-| Run a first end-to-end training loop | [Getting Started](getting-started.md) |
-| Start from raw multivariate series | [Preprocessor Guide](preprocessor.md) |
-| Understand stable top-level imports | [Public API](reference/public-api.md) |
-| Customize model blocks or training internals | [Custom Blocks Guide](custom_blocks.md) |
-| Work with transformer backbones | [Transformer Guide](transformer.md) |
-| Enable expert routing | [MoE Guide](moe.md) |
-| Run neural architecture search | [DARTS Guide](darts.md) |
-| Generate synthetic time series | [Time Series Generator](foretools/tsgen.md) |
-| Run budgeted hyperparameter search | [BOHB Search](foretools/bohb.md) |
-| Diagnose install or shape issues | [Troubleshooting](troubleshooting.md) |
+| Run a first end-to-end training loop | [Getting Started](getting-started) |
+| Start from raw multivariate series | [Preprocessor Guide](preprocessor) |
+| Understand stable top-level imports | [Public API](reference/public-api) |
+| Customize model blocks or training internals | [Custom Blocks Guide](custom_blocks) |
+| Work with transformer backbones | [Transformer Guide](transformer) |
+| Enable expert routing | [MoE Guide](moe) |
+| Run neural architecture search | [DARTS Guide](darts) |
+| Generate synthetic time series | [Time Series Generator](foretools/tsgen) |
+| Run budgeted hyperparameter search | [BOHB Search](foretools/bohb) |
+| Diagnose install or shape issues | [Troubleshooting](troubleshooting) |
 
 ## Mental model of the repo
 
@@ -73,13 +79,7 @@ from foreblocks import (
     ModelConfig,
     TrainingConfig,
 )
-```
-
-The DARTS stack has its own public namespace:
-
 ```python
-from darts import DARTSTrainer
-```
 
 Treat deeper imports as subsystem-level APIs unless a topic guide explicitly tells you to use them directly.
 
@@ -131,22 +131,22 @@ Stable surfaces, configuration maps, and repository orientation.
 
 ### Track A: I just want a model training
 
-1. [Getting Started](getting-started.md)
-2. [Public API](reference/public-api.md)
-3. [Evaluation & Metrics](evaluation.md)
+1. [Getting Started](getting-started)
+2. [Public API](reference/public-api)
+3. [Evaluation & Metrics](evaluation)
 
 ### Track B: I have raw data and need preprocessing
 
-1. [Getting Started](getting-started.md)
-2. [Preprocessor Guide](preprocessor.md)
-3. [Feature Engineering](foretools/feature-engineering.md)
+1. [Getting Started](getting-started)
+2. [Preprocessor Guide](preprocessor)
+3. [Feature Engineering](foretools/feature-engineering)
 
 ### Track C: I want automated search or more advanced architectures
 
-1. [Getting Started](getting-started.md)
-2. [Transformer Guide](transformer.md) or [MoE Guide](moe.md)
-3. [DARTS Guide](darts.md)
-4. [DARTS Search Pipeline](architecture/darts-pipeline.md)
+1. [Getting Started](getting-started)
+2. [Transformer Guide](transformer) or [MoE Guide](moe)
+3. [DARTS Guide](darts)
+4. [DARTS Search Pipeline](architecture/darts-pipeline)
 
 ## Practical notes
 

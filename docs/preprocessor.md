@@ -1,12 +1,20 @@
+---
+title: TimeSeriesHandler Guide
+description: Raw series preprocessing, windowing, scaling, imputation, and filtering.
+editLink: true
+---
+
+
+[[toc]]
 # TimeSeriesHandler Guide
 
 `TimeSeriesHandler` provides a configurable preprocessing pipeline for multivariate time series, including optional auto-configuration (`self_tune=True`).
 
 Related docs:
-- [Documentation Overview](overview.md)
-- [Getting Started](getting-started.md)
-- [Custom Blocks](custom_blocks.md)
-- [Transformer](transformer.md)
+- [Documentation Overview](overview)
+- [Getting Started](getting-started)
+- [Custom Blocks](custom_blocks)
+- [Transformer](transformer)
 
 ---
 
@@ -14,29 +22,7 @@ Related docs:
 
 ```python
 from foreblocks import TimeSeriesHandler
-```
-
----
-
-## Quick start
-
 ```python
-import numpy as np
-import pandas as pd
-from foreblocks import TimeSeriesHandler
-
-data = np.random.randn(1200, 4)  # [T, F]
-timestamps = pd.date_range("2025-01-01", periods=len(data), freq="h")
-
-pre = TimeSeriesHandler(
-    self_tune=True,
-    window_size=96,
-    horizon=24,
-    generate_time_features=True,
-)
-
-X, y, processed, time_feats = pre.fit_transform(data, time_stamps=timestamps)
-```
 
 Return values from `fit_transform(...)`:
 - `X`: input windows
@@ -87,26 +73,7 @@ X_test = pre.transform(test_data, time_stamps=test_ts)
 
 # Invert model outputs back to data scale
 pred_real = pre.inverse_transform(pred_scaled)
-```
-
----
-
-## Manual configuration example
-
-```python
-pre = TimeSeriesHandler(
-    normalize=True,
-    scaling_method="robust",   # when heavy tails are expected
-    remove_outliers=True,
-    outlier_method="ecod",
-    apply_imputation=True,
-    impute_method="knn",
-    apply_filter=True,
-    filter_method="savgol",
-    detrend=True,
-    generate_time_features=True,
-)
-```
+```toml
 
 ---
 

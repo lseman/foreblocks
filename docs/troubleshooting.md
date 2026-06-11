@@ -1,3 +1,11 @@
+---
+title: Troubleshooting
+description: Common issues, error messages, and solutions.
+editLink: true
+---
+
+
+[[toc]]
 # Troubleshooting
 
 This page collects the most common first-run issues for `foreblocks`.
@@ -21,17 +29,7 @@ If you want every optional runtime dependency:
 
 ```bash
 pip install "foreblocks[all]"
-```
-
-## Training starts MLTracker when you only want a local smoke test
-
-`Trainer` can initialize MLTracker automatically.
-
-Disable it for quick local checks:
-
-```python
-trainer = Trainer(model, config=TrainingConfig(use_amp=False), auto_track=False)
-```
+```toml
 
 ## Shape mismatch in the direct forecasting path
 
@@ -53,8 +51,8 @@ If you are building custom encoder or decoder blocks, verify the hidden size, ta
 
 Relevant guides:
 
-- [Custom Blocks Guide](custom_blocks.md)
-- [Transformer Guide](transformer.md)
+- [Custom Blocks Guide](custom_blocks)
+- [Transformer Guide](transformer)
 
 ## `TimeSeriesHandler.transform(...)` does not work on a fresh instance
 
@@ -66,17 +64,7 @@ The normal order is:
 pre = TimeSeriesHandler(window_size=24, horizon=6)
 X_train, y_train, processed, time_feat = pre.fit_transform(train_data)
 X_val = pre.transform(val_data)
-```
-
-Call `fit_transform(...)` first, then reuse the same instance for validation or test data.
-
-## Predictions are still normalized or transformed
-
-If you trained on preprocessed outputs, map predictions back with:
-
-```python
-pred_real = pre.inverse_transform(pred_scaled)
-```
+```toml
 
 This is especially important when normalization, differencing, or detrending is enabled.
 
@@ -86,31 +74,9 @@ For small local runs and debugging sessions, prefer:
 
 ```python
 config = TrainingConfig(use_amp=False)
-```
-
-That removes AMP from the equation and makes failures easier to interpret.
-
-## Docs build errors locally
-
-The docs site is built with VitePress.
-
-Install the Node dependencies first:
-
 ```bash
-npm install
-```
 
 Then run:
 
 ```bash
 npm run docs:dev
-```
-
-## Still not sure where to start
-
-Use this order:
-
-1. [Getting Started](getting-started.md)
-2. [Public API](reference/public-api.md)
-3. [Configuration](reference/configuration.md)
-4. The subsystem guide closest to your workflow

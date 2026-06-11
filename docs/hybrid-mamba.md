@@ -1,3 +1,11 @@
+---
+title: Hybrid Mamba
+description: Hybrid Mamba and Mamba-2 style SSM blocks for time-series forecasting.
+editLink: true
+---
+
+
+[[toc]]
 # Hybrid Mamba
 
 `foreblocks.custom_mamba` provides custom SSM (State Space Model) building blocks that combine selective-scan dynamics with sliding-window attention. Two block variants are available:
@@ -23,20 +31,7 @@ from foreblocks.custom_mamba import TRITON_AVAILABLE, extension_available
 
 print(TRITON_AVAILABLE)       # True if triton is installed
 print(extension_available())  # True if CUDA extension is built
-```
-
-## `RotaryEmbedding`
-
-Rotary Position Embedding (Su et al. 2021 — RoFormer). Applied to Q and K inside `SlidingWindowAttention`. Available as a standalone module if you need to add RoPE to your own attention implementation.
-
 ```python
-from foreblocks.custom_mamba import RotaryEmbedding
-
-rope = RotaryEmbedding(head_dim=64, base=10_000, max_seq_len=2048)
-
-# tensors are (B, H, T, head_dim)
-q_rot, k_rot = rope(q, k)
-```
 
 The cache is extended automatically when `T > max_seq_len`, so setting a generous upper bound is fine.
 
@@ -68,59 +63,13 @@ block = HybridMambaBlock(
 
 x = torch.randn(8, 64, 256)  # (batch, seq_len, d_model)
 y = block(x)                 # same shape as x
-```
-
-### Constructor parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| `d_model` | required | Input / output feature dimension |
-| `d_inner` | `2 * d_model` | Inner (expanded) dimension |
-| `d_state` | `16` | SSM state dimension per feature |
-| `d_conv` | `4` | Causal conv kernel size |
-| `dt_rank` | auto | Low-rank projection for Δt; `None` → `max(4, ceil(d_model/16))` |
-| `dt_min` / `dt_max` | `1e-4` / `1.0` | Clamp range for the time-step after softplus |
-| `use_cuda_scan` | `True` | Use CUDA kernel if extension is loaded; falls back to PyTorch otherwise |
-| `use_pre_norm` | `True` | Apply `LayerNorm` on the input before the expansion projection |
-
-## `HybridMamba2Block`
-
-Combines a multi-head SSD branch (`StructuredStateSpaceDualityBranch`) with a `SlidingWindowAttention` branch. The attention branch supports RoPE, GQA, attention sinks, optional Q/K RMSNorm, and optional attention-logit soft-capping. The two branch outputs are mixed with a sigmoid gate, then passed through an output norm before the final projection:
-
-```
+```text
 ssm_out  = SSD( LayerNorm(x) )
 attn_out = SlidingWindowAttn( LayerNorm(x) )
 gate     = sigmoid( Linear( LayerNorm(x) ) )
 mixed    = gate * ssm_out + (1 − gate) * attn_out
 output   = out_proj( LayerNorm(mixed) )
-```
-
-The output `LayerNorm` (`out_norm`) stabilises gradients through the mixing gate.
-
 ```python
-from foreblocks.custom_mamba import HybridMamba2Block
-
-block = HybridMamba2Block(
-    d_model=256,
-    d_inner=512,
-    d_state=16,
-    d_conv=4,
-    dt_rank=None,
-    num_heads=8,
-    n_kv_heads=2,       # GQA: 2 KV heads shared across 8 query heads
-    window_size=128,
-    attn_dropout=0.0,
-    use_gated_delta=False,
-    rope_base=10_000,
-    max_seq_len=2048,
-    qk_norm=True,
-    attn_logit_softcap=50.0,
-    layer_scale_init=1e-2,
-)
-
-x = torch.randn(4, 128, 256)
-y = block(x)  # (4, 128, 256)
-```
 
 ### Constructor parameters
 
@@ -155,33 +104,7 @@ block = HybridMamba2Block(
     n_kv_heads=4,   # 4 query heads share each KV head
     window_size=256,
 )
-```
-
-KV heads are broadcast to query heads via `repeat_interleave` before SDPA — no extra memory allocation beyond the repeat.
-
-## Stacking blocks into a model
-
-`TinyHybridMamba2LM` shows the recommended stacking pattern: every `attn_every_n` layers uses a `HybridMamba2Block`; all others use the cheaper `HybridMambaBlock`.
-
-```python
-from foreblocks.custom_mamba import TinyHybridMamba2LM
-
-model = TinyHybridMamba2LM(
-    vocab_size=50257,
-    d_model=512,
-    n_layers=12,
-    d_state=16,
-    d_conv=4,
-    num_heads=8,
-    n_kv_heads=2,       # GQA across all hybrid blocks
-    window_size=256,
-    attn_every_n=4,     # HybridMamba2Block at layers 0, 4, 8; rest are plain Mamba
-    tie_embeddings=True,
-    use_pre_norm=True,
-    rope_base=10_000,
-    max_seq_len=4096,
-)
-```
+```text
 
 For use as a time-series backbone, replace the embedding + LM-head with your own projection layers and feed patch embeddings or raw-feature vectors in place of `input_ids`.
 
@@ -194,14 +117,3 @@ run_default_diagnostics()   # quick correctness checks for ops on current device
 
 stats = benchmark_block(d_model=256, seq_len=512, batch=8)
 print(stats)  # wall-clock and memory stats
-```
-
-## Ops reference
-
-| Symbol | Where | Description |
-|---|---|---|
-| `causal_depthwise_conv1d` | `ops/` | Causal grouped conv; Triton kernel when available |
-| `selective_scan` | `ops/` | S4/Mamba v1 scan; CUDA kernel when loaded |
-| `grouped_ssd_scan` | `ops/` | Multi-head SSD scan (Mamba-2); Triton kernel when available |
-| `dt_prep` | `ops/` | Δt bias add + softplus + clamp |
-| `fused_out` | `ops/` | Fused RMSNorm + gate + residual add |

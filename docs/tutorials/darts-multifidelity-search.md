@@ -1,3 +1,9 @@
+---
+title: Run A DARTS Search
+description: Multi-fidelity search workflow — configure trainer, run search, inspect candidates.
+editLink: true
+---
+
 # Run A DARTS Search
 
 This tutorial shows the intended end-to-end DARTS workflow in ForeBlocks: configure a search trainer, run a small multi-fidelity search, inspect the promoted candidates, and optionally analyze the final run.
@@ -8,21 +14,7 @@ Core DARTS workflow, including the analyzer:
 
 ```bash
 pip install "foreblocks[darts]"
-```
-
-## Step 1: create the trainer
-
 ```python
-from darts import DARTSTrainer
-
-trainer = DARTSTrainer(
-    input_dim=6,
-    hidden_dims=[32, 64, 128],
-    forecast_horizon=12,
-    seq_length=48,
-    device="auto",
-)
-```
 
 At this point you have a search controller, not just a single model. It knows how to generate candidates, train searched models, derive discrete architectures, and retrain the best one.
 
@@ -40,22 +32,7 @@ results = trainer.multi_fidelity_search(
     top_k=4,
     use_amp=False,
 )
-```
-
-Recommended first-run strategy:
-
-- keep `num_candidates` small
-- keep `search_epochs` small
-- disable AMP until the loop is stable
-- only scale up after the result structure looks correct
-
-## Step 3: inspect the result dictionary
-
 ```python
-print(results.keys())
-print(results["final_results"]["final_metrics"])
-print(len(results["candidates"]), len(results["top_candidates"]))
-```
 
 The most useful keys are:
 
@@ -68,25 +45,7 @@ The most useful keys are:
 
 ```python
 trainer.save_best_model("best_darts_model.pth")
-```
-
-This saves the best retrained final model together with the recorded metrics and search configuration.
-
-## Step 5: inspect search behavior directly
-
-If you want to debug the search space before a full run, call the intermediate APIs on a single candidate.
-
-### Zero-cost metrics
-
-```python
-metrics = trainer.evaluate_zero_cost_metrics(
-    model=candidate_model,
-    dataloader=val_loader,
-    max_samples=32,
-    num_batches=1,
-    fast_mode=True,
-)
-```
+```text
 
 ### Bilevel search for one candidate
 
@@ -99,13 +58,7 @@ search_run = trainer.train_darts_model(
     arch_learning_rate=3e-3,
     model_learning_rate=1e-3,
 )
-```
-
-### Convert to a fixed architecture
-
-```python
-fixed_model = trainer.derive_final_architecture(search_run["model"])
-```
+```toml
 
 ### Retrain that fixed model
 
@@ -117,18 +70,7 @@ final_run = trainer.train_final_model(
     test_loader=test_loader,
     epochs=50,
 )
-```
-
-## Optional: analyze the final search result
-
-With `foreblocks[darts]` installed:
-
 ```python
-from darts import StreamlinedDARTSAnalyzer
-
-analyzer = StreamlinedDARTSAnalyzer(results)
-print(analyzer.analysis_df.head())
-```
 
 Use this when you want:
 
@@ -149,6 +91,6 @@ If the answer to any of those is no, tighten the search space before you increas
 
 ## Related pages
 
-- [DARTS Guide](../darts.md)
-- [DARTS Search Pipeline](../architecture/darts-pipeline.md)
-- [Troubleshooting](../troubleshooting.md)
+- [DARTS Guide](../darts)
+- [DARTS Search Pipeline](../architecture/darts-pipeline)
+- [Troubleshooting](../troubleshooting)

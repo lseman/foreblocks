@@ -1,3 +1,11 @@
+---
+title: DARTS Guide
+description: Differentiable neural architecture search for time-series forecasting.
+editLink: true
+---
+
+
+[[toc]]
 # ForeBlocks DARTS Guide
 
 ForeBlocks includes a staged neural architecture search subsystem for time-series forecasting. The DARTS stack is built around `DARTSTrainer`, but it is not just a single differentiable loop. It combines:
@@ -14,21 +22,7 @@ For the DARTS workflow itself, including the analyzer and richer search-result v
 
 ```bash
 pip install "foreblocks[darts]"
-```
-
-## Public imports
-
 ```python
-from darts import (
-    DARTSTrainer,
-    DARTSConfig,
-    DARTSTrainConfig,
-    FinalTrainConfig,
-    MultiFidelitySearchConfig,
-    AblationSearchConfig,
-    RobustPoolSearchConfig,
-)
-```
 
 ## When to use DARTS here
 
@@ -70,63 +64,7 @@ results = trainer.multi_fidelity_search(
 
 best_model = results["final_model"]
 trainer.save_best_model("best_darts_model.pth")
-```
-
-This is the highest-level API. It runs candidate generation, ranking, short DARTS training, discrete derivation, and final retraining in one call.
-
-## Mental model
-
-The public entry point is `DARTSTrainer`, but the implementation is intentionally split into focused modules:
-
-- `darts/search/zero_cost.py`: cheap candidate scoring
-- `darts/training/darts_loop.py`: bilevel search training
-- `darts/training/final_trainer.py`: fixed-model retraining
-- `darts/search/multi_fidelity.py`: staged orchestration
-- `darts/evaluation/analyzer.py`: post-search analysis
-
-That means you can use the trainer in two styles:
-
-- as one end-to-end NAS pipeline via `multi_fidelity_search(...)`
-- as a lower-level orchestration layer where you call each phase manually
-
-## Search phases
-
-The multi-fidelity flow is:
-
-1. generate `num_candidates` random architectures from the configured search space
-2. score them with zero-cost metrics
-3. keep the top `top_k`
-4. run short bilevel DARTS training on the promoted candidates
-5. derive a discrete architecture for each searched mixed model
-6. select the best candidate by validation behavior
-7. retrain the best fixed model and report final metrics
-
-This is closer to a staged NAS pipeline than to a single bare DARTS loop.
-
-## Core APIs
-
-| Method | Use it when | Returns |
-| --- | --- | --- |
-| `evaluate_zero_cost_metrics(...)` | you want a cheap score before expensive training | weighted zero-cost metrics |
-| `evaluate_zero_cost_metrics_raw(...)` | you want the underlying raw zero-cost signals | raw metrics without weighting |
-| `train_darts_model(...)` | you want to search a single candidate with bilevel optimization | searched model, losses, alphas, metrics |
-| `derive_final_architecture(...)` | you want a discrete model from a mixed searched one | fixed model |
-| `train_final_model(...)` | you want to retrain a fixed model independently | final metrics and training info |
-| `multi_fidelity_search(...)` | you want the end-to-end staged workflow | full search result dictionary |
-| `ablation_weight_search(...)` | you want to study zero-cost weighting choices | ablation artifacts and rankings |
-| `robust_initial_pool_over_op_pools(...)` | you want to test sensitivity to op-pool composition | robustness report |
-
-### `evaluate_zero_cost_metrics(...)`
-
-```python
-metrics = trainer.evaluate_zero_cost_metrics(
-    model=candidate,
-    dataloader=val_loader,
-    max_samples=32,
-    num_batches=1,
-    fast_mode=True,
-)
-```
+```text
 
 Useful knobs:
 
@@ -150,15 +88,7 @@ search_results = trainer.train_darts_model(
     model_learning_rate=1e-3,
     use_bilevel_optimization=True,
 )
-```
-
-This runs the differentiable search phase for a single candidate and returns a dictionary with the searched model, train/validation losses, alpha traces, and final metrics.
-
-### `derive_final_architecture(...)`
-
-```python
-fixed_model = trainer.derive_final_architecture(search_results["model"])
-```
+```toml
 
 Use this after the mixed architecture has converged enough that you want a discrete artifact for final training or export.
 
@@ -172,22 +102,7 @@ final_results = trainer.train_final_model(
     test_loader=test_loader,
     epochs=100,
 )
-```
-
-### `multi_fidelity_search(...)`
-
-```python
-results = trainer.multi_fidelity_search(
-    train_loader=train_loader,
-    val_loader=val_loader,
-    test_loader=test_loader,
-    num_candidates=10,
-    search_epochs=10,
-    final_epochs=100,
-    max_samples=32,
-    top_k=5,
-)
-```
+```toml
 
 ## Result structure
 
@@ -285,8 +200,8 @@ Useful early knobs:
 
 ## Related pages
 
-- [Run A DARTS Search](tutorials/darts-multifidelity-search.md)
-- [DARTS Search Pipeline](architecture/darts-pipeline.md)
-- [Transformer Guide](transformer.md)
-- [Custom Blocks Guide](custom_blocks.md)
-- [Troubleshooting](troubleshooting.md)
+- [Run A DARTS Search](tutorials/darts-multifidelity-search)
+- [DARTS Search Pipeline](architecture/darts-pipeline)
+- [Transformer Guide](transformer)
+- [Custom Blocks Guide](custom_blocks)
+- [Troubleshooting](troubleshooting)

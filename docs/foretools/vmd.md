@@ -1,3 +1,11 @@
+---
+title: VMD Decomposition
+description: Variational Mode Decomposition, EMD variants, hierarchical decomposition, and parameter search.
+editLink: true
+---
+
+
+[[toc]]
 # VMD Decomposition
 
 `foretools/emd_like` provides a decomposition toolkit covering Variational Mode Decomposition (VMD), empirical mode decomposition variants, hierarchical decomposition, multivariate support, and Optuna-based parameter search.
@@ -10,17 +18,7 @@ The VMD module requires the `vmd` extra:
 
 ```bash
 pip install "foreblocks[vmd]"
-```
-
-This currently pulls in the FFTW and Optuna dependencies that `foretools.emd_like` imports eagerly.
-
-## Import surface
-
-For most users, start here:
-
 ```python
-from foretools.emd_like import FastVMD, HierarchicalParameters, VMDParameters
-```
 
 Other useful exports:
 
@@ -58,26 +56,7 @@ raw_modes, raw_freqs, optinfo = vmd.decompose(
 post_modes = optinfo["post_modes"]
 post_freqs = optinfo["post_freqs"]
 best_K, best_alpha, best_cost = optinfo["best"]
-```
-
-### What comes back
-
-When `return_raw_modes=True`, `FastVMD.decompose(...)` returns:
-
-- `raw_modes`: NumPy array shaped `[K_raw, N]`
-- `raw_freqs`: dominant frequency estimate for each raw mode
-- `optinfo`: metadata dictionary with:
-  - `best`: `(K, alpha, cost)`
-  - `raw_modes`, `raw_freqs`
-  - `post_modes`, `post_freqs`
-
-The post-processed modes are usually the ones you want to keep for analysis, because the pipeline may drop low-energy modes, merge nearby frequencies, and sort modes from low to high frequency.
-
-If `return_raw_modes=False`, the return shape is simpler:
-
-```python
-modes, freqs, best = vmd.decompose(signal, fs=fs, return_raw_modes=False)
-```
+```toml
 
 ## Common controls
 
@@ -115,26 +94,7 @@ modes, freqs, best = vmd.decompose(
     boundary_method="mirror",
     apply_tapering=True,
 )
-```
-
-## Parameter objects
-
-Use `VMDParameters` when you want a typed view of the available controls.
-
 ```python
-from foretools.emd_like import VMDParameters
-
-params = VMDParameters(
-    n_trials=24,
-    max_K=6,
-    alpha_min=600,
-    alpha_max=5000,
-    boundary_method="mirror",
-    k_selection="penalized",
-    search_method="optuna",
-    apply_tapering=True,
-)
-```
 
 Important parameter groups:
 
@@ -175,42 +135,7 @@ modes, freqs, level_info = vmd.decompose(
     use_emd_hybrid=False,
     refine_modes=False,
 )
-```
-
-`level_info` contains per-level metadata such as:
-
-- level number
-- downsampling factor
-- sampling rate used at that level
-- number of modes found
-- dominant frequencies
-- energy ratio
-- computation time
-- selected optimization parameters
-
-This path is useful when a single flat decomposition struggles to separate very low-frequency structure from faster local oscillations.
-
-## Multivariate decomposition
-
-The optimizer also supports MVMD-style workflows for signals shaped `[channels, samples]`.
-
-```python
-signals = np.stack(
-    [
-        signal,
-        0.8 * signal + 0.1 * np.random.default_rng(1).normal(size=signal.shape[0]),
-    ],
-    axis=0,
-)
-
-raw_modes, raw_freqs, optinfo = vmd.decompose(
-    signals,
-    fs=fs,
-    use_mvmd=True,
-    return_raw_modes=True,
-    refine_modes=False,
-)
-```
+```text
 
 Notes:
 
@@ -235,27 +160,3 @@ raw_modes, raw_freqs, optinfo = optimizer.optimize(
     refine_modes=False,
     return_raw_modes=True,
 )
-```
-
-This is the same core path used by `FastVMD`, just without the convenience wrapper.
-
-## Practical behavior
-
-- The pipeline caches candidate evaluations internally during search, so repeated `(K, alpha)` evaluations are cheaper within one optimizer instance.
-- FFTW wisdom is loaded on startup and saved again after decomposition, which can speed up repeated runs.
-- Returned post-processed modes may be fewer than the raw `K` because low-energy modes can be removed and nearby modes can be merged.
-- `boundary_method` and `window_alpha` interact: the low-level solver treats boundary extension and Tukey windowing as mutually exclusive paths.
-- `return_raw_modes=True` is useful for debugging search behavior; `return_raw_modes=False` is cleaner for downstream use.
-
-## Suggested workflow
-
-1. Install the extra with `pip install "foreblocks[vmd]"`.
-2. Start with `FastVMD(...).decompose(..., auto_params=True, refine_modes=False)`.
-3. Inspect `optinfo["best"]`, `optinfo["post_freqs"]`, and the reconstructed sum of `post_modes`.
-4. Only then start tightening `max_K`, `alpha_min`, `alpha_max`, or enabling hierarchical decomposition.
-
-## Related pages
-
-- [Foretools Overview](index.md)
-- [Repository Map](../reference/repository-map.md)
-- [Troubleshooting](../troubleshooting.md)

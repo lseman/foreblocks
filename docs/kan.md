@@ -1,3 +1,11 @@
+---
+title: KAN Backbone
+description: Kolmogorov-Arnold Network backbone for time-series forecasting.
+editLink: true
+---
+
+
+[[toc]]
 # KAN Backbone
 
 ForeBlocks ships a Kolmogorov–Arnold Network (KAN) backbone for time-series
@@ -20,7 +28,7 @@ The KAN backbone is a specialist subsystem: it is **not** part of the top-level
   forecasting stack.
 
 If your baseline `ForecastingModel` run is not working yet, start there first —
-see [Getting Started](getting-started.md).
+see [Getting Started](getting-started).
 
 ## Minimal example
 
@@ -44,20 +52,7 @@ model = KANModel(
 
 x = torch.randn(8, 48, 4)   # [B, T, C]
 y = model(x)                # [B, 24, 4] -> [B, H, C]
-```
-
-## Polynomial families
-
-Each KAN block expands its input through one or more polynomial/basis families.
-The available families are:
-
 ```python
-from foreblocks.kan import list_poly_families
-
-list_poly_families()
-# ('hahn', 'chebyshev', 'jacobi', 'legendre', 'gegenbauer',
-#  'laguerre', 'fourier', 'wavelet', 'hermite')
-```
 
 Pass a subset via the `families` argument; per-family hyperparameters are
 exposed as keyword arguments (for example `jacobi_alpha`, `jacobi_beta`,
@@ -88,6 +83,6 @@ relevant `KANModel` knobs are:
 
 ## Related pages
 
-- [Transformer Guide](transformer.md) — the standard backbone and attention variants
-- [Hybrid Mamba Guide](hybrid-mamba.md) — the SSM-based backbone
-- [Getting Started](getting-started.md)
+- [Transformer Guide](transformer) — the standard backbone and attention variants
+- [Hybrid Mamba Guide](hybrid-mamba) — the SSM-based backbone
+- [Getting Started](getting-started)

@@ -1,3 +1,11 @@
+---
+title: Time Series Generator
+description: Synthetic time-series generator with explicit structural components for testing and prototyping.
+editLink: true
+---
+
+
+[[toc]]
 # Time Series Generator
 
 `foretools/tsgen/ts_gen.py` provides a pedagogical synthetic time-series generator with explicit structural components. It is useful when you need data that is fully controlled, explainable, and easy to visualize.
@@ -6,49 +14,7 @@
 
 ```python
 from foretools.tsgen import TimeSeriesGenerator
-```
-
-The generator is implemented in `foretools/tsgen/ts_gen.py` and is also
-exported from the `foretools.tsgen` package surface.
-
-## Core workflow
-
 ```python
-from foretools.tsgen import TimeSeriesGenerator
-
-gen = TimeSeriesGenerator(random_state=42)
-
-df, meta = gen.make(
-    n_series=3,
-    n_steps=365,
-    freq="D",
-    trend={
-        "type": "piecewise",
-        "knots": [120, 250],
-        "slopes": [0.08, -0.03, 0.05],
-        "intercept": 18.0,
-    },
-    seasonality=[
-        {"period": 7.0, "amplitude": 4.2, "harmonics": 2},
-        {"period": 30.5, "amplitude": 1.8, "harmonics": 1},
-    ],
-    cycle={"period": 180.0, "amplitude": 2.4, "freq_drift": 0.08, "phase": 0.2},
-    noise={"ar": [0.55], "ma": [0.2], "sigma": 0.9},
-    regime={
-        "n_states": 2,
-        "p": [[0.96, 0.04], [0.08, 0.92]],
-        "state_bias": [0.0, 3.2],
-        "state_sigma_scale": [1.0, 1.35],
-    },
-    exog={
-        "n_features": 2,
-        "types": ["random_walk", "seasonal"],
-        "beta": [0.22, -1.1],
-    },
-    add_calendar=True,
-    return_components=True,
-)
-```
 
 ## What `make()` returns
 
@@ -109,37 +75,7 @@ df, meta = gen.make(
     noise={"ar": [0.5], "ma": [0.1], "sigma": 0.4},
     return_components=True,
 )
-```
-
-### 2. Stress-test with missingness, regimes, and exogenous drivers
-
-Use this when you want a harder forecasting or preprocessing benchmark.
-
-```python
-df, meta = gen.make(
-    n_series=4,
-    n_steps=730,
-    trend={"type": "piecewise", "knots": [180, 500], "slopes": [0.05, -0.02, 0.01]},
-    seasonality=[
-        {"period": 7.0, "amplitude": 2.0, "harmonics": 2},
-        {"period": 30.5, "amplitude": 1.0, "harmonics": 1},
-    ],
-    regime={
-        "n_states": 3,
-        "p": [[0.95, 0.04, 0.01], [0.05, 0.90, 0.05], [0.02, 0.08, 0.90]],
-        "state_bias": [0.0, 1.5, -1.0],
-        "state_sigma_scale": [1.0, 1.4, 1.8],
-    },
-    exog={
-        "n_features": 3,
-        "types": ["random_walk", "binary_event", "seasonal"],
-        "beta": [0.1, 2.0, -0.7],
-    },
-    missing={"prob": 0.02, "block_prob": 0.01, "block_max": 7},
-    outliers={"prob": 0.01, "scale": 5.0},
-    return_components=True,
-)
-```
+```json
 
 ### 3. Create a train/val/test split quickly
 
@@ -159,16 +95,7 @@ train_df = dataset["train"]
 val_df = dataset["val"]
 test_df = dataset["test"]
 meta = dataset["meta"]
-```
-
-## Plotting helpers
-
-`TimeSeriesGenerator` includes simple plotting helpers for fast inspection:
-
-```python
-gen.plot_series(df, series_id=0)
-gen.plot_decompose(meta, series_id=0)
-```
+```text
 
 - `plot_series()` shows the observed `y` path for a single series.
 - `plot_decompose()` renders separate trend, seasonality, cycle, and noise plots.
@@ -192,6 +119,6 @@ If you need a richer figure that overlays all components at once, use the compan
 
 ## Related pages
 
-- [Generate Synthetic Series](../tutorials/generate-synthetic-series.md)
-- [Foretools Overview](index.md)
-- [Repository Map](../reference/repository-map.md)
+- [Generate Synthetic Series](../tutorials/generate-synthetic-series)
+- [Foretools Overview](index)
+- [Repository Map](../reference/repository-map)

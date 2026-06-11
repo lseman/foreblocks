@@ -5,6 +5,7 @@
 4. Diversity-aware finalization with sqrt-based target_unique
 """
 import unittest
+from unittest.mock import patch
 
 import torch
 import torch.nn.functional as F
@@ -82,6 +83,31 @@ class TestGDASGradientNormalisation(unittest.TestCase):
 
 
 class TestPerformanceTrackerMetric(unittest.TestCase):
+    def test_mixed_op_skips_fvcore_profile_on_old_torch(self):
+        """PyTorch < 2.12 uses static efficiency priors instead of fvcore tracing."""
+        real_import = __import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name.startswith("fvcore"):
+                raise AssertionError("fvcore profiling should be skipped")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(torch, "__version__", "2.10.0"), patch(
+            "builtins.__import__", side_effect=guarded_import
+        ):
+            op = MixedOp(
+                input_dim=4,
+                latent_dim=4,
+                seq_length=8,
+                available_ops=["Identity", "Fourier", "ResidualMLP"],
+                use_hierarchical=False,
+            )
+
+        self.assertTrue(op._flops_profiled)
+        self.assertFalse(op._dynamic_efficiency_profiled)
+        self.assertEqual(op.op_efficiency["Identity"], 1.0)
+        self.assertEqual(op.op_efficiency["Fourier"], 0.45)
+
     def test_tracker_uses_mean_square_not_l2_norm(self):
         """Performance tracker score is based on mean-square energy, not L2 norm."""
         # Create an op and verify the tracker metric is mean-square based.

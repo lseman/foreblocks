@@ -1,3 +1,9 @@
+---
+title: Changelog
+description: All notable changes to foreblocks — release notes and version history.
+editLink: true
+---
+
 # Changelog
 
 Release history for `foreblocks` and `foretools`.

@@ -1,3 +1,11 @@
+---
+title: Configuration
+description: Configuration objects — ModelConfig, TrainingConfig, search and evaluation settings.
+editLink: true
+---
+
+
+[[toc]]
 # Configuration
 
 This page summarizes the main configuration objects exposed through the current API.
@@ -134,24 +142,7 @@ config = TrainingConfig(
     use_amp=False,
 )
 trainer = Trainer(model, config=config, auto_track=False)
-```
-
-**Preprocessing-heavy run — longer training, AMP, gradient clipping:**
-
-```python
-config = TrainingConfig(
-    num_epochs=50,
-    learning_rate=3e-4,
-    batch_size=32,
-    patience=10,
-    use_amp=True,
-    gradient_clip_val=1.0,
-    scheduler_type="cosine",
-    min_lr=1e-6,
-    save_best_model=True,
-    experiment_name="revin_decomp_baseline",
-)
-```
+```toml
 
 **DARTS / NAS run — architecture parameter alternation:**
 
@@ -168,23 +159,7 @@ config = TrainingConfig(
     nas_discretize_at_end=True,
     nas_log_alphas=True,
 )
-```
-
-**MoE monitoring run — enable router diagnostics:**
-
-```python
-config = TrainingConfig(
-    num_epochs=40,
-    learning_rate=3e-4,
-    use_amp=True,
-    moe_logging=True,
-    moe_log_latency=True,
-    moe_condition_name="season",
-    moe_condition_cardinality=4,
-    experiment_name="moe_router_audit",
-    save_best_model=True,
-)
-```
+```toml
 
 **Conformal prediction run — split conformal with 90 % coverage:**
 
@@ -196,20 +171,7 @@ config = TrainingConfig(
     conformal_method="split",
     conformal_quantile=0.90,
 )
-```
-
-**Tracking-oriented production run:**
-
-```python
-config = TrainingConfig(
-    experiment_name="baseline_direct",
-    save_best_model=True,
-    save_model_path="checkpoints/best.pt",
-    use_amp=True,
-    gradient_clip_val=1.0,
-    scheduler_type="cosine",
-)
-```
+```toml
 
 ## `TimeSeriesHandler` settings
 
@@ -229,7 +191,7 @@ Important preprocessor controls include:
 
 Use the dedicated guide for more detail:
 
-- [Preprocessor Guide](../preprocessor.md)
+- [Preprocessor Guide](../preprocessor)
 
 ## Practical guidance
 
@@ -240,6 +202,6 @@ Use the dedicated guide for more detail:
 
 ## Related pages
 
-- [Public API](public-api.md)
-- [Getting Started](../getting-started.md)
-- [Troubleshooting](../troubleshooting.md)
+- [Public API](public-api)
+- [Getting Started](../getting-started)
+- [Troubleshooting](../troubleshooting)

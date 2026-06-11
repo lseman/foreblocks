@@ -1,3 +1,9 @@
+---
+title: Foretools Overview
+description: Companion toolbox — synthetic data, search, decomposition, feature engineering.
+editLink: true
+---
+
 # Foretools Overview
 
 `foretools` is the companion toolbox that sits next to `foreblocks`.
@@ -8,11 +14,11 @@ Use `foreblocks` when you are building and training forecasting models. Use `for
 
 | Tool | When to use it | Docs |
 | --- | --- | --- |
-| `foretools/tsgen` | create synthetic series with known structure and ground-truth components | [Time Series Generator](tsgen.md) |
-| `foretools/bohb` | run budgeted hyperparameter optimization with Hyperband + TPE | [BOHB Search](bohb.md) |
-| `foretools/emd_like` | decompose signals into oscillatory modes with VMD, EMD-family methods, hierarchical VMD, and multivariate support | [VMD Decomposition](vmd.md) |
-| `foretools/fengineer` | automated feature engineering with transforms, interactions, MI selection, and RFECV | [Feature Engineering](feature-engineering.md) |
-| `foretools/tsaug` | data augmentation — jitter, scaling, time-warp, window-slice, and AutoDA search | [AutoDA Augmentation](tsaug.md) |
+| `foretools/tsgen` | create synthetic series with known structure and ground-truth components | [Time Series Generator](tsgen) |
+| `foretools/bohb` | run budgeted hyperparameter optimization with Hyperband + TPE | [BOHB Search](bohb) |
+| `foretools/emd_like` | decompose signals into oscillatory modes with VMD, EMD-family methods, hierarchical VMD, and multivariate support | [VMD Decomposition](vmd) |
+| `foretools/fengineer` | automated feature engineering with transforms, interactions, MI selection, and RFECV | [Feature Engineering](feature-engineering) |
+| `foretools/tsaug` | data augmentation — jitter, scaling, time-warp, window-slice, and AutoDA search | [AutoDA Augmentation](tsaug) |
 
 ## Other foretools areas
 
@@ -46,32 +52,3 @@ results = analyzer.analyze(["correlations", "outliers"])
 # Run-and-plot in one step, or fetch a single analysis result
 analyzer.analyze_and_plot(["clusters"])
 corr = analyzer.get_results("correlations")
-```
-
-`foreminer` is primarily notebook-oriented. It operates on a pandas DataFrame, does not expose a stable training-time API, and is best used in exploratory phases before committing to a preprocessing and model pipeline. Use `get_available_analyses()` to discover the analysis keys registered in your build.
-
-### `foretools/foraug` (tsaug)
-
-Data augmentation utilities. See [AutoDA Augmentation](tsaug.md) for the full guide.
-
-## How `foretools` fits the repo
-
-- `foreblocks` is the main model and training API.
-- `foretools` is a set of practical companion modules. Some are notebook-oriented and some are reusable library code.
-- `foretools` imports are deeper and less consolidated than `foreblocks`, so the safest entry points are the specific modules documented here.
-
-## Recommended reading
-
-1. [Time Series Generator](tsgen.md) if you need synthetic datasets or decomposition examples.
-2. [BOHB Search](bohb.md) if you need hyperparameter optimization outside the `darts` neural architecture search stack.
-3. [VMD Decomposition](vmd.md) if you need decomposition, denoising, or mode extraction workflows.
-4. [Feature Engineering](feature-engineering.md) if you need automated feature construction, mutual information selection, or RFECV-based pruning.
-5. [Repository Map](../reference/repository-map.md) if you want the broader code layout.
-
-## Related pages
-
-- [Generate Synthetic Series](../tutorials/generate-synthetic-series.md)
-- [Optimize With BOHB](../tutorials/optimize-with-bohb.md)
-- [VMD Decomposition](vmd.md)
-- [Feature Engineering](feature-engineering.md)
-- [Overview](../overview.md)

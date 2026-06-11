@@ -1,3 +1,9 @@
+---
+title: Optimize With BOHB
+description: Define a BOHB search space, run budget-aware optimization, inspect results.
+editLink: true
+---
+
 # Optimize With BOHB
 
 This tutorial shows the shortest complete BOHB workflow in `foretools`: define a search space, write a budget-aware objective, run the optimizer, and inspect the result history.
@@ -44,35 +50,7 @@ print(best_config, best_loss)
 plotter = OptimizationPlotter.from_bohb(bohb)
 plotter.plot_optimization_history()
 plotter.plot_param_importance()
-```
-
-## What the budgets mean
-
-BOHB does not prescribe what a budget is. You define it in the objective.
-
-Common interpretations:
-
-- number of epochs
-- number of gradient steps
-- training subset size
-- cross-validation folds evaluated so far
-
-The only requirement is that larger budgets should usually be more informative and more expensive.
-
-## Adding pruning-aware reporting
-
-If your objective can report intermediate losses, accept a third `trial` argument:
-
-```python
-from foretools.bohb.trial import TrialPruned
-
-def objective(config, budget, trial):
-    loss = 1.0
-    for epoch in range(int(budget)):
-        loss = 0.9 * loss + 0.02 * abs(config["dropout"] - 0.2)
-        trial.report(epoch, loss)
-    return float(loss)
-```
+```text
 
 This enables BOHB's trial-level pruning hook. Keep in mind that the current pruning rule is intentionally simple, so validate it against your workload before relying on it heavily.
 
@@ -83,18 +61,3 @@ Start with:
 ```python
 history = bohb.get_optimization_history()
 top5 = bohb.get_top_configs(5)
-```
-
-Then answer three questions:
-
-1. Did the best-so-far loss keep improving late in the run?
-2. Did higher budgets produce materially lower losses?
-3. Which parameters actually moved the objective?
-
-The plotting helper is usually enough for this first pass.
-
-## Related pages
-
-- [BOHB Search](../foretools/bohb.md)
-- [Foretools Overview](../foretools/index.md)
-- [DARTS Guide](../darts.md)

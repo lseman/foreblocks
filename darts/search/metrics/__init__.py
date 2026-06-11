@@ -2,6 +2,7 @@ import contextlib
 import importlib
 import math
 import os
+import re
 import threading
 import time
 import warnings
@@ -33,6 +34,20 @@ from .snip import compute_snip
 from .synflow import compute_synflow
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+
+def _torch_version_tuple(version: str | None = None) -> tuple[int, int]:
+    """Return the major/minor PyTorch version, ignoring local build suffixes."""
+    raw = torch.__version__ if version is None else str(version)
+    match = re.match(r"^\s*(\d+)\.(\d+)", raw)
+    if match is None:
+        return (0, 0)
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def _default_enable_flops() -> bool:
+    """Disable FLOP proxy scoring on older PyTorch tracer stacks."""
+    return _torch_version_tuple() >= (2, 12)
 
 
 # Phase-1 zero-cost evaluation runs many candidates concurrently in a thread
@@ -102,6 +117,7 @@ class Config:
     enable_grasp: bool = True
     enable_jacobian: bool = True
     enable_synflow: bool = True
+    enable_flops: bool = field(default_factory=_default_enable_flops)
     conditioning_every_n_layers: int = 3
     conditioning_min_out_features: int = 0
     conditioning_power_iters: int = 6
@@ -605,7 +621,8 @@ class MetricsComputer:
         results["activation_diversity"] = compute_activation_diversity(
             self, activations, relu_modules
         )
-        results["flops"] = compute_activation_flops(self, flops_count)
+        if self.config.enable_flops:
+            results["flops"] = compute_activation_flops(self, flops_count)
         return results
 
     def _compute_gradient_metrics(
@@ -842,6 +859,8 @@ class MetricsComputer:
 
     def flops(self, model: nn.Module, inputs: torch.Tensor) -> Result:
         """FLOP estimation using fvcore with fallback to manual hook count."""
+        if not self.config.enable_flops:
+            return Result(0.0, False, 0.0, "Disabled for PyTorch < 2.12")
         return compute_flops(self, model, inputs)
 
     def sensitivity(

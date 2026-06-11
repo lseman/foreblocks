@@ -1,13 +1,21 @@
+---
+title: Custom Blocks Guide
+description: ForecastingModel customization — preprocessing, normalization, output post-processing.
+editLink: true
+---
+
+
+[[toc]]
 # ForeBlocks Custom Blocks Guide
 
 This guide covers the current `ForecastingModel` customization points for feature preprocessing, normalization, and output post-processing.
 
 Related docs:
-- [Documentation Overview](overview.md)
-- [Getting Started](getting-started.md)
-- [Transformer](transformer.md)
-- [Preprocessor](preprocessor.md)
-- [DARTS](darts.md)
+- [Documentation Overview](overview)
+- [Getting Started](getting-started)
+- [Transformer](transformer)
+- [Preprocessor](preprocessor)
+- [DARTS](darts)
 
 ---
 
@@ -51,53 +59,13 @@ model = ForecastingModel(
     output_postprocessor=...,    # default: Identity
     input_skip_connection=False,
 )
-```
-
-### Block order
-
-1. `input_preprocessor`
-2. optional input skip connection
-3. `input_normalization`
-4. encoder/decoder (or direct head path)
-5. `output_block`
-6. `output_normalization`
-7. `output_postprocessor`
-
----
-
-## Add/replace blocks after model creation
-
-Use `add_head(...)` to modify blocks in-place.
-
-### Valid `position` values
-
-- `encoder`
-- `decoder`
-- `attention`
-- `input`
-- `output`
-- `input_norm`
-- `output_norm`
-- `head`
-
-```python
-import torch.nn as nn
-
-model.add_head(nn.LayerNorm(64), position="input_norm")
-model.add_head(nn.Sequential(nn.Linear(1, 1)), position="output")
-```
+```text
 
 Remove with:
 
 ```python
 model.remove_head("output_norm")
-```
-
-Inspect with:
-
 ```python
-print(model.list_heads())
-```
 
 ## Minimal custom preprocessor example
 
@@ -132,20 +100,3 @@ model = ForecastingModel(
     input_preprocessor=ConvPre(in_features=8, hidden=32),
     input_skip_connection=True,
 )
-```
-
----
-
-## Practical recommendations
-
-- Start with identity blocks and add one custom block at a time.
-- Enable `input_skip_connection=True` when your preprocessor is aggressive.
-- For long horizons, pair custom blocks with transformer backbones (`transformer_seq2seq`).
-- Keep post-processing simple (monotonic constraints, scaling, clipping) and test it independently.
-
----
-
-## Version notes
-
-This page reflects the current `foreblocks.core.model.ForecastingModel` API.
-If you are migrating from older examples that mention `TimeSeriesSeq2Seq`, switch to `ForecastingModel`.

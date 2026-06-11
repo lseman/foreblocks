@@ -7,6 +7,10 @@ The public entry-point is :func:`train_darts_model`.
 
 from __future__ import annotations
 
+import contextlib
+import faulthandler
+import os
+import sys
 import time
 from typing import Any
 
@@ -58,6 +62,47 @@ from ..utils.training import (
 # ---------------------------------------------------------------------------
 # Public entry-point
 # ---------------------------------------------------------------------------
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _use_fused_optimizers(device: str) -> bool:
+    # Use fused Adam/AdamW on CUDA by default. Keep an escape hatch for unusual
+    # PyTorch/driver combinations where the native fused kernels misbehave.
+    return device.startswith("cuda") and not _env_flag(
+        "FORE_DARTS_DISABLE_FUSED_OPTIMIZERS"
+    )
+
+
+def _debug_crash_enabled() -> bool:
+    return _env_flag("FORE_DARTS_DEBUG_CRASH")
+
+
+def _enable_fatal_signal_tracebacks() -> None:
+    if _debug_crash_enabled() and not faulthandler.is_enabled():
+        faulthandler.enable(file=sys.stderr, all_threads=True)
+
+
+@contextlib.contextmanager
+def _crash_trace(stage: str, device: str = "cpu"):
+    if not _debug_crash_enabled():
+        yield
+        return
+
+    print(f"[DARTS-CRASH-TRACE] >> {stage}", flush=True)
+    t0 = time.perf_counter()
+    try:
+        yield
+        if str(device).startswith("cuda") and torch.cuda.is_available():
+            torch.cuda.synchronize()
+    finally:
+        dt = time.perf_counter() - t0
+        print(f"[DARTS-CRASH-TRACE] << {stage} ({dt:.3f}s)", flush=True)
 
 
 def train_darts_model(
@@ -133,8 +178,10 @@ def train_darts_model(
         ``training_time``, ``final_metrics``.
     """
     device = trainer.device
+    _enable_fatal_signal_tracebacks()
     loss_fn = trainer._get_loss_function(loss_type)
-    model = model.to(device)
+    with _crash_trace("model.to(device)", device):
+        model = model.to(device)
     start_time = time.time()
 
     # ── GPU fast-path settings (Ampere+) ──────────────────────────────────
@@ -202,31 +249,33 @@ def train_darts_model(
     )
 
     # ── Optimizers ────────────────────────────────────────────────────────
-    try:
-        # Architecture params: Adam (betas=(0.5, 0.999) per DARTS paper).
-        # Model params: AdamW — decoupled weight decay is strictly better for
-        # over-parameterised models and consistent with the fallback path.
-        arch_optimizer = torch.optim.Adam(
-            arch_param_groups,
-            betas=(0.5, 0.999),
-            weight_decay=arch_weight_decay,
-            fused=True,
-        )
-        model_optimizer = torch.optim.AdamW(
-            model_params,
-            lr=model_learning_rate,
-            weight_decay=model_weight_decay,
-            fused=True,
-        )
-    except (TypeError, RuntimeError):
-        arch_optimizer = torch.optim.Adam(
-            arch_param_groups,
-            betas=(0.5, 0.999),
-            weight_decay=arch_weight_decay,
-        )
-        model_optimizer = torch.optim.AdamW(
-            model_params, lr=model_learning_rate, weight_decay=model_weight_decay
-        )
+    with _crash_trace("optimizer.init", device):
+        optimizer_kwargs = {"fused": True} if _use_fused_optimizers(device) else {}
+        try:
+            # Architecture params: Adam (betas=(0.5, 0.999) per DARTS paper).
+            # Model params: AdamW — decoupled weight decay is strictly better for
+            # over-parameterised models.
+            arch_optimizer = torch.optim.Adam(
+                arch_param_groups,
+                betas=(0.5, 0.999),
+                weight_decay=arch_weight_decay,
+                **optimizer_kwargs,
+            )
+            model_optimizer = torch.optim.AdamW(
+                model_params,
+                lr=model_learning_rate,
+                weight_decay=model_weight_decay,
+                **optimizer_kwargs,
+            )
+        except (TypeError, RuntimeError):
+            arch_optimizer = torch.optim.Adam(
+                arch_param_groups,
+                betas=(0.5, 0.999),
+                weight_decay=arch_weight_decay,
+            )
+            model_optimizer = torch.optim.AdamW(
+                model_params, lr=model_learning_rate, weight_decay=model_weight_decay
+            )
 
     # ── Schedulers ────────────────────────────────────────────────────────
     arch_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -698,11 +747,12 @@ def train_darts_model(
     # Skip the extra full-val metrics pass when the caller doesn't need it
     # (e.g. phase-3 ASHA rungs, which only read best_val_loss). Saves one
     # validation pass per call across many candidate×rung invocations.
-    final_metrics = (
-        compute_final_metrics(model, val_loader, device)
-        if compute_metrics
-        else {"mse": float("nan"), "mae": float("nan")}
-    )
+    with _crash_trace("final_metrics", device):
+        final_metrics = (
+            compute_final_metrics(model, val_loader, device)
+            if compute_metrics
+            else {"mse": float("nan"), "mae": float("nan")}
+        )
 
     if verbose:
         print(f"\nTraining completed in {training_time:.1f}s")
@@ -765,22 +815,29 @@ def _run_model_training_epoch(
         if max_batches is not None and batch_idx >= int(max_batches):
             break
         batches_seen += 1
-        batch_x = batch_x.to(device, non_blocking=True)
-        batch_y = batch_y.to(device, non_blocking=True)
+        with _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} transfer", device):
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
 
-        with autocast_ctx(device, enabled=use_amp):
-            preds = model(batch_x)
-            loss = loss_fn(preds, batch_y) / gradient_accumulation_steps
+        with _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} forward", device):
+            with autocast_ctx(device, enabled=use_amp):
+                preds = model(batch_x)
+                loss = loss_fn(preds, batch_y) / gradient_accumulation_steps
 
-        scaler.scale(loss).backward()
+        with _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} backward", device):
+            scaler.scale(loss).backward()
 
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
-            scaler.unscale_(model_optimizer)
-            torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
-            scaler.step(model_optimizer)
-            scaler.update()
-            model_scheduler.step()
-            model_optimizer.zero_grad()
+            with _crash_trace(
+                f"epoch {epoch + 1}: train batch {batch_idx} optimizer_step",
+                device,
+            ):
+                scaler.unscale_(model_optimizer)
+                torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
+                scaler.step(model_optimizer)
+                scaler.update()
+                model_scheduler.step()
+                model_optimizer.zero_grad()
 
         epoch_train_loss += loss.item() * gradient_accumulation_steps
 
@@ -823,10 +880,12 @@ def _run_validation_epoch(
             if max_batches is not None and batch_idx >= int(max_batches):
                 break
             batches_seen += 1
-            x = batch_data[0].to(device, non_blocking=True)
-            y = batch_data[1].to(device, non_blocking=True)
-            with autocast_ctx(device, enabled=use_amp):
-                val_loss += loss_fn(model(x), y).item()
+            with _crash_trace(f"val batch {batch_idx} transfer", device):
+                x = batch_data[0].to(device, non_blocking=True)
+                y = batch_data[1].to(device, non_blocking=True)
+            with _crash_trace(f"val batch {batch_idx} forward", device):
+                with autocast_ctx(device, enabled=use_amp):
+                    val_loss += loss_fn(model(x), y).item()
             if verbose and hasattr(val_pbar, "set_postfix"):
                 val_pbar.set_postfix(
                     {"val_loss": f"{val_loss / max(batches_seen, 1):.4f}"}
@@ -835,5 +894,3 @@ def _run_validation_epoch(
             val_pbar.close()
 
     return val_loss / max(batches_seen, 1)
-
-

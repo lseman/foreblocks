@@ -1,3 +1,9 @@
+---
+title: Repository Map
+description: Quick path through the repo for contributors and power users.
+editLink: true
+---
+
 # Repository Map
 
 This page gives a quick path through the repository for contributors and power users.
@@ -6,7 +12,7 @@ This page gives a quick path through the repository for contributors and power u
 
 | Path | Purpose |
 | --- | --- |
-| [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md) | GitHub landing page |
+| [`README.md`](https://github.com/lseman/foreblocks/blob/main/README) | GitHub landing page |
 | [`docs/.vitepress/config.js`](https://github.com/lseman/foreblocks/blob/main/docs/.vitepress/config.js) | Navigation and site structure for the `/docs/` site |
 | `web/` | Static landing page assets for the published site root |
 | `docs/` | VitePress source for the versioned documentation site |
@@ -38,7 +44,7 @@ This page gives a quick path through the repository for contributors and power u
 The package was reorganized into a tiered layout. There are **no compatibility
 shims** — old import paths (`foreblocks.transformer.*`, `foreblocks.blocks.*`,
 `foreblocks.custom_mamba.*`, `foreblocks.custom_raven.*`, `foreblocks.custom_att.*`)
-were hard-renamed. See [Reorg Migration Map](reorg-migration.md) for the full
+were hard-renamed. See [Reorg Migration Map](reorg-migration) for the full
 old → new table.
 
 | Tier | Package | What lives here |
@@ -73,7 +79,7 @@ Conventions:
 
 | Task | Entry point |
 | --- | --- |
-| Training a baseline model | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md), [Getting Started](../getting-started.md) |
+| Training a baseline model | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README), [Getting Started](../getting-started) |
 | Understanding architecture composition | [`foreblocks/models/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/models) |
 | Working with graph forecasting | [`foreblocks/models/graph_forecasting.py`](https://github.com/lseman/foreblocks/blob/main/foreblocks/models/graph_forecasting.py), [`foreblocks/layers/graph/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/layers/graph) |
 | Writing Triton kernels | [`foreblocks/ops/`](https://github.com/lseman/foreblocks/tree/main/foreblocks/ops) |
@@ -89,7 +95,7 @@ Conventions:
 
 ## Related pages
 
-- [System Overview](../architecture/system-overview.md)
-- [Public API](public-api.md)
-- [Foretools Overview](../foretools/index.md)
-- [Documentation Workflow](../contributing/docs-workflow.md)
+- [System Overview](../architecture/system-overview)
+- [Public API](public-api)
+- [Foretools Overview](../foretools/index)
+- [Documentation Workflow](../contributing/docs-workflow)
