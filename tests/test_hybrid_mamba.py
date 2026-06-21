@@ -62,19 +62,20 @@ def _sequential_diagonal_ssd(
     return torch.stack(ys, dim=1)
 
 
-def test_mamba2_block_cpu_forward_uses_low_rank_dt() -> None:
+def test_mamba2_block_cpu_forward_direct_dt() -> None:
     block = Mamba2Block(
         d_model=32,
         d_inner=64,
         d_state=8,
         d_conv=4,
-        dt_rank=None,
         num_heads=4,
     )
     x = torch.randn(2, 11, 32)
     y = block(x)
 
-    assert block.dt_proj.weight.shape == (4, block.dt_rank)
+    # dt projected directly in in_proj (no separate dt_proj layer)
+    assert not hasattr(block, 'dt_proj')
+    assert block.dt_bias.shape == (block.num_heads,)
     assert isinstance(block.residual_proj, nn.Linear)
     assert y.shape == x.shape
 
@@ -85,7 +86,6 @@ def test_mamba2_block_fla_style_knobs_and_attention_mask() -> None:
         d_inner=64,
         d_state=8,
         d_conv=4,
-        dt_rank=4,
         num_heads=4,
         chunk_size=8,
         dt_init_min=0.001,
@@ -117,7 +117,6 @@ def test_mamba2_combined_path_matches_decomposed_path() -> None:
         d_inner=64,
         d_state=8,
         d_conv=4,
-        dt_rank=4,
         num_heads=4,
         chunk_size=8,
         use_fused_path=True,
@@ -128,7 +127,6 @@ def test_mamba2_combined_path_matches_decomposed_path() -> None:
         d_inner=64,
         d_state=8,
         d_conv=4,
-        dt_rank=4,
         num_heads=4,
         chunk_size=8,
         use_fused_path=False,
@@ -150,7 +148,6 @@ def test_mamba2_block_pre_norm_disabled() -> None:
         d_inner=64,
         d_state=8,
         d_conv=4,
-        dt_rank=4,
         num_heads=4,
         use_pre_norm=False,
     )
@@ -166,7 +163,6 @@ def test_mamba2_block_step_matches_parallel() -> None:
         d_inner=64,
         d_state=8,
         d_conv=4,
-        dt_rank=4,
         num_heads=4,
         use_pre_norm=False,
     )
@@ -189,7 +185,6 @@ def test_hybrid_mamba2_block_cpu_forward() -> None:
         d_inner=64,
         d_state=8,
         d_conv=4,
-        dt_rank=4,
         num_heads=4,
         n_groups=2,
         window_size=8,
@@ -209,7 +204,6 @@ def test_hybrid_mamba2_block_step_matches_parallel_with_attention_sink() -> None
         d_inner=64,
         d_state=8,
         d_conv=4,
-        dt_rank=4,
         num_heads=4,
         window_size=4,
         n_sink_tokens=2,

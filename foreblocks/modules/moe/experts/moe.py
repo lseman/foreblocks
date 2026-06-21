@@ -21,8 +21,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch._tensor import Tensor
 
-from foreblocks.modules.moe.experts.dispatchers import DroplessPackedDispatcher, ExpertChoiceDispatcher
-from foreblocks.modules.moe.experts.expert_blocks import MoE_FFNExpert, MoE_SwiGLUExpert, MTPHead
+from foreblocks.modules.moe.experts.dispatchers import (
+    DroplessPackedDispatcher,
+    ExpertChoiceDispatcher,
+)
+from foreblocks.modules.moe.experts.expert_blocks import (
+    MoE_FFNExpert,
+    MoE_SwiGLUExpert,
+    MTPHead,
+)
 from foreblocks.modules.moe.experts.moe_utils import (
     autocast_bf16_enabled as _autocast_bf16_enabled,
 )
@@ -39,11 +46,13 @@ from foreblocks.modules.moe.experts.moe_utils import (
 )
 from foreblocks.modules.moe.experts.routers import (
     AdaptiveNoisyTopKRouter,
+    AuxiliaryTokenRouter,
     ContinuousTopKRouter,
     HashTopKRouter,
     LinearRouter,
     NoisyTopKRouter,
     Router,
+    SoftDenseRouter,
     StraightThroughTopKRouter,
 )
 
@@ -115,6 +124,7 @@ class MoEFeedForwardDMoE(nn.Module):
         use_fused_router_topk: bool = True,
         triton_use_fp16_acc: bool = False,
         triton_use_shared_b: bool = False,
+        router_aux_num_aux: int = 1,
         router_expert_bias_init: float = 0.0,
         router_bias_update_rate: float = 0.01,
         router_bias_clip: float = 2.0,
@@ -164,6 +174,8 @@ class MoEFeedForwardDMoE(nn.Module):
             "perturb_and_pick_topk",
             "hash_topk",
             "multi_hash_topk",
+            "soft_dense",
+            "auxiliary_token",
         }
         if router_type not in allowed_router_types:
             raise ValueError(
@@ -384,6 +396,23 @@ class MoEFeedForwardDMoE(nn.Module):
                 use_bias=use_bias,
                 expert_bias_init=router_expert_bias_init,
             )
+        elif router_type == "soft_dense":
+            router = SoftDenseRouter(
+                d_model=self.routed_d_model,
+                num_experts=num_routed,
+                temperature=router_temperature,
+                input_dropout=input_dropout,
+                use_bias=use_bias,
+                expert_bias_init=router_expert_bias_init,
+            )
+        elif router_type == "auxiliary_token":
+            router = AuxiliaryTokenRouter(
+                d_model=self.routed_d_model,
+                num_experts=num_routed,
+                num_aux=router_aux_num_aux,
+                temperature=router_temperature,
+                input_dropout=input_dropout,
+            )
         else:
             raise ValueError(f"unsupported router_type '{router_type}'")
         self.router = maybe_compile(router, enabled=compile_router)
@@ -462,12 +491,19 @@ class MoEFeedForwardDMoE(nn.Module):
         # Expert group index: [num_routed] -> group id per expert
         if moe_num_groups > 1 and num_routed % moe_num_groups == 0:
             group_size = num_routed // moe_num_groups
-            self.register_buffer("_expert_group", torch.cat([
-                torch.full((group_size,), g, dtype=torch.long)
-                for g in range(moe_num_groups)
-            ]))
+            self.register_buffer(
+                "_expert_group",
+                torch.cat(
+                    [
+                        torch.full((group_size,), g, dtype=torch.long)
+                        for g in range(moe_num_groups)
+                    ]
+                ),
+            )
         else:
-            self.register_buffer("_expert_group", torch.zeros(num_routed, dtype=torch.long))
+            self.register_buffer(
+                "_expert_group", torch.zeros(num_routed, dtype=torch.long)
+            )
         self.aux_loss = torch.tensor(0.0)
 
         # Prepacked expert weights cache (optional fast path)
@@ -553,7 +589,17 @@ class MoEFeedForwardDMoE(nn.Module):
             top_i = out.top_i
             router_entropy = out.router_entropy
         elif isinstance(out, tuple) and len(out) >= 9:
-            logits, raw, sparse, k_logits, per_token_k, k_probs, top_p, top_i, router_entropy = out
+            (
+                logits,
+                raw,
+                sparse,
+                k_logits,
+                per_token_k,
+                k_probs,
+                top_p,
+                top_i,
+                router_entropy,
+            ) = out
         elif isinstance(out, tuple) and len(out) >= 8:
             logits, raw, sparse, k_logits, per_token_k, k_probs, top_p, top_i = out
         elif isinstance(out, tuple):
@@ -777,9 +823,15 @@ class MoEFeedForwardDMoE(nn.Module):
                 shared_out = None
                 shared_cat = None
 
-            logits, per_token_k, _k_logits, _k_probs, _router_top_p, _router_top_i, router_entropy = (
-                self._compute_router_outputs(routed_x, tau=tau)
-            )  # [T, E]
+            (
+                logits,
+                per_token_k,
+                _k_logits,
+                _k_probs,
+                _router_top_p,
+                _router_top_i,
+                router_entropy,
+            ) = self._compute_router_outputs(routed_x, tau=tau)  # [T, E]
             if self.routing_mode == "expert_choice":
                 self.last_per_token_k = None
                 self.last_log_prob_k = None
@@ -1045,11 +1097,13 @@ class MoEFeedForwardDMoE(nn.Module):
             # Gate probs over experts: [T, E]
             gate_probs = F.softmax(logits, dim=-1)  # [T, E]
             # Fraction of tokens routed to each expert (from top-k assignments)
-            expert_freq = torch.zeros(num_routed, device=logits.device, dtype=logits.dtype)
+            expert_freq = torch.zeros(
+                num_routed, device=logits.device, dtype=logits.dtype
+            )
             if experts_seq.numel() > 0:
-                expert_freq = torch.bincount(
-                    experts_seq, minlength=num_routed
-                ).to(dtype=logits.dtype)
+                expert_freq = torch.bincount(experts_seq, minlength=num_routed).to(
+                    dtype=logits.dtype
+                )
             expert_freq = expert_freq / max(num_tokens * self.top_k, 1)  # [E]
             # Average gate probability per expert: [E]
             avg_gate = gate_probs.mean(dim=0)  # [E]
@@ -1125,7 +1179,9 @@ class MoEFeedForwardDMoE(nn.Module):
         }
         # ── Group-wise stats (Qwen2.5-MoE style) ────────────────────────
         if self.moe_num_groups > 1:
-            group_usage = torch.zeros(self.moe_num_groups, device=usage.device, dtype=usage.dtype)
+            group_usage = torch.zeros(
+                self.moe_num_groups, device=usage.device, dtype=usage.dtype
+            )
             group_size = self.num_routed_experts // self.moe_num_groups
             for g in range(self.moe_num_groups):
                 start = g * group_size
@@ -1196,8 +1252,9 @@ class MoEFeedForwardDMoE(nn.Module):
                 meta=meta,
             )
             # Store router entropy for reporting
-            if hasattr(self.moe_logger, 'buff'):
-                self.moe_logger.buff.setdefault('router_entropy', []).append(float(router_entropy))
+            if hasattr(self.moe_logger, "buff"):
+                self.moe_logger.buff.setdefault("router_entropy", []).append(
+                    float(router_entropy)
+                )
         except Exception:
             pass
-

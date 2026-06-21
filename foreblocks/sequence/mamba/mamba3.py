@@ -311,7 +311,7 @@ class Mamba3Block(nn.Module):
         y_reshaped = y.reshape(y.shape[0], y.shape[1], self.d_inner)
         z_reshaped = z.reshape(z.shape[0], z.shape[1], self.d_inner)
         y = fused_out(
-            y_reshaped, z_reshaped, residual_inner, self.norm.weight, eps=self.norm_eps
+            y_reshaped, z_reshaped, self.norm.weight, eps=self.norm_eps
         )
         return self.out_proj(y)
 
@@ -442,7 +442,6 @@ class Mamba3Block(nn.Module):
         y_normed = fused_out_2d(
             y,
             z.reshape(Bsz, 1, self.d_inner),
-            residual_inner,
             self.norm.weight,
             eps=self.norm_eps,
         )

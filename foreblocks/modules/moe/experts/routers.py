@@ -77,8 +77,14 @@ class Router(nn.Module, ABC):
         z = x.new_zeros(shp)
         raw = z if return_raw_logits else None
         return RouterOutput(
-            logits=z, raw_logits=raw, sparse_assignments=raw, k_logits=raw,
-            per_token_k=None, k_probs=None, top_p=None, top_i=None,
+            logits=z,
+            raw_logits=raw,
+            sparse_assignments=raw,
+            k_logits=raw,
+            per_token_k=None,
+            k_probs=None,
+            top_p=None,
+            top_i=None,
         )
 
     @abstractmethod
@@ -112,8 +118,13 @@ class LinearRouter(Router):
             return self._empty_out(x, return_raw_logits=return_raw_logits)
         logits = self.router(x)
         raw = logits if return_raw_logits else None
-        entropy = _compute_router_entropy(logits) if self.training else 0.0
-        return RouterOutput(logits=logits, raw_logits=raw, sparse_assignments=raw, router_entropy=entropy)
+        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        return RouterOutput(
+            logits=logits,
+            raw_logits=raw,
+            sparse_assignments=raw,
+            router_entropy=entropy,
+        )
 
 
 class NoisyTopKRouter(Router):
@@ -170,8 +181,13 @@ class NoisyTopKRouter(Router):
             return self._empty_out(x, return_raw_logits=return_raw_logits)
         raw, logits = self._compute_logits(x)
         sparse = logits if return_raw_logits else None
-        entropy = _compute_router_entropy(logits) if self.training else 0.0
-        return RouterOutput(logits=logits, raw_logits=raw if return_raw_logits else None, sparse_assignments=sparse, router_entropy=entropy)
+        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        return RouterOutput(
+            logits=logits,
+            raw_logits=raw if return_raw_logits else None,
+            sparse_assignments=sparse,
+            router_entropy=entropy,
+        )
 
 
 class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
@@ -221,9 +237,14 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
                 kz = x.new_zeros(k_shp)
                 k_idx = x.new_zeros((*x.shape[:-1],), dtype=torch.long)
                 return RouterOutput(
-                    logits=z, raw_logits=z, sparse_assignments=z,
-                    k_logits=kz, per_token_k=k_idx, k_probs=kz,
-                    top_p=None, top_i=None,
+                    logits=z,
+                    raw_logits=z,
+                    sparse_assignments=z,
+                    k_logits=kz,
+                    per_token_k=k_idx,
+                    k_probs=kz,
+                    top_p=None,
+                    top_i=None,
                 )
             return self._empty_out(x, return_raw_logits=False)
 
@@ -244,7 +265,7 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
         self.last_k = per_token_k.detach()
         self.last_k_probs = k_probs.detach()
 
-        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -306,7 +327,7 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
         st_sparse = hard_sparse + (soft - soft.detach())
         top_p = st_sparse.gather(1, top_i)
 
-        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -371,7 +392,7 @@ class ContinuousTopKRouter(NoisyTopKRouter):
         top_p, top_i = torch.topk(soft_probs, k_eff, dim=-1, sorted=False)
         top_p = top_p / (top_p.sum(dim=-1, keepdim=True) + 1e-12)
 
-        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -462,7 +483,8 @@ class HashTopKRouter(NoisyTopKRouter):
 
         chunks = []
         for h in range(self.num_hashes):
-            chunks.append(self.hash_tables[h].index_select(0, bucket_idx[:, h]))
+            ht = self.hash_tables[h]  # type: ignore[operator]
+            chunks.append(ht.index_select(0, bucket_idx[:, h]))
         return torch.cat(chunks, dim=-1)
 
     def forward(
@@ -486,7 +508,7 @@ class HashTopKRouter(NoisyTopKRouter):
         expv = torch.exp(top_v - m)
         top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
 
-        entropy = _compute_router_entropy(logits) if self.training else 0.0
+        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -500,6 +522,160 @@ class HashTopKRouter(NoisyTopKRouter):
         )
 
 
+class SoftDenseRouter(Router):
+    """Soft/dense MoE router — all experts run, continuous gate weights.
+
+    No top-k sparsity: every token sends fractional load to every expert.
+    Fully differentiable, no dropped tokens. Reference: Soft MoE (Puigcerver 2023).
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        num_experts: int,
+        temperature: float = 1.0,
+        input_dropout: float = 0.0,
+        use_bias: bool = False,
+        expert_bias_init: float = 0.0,
+        clamp_range: tuple[float, float] = (-1e4, 1e4),
+    ):
+        super().__init__(num_experts=num_experts)
+        self.router = nn.Linear(d_model, num_experts, bias=use_bias)
+        self.expert_bias = nn.Parameter(
+            torch.full((num_experts,), float(expert_bias_init))
+        )
+        self.input_dropout = nn.Dropout(input_dropout) if input_dropout > 0 else None
+        self.temperature = float(temperature)
+        self.clamp_min, self.clamp_max = clamp_range
+        self._init_router()
+
+    def _init_router(self):
+        with torch.no_grad():
+            std = 0.02
+            bound = std * math.sqrt(3)
+            self.router.weight.uniform_(-bound, bound)
+            if self.router.bias is not None:
+                self.router.bias.zero_()
+
+    def _compute_logits(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training and self.input_dropout is not None:
+            x = self.input_dropout(x)
+        return (self.router(x) + self.expert_bias).clamp_(
+            self.clamp_min, self.clamp_max
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_raw_logits: bool = False,
+        tau: float | None = None,
+    ) -> RouterOutput:
+        del tau
+        if x.numel() == 0:
+            return self._empty_out(x, return_raw_logits=return_raw_logits)
+        logits = self._compute_logits(x)
+        gate_probs = F.softmax(logits, dim=-1)
+        # Gate probs serve as continuous assignment weights [T, E]
+        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        return RouterOutput(
+            logits=logits,
+            raw_logits=logits if return_raw_logits else None,
+            sparse_assignments=gate_probs,
+            k_logits=None,
+            per_token_k=None,
+            k_probs=None,
+            top_p=gate_probs,
+            top_i=None,
+            router_entropy=entropy,
+        )
+
+
+class AuxiliaryTokenRouter(Router):
+    """Auxiliary-token router — learnable query tokens act as expert proxies.
+
+    Decouples routing from token identity: a set of learnable aux tokens
+    ([num_aux, d_model]) are projected to expert logits per token via
+    an optional linear. Each expert gets routing scores from dot-product
+    (or learned projection) against the aux-token manifold.
+
+    Reference: Soft MoE slot-based routing.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        num_experts: int,
+        num_aux: int = 1,
+        temperature: float = 1.0,
+        input_dropout: float = 0.0,
+        clamp_range: tuple[float, float] = (-1e4, 1e4),
+        use_bias: bool = False,
+    ):
+        super().__init__(num_experts=num_experts)
+        self.num_aux = int(num_aux)
+        self.temperature = float(temperature)
+        self.clamp_min, self.clamp_max = clamp_range
+        self.input_dropout = nn.Dropout(input_dropout) if input_dropout > 0 else None
+
+        # Learnable auxiliary query tokens: [num_aux, d_model]
+        self.aux_tokens = nn.Parameter(torch.empty(num_aux, d_model))
+        nn.init.xavier_uniform_(self.aux_tokens)
+
+        # Optional linear projection from aux tokens to expert logits
+        self.aux_to_expert = nn.Linear(d_model, num_experts, bias=use_bias)
+        nn.init.normal_(self.aux_to_expert.weight, mean=0.0, std=0.02)
+        if self.aux_to_expert.bias is not None:
+            nn.init.zeros_(self.aux_to_expert.bias)
+
+        # Per-expert bias for balancing
+        self.expert_bias = nn.Parameter(torch.full((num_experts,), 0.0))
+
+    def _compute_logits(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training and self.input_dropout is not None:
+            x = self.input_dropout(x)
+        T = x.size(0)
+
+        # [num_aux, d_model] -> [num_aux, num_experts]
+        aux_logits = self.aux_to_expert(self.aux_tokens)  # [num_aux, E]
+
+        if self.num_aux == 1:
+            # Single aux: broadcast dot-product to every token -> [T, E]
+            logits = aux_logits[0].expand(T, -1)
+        else:
+            # Multi-aux: project each token, then max-pool over aux slots
+            # token_proj: [T, num_experts] via aux_to_expert
+            token_proj = self.aux_to_expert(x)  # [T, E]
+            # Combine with aux_logits via average
+            logits = (token_proj + aux_logits.mean(0)).clamp_(
+                self.clamp_min, self.clamp_max
+            )
+        return logits + self.expert_bias
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_raw_logits: bool = False,
+        tau: float | None = None,
+    ) -> RouterOutput:
+        del tau
+        if x.numel() == 0:
+            return self._empty_out(x, return_raw_logits=return_raw_logits)
+        logits = self._compute_logits(x)
+        gate_probs = F.softmax(logits, dim=-1)
+        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        return RouterOutput(
+            logits=logits,
+            raw_logits=logits if return_raw_logits else None,
+            sparse_assignments=gate_probs,
+            k_logits=None,
+            per_token_k=None,
+            k_probs=None,
+            top_p=gate_probs,
+            top_i=None,
+            router_entropy=entropy,
+        )
+
+
 __all__ = [
     "Router",
     "RouterOutput",
@@ -509,4 +685,6 @@ __all__ = [
     "StraightThroughTopKRouter",
     "ContinuousTopKRouter",
     "HashTopKRouter",
+    "SoftDenseRouter",
+    "AuxiliaryTokenRouter",
 ]

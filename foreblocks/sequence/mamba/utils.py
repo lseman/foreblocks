@@ -17,14 +17,12 @@ def inverse_softplus(x: torch.Tensor) -> torch.Tensor:
 def fused_out_2d(
     y: torch.Tensor,
     z: torch.Tensor,
-    residual: torch.Tensor,
     norm_weight: torch.Tensor,
-    eps: float = 1e-6,
+    eps: float = 1e-5,
 ) -> torch.Tensor:
-    """CPU-safe fused_out for 2-D tensors ``(B, D)`` used in step() methods."""
-    x = y * F.silu(z) + residual
-    rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
-    return x * rms * norm_weight
+    """RMSNormGated for 2-D tensors: rms_norm(y, w) * silu(z). Matches official Mamba2."""
+    rms = torch.rsqrt((y * y).mean(-1, keepdim=True) + eps)
+    return y * rms * norm_weight * F.silu(z)
 
 
 def conv_step(

@@ -47,7 +47,6 @@ if TRITON_AVAILABLE:
     def _fused_out_kernel(
         y_ptr,
         z_ptr,
-        res_ptr,
         w_ptr,
         out_ptr,
         M,
@@ -63,16 +62,18 @@ if TRITON_AVAILABLE:
 
         y = tl.load(y_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
         z = tl.load(z_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
-        r = tl.load(res_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
         w = tl.load(w_ptr + col, mask=mask, other=1.0).to(tl.float32)
 
-        g = z / (1.0 + tl.exp(-z))
-        x = y * g + r
-
-        mean_sq = tl.sum(x * x, axis=0) / D
+        # RMSNorm(y): y / sqrt(mean(y^2) + eps) * w
+        mean_sq = tl.sum(y * y, axis=0) / D
         inv_rms = tl.rsqrt(mean_sq + eps)
+        y_normed = y * inv_rms * w
 
-        out = x * inv_rms * w
+        # silu(z) = z * sigmoid(z)
+        sig = 1.0 / (1.0 + tl.exp(-z))
+        silu_z = z * sig
+
+        out = y_normed * silu_z
         tl.store(out_ptr + row_off, out, mask=mask)
 
     @triton.jit
@@ -128,11 +129,9 @@ if TRITON_AVAILABLE:
         dy_ptr,
         y_ptr,
         z_ptr,
-        res_ptr,
         w_ptr,
         ddy_ptr,
         ddz_ptr,
-        ddr_ptr,
         ddw_ptr,
         M,
         D,
@@ -149,33 +148,38 @@ if TRITON_AVAILABLE:
         dy = tl.load(dy_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
         y = tl.load(y_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
         z = tl.load(z_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
-        r = tl.load(res_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
         w = tl.load(w_ptr + col, mask=mask, other=1.0).to(tl.float32)
 
-        # g = silu(z) = z * sigmoid(z)
-        sigmoid_z = tl.where(
-            z >= 0,
-            1.0 / (1.0 + tl.exp(-z)),
-            tl.exp(z) / (1.0 + tl.exp(z)),
-        )
-        g = z * sigmoid_z
-        x = y * g + r
-
-        mean_sq = tl.sum(x * x, axis=0) / D
+        # Forward recomputation
+        mean_sq = tl.sum(y * y, axis=0) / D
         inv_rms = tl.rsqrt(mean_sq + eps)
+        x_hat = y * inv_rms  # normalized y
 
-        q = dy * w
-        sum_qx = tl.sum(q * x, axis=0)
-        dx = q * inv_rms - x * inv_rms * inv_rms * inv_rms * sum_qx / D
+        # silu(z)
+        sig = tl.where(z >= 0, 1.0/(1.0+tl.exp(-z)), tl.exp(z)/(1.0+tl.exp(z)))
+        s = z * sig  # silu(z)
 
+        # dx_hat = dy * w * s  (gradient flowing into RMSNorm output)
+        dx_hat = dy * w * s
+
+        # RMSNorm backward: dy_out = (dx_hat - mean(dx_hat * x_hat) * x_hat) * inv_rms
+        mean_dhx_xh = tl.sum(dx_hat * x_hat, axis=0) / D
+        dy_out = (dx_hat - mean_dhx_xh * x_hat) * inv_rms
+
+        # d_w = sum(dy * x_hat * s, axis=0)
         if COMPUTE_DW:
-            dw = dy * x * inv_rms
+            dw = tl.sum(dy * x_hat * s, axis=0)
             tl.atomic_add(ddw_ptr + col, dw, mask=mask)
 
-        tl.store(ddy_ptr + row_off, dx * g, mask=mask)
-        tl.store(ddr_ptr + row_off, dx, mask=mask)
-        dsilu = sigmoid_z + z * sigmoid_z * (1.0 - sigmoid_z)
-        tl.store(ddz_ptr + row_off, dx * y * dsilu, mask=mask)
+        tl.store(ddy_ptr + row_off, dy_out, mask=mask)
+
+        # d_s = dy * x_hat * w  (gradient into silu gate)
+        ds = dy * x_hat * w
+
+        # d_z = d_s * silu'(z) = d_s * (sig + z * sig * (1 - sig))
+        dsilu = sig + z * sig * (1.0 - sig)
+        dz = ds * dsilu
+        tl.store(ddz_ptr + row_off, dz, mask=mask)
 
 
 def dt_prep_fallback(
@@ -252,84 +256,79 @@ def dt_prep_bwd_triton(
 def fused_out_fallback(
     y: torch.Tensor,
     z: torch.Tensor,
-    residual: torch.Tensor,
     norm_weight: torch.Tensor,
-    eps: float = 1e-6,
+    eps: float = 1e-5,
 ) -> torch.Tensor:
-    x = y * F.silu(z) + residual
-    rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
-    return x * rms * norm_weight.view(1, 1, -1)
+    """RMSNormGated: rms_norm(y, weight) * silu(z) — matches official Mamba2."""
+    rms = torch.rsqrt((y * y).mean(dim=-1, keepdim=True) + eps)
+    return y * rms * norm_weight.view(1, 1, -1) * F.silu(z)
 
 
 def _fused_out_bwd_fallback(
     grad_out: torch.Tensor,
     y: torch.Tensor,
     z: torch.Tensor,
-    residual: torch.Tensor,
     norm_weight: torch.Tensor,
-    eps: float = 1e-6,
+    eps: float = 1e-5,
     compute_norm_weight_grad: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Backward for RMSNormGated: rms_norm(y, w) * silu(z)."""
     calc_dtype = torch.float64 if grad_out.dtype == torch.float64 else torch.float32
     grad32 = grad_out.to(calc_dtype)
     y32 = y.to(calc_dtype)
     z32 = z.to(calc_dtype)
-    r32 = residual.to(calc_dtype)
     w32 = norm_weight.to(calc_dtype).view(1, 1, -1)
 
-    silu_z = F.silu(z32)
-    x = y32 * silu_z + r32
-    inv_rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+    # Forward recomputation
+    inv_rms = torch.rsqrt((y32 * y32).mean(dim=-1, keepdim=True) + eps)
+    x_hat = y32 * inv_rms  # normalized y
+    sig = torch.sigmoid(z32)
+    s = z32 * sig  # silu(z)
 
-    q = grad32 * w32
-    sum_qx = (q * x).sum(dim=-1, keepdim=True)
-    dx = q * inv_rms - x * inv_rms.pow(3) * sum_qx / x.shape[-1]
+    # dx_hat = grad * w * s (gradient into RMSNorm output)
+    dx_hat = grad32 * w32 * s
 
-    sigmoid_z = torch.sigmoid(z32)
-    dsilu = sigmoid_z + z32 * sigmoid_z * (1.0 - sigmoid_z)
-    d_y = dx * silu_z
-    d_z = dx * y32 * dsilu
-    d_residual = dx
-    d_norm_weight = (
-        (grad32 * x * inv_rms).sum(dim=(0, 1)).to(norm_weight.dtype)
-        if compute_norm_weight_grad
-        else None
-    )
+    # RMSNorm backward
+    mean_dhx_xh = (dx_hat * x_hat).mean(dim=-1, keepdim=True)
+    dy_out = (dx_hat - mean_dhx_xh * x_hat) * inv_rms
 
-    return (
-        d_y.to(y.dtype),
-        d_z.to(z.dtype),
-        d_residual.to(residual.dtype),
-        d_norm_weight,
-    )
+    # d_w = sum(grad * x_hat * s, dim=(0,1))
+    if compute_norm_weight_grad:
+        dw = (grad32 * x_hat * s).sum(dim=(0, 1)).to(norm_weight.dtype)
+    else:
+        dw = None
+
+    # d_z = grad * x_hat * w * silu'(z)
+    ds = grad32 * x_hat * w32
+    dsilu = sig + z32 * sig * (1.0 - sig)
+    dz = ds * dsilu
+
+    return (dy_out.to(y.dtype), dz.to(z.dtype), dw)
 
 
 def fused_out_bwd_triton(
     grad_out: torch.Tensor,
     y: torch.Tensor,
     z: torch.Tensor,
-    residual: torch.Tensor,
     norm_weight: torch.Tensor,
-    eps: float = 1e-6,
+    eps: float = 1e-5,
     compute_norm_weight_grad: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Triton backward for fused_out.
 
-    Returns (d_y, d_z, d_residual, d_norm_weight).
+    Returns (d_y, d_z, d_norm_weight).
     """
     if not (
         TRITON_AVAILABLE
         and grad_out.is_cuda
         and y.is_cuda
         and z.is_cuda
-        and residual.is_cuda
         and norm_weight.is_cuda
     ):
         return _fused_out_bwd_fallback(
             grad_out,
             y,
             z,
-            residual,
             norm_weight,
             eps=eps,
             compute_norm_weight_grad=compute_norm_weight_grad,
@@ -338,14 +337,12 @@ def fused_out_bwd_triton(
     B, T, D = grad_out.shape
     M = B * T
 
+    dy2 = grad_out.contiguous().view(M, D)
     y2 = y.contiguous().view(M, D)
     z2 = z.contiguous().view(M, D)
-    r2 = residual.contiguous().view(M, D)
-    dy2 = grad_out.contiguous().view(M, D)
 
     ddy2 = torch.empty_like(dy2)
     ddz2 = torch.empty_like(dy2)
-    ddr2 = torch.empty_like(dy2)
     ddw = (
         torch.zeros_like(norm_weight)
         if compute_norm_weight_grad
@@ -360,11 +357,9 @@ def fused_out_bwd_triton(
         dy2,
         y2,
         z2,
-        r2,
         norm_weight,
         ddy2,
         ddz2,
-        ddr2,
         ddw,
         M,
         D,
@@ -375,7 +370,6 @@ def fused_out_bwd_triton(
     return (
         ddy2.view(B, T, D),
         ddz2.view(B, T, D),
-        ddr2.view(B, T, D),
         ddw if compute_norm_weight_grad else None,
     )
 
@@ -405,28 +399,26 @@ class _DtPrepFn(torch.autograd.Function):
 
 class _FusedOutFn(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, y, z, residual, norm_weight, eps: float):
+    def forward(ctx, y, z, norm_weight, eps: float):
         ctx.eps = eps
-        ctx.save_for_backward(y, z, residual, norm_weight)
-        return fused_out_triton(y, z, residual, norm_weight, eps=eps)
+        ctx.save_for_backward(y, z, norm_weight)
+        return fused_out_triton(y, z, norm_weight, eps=eps)
 
     @staticmethod
     def backward(ctx, grad_out):
-        y, z, residual, norm_weight = ctx.saved_tensors
+        y, z, norm_weight = ctx.saved_tensors
         needs = ctx.needs_input_grad
-        dy, dz, d_residual, d_norm_weight = fused_out_bwd_triton(
+        dy, dz, d_norm_weight = fused_out_bwd_triton(
             grad_out,
             y,
             z,
-            residual,
             norm_weight,
             eps=ctx.eps,
-            compute_norm_weight_grad=needs[3],
+            compute_norm_weight_grad=needs[2],
         )
         return (
             dy if needs[0] else None,
             dz if needs[1] else None,
-            d_residual if needs[2] else None,
             d_norm_weight,
             None,
         )
@@ -463,19 +455,17 @@ def dt_prep_triton(
 def fused_out_triton(
     y: torch.Tensor,
     z: torch.Tensor,
-    residual: torch.Tensor,
     norm_weight: torch.Tensor,
-    eps: float = 1e-6,
+    eps: float = 1e-5,
 ) -> torch.Tensor:
     if not (
         TRITON_AVAILABLE
         and y.is_cuda
         and z.is_cuda
-        and residual.is_cuda
         and norm_weight.is_cuda
     ):
-        return fused_out_fallback(y, z, residual, norm_weight, eps=eps)
-    assert y.shape == z.shape == residual.shape
+        return fused_out_fallback(y, z, norm_weight, eps=eps)
+    assert y.shape == z.shape
     assert y.ndim == 3
 
     B, T, D = y.shape
@@ -483,7 +473,6 @@ def fused_out_triton(
 
     y2 = y.contiguous().view(M, D)
     z2 = z.contiguous().view(M, D)
-    r2 = residual.contiguous().view(M, D)
 
     out = torch.empty_like(y2)
     BLOCK_D = triton.next_power_of_2(D)
@@ -493,7 +482,6 @@ def fused_out_triton(
     _fused_out_kernel[grid](
         y2,
         z2,
-        r2,
         norm_weight,
         out,
         M,
@@ -518,16 +506,15 @@ def dt_prep(
 def fused_out(
     y: torch.Tensor,
     z: torch.Tensor,
-    residual: torch.Tensor,
     norm_weight: torch.Tensor,
-    eps: float = 1e-6,
+    eps: float = 1e-5,
 ) -> torch.Tensor:
+    """RMSNormGated: rms_norm(y, weight) * silu(z) — matches official Mamba2."""
     if (
         TRITON_AVAILABLE
         and y.is_cuda
         and z.is_cuda
-        and residual.is_cuda
         and norm_weight.is_cuda
     ):
-        return _FusedOutFn.apply(y, z, residual, norm_weight, eps)
-    return fused_out_fallback(y, z, residual, norm_weight, eps=eps)
+        return _FusedOutFn.apply(y, z, norm_weight, eps)
+    return fused_out_fallback(y, z, norm_weight, eps)

@@ -4,8 +4,9 @@ import torch
 import torch.nn.functional as F
 
 from foreblocks.ops.mamba.causal_conv1d import causal_depthwise_conv1d
+from foreblocks.ops.mamba.fused_dt import fused_dt
 from foreblocks.ops.mamba.ssd import chunked_ssd_forward
-from foreblocks.ops.mamba.triton_ops import dt_prep, fused_out
+from foreblocks.ops.mamba.triton_ops import fused_out
 
 
 def _repeat_group_params(
@@ -28,7 +29,7 @@ def mamba2_split_conv1d_scan_combined(
     *,
     conv_weight: torch.Tensor,
     conv_bias: torch.Tensor | None,
-    dt_proj_weight: torch.Tensor,
+    dt_proj_weight: torch.Tensor | None,
     dt_bias: torch.Tensor,
     A_log: torch.Tensor,
     Dskip: torch.Tensor,
@@ -37,22 +38,27 @@ def mamba2_split_conv1d_scan_combined(
     out_proj_bias: torch.Tensor | None,
     d_inner: int,
     conv_dim: int,
-    dt_rank: int,
-    num_heads: int,
+    dt_rank: int | None = None,  # None → dt_rank = num_heads (direct projection)
+    num_heads: int = 0,
     head_dim: int,
     n_groups: int,
     d_state: int,
     chunk_size: int,
     dt_limit: tuple[float, float],
-    norm_eps: float,
+    norm_eps: float = 1e-5,
     attention_mask: torch.Tensor | None = None,
     use_triton_ssd: bool = True,
+    activation: str = "silu",
 ) -> torch.Tensor:
     """Combined Mamba2 block path following FLA's split/conv/scan layout.
 
     This keeps the layer-level dataflow in one op boundary while reusing the
     local Triton kernels for causal conv, dt prep, SSD, and gated RMSNorm.
+
+    When dt_proj_weight is None, dt_rank defaults to num_heads (no low-rank bottleneck).
     """
+    if dt_rank is None:
+        dt_rank = num_heads
     z, conv_input, dt_hidden = torch.split(
         projected,
         [d_inner, conv_dim, dt_rank],
@@ -69,6 +75,9 @@ def mamba2_split_conv1d_scan_combined(
         conv_weight,
         conv_bias,
     ).transpose(1, 2)
+    # SiLU activation on conv output before splitting — matches official Mamba2
+    if activation in ("silu", "swish"):
+        conv_out = F.silu(conv_out)
     if attention_mask is not None:
         conv_out = conv_out * mask.unsqueeze(-1)
 
@@ -90,8 +99,9 @@ def mamba2_split_conv1d_scan_combined(
         d_state=d_state,
     )
 
-    dt_raw = F.linear(dt_hidden, dt_proj_weight)
-    dt = dt_prep(dt_raw, dt_bias, dt_min=dt_limit[0], dt_max=dt_limit[1])
+    dt = fused_dt(dt_hidden, dt_proj_weight, dt_bias,
+                  dt_min=dt_limit[0], dt_max=dt_limit[1])
+    # dt_proj_weight=None → no projection, dt_hidden already [B, T, H]
     A = -torch.exp(A_log)
 
     y = chunked_ssd_forward(
@@ -104,5 +114,6 @@ def mamba2_split_conv1d_scan_combined(
         chunk_size=chunk_size,
         use_triton=use_triton_ssd,
     ).reshape(u.shape[0], u.shape[1], d_inner)
-    y = fused_out(y, z, residual_inner, norm_weight, eps=norm_eps)
+    # RMSNormGated: rms_norm(y) * silu(z) — matches official Mamba2
+    y = fused_out(y, z, norm_weight, eps=norm_eps)
     return F.linear(y, out_proj_weight, out_proj_bias)
