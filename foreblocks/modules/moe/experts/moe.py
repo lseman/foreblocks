@@ -141,6 +141,10 @@ class MoEFeedForwardDMoE(nn.Module):
         moe_entropy_reg_weight: float = 0.0,
         moe_capacity_min: float = 0.5,
         moe_capacity_max: float = 2.0,
+        # ── Auxiliary-loss-free load balancing via per-expert router bias ──
+        moe_router_bias_balance: bool = True,
+        moe_router_bias_warmup_steps: int = 0,
+        moe_router_bias_min_usage: float = 0.01,
     ):
         super().__init__()
         num_experts = int(num_experts)
@@ -250,13 +254,18 @@ class MoEFeedForwardDMoE(nn.Module):
         )
         aux_status = f"lb_w={moe_aux_loss_weight}" if moe_aux_loss_weight > 0 else "off"
         soft_cap = "elastic" if moe_soft_capacity else f"hard({moe_capacity_factor})"
+        bias_bal_status = (
+            f"on(lr={router_bias_update_rate},clip={router_bias_clip})"
+            if bool(moe_router_bias_balance) and router_bias_update_rate > 0
+            else "off"
+        )
         print(
             f"MoEFeedForwardDMoE: E={num_experts} (shared={num_shared}, routed={num_routed}), "
             f"K={top_k}, routing={routing_mode}, ec_tokens={ec_tokens_desc}, "
             f"swiglu={use_swiglu}, shared={shared_combine}, "
             f"cap={soft_cap}, groups={moe_num_groups}, router={router_type}, "
             f"aux_lb={aux_status}, z_loss={z_loss_weight}, "
-            f"entropy_reg={moe_entropy_reg_weight}, bias_lr={router_bias_update_rate}, "
+            f"entropy_reg={moe_entropy_reg_weight}, bias_balance={bias_bal_status}, "
             f"latent={latent_enabled} latent_dim={latent_dim if latent_enabled else 'off'}"
         )
         self.d_model = d_model
@@ -295,6 +304,11 @@ class MoEFeedForwardDMoE(nn.Module):
         self.moe_entropy_reg_weight = moe_entropy_reg_weight
         self.moe_capacity_min = float(moe_capacity_min)
         self.moe_capacity_max = float(moe_capacity_max)
+        # ── Router bias balance (aux-loss-free load balancing) ────────────
+        self.moe_router_bias_balance = bool(moe_router_bias_balance)
+        self.moe_router_bias_warmup_steps = int(moe_router_bias_warmup_steps)
+        self.moe_router_bias_min_usage = float(moe_router_bias_min_usage)
+        self._current_step = 0
 
         self.moe_logger = moe_logger
         self.step_getter = step_getter
@@ -654,13 +668,46 @@ class MoEFeedForwardDMoE(nn.Module):
         return None
 
     def _maybe_update_router_bias(self):
+        """Update per-expert router bias toward uniform based on usage EMA.
+
+        This is an auxiliary-loss-free load balancing mechanism: when an expert
+        is under-utilized relative to uniform, its bias increases (making the
+        router more likely to pick it next time).  When over-utilized, bias
+        decreases.  The bias is clamped to [-clip, +clip] to prevent runaway.
+
+        Works independently of ``moe_aux_loss_weight`` — you can disable the
+        aux loss entirely and still get balanced load via bias terms alone.
+        """
+        if not self.moe_router_bias_balance:
+            return
         if (not self.training) or self.router_bias_update_rate <= 0:
             return
+
+        # Warmup: skip bias updates until we've seen enough steps
+        if self.moe_router_bias_warmup_steps > 0:
+            step = (
+                int(self.step_getter())
+                if self.step_getter is not None
+                else self._current_step
+            )
+            if step < self.moe_router_bias_warmup_steps:
+                self._current_step = step
+                return
+            self._current_step = step
+
         bias = self._get_router_expert_bias()
         if bias is None:
             return
+
         with torch.no_grad():
-            usage = self.expert_usage
+            usage = self.expert_usage.clone()
+            # Skip if usage is too sparse (still in early/noise phase)
+            if usage.max() < 1e-6 or usage.sum() < 1e-12:
+                return
+            # Only update experts below the min_usage threshold
+            mask = usage < self.moe_router_bias_min_usage
+            if not mask.any():
+                return
             usage = usage / usage.sum().clamp_min(1e-12)
             target = torch.full_like(usage, 1.0 / self.num_routed_experts)
             bias.add_(self.router_bias_update_rate * (target - usage))

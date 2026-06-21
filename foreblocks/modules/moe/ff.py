@@ -175,6 +175,10 @@ class FeedForwardBlock(nn.Module):
         moe_entropy_reg_weight: float = 0.0,
         moe_capacity_min: float = 0.5,
         moe_capacity_max: float = 2.0,
+        # ── Auxiliary-loss-free load balancing via per-expert router bias ──
+        moe_router_bias_balance: bool = True,
+        moe_router_bias_warmup_steps: int = 0,
+        moe_router_bias_min_usage: float = 0.01,
     ):
         super().__init__()
         self.use_moe = bool(use_moe)
@@ -239,6 +243,10 @@ class FeedForwardBlock(nn.Module):
                 moe_entropy_reg_weight=moe_entropy_reg_weight,
                 moe_capacity_min=moe_capacity_min,
                 moe_capacity_max=moe_capacity_max,
+                # ── Router bias balance ──
+                moe_router_bias_balance=moe_router_bias_balance,
+                moe_router_bias_warmup_steps=moe_router_bias_warmup_steps,
+                moe_router_bias_min_usage=moe_router_bias_min_usage,
             )
             self._supports_aux = True
         else:
