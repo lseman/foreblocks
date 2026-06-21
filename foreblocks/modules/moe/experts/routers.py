@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -50,9 +51,10 @@ class RouterOutput:
         yield self.k_probs
         yield self.top_p
         yield self.top_i
+        yield self.router_entropy
 
     def __len__(self):
-        return 8
+        return len(tuple(dataclasses.fields(self)))
 
 
 class Router(nn.Module, ABC):
@@ -68,6 +70,7 @@ class Router(nn.Module, ABC):
         self.last_tokens_dropped: int = 0
         self.last_aux_loss: float = 0.0
         self.last_latency_ms: float = 0.0
+        self.last_router_entropy: float = 0.0
         self.last_meta = None
 
     def _empty_out(
@@ -323,7 +326,8 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
 
         mask = torch.zeros_like(soft).scatter(1, top_i, 1.0)
         hard_sparse = mask * soft
-        hard_sparse = hard_sparse / (hard_sparse.sum(dim=-1, keepdim=True) + 1e-12)
+        row_sums = hard_sparse.sum(dim=-1, keepdim=True)
+        hard_sparse = torch.where(row_sums > 1e-12, hard_sparse / row_sums, hard_sparse)
         st_sparse = hard_sparse + (soft - soft.detach())
         top_p = st_sparse.gather(1, top_i)
 
@@ -570,11 +574,11 @@ class SoftDenseRouter(Router):
         return_raw_logits: bool = False,
         tau: float | None = None,
     ) -> RouterOutput:
-        del tau
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
         logits = self._compute_logits(x)
-        gate_probs = F.softmax(logits, dim=-1)
+        temp = max(self.temperature if tau is None else tau, 1e-3)
+        gate_probs = F.softmax(logits / temp, dim=-1)
         # Gate probs serve as continuous assignment weights [T, E]
         entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
         return RouterOutput(
@@ -657,11 +661,11 @@ class AuxiliaryTokenRouter(Router):
         return_raw_logits: bool = False,
         tau: float | None = None,
     ) -> RouterOutput:
-        del tau
         if x.numel() == 0:
             return self._empty_out(x, return_raw_logits=return_raw_logits)
         logits = self._compute_logits(x)
-        gate_probs = F.softmax(logits, dim=-1)
+        temp = max(self.temperature if tau is None else tau, 1e-3)
+        gate_probs = F.softmax(logits / temp, dim=-1)
         entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
         return RouterOutput(
             logits=logits,

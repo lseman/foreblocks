@@ -583,14 +583,7 @@ class MoEFeedForwardDMoE(nn.Module):
         """
         from foreblocks.modules.moe.experts.routers import RouterOutput
 
-        out = None
-        try:
-            out = self.router(x_flat, return_raw_logits=True, tau=tau)
-        except TypeError:
-            try:
-                out = self.router(x_flat, return_raw_logits=True)
-            except TypeError:
-                out = self.router(x_flat)
+        out = self.router(x_flat, return_raw_logits=True, tau=tau)
 
         # --- Prefer named fields from RouterOutput ---
         router_entropy = 0.0
@@ -782,7 +775,7 @@ class MoEFeedForwardDMoE(nn.Module):
         self,
         x: torch.Tensor,  # [..., T, D] or [B, T, D]
         return_aux_loss: bool = True,
-        tau: float = 1.0,
+        tau: float | None = None,
         downstream_loss: torch.Tensor | None = None,
         mtp_targets: torch.Tensor | None = None,
         *,

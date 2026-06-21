@@ -1,0 +1,7 @@
+# Build artifacts that bloat the graph
+web/studio/dist/
+foreblocks/mltracker/dashboard_v2/dist/
+tree/build/
+
+# Docs build output (Vite chunks)
+site/docs/assets/

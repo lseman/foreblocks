@@ -29,9 +29,10 @@ class MoE_SwiGLUExpert(nn.Module):
         h = F.silu(g) * u
         if self.training and self._needs_dropout:
             h = F.dropout(h, p=self.dropout_p, training=True)
+        out = self.w3(h)
         if self.training and self._needs_edrop:
-            h = F.dropout(h, p=self.expert_dropout_p, training=True)
-        return self.w3(h)
+            out = F.dropout(out, p=self.expert_dropout_p, training=True)
+        return out
 
 
 class MoE_FFNExpert(nn.Module):
