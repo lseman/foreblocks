@@ -569,7 +569,7 @@ class MoEFeedForwardDMoE(nn.Module):
         torch.Tensor | None,
         torch.Tensor | None,
         torch.Tensor | None,
-        float,
+        Tensor | float,
     ]:
         """
         Unified router output parser.
@@ -1248,7 +1248,7 @@ class MoEFeedForwardDMoE(nn.Module):
         latency_ms: float,
         meta: dict[str, Any] | None,
         per_token_k: torch.Tensor | None = None,
-        router_entropy: float = 0.0,
+        router_entropy: Tensor | float = 0.0,
     ):
         r = self.router
         try:
@@ -1273,7 +1273,7 @@ class MoEFeedForwardDMoE(nn.Module):
         latency_ms: float,
         meta: dict[str, Any] | None,
         per_token_k: torch.Tensor | None = None,
-        router_entropy: float = 0.0,
+        router_entropy: Tensor | float = 0.0,
     ):
         if self.moe_logger is None or MoELogger is None:
             return

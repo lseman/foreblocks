@@ -205,3 +205,18 @@ def test_moe_router_output_is_dataclass():
     assert hasattr(out, "top_p")
     assert hasattr(out, "top_i")
     assert hasattr(out, "router_entropy")
+
+
+def test_router_entropy_stays_tensor_in_training_forward():
+    """Router entropy does not force a Python scalar inside compiled forwards."""
+    from foreblocks.modules.moe.experts.routers import AdaptiveNoisyTopKRouter
+
+    router = AdaptiveNoisyTopKRouter(d_model=16, num_experts=4, max_k=2)
+    router.train()
+    x = torch.randn(8, 16)
+
+    out = router(x, return_raw_logits=True)
+
+    assert isinstance(out.router_entropy, torch.Tensor)
+    assert out.router_entropy.ndim == 0
+    assert out.router_entropy.requires_grad is False

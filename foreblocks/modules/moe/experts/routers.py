@@ -39,7 +39,7 @@ class RouterOutput:
     k_probs: torch.Tensor | None = None
     top_p: torch.Tensor | None = None
     top_i: torch.Tensor | None = None
-    router_entropy: float = 0.0  # mean per-token entropy of gate probs [T, E]
+    router_entropy: torch.Tensor | float = 0.0  # mean per-token entropy of gate probs [T, E]
 
     def __iter__(self):
         """Yield fields positionally for backward-compatible tuple unpacking."""
@@ -121,7 +121,7 @@ class LinearRouter(Router):
             return self._empty_out(x, return_raw_logits=return_raw_logits)
         logits = self.router(x)
         raw = logits if return_raw_logits else None
-        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw,
@@ -184,7 +184,7 @@ class NoisyTopKRouter(Router):
             return self._empty_out(x, return_raw_logits=return_raw_logits)
         raw, logits = self._compute_logits(x)
         sparse = logits if return_raw_logits else None
-        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -268,7 +268,7 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
         self.last_k = per_token_k.detach()
         self.last_k_probs = k_probs.detach()
 
-        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -331,7 +331,7 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
         st_sparse = hard_sparse + (soft - soft.detach())
         top_p = st_sparse.gather(1, top_i)
 
-        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -396,7 +396,7 @@ class ContinuousTopKRouter(NoisyTopKRouter):
         top_p, top_i = torch.topk(soft_probs, k_eff, dim=-1, sorted=False)
         top_p = top_p / (top_p.sum(dim=-1, keepdim=True) + 1e-12)
 
-        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -512,7 +512,7 @@ class HashTopKRouter(NoisyTopKRouter):
         expv = torch.exp(top_v - m)
         top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
 
-        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=raw if return_raw_logits else None,
@@ -580,7 +580,7 @@ class SoftDenseRouter(Router):
         temp = max(self.temperature if tau is None else tau, 1e-3)
         gate_probs = F.softmax(logits / temp, dim=-1)
         # Gate probs serve as continuous assignment weights [T, E]
-        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=logits if return_raw_logits else None,
@@ -666,7 +666,7 @@ class AuxiliaryTokenRouter(Router):
         logits = self._compute_logits(x)
         temp = max(self.temperature if tau is None else tau, 1e-3)
         gate_probs = F.softmax(logits / temp, dim=-1)
-        entropy = float(_compute_router_entropy(logits)) if self.training else 0.0
+        entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
             logits=logits,
             raw_logits=logits if return_raw_logits else None,
