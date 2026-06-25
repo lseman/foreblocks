@@ -6,6 +6,7 @@
 
 import torch
 
+
 try:
     import triton
     import triton.language as tl
@@ -44,6 +45,16 @@ def _block_size_for_num_cols(n_cols: int, element_size: int) -> int:
             f"for element size {element_size}; got {n_cols}."
         )
     return block_size
+
+
+def _num_warps_for_block(block_size: int) -> int:
+    if block_size <= 64:
+        return 2
+    if block_size <= 512:
+        return 4
+    if block_size <= 2048:
+        return 8
+    return 16
 
 
 # =============================== Triton kernels ===============================
@@ -300,6 +311,7 @@ class RMSNormTritonFunction(torch.autograd.Function):
             eps,
             True,
             BLOCK_SIZE,
+            num_warps=_num_warps_for_block(BLOCK_SIZE),
         )
 
         ctx.save_for_backward(x, weight, rms)
@@ -347,6 +359,7 @@ class RMSNormTritonFunction(torch.autograd.Function):
             BLOCK_SIZE,
             rows_per_program,
             True,
+            num_warps=_num_warps_for_block(BLOCK_SIZE),
         )
 
         grad_weight = grad_weight_partials.sum(dim=0).to(weight.dtype)
@@ -393,6 +406,7 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
             eps,
             weight is not None,
             BLOCK_SIZE,
+            num_warps=_num_warps_for_block(BLOCK_SIZE),
         )
 
         out_2d = residual_2d + update_2d
@@ -440,6 +454,7 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
             BLOCK_SIZE,
             rows_per_program,
             compute_dw,
+            num_warps=_num_warps_for_block(BLOCK_SIZE),
         )
 
         grad_weight = (
@@ -485,6 +500,7 @@ def triton_scale_bias(
         H,
         beta is not None,
         BLOCK_SIZE,
+        num_warps=_num_warps_for_block(BLOCK_SIZE),
     )
 
     return y_flat.reshape(*lead, H)
@@ -522,6 +538,7 @@ def triton_fused_rmsnorm_scale_bias(
         rms_weight is not None,
         beta is not None,
         BLOCK_SIZE,
+        num_warps=_num_warps_for_block(BLOCK_SIZE),
     )
 
     return y_flat.reshape(*lead, H)

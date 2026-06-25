@@ -5,6 +5,12 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from foreblocks.modules.attention.modules.linear_att.base import (
+    FeatureMapRegistry,
+    RoPEMixin,
+)
+
+
 try:
     from foreblocks.ops.attention.chunked_causal_linear_attention import (
         chunked_causal_linear_attn,
@@ -18,7 +24,6 @@ except Exception:
     can_use_fla_linear_attn = None  # type: ignore[assignment]
     fla_recurrent_linear_attn_forward = None  # type: ignore[assignment]
 
-from foreblocks.modules.attention.modules.linear_att.base import FeatureMapRegistry, RoPEMixin
 
 
 class RDABackend(RoPEMixin, nn.Module):

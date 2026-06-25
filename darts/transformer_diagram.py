@@ -56,6 +56,7 @@ from matplotlib.path import Path
 
 from darts.config import DEFAULT_OP_FAMILIES
 
+
 # -----------------------------------------------------------------------------
 # Global styling
 # -----------------------------------------------------------------------------

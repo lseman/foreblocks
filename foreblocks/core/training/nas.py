@@ -7,8 +7,8 @@ import torch
 import torch.nn as nn
 
 from foreblocks.config import TrainingConfig
-from foreblocks.modules.heads.head_helper import HeadComposer
 from foreblocks.core.training.history import TrainingHistory
+from foreblocks.modules.heads.head_helper import HeadComposer
 
 
 try:

@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+
 if TYPE_CHECKING:
     from foreblocks.core.training.trainer import Trainer
 

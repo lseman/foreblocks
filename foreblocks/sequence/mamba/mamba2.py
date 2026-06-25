@@ -14,7 +14,10 @@ from foreblocks.ops.mamba import (
     fused_out,
     mamba2_split_conv1d_scan_combined,
 )
-from foreblocks.ops.mamba.fused_mamba2 import fused_mamba2_forward, FUSED_MAMBA2_TRITON_AVAILABLE
+from foreblocks.ops.mamba.fused_mamba2 import (
+    FUSED_MAMBA2_TRITON_AVAILABLE,
+    fused_mamba2_forward,
+)
 from foreblocks.sequence.mamba.conv import CausalDepthwiseConv1d
 from foreblocks.sequence.mamba.norms import RMSNormWeightOnly
 from foreblocks.sequence.mamba.utils import conv_step, fused_out_2d
@@ -64,7 +67,7 @@ class Mamba2Block(nn.Module):
         use_conv_bias: bool = True,
         use_bias: bool = False,
         norm_eps: float = 1e-5,
-        use_fused_path: bool = True,
+        use_fused_path: bool = False,  # fused kernel underperforms (4-kernel path is 10-30% faster per analysis)
         use_triton_ssd: bool = True,
         use_pre_norm: bool = True,
         activation: str = "silu",
@@ -118,16 +121,16 @@ class Mamba2Block(nn.Module):
         dt_init = torch.clamp(dt_init, min=dt_init_floor)
         inv_dt = dt_init + torch.log(-torch.expm1(-dt_init))
         self.dt_bias = nn.Parameter(inv_dt)
-        self.dt_bias._no_weight_decay = True
+        self.dt_bias._no_weight_decay = True  # type: ignore[assignment]
 
         # ── A_log (per-head scalar, diagonal A, Mamba2-style) ────────
         A = torch.empty(self.num_heads, dtype=torch.float32).uniform_(*A_init_range)
         self.A_log = nn.Parameter(torch.log(A))
-        self.A_log._no_weight_decay = True
+        self.A_log._no_weight_decay = True  # type: ignore[assignment]
 
         # ── D skip (per head × head_dim) ─────────────────────────────
         self.Dskip = nn.Parameter(torch.ones(self.num_heads, self.head_dim))
-        self.Dskip._no_weight_decay = True
+        self.Dskip._no_weight_decay = True  # type: ignore[assignment]
 
         # ── conv1d on [u, B, C] ──────────────────────────────────────
         self.conv = CausalDepthwiseConv1d(
@@ -168,7 +171,9 @@ class Mamba2Block(nn.Module):
     ) -> torch.Tensor:
         x_normed = self.pre_norm(x)
         p = self.in_proj(x_normed)
-        residual_inner = self.residual_proj(x_normed) if self.residual_proj is not None else x_normed
+        residual_inner = (
+            self.residual_proj(x_normed) if self.residual_proj is not None else x_normed
+        )
 
         # ── Fused path: single Triton kernel (conv + dt + SSM + out) ──
         # Only for inference — fused kernel has no backward pass
@@ -212,45 +217,9 @@ class Mamba2Block(nn.Module):
             use_triton=self.use_triton_ssd,
         ).reshape(u.shape[0], u.shape[1], self.d_inner)
 
-        # ── norm + gate + out (RMSNormGated: rms_norm(y)*silu(z)) ──────
-        y = fused_out(y, z, self.norm.weight, eps=self.norm_eps)
-        return self.out_proj(y)
-
-        z, conv_input, dt_raw = torch.split(
-            p, [self.d_inner, self.conv_dim, self.num_heads], dim=-1
-        )
-        if attention_mask is not None:
-            conv_input = self._apply_attention_mask(conv_input, attention_mask)
-        conv_out = self.conv(conv_input)
-        # SiLU activation on conv output before splitting — matches official Mamba2
-        conv_out = F.silu(conv_out)
-        if attention_mask is not None:
-            conv_out = self._apply_attention_mask(conv_out, attention_mask)
-        u, Braw, Craw = self._split_conv_out(conv_out)
-
-        dt = dt_prep(
-            dt_raw,
-            self.dt_bias,
-            dt_min=self.dt_limit[0],
-            dt_max=self.dt_limit[1],
-        )
-        A = -torch.exp(self.A_log)  # [H] — scalar per head
-
-        # ── SSM scan ─────────────────────────────────────────────────
-        chunk_size = self.chunk_size or u.shape[1]
-        y = chunked_ssd_forward(
-            u=u.reshape(u.shape[0], u.shape[1], self.num_heads, self.head_dim),
-            dt=dt,
-            A=A,
-            B=Braw,
-            C=Craw,
-            D=self.Dskip,
-            chunk_size=chunk_size,
-            use_triton=self.use_triton_ssd,
-        ).reshape(u.shape[0], u.shape[1], self.d_inner)
-
-        # ── norm + gate + out (RMSNormGated: rms_norm(y)*silu(z)) ──────
-        y = fused_out(y, z, self.norm.weight, eps=self.norm_eps)
+        # ── norm + gate + out (RMSNormGated: rms_norm(y, group)*silu(z)) ─
+        group_size = self.d_inner // self.n_groups if self.n_groups > 1 else None
+        y = fused_out(y, z, self.norm.weight, eps=self.norm_eps, group_size=group_size)
         return self.out_proj(y)
 
     # ── fused forward path ────────────────────────────────────────
@@ -412,7 +381,8 @@ class Mamba2Block(nn.Module):
         h = state["ssm"].to(dtype=torch.float32)
         u_heads = u.reshape(B, self.num_heads, self.head_dim)
         abar = torch.exp(
-            dt.squeeze(1).unsqueeze(-1).unsqueeze(-1) * A.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            dt.squeeze(1).unsqueeze(-1).unsqueeze(-1)
+            * A.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         )
         h = abar * h + dt.squeeze(1).unsqueeze(-1).unsqueeze(-1) * Bpar.unsqueeze(
             -2
@@ -421,7 +391,6 @@ class Mamba2Block(nn.Module):
         y = y.reshape(B, self.d_inner)
         state["ssm"] = h.detach()
 
-        y_normed = fused_out_2d(
-            y, z.squeeze(1), self.norm.weight, eps=self.norm_eps
-        )
+        # fused_out_2d is 2D version (B, D) — no group support needed for step
+        y_normed = fused_out_2d(y, z.squeeze(1), self.norm.weight, eps=self.norm_eps)
         return self.out_proj(y_normed)

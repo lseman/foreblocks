@@ -1,7 +1,11 @@
 import torch
 import torch.nn as nn
 
-from foreblocks.ops.norms_triton import TRITON_AVAILABLE, RMSNormTritonFunction, _should_use_triton
+from foreblocks.ops.norms_triton import (
+    TRITON_AVAILABLE,
+    RMSNormTritonFunction,
+    _should_use_triton,
+)
 
 
 class RMSNorm(nn.Module):

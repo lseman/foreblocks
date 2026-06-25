@@ -5,6 +5,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
+
 Tensor = torch.Tensor
 AggType = Literal["add", "mean", "max"]
 ActivationType = Literal["relu", "gelu", "silu", "none"]

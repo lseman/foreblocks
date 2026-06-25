@@ -3,11 +3,13 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-matplotlib.use("Agg")
-
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.conformal import ConformalPredictionEngine
 from foreblocks.core.training.trainer import Trainer
+
+
+matplotlib.use("Agg")
+
 
 
 class ZeroForecastModel(torch.nn.Module):

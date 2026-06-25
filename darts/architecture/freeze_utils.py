@@ -10,8 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .bb_attention import LearnedPoolingBridge
-from .helpers import _collect_layer_components
-from .helpers import _mean_component_mode_probs
 from .bb_sequence import (
     ArchitectureNormalizer,
     BaseFixedSequenceBlock,
@@ -22,6 +20,8 @@ from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
+from .helpers import _collect_layer_components, _mean_component_mode_probs
+
 
 __all__ = [
     "MixedEncoder",

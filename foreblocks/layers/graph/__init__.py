@@ -1,4 +1,8 @@
-from foreblocks.layers.graph.latent import AdaptiveEdgeSparsifier, CorrelationConfig, LatentCorrelationLearner
+from foreblocks.layers.graph.latent import (
+    AdaptiveEdgeSparsifier,
+    CorrelationConfig,
+    LatentCorrelationLearner,
+)
 from foreblocks.layers.graph.layers import (
     EdgeCondGCN,
     GATConv,
@@ -33,6 +37,7 @@ from foreblocks.layers.graph.tggc import (
     normalized_laplacian_from_adjacency,
     symmetric_normalize_adjacency,
 )
+
 
 __all__ = [
     "AdaptiveEdgeSparsifier",

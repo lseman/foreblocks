@@ -44,7 +44,7 @@ def mamba2_split_conv1d_scan_combined(
     n_groups: int,
     d_state: int,
     chunk_size: int,
-    dt_limit: tuple[float, float],
+    dt_limit: tuple[float, float] = (1e-4, 1.0),
     norm_eps: float = 1e-5,
     attention_mask: torch.Tensor | None = None,
     use_triton_ssd: bool = True,
@@ -64,22 +64,27 @@ def mamba2_split_conv1d_scan_combined(
         [d_inner, conv_dim, dt_rank],
         dim=-1,
     )
+
     if attention_mask is not None:
         if attention_mask.ndim != 2 or attention_mask.shape != projected.shape[:2]:
             raise ValueError("attention_mask must have shape [B, T]")
-        mask = attention_mask.to(dtype=projected.dtype, device=projected.device)
-        conv_input = conv_input * mask.unsqueeze(-1)
+        mask_t = attention_mask.to(dtype=projected.dtype, device=projected.device)
+        conv_input = conv_input * mask_t.unsqueeze(-1)
 
     conv_out = causal_depthwise_conv1d(
         conv_input.transpose(1, 2),
         conv_weight,
         conv_bias,
     ).transpose(1, 2)
-    # SiLU activation on conv output before splitting — matches official Mamba2
+
     if activation in ("silu", "swish"):
         conv_out = F.silu(conv_out)
+
     if attention_mask is not None:
-        conv_out = conv_out * mask.unsqueeze(-1)
+        if attention_mask.ndim != 2 or attention_mask.shape != projected.shape[:2]:
+            raise ValueError("attention_mask must have shape [B, T]")
+        mask_t = attention_mask.to(dtype=projected.dtype, device=projected.device)
+        conv_out = conv_out * mask_t.unsqueeze(-1)
 
     u, Bflat, Cflat = torch.split(
         conv_out,
@@ -99,8 +104,9 @@ def mamba2_split_conv1d_scan_combined(
         d_state=d_state,
     )
 
-    dt = fused_dt(dt_hidden, dt_proj_weight, dt_bias,
-                  dt_min=dt_limit[0], dt_max=dt_limit[1])
+    dt = fused_dt(
+        dt_hidden, dt_proj_weight, dt_bias, dt_min=dt_limit[0], dt_max=dt_limit[1]
+    )
     # dt_proj_weight=None → no projection, dt_hidden already [B, T, H]
     A = -torch.exp(A_log)
 
@@ -114,6 +120,7 @@ def mamba2_split_conv1d_scan_combined(
         chunk_size=chunk_size,
         use_triton=use_triton_ssd,
     ).reshape(u.shape[0], u.shape[1], d_inner)
-    # RMSNormGated: rms_norm(y) * silu(z) — matches official Mamba2
-    y = fused_out(y, z, norm_weight, eps=norm_eps)
+    # RMSNormGated: rms_norm(y, group_size) * silu(z) — matches official Mamba2
+    group_size = d_inner // n_groups if n_groups > 1 else None
+    y = fused_out(y, z, norm_weight, eps=norm_eps, group_size=group_size)
     return F.linear(y, out_proj_weight, out_proj_bias)

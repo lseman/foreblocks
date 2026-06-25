@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 from scipy.stats import norm
 
+
 Observation = tuple[dict[str, Any], float, float | None]
 
 

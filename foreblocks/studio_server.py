@@ -16,6 +16,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+
 LOCAL_BROWSER_HOSTS = {"127.0.0.1", "localhost"}
 
 

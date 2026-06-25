@@ -43,17 +43,22 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-# ── Ensure repo root is on path ──────────────────────────────────────────────
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+from foreblocks.modules.attention.modules.linear_att.deltanet import DeltaNetBackend
+from foreblocks.modules.attention.modules.linear_att.gated_delta import GatedDeltaNet
+from foreblocks.modules.attention.modules.linear_att.gated_deltanet2 import (
+    GatedDeltaNet2,
+)
+from foreblocks.modules.attention.modules.linear_att.gla import GLABackend
+from foreblocks.modules.attention.modules.linear_att.kimi import KimiAttention
+
+# ── Custom backends ──────────────────────────────────────────────────────────
+from foreblocks.modules.attention.modules.linear_att.rda import RDABackend
 
 # ── FLA availability ─────────────────────────────────────────────────────────
 from foreblocks.ops.attention.fla_backend import (
     fla_path,
     has_fla_checkout,
 )
-from foreblocks.ops.attention.fla_gla import can_use_fla_gla, fla_gla_forward
 from foreblocks.ops.attention.fla_delta_rule import (
     can_use_fla_delta_rule,
     can_use_fla_recurrent_delta_rule,
@@ -69,21 +74,22 @@ from foreblocks.ops.attention.fla_gdn2 import (
     fla_gdn2_chunk_forward,
     fla_gdn2_forward,
 )
+from foreblocks.ops.attention.fla_gla import can_use_fla_gla, fla_gla_forward
 from foreblocks.ops.attention.fla_kda import can_use_fla_kda, fla_kda_forward
 from foreblocks.ops.attention.fla_linear_attention import (
     can_use_fla_linear_attn,
     fla_recurrent_linear_attn_forward,
 )
 
+
+# ── Ensure repo root is on path ──────────────────────────────────────────────
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
 _HAS_FLA = has_fla_checkout()
 
-# ── Custom backends ──────────────────────────────────────────────────────────
-from foreblocks.modules.attention.modules.linear_att.rda import RDABackend
-from foreblocks.modules.attention.modules.linear_att.gla import GLABackend
-from foreblocks.modules.attention.modules.linear_att.deltanet import DeltaNetBackend
-from foreblocks.modules.attention.modules.linear_att.gated_delta import GatedDeltaNet
-from foreblocks.modules.attention.modules.linear_att.gated_deltanet2 import GatedDeltaNet2
-from foreblocks.modules.attention.modules.linear_att.kimi import KimiAttention
 
 # ── Timing helper ────────────────────────────────────────────────────────────
 

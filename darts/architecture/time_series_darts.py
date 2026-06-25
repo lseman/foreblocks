@@ -19,10 +19,11 @@ import torch.nn.functional as F
 from foreblocks.layers.norms import RevIN
 
 from .base_blocks import MixedDecoder, MixedEncoder
-from .norms import RMSNorm
 from .bb_moe import DARTSFeedForward
 from .darts_cell import DARTSCell
 from .mixed_op import MixedOp
+from .norms import RMSNorm
+
 
 __all__ = ["TimeSeriesDARTS"]
 

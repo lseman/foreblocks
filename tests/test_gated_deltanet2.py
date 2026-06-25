@@ -130,8 +130,8 @@ class TestGatedDeltaNet2Correctness:
         GatedDeltaNet with same α and β.
         """
         from foreblocks.modules.attention.modules.linear_att import (
-            GatedDeltaNet2,
             GatedDeltaNet,
+            GatedDeltaNet2,
         )
         B, T, D, H = 2, 16, 128, 4
         gdn2 = GatedDeltaNet2(d_model=D, n_heads=H, chunk_size=0).to(device)

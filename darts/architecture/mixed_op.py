@@ -17,6 +17,7 @@ import torch.nn.functional as F
 
 from darts.search.metrics import _default_enable_flops
 
+from .advanced_ops import GatedGeLUFFNOp, GeGLUFFNOp, SwiGLUFFNOp
 from .operation_blocks import (
     ConvMixerOp,
     DLinearOp,
@@ -36,7 +37,7 @@ from .operation_blocks import (
     TimesNetOp,
     WaveletOp,
 )
-from .advanced_ops import SwiGLUFFNOp, GeGLUFFNOp, GatedGeLUFFNOp
+
 
 __all__ = ["MixedOp"]
 

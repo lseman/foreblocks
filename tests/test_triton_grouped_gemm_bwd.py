@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+
 pytest.importorskip("triton", reason="Triton not available")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 

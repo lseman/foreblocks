@@ -8,14 +8,17 @@ from collections.abc import Sequence
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .norms import RMSNorm
-from .utils import _causal_mask
-from .utils import _make_alibi_slopes
-from .utils import _seasonal_relative_bias
-from .utils import _sinusoidal_features
 
 from .bb_positional import RotaryPositionalEncoding
 from .bb_primitives import RMSNorm
+from .norms import RMSNorm
+from .utils import (
+    _causal_mask,
+    _make_alibi_slopes,
+    _seasonal_relative_bias,
+    _sinusoidal_features,
+)
+
 
 __all__ = [
     "SelfAttention",

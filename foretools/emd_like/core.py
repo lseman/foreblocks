@@ -29,6 +29,7 @@ from scipy.signal import find_peaks, hilbert, spectrogram, welch
 from scipy.sparse import bmat, csc_matrix, diags, eye
 from scipy.sparse.linalg import factorized, spsolve
 
+
 try:
     from ..config import VMDOptions, VMDParameters
 except Exception:

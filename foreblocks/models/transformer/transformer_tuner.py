@@ -6,8 +6,8 @@ from typing import Any, Literal
 
 import numpy as np
 import torch
+from pydantic import BaseModel  # pip install pydantic
 from pydantic import (
-    BaseModel,  # pip install pydantic
     Field,
     field_validator,
 )

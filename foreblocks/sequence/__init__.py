@@ -11,4 +11,5 @@ Modules:
 
 from foreblocks.sequence.block_stack import BLOCK_TYPES, BlockStack
 
+
 __all__ = ["BlockStack", "BLOCK_TYPES"]

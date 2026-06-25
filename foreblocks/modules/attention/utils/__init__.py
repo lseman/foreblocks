@@ -1,4 +1,7 @@
-from foreblocks.modules.attention.utils.compaction import AttentionMatchingCompactor, AttentionMatchingConfig
+from foreblocks.modules.attention.utils.compaction import (
+    AttentionMatchingCompactor,
+    AttentionMatchingConfig,
+)
 from foreblocks.modules.attention.utils.position import PositionEncodingApplier
 from foreblocks.modules.attention.utils.residuals import (
     AttentionResidual,

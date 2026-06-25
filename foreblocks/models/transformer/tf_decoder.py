@@ -6,20 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.ui.node_spec import node
-
-from foreblocks.modules.attention.modules.linear_att import ModernLinearAttention
-from foreblocks.modules.attention.modules.linear_att.gated_delta import GatedDeltaNet
-from foreblocks.modules.attention.modules.linear_att.kimi import KimiAttention
-from foreblocks.modules.attention.multi_att import MultiAttention
-from foreblocks.modules.attention.utils.residuals import (
-    AttentionResidual,
-    BlockAttentionResidual,
-    normalize_attention_residual_mode,
-)
 from foreblocks.layers.embeddings import InformerTimeEmbedding
 from foreblocks.models.transformer.mhc import mhc_init_streams
-from foreblocks.modules.skip.gateskip import ResidualGate
 from foreblocks.models.transformer.tf_base import (
     BaseTransformer,
     BaseTransformerLayer,
@@ -37,6 +25,17 @@ from foreblocks.models.transformer.tf_base import (
     _ModelLayerInvokeStrategy,
     _scatter_mixture_of_depths_output,
 )
+from foreblocks.modules.attention.modules.linear_att import ModernLinearAttention
+from foreblocks.modules.attention.modules.linear_att.gated_delta import GatedDeltaNet
+from foreblocks.modules.attention.modules.linear_att.kimi import KimiAttention
+from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.modules.attention.utils.residuals import (
+    AttentionResidual,
+    BlockAttentionResidual,
+    normalize_attention_residual_mode,
+)
+from foreblocks.modules.skip.gateskip import ResidualGate
+from foreblocks.ui.node_spec import node
 
 
 class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformerLayer):

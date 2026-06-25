@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import torch
 
+
 try:
     from foreblocks.ops.kernels.rms_norm import (
-        RMSNormTritonFunction,
         TRITON_AVAILABLE as RMS_NORM_TRITON_AVAILABLE,
+        RMSNormTritonFunction,
         _should_use_triton,
     )
 except Exception:

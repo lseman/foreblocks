@@ -8,6 +8,7 @@ from .greedy_diversity import GreedyDiversitySelector
 from .local_penalization import LocalPenalizationSelector
 from .thompson import ThompsonSamplingSelector
 
+
 try:  # optional
     from .qnei import qNoisyEISelector
 except Exception:

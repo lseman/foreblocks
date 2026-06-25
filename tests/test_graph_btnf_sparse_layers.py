@@ -2,10 +2,10 @@ import pytest
 import torch
 
 from foreblocks.config import TrainingConfig
+from foreblocks.core.training.trainer import Trainer
 from foreblocks.layers.graph.common import add_self_loops
 from foreblocks.layers.graph.layers import GATConv, GCNConv, JumpKnowledge, SAGEConv
 from foreblocks.models import GraphForecastingModel
-from foreblocks.core.training.trainer import Trainer
 
 
 def _dense_adj_from_edge_index(

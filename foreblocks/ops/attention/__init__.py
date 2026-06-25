@@ -7,9 +7,9 @@ try:
         fla_chunk_kda,
         fla_chunk_linear_attn,
         fla_fused_chunk_delta_rule,
+        fla_fused_recurrent_delta_rule,
         fla_fused_recurrent_gated_delta_rule,
         fla_fused_recurrent_gdn2,
-        fla_fused_recurrent_delta_rule,
         fla_fused_recurrent_gla,
         fla_fused_recurrent_kda,
         fla_fused_recurrent_linear_attn,
@@ -139,7 +139,10 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fla_gated_delta_rule import can_use_fla_gated_delta_rule, fla_gated_delta_rule_forward
+    from foreblocks.ops.attention.fla_gated_delta_rule import (
+        can_use_fla_gated_delta_rule,
+        fla_gated_delta_rule_forward,
+    )
 except Exception:
 
     def can_use_fla_gated_delta_rule(*args, **kwargs):  # type: ignore[misc]
@@ -150,7 +153,10 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fla_linear_attention import can_use_fla_linear_attn, fla_recurrent_linear_attn_forward
+    from foreblocks.ops.attention.fla_linear_attention import (
+        can_use_fla_linear_attn,
+        fla_recurrent_linear_attn_forward,
+    )
 except Exception:
 
     def can_use_fla_linear_attn(*args, **kwargs):  # type: ignore[misc]
@@ -175,8 +181,8 @@ try:
     from foreblocks.ops.attention.fla_gdn2 import (
         can_use_fla_gdn2,
         can_use_fla_gdn2_chunk,
-        fla_gdn2_forward,
         fla_gdn2_chunk_forward,
+        fla_gdn2_forward,
     )
 except Exception:
 

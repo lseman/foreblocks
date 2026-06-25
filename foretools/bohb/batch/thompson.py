@@ -8,6 +8,7 @@ import numpy as np
 
 from .base import BatchSelector
 
+
 Observation = tuple[dict[str, Any], float, float | None]
 
 

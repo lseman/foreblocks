@@ -11,7 +11,7 @@ from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
-from .inspector import _softmax_top, _mean_softmax_top
+from .inspector import _mean_softmax_top, _softmax_top
 from .operation_blocks import FixedOp
 
 

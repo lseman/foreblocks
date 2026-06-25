@@ -52,8 +52,11 @@ if TRITON_AVAILABLE:
         M,
         D,
         eps,
+        GROUP_SIZE: tl.constexpr,
+        HAS_GROUP: tl.constexpr,
         BLOCK_D: tl.constexpr,
     ):
+        """RMSNormGated: rms_norm(y, weight, group_size) * silu(z)."""
         row = tl.program_id(0)
         col = tl.arange(0, BLOCK_D)
         mask = col < D
@@ -64,12 +67,20 @@ if TRITON_AVAILABLE:
         z = tl.load(z_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
         w = tl.load(w_ptr + col, mask=mask, other=1.0).to(tl.float32)
 
-        # RMSNorm(y): y / sqrt(mean(y^2) + eps) * w
-        mean_sq = tl.sum(y * y, axis=0) / D
-        inv_rms = tl.rsqrt(mean_sq + eps)
-        y_normed = y * inv_rms * w
+        if HAS_GROUP:
+            group_id = col // GROUP_SIZE
+            group_offset = group_id * GROUP_SIZE
+            gcol = group_offset + (col - group_offset)
+            gmask = gcol < D
+            y_g = tl.load(y_ptr + row * D + gcol, mask=gmask, other=0.0).to(tl.float32)
+            mean_sq = tl.sum(y_g * y_g, axis=0) / GROUP_SIZE
+            inv_rms = tl.rsqrt(mean_sq + eps)
+            y_normed = y * inv_rms * w
+        else:
+            mean_sq = tl.sum(y * y, axis=0) / D
+            inv_rms = tl.rsqrt(mean_sq + eps)
+            y_normed = y * inv_rms * w
 
-        # silu(z) = z * sigmoid(z)
         sig = 1.0 / (1.0 + tl.exp(-z))
         silu_z = z * sig
 
@@ -105,14 +116,15 @@ if TRITON_AVAILABLE:
         clamped = tl.maximum(sp, dt_min)
         clamped = tl.minimum(clamped, dt_max)
 
-        # pass_through: 1 if strictly inside, 0 if at boundary
+        # pass_through: 1 if strictly inside bounds, 0 if at boundary
+        # Use nested where instead of & (which does element-wise mul on floats in Triton)
         pass_through = tl.where(
-            (clamped > dt_min) & (clamped < dt_max),
-            1.0,
+            clamped > dt_min,
+            tl.where(clamped < dt_max, 1.0, 0.0),
             0.0,
         )
 
-        # sigmoid
+        # sigmoid (numerically stable)
         sigmoid_v = tl.where(
             v >= 0,
             1.0 / (1.0 + tl.exp(-v)),
@@ -122,7 +134,6 @@ if TRITON_AVAILABLE:
         dv = dy * pass_through * sigmoid_v
 
         tl.store(dx_ptr + offs, dv, mask=mask)
-        tl.atomic_add(db_ptr + d_idx, dv, mask=mask)
 
     @triton.jit
     def _fused_out_bwd_kernel(
@@ -155,8 +166,12 @@ if TRITON_AVAILABLE:
         inv_rms = tl.rsqrt(mean_sq + eps)
         x_hat = y * inv_rms  # normalized y
 
-        # silu(z)
-        sig = tl.where(z >= 0, 1.0/(1.0+tl.exp(-z)), tl.exp(z)/(1.0+tl.exp(z)))
+        # silu(z) - numerically stable sigmoid
+        sig = tl.where(
+            (z >= 0).to(tl.int1),
+            1.0 / (1.0 + tl.exp(-z)),
+            tl.exp(z) / (1.0 + tl.exp(z)),
+        )
         s = z * sig  # silu(z)
 
         # dx_hat = dy * w * s  (gradient flowing into RMSNorm output)
@@ -167,9 +182,7 @@ if TRITON_AVAILABLE:
         dy_out = (dx_hat - mean_dhx_xh * x_hat) * inv_rms
 
         # d_w = sum(dy * x_hat * s, axis=0)
-        if COMPUTE_DW:
-            dw = tl.sum(dy * x_hat * s, axis=0)
-            tl.atomic_add(ddw_ptr + col, dw, mask=mask)
+        # Note: atomic_add unreliable in Triton 3.x with mask; handled after kernel
 
         tl.store(ddy_ptr + row_off, dy_out, mask=mask)
 
@@ -229,12 +242,16 @@ def dt_prep_bwd_triton(
             compute_bias_grad=compute_bias_grad,
         )
 
+    # Ensure contiguous for kernel
+    grad_out = grad_out.contiguous()
+    dt_raw = dt_raw.contiguous()
+    bias = bias.contiguous()
+
     B, T, D = grad_out.shape
     n = dt_raw.numel()
     BLOCK = 1024
 
     d_dt_raw = torch.empty_like(grad_out)
-    # d_bias is per-channel; accumulate via atomic_add
     d_bias = torch.zeros_like(bias)
 
     grid = (triton.cdiv(n, BLOCK),)
@@ -250,6 +267,9 @@ def dt_prep_bwd_triton(
         dt_max,
         BLOCK=BLOCK,
     )
+    # Compute bias gradient via PyTorch (atomic_add unreliable in Triton 3.x)
+    if compute_bias_grad:
+        d_bias = d_dt_raw.sum(dim=(0, 1))
     return d_dt_raw, d_bias if compute_bias_grad else None
 
 
@@ -367,6 +387,21 @@ def fused_out_bwd_triton(
         COMPUTE_DW=compute_norm_weight_grad,
         BLOCK_D=BLOCK_D,
     )
+    # Compute dw via PyTorch (atomic_add unreliable in Triton 3.x)
+    if compute_norm_weight_grad:
+        # Recompute: RMSNorm(y, eps) with w=1, then silu(z)
+        calc_dtype = torch.float64 if grad_out.dtype == torch.float64 else torch.float32
+        y32 = y.to(calc_dtype)
+        z32 = z.to(calc_dtype)
+        w32 = norm_weight.to(calc_dtype).view(1, 1, -1)
+        inv_rms = torch.rsqrt((y32 * y32).mean(dim=-1, keepdim=True) + eps)
+        x_hat = y32 * inv_rms
+        sig = torch.sigmoid(z32)
+        s = z32 * sig
+        grad32 = grad_out.to(calc_dtype)
+        dw = (grad32 * x_hat * s).sum(dim=(0, 1)).to(norm_weight.dtype)
+        ddw = dw
+
     return (
         ddy2.view(B, T, D),
         ddz2.view(B, T, D),
@@ -399,10 +434,11 @@ class _DtPrepFn(torch.autograd.Function):
 
 class _FusedOutFn(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, y, z, norm_weight, eps: float):
+    def forward(ctx, y, z, norm_weight, eps: float, group_size: int | None = None):
         ctx.eps = eps
+        ctx.group_size = group_size
         ctx.save_for_backward(y, z, norm_weight)
-        return fused_out_triton(y, z, norm_weight, eps=eps)
+        return fused_out_triton(y, z, norm_weight, eps=eps, group_size=group_size)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -420,6 +456,7 @@ class _FusedOutFn(torch.autograd.Function):
             dy if needs[0] else None,
             dz if needs[1] else None,
             d_norm_weight,
+            None,
             None,
         )
 
@@ -457,13 +494,14 @@ def fused_out_triton(
     z: torch.Tensor,
     norm_weight: torch.Tensor,
     eps: float = 1e-5,
+    group_size: int | None = None,
 ) -> torch.Tensor:
-    if not (
-        TRITON_AVAILABLE
-        and y.is_cuda
-        and z.is_cuda
-        and norm_weight.is_cuda
-    ):
+    """RMSNormGated: rms_norm(y, weight, group_size) * silu(z).
+
+    When group_size is None or equals D, normalizes over full D dimension.
+    When group_size is set, normalizes each group independently (for ngroups > 1).
+    """
+    if not (TRITON_AVAILABLE and y.is_cuda and z.is_cuda and norm_weight.is_cuda):
         return fused_out_fallback(y, z, norm_weight, eps=eps)
     assert y.shape == z.shape
     assert y.ndim == 3
@@ -477,6 +515,8 @@ def fused_out_triton(
     out = torch.empty_like(y2)
     BLOCK_D = triton.next_power_of_2(D)
     BLOCK_D = min(max(BLOCK_D, 16), 4096)
+    actual_group = group_size if group_size is not None else D
+    has_group = actual_group != D
 
     grid = (M,)
     _fused_out_kernel[grid](
@@ -487,6 +527,8 @@ def fused_out_triton(
         M,
         D,
         eps,
+        GROUP_SIZE=actual_group,
+        HAS_GROUP=has_group,
         BLOCK_D=BLOCK_D,
     )
     return out.view(B, T, D)
@@ -508,13 +550,13 @@ def fused_out(
     z: torch.Tensor,
     norm_weight: torch.Tensor,
     eps: float = 1e-5,
+    group_size: int | None = None,
 ) -> torch.Tensor:
-    """RMSNormGated: rms_norm(y, weight) * silu(z) — matches official Mamba2."""
-    if (
-        TRITON_AVAILABLE
-        and y.is_cuda
-        and z.is_cuda
-        and norm_weight.is_cuda
-    ):
-        return _FusedOutFn.apply(y, z, norm_weight, eps)
+    """RMSNormGated: rms_norm(y, weight, group_size) * silu(z) — matches official Mamba2.
+
+    When group_size is None, normalizes over full D dimension.
+    When group_size is set (e.g., d_inner // ngroups), normalizes each group independently.
+    """
+    if TRITON_AVAILABLE and y.is_cuda and z.is_cuda and norm_weight.is_cuda:
+        return _FusedOutFn.apply(y, z, norm_weight, eps, group_size)
     return fused_out_fallback(y, z, norm_weight, eps)

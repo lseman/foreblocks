@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import warnings
 import sys
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -13,12 +13,14 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.sparse.linalg import spsolve
 from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 
+from foreblocks.ts_handler.auto_filter.registry import register_filter
+
+
 try:
     from statsmodels.tsa.seasonal import STL
 except ImportError:  # pragma: no cover - statsmodels ships this in supported envs.
     STL = None
 
-from foreblocks.ts_handler.auto_filter.registry import register_filter
 
 try:  # Real-wavelet basis for wavelet_denoise; falls back to pure-NumPy Haar.
     import pywt

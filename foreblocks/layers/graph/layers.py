@@ -21,11 +21,10 @@ from foreblocks.layers.graph.common import (
 )
 from foreblocks.layers.graph.norms import make_activation, make_norm_pair
 
+
 try:
     from torch_scatter import (
         scatter_add as torch_scatter_add,
-    )
-    from torch_scatter import (
         scatter_max as torch_scatter_max,
     )
 except ImportError:

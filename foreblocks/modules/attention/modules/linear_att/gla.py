@@ -7,8 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.ops.attention import can_use_fla_gla, fla_gla_forward
 from foreblocks.modules.attention.modules.linear_att.base import RoPEMixin
+from foreblocks.ops.attention import can_use_fla_gla, fla_gla_forward
 
 
 class GLABackend(RoPEMixin, nn.Module):

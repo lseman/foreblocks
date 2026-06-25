@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+
 if TYPE_CHECKING:
     from torch.utils.tensorboard import SummaryWriter  # type: ignore
 

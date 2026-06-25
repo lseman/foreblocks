@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from foretools import AdaptiveMRMR
-from foretools.fengineer import FeatureEngineer, FeatureConfig
+from foretools.fengineer import FeatureConfig, FeatureEngineer
 from foretools.fengineer.filters import CorrelationFilter
 from foretools.fengineer.selectors.feature_selector import FeatureSelector
 from foretools.fengineer.transformers import (
@@ -16,6 +16,7 @@ from foretools.fengineer.transformers import (
     MathematicalTransformer,
     RandomFourierFeaturesTransformer,
 )
+
 
 def test_sota_fengineer_tree_backend_prunes_heavy_expansions():
     rng = np.random.default_rng(42)

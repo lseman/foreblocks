@@ -142,30 +142,35 @@ class Mamba2ModelBlock(_SequenceModelBlock):
             raise ValueError("implementation must be either 'fla' or 'custom'")
 
         if impl == "fla":
-            layer_factory = lambda layer_idx: _FLAMamba2Layer(
-                hidden_size=hidden_size,
-                d_state=d_state,
-                d_conv=d_conv,
-                num_heads=num_heads,
-                n_groups=n_groups,
-                chunk_size=chunk_size,
-                backend=backend,
-                layer_idx=layer_idx,
-            )
+
+            def layer_factory(layer_idx):
+                return _FLAMamba2Layer(
+                    hidden_size=hidden_size,
+                    d_state=d_state,
+                    d_conv=d_conv,
+                    num_heads=num_heads,
+                    n_groups=n_groups,
+                    chunk_size=chunk_size,
+                    backend=backend,
+                    layer_idx=layer_idx,
+                )
+
             preferred_device = device
         else:
             from foreblocks.sequence.mamba.mamba2 import Mamba2Block
 
-            layer_factory = lambda _: Mamba2Block(
-                d_model=hidden_size,
-                d_state=d_state,
-                d_conv=d_conv,
-                num_heads=num_heads,
-                n_groups=n_groups,
-                chunk_size=chunk_size,
-                use_fused_path=use_fused_path,
-                use_triton_ssd=use_triton_ssd,
-            )
+            def layer_factory(_):
+                return Mamba2Block(
+                    d_model=hidden_size,
+                    d_state=d_state,
+                    d_conv=d_conv,
+                    num_heads=num_heads,
+                    n_groups=n_groups,
+                    chunk_size=chunk_size,
+                    use_fused_path=use_fused_path,
+                    use_triton_ssd=use_triton_ssd,
+                )
+
             preferred_device = None
 
         super().__init__(

@@ -10,15 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .bb_attention import LearnedPoolingBridge
-from .freeze_utils import (
-    _freeze_transformer_cross_attention,
-    _freeze_transformer_cross_attention_position,
-    _freeze_transformer_decoder_style,
-    _freeze_transformer_ffn_mode,
-    _freeze_transformer_patch_mode,
-    _freeze_transformer_self_attention,
-    _freeze_transformer_self_attention_position,
-)
 from .bb_sequence import (
     ArchitectureNormalizer,
     BaseFixedSequenceBlock,
@@ -29,6 +20,16 @@ from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
+from .freeze_utils import (
+    _freeze_transformer_cross_attention,
+    _freeze_transformer_cross_attention_position,
+    _freeze_transformer_decoder_style,
+    _freeze_transformer_ffn_mode,
+    _freeze_transformer_patch_mode,
+    _freeze_transformer_self_attention,
+    _freeze_transformer_self_attention_position,
+)
+
 
 __all__ = [
     "MixedEncoder",

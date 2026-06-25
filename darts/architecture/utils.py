@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from .bb_positional import RotaryPositionalEncoding
 from .bb_primitives import RMSNorm
 
+
 __all__ = [
     "SelfAttention",
     "AttentionBridge",

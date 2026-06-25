@@ -7,8 +7,8 @@ from foreblocks.models.popular.crossformer import CrossFormer
 from foreblocks.models.popular.etsformer import ETSformer
 from foreblocks.models.popular.informer import Informer
 from foreblocks.models.popular.nonstationary import NonStationaryTransformer
-from foreblocks.models.popular.timesnet import TimesNet
 from foreblocks.models.popular.timemixer import TimeMixer
+from foreblocks.models.popular.timesnet import TimesNet
 from foreblocks.models.popular.timexer import TimeXer
 
 

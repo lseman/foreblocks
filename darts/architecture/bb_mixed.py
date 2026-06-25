@@ -8,11 +8,7 @@ from their dedicated modules for backward compatibility.
 from __future__ import annotations
 
 from .converter import ArchitectureConverter
-from .fixed_encoder_decoder import FixedDecoder
-from .fixed_encoder_decoder import FixedEncoder
-from .helpers import _collect_layer_components
-from .helpers import _layer_component
-from .helpers import _mean_component_mode_probs
+from .fixed_encoder_decoder import FixedDecoder, FixedEncoder
 from .freeze_utils import (
     _freeze_transformer_cross_attention,
     _freeze_transformer_cross_attention_position,
@@ -29,8 +25,13 @@ from .freeze_utils import (
     _resolve_searchable_self_attention_position,
     _resolve_searchable_self_attention_type,
 )
-from .mixed_encoder_decoder import MixedDecoder
-from .mixed_encoder_decoder import MixedEncoder
+from .helpers import (
+    _collect_layer_components,
+    _layer_component,
+    _mean_component_mode_probs,
+)
+from .mixed_encoder_decoder import MixedDecoder, MixedEncoder
+
 
 __all__ = [
     "MixedEncoder",

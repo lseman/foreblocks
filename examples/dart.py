@@ -12,14 +12,23 @@
 import os
 import warnings
 
-warnings.filterwarnings("ignore")
-
 import matplotlib.pyplot as plt
 import numpy as np
+
+# %%
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from foreblocks.darts import DARTSTrainer
+from foreblocks.darts.architecture.core_blocks import TimeSeriesDARTS
+
+# %%
+from foreblocks.darts.transformer_diagram import draw_selected_transformer_architecture
+
+
+warnings.filterwarnings("ignore")
+
+
 
 SEED = 42
 torch.manual_seed(SEED)
@@ -238,10 +247,7 @@ trainer = DARTSTrainer(
 )
 
 
-# %%
-import torch
 
-from foreblocks.darts.architecture.core_blocks import TimeSeriesDARTS
 
 _seq_len, _horizon, _channels = SEQ_LEN, HORIZON, N_CHANNELS
 _x = torch.randn(4, _seq_len, _channels)
@@ -367,8 +373,6 @@ for k, v in fm.items():
 # %% [markdown]
 # ## 5.1  Selected transformer architecture
 
-# %%
-from foreblocks.darts.transformer_diagram import draw_selected_transformer_architecture
 
 final_model = results["final_model"]
 fig, ax = draw_selected_transformer_architecture(

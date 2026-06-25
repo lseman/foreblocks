@@ -34,14 +34,24 @@ layer_state dict carries recurrent state under key "<backend>_state":
 
 from __future__ import annotations
 
-from foreblocks.modules.attention.modules.linear_att.base import FeatureMapRegistry, RoPEMixin
+from foreblocks.modules.attention.modules.linear_att.base import (
+    FeatureMapRegistry,
+    RoPEMixin,
+)
 from foreblocks.modules.attention.modules.linear_att.deltanet import DeltaNetBackend
 from foreblocks.modules.attention.modules.linear_att.gated_delta import GatedDeltaNet
-from foreblocks.modules.attention.modules.linear_att.gated_deltanet2 import GatedDeltaNet2
+from foreblocks.modules.attention.modules.linear_att.gated_deltanet2 import (
+    GatedDeltaNet2,
+)
 from foreblocks.modules.attention.modules.linear_att.gla import GLABackend
 from foreblocks.modules.attention.modules.linear_att.kimi import KimiAttention
 from foreblocks.modules.attention.modules.linear_att.rda import RDABackend
-from foreblocks.modules.attention.modules.linear_att.wrapper import GatedDeltaBackend, KimiBackend, ModernLinearAttention
+from foreblocks.modules.attention.modules.linear_att.wrapper import (
+    GatedDeltaBackend,
+    KimiBackend,
+    ModernLinearAttention,
+)
+
 
 __all__ = [
     "FeatureMapRegistry",

@@ -17,6 +17,7 @@ from sklearn.exceptions import ConvergenceWarning
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tools.sm_exceptions import ValueWarning
 
+
 # Suppress known noise warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)

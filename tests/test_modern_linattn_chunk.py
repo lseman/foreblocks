@@ -11,6 +11,7 @@ import unittest
 
 import torch
 
+from foreblocks.layers.embeddings.rotary import apply_rotary_emb
 from foreblocks.modules.attention.modules.linear_att import (
     GatedDeltaBackend,
     GatedDeltaNet,
@@ -20,7 +21,6 @@ from foreblocks.modules.attention.modules.linear_att import (
     ModernLinearAttention,
     RDABackend,
 )
-from foreblocks.layers.embeddings.rotary import apply_rotary_emb
 
 
 def _assert_backend_rope_matches_reference(backend, Lq=7, Lk=5):

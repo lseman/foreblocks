@@ -30,9 +30,7 @@ if FUSED_DT_TRITON_AVAILABLE:
         B, T, dt_rank, num_heads, dt_min, dt_max,
         BLOCK_DT: tl.constexpr,
     ):
-        """Forward: each thread handles one (b, t, h) output element.
-        Loads dt_rank elements using a constexpr block with masking.
-        """
+        """Forward: each thread handles one (b, t, h) output element."""
         pid = tl.program_id(0)
         stride = T * num_heads
         b = pid // stride
@@ -48,90 +46,22 @@ if FUSED_DT_TRITON_AVAILABLE:
 
         bt_idx = b * T + t
 
-        # Load dt_hidden[b,t,:] as [BLOCK_DT] elements, mask out beyond dt_rank
         j = tl.arange(0, BLOCK_DT)
         mask_j = j < dt_rank
         dt_h = tl.load(dt_hidden_ptr + (bt_idx * dt_rank + j),
                        mask=mask_j, other=0.0).to(tl.float32)
-
-        # Load dt_proj_weight[h,:] as [BLOCK_DT] elements, mask out beyond dt_rank
         w = tl.load(dt_proj_weight_ptr + (h * dt_rank + j),
                     mask=mask_j, other=0.0).to(tl.float32)
 
-        # Dot product
         v = tl.sum(dt_h * w)
-
-        # Add bias
         bias = tl.load(dt_bias_ptr + h, mask=h_mask, other=0.0).to(tl.float32)
         v += bias
 
-        # Softplus + clamp
         sp = tl.where(v > 20.0, v, tl.log(1.0 + tl.exp(v)))
         v = tl.maximum(sp, dt_min)
         v = tl.minimum(v, dt_max)
 
         tl.store(out_ptr + pid, v, mask=(b_mask & t_mask & h_mask))
-
-    @triton.jit
-    def _fused_dt_bwd_kernel(
-        gy_ptr, dt_hidden_ptr, dt_proj_weight_ptr, dt_bias_ptr,
-        d_dt_hidden_ptr, d_dt_proj_weight_ptr, d_dt_bias_ptr,
-        B, T, dt_rank, num_heads, dt_min, dt_max,
-        BLOCK_DT: tl.constexpr,
-    ):
-        """Backward: each thread handles one (b, t, h) output element."""
-        pid = tl.program_id(0)
-        stride = T * num_heads
-        b = pid // stride
-        rem = pid % stride
-        t = rem // num_heads
-        h = rem % num_heads
-
-        b_mask = b < B
-        t_mask = t < T
-        h_mask = h < num_heads
-        if not (b_mask and t_mask and h_mask):
-            return
-
-        bt_idx = b * T + t
-
-        # Load gradient
-        gy = tl.load(gy_ptr + pid, mask=(b_mask & t_mask & h_mask), other=0.0).to(tl.float32)
-
-        # Load dt_hidden and dt_proj_weight
-        j = tl.arange(0, BLOCK_DT)
-        mask_j = j < dt_rank
-        dt_h = tl.load(dt_hidden_ptr + (bt_idx * dt_rank + j),
-                       mask=mask_j, other=0.0).to(tl.float32)
-        w = tl.load(dt_proj_weight_ptr + (h * dt_rank + j),
-                    mask=mask_j, other=0.0).to(tl.float32)
-
-        # dt_raw = sum_j dt_h[j] * w[j] + bias (same as forward)
-        dt_raw = tl.sum(dt_h * w)
-        bias = tl.load(dt_bias_ptr + h, mask=h_mask, other=0.0).to(tl.float32)
-        dt_raw += bias
-
-        # Softplus + clamp
-        sp = tl.where(dt_raw > 20.0, dt_raw, tl.log(1.0 + tl.exp(dt_raw)))
-        clamped = tl.maximum(sp, dt_min)
-        clamped = tl.minimum(clamped, dt_max)
-        pass_through = tl.where((clamped > dt_min) & (clamped < dt_max), 1.0, 0.0)
-        sigmoid_v = tl.where(dt_raw >= 0,
-                             1.0 / (1.0 + tl.exp(-dt_raw)),
-                             tl.exp(dt_raw) / (1.0 + tl.exp(dt_raw)))
-        # chain rule: d_dt_raw = gy * sigmoid(v) * pass_through
-        d_dt_raw = gy * pass_through * sigmoid_v
-
-        # d_dt_hidden[b,t,j] += d_dt_raw * w[j] (atomic, multiple h threads)
-        tl.atomic_add(d_dt_hidden_ptr + (bt_idx * dt_rank + j),
-                      d_dt_raw * w, mask=mask_j)
-
-        # d_dt_proj_weight[h,j] += dt_h[j] * d_dt_raw (atomic, multiple (b,t) threads)
-        tl.atomic_add(d_dt_proj_weight_ptr + (h * dt_rank + j),
-                      dt_h * d_dt_raw, mask=mask_j)
-
-        # d_dt_bias[h] += d_dt_raw (atomic)
-        tl.atomic_add(d_dt_bias_ptr + h, d_dt_raw, mask=h_mask)
 
 
 def fused_dt_fallback(
@@ -203,11 +133,13 @@ def fused_dt_triton(
     out = torch.empty(B, T, num_heads, device=dt_hidden.device, dtype=dt_hidden.dtype)
 
     n_elements = B * T * num_heads
-    BLOCK_DT = min(256, max(16, dt_rank, num_heads))
-    _fused_dt_kernel[(triton.cdiv(n_elements, 1),)](
+    BLOCK_DT = min(max(triton.next_power_of_2(dt_rank), 16), 256)
+    num_warps = 4 if BLOCK_DT >= 64 else 2
+    _fused_dt_kernel[(n_elements,)](
         dt_hidden, dt_proj_weight, dt_bias, out,
         B, T, dt_rank, num_heads, dt_min, dt_max,
         BLOCK_DT=BLOCK_DT,
+        num_warps=num_warps,
     )
     return out
 
@@ -222,47 +154,11 @@ def fused_dt_bwd_triton(
     compute_w_grad: bool = True,
     compute_bias_grad: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-    """Triton backward. Falls back to PyTorch if dt_proj_weight is None."""
-    if dt_proj_weight is None:
-        return fused_dt_bwd_fallback(
-            grad_out, dt_hidden, None, dt_bias, dt_min, dt_max,
-            compute_w_grad, compute_bias_grad,
-        )
-    if not (FUSED_DT_TRITON_AVAILABLE
-            and grad_out.is_cuda
-            and dt_hidden.is_cuda
-            and dt_proj_weight.is_cuda
-            and dt_bias.is_cuda):
-        return fused_dt_bwd_fallback(
-            grad_out, dt_hidden, dt_proj_weight, dt_bias, dt_min, dt_max,
-            compute_w_grad, compute_bias_grad,
-        )
-
-    B, T, _ = grad_out.shape
-    dt_rank = dt_hidden.shape[2]
-    num_heads = grad_out.shape[2]
-
-    d_dt_hidden = torch.empty_like(dt_hidden)
-
-    if compute_w_grad:
-        d_dt_proj_weight = torch.zeros_like(dt_proj_weight, dtype=torch.float32)
-    else:
-        d_dt_proj_weight = torch.empty(0, dtype=torch.float32)
-
-    if compute_bias_grad:
-        d_dt_bias = torch.zeros_like(dt_bias, dtype=torch.float32)
-    else:
-        d_dt_bias = torch.empty(0, dtype=torch.float32)
-
-    n_elements = B * T * num_heads
-    BLOCK_DT = min(256, max(16, dt_rank, num_heads))
-    _fused_dt_bwd_kernel[(triton.cdiv(n_elements, 1),)](
-        grad_out, dt_hidden, dt_proj_weight, dt_bias,
-        d_dt_hidden, d_dt_proj_weight, d_dt_bias,
-        B, T, dt_rank, num_heads, dt_min, dt_max,
-        BLOCK_DT=BLOCK_DT,
+    """Backward. Uses PyTorch — avoids atomic_add serialization in Triton bwd kernel."""
+    return fused_dt_bwd_fallback(
+        grad_out, dt_hidden, dt_proj_weight, dt_bias, dt_min, dt_max,
+        compute_w_grad, compute_bias_grad,
     )
-    return d_dt_hidden, d_dt_proj_weight, d_dt_bias
 
 
 class _FusedDtFn(torch.autograd.Function):
@@ -302,4 +198,12 @@ def fused_dt(
     When dt_proj_weight is None, dt_hidden is treated as already projected [B, T, H].
     This matches Mamba2's direct dt projection pattern (no low-rank bottleneck).
     """
+    if (
+        dt_proj_weight is not None
+        and FUSED_DT_TRITON_AVAILABLE
+        and dt_hidden.is_cuda
+        and dt_proj_weight.is_cuda
+        and dt_bias.is_cuda
+    ):
+        return _FusedDtFn.apply(dt_hidden, dt_proj_weight, dt_bias, dt_min, dt_max)
     return fused_dt_fallback(dt_hidden, dt_proj_weight, dt_bias, dt_min, dt_max)

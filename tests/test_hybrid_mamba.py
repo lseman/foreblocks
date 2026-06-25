@@ -74,7 +74,7 @@ def test_mamba2_block_cpu_forward_direct_dt() -> None:
     y = block(x)
 
     # dt projected directly in in_proj (no separate dt_proj layer)
-    assert not hasattr(block, 'dt_proj')
+    assert not hasattr(block, "dt_proj")
     assert block.dt_bias.shape == (block.num_heads,)
     assert isinstance(block.residual_proj, nn.Linear)
     assert y.shape == x.shape
@@ -264,24 +264,19 @@ def test_fused_out_backward_matches_autograd_reference() -> None:
     batch, seqlen, dim = 2, 4, 9
     y = torch.randn(batch, seqlen, dim)
     z = torch.randn(batch, seqlen, dim)
-    residual = torch.randn(batch, seqlen, dim)
     norm_weight = torch.randn(dim)
     grad_out = torch.randn_like(y)
 
-    d_y, d_z, d_residual, d_norm_weight = fused_out_bwd_triton(
-        grad_out, y, z, residual, norm_weight
-    )
+    d_y, d_z, d_norm_weight = fused_out_bwd_triton(grad_out, y, z, norm_weight)
 
     y_ref = _clone_requires_grad(y)
     z_ref = _clone_requires_grad(z)
-    residual_ref = _clone_requires_grad(residual)
     norm_weight_ref = _clone_requires_grad(norm_weight)
-    out_ref = fused_out_fallback(y_ref, z_ref, residual_ref, norm_weight_ref)
+    out_ref = fused_out_fallback(y_ref, z_ref, norm_weight_ref)
     out_ref.backward(grad_out)
 
     _assert_close(d_y, y_ref.grad)
     _assert_close(d_z, z_ref.grad)
-    _assert_close(d_residual, residual_ref.grad)
     assert d_norm_weight is not None
     _assert_close(d_norm_weight, norm_weight_ref.grad)
 

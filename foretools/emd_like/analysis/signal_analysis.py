@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
-import scipy.stats
 import pyfftw.interfaces.numpy_fft as fftw_np
+import scipy.stats
 
 from ..config import VMDParameters
 

@@ -7,6 +7,7 @@ from typing import Literal
 import torch
 from torch import Tensor, nn
 
+
 PolyFamily = Literal[
     "hahn",
     "chebyshev",

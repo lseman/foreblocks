@@ -13,7 +13,12 @@ from foreblocks.modules.blocks.attention import (
     AutoCorrelationPreprocessor,
     HierarchicalAttention,
 )
-from foreblocks.modules.blocks.enc_dec import GRUDecoder, GRUEncoder, LSTMDecoder, LSTMEncoder
+from foreblocks.modules.blocks.enc_dec import (
+    GRUDecoder,
+    GRUEncoder,
+    LSTMDecoder,
+    LSTMEncoder,
+)
 
 # Preprocessing blocks
 # from .famous import N_BEATS, TimesBlock
@@ -29,6 +34,7 @@ from foreblocks.modules.blocks.ode import NeuralODE
 # from .popular.nha import NHA
 # Simple blocks
 from foreblocks.modules.blocks.simple import GRN
+
 
 # Mamba blocks
 # from .mamba import MambaDecoder

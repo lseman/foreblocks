@@ -2,7 +2,11 @@ import os
 
 import torch
 
-from foreblocks.ops.attention.fla_backend import fla_chunk_gla, fla_fused_recurrent_gla, is_fla_available
+from foreblocks.ops.attention.fla_backend import (
+    fla_chunk_gla,
+    fla_fused_recurrent_gla,
+    is_fla_available,
+)
 
 
 def can_use_fla_gla(

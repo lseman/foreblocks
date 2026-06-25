@@ -4,11 +4,13 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from darts.training.edge_regularization import _add_edge_diversity_reg
+
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from darts.training.edge_regularization import _add_edge_diversity_reg
 
 
 class _FakeEdge:

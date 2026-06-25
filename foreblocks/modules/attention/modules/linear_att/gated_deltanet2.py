@@ -66,8 +66,8 @@ from foreblocks.ops.attention import (
     can_use_fla_gdn2,
     can_use_fla_gdn2_chunk,
     can_use_fused_rmsnorm_sigmoid_gate,
-    fla_gdn2_forward,
     fla_gdn2_chunk_forward,
+    fla_gdn2_forward,
     fused_rmsnorm_sigmoid_gate,
 )
 

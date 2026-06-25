@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from foreblocks.layers.norms import create_norm_layer
+from foreblocks.modules.attention.modules.linear_att.gated_delta import (
+    GatedDeltaNet,
+)
+from foreblocks.modules.attention.multi_att import MultiAttention
+
+
 """Oryx multi-mixer block and transformer stack.
 
 Based on: Li et al., "Multi-Mixer Models: Flexible Sequence Modeling with Shared
@@ -7,15 +18,7 @@ Representations", arXiv 2605.28769v1.
 Paper: https://arxiv.org/abs/2605.28769
 """
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
-from foreblocks.modules.attention.modules.linear_att.gated_delta import (
-    GatedDeltaNet,
-)
-from foreblocks.modules.attention.multi_att import MultiAttention
-from foreblocks.layers.norms import create_norm_layer
 
 
 class _CausalDepthwiseConv(nn.Module):

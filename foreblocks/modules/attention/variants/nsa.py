@@ -42,7 +42,9 @@ import math
 import torch
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.variants.sliding_window import SlidingWindowAttentionImpl
+from foreblocks.modules.attention.variants.sliding_window import (
+    SlidingWindowAttentionImpl,
+)
 
 
 class NSAImpl:

@@ -1,12 +1,15 @@
-import pandas as pd
-import numpy as np
-import sys
 import os
+import sys
+
+import numpy as np
+import pandas as pd
+
+from foretools.foreminer.foreminer import DatasetAnalyzer
+
 
 # Add the project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from foretools.foreminer.foreminer import DatasetAnalyzer
 
 def test_foreminer_sota():
     # 1. Create synthetic dataset with patterns

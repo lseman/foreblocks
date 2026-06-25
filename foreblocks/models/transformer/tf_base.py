@@ -32,23 +32,35 @@ from typing import Callable, List, Literal, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from foreblocks.modules.attention.utils.residuals import (
-    AttentionResidual,
-    normalize_attention_residual_mode,
-)
 from foreblocks.layers.embeddings import LearnablePositionalEncoding, PositionalEncoding
-from foreblocks.modules.moe.ff import FeedForwardBlock
+from foreblocks.layers.norms import RMSNorm, create_norm_layer
 from foreblocks.models.transformer.fusions import fused_dropout_add  # fused helpers
-from foreblocks.models.transformer.fusions import fused_dropout_add_norm, fused_dropout_gateskip_norm, get_dropout_p
+from foreblocks.models.transformer.fusions import (
+    fused_dropout_add_norm,
+    fused_dropout_gateskip_norm,
+    get_dropout_p,
+)
 from foreblocks.models.transformer.mhc import (
     MHCHyperConnection,
     mhc_apply_norm_streamwise,
     mhc_collapse_streams,
     mhc_init_streams,
 )
-from foreblocks.layers.norms import RMSNorm, create_norm_layer
-from foreblocks.models.transformer.patching import PatchDetokenizer, PatchTokenizer, patchify_padding_mask
-from foreblocks.modules.skip.gateskip import BudgetScheduler, ResidualGate, apply_skip_to_kv
+from foreblocks.models.transformer.patching import (
+    PatchDetokenizer,
+    PatchTokenizer,
+    patchify_padding_mask,
+)
+from foreblocks.modules.attention.utils.residuals import (
+    AttentionResidual,
+    normalize_attention_residual_mode,
+)
+from foreblocks.modules.moe.ff import FeedForwardBlock
+from foreblocks.modules.skip.gateskip import (
+    BudgetScheduler,
+    ResidualGate,
+    apply_skip_to_kv,
+)
 from foreblocks.modules.skip.mod import (
     MoDBudgetScheduler,
     MoDRouter,

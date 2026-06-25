@@ -19,21 +19,25 @@ See :class:`~darts.config.DARTSVariant` for full documentation.
 from __future__ import annotations
 
 # Re-export all public functions from submodules
-from .dynamic_scheduling import _dynamic_arch_update_freq
-from .dynamic_scheduling import _dynamic_inner_arch_iters
-from .edge_regularization import _add_edge_diversity_reg
-from .edge_regularization import _add_edge_sharpening
-from .edge_regularization import _extract_edge_probs
-from .perturbation_hessian import _apply_darts_pt_perturbation
-from .perturbation_hessian import _restore_model_params
-from .perturbation_hessian import compute_implicit_arch_gradient_correction
-from .perturbation_hessian import finite_difference_hessian_penalty
-from .training_loop import train_darts_model
-from .training_loop import _run_model_training_epoch
-from .training_loop import _run_validation_epoch
-from .utils import _maybe_prune
-from .utils import _safe_load_state
-from .utils import _log_arch_gradients
+from .dynamic_scheduling import _dynamic_arch_update_freq, _dynamic_inner_arch_iters
+from .edge_regularization import (
+    _add_edge_diversity_reg,
+    _add_edge_sharpening,
+    _extract_edge_probs,
+)
+from .perturbation_hessian import (
+    _apply_darts_pt_perturbation,
+    _restore_model_params,
+    compute_implicit_arch_gradient_correction,
+    finite_difference_hessian_penalty,
+)
+from .training_loop import (
+    _run_model_training_epoch,
+    _run_validation_epoch,
+    train_darts_model,
+)
+from .utils import _log_arch_gradients, _maybe_prune, _safe_load_state
+
 
 __all__ = [
     "train_darts_model",

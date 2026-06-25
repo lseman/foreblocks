@@ -12,8 +12,8 @@ Optional:
 from __future__ import annotations
 
 import argparse
-import time
 import sys
+import time
 
 
 def _need(mod: str):

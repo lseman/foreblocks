@@ -4,12 +4,12 @@ This package exports the main core building blocks used by foreblocks
 models, attention layers, and conformal prediction helpers.
 """
 
-from foreblocks.core.training.conformal import ConformalPredictionEngine
-
 from foreblocks.core.att import AttentionLayer
 from foreblocks.core.extend import DistilledForecastingModel
-from foreblocks.modules.heads import HeadComposer, HeadSpec
 from foreblocks.core.model import BaseHead, ForecastingModel
+from foreblocks.core.training.conformal import ConformalPredictionEngine
+from foreblocks.modules.heads import HeadComposer, HeadSpec
+
 
 __all__ = [
     "AttentionLayer",

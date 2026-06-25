@@ -7,12 +7,14 @@ from their dedicated modules for backward compatibility.
 
 from __future__ import annotations
 
-from .optimizers import AlphaTracker
-from .optimizers import BilevelOptimizer
-from .regularization import ArchitectureRegularizer
-from .regularization import default_as_probability_vector
-from .regularization import RegularizationType
+from .optimizers import AlphaTracker, BilevelOptimizer
+from .regularization import (
+    ArchitectureRegularizer,
+    RegularizationType,
+    default_as_probability_vector,
+)
 from .schedulers import TemperatureScheduler
+
 
 __all__ = [
     "AlphaTracker",

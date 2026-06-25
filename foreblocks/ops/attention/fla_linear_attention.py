@@ -2,7 +2,10 @@ import os
 
 import torch
 
-from foreblocks.ops.attention.fla_backend import fla_fused_recurrent_linear_attn, is_fla_available
+from foreblocks.ops.attention.fla_backend import (
+    fla_fused_recurrent_linear_attn,
+    is_fla_available,
+)
 
 
 def can_use_fla_linear_attn(

@@ -26,6 +26,7 @@ from foreblocks.models.kan.poly import (
 )
 from foreblocks.models.kan.router import RouterConfig, TokenRouter
 
+
 __all__ = [
     "BackBone",
     "Backbone",

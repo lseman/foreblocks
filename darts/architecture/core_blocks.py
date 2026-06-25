@@ -23,10 +23,12 @@ import torch.nn.functional as F
 
 from foreblocks.layers.norms import RevIN
 
+from .darts_cell import DARTSCell
+
 # Re-export from split modules for backward compatibility
 from .mixed_op import MixedOp
-from .darts_cell import DARTSCell
 from .time_series_darts import TimeSeriesDARTS
+
 
 __all__ = [
     "SearchableNorm",

@@ -15,11 +15,6 @@ import optuna
 import pandas as pd
 from scipy import signal
 
-try:
-    from tqdm.auto import tqdm
-except ImportError:  # pragma: no cover - optional dependency
-    tqdm = None
-
 from foreblocks.ts_handler.auto_filter.filters import (
     _autocorr,
     _safe_corr,
@@ -45,7 +40,18 @@ from foreblocks.ts_handler.auto_filter.filters import (
     wavelet_denoise,
     whittaker_smoother,
 )
-from foreblocks.ts_handler.auto_filter.registry import _FILTER_REGISTRY, _SLOW_FILTERS, register_filter
+from foreblocks.ts_handler.auto_filter.registry import (
+    _FILTER_REGISTRY,
+    _SLOW_FILTERS,
+    register_filter,
+)
+
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - optional dependency
+    tqdm = None
+
 
 __all__ = [
     "auto_filter",

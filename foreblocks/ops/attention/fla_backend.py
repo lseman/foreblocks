@@ -16,6 +16,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Iterator
 
+
 _SUBMODULE_REL = Path("third_party") / "flash-linear-attention"
 _FALLBACK_REL = Path("flash-linear-attention")
 

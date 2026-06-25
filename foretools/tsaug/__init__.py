@@ -32,6 +32,7 @@ from .transformations import (
     window_slice,
 )
 
+
 __version__ = "0.1.0"
 __all__ = [
     "AutoDATimeseries",

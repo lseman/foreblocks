@@ -10,7 +10,7 @@ from unittest.mock import patch
 import torch
 import torch.nn.functional as F
 
-from darts.architecture.core_blocks import MixedOp, DARTSCell
+from darts.architecture.core_blocks import DARTSCell, MixedOp
 
 
 # ── 1. GDAS gradient normalisation ──────────────────────────────────────────
@@ -253,8 +253,9 @@ class TestDiversityFinalization(unittest.TestCase):
 
     def test_diversity_stops_repeating_same_op(self):
         """Verify _assign_cell_edges_with_diversity produces diverse results."""
-        import math
         import importlib
+        import math
+
         from darts.architecture import finalization
 
         # Reload the module to get the updated code

@@ -1,6 +1,13 @@
 from foreblocks.modules.moe.experts import dispatchers, moe, moe_logging, routers
-from foreblocks.modules.moe.experts.dispatchers import DroplessPackedDispatcher, ExpertChoiceDispatcher
-from foreblocks.modules.moe.experts.expert_blocks import MoE_FFNExpert, MoE_SwiGLUExpert, MTPHead
+from foreblocks.modules.moe.experts.dispatchers import (
+    DroplessPackedDispatcher,
+    ExpertChoiceDispatcher,
+)
+from foreblocks.modules.moe.experts.expert_blocks import (
+    MoE_FFNExpert,
+    MoE_SwiGLUExpert,
+    MTPHead,
+)
 from foreblocks.modules.moe.experts.moe import (
     MoEFeedForwardDMoE,
     eager_topk_routing,

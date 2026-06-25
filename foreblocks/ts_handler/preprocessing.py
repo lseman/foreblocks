@@ -66,6 +66,7 @@ from foreblocks.ts_handler.filters import (
 from foreblocks.ts_handler.impute import SAITSImputer
 from foreblocks.ts_handler.outlier import _remove_outliers, _remove_outliers_parallel
 
+
 Mode = Literal["fit", "transform"]
 
 # ---- optional deps -----------------------------------------------------------

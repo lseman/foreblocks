@@ -6,6 +6,12 @@ from foreblocks.core.training.batch_io import (
     to_device,
     unpack_batch,
 )
+from foreblocks.core.training.conformal_trainer import (
+    calibrate_conformal,
+    compute_coverage,
+    predict_with_intervals,
+    update_conformal,
+)
 from foreblocks.core.training.history import TrainingHistory
 from foreblocks.core.training.losses import LossComputer
 from foreblocks.core.training.nas import NASHelper, plot_alpha_evolution
@@ -14,12 +20,6 @@ from foreblocks.core.training.training_loop import (
     evaluate,
     forward_pass,
     train_epoch,
-)
-from foreblocks.core.training.conformal_trainer import (
-    calibrate_conformal,
-    compute_coverage,
-    predict_with_intervals,
-    update_conformal,
 )
 
 

@@ -12,34 +12,18 @@ Skipped when CUDA/Triton is unavailable.
 import pytest
 import torch
 
-triton = pytest.importorskip("triton")
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="Triton kernels require CUDA"
-)
-
-from foreblocks.ops.kernels.layer_norm import LayerNormTritonFunction
-from foreblocks.ops.kernels.rms_norm import (
-    RMSNormTritonFunction,
-    fused_add_rmsnorm,
-)
 from foreblocks.ops.attention.chunked_causal_linear_attention import (
     chunked_causal_linear_attn,
     fused_recurrent_causal_linear_attn,
-)
-from foreblocks.ops.attention.fla_delta_rule import (
-    can_use_fla_recurrent_delta_rule,
-    fla_recurrent_delta_rule,
 )
 from foreblocks.ops.attention.fla_backend import (
     fla_path,
     has_fla_checkout,
     is_fla_available,
 )
-from foreblocks.ops.attention.fused_norm_gate import (
-    fused_rmsnorm_sigmoid_gate,
-)
-from foreblocks.ops.attention.fla_linear_attention import (
-    fla_recurrent_linear_attn_forward,
+from foreblocks.ops.attention.fla_delta_rule import (
+    can_use_fla_recurrent_delta_rule,
+    fla_recurrent_delta_rule,
 )
 from foreblocks.ops.attention.fla_gated_delta_rule import (
     can_use_fla_gated_delta_rule,
@@ -54,6 +38,24 @@ from foreblocks.ops.attention.fla_kda import (
     can_use_fla_kda,
     fla_kda_forward,
 )
+from foreblocks.ops.attention.fla_linear_attention import (
+    fla_recurrent_linear_attn_forward,
+)
+from foreblocks.ops.attention.fused_norm_gate import (
+    fused_rmsnorm_sigmoid_gate,
+)
+from foreblocks.ops.kernels.layer_norm import LayerNormTritonFunction
+from foreblocks.ops.kernels.rms_norm import (
+    RMSNormTritonFunction,
+    fused_add_rmsnorm,
+)
+
+
+triton = pytest.importorskip("triton")
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Triton kernels require CUDA"
+)
+
 
 DEV = "cuda"
 DT = torch.float32

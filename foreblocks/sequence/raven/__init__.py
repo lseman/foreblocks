@@ -1,13 +1,11 @@
-from foreblocks.sequence.raven.blocks import Raven, RavenBlock
-from foreblocks.sequence.raven.configuration import RavenConfig
 from foreblocks.ops.raven import (
     ACT2FN,
     Attention,
     Cache,
     FusedRMSNormGated,
-    RMSNorm,
     RavenMLP,
     ReLUFeatureMap,
+    RMSNorm,
     RotaryEmbedding,
     SwishFeatureMap,
     T2RFeatureMap,
@@ -26,6 +24,8 @@ from foreblocks.ops.raven import (
     rms_norm_linear,
     update_layer_cache,
 )
+from foreblocks.sequence.raven.blocks import Raven, RavenBlock
+from foreblocks.sequence.raven.configuration import RavenConfig
 
 
 __all__ = [

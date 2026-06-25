@@ -55,7 +55,7 @@ def make_ssd_args(B, T, H, P, N, chunk_size=64, device="cuda"):
 # ── Benchmarks ──────────────────────────────────────────────────
 
 def bench_dt_prep(use_triton=True, iters=50):
-    from foreblocks.ops.mamba.triton_ops import dt_prep_triton, dt_prep_fallback
+    from foreblocks.ops.mamba.triton_ops import dt_prep_fallback, dt_prep_triton
     configs = [(2, 256, 512), (2, 1024, 2048), (2, 4096, 4096)]
     results = {}
     for B, T, D in configs:
@@ -87,7 +87,7 @@ def bench_fused_dt(use_triton=True, iters=50):
 
 
 def bench_fused_out(use_triton=True, iters=50):
-    from foreblocks.ops.mamba.triton_ops import fused_out_triton, fused_out_fallback
+    from foreblocks.ops.mamba.triton_ops import fused_out_fallback, fused_out_triton
     configs = [(2, 256, 512), (2, 1024, 2048), (2, 4096, 4096)]
     results = {}
     for B, T, D in configs:
@@ -103,12 +103,10 @@ def bench_fused_out(use_triton=True, iters=50):
 
 
 def bench_ssd_forward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=50):
-    from foreblocks.ops.mamba.ssd import _chunked_ssd_forward_torch as torch_fwd
-    from foreblocks.ops.mamba.ssd import chunked_ssd_forward_triton as triton_fwd
     from foreblocks.ops.mamba.ssd import (
+        _chunked_ssd_forward_torch as torch_fwd,
+        chunked_ssd_forward_triton as triton_fwd,
         chunked_ssd_forward_triton_parallel as triton_parallel_fwd,
-    )
-    from foreblocks.ops.mamba.ssd import (
         chunked_ssd_forward_triton_tiled as triton_tiled_fwd,
     )
 
@@ -187,9 +185,11 @@ def bench_ssd_forward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=50):
 
 
 def bench_ssd_backward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=20):
-    from foreblocks.ops.mamba.ssd import _chunked_ssd_backward_torch as torch_bwd
-    from foreblocks.ops.mamba.ssd import chunked_ssd_backward_triton as triton_bwd
-    from foreblocks.ops.mamba.ssd import _chunked_ssd_forward_torch as torch_fwd
+    from foreblocks.ops.mamba.ssd import (
+        _chunked_ssd_backward_torch as torch_bwd,
+        _chunked_ssd_forward_torch as torch_fwd,
+        chunked_ssd_backward_triton as triton_bwd,
+    )
 
     results = {}
     for T in Ts:
@@ -288,17 +288,21 @@ def bench_full_mamba2(B, T, num_heads=8, head_dim=512,
 
 
 def check_correctness():
+    from foreblocks.ops.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
     from foreblocks.ops.mamba.mamba2_combined import mamba2_split_conv1d_scan_combined
     from foreblocks.ops.mamba.ssd import (
-        chunked_ssd_forward,
         _chunked_ssd_forward_torch as torch_fwd,
+        chunked_ssd_forward,
         chunked_ssd_forward_triton as triton_fwd,
         chunked_ssd_forward_triton_parallel as triton_parallel_fwd,
         chunked_ssd_forward_triton_tiled as triton_tiled_fwd,
     )
-    from foreblocks.ops.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
-    from foreblocks.ops.mamba.triton_ops import dt_prep_triton, dt_prep_fallback
-    from foreblocks.ops.mamba.triton_ops import fused_out_triton, fused_out_fallback
+    from foreblocks.ops.mamba.triton_ops import (
+        dt_prep_fallback,
+        dt_prep_triton,
+        fused_out_fallback,
+        fused_out_triton,
+    )
 
     torch.manual_seed(123)
     B, T, H, P, N = 2, 128, 8, 16, 8

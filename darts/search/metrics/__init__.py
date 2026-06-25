@@ -17,8 +17,6 @@ from torch.utils.data import DataLoader
 
 from ..scoring import (
     normalize_metric_value as _normalize_metric_value_shared,
-)
-from ..scoring import (
     score_from_metrics as _score_from_metrics_shared,
 )
 from .activation_diversity import compute_activation_diversity
@@ -32,6 +30,7 @@ from .params import compute_params
 from .sensitivity import compute_sensitivity
 from .snip import compute_snip
 from .synflow import compute_synflow
+
 
 warnings.filterwarnings("ignore", category=UserWarning)
 

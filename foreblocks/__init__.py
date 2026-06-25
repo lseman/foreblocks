@@ -7,15 +7,27 @@ training, evaluation, and model composition.
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from foreblocks.modules.blocks.enc_dec import GRUDecoder, GRUEncoder, LSTMDecoder, LSTMEncoder
 from foreblocks.config import ModelConfig, TrainingConfig
 from foreblocks.core.att import AttentionLayer
 from foreblocks.data import TimeSeriesDataset, create_dataloaders
 from foreblocks.models import ForecastingModel, GraphForecastingModel
-from foreblocks.models.transformer.transformer import TransformerDecoder, TransformerEncoder
+from foreblocks.models.transformer.transformer import (
+    TransformerDecoder,
+    TransformerEncoder,
+)
 
 # from .pipeline import TimeSeriesSeq2Seq
-from foreblocks.models.transformer.transformer_tuner import ModernTransformerTuner, TransformerTuner
+from foreblocks.models.transformer.transformer_tuner import (
+    ModernTransformerTuner,
+    TransformerTuner,
+)
+from foreblocks.modules.blocks.enc_dec import (
+    GRUDecoder,
+    GRUEncoder,
+    LSTMDecoder,
+    LSTMEncoder,
+)
+
 
 if TYPE_CHECKING:
     from foreblocks.core.evaluation import ModelEvaluator

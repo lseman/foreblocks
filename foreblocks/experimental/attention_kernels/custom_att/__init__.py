@@ -4,11 +4,16 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from custom_att.src.triton_bwd import can_use_triton_bwd, triton_flash_bwd
-from custom_att.src.triton_fwd import can_use_triton_fwd, triton_flash_fwd, triton_flash_decode, can_use_triton_decode
 from custom_att.src.tilelang_bwd import can_use_tilelang_bwd, tilelang_flash_bwd
 from custom_att.src.tilelang_fwd import can_use_tilelang_fwd, tilelang_flash_fwd
+from custom_att.src.triton_bwd import can_use_triton_bwd, triton_flash_bwd
+from custom_att.src.triton_fwd import (
+    can_use_triton_decode,
+    can_use_triton_fwd,
+    triton_flash_decode,
+    triton_flash_fwd,
+)
+
 
 _DECODER_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_DECODER") != "1"
 

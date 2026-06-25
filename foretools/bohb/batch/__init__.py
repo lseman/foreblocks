@@ -4,10 +4,11 @@ from .fantasized import FantasizedBatchSelector
 from .greedy_diversity import GreedyDiversitySelector
 from .local_penalization import LocalPenalizationSelector
 from .thompson import (
-    ThompsonSamplingSelector,
     DistanceBasedUncertainty,
     GPUCBBasedUncertainty,
+    ThompsonSamplingSelector,
 )
+
 
 try:
     from .qnei import qNoisyEISelector

@@ -4,7 +4,12 @@ from collections.abc import Sequence
 
 import torch.nn as nn
 
-from foreblocks.layers.graph.common import Tensor, crop_residual_to_match, ensure_adj, xavier_zero_bias
+from foreblocks.layers.graph.common import (
+    Tensor,
+    crop_residual_to_match,
+    ensure_adj,
+    xavier_zero_bias,
+)
 from foreblocks.layers.graph.mtgnn import (
     MTGNNGraphConstructor,
     MTGNNMixProp,

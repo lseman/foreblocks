@@ -3,12 +3,13 @@ import sys
 from pathlib import Path
 
 import torch
+from custom_att import flash_attn_backward_backend, flash_attn_func
+
 
 PACKAGE_PARENT = Path(__file__).resolve().parent.parent
 if str(PACKAGE_PARENT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_PARENT))
 
-from custom_att import flash_attn_backward_backend, flash_attn_func
 
 
 def ref(q, k, v, causal=False, scale=None):

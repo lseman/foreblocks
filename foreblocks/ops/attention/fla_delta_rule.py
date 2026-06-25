@@ -2,7 +2,11 @@ import os
 
 import torch
 
-from foreblocks.ops.attention.fla_backend import fla_chunk_delta_rule, fla_fused_recurrent_delta_rule, is_fla_available
+from foreblocks.ops.attention.fla_backend import (
+    fla_chunk_delta_rule,
+    fla_fused_recurrent_delta_rule,
+    is_fla_available,
+)
 
 
 def can_use_fla_delta_rule(

@@ -3,10 +3,10 @@ import torch
 from foreblocks.layers.graph.tggc import (
     GraphGegenbauerConv,
     LatentCorrelationLayer,
+    TemporalSpectralFilter,
     TGGCBlock,
     TGGCModern,
     TGGCModernConfig,
-    TemporalSpectralFilter,
     normalized_laplacian_from_adjacency,
     symmetric_normalize_adjacency,
 )

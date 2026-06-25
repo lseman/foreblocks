@@ -31,6 +31,7 @@ from foreblocks.models.transformer.transformer import (
     TransformerEncoder,
 )
 
+
 # ---------------------------
 # Core TFT building blocks
 # ---------------------------

@@ -7,13 +7,15 @@ from their dedicated modules for backward compatibility.
 
 from __future__ import annotations
 
-from .bridges import AttentionBridge
-from .bridges import LearnedPoolingBridge
+from .bridges import AttentionBridge, LearnedPoolingBridge
 from .self_attention import SelfAttention
-from .utils import _causal_mask
-from .utils import _make_alibi_slopes
-from .utils import _seasonal_relative_bias
-from .utils import _sinusoidal_features
+from .utils import (
+    _causal_mask,
+    _make_alibi_slopes,
+    _seasonal_relative_bias,
+    _sinusoidal_features,
+)
+
 
 __all__ = [
     "SelfAttention",

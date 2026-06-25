@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import pandas as pd
 
+
 _FILTER_REGISTRY: dict[str, Callable[[pd.Series], pd.Series]] = {}
 _SLOW_FILTERS: set[str] = set()
 

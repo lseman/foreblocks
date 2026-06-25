@@ -7,6 +7,7 @@ import torch
 from einops import rearrange, repeat
 from torch import Tensor
 
+
 try:
     from foreblocks.ops.attention.fused_rope import (
         _TRITON_AVAILABLE,

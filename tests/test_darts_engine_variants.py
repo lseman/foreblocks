@@ -4,15 +4,20 @@ import unittest
 import torch
 import torch.nn as nn
 
-from darts.config import DARTSEngineConfig, DARTSVariant, R_DARTSEngineConfig, GD_DARTSEngineConfig
-from darts.training.darts_engine import (
-    configure_mixed_op_for_variant,
-    compute_gradient_norm_balance,
-    apply_permutation_consistency,
-    forward_bidirectional,
-    build_engine_config,
+from darts.architecture.core_blocks import DARTSCell, MixedOp
+from darts.config import (
+    DARTSEngineConfig,
+    DARTSVariant,
+    GD_DARTSEngineConfig,
+    R_DARTSEngineConfig,
 )
-from darts.architecture.core_blocks import MixedOp, DARTSCell
+from darts.training.darts_engine import (
+    apply_permutation_consistency,
+    build_engine_config,
+    compute_gradient_norm_balance,
+    configure_mixed_op_for_variant,
+    forward_bidirectional,
+)
 
 
 class TestDARTSVariantEnum(unittest.TestCase):

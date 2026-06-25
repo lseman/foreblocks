@@ -14,8 +14,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from foreblocks.core.training.batch_io import loader_len, move_batch_to_device, unpack_batch
-from foreblocks.core.training.batch_io import to_device
+from foreblocks.core.training.batch_io import (
+    loader_len,
+    move_batch_to_device,
+    to_device,
+    unpack_batch,
+)
 
 
 # ====================================================================

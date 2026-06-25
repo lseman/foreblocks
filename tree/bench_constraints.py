@@ -1,7 +1,8 @@
-import numpy as np
 import foreforest
+import numpy as np
 from foreforest import ForeForest, ForeForestConfig, TreeConfig
 from sklearn.metrics import mean_squared_error
+
 
 print("Testing Monotonic Constraints and Sparsity Handling")
 

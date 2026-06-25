@@ -11,6 +11,7 @@ from foreblocks.models.kan.model import KANModel, Model, RevIN, compute_patch_nu
 from foreblocks.models.kan.poly import PolyFamily, PolyLayerConfig
 from foreblocks.models.kan.router import RouterConfig, TokenRouter
 
+
 __all__ = [
     "BackBone",
     "Backbone",

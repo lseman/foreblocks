@@ -13,11 +13,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.multi_att import MultiAttention
-
 # Use your project modules
 from foreblocks.layers.embeddings import PositionalEncoding
 from foreblocks.layers.norms import create_norm_layer
+from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 def _patchify_1d(x: torch.Tensor, patch_len: int, stride: int) -> torch.Tensor:

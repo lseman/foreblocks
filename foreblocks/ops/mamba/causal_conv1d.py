@@ -180,7 +180,9 @@ def causal_depthwise_conv1d_triton(
     weight_contig = weight.contiguous()
     out = torch.empty_like(x_contig)
     total = x.numel()
-    BLOCK = 256
+    # larger block → more ILP; cap at 1024 to stay within register limits
+    BLOCK = min(max(triton.next_power_of_2(T), 256), 1024)
+    num_warps = min(BLOCK // 32, 8)
     grid = (triton.cdiv(total, BLOCK),)
     _causal_depthwise_conv1d_kernel[grid](
         x_contig,
@@ -193,6 +195,7 @@ def causal_depthwise_conv1d_triton(
         K,
         has_bias=bias is not None,
         BLOCK=BLOCK,
+        num_warps=num_warps,
     )
     return out
 
@@ -231,7 +234,8 @@ def causal_depthwise_conv1d_bwd_triton(
     dbias = torch.empty_like(bias) if (bias is not None and needs_input_grad[2]) else None
 
     if dx is not None:
-        block = 256
+        block = min(max(triton.next_power_of_2(T), 256), 1024)
+        num_warps = min(block // 32, 8)
         grid = (triton.cdiv(x_contig.numel(), block),)
         _causal_depthwise_conv1d_dx_kernel[grid](
             grad_contig,
@@ -242,6 +246,7 @@ def causal_depthwise_conv1d_bwd_triton(
             T,
             K,
             BLOCK=block,
+            num_warps=num_warps,
         )
 
     if dweight is not None or dbias is not None:

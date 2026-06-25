@@ -1,6 +1,6 @@
+import pytest
 import torch
 import torch.nn as nn
-import pytest
 
 from darts.search import zero_cost
 from darts.search.metrics import (

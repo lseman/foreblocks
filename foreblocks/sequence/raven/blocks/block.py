@@ -5,7 +5,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from foreblocks.ops.raven import Attention, Cache, RMSNorm, RavenMLP, fused_attnres
+from foreblocks.ops.raven import Attention, Cache, RavenMLP, RMSNorm, fused_attnres
 from foreblocks.sequence.raven.blocks.raven import Raven
 
 

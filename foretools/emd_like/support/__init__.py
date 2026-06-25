@@ -1,8 +1,9 @@
 """Support helpers for the EMD-like package."""
 
 from .boundary import BoundaryHandler
-from .fft import FFTWManager, TORCH_AVAILABLE, torch
+from .fft import TORCH_AVAILABLE, FFTWManager, torch
 from .utils import _energy
+
 
 __all__ = [
     "BoundaryHandler",

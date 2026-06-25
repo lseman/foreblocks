@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .norms import RMSNorm
+
+
 try:
     from foreblocks.ops.norms_triton import (
         TRITON_AVAILABLE,
@@ -15,7 +18,6 @@ except Exception:  # pragma: no cover - foreblocks namespace may exclude transfo
     def _should_use_triton(x, min_numel: int = 2048) -> bool:
         return False
 
-from .norms import RMSNorm
 
 
 class DLinearOp(nn.Module):

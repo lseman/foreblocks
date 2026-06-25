@@ -1,8 +1,8 @@
 import torch
 
+from foreblocks.models.transformer.transformer import TransformerEncoder
 from foreblocks.modules.skip.gateskip import BudgetScheduler
 from foreblocks.modules.skip.mod import MoDBudgetScheduler
-from foreblocks.models.transformer.transformer import TransformerEncoder
 
 
 def test_transformer_schedulers_do_not_step_during_eval():

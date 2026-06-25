@@ -22,6 +22,7 @@ from foreblocks.modules.moe.ff import FeedForwardBlock
 from foreblocks.sequence.mamba.mamba2 import Mamba2Block
 from foreblocks.sequence.mamba.mamba3 import Mamba3Block
 
+
 BLOCK_TYPES = ("mamba2", "mamba3", "attn", "moe")
 
 

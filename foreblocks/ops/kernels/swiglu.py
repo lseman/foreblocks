@@ -8,6 +8,9 @@ from collections.abc import Sequence
 import torch
 import torch.nn.functional as F
 
+from foreblocks.ops.kernels.grouped_gemm import grouped_mm_varM
+
+
 try:
     import triton
     import triton.language as tl
@@ -16,7 +19,6 @@ try:
 except Exception:  # pragma: no cover
     HAS_TRITON = False
 
-from foreblocks.ops.kernels.grouped_gemm import grouped_mm_varM
 
 # =============================== Triton kernels ===============================
 
@@ -93,6 +95,7 @@ if HAS_TRITON:
             B, T, Dh = a.shape
             y = torch.empty_like(a)
             BLOCK = triton.next_power_of_2(Dh)
+            num_warps = 2 if BLOCK <= 64 else (4 if BLOCK <= 512 else 8)
             _swiglu_gate_forward[(B, T)](
                 a,
                 b,
@@ -109,6 +112,7 @@ if HAS_TRITON:
                 y.stride(2),
                 Dh,
                 BLOCK=BLOCK,
+                num_warps=num_warps,
             )
             ctx.save_for_backward(a, b)
             return y
@@ -134,6 +138,7 @@ if HAS_TRITON:
             da = torch.empty_like(a)
             db = torch.empty_like(b)
             BLOCK = triton.next_power_of_2(Dh)
+            num_warps = 2 if BLOCK <= 64 else (4 if BLOCK <= 512 else 8)
             _swiglu_gate_backward[(B, T)](
                 da,
                 db,
@@ -145,6 +150,7 @@ if HAS_TRITON:
                 a.stride(2),
                 Dh,
                 BLOCK=BLOCK,
+                num_warps=num_warps,
             )
             return da, db
 

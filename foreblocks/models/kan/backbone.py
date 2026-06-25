@@ -6,7 +6,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from foreblocks.models.kan.poly import DEFAULT_POLY_FAMILIES, PolyFamily, PolyLayerConfig, build_poly_layer
+from foreblocks.models.kan.poly import (
+    DEFAULT_POLY_FAMILIES,
+    PolyFamily,
+    PolyLayerConfig,
+    build_poly_layer,
+)
 from foreblocks.models.kan.router import RouterConfig, TokenRouter
 
 

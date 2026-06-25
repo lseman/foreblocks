@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+
 pytest.importorskip("triton", reason="Triton not available")
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA required for Triton kernels"
@@ -78,8 +79,8 @@ def test_grad_residual_equals_grad_update():
 
 
 def test_fallback_for_large_d():
-    from foreblocks.models.transformer.fusions import fused_dropout_add_norm
     from foreblocks.layers.norms.rms_norm import RMSNorm
+    from foreblocks.models.transformer.fusions import fused_dropout_add_norm
 
     D = 4096
     residual = torch.randn(1, 4, D, device="cuda")

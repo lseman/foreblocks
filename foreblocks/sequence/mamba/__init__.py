@@ -1,8 +1,8 @@
-from foreblocks.ops.mamba import (
+from foreblocks.ops.mamba import (  # rotary_apply, rotary_apply_fallback stubs below
     CAUSAL_CONV1D_TRITON_AVAILABLE,
     CHUNKED_SSD_TRITON_AVAILABLE,
     RMS_NORM_TRITON_AVAILABLE,
-    # ROTARY_TRITON_AVAILABLE,
+    ROTARY_TRITON_AVAILABLE,
     TRITON_AVAILABLE,
     causal_depthwise_conv1d,
     causal_depthwise_conv1d_bwd_triton,
@@ -23,29 +23,61 @@ from foreblocks.ops.mamba import (
     mamba2_split_conv1d_scan_combined,
     rms_norm,
     rms_norm_fallback,
-    # rotary_apply,
-    # rotary_apply_fallback,
 )
-
-# from foreblocks.sequence.mamba.attention import SlidingWindowAttention
 from foreblocks.sequence.mamba.conv import CausalDepthwiseConv1d
 from foreblocks.sequence.mamba.feedforward import FeedForward
-
-# from foreblocks.sequence.mamba.hybrid import HybridMamba2Block
 from foreblocks.sequence.mamba.mamba2 import Mamba2Block
 from foreblocks.sequence.mamba.mamba3 import Mamba3Block
 from foreblocks.sequence.mamba.norms import RMSNorm, RMSNormWeightOnly
 
+
+def rotary_apply(*args, **kwargs):
+    """Stub — rotary Triton kernel not implemented."""
+    raise NotImplementedError("rotary_apply not yet implemented")
+
+
+def rotary_apply_fallback(*args, **kwargs):
+    """Stub — rotary fallback not implemented."""
+    raise NotImplementedError("rotary_apply_fallback not yet implemented")
+
+
+# from foreblocks.sequence.mamba.attention import SlidingWindowAttention
+class SlidingWindowAttention:
+    """Stub — not yet implemented."""
+
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError("SlidingWindowAttention not yet implemented")
+
+
+
+
+# from foreblocks.sequence.mamba.hybrid import HybridMamba2Block
+class HybridMamba2Block:
+    """Stub — not yet implemented."""
+
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError("HybridMamba2Block not yet implemented")
+
+
+
+
 # from foreblocks.sequence.mamba.rotary import RotaryEmbedding
+class RotaryEmbedding:
+    """Stub — not yet implemented."""
+
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError("RotaryEmbedding not yet implemented")
+
 
 _HAS_TRITON = TRITON_AVAILABLE
 __all__ = [
     "RotaryEmbedding",
+    "SlidingWindowAttention",
     "TRITON_AVAILABLE",
     "_HAS_TRITON",
     "CAUSAL_CONV1D_TRITON_AVAILABLE",
     "RMS_NORM_TRITON_AVAILABLE",
-    # "ROTARY_TRITON_AVAILABLE",
+    "ROTARY_TRITON_AVAILABLE",
     "CausalDepthwiseConv1d",
     "FeedForward",
     "causal_depthwise_conv1d",
@@ -67,13 +99,13 @@ __all__ = [
     "mamba2_split_conv1d_scan_combined",
     "rms_norm",
     "rms_norm_fallback",
-    # "rotary_apply",
-    # "rotary_apply_fallback",
+    "rotary_apply",
+    "rotary_apply_fallback",
     "CHUNKED_SSD_TRITON_AVAILABLE",
-    # "HybridMamba2Block",
+    "HybridMamba2Block",
     "Mamba2Block",
     "Mamba3Block",
     "RMSNorm",
     "RMSNormWeightOnly",
-    # "SlidingWindowAttention",
+    "SlidingWindowAttention",
 ]

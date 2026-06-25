@@ -5,8 +5,11 @@ import inspect
 import torch
 import torch.nn as nn
 
+
 try:
-    from foreblocks.modules.moe.kernels.kernels import grouped_mlp_swiglu  # type: ignore
+    from foreblocks.modules.moe.kernels.kernels import (
+        grouped_mlp_swiglu,  # type: ignore
+    )
 except Exception:
     grouped_mlp_swiglu = None  # type: ignore
 

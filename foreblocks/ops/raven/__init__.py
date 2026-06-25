@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from foreblocks.ops.raven.backend import fla_import_path, fla_path, get_fla_attr, has_fla_checkout, import_fla_module
+from foreblocks.ops.raven.backend import (
+    fla_import_path,
+    fla_path,
+    get_fla_attr,
+    has_fla_checkout,
+    import_fla_module,
+)
 
 
 class _LazyFLAAttr:

@@ -1,10 +1,9 @@
+import pytest
 import torch
 
-import pytest
-
-from foreblocks.modules.moe.ff import FeedForwardBlock
 from foreblocks.modules.moe.experts import moe
 from foreblocks.modules.moe.experts.routers import RouterOutput
+from foreblocks.modules.moe.ff import FeedForwardBlock
 
 
 def test_latent_moe_preserves_output_shape_and_aux():

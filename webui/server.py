@@ -24,6 +24,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Node discovery endpoints you included
+# ──────────────────────────────────────────────────────────────────────────────
+from foreblocks.ui.discovery import categories_map, discover_nodes  # noqa
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Settings
 # ──────────────────────────────────────────────────────────────────────────────
 MAX_WORKERS = max(2, os.cpu_count() or 2)
@@ -739,10 +745,6 @@ def analyze_csv(path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Node discovery endpoints you included
-# ──────────────────────────────────────────────────────────────────────────────
-from foreblocks.ui.discovery import categories_map, discover_nodes  # noqa
 
 
 @app.get("/health")

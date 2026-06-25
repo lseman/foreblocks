@@ -9,8 +9,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
 
-from foreblocks.ui.node_spec import node
-
 from foreblocks.modules.heads.head_state import HeadStateManager
 from foreblocks.modules.heads.head_types import (
     ActiveHead,
@@ -29,6 +27,7 @@ from foreblocks.modules.heads.head_types import (
     SerialNoneState,
 )
 from foreblocks.modules.heads.projection_registry import ProjectionRegistry
+from foreblocks.ui.node_spec import node
 
 
 @node(

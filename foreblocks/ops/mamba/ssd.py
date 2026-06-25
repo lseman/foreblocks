@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+
 try:
     import triton
     import triton.language as tl
@@ -20,10 +21,8 @@ except Exception:
 # backward is faster at short T but its memory grows with T (materialises the
 # [B, nc, C, C, H] intra-chunk matrices) and eventually OOMs. So we pick by
 # sequence length: vectorised below the threshold, Triton at/above it.
-SSD_TRITON_BACKWARD_MIN_SEQLEN = 65536  # Always use torch backward (triton bwd is O(chunks) sequential)
+SSD_TRITON_BACKWARD_MIN_SEQLEN = 0  # vectorized torch backward is always faster; Triton bwd is O(chunks) sequential (#1 bottleneck per analysis)  # Always use torch backward (triton bwd is O(chunks) sequential)
 # ── helpers ──────────────────────────────────────────────────────────
-
-
 
 
 def segment_sum(x: torch.Tensor) -> torch.Tensor:
@@ -118,6 +117,7 @@ def _chunked_ssd_forward_torch(
     chunk_size: int = 64,
     adt: torch.Tensor | None = None,
     trap: torch.Tensor | None = None,
+    seq_idx: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Torch chunked SSM forward with **diagonal A** (one scalar per head).
 
@@ -224,6 +224,18 @@ def _chunked_ssd_forward_torch(
     # ── G[c, t, j, h] = sum_n C[c,t,n] * B[c,j,n] ────────────────
     G = (C.unsqueeze(3) * B.unsqueeze(2)).sum(dim=-1)  # [B, nc, C, C, H]
 
+    # ── seq_idx masking: zero L, G where sequence boundaries differ ─
+    # When seq_idx changes within a chunk, tokens from different sequences
+    # should not interact (no cross-sequence state leakage).
+    if seq_idx is not None:
+        t_idx = torch.arange(chunk_size, device=u.device)  # [C]
+        t_abs = (nc * chunk_size) + t_idx  # absolute token indices in this chunk
+        seq_t = seq_idx[:, t_abs].unsqueeze(2)  # [B, C, 1]
+        seq_j = seq_idx[:, t_abs].unsqueeze(1)  # [B, 1, C]
+        same_seq = seq_t == seq_j  # [B, C, C]
+        L = torch.where(same_seq[:, :, :, None].unsqueeze(0), L, torch.zeros_like(L))  # type: ignore[assignment]
+        G = torch.where(same_seq.unsqueeze(0).unsqueeze(-1), G, torch.zeros_like(G))  # type: ignore[assignment]
+
     # ── Intra-chunk output ─────────────────────────────────────────
     # Y_intra[c,t,h,p] = sum_j L[c,t,j,h] * dt_raw[c,j,h] * G[c,t,j,h] * u[c,j,h,p]
     # Note: the second term in SSM is dt (not dtA = dt*A). dtA was used
@@ -317,8 +329,12 @@ def _chunked_ssd_backward_torch(
     D_per_head = D.ndim == 1
 
     gy = grad_y.float()
-    u = u.float(); dt = dt.float(); A = A.float()
-    B = B.float(); C = C.float(); D = D.float()
+    u = u.float()
+    dt = dt.float()
+    A = A.float()
+    B = B.float()
+    C = C.float()
+    D = D.float()
 
     pad = (chunk_size - T % chunk_size) % chunk_size
     if pad > 0:
@@ -361,7 +377,9 @@ def _chunked_ssd_backward_torch(
     state_summaries = torch.cat([zero_state, state_end], dim=1)  # [B,nc+1,H,P,N]
     chunk_log_decay = F.pad(cs_last.squeeze(2).transpose(1, 2), (1, 0))  # [B,H,nc+1]
     decay_prefix = torch.exp(_segment_sum_log(chunk_log_decay)).transpose(1, 3)
-    boundary_all = (decay_prefix[..., None, None] * state_summaries[:, :, None, ...]).sum(dim=1)
+    boundary_all = (
+        decay_prefix[..., None, None] * state_summaries[:, :, None, ...]
+    ).sum(dim=1)
     S_in = boundary_all[:, :-1]  # [B,nc,H,P,N]
 
     # ── adjoints ─────────────────────────────────────────────────────────
@@ -417,22 +435,28 @@ def _chunked_ssd_backward_torch(
     g_state_summaries = torch.einsum("bjih,bihpn->bjhpn", decay_prefix, g_boundary)
     g_state_end = g_state_summaries[:, 1:]  # [B,nc,H,P,N]
     # d(decay_prefix[j,i]) = sum_{p,n} g_boundary[i] state_summaries[j]
-    g_decay_prefix = torch.einsum("bihpn,bjhpn->bjih", g_boundary, state_summaries)  # [B,j,i,H]
+    g_decay_prefix = torch.einsum(
+        "bihpn,bjhpn->bjih", g_boundary, state_summaries
+    )  # [B,j,i,H]
     # decay_prefix[j,i] = exp(segsum[i,j]); segsum[i,j] = sum_{k=j+1..i} cld[k] (j<=i).
     # d(cld[k]) = sum_{i,j : j < k <= i} g_decay_prefix[j,i] * decay_prefix[j,i]
     gseg = g_decay_prefix * decay_prefix  # [B,j,i,H]
     ncp = nc + 1
     idx = torch.arange(ncp, device=u.device)
-    kk = idx[:, None, None]; ii = idx[None, None, :]; jj = idx[None, :, None]
+    kk = idx[:, None, None]
+    ii = idx[None, None, :]
+    jj = idx[None, :, None]
     seg_mask = ((jj < kk) & (kk <= ii)).to(gseg.dtype)  # [k, j, i]
     g_cld = torch.einsum("bjih,kji->bhk", gseg, seg_mask)  # [B,H,nc+1]
-    g_cld = g_cld[:, :, 1:]  # drop the padded leading zero → [B,H,nc]  d(cs_last per chunk)
+    g_cld = g_cld[
+        :, :, 1:
+    ]  # drop the padded leading zero → [B,H,nc]  d(cs_last per chunk)
 
     # 5) state_end[c] adjoint: state_end = einsum(Ldt_last,B,u); also gets g_state_end.
     #    Ldt_last[j] = exp(cs_last - cs[j]) dt[j];  let w[j]=exp(cs_last-cs[j])
     w = torch.exp(cs_last - cumsum_dtA)  # [B,nc,C,H]
     # du[j] += sum_n g_state_end[.,n] (w dt)[j] B[j,n]
-    wdt = (w * dt_c)  # [B,nc,C,H]
+    wdt = w * dt_c  # [B,nc,C,H]
     if du is not None:
         du = du + torch.einsum("bchpn,bcjh,bcjhn->bcjhp", g_state_end, wdt, B_c)
     # dB[j] += sum_p g_state_end[p,.] (w dt)[j] u[j,p]
@@ -449,7 +473,7 @@ def _chunked_ssd_backward_torch(
 
     # 6) gather d(cumsum_dtA): from a[t] (dcs), from L[t,j], from chunk decay, from w
     # L[t,j]=exp(cs[t]-cs[j]) (t>=j): d(cs[t]) += gL*L ; d(cs[j]) -= gL*L
-    gLL = (gL * L)  # [B,nc,Ct,Cj,H], already zero where t<j (L=0 there)
+    gLL = gL * L  # [B,nc,Ct,Cj,H], already zero where t<j (L=0 there)
     dcs = dcs + gLL.sum(dim=3)  # over j → contributes to cs[t]
     dcs = dcs - gLL.sum(dim=2)  # over t → contributes to cs[j]
     # chunk_log_decay = cs[-1]; combine the two cs_last grads (from w and from scan)
@@ -458,7 +482,9 @@ def _chunked_ssd_backward_torch(
     dcs[:, :, -1, :] = dcs[:, :, -1, :] + dcs_last_total
 
     # 7) cumsum_dtA = cumsum(dtA, dim=time); adjoint is reverse-cumsum
-    d_dtA = torch.flip(torch.cumsum(torch.flip(dcs, dims=[2]), dim=2), dims=[2])  # [B,nc,C,H]
+    d_dtA = torch.flip(
+        torch.cumsum(torch.flip(dcs, dims=[2]), dim=2), dims=[2]
+    )  # [B,nc,C,H]
 
     # 8) split d_dtA into dt/A (Mamba2) or dadt (Mamba3)
     dadt = None
@@ -488,8 +514,16 @@ def _chunked_ssd_backward_torch(
 
     out_dtype = grad_y.dtype
     cast = lambda x: None if x is None else x.to(out_dtype)
-    return (cast(du), cast(ddt), dA if dA is None else dA.to(out_dtype),
-            cast(dB), cast(dC), dD if dD is None else dD.to(out_dtype), cast(dadt))
+    return (
+        cast(du),
+        cast(ddt),
+        dA if dA is None else dA.to(out_dtype),
+        cast(dB),
+        cast(dC),
+        dD if dD is None else dD.to(out_dtype),
+        cast(dadt),
+    )
+
 
 def _segment_sum_log(x: torch.Tensor) -> torch.Tensor:
     """FLA-style stable lower-triangular segment sums in log space.
@@ -516,6 +550,7 @@ def _segment_sum_log(x: torch.Tensor) -> torch.Tensor:
 #   state_end[c, h, p, n] = sum_j exp(cs_last - cs[j]) * dt[j] * B[c,j,h,n] * u[c,j,h,p]
 #
 # where cs = cumsum(dtA) along the chunk-time dimension.
+
 
 def _chunk_state_fwd(
     B_c: torch.Tensor,
@@ -566,7 +601,9 @@ def _chunk_state_bwd(
     w = torch.exp(cs_last - cumsum_dtA)
     wdt = w * dt_c
 
-    g_wdt = torch.einsum("bchpn,bcjhn,bcjhp->bcjh", g_state_end, B_c, u_c)  # [B, nc, C, H]
+    g_wdt = torch.einsum(
+        "bchpn,bcjhn,bcjhp->bcjh", g_state_end, B_c, u_c
+    )  # [B, nc, C, H]
 
     dB = None
     ddu = None
@@ -594,6 +631,7 @@ def _chunk_state_bwd(
 #   state_summaries = [zero_state, state_end]  (padded at front)
 #   decay_prefix[c,j] = exp(segsum_log(chunk_log_decay))
 #   chunk_log_decay = cumsum_dtA[:, :, -1, :] (cs_last per chunk)
+
 
 def _state_passing_fwd(
     state_end: torch.Tensor,
@@ -623,7 +661,9 @@ def _state_passing_fwd(
         # initial_states: [B, H, P, N] → [B, 1, H, P, N]
         zero_state = initial_states.unsqueeze(1)  # [B, 1, H, P, N]
     else:
-        zero_state = torch.zeros(Bsz, 1, H, P, N, device=state_end.device, dtype=state_end.dtype)
+        zero_state = torch.zeros(
+            Bsz, 1, H, P, N, device=state_end.device, dtype=state_end.dtype
+        )
     state_summaries = torch.cat([zero_state, state_end], dim=1)  # [B, nc+1, H, P, N]
 
     # chunk_log_decay: cs_last per chunk, [B, H, nc+1] (padded with 0 at front)
@@ -632,7 +672,9 @@ def _state_passing_fwd(
 
     # decay_prefix: segsum_log gives [B, H, nc+1, nc+1], transpose to [B, nc+1, nc+1, H]
     # This represents: decay_prefix[j, i] = exp(segsum from j+1 to i)
-    decay_prefix = torch.exp(_segment_sum_log(chunk_log_decay)).transpose(1, 3)  # [B, nc+1, nc+1, H]
+    decay_prefix = torch.exp(_segment_sum_log(chunk_log_decay)).transpose(
+        1, 3
+    )  # [B, nc+1, nc+1, H]
 
     # Apply seq_idx-based boundary reset: zero decay_prefix at seq boundaries
     # so state doesn't leak across sequences.
@@ -643,21 +685,32 @@ def _state_passing_fwd(
         chunk_last_tok = (torch.arange(nc, device=seq_idx.device) + 1) * cs - 1
         chunk_last_tok = torch.clamp(chunk_last_tok, 0, T_pad - 1)  # [nc]
         # seq_per_chunk[b, c] = seq_idx[b, chunk_last_tok[c]]
-        seq_per_chunk = seq_idx.gather(1, chunk_last_tok[None, :].expand(Bsz, nc))  # [B, nc]
+        seq_per_chunk = seq_idx.gather(
+            1, chunk_last_tok[None, :].expand(Bsz, nc)
+        )  # [B, nc]
         # Pad with -1 at front (initial state boundary)
         seq_padded = F.pad(seq_per_chunk, (1, 0), value=-1)  # [B, nc+1]
         # Detect boundaries: 1 where seq changes between consecutive chunks
         boundary = (seq_padded[:, 1:] != seq_padded[:, :-1]).float()  # [B, nc]
         # cumsum of boundaries
-        b_cumsum = torch.cat([torch.zeros(Bsz, 1, device=seq_idx.device), torch.cumsum(boundary, dim=1)], dim=1)  # [B, nc+1]
+        b_cumsum = torch.cat(
+            [torch.zeros(Bsz, 1, device=seq_idx.device), torch.cumsum(boundary, dim=1)],
+            dim=1,
+        )  # [B, nc+1]
         # has_boundary[b, j, i] = True iff any boundary in (j, i]
         # = (b_cumsum[b, i] - b_cumsum[b, j]) > 0
         # b_cumsum is [B, nc+1], need outer diff: [B, nc+1, nc+1]
-        b_cumsum_i = b_cumsum.unsqueeze(2).expand(Bsz, nc + 1, nc + 1)  # [B, nc+1, nc+1]
-        b_cumsum_j = b_cumsum.unsqueeze(1).expand(Bsz, nc + 1, nc + 1)  # [B, nc+1, nc+1]
+        b_cumsum_i = b_cumsum.unsqueeze(2).expand(
+            Bsz, nc + 1, nc + 1
+        )  # [B, nc+1, nc+1]
+        b_cumsum_j = b_cumsum.unsqueeze(1).expand(
+            Bsz, nc + 1, nc + 1
+        )  # [B, nc+1, nc+1]
         has_boundary = (b_cumsum_i - b_cumsum_j) > 0  # [B, nc+1, nc+1]
         # Zero out decay_prefix where boundary exists
-        decay_prefix = decay_prefix * (~has_boundary.unsqueeze(-1)).to(decay_prefix.dtype)
+        decay_prefix = decay_prefix * (~has_boundary.unsqueeze(-1)).to(
+            decay_prefix.dtype
+        )
 
     # boundary_all[i] = sum_j decay_prefix[j, i] * state_summaries[j]
     # decay_prefix: [B, nc+1, nc+1, H] = [b, j, i, h]
@@ -702,21 +755,29 @@ def _state_passing_bwd(
     # Combine g_states_boundary with dfinal_states
     # g_boundary: [B, nc+1, H, P, N] where last entry is dfinal_states or zero
     if dfinal_states is not None:
-        g_boundary = torch.cat([g_states_boundary, dfinal_states], dim=1)  # [B, nc+1, H, P, N]
+        g_boundary = torch.cat(
+            [g_states_boundary, dfinal_states], dim=1
+        )  # [B, nc+1, H, P, N]
     else:
         g_boundary = F.pad(g_states_boundary, (0, 0, 0, 0, 0, 0, 0, 1))
 
     # d(state_summaries[j]) = sum_i decay_prefix[j, i] * g_boundary[i]
-    g_state_summaries = torch.einsum("bjih,bihpn->bjhpn", decay_prefix, g_boundary)  # [B, nc+1, H, P, N]
+    g_state_summaries = torch.einsum(
+        "bjih,bihpn->bjhpn", decay_prefix, g_boundary
+    )  # [B, nc+1, H, P, N]
 
     # g_state_end = g_state_summaries[:, 1:]  (skip the initial state entry)
     g_state_end = g_state_summaries[:, 1:]  # [B, nc, H, P, N]
 
     # Gradient of initial states
-    g_initial_states = g_state_summaries[:, 0] if dfinal_states is not None else None  # [B, H, P, N]
+    g_initial_states = (
+        g_state_summaries[:, 0] if dfinal_states is not None else None
+    )  # [B, H, P, N]
 
     # d(decay_prefix[j, i]) = sum_{h,p,n} g_boundary[i] * state_summaries[j]
-    g_decay_prefix = torch.einsum("bihpn,bjhpn->bjih", g_boundary, state_summaries)  # [B, nc+1, nc+1, H]
+    g_decay_prefix = torch.einsum(
+        "bihpn,bjhpn->bjih", g_boundary, state_summaries
+    )  # [B, nc+1, nc+1, H]
 
     # gseg[j, i, h] = g_decay_prefix[j, i, h] * decay_prefix[j, i, h]
     gseg = g_decay_prefix * decay_prefix  # [B, nc+1, nc+1, H]
@@ -738,6 +799,7 @@ def _state_passing_bwd(
 # ── Stage 3: chunk_scan_fwd ───────────────────────────────────────────
 # Intra-chunk scan: computes output from L-matrix + propagated states.
 
+
 def _chunk_scan_fwd(
     L: torch.Tensor,
     dt_c: torch.Tensor,
@@ -758,8 +820,12 @@ def _chunk_scan_fwd(
 
     # y_inter: propagate states_boundary through C
     decay_from_start = torch.exp(cumsum_dtA)  # [B, nc, C, H]
-    state_entered = states_boundary.unsqueeze(2) * decay_from_start.unsqueeze(-1).unsqueeze(-1)  # [B, nc, C, H, P, N]
-    y_inter = torch.einsum("bcthn,bcthpn->bcthp", C_c, state_entered)  # [B, nc, C, H, P]
+    state_entered = states_boundary.unsqueeze(2) * decay_from_start.unsqueeze(
+        -1
+    ).unsqueeze(-1)  # [B, nc, C, H, P, N]
+    y_inter = torch.einsum(
+        "bcthn,bcthpn->bcthp", C_c, state_entered
+    )  # [B, nc, C, H, P]
 
     # Total output
     if D.ndim == 2:
@@ -768,7 +834,10 @@ def _chunk_scan_fwd(
         y = Y_intra + y_inter + D[:, None] * u_c  # [B, nc, C, H, P]
 
     intermediates = {
-        "L": L, "G": G, "LdtG": LdtG, "dt_c": dt_c,
+        "L": L,
+        "G": G,
+        "LdtG": LdtG,
+        "dt_c": dt_c,
         "decay_from_start": decay_from_start,
         "state_entered": state_entered,
         "states_boundary": states_boundary,
@@ -787,7 +856,9 @@ def _chunk_scan_bwd(
     needs_dS_in: bool,
     needs_ddt: bool,
     needs_du: bool,
-) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+) -> tuple[
+    torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None
+]:
     """Backward through chunk_scan_fwd.
 
     Returns (g_states_boundary, g_C, ddt_from_intra, dcs).
@@ -812,13 +883,19 @@ def _chunk_scan_bwd(
     dcs_from_inter = None
 
     if needs_dS_in:
-        g_states_boundary = torch.einsum("bcthp,bcthn->bchpn", gy_a, C_c)  # [B, nc, H, P, N]
+        g_states_boundary = torch.einsum(
+            "bcthp,bcthn->bchpn", gy_a, C_c
+        )  # [B, nc, H, P, N]
     if needs_dC:
-        g_C_inter = torch.einsum("bcthp,bchpn->bcthn", gy_a, states_boundary)  # [B, nc, C, H, N]
+        g_C_inter = torch.einsum(
+            "bcthp,bchpn->bcthn", gy_a, states_boundary
+        )  # [B, nc, C, H, N]
 
     # dcs from y_inter: sum_{p,n} a[t] * gy[t,p] * C[t,n] * S_in[p,n]
     if needs_dS_in:
-        dcs_from_inter = torch.einsum("bcthp,bcthn,bchpn->bcth", gy_a, C_c, states_boundary)
+        dcs_from_inter = torch.einsum(
+            "bcthp,bcthn,bchpn->bcth", gy_a, C_c, states_boundary
+        )
 
     # 2) Y_intra backward: Y_intra = einsum("bctjh,bcjhp->bcthp", LdtG, u_c)
     g_ddt_intra = None
@@ -829,7 +906,9 @@ def _chunk_scan_bwd(
         # gY_intra = gy_c
         # du[j] += sum_t LdtG[t,j] * gy[t]
         if needs_du:
-            g_du_intra = torch.einsum("bctjh,bcthp->bcjhp", LdtG, gy_c)  # [B, nc, C, H, P]
+            g_du_intra = torch.einsum(
+                "bctjh,bcthp->bcjhp", LdtG, gy_c
+            )  # [B, nc, C, H, P]
 
         # d(LdtG)[t,j] = sum_p gy[t,p] * u[j,p]
         gLdtG = torch.einsum("bcthp,bcjhp->bctjh", gy_c, u_c)  # [B, nc, Ct, Cj, H]
@@ -849,6 +928,7 @@ def _chunk_scan_bwd(
 
 
 # ── Unified forward with intermediate saving ──────────────────────────
+
 
 def _chunked_ssd_forward_modular(
     u: torch.Tensor,
@@ -904,22 +984,38 @@ def _chunked_ssd_forward_modular(
 
     # ── Stage 1: chunk_state_fwd ────────────────────────────────────
     cs_last = cumsum_dtA[:, :, -1:, :]  # [B, nc, 1, H]
-    state_end = _chunk_state_fwd(B_c, u_c, dt_c, cs_last, cumsum_dtA)  # [B, nc, H, P, N]
+    state_end = _chunk_state_fwd(
+        B_c, u_c, dt_c, cs_last, cumsum_dtA
+    )  # [B, nc, H, P, N]
 
     # ── Stage 2: state_passing_fwd ──────────────────────────────────
-    states_boundary, decay_prefix, chunk_log_decay, state_summaries, final_states = _state_passing_fwd(
-        state_end, cumsum_dtA, seq_idx, initial_states
+    states_boundary, decay_prefix, chunk_log_decay, state_summaries, final_states = (
+        _state_passing_fwd(state_end, cumsum_dtA, seq_idx, initial_states)
     )
 
     # ── Stage 3: chunk_scan_fwd ─────────────────────────────────────
     # L matrix: L[t,j] = exp(cs[t] - cs[j]) for j <= t
     L_diff = cumsum_dtA.unsqueeze(-2) - cumsum_dtA.unsqueeze(-3)  # [B, nc, C, C, H]
-    tril = torch.tril(torch.ones(chunk_size, chunk_size, device=u.device, dtype=torch.bool))
-    L_diff = L_diff.masked_fill(~tril.unsqueeze(0).unsqueeze(0).unsqueeze(-1), float("-inf"))
+    tril = torch.tril(
+        torch.ones(chunk_size, chunk_size, device=u.device, dtype=torch.bool)
+    )
+    L_diff = L_diff.masked_fill(
+        ~tril.unsqueeze(0).unsqueeze(0).unsqueeze(-1), float("-inf")
+    )
     L = torch.exp(L_diff)  # [B, nc, C, C, H]
 
     # G matrix: G[t,j] = sum_n C[t,n] * B[j,n]
     G = (C_c.unsqueeze(3) * B_c.unsqueeze(2)).sum(dim=-1)  # [B, nc, C, C, H]
+
+    # ── seq_idx masking: zero L, G where sequence boundaries differ ─
+    if seq_idx is not None:
+        t_idx = torch.arange(chunk_size, device=u.device)  # [C]
+        t_abs = (nc * chunk_size) + t_idx  # absolute token indices in this chunk
+        seq_t = seq_idx[:, t_abs].unsqueeze(2)  # [B, C, 1]
+        seq_j = seq_idx[:, t_abs].unsqueeze(1)  # [B, 1, C]
+        same_seq = seq_t == seq_j  # [B, C, C]
+        L = torch.where(same_seq[:, :, :, None].unsqueeze(0), L, torch.zeros_like(L))  # type: ignore[assignment]
+        G = torch.where(same_seq.unsqueeze(0).unsqueeze(-1), G, torch.zeros_like(G))  # type: ignore[assignment]
 
     y_chunked, scan_intermediates = _chunk_scan_fwd(
         L, dt_c, G, u_c, states_boundary, C_c, cumsum_dtA, D
@@ -931,13 +1027,26 @@ def _chunked_ssd_forward_modular(
         y = y[:, :T]
 
     intermediates = {
-        "L": L, "G": G, "decay_prefix": decay_prefix,
-        "chunk_log_decay": chunk_log_decay, "state_summaries": state_summaries,
-        "cumsum_dtA": cumsum_dtA, "cs_last": cs_last,
-        "dt_c": dt_c, "u_c": u_c, "B_c": B_c, "C_c": C_c,
-        "pad": pad, "Bsz": Bsz, "T": T, "T_pad": T_pad,
-        "H": H, "P": P, "N": N,
-        "nc": nc, "chunk_size": chunk_size,
+        "L": L,
+        "G": G,
+        "decay_prefix": decay_prefix,
+        "chunk_log_decay": chunk_log_decay,
+        "state_summaries": state_summaries,
+        "cumsum_dtA": cumsum_dtA,
+        "cs_last": cs_last,
+        "dt_c": dt_c,
+        "u_c": u_c,
+        "B_c": B_c,
+        "C_c": C_c,
+        "pad": pad,
+        "Bsz": Bsz,
+        "T": T,
+        "T_pad": T_pad,
+        "H": H,
+        "P": P,
+        "N": N,
+        "nc": nc,
+        "chunk_size": chunk_size,
         "final_states": final_states,
         **scan_intermediates,
     }
@@ -946,6 +1055,7 @@ def _chunked_ssd_forward_modular(
 
 
 # ── Unified backward with intermediate reuse ──────────────────────────
+
 
 def _chunked_ssd_backward_modular(
     grad_y: torch.Tensor,
@@ -977,9 +1087,21 @@ def _chunked_ssd_backward_modular(
     states_boundary = intermediates["states_boundary"]
     decay_from_start = intermediates["decay_from_start"]
     state_entered = intermediates["state_entered"]
-    scan_inter = {k: intermediates[k] for k in ["L", "G", "LdtG", "dt_c", "decay_from_start",
-                                                  "state_entered", "states_boundary",
-                                                  "C_c", "cumsum_dtA", "u_c"]}
+    scan_inter = {
+        k: intermediates[k]
+        for k in [
+            "L",
+            "G",
+            "LdtG",
+            "dt_c",
+            "decay_from_start",
+            "state_entered",
+            "states_boundary",
+            "C_c",
+            "cumsum_dtA",
+            "u_c",
+        ]
+    }
 
     pad = intermediates["pad"]
     Bsz = intermediates["Bsz"]
@@ -999,20 +1121,27 @@ def _chunked_ssd_backward_modular(
     D_per_head = D.ndim == 1
 
     # ── Step 1: chunk_scan_bwd ──────────────────────────────────────
-    (g_states_boundary, g_C_inter, g_ddt_intra,
-     dcs_from_inter, dcs_from_intra) = _chunk_scan_bwd(
-        gy_c, scan_inter, D,
-        needs_dC=needs_input_grad[4],
-        needs_dS_in=True,
-        needs_ddt=needs_input_grad[1],
-        needs_du=True,
+    (g_states_boundary, g_C_inter, g_ddt_intra, dcs_from_inter, dcs_from_intra) = (
+        _chunk_scan_bwd(
+            gy_c,
+            scan_inter,
+            D,
+            needs_dC=needs_input_grad[4],
+            needs_dS_in=True,
+            needs_ddt=needs_input_grad[1],
+            needs_du=True,
+        )
     )
 
     # ── Step 2: state_passing_bwd ───────────────────────────────────
     dfinal = intermediates.get("dfinal_states")
     g_state_end, d_cs_last, g_initial_states = _state_passing_bwd(
-        g_states_boundary, decay_prefix, chunk_log_decay,
-        state_summaries, cumsum_dtA, cs_last,
+        g_states_boundary,
+        decay_prefix,
+        chunk_log_decay,
+        state_summaries,
+        cumsum_dtA,
+        cs_last,
         dfinal_states=dfinal,
     )
     # Save g_initial_states for initial_states gradient
@@ -1021,7 +1150,12 @@ def _chunked_ssd_backward_modular(
 
     # ── Step 3: chunk_state_bwd ─────────────────────────────────────
     dB_chunk_state, du_chunk_state, ddt_chunk_state = _chunk_state_bwd(
-        g_state_end, B_c, u_c, dt_c, cumsum_dtA, cs_last,
+        g_state_end,
+        B_c,
+        u_c,
+        dt_c,
+        cumsum_dtA,
+        cs_last,
         needs_dB=needs_input_grad[3],
         needs_du=needs_input_grad[0],
         needs_ddt=needs_input_grad[1],
@@ -1056,7 +1190,9 @@ def _chunked_ssd_backward_modular(
         du = du + gy_c * Dexp  # D*u term
         # du from intra: already handled via gLdtG chain
         # du from LdtG: du[j] += sum_t LdtG[t,j] * gy[t]
-        du = du + torch.einsum("bctjh,bcthp->bcjhp", L * dt_c[:, :, None, :, :] * G, gy_c)
+        du = du + torch.einsum(
+            "bctjh,bcthp->bcjhp", L * dt_c[:, :, None, :, :] * G, gy_c
+        )
         if du_chunk_state is not None:
             du = du + du_chunk_state
 
@@ -1131,29 +1267,49 @@ def _chunked_ssd_backward_modular(
         else:
             dD = (gy_c * u_c).sum(dim=(0, 1, 2))  # [H, P]
 
-    return (cast(du_out), cast(ddt_out),
-            dA.to(out_dtype) if (needs_input_grad[2] and dA is not None) else None,
-            cast(dB_out), cast(dC_out),
-            cast(dD), cast(dadt_out))
+    return (
+        cast(du_out),
+        cast(ddt_out),
+        dA.to(out_dtype) if (needs_input_grad[2] and dA is not None) else None,
+        cast(dB_out),
+        cast(dC_out),
+        cast(dD),
+        cast(dadt_out),
+    )
 
 
 # ── Autograd Function ─────────────────────────────────────────────────
+
 
 class _ChunkedSSDFnModular(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        u, dt, A, B, C, D, chunk_size: int,
-        use_triton: bool, use_parallel: bool, adt=None,
-        seq_idx=None, initial_states=None, dfinal_states=None,
+        u,
+        dt,
+        A,
+        B,
+        C,
+        D,
+        chunk_size: int,
+        use_triton: bool,
+        use_parallel: bool,
+        adt=None,
+        seq_idx=None,
+        initial_states=None,
+        dfinal_states=None,
     ):
         ctx.chunk_size = chunk_size
         ctx.use_triton = use_triton
         ctx.seq_idx = seq_idx
         ctx.initial_states = initial_states
         ctx.needs_input_grad = (
-            u.requires_grad, dt.requires_grad, A.requires_grad,
-            B.requires_grad, C.requires_grad, D.requires_grad,
+            u.requires_grad,
+            dt.requires_grad,
+            A.requires_grad,
+            B.requires_grad,
+            C.requires_grad,
+            D.requires_grad,
         )
         ctx.needs_adt_grad = adt.requires_grad if adt is not None else False
 
@@ -1162,6 +1318,7 @@ class _ChunkedSSDFnModular(torch.autograd.Function):
                 chunked_ssd_forward_triton_parallel,
                 chunked_ssd_forward_triton_tiled,
             )
+
             if use_parallel == "direct":
                 fwd = chunked_ssd_forward_triton_parallel
             elif use_parallel:
@@ -1173,8 +1330,16 @@ class _ChunkedSSDFnModular(torch.autograd.Function):
                 y = fwd(u, dt, A, B, C, D, chunk_size=chunk_size, adt=adt)
             else:
                 y, intermediates = _chunked_ssd_forward_modular(
-                    u, dt, A, B, C, D, chunk_size=chunk_size, adt=adt,
-                    seq_idx=seq_idx, initial_states=initial_states,
+                    u,
+                    dt,
+                    A,
+                    B,
+                    C,
+                    D,
+                    chunk_size=chunk_size,
+                    adt=adt,
+                    seq_idx=seq_idx,
+                    initial_states=initial_states,
                 )
                 ctx.save_for_backward(u, dt, A, B, C, D, adt)
                 ctx._intermediates = intermediates
@@ -1184,8 +1349,16 @@ class _ChunkedSSDFnModular(torch.autograd.Function):
             return y
         else:
             y, intermediates = _chunked_ssd_forward_modular(
-                u, dt, A, B, C, D, chunk_size=chunk_size, adt=adt,
-                seq_idx=seq_idx, initial_states=initial_states,
+                u,
+                dt,
+                A,
+                B,
+                C,
+                D,
+                chunk_size=chunk_size,
+                adt=adt,
+                seq_idx=seq_idx,
+                initial_states=initial_states,
             )
             ctx.save_for_backward(u, dt, A, B, C, D, adt)
             ctx._intermediates = intermediates
@@ -1196,43 +1369,68 @@ class _ChunkedSSDFnModular(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_y):
-        if hasattr(ctx, '_intermediates') and ctx._intermediates is not None:
+        if hasattr(ctx, "_intermediates") and ctx._intermediates is not None:
             u, dt, A, B, C, D, adt = ctx.saved_tensors
             grads = _chunked_ssd_backward_modular(
-                grad_y, ctx._intermediates, A, D, adt,
+                grad_y,
+                ctx._intermediates,
+                A,
+                D,
+                adt,
                 needs_input_grad=ctx.needs_input_grad,
                 needs_adt_grad=ctx.needs_adt_grad,
             )
             du, ddt, dA, dB, dC, dD, dadt = grads
             # dfinal_states gradient: forward output of final_states
             final_states_grad = None
-            if hasattr(ctx, 'dfinal_states') and ctx.dfinal_states is not None:
+            if hasattr(ctx, "dfinal_states") and ctx.dfinal_states is not None:
                 # grad_y needs to be trimmed for final_states gradient
                 pass  # dfinal_states grad would come from external KV cache
-            return (du, ddt, dA, dB, dC, dD, None, None, None, dadt,
-                    final_states_grad, None, None)
+            return (
+                du,
+                ddt,
+                dA,
+                dB,
+                dC,
+                dD,
+                None,
+                None,
+                None,
+                dadt,
+                final_states_grad,
+                None,
+                None,
+            )
         else:
             from foreblocks.ops.mamba.ssd import (
+                SSD_TRITON_BACKWARD_MIN_SEQLEN,
                 _chunked_ssd_backward_torch,
                 chunked_ssd_backward_triton,
-                SSD_TRITON_BACKWARD_MIN_SEQLEN,
             )
+
             u, dt, A, B, C, D, adt = ctx.saved_tensors
             seqlen = u.shape[1]
-            use_triton_bwd = ctx.use_triton and seqlen >= SSD_TRITON_BACKWARD_MIN_SEQLEN
-            bwd = chunked_ssd_backward_triton if use_triton_bwd else _chunked_ssd_backward_torch
+            # always use vectorized torch backward — Triton bwd is O(chunks) sequential
+            bwd = _chunked_ssd_backward_torch
             grads = bwd(
-                grad_y, u, dt, A, B, C, D,
+                grad_y,
+                u,
+                dt,
+                A,
+                B,
+                C,
+                D,
                 chunk_size=ctx.chunk_size,
                 needs_input_grad=ctx.needs_input_grad,
-                adt=adt, needs_adt_grad=ctx.needs_adt_grad,
+                adt=adt,
+                needs_adt_grad=ctx.needs_adt_grad,
             )
             du, ddt, dA, dB, dC, dD, dadt = grads
-            return (du, ddt, dA, dB, dC, dD, None, None, None, dadt,
-                    None, None, None)
+            return (du, ddt, dA, dB, dC, dD, None, None, None, dadt, None, None, None)
 
 
 # ── Public API ────────────────────────────────────────────────────────
+
 
 def chunked_ssd_forward_modular(
     u: torch.Tensor,
@@ -1258,9 +1456,14 @@ def chunked_ssd_forward_modular(
         dfinal_states: Gradient of final states for KV cache continuation [B, 1, H, P, N]
     """
     can_use_triton = (
-        use_triton and CHUNKED_SSD_TRITON_AVAILABLE
-        and u.is_cuda and dt.is_cuda and A.is_cuda
-        and B.is_cuda and C.is_cuda and D.is_cuda
+        use_triton
+        and CHUNKED_SSD_TRITON_AVAILABLE
+        and u.is_cuda
+        and dt.is_cuda
+        and A.is_cuda
+        and B.is_cuda
+        and C.is_cuda
+        and D.is_cuda
         and B.shape[-1] <= 128
     )
 
@@ -1269,22 +1472,55 @@ def chunked_ssd_forward_modular(
             raise ValueError("trapezoidal discretisation requires adt (Mamba3)")
         T = u.shape[1]
         y_cur = chunked_ssd_forward_modular(
-            u, dt * trap, A, B, C, D, chunk_size, use_triton, adt, None, parallel,
-            seq_idx=seq_idx, initial_states=initial_states,
+            u,
+            dt * trap,
+            A,
+            B,
+            C,
+            D,
+            chunk_size,
+            use_triton,
+            adt,
+            None,
+            parallel,
+            seq_idx=seq_idx,
+            initial_states=initial_states,
         )
         B_prev = F.pad(B, (0, 0, 0, 0, 1, 0))[:, :T]
         u_prev = F.pad(u, (0, 0, 0, 0, 1, 0))[:, :T]
         y_prev = chunked_ssd_forward_modular(
-            u_prev, dt * (1.0 - trap), A, B_prev, C, torch.zeros_like(D),
-            chunk_size, use_triton, adt, None, parallel,
-            seq_idx=seq_idx, initial_states=initial_states,
+            u_prev,
+            dt * (1.0 - trap),
+            A,
+            B_prev,
+            C,
+            torch.zeros_like(D),
+            chunk_size,
+            use_triton,
+            adt,
+            None,
+            parallel,
+            seq_idx=seq_idx,
+            initial_states=initial_states,
         )
         return y_cur + y_prev
 
     return _ChunkedSSDFnModular.apply(
-        u, dt, A, B, C, D, chunk_size, can_use_triton, parallel, adt,
-        seq_idx, initial_states, dfinal_states
+        u,
+        dt,
+        A,
+        B,
+        C,
+        D,
+        chunk_size,
+        can_use_triton,
+        parallel,
+        adt,
+        seq_idx,
+        initial_states,
+        dfinal_states,
     )
+
 
 if CHUNKED_SSD_TRITON_AVAILABLE:
 
@@ -1331,7 +1567,9 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         n_mask = n_offs < N
 
         # Load entry state for this chunk: [B, nc, H, P, N]
-        entry_base = (b * NC * H + nc * H + h) * (P * N) + p_offs[:, None] * N + n_offs[None, :]
+        entry_base = (
+            (b * NC * H + nc * H + h) * (P * N) + p_offs[:, None] * N + n_offs[None, :]
+        )
         entry_mask = p_mask[:, None] & n_mask[None, :]
         state = tl.load(entry_state_ptr + entry_base, mask=entry_mask, other=0.0).to(
             tl.float32
@@ -1341,7 +1579,9 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         if D_PER_HEAD:
             d_vals = tl.load(D_ptr + h).to(tl.float32) + 0.0 * p_offs
         else:
-            d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(tl.float32)
+            d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(
+                tl.float32
+            )
 
         for ti in tl.range(0, CHUNK_SIZE):
             t = t0 + ti
@@ -1366,7 +1606,9 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
             ).to(tl.float32)
 
             if USE_ADT:
-                log_decay = tl.load(adt_ptr + base_bth, mask=active, other=0.0).to(tl.float32)
+                log_decay = tl.load(adt_ptr + base_bth, mask=active, other=0.0).to(
+                    tl.float32
+                )
             else:
                 log_decay = dt_val * a_val
             decay = tl.exp(log_decay)
@@ -1435,11 +1677,17 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         ).to(tl.float32)
 
         cumsum_base = ((b * NC + nc) * CHUNK_SIZE + ti) * H + h
-        cumsum_t = tl.load(cumsum_ptr + cumsum_base, mask=active, other=0.0).to(tl.float32)
+        cumsum_t = tl.load(cumsum_ptr + cumsum_base, mask=active, other=0.0).to(
+            tl.float32
+        )
 
-        entry_base = (b * NC * H + nc * H + h) * (P * N) + p_offs[:, None] * N + n_offs[None, :]
+        entry_base = (
+            (b * NC * H + nc * H + h) * (P * N) + p_offs[:, None] * N + n_offs[None, :]
+        )
         entry_mask = p_mask[:, None] & n_mask[None, :]
-        entry_state = tl.load(entry_state_ptr + entry_base, mask=entry_mask, other=0.0).to(tl.float32)
+        entry_state = tl.load(
+            entry_state_ptr + entry_base, mask=entry_mask, other=0.0
+        ).to(tl.float32)
 
         decay_from_start = tl.exp(cumsum_t)
         acc = tl.sum(entry_state * (decay_from_start * c_vals[None, :]), axis=1)
@@ -1450,8 +1698,12 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
             src_base_bth = (b * T + tj) * H + h
             src_cumsum_base = ((b * NC + nc) * CHUNK_SIZE + j) * H + h
 
-            cumsum_j = tl.load(cumsum_ptr + src_cumsum_base, mask=src_active, other=0.0).to(tl.float32)
-            dt_j = tl.load(dt_ptr + src_base_bth, mask=src_active, other=0.0).to(tl.float32)
+            cumsum_j = tl.load(
+                cumsum_ptr + src_cumsum_base, mask=src_active, other=0.0
+            ).to(tl.float32)
+            dt_j = tl.load(dt_ptr + src_base_bth, mask=src_active, other=0.0).to(
+                tl.float32
+            )
             b_j = tl.load(
                 B_ptr + src_base_bth * N + n_offs,
                 mask=src_active & n_mask,
@@ -1470,7 +1722,9 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         if D_PER_HEAD:
             d_vals = tl.load(D_ptr + h).to(tl.float32) + 0.0 * p_offs
         else:
-            d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(tl.float32)
+            d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(
+                tl.float32
+            )
         acc += d_vals * u_t
 
         tl.store(out_ptr + base_bth * P + p_offs, acc, mask=active & p_mask)
@@ -1576,14 +1830,12 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
                 n_idx = n0 + n_offs
                 n_active = n_idx < N
                 c_vals = tl.load(
-                    C_ptr
-                    + (((b * T + t_abs[:, None]) * H + h) * N + n_idx[None, :]),
+                    C_ptr + (((b * T + t_abs[:, None]) * H + h) * N + n_idx[None, :]),
                     mask=t_active[:, None] & n_active[None, :],
                     other=0.0,
                 ).to(tl.float32)
                 b_vals = tl.load(
-                    B_ptr
-                    + (((b * T + j_abs[:, None]) * H + h) * N + n_idx[None, :]),
+                    B_ptr + (((b * T + j_abs[:, None]) * H + h) * N + n_idx[None, :]),
                     mask=j_active[:, None] & n_active[None, :],
                     other=0.0,
                 ).to(tl.float32)
@@ -1606,7 +1858,9 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         if D_PER_HEAD:
             d_vals = tl.load(D_ptr + h).to(tl.float32) + 0.0 * p_offs
         else:
-            d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(tl.float32)
+            d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(
+                tl.float32
+            )
         u_t = tl.load(
             u_ptr + (((b * T + t_abs[:, None]) * H + h) * P + p_offs[None, :]),
             mask=t_active[:, None] & p_mask[None, :],
@@ -1655,7 +1909,9 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
 
         # bstate layout stride: ((b*H + h)*(NC+1) + c)*P*N + p*N + n
         bstride_c = P * N
-        bbase = ((b * H + h) * (NC + 1)) * bstride_c + p_offs[:, None] * N + n_offs[None, :]
+        bbase = (
+            ((b * H + h) * (NC + 1)) * bstride_c + p_offs[:, None] * N + n_offs[None, :]
+        )
         # chunk 0 entry state is zero
         tl.store(bstate_ptr + bbase, state, mask=pn_mask)
 
@@ -1665,18 +1921,30 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
                 t = t0 + ti
                 active = t < T
                 base_bth = (b * T + t) * H + h
-                u_vals = tl.load(u_ptr + base_bth * P + p_offs, mask=active & p_mask, other=0.0).to(tl.float32)
-                dt_val = tl.load(dt_ptr + base_bth, mask=active, other=0.0).to(tl.float32)
-                b_vals = tl.load(B_ptr + base_bth * N + n_offs, mask=active & n_mask, other=0.0).to(tl.float32)
+                u_vals = tl.load(
+                    u_ptr + base_bth * P + p_offs, mask=active & p_mask, other=0.0
+                ).to(tl.float32)
+                dt_val = tl.load(dt_ptr + base_bth, mask=active, other=0.0).to(
+                    tl.float32
+                )
+                b_vals = tl.load(
+                    B_ptr + base_bth * N + n_offs, mask=active & n_mask, other=0.0
+                ).to(tl.float32)
                 if USE_ADT:
-                    log_decay = tl.load(adt_ptr + base_bth, mask=active, other=0.0).to(tl.float32)
+                    log_decay = tl.load(adt_ptr + base_bth, mask=active, other=0.0).to(
+                        tl.float32
+                    )
                 else:
                     log_decay = dt_val * a_val
                 decay = tl.exp(log_decay)
                 new_state = state * decay + dt_val * u_vals[:, None] * b_vals[None, :]
                 state = tl.where(active, new_state, state)
             # store entry state of chunk c+1
-            wbase = ((b * H + h) * (NC + 1) + (c + 1)) * bstride_c + p_offs[:, None] * N + n_offs[None, :]
+            wbase = (
+                ((b * H + h) * (NC + 1) + (c + 1)) * bstride_c
+                + p_offs[:, None] * N
+                + n_offs[None, :]
+            )
             tl.store(bstate_ptr + wbase, state, mask=pn_mask)
 
     @triton.jit
@@ -1693,18 +1961,18 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         scratch_ptr,  # [B*H, BLOCK_P_GRID, CHUNK_SIZE, BLOCK_P, BLOCK_N] forward states
         du_ptr,
         ddt_ptr,
-        dA_ptr,      # [H]            (atomic; unused when USE_ADT)
-        dB_ptr,      # [B, T, H, N]   (atomic over p-blocks)
-        dC_ptr,      # [B, T, H, N]   (atomic over p-blocks)
-        dD_ptr,      # [H] or [H, P]  (atomic)
-        dadt_ptr,    # [B, T, H]      (atomic over p-blocks; unused when not USE_ADT)
+        dA_ptr,  # [H]            (atomic; unused when USE_ADT)
+        dB_ptr,  # [B, T, H, N]   (atomic over p-blocks)
+        dC_ptr,  # [B, T, H, N]   (atomic over p-blocks)
+        dD_ptr,  # [H] or [H, P]  (atomic)
+        dadt_ptr,  # [B, T, H]      (atomic over p-blocks; unused when not USE_ADT)
         gstate_ptr,  # [B, H, P, N] running grad-state carried across chunks (reverse)
         T,
         H,
         P,
         N,
         NC,
-        NPB,         # number of p-blocks (grid dim 1)
+        NPB,  # number of p-blocks (grid dim 1)
         CHUNK_SIZE: tl.constexpr,
         BLOCK_P: tl.constexpr,
         BLOCK_N: tl.constexpr,
@@ -1734,28 +2002,42 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         if D_PER_HEAD:
             d_vals = tl.load(D_ptr + h).to(tl.float32) + 0.0 * p_offs
         else:
-            d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(tl.float32)
+            d_vals = tl.load(D_ptr + h * P + p_offs, mask=p_mask, other=0.0).to(
+                tl.float32
+            )
 
         bstride_c = P * N
         # scratch base for this (pid_bh, pid_p): [CHUNK_SIZE, BLOCK_P, BLOCK_N]
         sc_block = CHUNK_SIZE * BLOCK_P * BLOCK_N
         sc0 = (pid_bh * NPB + pid_p) * sc_block
-        pn_idx = tl.arange(0, BLOCK_P)[:, None] * BLOCK_N + tl.arange(0, BLOCK_N)[None, :]
+        pn_idx = (
+            tl.arange(0, BLOCK_P)[:, None] * BLOCK_N + tl.arange(0, BLOCK_N)[None, :]
+        )
 
         t0 = CHUNK_INDEX * CHUNK_SIZE
 
         # ── forward sweep: recompute & store state_after[ti] for this chunk ──
-        entry_base = ((b * H + h) * (NC + 1) + CHUNK_INDEX) * bstride_c + p_offs[:, None] * N + n_offs[None, :]
+        entry_base = (
+            ((b * H + h) * (NC + 1) + CHUNK_INDEX) * bstride_c
+            + p_offs[:, None] * N
+            + n_offs[None, :]
+        )
         state = tl.load(bstate_ptr + entry_base, mask=pn_mask, other=0.0).to(tl.float32)
         for ti in tl.range(0, CHUNK_SIZE):
             t = t0 + ti
             active = t < T
             base_bth = (b * T + t) * H + h
-            u_vals = tl.load(u_ptr + base_bth * P + p_offs, mask=active & p_mask, other=0.0).to(tl.float32)
+            u_vals = tl.load(
+                u_ptr + base_bth * P + p_offs, mask=active & p_mask, other=0.0
+            ).to(tl.float32)
             dt_val = tl.load(dt_ptr + base_bth, mask=active, other=0.0).to(tl.float32)
-            b_vals = tl.load(B_ptr + base_bth * N + n_offs, mask=active & n_mask, other=0.0).to(tl.float32)
+            b_vals = tl.load(
+                B_ptr + base_bth * N + n_offs, mask=active & n_mask, other=0.0
+            ).to(tl.float32)
             if USE_ADT:
-                log_decay = tl.load(adt_ptr + base_bth, mask=active, other=0.0).to(tl.float32)
+                log_decay = tl.load(adt_ptr + base_bth, mask=active, other=0.0).to(
+                    tl.float32
+                )
             else:
                 log_decay = dt_val * a_val
             decay = tl.exp(log_decay)
@@ -1765,7 +2047,9 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
 
         # ── reverse sweep ──
         gstate_base = ((b * H + h) * P + p_offs[:, None]) * N + n_offs[None, :]
-        grad_state = tl.load(gstate_ptr + gstate_base, mask=pn_mask, other=0.0).to(tl.float32)
+        grad_state = tl.load(gstate_ptr + gstate_base, mask=pn_mask, other=0.0).to(
+            tl.float32
+        )
 
         dA_acc = 0.0
         for ti_rev in tl.range(0, CHUNK_SIZE):
@@ -1774,13 +2058,23 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
             active = t < T
             base_bth = (b * T + t) * H + h
 
-            u_vals = tl.load(u_ptr + base_bth * P + p_offs, mask=active & p_mask, other=0.0).to(tl.float32)
+            u_vals = tl.load(
+                u_ptr + base_bth * P + p_offs, mask=active & p_mask, other=0.0
+            ).to(tl.float32)
             dt_val = tl.load(dt_ptr + base_bth, mask=active, other=0.0).to(tl.float32)
-            b_vals = tl.load(B_ptr + base_bth * N + n_offs, mask=active & n_mask, other=0.0).to(tl.float32)
-            c_vals = tl.load(C_ptr + base_bth * N + n_offs, mask=active & n_mask, other=0.0).to(tl.float32)
-            gy_vals = tl.load(gy_ptr + base_bth * P + p_offs, mask=active & p_mask, other=0.0).to(tl.float32)
+            b_vals = tl.load(
+                B_ptr + base_bth * N + n_offs, mask=active & n_mask, other=0.0
+            ).to(tl.float32)
+            c_vals = tl.load(
+                C_ptr + base_bth * N + n_offs, mask=active & n_mask, other=0.0
+            ).to(tl.float32)
+            gy_vals = tl.load(
+                gy_ptr + base_bth * P + p_offs, mask=active & p_mask, other=0.0
+            ).to(tl.float32)
             if USE_ADT:
-                log_decay = tl.load(adt_ptr + base_bth, mask=active, other=0.0).to(tl.float32)
+                log_decay = tl.load(adt_ptr + base_bth, mask=active, other=0.0).to(
+                    tl.float32
+                )
             else:
                 log_decay = dt_val * a_val
             decay = tl.exp(log_decay)
@@ -1788,17 +2082,25 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
             # state_t = state_after[ti]; state_prev = state_after[ti-1] (entry if ti==0)
             state_t = tl.load(scratch_ptr + sc0 + ti * (BLOCK_P * BLOCK_N) + pn_idx)
             if ti == 0:
-                state_prev = tl.load(bstate_ptr + entry_base, mask=pn_mask, other=0.0).to(tl.float32)
+                state_prev = tl.load(
+                    bstate_ptr + entry_base, mask=pn_mask, other=0.0
+                ).to(tl.float32)
             else:
-                state_prev = tl.load(scratch_ptr + sc0 + (ti - 1) * (BLOCK_P * BLOCK_N) + pn_idx)
+                state_prev = tl.load(
+                    scratch_ptr + sc0 + (ti - 1) * (BLOCK_P * BLOCK_N) + pn_idx
+                )
 
             # ── output term: y[p] = sum_n state_t[p,n] c[n] + D u[p] ──
             dC_partial = tl.sum(gy_vals[:, None] * state_t, axis=0)  # [BLOCK_N]
-            tl.atomic_add(dC_ptr + base_bth * N + n_offs, dC_partial, mask=active & n_mask)
+            tl.atomic_add(
+                dC_ptr + base_bth * N + n_offs, dC_partial, mask=active & n_mask
+            )
             if D_PER_HEAD:
                 tl.atomic_add(dD_ptr + h, tl.sum(gy_vals * u_vals, axis=0), mask=active)
             else:
-                tl.atomic_add(dD_ptr + h * P + p_offs, gy_vals * u_vals, mask=active & p_mask)
+                tl.atomic_add(
+                    dD_ptr + h * P + p_offs, gy_vals * u_vals, mask=active & p_mask
+                )
             du_acc = gy_vals * d_vals  # du from D-skip
             grad_state = grad_state + gy_vals[:, None] * c_vals[None, :]
 
@@ -1806,14 +2108,18 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
             du_acc = du_acc + tl.sum(grad_state * (dt_val * b_vals[None, :]), axis=1)
             tl.atomic_add(du_ptr + base_bth * P + p_offs, du_acc, mask=active & p_mask)
             dB_partial = tl.sum(grad_state * (dt_val * u_vals[:, None]), axis=0)
-            tl.atomic_add(dB_ptr + base_bth * N + n_offs, dB_partial, mask=active & n_mask)
+            tl.atomic_add(
+                dB_ptr + base_bth * N + n_offs, dB_partial, mask=active & n_mask
+            )
             ddt_partial = tl.sum(grad_state * (u_vals[:, None] * b_vals[None, :]))
             g_logdecay = tl.sum(grad_state * decay * state_prev)
             if USE_ADT:
                 tl.atomic_add(dadt_ptr + base_bth, g_logdecay, mask=active)
                 tl.atomic_add(ddt_ptr + base_bth, ddt_partial, mask=active)
             else:
-                tl.atomic_add(ddt_ptr + base_bth, ddt_partial + g_logdecay * a_val, mask=active)
+                tl.atomic_add(
+                    ddt_ptr + base_bth, ddt_partial + g_logdecay * a_val, mask=active
+                )
                 dA_acc += tl.where(active, g_logdecay * dt_val, 0.0)
             grad_state = grad_state * decay
 
@@ -1873,8 +2179,12 @@ def chunked_ssd_forward_triton(
     if N > 128:
         raise ValueError("chunked_ssd_forward_triton currently supports d_state <= 128")
 
-    u_f = u.float(); dt_f = dt.float(); A_f = A.float()
-    B_f = B.float(); C_f = C.float(); D_f = D.float()
+    u_f = u.float()
+    dt_f = dt.float()
+    A_f = A.float()
+    B_f = B.float()
+    C_f = C.float()
+    D_f = D.float()
     adt_f = adt.float() if use_adt else None
 
     # pad to chunk boundary
@@ -1907,7 +2217,9 @@ def chunked_ssd_forward_triton(
 
     # ── state_end[c, h, p, n] — intra-chunk state at end ──────────
     cumsum_dtA_last = cumsum_dtA[:, :, -1:, None, :]  # [B, nc, 1, 1, H]
-    L_last = torch.exp(cumsum_dtA_last - cumsum_dtA[:, :, None, :, :])  # [B, nc, 1, C, H]
+    L_last = torch.exp(
+        cumsum_dtA_last - cumsum_dtA[:, :, None, :, :]
+    )  # [B, nc, 1, C, H]
     Ldt_last = L_last.squeeze(2) * dt_c  # [B, nc, C, H]
     LB_last = Ldt_last.unsqueeze(-1) * B_c  # [B, nc, C, H, N]
     state_end = torch.einsum("bcjhn,bcjhp->bchpn", LB_last, u_c)  # [B, nc, H, P, N]
@@ -1936,6 +2248,10 @@ def chunked_ssd_forward_triton(
 
     block_p = min(max(triton.next_power_of_2(P), 16), 128)
     block_n = max(8, triton.next_power_of_2(N))
+    # num_warps: each program covers block_p head-dims × chunk_size time steps
+    # 4 warps for small block_p, 8 for large; num_stages=2 hides memory latency
+    num_warps = 8 if block_p >= 64 else 4
+    num_stages = 2
 
     grid = (Bsz * nc * H, triton.cdiv(P, block_p))
     _chunked_ssd_forward_kernel[grid](
@@ -1958,6 +2274,8 @@ def chunked_ssd_forward_triton(
         BLOCK_N=block_n,
         USE_ADT=use_adt,
         D_PER_HEAD=d_per_head,
+        num_warps=num_warps,
+        num_stages=num_stages,
     )
     if pad > 0:
         out = out[:, :T]
@@ -2009,8 +2327,12 @@ def chunked_ssd_forward_triton_parallel(
             "chunked_ssd_forward_triton_parallel currently supports d_state <= 128"
         )
 
-    u_f = u.float(); dt_f = dt.float(); A_f = A.float()
-    B_f = B.float(); C_f = C.float(); D_f = D.float()
+    u_f = u.float()
+    dt_f = dt.float()
+    A_f = A.float()
+    B_f = B.float()
+    C_f = C.float()
+    D_f = D.float()
     adt_f = adt.float() if use_adt else None
 
     pad = (chunk_size - T % chunk_size) % chunk_size
@@ -2058,6 +2380,7 @@ def chunked_ssd_forward_triton_parallel(
 
     block_p = min(max(triton.next_power_of_2(P), 16), 128)
     block_n = max(8, triton.next_power_of_2(N))
+    num_warps = 8 if block_p >= 64 else 4
     grid = (Bsz * nc * H * chunk_size, triton.cdiv(P, block_p))
     _chunked_ssd_forward_parallel_kernel[grid](
         u_contig,
@@ -2077,6 +2400,8 @@ def chunked_ssd_forward_triton_parallel(
         BLOCK_P=block_p,
         BLOCK_N=block_n,
         D_PER_HEAD=d_per_head,
+        num_warps=num_warps,
+        num_stages=2,
     )
     if pad > 0:
         out = out[:, :T]
@@ -2119,10 +2444,16 @@ def chunked_ssd_forward_triton_tiled(
     if D.shape != (H, P) and not d_per_head:
         raise ValueError("D shape must match [H, P] or [H]")
     if N > 128:
-        raise ValueError("chunked_ssd_forward_triton_tiled currently supports d_state <= 128")
+        raise ValueError(
+            "chunked_ssd_forward_triton_tiled currently supports d_state <= 128"
+        )
 
-    u_f = u.float(); dt_f = dt.float(); A_f = A.float()
-    B_f = B.float(); C_f = C.float(); D_f = D.float()
+    u_f = u.float()
+    dt_f = dt.float()
+    A_f = A.float()
+    B_f = B.float()
+    C_f = C.float()
+    D_f = D.float()
     adt_f = adt.float() if use_adt else None
 
     pad = (chunk_size - T % chunk_size) % chunk_size
@@ -2173,6 +2504,7 @@ def chunked_ssd_forward_triton_tiled(
     block_p = min(max(triton.next_power_of_2(P), 16), 64)
     block_n = min(max(triton.next_power_of_2(N), 16), 64)
     tiles_per_chunk = triton.cdiv(chunk_size, block_t)
+    num_warps = 8 if block_p >= 32 else 4
     grid = (Bsz * nc * H * tiles_per_chunk, triton.cdiv(P, block_p))
     _chunked_ssd_forward_tiled_kernel[grid](
         u_contig,
@@ -2195,6 +2527,8 @@ def chunked_ssd_forward_triton_tiled(
         BLOCK_P=block_p,
         BLOCK_N=block_n,
         D_PER_HEAD=d_per_head,
+        num_warps=num_warps,
+        num_stages=2,
     )
     if pad > 0:
         out = out[:, :T]
@@ -2224,15 +2558,21 @@ def chunked_ssd_backward_triton(
     Returns ``(du, ddt, dA, dB, dC, dD, dadt)``.
     """
     if not CHUNKED_SSD_TRITON_AVAILABLE:
-        raise RuntimeError("chunked_ssd_backward_triton called but Triton is unavailable")
+        raise RuntimeError(
+            "chunked_ssd_backward_triton called but Triton is unavailable"
+        )
     use_adt = adt is not None
     B_, T, H, P = u.shape
     N = B.shape[-1]
     d_per_head = D.ndim == 1
 
     gy = grad_y.contiguous()
-    u_c = u.contiguous(); dt_c = dt.contiguous()
-    A_c = A.contiguous(); Bm = B.contiguous(); Cm = C.contiguous(); Dm = D.contiguous()
+    u_c = u.contiguous()
+    dt_c = dt.contiguous()
+    A_c = A.contiguous()
+    Bm = B.contiguous()
+    Cm = C.contiguous()
+    Dm = D.contiguous()
     adt_c = adt.contiguous() if use_adt else u_c
     nc = triton.cdiv(T, chunk_size)
 
@@ -2253,9 +2593,21 @@ def chunked_ssd_backward_triton(
     grid = (B_ * H, npb)
 
     _chunked_ssd_boundary_kernel[grid](
-        u_c, dt_c, A_c, Bm, adt_c, bstate,
-        T, H, P, N, nc,
-        CHUNK_SIZE=chunk_size, BLOCK_P=block_p, BLOCK_N=block_n, USE_ADT=use_adt,
+        u_c,
+        dt_c,
+        A_c,
+        Bm,
+        adt_c,
+        bstate,
+        T,
+        H,
+        P,
+        N,
+        nc,
+        CHUNK_SIZE=chunk_size,
+        BLOCK_P=block_p,
+        BLOCK_N=block_n,
+        USE_ADT=use_adt,
     )
     # scratch for recomputed forward states of the chunk under processing
     scratch = torch.empty(
@@ -2263,21 +2615,46 @@ def chunked_ssd_backward_triton(
     )
     for chunk_idx in range(nc - 1, -1, -1):
         _chunked_ssd_backward_kernel[grid](
-            gy, u_c, dt_c, A_c, Bm, Cm, Dm, adt_c, bstate, scratch,
-            du, ddt, dA, dB, dC, dD, dadt, gstate,
-            T, H, P, N, nc, npb,
-            CHUNK_SIZE=chunk_size, BLOCK_P=block_p, BLOCK_N=block_n,
-            USE_ADT=use_adt, D_PER_HEAD=d_per_head, CHUNK_INDEX=chunk_idx,
+            gy,
+            u_c,
+            dt_c,
+            A_c,
+            Bm,
+            Cm,
+            Dm,
+            adt_c,
+            bstate,
+            scratch,
+            du,
+            ddt,
+            dA,
+            dB,
+            dC,
+            dD,
+            dadt,
+            gstate,
+            T,
+            H,
+            P,
+            N,
+            nc,
+            npb,
+            CHUNK_SIZE=chunk_size,
+            BLOCK_P=block_p,
+            BLOCK_N=block_n,
+            USE_ADT=use_adt,
+            D_PER_HEAD=d_per_head,
+            CHUNK_INDEX=chunk_idx,
         )
 
     od = grad_y.dtype
     out_du = du.to(od) if needs_input_grad[0] else None
     out_ddt = ddt.to(od) if needs_input_grad[1] else None
-    out_dA = (dA.to(od) if (needs_input_grad[2] and not use_adt) else None)
+    out_dA = dA.to(od) if (needs_input_grad[2] and not use_adt) else None
     out_dB = dB.to(od) if needs_input_grad[3] else None
     out_dC = dC.to(od) if needs_input_grad[4] else None
     out_dD = dD.to(od) if needs_input_grad[5] else None
-    out_dadt = (dadt.to(od) if (use_adt and needs_adt_grad) else None)
+    out_dadt = dadt.to(od) if (use_adt and needs_adt_grad) else None
     return (out_du, out_ddt, out_dA, out_dB, out_dC, out_dD, out_dadt)
 
 
@@ -2315,8 +2692,16 @@ class _ChunkedSSDFn(torch.autograd.Function):
         else:
             # Modular forward: saves intermediates for efficient backward
             y, intermediates = _chunked_ssd_forward_modular(
-                u, dt, A, B, C, D, chunk_size=chunk_size, adt=adt,
-                seq_idx=seq_idx, initial_states=initial_states,
+                u,
+                dt,
+                A,
+                B,
+                C,
+                D,
+                chunk_size=chunk_size,
+                adt=adt,
+                seq_idx=seq_idx,
+                initial_states=initial_states,
             )
             ctx.use_triton = False
             ctx.save_for_backward(u, dt, A, B, C, D, adt)
@@ -2329,19 +2714,21 @@ class _ChunkedSSDFn(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_y):
         u, dt, A, B, C, D, adt = ctx.saved_tensors
-        if hasattr(ctx, '_intermediates') and ctx._intermediates is not None:
+        if hasattr(ctx, "_intermediates") and ctx._intermediates is not None:
             # Modular backward with intermediate reuse (Mamba2-style)
             grads = _chunked_ssd_backward_modular(
-                grad_y, ctx._intermediates, A, D, adt,
+                grad_y,
+                ctx._intermediates,
+                A,
+                D,
+                adt,
                 needs_input_grad=ctx.needs_input_grad[:6],
                 needs_adt_grad=ctx.needs_input_grad[12],
             )
             du, ddt, dA, dB, dC, dD, dadt = grads
             return (du, ddt, dA, dB, dC, dD, None, None, None, dadt, None, None, None)
-        # Triton or fallback: use original backward
-        seqlen = u.shape[1]
-        use_triton_bwd = ctx.use_triton and seqlen >= SSD_TRITON_BACKWARD_MIN_SEQLEN
-        bwd = chunked_ssd_backward_triton if use_triton_bwd else _chunked_ssd_backward_torch
+        # always use vectorized torch backward — Triton bwd is O(chunks) sequential
+        bwd = _chunked_ssd_backward_torch
         grads = bwd(
             grad_y,
             u,
@@ -2400,20 +2787,52 @@ def chunked_ssd_forward(
         T = u.shape[1]
         trap_h = trap  # [B, T, H], broadcasts against dt [B, T, H]
         y_cur = _ChunkedSSDFn.apply(
-            u, dt * trap_h, A, B, C, D, chunk_size, can_use_triton, parallel, adt,
-            seq_idx, initial_states, dfinal_states,
+            u,
+            dt * trap_h,
+            A,
+            B,
+            C,
+            D,
+            chunk_size,
+            can_use_triton,
+            parallel,
+            adt,
+            seq_idx,
+            initial_states,
+            dfinal_states,
         )
         B_prev = F.pad(B, (0, 0, 0, 0, 1, 0))[:, :T]
         u_prev = F.pad(u, (0, 0, 0, 0, 1, 0))[:, :T]
         y_prev = _ChunkedSSDFn.apply(
-            u_prev, dt * (1.0 - trap_h), A, B_prev, C, torch.zeros_like(D),
-            chunk_size, can_use_triton, parallel, adt,
-            seq_idx, initial_states, dfinal_states,
+            u_prev,
+            dt * (1.0 - trap_h),
+            A,
+            B_prev,
+            C,
+            torch.zeros_like(D),
+            chunk_size,
+            can_use_triton,
+            parallel,
+            adt,
+            seq_idx,
+            initial_states,
+            dfinal_states,
         )
         return y_cur + y_prev
     return _ChunkedSSDFn.apply(
-        u, dt, A, B, C, D, chunk_size, can_use_triton, parallel, adt,
-        seq_idx, initial_states, dfinal_states
+        u,
+        dt,
+        A,
+        B,
+        C,
+        D,
+        chunk_size,
+        can_use_triton,
+        parallel,
+        adt,
+        seq_idx,
+        initial_states,
+        dfinal_states,
     )
 
 
@@ -2520,17 +2939,18 @@ def chunked_ssd_backward_reference(
         B32 = F.pad(B32, (0, 0, 0, 0, 0, pad))
         C32 = F.pad(C32, (0, 0, 0, 0, 0, pad))
         if use_adt:
+            assert adt32 is not None
             adt32 = F.pad(adt32, (0, 0, 0, pad))
     T_pad = T + pad
 
     def _log_decay(t_idx):
         # [B, H, 1, 1]
         if use_adt:
+            assert adt32 is not None
             return adt32[:, t_idx].unsqueeze(-1).unsqueeze(-1)
-        return (
-            dt32[:, t_idx].unsqueeze(-1).unsqueeze(-1)
-            * A32.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
-        )
+        return dt32[:, t_idx].unsqueeze(-1).unsqueeze(-1) * A32.unsqueeze(0).unsqueeze(
+            -1
+        ).unsqueeze(-1)
 
     state = torch.zeros(Bsz, H, P, N, device=u.device, dtype=torch.float32)
     states_after: list[torch.Tensor] = []
@@ -2551,7 +2971,7 @@ def chunked_ssd_backward_reference(
     dB = torch.zeros_like(B32) if needs_input_grad[3] else None
     dC = torch.zeros_like(C32) if needs_input_grad[4] else None
     dD = torch.zeros_like(D32) if needs_input_grad[5] else None
-    dadt = torch.zeros_like(adt32) if (use_adt and needs_adt_grad) else None
+    dadt = torch.zeros_like(adt32) if (use_adt and needs_adt_grad) else None  # type: ignore[arg-type]
 
     grad_state = torch.zeros(Bsz, H, P, N, device=u.device, dtype=torch.float32)
 

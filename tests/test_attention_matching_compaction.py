@@ -1,7 +1,7 @@
 import torch
 
-from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.models.transformer.transformer import TransformerEncoderLayer
+from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 def test_multiattention_attention_matching_compacts_cache():

@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import foreforest  # noqa: E402
 import numpy as np
 from sklearn.ensemble import (
     HistGradientBoostingClassifier,
@@ -36,7 +37,6 @@ def _configure_import_paths() -> None:
 
 
 _configure_import_paths()
-import foreforest  # noqa: E402
 
 
 def mse(y_true: np.ndarray, y_pred: np.ndarray) -> float:

@@ -5,6 +5,7 @@
 
 import torch
 
+
 try:
     import triton
     import triton.language as tl
@@ -25,6 +26,16 @@ def _block_size_for_num_cols(n_cols: int, element_size: int) -> int:
             f"for element size {element_size}; got {n_cols}."
         )
     return block_size
+
+
+def _num_warps_for_block(block_size: int) -> int:
+    if block_size <= 64:
+        return 2
+    if block_size <= 512:
+        return 4
+    if block_size <= 2048:
+        return 8
+    return 16
 
 
 # =============================== Triton kernels ===============================
@@ -340,6 +351,7 @@ class LayerNormTritonFunction(torch.autograd.Function):
             True,
             True,
             BLOCK_SIZE,
+            num_warps=_num_warps_for_block(BLOCK_SIZE),
         )
 
         ctx.save_for_backward(x, weight, bias, mean, rstd)
@@ -390,6 +402,7 @@ class LayerNormTritonFunction(torch.autograd.Function):
             True,
             BLOCK_SIZE,
             rows_per_program,
+            num_warps=_num_warps_for_block(BLOCK_SIZE),
         )
 
         grad_weight = grad_weight_partials.sum(dim=0).to(weight.dtype)

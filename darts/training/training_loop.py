@@ -31,6 +31,12 @@ from ..training.edge_regularization import (
     _add_edge_sharpening,
     _extract_edge_probs,
 )
+from ..training.helpers import (
+    ArchitectureRegularizer,
+    BilevelOptimizer,
+    RegularizationType,
+    TemperatureScheduler,
+)
 from ..training.perturbation_hessian import (
     _apply_darts_pt_perturbation,
     _restore_model_params,
@@ -38,15 +44,9 @@ from ..training.perturbation_hessian import (
     finite_difference_hessian_penalty,
 )
 from ..training.utils import (
+    _log_arch_gradients,
     _maybe_prune,
     _safe_load_state,
-    _log_arch_gradients,
-)
-from ..training.helpers import (
-    ArchitectureRegularizer,
-    BilevelOptimizer,
-    RegularizationType,
-    TemperatureScheduler,
 )
 from ..utils.training import (
     autocast_ctx,
