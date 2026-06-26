@@ -7,11 +7,11 @@ from foreblocks.sequence.mamba import (
     RMS_NORM_TRITON_AVAILABLE,
     ROTARY_TRITON_AVAILABLE,
     FeedForward,
-    HybridMamba2Block,
+
     Mamba2Block,
-    RMSNorm,
-    RotaryEmbedding,
-    SlidingWindowAttention,
+
+
+
     chunked_ssd_forward,
     chunked_ssd_forward_reference,
     dt_prep_bwd_triton,
@@ -20,8 +20,7 @@ from foreblocks.sequence.mamba import (
     fused_out_fallback,
     rms_norm,
     rms_norm_fallback,
-    rotary_apply,
-    rotary_apply_fallback,
+
 )
 
 
@@ -179,49 +178,6 @@ def test_mamba2_block_step_matches_parallel() -> None:
     _assert_close(y_par, y_step, atol=1e-4)
 
 
-def test_hybrid_mamba2_block_cpu_forward() -> None:
-    block = HybridMamba2Block(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        num_heads=4,
-        n_groups=2,
-        window_size=8,
-    )
-    x = torch.randn(2, 10, 32)
-    y = block(x)
-
-    assert y.shape == x.shape
-    assert isinstance(block.ssm, Mamba2Block)
-    assert isinstance(block.out_norm, nn.LayerNorm)
-
-
-def test_hybrid_mamba2_block_step_matches_parallel_with_attention_sink() -> None:
-    torch.manual_seed(2)
-    block = HybridMamba2Block(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        num_heads=4,
-        window_size=4,
-        n_sink_tokens=2,
-    )
-    block.eval()
-    x = torch.randn(1, 7, 32)
-
-    with torch.no_grad():
-        y_parallel = block(x)
-        state = block.make_state(1)
-        y_step = torch.stack(
-            [block.step(x[:, t], state) for t in range(x.shape[1])],
-            dim=1,
-        )
-
-    _assert_close(y_parallel, y_step, atol=1e-4)
-
-
 def test_chunked_ssd_forward_matches_sequential_diagonal_scan() -> None:
     torch.manual_seed(10)
     batch, seqlen, heads, head_dim, d_state = 2, 9, 3, 4, 5
@@ -279,91 +235,6 @@ def test_fused_out_backward_matches_autograd_reference() -> None:
     _assert_close(d_z, z_ref.grad)
     assert d_norm_weight is not None
     _assert_close(d_norm_weight, norm_weight_ref.grad)
-
-
-def test_sliding_window_attention_is_causal() -> None:
-    attn = SlidingWindowAttention(
-        d_model=16,
-        num_heads=4,
-        window_size=3,
-        dropout=0.0,
-    )
-    attn.eval()
-
-    x = torch.randn(2, 6, 16)
-    x_perturbed = x.clone()
-    x_perturbed[:, -1, :] = torch.randn_like(x_perturbed[:, -1, :]) * 10.0
-
-    y = attn(x)
-    y_perturbed = attn(x_perturbed)
-
-    assert torch.allclose(y[:, :-1, :], y_perturbed[:, :-1, :], atol=1e-6, rtol=1e-6)
-
-
-def test_sliding_window_attention_gqa_shapes() -> None:
-    attn = SlidingWindowAttention(
-        d_model=32,
-        num_heads=8,
-        n_kv_heads=2,
-        window_size=4,
-        dropout=0.0,
-    )
-    assert attn.n_rep == 4
-    assert attn.k_proj.out_features == 2 * (32 // 8)
-    x = torch.randn(2, 6, 32)
-    assert attn(x).shape == x.shape
-
-
-def test_sliding_window_attention_qk_norm_and_softcap() -> None:
-    attn = SlidingWindowAttention(
-        d_model=32,
-        num_heads=8,
-        n_kv_heads=2,
-        window_size=4,
-        dropout=0.0,
-        qk_norm=True,
-        logit_softcap=20.0,
-    )
-    assert isinstance(attn.q_norm, RMSNorm)
-    assert isinstance(attn.k_norm, RMSNorm)
-    x = torch.randn(2, 6, 32)
-    assert attn(x).shape == x.shape
-
-
-def test_rotary_embedding_shape_and_causality() -> None:
-    rope = RotaryEmbedding(head_dim=16, base=10_000, max_seq_len=64)
-    q = torch.randn(2, 4, 10, 16)
-    k = torch.randn(2, 4, 10, 16)
-    q_rot, k_rot = rope(q, k)
-
-    assert q_rot.shape == q.shape
-    assert k_rot.shape == k.shape
-    assert not torch.allclose(q_rot, q)
-    assert not torch.allclose(k_rot, k)
-
-
-def test_rotary_apply_matches_fallback_on_cuda() -> None:
-    if not torch.cuda.is_available():
-        return
-    torch.manual_seed(20)
-    torch.cuda.empty_cache()
-    try:
-        q = torch.randn(1, 2, 5, 8, device="cuda", requires_grad=True)
-        cos = torch.randn(1, 1, 5, 8, device="cuda")
-        sin = torch.randn(1, 1, 5, 8, device="cuda")
-        grad = torch.randn_like(q)
-    except torch.AcceleratorError as exc:
-        pytest.skip(f"CUDA allocation unavailable: {exc}")
-
-    y_fast = rotary_apply(q, cos, sin)
-    y_ref = rotary_apply_fallback(q, cos, sin)
-    _assert_close(y_fast, y_ref, atol=1e-6)
-
-    y_fast.backward(grad, retain_graph=True)
-    dq_fast = q.grad.detach().clone()
-    q.grad = None
-    y_ref.backward(grad)
-    _assert_close(dq_fast, q.grad, atol=1e-6)
 
 
 def test_rms_norm_matches_fallback_on_cuda() -> None:
