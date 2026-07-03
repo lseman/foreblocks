@@ -1,11 +1,15 @@
-"""
+"""foreblocks.layers.embeddings.alibi_bias.
+
 ALiBi (Attention with Linear Biases) positional encoding.
 
-Paper: "Train Short, Test Long: Attention with Linear Biases Enables
-Inference Length Extrapolation" (Press et al., 2022).
+Implements ALiBi from Press et al. (2022) — a position-independent
+positional encoding that applies a linear distance penalty to attention
+scores per head. Compatible with chunked attention and linear attention
+backends. Provides length extrapolation without position limit.
 
-Unlike RoPE, ALiBi is position-independent and compatible with chunked
-attention, making it suitable for linear attention backends.
+Core API:
+- ALiBiPositionalBias: ALiBi positional bias layer
+
 """
 
 from __future__ import annotations
@@ -69,14 +73,13 @@ class ALiBiPositionalBias(nn.Module):
             return  # cache valid
 
         # [1, H, Tq, Tk] bias matrix
-        rel_pos = (
-            torch.arange(seqlen_q, device=device, dtype=torch.float32).unsqueeze(
-                1
-            )  # [Tq, 1]
-            - torch.arange(seqlen_k, device=device, dtype=torch.float32).unsqueeze(
-                0
-            )  # [1, Tk]
-        )  # [Tq, Tk]
+        rel_pos = torch.arange(seqlen_q, device=device, dtype=torch.float32).unsqueeze(
+            1
+        ) - torch.arange(  # [Tq, 1]
+            seqlen_k, device=device, dtype=torch.float32
+        ).unsqueeze(
+            0
+        )  # [1, Tk]  # [Tq, Tk]
         abs_rel = torch.abs(rel_pos)  # [Tq, Tk]
         bias = -(self.slopes * abs_rel.unsqueeze(0)).to(device=device)  # [1, H, Tq, Tk]
         self.bias_buffer = bias

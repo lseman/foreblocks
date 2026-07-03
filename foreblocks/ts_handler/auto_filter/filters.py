@@ -1,8 +1,19 @@
 """foreblocks.ts_handler.auto_filter.filters.
 
-This module implements the filters pieces for its package.
-It belongs to the automatic signal filtering and denoising pipelines area of Foreblocks.
-It exposes functions such as moving_average, gaussian_filter, savgol_filter, butter_lowpass.
+Curated collection of signal processing filters for auto-selection.
+
+Provides moving average, Gaussian, Savitzky-Golay, Butterworth lowpass,
+Kalman, VMD, wavelet, CEEMDAN, STL, and other denoising methods. Each
+filter is registered with the auto-selection registry and supports
+both univariate and multivariate time series.
+
+Core API:
+- moving_average, gaussian_filter, savgol_filter, butter_lowpass: classic filters
+- kalman_rts_smoother: Kalman fixed-interval RTS smoother
+- wavelet_denoise, vmd_filter, ceemdan_vae_filter: decomposition-based filters
+- lowess_filter, robust_loess_filter: nonparametric smoothers
+- stl_residual_denoise: STL-based residual denoising
+
 """
 
 from __future__ import annotations
@@ -21,7 +32,6 @@ from scipy.sparse.linalg import spsolve
 from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 
 from foreblocks.ts_handler.auto_filter.registry import register_filter
-
 
 try:
     from statsmodels.tsa.seasonal import STL
@@ -46,6 +56,7 @@ except ImportError:  # pragma: no cover - exercised when dependency is absent.
     VMD = None
 
 _SEED = 42
+
 
 def _as_series(
     values: np.ndarray, index: pd.Index, name: str | None = None
@@ -279,11 +290,17 @@ def wavelet_denoise(
 
     if pywt is not None:
         try:
-            denoise_once = lambda v: _pywt_denoise_once(v, wavelet, levels)  # noqa: E731
+            denoise_once = lambda v: _pywt_denoise_once(
+                v, wavelet, levels
+            )  # noqa: E731
         except Exception:
-            denoise_once = lambda v: _haar_wavelet_denoise_once(v, levels=levels)  # noqa: E731
+            denoise_once = lambda v: _haar_wavelet_denoise_once(
+                v, levels=levels
+            )  # noqa: E731
     else:
-        denoise_once = lambda v: _haar_wavelet_denoise_once(v, levels=levels)  # noqa: E731
+        denoise_once = lambda v: _haar_wavelet_denoise_once(
+            v, levels=levels
+        )  # noqa: E731
 
     acc = np.zeros_like(x)
     for shift in range(spins):
@@ -427,10 +444,7 @@ def non_local_means_filter(
     patch_radius = max(1, int(patch_radius))
     search_radius = max(patch_radius + 1, int(search_radius))
     padded = np.pad(y, (patch_radius, patch_radius), mode="reflect")
-    patches = np.stack([
-        padded[i : i + 2 * patch_radius + 1]
-        for i in range(n)
-    ])
+    patches = np.stack([padded[i : i + 2 * patch_radius + 1] for i in range(n)])
     if h is None:
         h = float(np.median(np.abs(np.diff(y))) / 0.6745) + 1e-6
     h = max(float(h), 1e-6)
@@ -758,7 +772,9 @@ def stl_residual_denoise(
         levels=resid_levels,
         cycle_spins=cycle_spins,
     ).values
-    return _as_series(fit.trend + fit.seasonal + resid_clean, ts.index, name="stl_wavelet")
+    return _as_series(
+        fit.trend + fit.seasonal + resid_clean, ts.index, name="stl_wavelet"
+    )
 
 
 @register_filter("VMD", slow=True)
@@ -919,7 +935,9 @@ class _DenoisingAutoencoder(nn.Module):
 
 
 class _VariationalAutoencoder(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int = 64, latent_size: int = 8) -> None:
+    def __init__(
+        self, input_size: int, hidden_size: int = 64, latent_size: int = 8
+    ) -> None:
         super().__init__()
         hidden_size = max(16, int(hidden_size))
         latent_size = max(2, int(latent_size))
@@ -935,7 +953,9 @@ class _VariationalAutoencoder(nn.Module):
             nn.Linear(hidden_size, input_size),
         )
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         h = self.encoder(x)
         mu = self.mu(h)
         logvar = self.logvar(h).clamp(-8.0, 8.0)

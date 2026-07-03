@@ -1,8 +1,15 @@
 """foreblocks.modules.attention.modules.dwt_att.
 
-This module implements the dwt att pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as DWTAttention.
+Spectral attention operating in the wavelet-coefficient domain.
+
+Applies a single-level orthogonal Haar discrete wavelet transform to split
+the sequence into approximation (low-pass) and detail (high-pass) bands, then
+computes attention over the leading wavelet coefficients before inverting back
+to the time domain. Use when you want frequency-domain attention without FFT.
+
+Core API:
+- DWTAttention: Haar wavelet-domain attention with per-coefficient spectral weights
+
 """
 
 import math

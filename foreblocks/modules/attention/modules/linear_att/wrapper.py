@@ -1,8 +1,15 @@
 """foreblocks.modules.attention.modules.linear_att.wrapper.
 
-This module implements the wrapper pieces for its package.
-It belongs to the linear and gated attention backends area of Foreblocks.
-It exposes classes such as ModernLinearAttention.
+Modular linear attention with swappable backends.
+
+Dispatches to one of six backend implementations (RDA, GLA, DeltaNet,
+GatedDeltaNet, GatedDeltaNet2, KimiAttention) based on a string key, all
+implementing the same drop-in forward API. Use when you need to switch
+backends without changing model code.
+
+Core API:
+- ModernLinearAttention: backend-dispatching wrapper with unified forward API
+
 """
 
 from __future__ import annotations
@@ -20,7 +27,6 @@ from foreblocks.modules.attention.modules.linear_att.gated_deltanet2 import (
 from foreblocks.modules.attention.modules.linear_att.gla import GLABackend
 from foreblocks.modules.attention.modules.linear_att.kimi import KimiAttention
 from foreblocks.modules.attention.modules.linear_att.rda import RDABackend
-
 
 GatedDeltaBackend = GatedDeltaNet
 KimiBackend = KimiAttention
@@ -78,8 +84,14 @@ class ModernLinearAttention(nn.Module):
         n_heads: int,
         dropout: float = 0.1,
         backend: Literal[
-            "rda", "gla", "deltanet", "gated_delta", "gated_deltanet",
-            "gated_deltanet2", "gdn2", "kimi"
+            "rda",
+            "gla",
+            "deltanet",
+            "gated_delta",
+            "gated_deltanet",
+            "gated_deltanet2",
+            "gdn2",
+            "kimi",
         ] = "rda",
         state: str = "elu",
         mode: Literal["chunk", "recurrent"] = "chunk",

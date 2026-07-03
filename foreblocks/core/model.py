@@ -1,7 +1,17 @@
-"""Forecasting model wrappers and head composition utilities.
+"""foreblocks.core.model.
 
-This module defines the BaseHead wrapper and the ForecastingModel class used
-by foreblocks to assemble modular forecasting pipelines.
+Forecasting model wrappers and head composition utilities.
+
+Defines the BaseHead wrapper and the ForecastingModel class used by foreblocks
+to assemble modular forecasting pipelines. BaseHead standardizes aux_loss
+handling, naming, and attribute delegation for wrapped modules. ForecastingModel
+provides head-based modular forecasting with support for multiple strategies
+(seq2seq, autoregressive, direct, transformer_seq2seq) and model types.
+
+Core API:
+- BaseHead: base class for all heads in the forecasting model
+- ForecastingModel: head-based modular forecasting model for time series tasks
+
 """
 
 import contextlib
@@ -12,7 +22,6 @@ import torch
 import torch.nn as nn
 
 from foreblocks.ui.node_spec import node
-
 
 # =============================================================================
 # Base head wrapper
@@ -737,9 +746,9 @@ class ForecastingModel(nn.Module):
 
     def _merge_bidirectional(self, hidden: torch.Tensor) -> torch.Tensor:
         """Merge bidirectional hidden states."""
-        assert hidden.size(0) % 2 == 0, (
-            "Expected even number of layers for bidirectional RNN"
-        )
+        assert (
+            hidden.size(0) % 2 == 0
+        ), "Expected even number of layers for bidirectional RNN"
         num_layers = hidden.size(0) // 2
         reshaped = hidden.reshape(num_layers, 2, *hidden.shape[1:])
         return reshaped.sum(dim=1)

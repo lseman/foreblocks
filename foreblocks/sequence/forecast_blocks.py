@@ -1,8 +1,18 @@
 """foreblocks.sequence.forecast_blocks.
 
-This module implements the forecast blocks pieces for its package.
-It belongs to the Foreblocks package functionality area of Foreblocks.
-It exposes classes such as Mamba2ModelBlock, Mamba3ModelBlock, HybridMambaModelBlock, RavenModelBlock.
+Node-wrapped model blocks for the Foreblocks UI pipeline.
+
+Provides ForecastingModel-compatible encoder blocks (Mamba2, Mamba3, Hybrid
+Mamba, Raven) decorated with the @node registry for the Foreblocks visual
+pipeline builder. Each block wraps a sequence of lower-level mixer layers
+with input projection, dropout, and normalization.
+
+Core API:
+- Mamba2ModelBlock: Mamba2-based model block with FLA or custom backend
+- Mamba3ModelBlock: Mamba3-based model block
+- HybridMambaModelBlock: Hybrid Mamba2 block mixing SSM and attention
+- RavenModelBlock: Raven sequence mixer model block
+
 """
 
 from __future__ import annotations

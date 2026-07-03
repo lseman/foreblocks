@@ -1,10 +1,19 @@
-# patch.py
-
 """PatchTST-style patch token transformer head.
+
+Patches input series into overlapping windows, embeds each patch, then encodes
+tokens with a custom transformer encoder stack. Supports pooled, linear, and
+attention-based output mixing with optional CLS token and channel-independent
+processing.
 
 Based on: Nie et al., "A Time Series is Worth 64 Words: Long-term Forecasting with Transformers" (PatchTST),
 ICLR 2023.
 Paper: https://arxiv.org/abs/2211.14730
+
+Core API:
+- PatchTST: PatchTST-style head with patch embedding and multiple output modes
+- PatchTokenEncoder: encoder stack over patch tokens
+- _patchify_1d: 1D patchification helper
+
 """
 
 from typing import Literal
@@ -82,9 +91,9 @@ class PatchTokenEncoder(nn.Module):
             num_experts=num_experts,
             top_k=top_k,
         )
-        self.layers = nn.ModuleList([
-            _EncLayer(**layer_kwargs) for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [_EncLayer(**layer_kwargs) for _ in range(n_layers)]
+        )
         self.final_norm = (
             create_norm_layer(custom_norm, d_model, layer_norm_eps)
             if use_final_norm

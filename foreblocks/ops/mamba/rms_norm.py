@@ -1,14 +1,21 @@
 """foreblocks.ops.mamba.rms_norm.
 
-This module implements the rms norm pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes functions such as rms_norm_fallback, rms_norm.
+Mamba RMSNorm wrapper — reuses transformer Triton kernels.
+
+Provides RMSNorm for Mamba2 models, delegating to the transformer
+RMSNormTritonFunction for the Triton path. This avoids maintaining a
+duplicate Mamba-specific kernel while keeping the public API intact.
+Falls back to pure PyTorch when Triton is unavailable.
+
+Core API:
+- rms_norm: main entry, auto-selects Triton or PyTorch fallback
+- rms_norm_fallback: pure PyTorch RMSNorm
+
 """
 
 from __future__ import annotations
 
 import torch
-
 
 try:
     from foreblocks.ops.kernels.rms_norm import (

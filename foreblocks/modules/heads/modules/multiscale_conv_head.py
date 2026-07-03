@@ -1,8 +1,17 @@
 """foreblocks.modules.heads.modules.multiscale_conv_head.
 
-This module implements the multiscale conv head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as MultiScalePyramid, MultiScalePyramidHead.
+Multi-scale pyramid head with recursive pooling, spectral filtering, and coarse-to-fine fusion.
+
+Builds a downsampling pyramid via average pooling, applies optional per-scale
+learnable FFT filters, then fuses scales from coarse to fine with channel-wise
+projections and optional NHITS-style residual refinement. Use when you need
+hierarchical multi-scale feature extraction that captures both local and global
+temporal structure.
+
+Core API:
+- MultiScalePyramid: recursive pyramid with spectral filters and hierarchical fusion
+- MultiScalePyramidHead: BaseHead wrapper
+
 """
 
 from __future__ import annotations
@@ -14,7 +23,6 @@ import torch.nn.functional as F
 
 from foreblocks.core.model import BaseHead
 from foreblocks.ui.node_spec import node
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Multi-Scale Pyramid + (optional) Frequency-Domain Filtering + Hierarchical Fuse

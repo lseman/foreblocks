@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.modules.differencing_head.
 
-This module implements the differencing head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as Differencing, DifferencingHead.
+First-order time differencing with reversible inversion.
+
+Computes delta(x) = x[t] - x[t-1] with length preservation (delta[:,0] = 0)
+and stores the initial value for reconstruction. Use as a reversible
+preprocessing head for non-stationary series — apply differencing before the
+forecast and invert predictions to recover the original scale.
+
+Core API:
+- Differencing: differencing with invert()
+- DifferencingHead: BaseHead wrapper
+
 """
 
 from __future__ import annotations

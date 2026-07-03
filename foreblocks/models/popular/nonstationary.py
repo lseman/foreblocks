@@ -1,20 +1,22 @@
-# nonstationary.py
+"""foreblocks.models.popular.nonstationary.
 
-"""Non-stationary Transformer framework (NSformer).
+Non-stationary Transformer framework with stationarization and de-stationary attention.
 
 Based on: Liu et al., "Non-stationary Transformers: Exploring the Stationarity
 in Time Series Forecasting", NeurIPS 2022.
 Paper: https://arxiv.org/abs/2205.14415
 
-Two core modules:
-  Series Stationarization — normalize input to zero-mean, unit-variance,
-    process through model, then restore output statistics.
+Normalizes input to zero-mean/unit-variance for stable training, processes through
+a de-stationary transformer (tau/delta-modulated attention), then denormalizes
+output. Provides both a full NonStationaryTransformer and a wrapper that enhances
+any existing attention-based transformer head.
 
-  De-stationary Attention — modulate attention scores by learned factors
-    (tau, delta) to recover non-stationary structure lost in normalization.
+Core API:
+- NonStationaryTransformer: full NSformer with stationarization, de-stationary encoder, and denormalization
+- NonStationaryWrapper: wrap any transformer head with NS stationarization benefits
+- DSAttention: de-stationary attention with learned tau (scaling) and delta (shift) factors
+- DeStationaryProjector: MLP learner for tau/delta factors from raw input statistics
 
-This is an architecture-agnostic framework — the wrapper can enhance any
-existing attention-based transformer head.
 """
 
 import math
@@ -203,9 +205,7 @@ class DeStationaryProjector(nn.Module):
             self._series_convs[key] = conv
         return self._series_convs[key](x)
 
-    def forward(
-        self, x: torch.Tensor, stats: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
         """
         x:   [B, L, C] raw input
         stats: [B, 1, C] mean or std
@@ -252,9 +252,7 @@ class NSEncoderLayer(nn.Module):
         tau: torch.Tensor | None = None,
         delta: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        new_x, attn = self.attention(
-            x, x, x, attn_mask=attn_mask, tau=tau, delta=delta
-        )
+        new_x, attn = self.attention(x, x, x, attn_mask=attn_mask, tau=tau, delta=delta)
         x = x + self.drop(new_x)
 
         y = self.norm1(x)
@@ -278,18 +276,20 @@ class NSFormerEncoder(nn.Module):
         eps: float = 1e-5,
     ):
         super().__init__()
-        self.layers = nn.ModuleList([
-            NSEncoderLayer(
-                d_model=d_model,
-                n_heads=n_heads,
-                dim_ff=dim_ff,
-                dropout=dropout,
-                activation=activation,
-                norm_type=norm_type,
-                eps=eps,
-            )
-            for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                NSEncoderLayer(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    dim_ff=dim_ff,
+                    dropout=dropout,
+                    activation=activation,
+                    norm_type=norm_type,
+                    eps=eps,
+                )
+                for _ in range(n_layers)
+            ]
+        )
         self.norm = create_norm_layer(norm_type, d_model, eps=eps)
 
     def forward(
@@ -381,18 +381,20 @@ class NSFormerDecoder(nn.Module):
         eps: float = 1e-5,
     ):
         super().__init__()
-        self.layers = nn.ModuleList([
-            NSDecoderLayer(
-                d_model=d_model,
-                n_heads=n_heads,
-                dim_ff=dim_ff,
-                dropout=dropout,
-                activation=activation,
-                norm_type=norm_type,
-                eps=eps,
-            )
-            for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                NSDecoderLayer(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    dim_ff=dim_ff,
+                    dropout=dropout,
+                    activation=activation,
+                    norm_type=norm_type,
+                    eps=eps,
+                )
+                for _ in range(n_layers)
+            ]
+        )
         self.norm = create_norm_layer(norm_type, d_model, eps=eps)
 
     def forward(
@@ -584,12 +586,9 @@ class NonStationaryTransformer(nn.Module):
         # ---- Series Stationarization ----
         mean = x.mean(dim=1, keepdim=True).detach()  # [B, 1, C_in]
         x_centered = x - mean
-        std = (
-            torch.sqrt(
-                torch.var(x_centered, dim=1, keepdim=True, unbiased=False) + 1e-5
-            )
-            .detach()
-        )  # [B, 1, C_in]
+        std = torch.sqrt(
+            torch.var(x_centered, dim=1, keepdim=True, unbiased=False) + 1e-5
+        ).detach()  # [B, 1, C_in]
         x_norm = x_centered / std  # [B, L, C_in]
 
         # ---- Learn de-stationary factors ----
@@ -607,9 +606,7 @@ class NonStationaryTransformer(nn.Module):
 
         # ---- Encode ----
         z = self.enc_in(x_norm)  # [B, L, D]
-        enc_out, _ = self.encoder(
-            z, attn_mask=None, tau=tau, delta=delta
-        )  # [B, L, D]
+        enc_out, _ = self.encoder(z, attn_mask=None, tau=tau, delta=delta)  # [B, L, D]
 
         # ---- Decoder: normalized tail + zero future tokens ----
         label_len = min(
@@ -693,12 +690,9 @@ class NonStationaryWrapper(nn.Module):
         # ---- Stationarize ----
         mean = x.mean(dim=1, keepdim=True).detach()  # [B, 1, C]
         x_centered = x - mean
-        std = (
-            torch.sqrt(
-                torch.var(x_centered, dim=1, keepdim=True, unbiased=False) + 1e-5
-            )
-            .detach()
-        )  # [B, 1, C]
+        std = torch.sqrt(
+            torch.var(x_centered, dim=1, keepdim=True, unbiased=False) + 1e-5
+        ).detach()  # [B, 1, C]
         x_norm = x_centered / std  # [B, L, C]
 
         # ---- Learn factors ----

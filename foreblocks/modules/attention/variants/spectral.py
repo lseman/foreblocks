@@ -1,19 +1,15 @@
-"""Spectral attention dispatcher — frequency- and wavelet-domain attention.
+"""foreblocks.modules.attention.variants.spectral.
 
-This is a thin router that forwards to the parent's spectral attention module
-according to ``parent.attention_type``:
+Dispatch to frequency-domain or wavelet-domain attention mechanisms.
 
-    * ``"frequency"`` → :class:`FrequencyAttention`, a re-implementation of the
-      ``FourierCrossAttention`` block from FEDformer (Zhou et al., "FEDformer:
-      Frequency Enhanced Decomposed Transformer for Long-term Series
-      Forecasting", ICML 2022, arXiv:2201.12740).
-    * ``"dwt"`` → :class:`DWTAttention`, an analogous attention computed in the
-      Haar wavelet-coefficient domain.
+Routes attention computation into the Fourier or Haar wavelet coefficient domain
+instead of the standard time-domain dot-product. Use when frequency periodicity
+or multi-scale wavelet patterns are expected in the data, such as seasonal time
+series or signals with scale-invariant structure.
 
-Any other type falls through to the frequency module. The actual algorithms,
-math, and references live in the respective module docstrings
-(:mod:`..modules.frequency_att`, :mod:`..modules.dwt_att`); this class only
-handles dispatch.
+Core API:
+- SpectralAttentionImpl: dispatcher for frequency and DWT attention backends
+
 """
 
 import torch

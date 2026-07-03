@@ -1,8 +1,17 @@
 """foreblocks.ops.attention.fla_kda.
 
-This module implements the fla kda pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as can_use_fla_kda, fla_kda_forward.
+Wrap upstream FLA kernel-discretised attention with Foreblocks tensor layout.
+
+Kernel Discretised Attention (KDA) extends gated-linear attention with a kernel-based
+recurrent state update. This module bridges FLA's internal layout to Foreblocks'
+`[B, H, T, D]` convention, exposing runtime availability checks and a single entry
+point. Use when you need FLA-backed KDA inside a Foreblocks model without manual
+tensor transposes.
+
+Core API:
+- can_use_fla_kda: runtime capability check (FLA installed, CUDA, shape/dtype valid)
+- fla_kda_forward: chunk or recurrent KDA with Foreblocks layout
+
 """
 
 import os
@@ -61,7 +70,19 @@ def fla_kda_forward(
     *,
     recurrent: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run upstream FLA KDA with [B, H, T, *] layout."""
+    """Run upstream FLA KDA with [B, H, T, *] layout.
+
+    Args:
+        q, k, v: query, key, value tensors [B, H, T, D].
+        g: gate tensor [B, H, T, D].
+        beta: kernel discretisation parameter [B, H, T].
+        initial_state: per-head state [B, H, D, D].
+        scale, chunk_size: attention scale and chunk size (chunk mode only).
+        recurrent: if True, use recurrent mode instead of chunked.
+
+    Returns:
+        (output, final_state): output [B, H, T, D], state [B, H, D, D].
+    """
     if not can_use_fla_kda(
         q, k, v, g, beta, initial_state, chunk_size, recurrent=recurrent
     ):

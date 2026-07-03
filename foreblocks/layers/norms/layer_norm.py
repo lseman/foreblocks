@@ -1,8 +1,16 @@
 """foreblocks.layers.norms.layer_norm.
 
-This module implements the layer norm pieces for its package.
-It belongs to the normalization layers and normalization helpers area of Foreblocks.
-It exposes classes such as FastLayerNorm, AdaptiveLayerNorm.
+High-performance LayerNorm variants with Triton acceleration.
+
+Provides FastLayerNorm with optional Triton kernel fallback, AdaptiveLayerNorm
+with learnable normalization parameters, and Triton-integrated norm computation.
+Designed for transformer and sequence model architectures requiring fast
+layer normalization.
+
+Core API:
+- FastLayerNorm: LayerNorm with Triton acceleration
+- AdaptiveLayerNorm: LayerNorm with learnable normalization
+
 """
 
 import torch

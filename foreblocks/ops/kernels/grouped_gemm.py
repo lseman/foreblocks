@@ -1,8 +1,17 @@
 """foreblocks.ops.kernels.grouped_gemm.
 
-This module implements the grouped gemm pieces for its package.
-It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
-It exposes functions such as grouped_mm_varM.
+Grouped GEMM with variable M per expert — Triton-accelerated matrix multiply.
+
+Supports concatenated MoE expert segments where each expert processes a variable
+number of tokens. The Triton forward kernel is autotuned; the backward falls back
+to PyTorch per-expert matmuls. Use when building Mixture-of-Experts models or
+any architecture that needs per-group matrix multiplication with varying group sizes.
+
+Core API:
+- grouped_mm_varM: compute concat_e(A_e @ B_e) with variable M_e, full autograd
+- TRITON_AVAILABLE: whether the Triton path is usable
+- _split_by_offsets: split a packed tensor by offset boundaries
+
 """
 
 # grouped_gemm.py
@@ -17,7 +26,6 @@ It exposes functions such as grouped_mm_varM.
 from collections.abc import Sequence
 
 import torch
-
 
 try:
     import triton
@@ -254,24 +262,18 @@ if TRITON_AVAILABLE:
             k_mask = k_ids < K
 
             a_ptrs = (
-                a_tile_base
-                + offs_m[:, None] * stride_a_m
-                + k_ids[None, :] * stride_a_k
+                a_tile_base + offs_m[:, None] * stride_a_m + k_ids[None, :] * stride_a_k
             )
             a = tl.load(a_ptrs, mask=mask_m[:, None] & k_mask[None, :], other=0.0)
 
-            b_ptrs = (
-                b_base + k_ids[:, None] * stride_b_k + offs_n[None, :] * stride_b_n
-            )
+            b_ptrs = b_base + k_ids[:, None] * stride_b_k + offs_n[None, :] * stride_b_n
             b = tl.load(b_ptrs, mask=k_mask[:, None] & mask_n[None, :], other=0.0)
 
             acc += tl.dot(a, b)
             k0 += BLOCK_K
 
         c_ptrs = (
-            c_tile_base
-            + offs_m[:, None] * stride_c_m
-            + offs_n[None, :] * stride_c_n
+            c_tile_base + offs_m[:, None] * stride_c_m + offs_n[None, :] * stride_c_n
         )
         tl.store(c_ptrs, acc, mask=mask_m[:, None] & mask_n[None, :])
 

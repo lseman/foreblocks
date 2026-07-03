@@ -1,8 +1,17 @@
 """foreblocks.sequence.mamba.utils.
 
-This module implements the utils pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes functions such as auto_dt_rank, inverse_softplus, fused_out_2d, conv_step.
+Utility functions for Mamba block internals.
+
+Provides helpers for dt-rank computation, inverse softplus parametrization,
+2-D fused-out projection (RMSNormGated for batched/autoregressive step),
+and one-step causal depthwise convolution from a ring buffer.
+
+Core API:
+- auto_dt_rank: compute dt rank from d_model (max 4, ceil(d_model/16))
+- inverse_softplus: compute x + log(1 - exp(-x)) with numerical stability
+- fused_out_2d: RMSNormGated for 2-D tensors [B, D]
+- conv_step: one-step causal depthwise conv from ring buffer state
+
 """
 
 from __future__ import annotations

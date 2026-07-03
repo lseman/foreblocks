@@ -1,8 +1,15 @@
 """foreblocks.sequence.raven.configuration.
 
-This module defines configuration objects and defaults.
-It belongs to the Raven sequence-model integration helpers area of Foreblocks.
-It exposes classes such as RavenConfig.
+Raven model configuration with HuggingFace PretrainedConfig integration.
+
+Defines RavenConfig with defaults for all model hyperparameters: hidden size,
+num layers/heads, gating, feature maps, rotary embeddings, hybrid attention
+settings, and fusion flags. Validates inter-parameter constraints (e.g.
+num_heads divisible by num_kv_heads). Compatible with model.from_pretrained.
+
+Core API:
+- RavenConfig: HuggingFace-compatible configuration for Raven models
+
 """
 
 from __future__ import annotations
@@ -94,7 +101,9 @@ class RavenConfig(PretrainedConfig):
         self.attnres_block_size = attnres_block_size
 
         if fuse_cross_entropy and fuse_linear_cross_entropy:
-            raise ValueError("`fuse_cross_entropy` and `fuse_linear_cross_entropy` cannot both be True.")
+            raise ValueError(
+                "`fuse_cross_entropy` and `fuse_linear_cross_entropy` cannot both be True."
+            )
         if fuse_linear_cross_entropy:
             warnings.warn(
                 "`fuse_linear_cross_entropy` can improve memory efficiency at the potential "
@@ -106,7 +115,9 @@ class RavenConfig(PretrainedConfig):
             if not isinstance(attn, dict):
                 raise ValueError("attn must be a dictionary")
             if "layers" not in attn:
-                raise ValueError("Layer indices are required for hybrid attention layers")
+                raise ValueError(
+                    "Layer indices are required for hybrid attention layers"
+                )
             if "num_heads" not in attn:
                 raise ValueError("num_heads is required for hybrid attention layers")
             attn["num_kv_heads"] = attn.get("num_kv_heads", attn["num_heads"])
@@ -116,7 +127,9 @@ class RavenConfig(PretrainedConfig):
 
         if attnres_block_size is not None and attnres_block_size != 1:
             if attnres_block_size < 2 or attnres_block_size % 2 != 0:
-                raise ValueError("`attnres_block_size` must be None, 1, or an even integer.")
+                raise ValueError(
+                    "`attnres_block_size` must be None, 1, or an even integer."
+                )
 
         super().__init__(
             pad_token_id=pad_token_id,

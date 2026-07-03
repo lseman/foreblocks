@@ -1,8 +1,15 @@
 """foreblocks.sequence.raven.blocks.raven.
 
-This module implements the raven pieces for its package.
-It belongs to the composable neural-network blocks area of Foreblocks.
-It exposes classes such as Raven.
+Raven sequence mixer with gated sparse attention and chunked/recurrent modes.
+
+Implements the Raven architecture: gated sparse attention (GSA) using
+multi-hot routing over slots, chunked or fused-recurrent scan modes, Mamba2
+or GLA decay types, and optional rotary embeddings. Supports KV caching for
+autoregressive decoding. Used as the sequence mixer in Raven language models.
+
+Core API:
+- Raven: Raven sequence mixer with GSA, chunked/recurrent modes, KV cache
+
 """
 
 from __future__ import annotations
@@ -100,7 +107,9 @@ class Raven(nn.Module):
         if self.num_heads < 1:
             raise ValueError(f"`num_heads` must be positive, got {self.num_heads}.")
         if self.num_kv_heads < 1:
-            raise ValueError(f"`num_kv_heads` must be positive, got {self.num_kv_heads}.")
+            raise ValueError(
+                f"`num_kv_heads` must be positive, got {self.num_kv_heads}."
+            )
         if self.num_heads % self.num_kv_heads != 0:
             raise ValueError("`num_heads` must be divisible by `num_kv_heads`.")
 
@@ -110,13 +119,21 @@ class Raven(nn.Module):
         self.key_dim = int(key_dim)
         self.value_dim = int(value_dim)
         if not math.isclose(key_dim, self.key_dim):
-            raise ValueError(f"`hidden_size * expand_k` must be an integer, got {key_dim}.")
+            raise ValueError(
+                f"`hidden_size * expand_k` must be an integer, got {key_dim}."
+            )
         if not math.isclose(value_dim, self.value_dim):
-            raise ValueError(f"`hidden_size * expand_v` must be an integer, got {value_dim}.")
+            raise ValueError(
+                f"`hidden_size * expand_v` must be an integer, got {value_dim}."
+            )
         if self.key_dim % self.num_heads != 0:
-            raise ValueError("`hidden_size * expand_k` must be divisible by `num_heads`.")
+            raise ValueError(
+                "`hidden_size * expand_k` must be divisible by `num_heads`."
+            )
         if self.value_dim % self.num_heads != 0:
-            raise ValueError("`hidden_size * expand_v` must be divisible by `num_heads`.")
+            raise ValueError(
+                "`hidden_size * expand_v` must be divisible by `num_heads`."
+            )
 
         self.key_dim_per_group = self.key_dim // self.num_kv_groups
         self.value_dim_per_group = self.value_dim // self.num_kv_groups
@@ -129,7 +146,9 @@ class Raven(nn.Module):
         if default_num_slots and topk > num_slots:
             topk = num_slots
         if topk < 1 or topk > num_slots:
-            raise ValueError(f"`topk` must be in [1, num_slots], got {topk}, {num_slots}.")
+            raise ValueError(
+                f"`topk` must be in [1, num_slots], got {topk}, {num_slots}."
+            )
 
         self.num_slots = num_slots
         self.topk = topk
@@ -184,26 +203,38 @@ class Raven(nn.Module):
             self.dt_bias = nn.Parameter(inv_dt)
             self.dt_bias._no_weight_decay = True
         else:
-            self.f_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.num_slots, bias=False)
+            self.f_proj = nn.Linear(
+                self.hidden_size, self.num_kv_heads * self.num_slots, bias=False
+            )
 
         if self.bias_rmm:
-            self.r_bias = nn.Parameter(torch.zeros(self.num_kv_heads, self.num_slots, dtype=torch.float32))
+            self.r_bias = nn.Parameter(
+                torch.zeros(self.num_kv_heads, self.num_slots, dtype=torch.float32)
+            )
 
         if self.router_type == "lin":
-            self.r_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.num_slots, bias=False)
+            self.r_proj = nn.Linear(
+                self.hidden_size, self.num_kv_heads * self.num_slots, bias=False
+            )
         else:
             self.r_proj = nn.Sequential(
                 nn.Linear(self.hidden_size, self.hidden_size, bias=True),
                 nn.GELU(),
-                nn.Linear(self.hidden_size, self.num_kv_heads * self.num_slots, bias=False),
+                nn.Linear(
+                    self.hidden_size, self.num_kv_heads * self.num_slots, bias=False
+                ),
             )
 
         if self.use_rope:
             self.rotary = RotaryEmbedding(dim=self.head_k_dim, base=self.rope_theta)
 
         norm_cls = RMSNorm if self.fuse_norm else nn.RMSNorm
-        self.q_norm = norm_cls(self.head_k_dim, elementwise_affine=elementwise_affine, eps=norm_eps)
-        self.k_norm = norm_cls(self.head_k_dim, elementwise_affine=elementwise_affine, eps=norm_eps)
+        self.q_norm = norm_cls(
+            self.head_k_dim, elementwise_affine=elementwise_affine, eps=norm_eps
+        )
+        self.k_norm = norm_cls(
+            self.head_k_dim, elementwise_affine=elementwise_affine, eps=norm_eps
+        )
 
         if self.use_output_gate:
             self.o_gate_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
@@ -216,10 +247,14 @@ class Raven(nn.Module):
                 )
                 self.fuse_norm_and_gate = True
             else:
-                self.o_norm = norm_cls(self.head_v_dim, elementwise_affine=elementwise_affine, eps=norm_eps)
+                self.o_norm = norm_cls(
+                    self.head_v_dim, elementwise_affine=elementwise_affine, eps=norm_eps
+                )
                 self.fuse_norm_and_gate = False
         else:
-            self.g_norm = norm_cls(self.value_dim, elementwise_affine=elementwise_affine, eps=norm_eps)
+            self.g_norm = norm_cls(
+                self.value_dim, elementwise_affine=elementwise_affine, eps=norm_eps
+            )
         self.o_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
     def forward(
@@ -233,7 +268,9 @@ class Raven(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None, Cache | None]:
         if attention_mask is not None:
             if len(attention_mask.shape) != 2:
-                raise AssertionError("Expected attention_mask with shape [batch_size, seq_len].")
+                raise AssertionError(
+                    "Expected attention_mask with shape [batch_size, seq_len]."
+                )
 
         batch_size, q_len, _ = hidden_states.shape
         mode = "fused_recurrent" if q_len <= 64 else self.mode
@@ -260,10 +297,18 @@ class Raven(nn.Module):
                 )
                 max_seqlen = q_len + _max_offset(seqlen_offset)
 
-        q = rearrange(self.q_proj(hidden_states), "... (h d) -> ... h d", d=self.head_k_dim)
-        k = rearrange(self.k_proj(hidden_states), "... (h d) -> ... h d", d=self.head_k_dim)
-        v = rearrange(self.v_proj(hidden_states), "... (h d) -> ... h d", d=self.head_v_dim)
-        router = rearrange(self.r_proj(hidden_states), "... (h m) -> ... h m", m=self.num_slots)
+        q = rearrange(
+            self.q_proj(hidden_states), "... (h d) -> ... h d", d=self.head_k_dim
+        )
+        k = rearrange(
+            self.k_proj(hidden_states), "... (h d) -> ... h d", d=self.head_k_dim
+        )
+        v = rearrange(
+            self.v_proj(hidden_states), "... (h d) -> ... h d", d=self.head_v_dim
+        )
+        router = rearrange(
+            self.r_proj(hidden_states), "... (h m) -> ... h m", m=self.num_slots
+        )
 
         if self.decay_type == "Mamba2":
             f = (
@@ -271,7 +316,9 @@ class Raven(nn.Module):
                 * F.softplus(self.a_proj(hidden_states).float() + self.dt_bias)
             ).unsqueeze(-1)
         else:
-            f = rearrange(self.f_proj(hidden_states), "... (h m) -> ... h m", m=self.num_slots)
+            f = rearrange(
+                self.f_proj(hidden_states), "... (h m) -> ... h m", m=self.num_slots
+            )
             f = F.logsigmoid(f) / self.gate_logit_normalizer
 
         q, k = self.feature_map(q), self.feature_map(k)
@@ -291,19 +338,29 @@ class Raven(nn.Module):
         v = self.gate_fn(v)
         if self.add_gumbel_noise and self.training:
             router = router - torch.empty_like(router).exponential_().log()
-        orig_scores = torch.sigmoid(router) if self.router_score == "sigmoid" else torch.softmax(router, dim=-1)
+        orig_scores = (
+            torch.sigmoid(router)
+            if self.router_score == "sigmoid"
+            else torch.softmax(router, dim=-1)
+        )
         scores = orig_scores + self.r_bias.float() if self.bias_rmm else orig_scores
 
         route_idx = scores.topk(self.topk, dim=-1).indices
         topk_weights = torch.gather(orig_scores, dim=-1, index=route_idx)
         if self.router_score == "sigmoid":
-            topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-9)
+            topk_weights = topk_weights / (
+                topk_weights.sum(dim=-1, keepdim=True) + 1e-9
+            )
 
-        s_multihot = torch.zeros_like(router).scatter_(-1, route_idx, topk_weights.to(router.dtype))
+        s_multihot = torch.zeros_like(router).scatter_(
+            -1, route_idx, topk_weights.to(router.dtype)
+        )
         f = (f * s_multihot).to(q.dtype)
         s = (1 - f.exp()).to(q.dtype)
 
-        recurrent_state = last_state["recurrent_state"] if last_state is not None else None
+        recurrent_state = (
+            last_state["recurrent_state"] if last_state is not None else None
+        )
         if self.num_kv_groups > 1:
             k, v, f, s = map(
                 lambda x: repeat(x, "... h d -> ... (h g) d", g=self.num_kv_groups),
@@ -346,7 +403,11 @@ class Raven(nn.Module):
         )
 
         if self.use_output_gate:
-            gate_out = rearrange(self.o_gate_proj(hidden_states), "... (h d) -> ... h d", d=self.head_v_dim)
+            gate_out = rearrange(
+                self.o_gate_proj(hidden_states),
+                "... (h d) -> ... h d",
+                d=self.head_v_dim,
+            )
             o = self.gate_fn(o)
             if self.fuse_norm_and_gate:
                 o = self.o_norm(o, gate_out)

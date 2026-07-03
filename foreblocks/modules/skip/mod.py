@@ -1,10 +1,12 @@
-"""Mixture-of-Depths (MoD) — router, routing, and budget scheduling.
+"""foreblocks.modules.skip.mod.
 
-Implements the MoD architecture from Ritter et al. (2024), where a learned
-per-token router dynamically allocates FLOPs across transformer layers: only
-the highest-scoring ``keep_rate`` fraction of tokens is processed by each
-subsequent block's self-attention and MLP, while the rest route around it
-via a residual connection.
+Mixture-of-Depths (MoD) — per-token router for dynamic FLOP allocation.
+
+Implements the MoD architecture: a learned per-token router dynamically allocates
+compute across transformer layers, routing only the highest-scoring keep_rate
+fraction of tokens through each block's attention and MLP while the rest route
+around via residual. Features expert-choice top-k selection, budget scheduling
+with annealing, and auxiliary BCE loss for causal predictor training.
 
 Original paper:
     Ritter, S., Richards, B., Lillicrap, T., Humphreys, P. C., & Santoro, A.
@@ -13,15 +15,14 @@ Original paper:
     language models."
     arXiv:2404.02258 [[arXiv]](https://arxiv.org/abs/2404.02258)
 
-Key ideas:
-    1. *Predictor*: a light MLP per token scores whether it needs a block's
-       self-attention and MLP.
-    2. *Expert-choice top-k*: the top-``keep_rate`` fraction of tokens per
-       batch are selected for each block (no hard capacity slots).
-    3. *Budget scheduler*: anneals the global keep-rate per layer over training
-       so the predictor learns progressively harder thresholds.
-    4. *Auxiliary loss*: a BCE term trains the causal (autoregressive) predictor
-       to match the non-causal top-k selections.
+Core API:
+- MoDRouter: per-token or per-sequence router for dynamic FLOP allocation
+- mod_topk_mask: expert-choice top-k routing mask (MoD §3.3)
+- mod_routed_indices: convert keep mask to sorted routed indices
+- mod_router_aux_loss: BCE auxiliary loss for causal router training (MoD §3.5)
+- MoDBudgetScheduler: budget annealing with layer profiles
+- LayerDropoutSchedule: per-layer dropout with depth profiles
+
 """
 
 import math
@@ -36,38 +37,6 @@ import torch.nn.functional as F
 # Mixture-of-Depths (MoD)
 # =============================================================================
 class MoDRouter(nn.Module):
-    """Mixture-of-Depths per-token router.
-
-    Predicts a scalar score for each token indicating whether it should be
-    routed to a deeper layer (high score) or exit early (low score).
-
-    The router is a light MLP: ``Norm(x) → Linear → GELU → Linear → 1``
-    (or a single linear layer when ``hidden=0``).  The bias is initialised
-    to ``init_bias`` so that the network starts biased towards / against
-    routing before training.
-
-    Reference:
-        Ritter et al. (2024) — arXiv:2404.02258
-        "Mixture-of-Depths: Dynamically allocating compute in
-        transformer-based language models."
-        See §3.2 "Routing around transformer blocks" for the router definition.
-
-    Parameters
-    ----------
-    d_model : int
-        Input feature dimension.
-    mode : str
-        ``"token"`` — scores per token ``[B,T,1]`` (MoD-correct).
-        ``"seq"``  — scores per sequence ``[B,1,1]`` (legacy).
-    hidden : int
-        Hidden dimension of the two-layer head.  ``0`` uses a single
-        linear layer.
-    use_norm : bool
-        Whether to apply LayerNorm before the head.
-    init_bias : float
-        Initial bias value (controls initial routing fraction).
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -286,40 +255,6 @@ def mod_router_aux_loss(
 
 @dataclass
 class MoDBudgetScheduler:
-    """MoD layer-wise budget scheduler with per-layer profile annealing.
-
-    Provides a target keep-rate per layer (0..1), optionally annealed from
-    ``start_keep`` to ``end_keep`` over ``total_steps`` with a warmup period.
-
-    The scheduler supports three layer-profile strategies:
-      - ``"flat"``       — identical keep-rate for all layers
-      - ``"deeper_more"`` — deeper layers keep *more* tokens (scales by depth)
-      - ``"deeper_less"`` — deeper layers keep *fewer* tokens
-
-    Reference:
-        Ritter et al. (2024) — arXiv:2404.02258
-        "Mixture-of-Depths: Dynamically allocating compute in
-        transformer-based language models."
-    ----------
-    num_layers : int
-        Number of transformer layers (depth of the network).
-    start_keep : float
-        Initial keep-rate before annealing begins (default 1.0 = all layers).
-    end_keep : float
-        Final keep-rate after annealing (default 0.85 = ~15% reduction).
-    warmup_steps : int
-        Steps during which keep-rate stays at ``start_keep`` (default 0).
-    total_steps : int
-        Total annealing steps (default 50 000).
-    layer_profile : str
-        ``"flat"``, ``"deeper_more"``, or ``"deeper_less"``.
-
-    Attributes
-    ----------
-    _step : int
-        Current global training step (incremented via ``.step()``).
-    """
-
     num_layers: int
     start_keep: float = 1.0
     end_keep: float = 0.85
@@ -359,28 +294,6 @@ class MoDBudgetScheduler:
 
 @dataclass
 class LayerDropoutSchedule:
-    """Depth-scaled attention dropout for transformers.
-
-    Deeper layers typically benefit from higher dropout (stochastic-depth style)
-    to prevent overfitting in later refinement stages. This scheduler provides
-    per-layer dropout rates based on layer depth.
-
-    Parameters
-    ----------
-    num_layers : int
-        Total number of transformer layers.
-    base_dropout : float
-        Base dropout rate (used for all layers when profile="flat").
-    max_dropout : float, optional
-        Maximum dropout rate (applied to the deepest layer).
-        If None, no depth scaling — returns base_dropout for all layers.
-    profile : str, optional
-        Depth profile strategy (default "deeper_more"):
-        - "flat": identical dropout for all layers (max_dropout is ignored)
-        - "deeper_more": deeper layers get higher dropout
-        - "deeper_less": deeper layers get lower dropout
-    """
-
     num_layers: int
     base_dropout: float
     max_dropout: float | None = None

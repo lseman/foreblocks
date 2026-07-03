@@ -1,8 +1,21 @@
-"""
-ForeBlocks custom neural network blocks for time series modeling.
+"""foreblocks.modules.blocks.
 
-This package contains a collection of state-of-the-art neural network building
-blocks specifically designed for time series forecasting and analysis.
+Neural network building blocks for time-series modeling.
+
+Aggregates attention, recurrent, spectral, graph, ODE, and normalization blocks
+into a single importable package. Use this submodule to access the full library
+of forecasting-ready layers without importing from individual implementation files.
+
+Core API (re-exports):
+- AttentionLayer: multi-head attention wrapper
+- LSTMEncoder / LSTMDecoder: LSTM encoder-decoder pair
+- GRUEncoder / GRUDecoder: GRU encoder-decoder pair
+- AutoCorrelationBlock: auto-correlation based attention block
+- HierarchicalAttention: hierarchical multi-scale attention
+- GRN: Gated Residual Network building block
+- FourierFeatures / FNO1dLayer: Fourier feature and spectral convolution blocks
+- NeuralODE: ODE-based continuous-time layer
+
 """
 
 from foreblocks.core.att import AttentionLayer
@@ -34,7 +47,6 @@ from foreblocks.modules.blocks.ode import NeuralODE
 # from .popular.nha import NHA
 # Simple blocks
 from foreblocks.modules.blocks.simple import GRN
-
 
 # Mamba blocks
 # from .mamba import MambaDecoder

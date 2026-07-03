@@ -1,16 +1,17 @@
-"""Recurrent encoder and decoder abstractions for sequence modeling.
+"""foreblocks.modules.blocks.enc_dec.
 
-This module defines the LSTM/GRU encoder and decoder classes used by
-foreblocks forecasting models and builder APIs.
+LSTM and GRU encoder/decoder building blocks with proper weight initialization.
 
-The recurrent cells are PyTorch implementations of the standard architectures:
+Provides recurrent cell implementations for sequence encoding and decoding in
+forecasting pipelines. Includes proper orthogonality and Xavier initialization
+with LSTM forget-gate bias warmup. Use as building blocks when recurrent
+inductive biases are desired over transformer attention, or as decoder components
+in encoder-decoder architectures.
 
-    Hochreiter & Schmidhuber, "Long Short-Term Memory", Neural Computation 1997.
-    Paper: https://www.bioinf.jku.at/publications/older/2604.pdf
+Core API:
+- LSTMEncoder, LSTMDecoder: LSTM with forget-gate bias warmup
+- GRUEncoder, GRUDecoder: GRU with orthogonal weight init
 
-    Cho et al., "Learning Phrase Representations using RNN Encoder-Decoder for
-    Statistical Machine Translation", EMNLP 2014.
-    Paper: https://arxiv.org/abs/1406.1078
 """
 
 import torch

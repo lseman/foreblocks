@@ -2,8 +2,16 @@
 
 """CrossFormer-style time series forecasting head.
 
+Cross-scale attention architecture that processes temporal and channel dimensions
+with separate multi-head attention streams, enabling fine-grained feature learning
+for multi-variate time series forecasting.
+
 Based on: CrossFormer, a cross-scale attention architecture for time series.
 Paper: https://openreview.net/pdf?id=vSVLM2j9eie
+
+Core API:
+- CrossFormer: lightweight cross-scale transformer head with temporal and channel attention
+
 """
 
 from __future__ import annotations
@@ -33,7 +41,9 @@ class CrossFormer(nn.Module):
         super().__init__()
         self.pred_len = int(pred_len)
         self.in_channels = int(in_channels)
-        self.out_channels = int(out_channels) if out_channels is not None else self.in_channels
+        self.out_channels = (
+            int(out_channels) if out_channels is not None else self.in_channels
+        )
 
         self.temporal_proj = nn.Linear(self.in_channels, d_model)
         self.channel_proj = nn.Conv1d(1, d_model, kernel_size=1)
@@ -93,9 +103,7 @@ class CrossFormer(nn.Module):
         temp_out = temp + self.temporal_ff(temp_cross)
         chan_out = chan + self.channel_ff(chan_cross)
 
-        pooled = torch.cat(
-            [temp_out.mean(dim=1), chan_out.mean(dim=1)], dim=-1
-        )
+        pooled = torch.cat([temp_out.mean(dim=1), chan_out.mean(dim=1)], dim=-1)
         h = self.horizon_mlp(pooled).view(B, self.pred_len, -1)
         y = self.output_proj(h)
         return y

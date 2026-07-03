@@ -1,8 +1,16 @@
 """foreblocks.ops.attention.fla_gated_delta_rule.
 
-This module implements the fla gated delta rule pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as can_use_fla_gated_delta_rule, fla_gated_delta_rule_forward.
+FLA Gated Delta Rule kernel adapter with Foreblocks layouts.
+
+Wraps upstream FLA gated delta rule kernels with automatic layout conversion
+from Foreblocks [B, H, T, *] to FLA [B, T, H, *]. Supports both chunk and
+recurrent modes. Use when your model uses gated SSM/attention mechanisms
+and needs FLA's optimized kernel path.
+
+Core API:
+- fla_gated_delta_rule_forward: gated delta rule with layout conversion
+- can_use_fla_gated_delta_rule: availability guard
+
 """
 
 import os
@@ -62,7 +70,11 @@ def fla_gated_delta_rule_forward(
         q, k, v, g, beta, initial_state, chunk_size, recurrent=recurrent
     ):
         raise RuntimeError("FLA gated delta rule is not available")
-    fn = fla_fused_recurrent_gated_delta_rule() if recurrent else fla_chunk_gated_delta_rule()
+    fn = (
+        fla_fused_recurrent_gated_delta_rule()
+        if recurrent
+        else fla_chunk_gated_delta_rule()
+    )
     out, final_state = fn(
         q.transpose(1, 2).contiguous(),
         k.transpose(1, 2).contiguous(),

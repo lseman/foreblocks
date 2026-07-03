@@ -1,20 +1,18 @@
-"""Mixture of Block Attention (MoBA) — learned block routing for long context.
+"""foreblocks.modules.attention.variants.moba.
 
-Implements MoBA from:
+Mixture of Block Attention (MoBA) — learned block routing for long context (arXiv:2502.13189).
 
-    Lu, E., Jiang, Z., Liu, J., Du, Y., Jiang, T., Hong, C., … Yang, Z. (2025).
-    "MoBA: Mixture of Block Attention for Long-Context LLMs."
-    arXiv:2502.13189 [[arXiv]](https://arxiv.org/abs/2502.13189)
+https://arxiv.org/abs/2502.13189
 
-MoBA applies a Mixture-of-Experts-style router over the attention itself: keys
-are partitioned into blocks, each query selects its top-k most relevant blocks
-(scored against per-block key means), and attention is computed only over the
-tokens in the selected blocks. This keeps full-attention expressivity while
-scaling sub-quadratically with context length.
+Partitions keys into blocks and routes each query to its top-k most relevant
+blocks (scored against per-block key means), computing full attention only
+over selected block tokens. Keeps full-attention expressivity while scaling
+sub-quadratically with context length. Provides flash-varlen backend and
+pure-PyTorch reference path.
 
-This module provides both a fused flash-varlen backend (when available) and a
-pure-PyTorch reference path, falling back to the latter if the flash ops cannot
-be resolved.
+Core API:
+- MoBAAttentionImpl: MoBA variant with flash and reference backends
+
 """
 
 import math
@@ -22,7 +20,6 @@ import warnings
 
 import torch
 import torch.nn.functional as F
-
 
 _FLASH_MOBA_OPS: tuple[object | None, object | None] | None = None
 _FLASH_MOBA_WARNED = False
@@ -426,14 +423,12 @@ class MoBAAttentionImpl:
         ).to(torch.long)
 
         k_experts = (
-            k_targets
-            .permute(0, 2, 1, 3)
+            k_targets.permute(0, 2, 1, 3)
             .contiguous()
             .view(target_blocks * num_heads, block_size, -1)
         )
         v_experts = (
-            v_targets
-            .permute(0, 2, 1, 3)
+            v_targets.permute(0, 2, 1, 3)
             .contiguous()
             .view(target_blocks * num_heads, block_size, -1)
         )

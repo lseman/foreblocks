@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.modules.dropoutts_head.
 
-This module implements the dropoutts head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as DropoutTSHead.
+Training-time temporal dropout with timestep, span, feature, and mixed modes.
+
+Applies random dropout to time series along time, feature, or span dimensions
+during training. Supports contiguous span masking, per-timestep and per-feature
+dropping, and mixed modes. Fill can be zero or series mean; scale_keep
+rebalances retained values. Use as a regularisation head in composed pipelines
+for non-stationary series.
+
+Core API:
+- DropoutTSHead: BaseHead wrapper for temporal dropout
+
 """
 
 from __future__ import annotations

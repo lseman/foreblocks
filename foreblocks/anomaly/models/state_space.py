@@ -1,13 +1,22 @@
-"""State-space (Mamba) models for anomaly detection.
+"""foreblocks.anomaly.models.state_space.
 
-SSMs like Mamba outperform transformers on long sequences by
-replacing attention with selective state propagation.
-Patched variant follows PatchTST — split into patches,
-apply Mamba per-patch for efficiency.
+State-space (Mamba) models for anomaly detection.
+
+Replaces transformer attention with selective state space propagation for linear-time
+sequence modeling. Includes a patched variant (PatchMamba) that splits windows into
+patches for efficiency, and an inverted transformer (iTransformer) that attends over
+features instead of timesteps for multivariate anomaly detection.
 
 References:
 - Mamba: Linear-Time Sequence Modeling with Selective State Spaces (Gu & Dao, 2024)
 - PatchTST: A PatchSplits for Multivariate Time Series (Fu et al., 2023)
+- iTransformer: The Inverted Transformers Are Fine for Time Series (Liu et al., ICLR 2024)
+
+Core API:
+- PatchMamba: patch-based Mamba (SSM) model with reconstruction scoring
+- iTransformer: inverted attention transformer for multivariate anomaly detection
+- S6Block: selective state space block (S6 variant of Mamba)
+
 """
 
 from __future__ import annotations
@@ -19,7 +28,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.anomaly.models.base import choose_heads
-
 
 # ── Minimal S6 (Selective Scan) block ──
 

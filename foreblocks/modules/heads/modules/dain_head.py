@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.modules.dain_head.
 
-This module implements the dain head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as DAIN, DAINHead.
+Deep Adaptive Input Normalization with shift, scale, and gating.
+
+DAIN computes adaptive per-feature shift and scale from time summaries,
+then applies a learned gate on the normalized signal. Use as a preprocessing
+or residual block that adapts normalization to input statistics rather than
+batch statistics — effective for non-stationary time series.
+
+Core API:
+- DAIN: adaptive shift/scale/gate normalization
+- DAINHead: BaseHead wrapper
+
 """
 
 from __future__ import annotations

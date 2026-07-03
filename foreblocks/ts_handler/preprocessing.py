@@ -1,31 +1,17 @@
-"""Time-series preprocessing and feature engineering pipeline.
+"""foreblocks.ts_handler.preprocessing.
 
-This module implements fit/transform preprocessing for time series data,
-including imputation, filtering, outlier handling, detrending, and feature
-construction.
+Time-series preprocessing and feature engineering pipeline.
+
+Provides fit/transform preprocessing for time series data, including imputation,
+filtering, outlier handling, detrending, and feature construction. The
+TimeSeriesHandler class centralizes all preprocessing stages with auto-configuration
+for filtering, imputation, scaling, and log transforms based on data characteristics.
+
+Core API:
+- TimeSeriesHandler: comprehensive time-series preprocessing pipeline
+
 """
 
-# =============================================================================
-# Modern / clean refactor of the time-series handling pipeline
-#
-# What changed (cleanliness / less repetition):
-# - ONE canonical preprocessing runner: _run_pipeline(mode="fit"/"transform")
-#   so fit_transform() and transform() don't duplicate logic.
-# - Stages are explicit and ordered; stage toggles are centralized.
-# - Outlier threshold calibration is fit-aware and reused.
-# - Time-features + windowing are always created via the same helper.
-# - Plot checkpoints use one small helper.
-#
-# What stayed the same (features / behavior):
-# - Same public API: fit_transform / transform / inverse_transform
-# - Same external imports (assumed present)
-# - Same auto_configure logic you wrote (kept, only lightly cleaned)
-# - Same log transform behavior (per-channel flags, learned offsets)
-# - Same EWT+detrend call: apply_ewt_and_detrend_parallel(...)
-# - Same filter methods via centralized dispatch
-# - Same imputation methods including SAITS + auto
-# - Same windowing outputs (vectorized, with safe fallback)
-# =============================================================================
 from __future__ import annotations
 
 import warnings
@@ -66,7 +52,6 @@ from foreblocks.ts_handler.filters import (
 from foreblocks.ts_handler.impute import SAITSImputer
 from foreblocks.ts_handler.outlier import _remove_outliers, _remove_outliers_parallel
 
-
 Mode = Literal["fit", "transform"]
 
 # ---- optional deps -----------------------------------------------------------
@@ -89,39 +74,41 @@ except Exception:
 # Plot style (kept)
 # -----------------------------------------------------------------------------
 def set_plot_style() -> None:
-    plt.rcParams.update({
-        "figure.figsize": (18, 9),
-        "figure.facecolor": "white",
-        "figure.dpi": 100,
-        "axes.facecolor": "white",
-        "axes.edgecolor": "#333333",
-        "axes.labelcolor": "#333333",
-        "axes.labelsize": 14,
-        "axes.titlesize": 16,
-        "axes.titleweight": "bold",
-        "axes.grid": True,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "xtick.color": "#333333",
-        "ytick.color": "#333333",
-        "xtick.labelsize": 12,
-        "ytick.labelsize": 12,
-        "grid.color": "#dddddd",
-        "grid.linestyle": "--",
-        "grid.linewidth": 0.5,
-        "legend.frameon": True,
-        "legend.framealpha": 0.9,
-        "legend.facecolor": "white",
-        "legend.edgecolor": "#cccccc",
-        "legend.fontsize": 12,
-        "legend.loc": "upper right",
-        "lines.linewidth": 1.8,
-        "lines.markersize": 6,
-        "font.family": "DejaVu Sans",
-        "savefig.facecolor": "white",
-        "savefig.edgecolor": "white",
-        "savefig.dpi": 150,
-    })
+    plt.rcParams.update(
+        {
+            "figure.figsize": (18, 9),
+            "figure.facecolor": "white",
+            "figure.dpi": 100,
+            "axes.facecolor": "white",
+            "axes.edgecolor": "#333333",
+            "axes.labelcolor": "#333333",
+            "axes.labelsize": 14,
+            "axes.titlesize": 16,
+            "axes.titleweight": "bold",
+            "axes.grid": True,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "xtick.color": "#333333",
+            "ytick.color": "#333333",
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "grid.color": "#dddddd",
+            "grid.linestyle": "--",
+            "grid.linewidth": 0.5,
+            "legend.frameon": True,
+            "legend.framealpha": 0.9,
+            "legend.facecolor": "white",
+            "legend.edgecolor": "#cccccc",
+            "legend.fontsize": 12,
+            "legend.loc": "upper right",
+            "lines.linewidth": 1.8,
+            "lines.markersize": 6,
+            "font.family": "DejaVu Sans",
+            "savefig.facecolor": "white",
+            "savefig.edgecolor": "white",
+            "savefig.dpi": 150,
+        }
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -878,19 +865,25 @@ class TimeSeriesHandler:
         }
         if method == "stl":
             period = max(2, min(365, int(stats.get("dominant_period", 7) or 7)))
-            kwargs.update({
-                "period": period,
-                "seasonal": max(5, min(13, period if period % 2 == 1 else period + 1)),
-                "robust": True,
-            })
+            kwargs.update(
+                {
+                    "period": period,
+                    "seasonal": max(
+                        5, min(13, period if period % 2 == 1 else period + 1)
+                    ),
+                    "robust": True,
+                }
+            )
         elif method == "ssa":
-            kwargs.update({
-                "window_length": min(
-                    max(7, self.window_size),
-                    max(7, stats.get("T_eval", self.window_size * 4) // 4),
-                ),
-                "n_components": 2,
-            })
+            kwargs.update(
+                {
+                    "window_length": min(
+                        max(7, self.window_size),
+                        max(7, stats.get("T_eval", self.window_size * 4) // 4),
+                    ),
+                    "n_components": 2,
+                }
+            )
         elif method == "lowess":
             kwargs.update({"frac": 0.05 if stats["T"] > 400 else 0.08})
         elif method == "wiener":
@@ -1159,9 +1152,9 @@ class TimeSeriesHandler:
             "med_snr": float(med_snr),
             "med_pacf": float(med_pacf),
             "is_autoregressive": bool(is_autoregressive),
-            "seasonal_fraction": float(np.mean(seasonal_flags))
-            if len(seasonal_flags)
-            else 0.0,
+            "seasonal_fraction": (
+                float(np.mean(seasonal_flags)) if len(seasonal_flags) else 0.0
+            ),
             "strong_periods": int(strong_periods),
             "extreme_ratio": float(extreme_ratio),
             "is_heavy_tailed": bool(is_heavy_tailed),
@@ -1170,11 +1163,13 @@ class TimeSeriesHandler:
             "scale_heterogeneity": float(scale_heterogeneity),
             "log_fraction_recommended": float(log_fraction),
             "log_score": float(log_score),
-            "dominant_period": int(
-                round(np.nanmedian([p for p in periods if p is not None and p > 1]))
-            )
-            if any(p is not None and p > 1 for p in periods)
-            else 7,
+            "dominant_period": (
+                int(
+                    round(np.nanmedian([p for p in periods if p is not None and p > 1]))
+                )
+                if any(p is not None and p > 1 for p in periods)
+                else 7
+            ),
         }
 
         archetype = "heuristic_robust"
@@ -1387,22 +1382,24 @@ class TimeSeriesHandler:
                     print(f"[Preprocessing] Filter auto-selection skipped: {exc}")
 
         if verbose:
-            summarize_configuration({
-                "dimensions": f"{T} × {D}",
-                "missing_rate": stats["missing_rate"],
-                "pattern": archetype,
-                "log_transform": self.log_transform,
-                "log_fraction": stats["log_fraction_recommended"],
-                "scaling_method": self.scaling_method,  # New field
-                "filter_method": self.filter_method,
-                "apply_filter": self.apply_filter,
-                "impute_method": self.impute_method,
-                "outlier_method": self.outlier_method,
-                "outlier_threshold": float(self.outlier_threshold),
-                "detrend": self.detrend,
-                "seasonal": self.seasonal,
-                "ewt_bands": int(self.ewt_bands),
-            })
+            summarize_configuration(
+                {
+                    "dimensions": f"{T} × {D}",
+                    "missing_rate": stats["missing_rate"],
+                    "pattern": archetype,
+                    "log_transform": self.log_transform,
+                    "log_fraction": stats["log_fraction_recommended"],
+                    "scaling_method": self.scaling_method,  # New field
+                    "filter_method": self.filter_method,
+                    "apply_filter": self.apply_filter,
+                    "impute_method": self.impute_method,
+                    "outlier_method": self.outlier_method,
+                    "outlier_threshold": float(self.outlier_threshold),
+                    "detrend": self.detrend,
+                    "seasonal": self.seasonal,
+                    "ewt_bands": int(self.ewt_bands),
+                }
+            )
 
         print("✅ Configuration complete.\n")
 
@@ -1579,10 +1576,12 @@ class TimeSeriesHandler:
             self._vprint("Applying differencing")
             if mode == "fit":
                 self.diff_values = processed[0:1].copy()
-            processed = np.vstack([
-                np.zeros_like(processed[0]),
-                np.diff(processed, axis=0),
-            ])
+            processed = np.vstack(
+                [
+                    np.zeros_like(processed[0]),
+                    np.diff(processed, axis=0),
+                ]
+            )
 
         # 7) Normalization / Scaling (Adaptive)
         return self._apply_scaling_stage(processed, mode)
@@ -1764,16 +1763,18 @@ class TimeSeriesHandler:
         mode = (self.time_feature_mode or "cyclical").lower()
 
         if mode == "legacy":
-            return np.column_stack([
-                ts.month.to_numpy(dtype=np.float32) / 12.0,
-                ts.day.to_numpy(dtype=np.float32) / 31.0,
-                ts.weekday.to_numpy(dtype=np.float32) / 6.0,
-                (
-                    ts.hour.to_numpy(dtype=np.float32) / 23.0
-                    if resolved_freq == "h"
-                    else np.zeros(len(ts), dtype=np.float32)
-                ),
-            ]).astype(np.float32, copy=False)
+            return np.column_stack(
+                [
+                    ts.month.to_numpy(dtype=np.float32) / 12.0,
+                    ts.day.to_numpy(dtype=np.float32) / 31.0,
+                    ts.weekday.to_numpy(dtype=np.float32) / 6.0,
+                    (
+                        ts.hour.to_numpy(dtype=np.float32) / 23.0
+                        if resolved_freq == "h"
+                        else np.zeros(len(ts), dtype=np.float32)
+                    ),
+                ]
+            ).astype(np.float32, copy=False)
 
         features = [
             _cyclical_encode(ts.month.to_numpy(dtype=np.float32) - 1.0, 12.0),

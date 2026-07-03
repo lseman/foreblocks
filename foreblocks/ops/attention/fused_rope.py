@@ -1,12 +1,20 @@
 """foreblocks.ops.attention.fused_rope.
 
-This module implements the fused rope pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as triton_apply_rope, triton_apply_rope_bthd.
+Triton-accelerated Rotary Position Embedding (RoPE) application.
+
+Applies sinusoidal positional rotations to query and key tensors in a single kernel
+launch, supporting both `[B, H, T, D]` and `[B, T, H, D]` layouts without intermediate
+transposes. Supports contiguous and interleaved rotary dimensions, tensor seqlen
+offsets, and conjugate mode. Use when you need RoPE with maximum throughput on
+CUDA tensors.
+
+Core API:
+- triton_apply_rope: apply RoPE to q, k in [B, H, T, D] layout
+- triton_apply_rope_bthd: apply RoPE to x in [B, T, H, D] layout without transposes
+
 """
 
 import torch
-
 
 try:
     import triton

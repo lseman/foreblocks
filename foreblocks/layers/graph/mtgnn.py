@@ -1,8 +1,18 @@
 """foreblocks.layers.graph.mtgnn.
 
-This module implements the mtgnn pieces for its package.
-It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
-It exposes classes such as MTGNNGraphConstructor, MTGNNProp, MTGNNMixProp, MTGNNDilatedInception.
+MTGNN (Multi-Type Graph Neural Network) spatio-temporal blocks.
+
+Implements the MTGNN architecture with adaptive graph learning, multi-type
+propagation, dilated inception temporal modeling, and gated temporal units.
+Designed for multi-variate time series forecasting with unknown graph
+structure.
+
+Core API:
+- MTGNNBlock: complete spatio-temporal MTGNN block
+- MTGNNGraphConstructor: adaptive graph learning
+- MTGNNDilatedInception: dilated temporal convolution
+- MTGNNTemporalGatedUnit: gated temporal processing
+
 """
 
 from __future__ import annotations

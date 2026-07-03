@@ -1,12 +1,21 @@
-"""Trainer-side conformal prediction wrapper.
+"""foreblocks.core.training.conformal_trainer.
 
-Extracted from the monolithic ``trainer.py``.  These methods delegate to
-the conformal engine (``self.conformal_engine``) while providing a clean
-Trainer API for calibration, online updates, and prediction with
-conformal intervals.
+Trainer-side conformal prediction API for calibrated prediction intervals.
 
-The conformal engine itself lives in ``conformal.py`` (~1500 lines).
-This module is the thin Trainer-facing API.
+Thin wrapper around the conformal engine (``conformal.py``) that exposes calibration,
+online updating, prediction with conformal intervals, and coverage computation via
+a clean Trainer interface. Supports all conformal methods (CPTC, AFOCP, ACI, EnbPI,
+Jackknife, etc.) without the Trainer needing to know engine internals. Use when
+you need prediction intervals with statistical coverage guarantees on top of
+any trained forecaster.
+
+Core API:
+- calibrate_conformal: calibrate the conformal engine with held-out data
+- predict_with_intervals: get point predictions with conformal intervals
+- update_conformal: online update for adaptive conformal methods
+- compute_coverage: empirical coverage and interval width statistics
+- predict_with_intervals_streaming: rolling prediction over a DataLoader
+
 """
 
 from __future__ import annotations
@@ -18,7 +27,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-
 if TYPE_CHECKING:
     from foreblocks.core.training.trainer import Trainer
 
@@ -26,6 +34,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Conformal helpers (Trainer-side only)
 # ---------------------------------------------------------------------------
+
 
 def _as_numpy(x: Any) -> np.ndarray:
     """Convert *x* to a NumPy array (handles tensors, lists, scalars)."""
@@ -73,6 +82,7 @@ def _collect_xy_from_loader(cal_loader: DataLoader) -> tuple[np.ndarray, np.ndar
 # Coverage summary (shared between compute_coverage and streaming)
 # ---------------------------------------------------------------------------
 
+
 def coverage_summary(
     y_true: np.ndarray,
     lower: np.ndarray,
@@ -98,18 +108,21 @@ def coverage_summary(
         "max_interval_width": float(widths.max()),
     }
     if include_breakdowns:
-        summary.update({
-            "per_horizon_coverage": covered.mean(axis=(0, 2)),
-            "per_feature_coverage": covered.mean(axis=(0, 1)),
-            "per_feature_joint_coverage": covered.all(axis=1).mean(axis=0),
-            "per_horizon_all_feature_coverage": covered.all(axis=2).mean(axis=0),
-        })
+        summary.update(
+            {
+                "per_horizon_coverage": covered.mean(axis=(0, 2)),
+                "per_feature_coverage": covered.mean(axis=(0, 1)),
+                "per_feature_joint_coverage": covered.all(axis=1).mean(axis=0),
+                "per_horizon_all_feature_coverage": covered.all(axis=2).mean(axis=0),
+            }
+        )
     return summary
 
 
 # ---------------------------------------------------------------------------
 # Trainer-side conformal methods
 # ---------------------------------------------------------------------------
+
 
 def calibrate_conformal(
     trainer: "Trainer",
@@ -135,11 +148,16 @@ def calibrate_conformal(
     # Method-specific hard requirements
     if method == "cptc" and state_model is None:
         raise ValueError("CPTC requires `state_model`.")
-    if method == "enbpi" and enbpi_member_models is not None and enbpi_boot_indices is None:
+    if (
+        method == "enbpi"
+        and enbpi_member_models is not None
+        and enbpi_boot_indices is None
+    ):
         raise ValueError("EnbPI with member models requires `enbpi_boot_indices`.")
 
     if method == "afocp" and feature_extractor is None:
         import warnings
+
         warnings.warn(
             "AFOCP without a feature_extractor will use an internal "
             "(untrained) DefaultFeatureExtractor. This is valid but may be "
@@ -153,10 +171,16 @@ def calibrate_conformal(
 
     engine.calibrate(
         model=trainer.model,
-        X_cal=Xc, y_cal=Yc, device=trainer.device, batch_size=batch_size,
-        state_model=state_model, feature_extractor=feature_extractor,
-        enbpi_member_models=enbpi_member_models, enbpi_boot_indices=enbpi_boot_indices,
-        jackknife_cv_models=jackknife_cv_models, jackknife_cv_indices=jackknife_cv_indices,
+        X_cal=Xc,
+        y_cal=Yc,
+        device=trainer.device,
+        batch_size=batch_size,
+        state_model=state_model,
+        feature_extractor=feature_extractor,
+        enbpi_member_models=enbpi_member_models,
+        enbpi_boot_indices=enbpi_boot_indices,
+        jackknife_cv_models=jackknife_cv_models,
+        jackknife_cv_indices=jackknife_cv_indices,
     )
 
     print(f"[Conformal] Calibration completed. Radii shape: {engine.radii.shape}")
@@ -181,7 +205,9 @@ def update_conformal(
     if engine is None:
         raise RuntimeError("Conformal prediction not enabled in config.")
     if engine.radii is None:
-        raise RuntimeError("Conformal engine not calibrated. Call calibrate_conformal() first.")
+        raise RuntimeError(
+            "Conformal engine not calibrated. Call calibrate_conformal() first."
+        )
 
     X_np = _as_numpy(X_new)
     y_np = _as_numpy(y_new)
@@ -193,15 +219,22 @@ def update_conformal(
         for i in range(len(X_np)):
             engine.update(
                 model=trainer.model,
-                X_new=X_np[i : i + 1], y_new=y_np[i : i + 1],
-                device=trainer.device, batch_size=1,
-                state_model=state_model, feature_extractor=feature_extractor,
+                X_new=X_np[i : i + 1],
+                y_new=y_np[i : i + 1],
+                device=trainer.device,
+                batch_size=1,
+                state_model=state_model,
+                feature_extractor=feature_extractor,
             )
     else:
         engine.update(
             model=trainer.model,
-            X_new=X_np, y_new=y_np, device=trainer.device, batch_size=batch_size,
-            state_model=state_model, feature_extractor=feature_extractor,
+            X_new=X_np,
+            y_new=y_np,
+            device=trainer.device,
+            batch_size=batch_size,
+            state_model=state_model,
+            feature_extractor=feature_extractor,
         )
 
 
@@ -209,7 +242,10 @@ def predict_with_intervals(
     trainer: "Trainer",
     X: torch.Tensor,
     return_tensors: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> (
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+    | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+):
     """Predict with conformal intervals.
 
     Returns ``(preds, lower, upper)`` with shape ``[N, H, D]`` (or ``[N, H, 1]``
@@ -219,13 +255,18 @@ def predict_with_intervals(
     if engine is None:
         raise RuntimeError("Conformal prediction not enabled in config.")
     if engine.radii is None:
-        raise RuntimeError("Conformal engine not calibrated. Call calibrate_conformal() first.")
+        raise RuntimeError(
+            "Conformal engine not calibrated. Call calibrate_conformal() first."
+        )
 
     X_np = _as_numpy(X)
     batch_size = int(getattr(trainer.config, "batch_size", 256))
 
     preds, lower, upper = engine.predict(
-        model=trainer.model, X=X_np, device=trainer.device, batch_size=batch_size,
+        model=trainer.model,
+        X=X_np,
+        device=trainer.device,
+        batch_size=batch_size,
     )
 
     # Normalize to [N, H, D] at the Trainer boundary
@@ -255,7 +296,9 @@ def compute_coverage(
     y_np = _ensure_y_shape_like_intervals(y_np, lower)
 
     return coverage_summary(
-        y_np, lower, upper,
+        y_np,
+        lower,
+        upper,
         target_coverage=float(trainer.conformal_engine.q),
     )
 
@@ -266,7 +309,10 @@ def predict_with_intervals_streaming(
     do_update: bool = True,
     return_numpy: bool = True,
     sequential: bool | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> (
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+):
     """Streaming (rolling) prediction over a DataLoader.
 
     - Assumes dataloader yields ``(X, y)`` or ``(X, y, ...)``
@@ -278,7 +324,9 @@ def predict_with_intervals_streaming(
     """
     engine = trainer.conformal_engine
     if engine is None or engine.radii is None:
-        raise RuntimeError("Conformal engine not calibrated. Call calibrate_conformal() first.")
+        raise RuntimeError(
+            "Conformal engine not calibrated. Call calibrate_conformal() first."
+        )
 
     trainer.model.eval()
     preds_all, low_all, up_all, y_all = [], [], [], []
@@ -308,7 +356,12 @@ def predict_with_intervals_streaming(
 
     if return_numpy:
         return preds, low, up, y_true
-    return torch.from_numpy(preds), torch.from_numpy(low), torch.from_numpy(up), torch.from_numpy(y_true)
+    return (
+        torch.from_numpy(preds),
+        torch.from_numpy(low),
+        torch.from_numpy(up),
+        torch.from_numpy(y_true),
+    )
 
 
 def compute_coverage_streaming(
@@ -322,11 +375,17 @@ def compute_coverage_streaming(
     Returns elementwise ``coverage`` and ``joint_coverage`` with breakdowns.
     """
     _, lower, upper, y_true = predict_with_intervals_streaming(
-        trainer, dataloader, do_update=do_update, return_numpy=True, sequential=sequential,
+        trainer,
+        dataloader,
+        do_update=do_update,
+        return_numpy=True,
+        sequential=sequential,
     )
 
     return coverage_summary(
-        y_true, lower, upper,
+        y_true,
+        lower,
+        upper,
         target_coverage=float(trainer.conformal_engine.q),
         include_breakdowns=True,
     )

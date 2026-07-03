@@ -1,11 +1,18 @@
-"""
-Reusable NumPy → NeuralForecast Benchmark
+"""foreblocks.core.evaluation.benchmark.
 
-- Input: np.ndarray [T, N] (rows=time, cols=series)
-- Handles: NaN forward-fill, train-only detrend/normalize, long-format building
-- Uses: NeuralForecast cross_validation
-- Reports: metrics on normalized space AND original scale (with proper inverse transform)
-- Extras: model factory for n_series-aware models, nice summaries + LaTeX table
+Reusable NumPy-to-NeuralForecast benchmarking for multivariate time series.
+
+Wraps raw NumPy arrays into NeuralForecast-compatible long-format DataFrames,
+handles NaN forward-fill, per-series detrending and normalization, and runs
+cross-validation across a broad suite of forecasting models. Reports metrics
+on both normalized and original scales with proper inverse transforms. Includes
+LaTeX table generation and model comparison summaries. Use when you need to
+benchmarks multiple forecasting models on your own multivariate time series data
+with consistent preprocessing.
+
+Core API:
+- NPTimeseriesNFBenchmark: full benchmark pipeline from raw array to metrics table
+
 """
 
 from __future__ import annotations
@@ -43,7 +50,6 @@ from sklearn.metrics import (
     mean_absolute_percentage_error,
     mean_squared_error,
 )
-
 
 # Try newer models if available in your install
 try:

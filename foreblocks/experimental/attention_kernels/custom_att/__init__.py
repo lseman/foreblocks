@@ -1,8 +1,23 @@
 """foreblocks.experimental.attention_kernels.custom_att.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
-It exposes classes such as CustomAttFunction, CustomAttDropoutFunction, RMSNorm, FlashAttnRMSNorm.
+Fast custom attention kernels with TileLang and Triton backends and PyTorch fallbacks.
+
+Provides ``flash_attn_func`` as the main entry point — it dispatches to TileLang
+forward (preferred on Ada+ GPUs), Triton, or a reference implementation. Also
+includes dropout-aware attention, decode-only attention for KV-cache generation,
+and fused attention + RMSNorm modules.
+
+Core API:
+- flash_attn_func: exact attention with TileLang/Triton forward-backward and torch fallbacks
+- flash_attn_dropout_func: attention with FA2-style dropout
+- flash_attn_decode: decode-only attention for single-token generation with KV cache
+- flash_attn_forward: forward-only pass
+- flash_attn_forward_backend / flash_attn_backward_backend: query which backend is selected
+- CustomAttFunction: torch.autograd.Function with TileLang > Triton > reference dispatch
+- CustomAttDropoutFunction: attention with FA2-style dropout
+- FlashAttnRMSNorm: fused attention + RMSNorm module
+- FlashDecodeModule: fused attention + RMSNorm for decoding with KV cache
+
 """
 
 import math
@@ -20,7 +35,6 @@ from custom_att.src.triton_fwd import (
     triton_flash_decode,
     triton_flash_fwd,
 )
-
 
 _DECODER_ENABLED = os.environ.get("CUSTOM_ATT_DISABLE_DECODER") != "1"
 
@@ -88,24 +102,26 @@ class CustomAttFunction(torch.autograd.Function):
         scale_arg = None if scale == 0.0 else scale
 
         # Prefer TileLang forward (faster on Ada+), then Triton, then ref.
-        use_tilelang = (_tilelang_fwd_enabled() and can_use_tilelang_fwd(q))
-        use_triton = (_triton_fwd_enabled() and can_use_triton_fwd(q))
+        use_tilelang = _tilelang_fwd_enabled() and can_use_tilelang_fwd(q)
+        use_triton = _triton_fwd_enabled() and can_use_triton_fwd(q)
         if use_tilelang:
             out, lse = tilelang_flash_fwd(
-                q, k, v,
+                q,
+                k,
+                v,
                 causal=bool(causal),
                 softmax_scale=scale_arg,
             )
         elif use_triton:
             out, lse = triton_flash_fwd(
-                q, k, v,
+                q,
+                k,
+                v,
                 causal=bool(causal),
                 softmax_scale=scale_arg,
             )
         else:
-            out, lse = _reference_forward(
-                q, k, v, bool(causal), scale_arg
-            )
+            out, lse = _reference_forward(q, k, v, bool(causal), scale_arg)
         ctx.save_for_backward(q, k, v, out, lse)
         ctx.causal = bool(causal)
         ctx.softmax_scale = scale if scale != 0.0 else None
@@ -117,17 +133,27 @@ class CustomAttFunction(torch.autograd.Function):
         q, k, v, out, lse = ctx.saved_tensors
         grad_out = grad_out.contiguous()
         # Prefer TileLang backward, then Triton, then ref.
-        use_tilelang_bwd = (_tilelang_bwd_enabled() and can_use_tilelang_bwd(q))
-        use_triton_bwd = (_triton_bwd_enabled() and can_use_triton_bwd(q))
+        use_tilelang_bwd = _tilelang_bwd_enabled() and can_use_tilelang_bwd(q)
+        use_triton_bwd = _triton_bwd_enabled() and can_use_triton_bwd(q)
         if use_tilelang_bwd:
             dq, dk, dv = tilelang_flash_bwd(
-                grad_out, q, k, v, out, lse,
+                grad_out,
+                q,
+                k,
+                v,
+                out,
+                lse,
                 causal=ctx.causal,
                 softmax_scale=ctx.softmax_scale,
             )
         elif use_triton_bwd:
             dq, dk, dv = triton_flash_bwd(
-                grad_out, q, k, v, out, lse,
+                grad_out,
+                q,
+                k,
+                v,
+                out,
+                lse,
                 causal=ctx.causal,
                 softmax_scale=ctx.softmax_scale,
             )
@@ -155,17 +181,21 @@ def flash_attn_forward(q, k, v, causal=False, softmax_scale=None):
     q = q.contiguous()
     k = k.contiguous()
     v = v.contiguous()
-    use_tilelang = (_tilelang_fwd_enabled() and can_use_tilelang_fwd(q))
-    use_triton = (_triton_fwd_enabled() and can_use_triton_fwd(q))
+    use_tilelang = _tilelang_fwd_enabled() and can_use_tilelang_fwd(q)
+    use_triton = _triton_fwd_enabled() and can_use_triton_fwd(q)
     if use_tilelang:
         return tilelang_flash_fwd(
-            q, k, v,
+            q,
+            k,
+            v,
             causal=bool(causal),
             softmax_scale=None if scale == 0.0 else scale,
         )
     if use_triton:
         return triton_flash_fwd(
-            q, k, v,
+            q,
+            k,
+            v,
             causal=bool(causal),
             softmax_scale=None if scale == 0.0 else scale,
         )
@@ -199,6 +229,7 @@ def flash_attn_backward_backend(q):
 # Dropout-aware attention (FA2-style)
 # ---------------------------------------------------------------------------
 
+
 def _triton_dropout_fwd_enabled():
     return os.environ.get("CUSTOM_ATT_DISABLE_DROPOUT") != "1"
 
@@ -218,7 +249,9 @@ class CustomAttDropoutFunction(torch.autograd.Function):
         use_triton = _triton_dropout_fwd_enabled() and can_use_triton_fwd(q)
         if use_triton:
             out, lse = triton_flash_fwd(
-                q, k, v,
+                q,
+                k,
+                v,
                 causal=bool(causal),
                 softmax_scale=None if scale == 0.0 else scale,
                 dropout_p=dropout_p,
@@ -238,8 +271,14 @@ class CustomAttDropoutFunction(torch.autograd.Function):
         q, k, v, out, lse = ctx.saved_tensors
         # Dropout is only applied in training forward; backward doesn't need it
         return triton_flash_bwd(
-            grad_out.contiguous(), q, k, v, out, lse,
-            causal=ctx.causal, softmax_scale=ctx.softmax_scale,
+            grad_out.contiguous(),
+            q,
+            k,
+            v,
+            out,
+            lse,
+            causal=ctx.causal,
+            softmax_scale=ctx.softmax_scale,
         ) + (None, None)
 
 
@@ -258,6 +297,7 @@ def flash_attn_dropout_func(q, k, v, causal=False, softmax_scale=None, dropout_p
 # ---------------------------------------------------------------------------
 # Decode-only (KV-cache) attention
 # ---------------------------------------------------------------------------
+
 
 def _triton_decode_enabled():
     return _DECODER_ENABLED and _triton_fwd_enabled()
@@ -286,16 +326,20 @@ def flash_attn_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
         return triton_flash_decode(q, k_cache, v_cache, seqlens, softmax_scale)
     # Fallback: standard attention
     bh = q.shape[0] * q.shape[1]
-    scale = (1.0 / math.sqrt(q.shape[-1])) if softmax_scale is None else float(softmax_scale)
+    scale = (
+        (1.0 / math.sqrt(q.shape[-1]))
+        if softmax_scale is None
+        else float(softmax_scale)
+    )
     out = torch.empty_like(q)
     lse = torch.empty(bh, device=q.device, dtype=torch.float32)
     for b in range(q.shape[0]):
         for h in range(q.shape[1]):
-            qi = q[b:b+1, h:h+1]
+            qi = q[b : b + 1, h : h + 1]
             seqlen = int(seqlens[b * q.shape[1] + h])
             scores = qi @ k_cache[b * q.shape[1] + h, :seqlen].transpose(-1, -2) * scale
             probs = F.softmax(scores, dim=-1)
-            out[b:b+1, h:h+1] = probs @ v_cache[b * q.shape[1] + h, :seqlen]
+            out[b : b + 1, h : h + 1] = probs @ v_cache[b * q.shape[1] + h, :seqlen]
             lse[b * q.shape[1] + h] = torch.logsumexp(scores.float(), dim=-1)
     return out, lse
 
@@ -303,6 +347,7 @@ def flash_attn_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
 # ---------------------------------------------------------------------------
 # Fused attention + RMSNorm (FA2-style)
 # ---------------------------------------------------------------------------
+
 
 class RMSNorm(nn.Module):
     """Root Mean Square Layer Normalization - compatible with PyTorch 2.x."""
@@ -331,7 +376,9 @@ class FlashAttnRMSNorm(nn.Module):
         dropout_p: dropout probability
     """
 
-    def __init__(self, dim, n_heads, eps=1e-6, causal=False, softmax_scale=None, dropout_p=0.0):
+    def __init__(
+        self, dim, n_heads, eps=1e-6, causal=False, softmax_scale=None, dropout_p=0.0
+    ):
         super().__init__()
         self.n_heads = n_heads
         self.head_dim = dim // n_heads
@@ -346,9 +393,9 @@ class FlashAttnRMSNorm(nn.Module):
 
     def to(self, dtype, *args, **kwargs):
         super().to(dtype, *args, **kwargs)
-        if hasattr(self, 'qkv_proj') and self.qkv_proj is not None:
+        if hasattr(self, "qkv_proj") and self.qkv_proj is not None:
             self.qkv_proj.weight = self.qkv_proj.weight.to(dtype)
-        if hasattr(self, 'out_proj') and self.out_proj is not None:
+        if hasattr(self, "out_proj") and self.out_proj is not None:
             self.out_proj.weight = self.out_proj.weight.to(dtype)
         return self
 
@@ -374,7 +421,9 @@ class FlashAttnRMSNorm(nn.Module):
         v = v.view(B, N, self.n_heads, self.head_dim).transpose(1, 2)
 
         # Attention
-        out = flash_attn_func(q, k, v, causal=self.causal, softmax_scale=self.softmax_scale)
+        out = flash_attn_func(
+            q, k, v, causal=self.causal, softmax_scale=self.softmax_scale
+        )
 
         # Output projection + norm + residual
         out = out.transpose(1, 2).reshape(B, N, D)
@@ -386,6 +435,7 @@ class FlashAttnRMSNorm(nn.Module):
 # ---------------------------------------------------------------------------
 # Decode-only fused module
 # ---------------------------------------------------------------------------
+
 
 class FlashDecodeModule(nn.Module):
     """Fused attention + RMSNorm for decoding with KV cache.

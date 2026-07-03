@@ -1,8 +1,15 @@
 """foreblocks.layers.embeddings.positional_encoding.
 
-This module implements the positional encoding pieces for its package.
-It belongs to the positional, rotary, time, and sequence embedding layers area of Foreblocks.
-It exposes classes such as PositionalEncoding.
+Sinusoidal positional encoding for sequence models.
+
+Implements the fixed sine/cosine positional encoding from "Attention Is All
+You Need" with cache support and optional explicit position input. Designed
+for transformer-based architectures where positional information must be
+injected into token embeddings.
+
+Core API:
+- PositionalEncoding: sinusoidal positional encoding with cache
+
 """
 
 import math

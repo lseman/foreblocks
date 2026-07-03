@@ -1,16 +1,18 @@
-"""Causal temporal convolution blocks for foreblocks.
+"""foreblocks.modules.blocks.tcn.
 
-This module provides dilated temporal convolutional layers and causal
-padding helpers for sequence modeling.
+Causal dilated temporal convolution blocks with depthwise gating.
 
-The design is related to causal/dilated convolutional sequence models:
+Dilated convolutions with left-only padding for autoregressive forecasting.
+CausalTCNBlock uses depthwise-separable convolutions with GLU-style gating
+and exponential dilation for growing receptive field. TCNPlus aggregates full
+skip connections across scales for strong multivariate forecasting baselines.
+Use when convolutional inductive bias is preferred over attention and latency
+must scale linearly with sequence length.
 
-    van den Oord et al., "WaveNet: A Generative Model for Raw Audio", 2016.
-    Paper: https://arxiv.org/abs/1609.03499
+Core API:
+- CausalTCNBlock: dilated causal depthwise block with GLU gating
+- TCNPlus: full-skip TCN with multi-level dilation stacks
 
-    Bai, Kolter & Koltun, "An Empirical Evaluation of Generic Convolutional and
-    Recurrent Networks for Sequence Modeling", 2018. (TCN)
-    Paper: https://arxiv.org/abs/1803.01271
 """
 
 import torch
@@ -143,9 +145,9 @@ class TCNPlus(nn.Module):
                 dilation *= 2
 
         # Skip aggregation (1×1 per block)
-        self.skip_projs = nn.ModuleList([
-            nn.Conv1d(hidden_dim, hidden_dim, 1, bias=False) for _ in self.blocks
-        ])
+        self.skip_projs = nn.ModuleList(
+            [nn.Conv1d(hidden_dim, hidden_dim, 1, bias=False) for _ in self.blocks]
+        )
         if use_weight_norm:
             for m in self.skip_projs:
                 nn.utils.weight_norm(m)

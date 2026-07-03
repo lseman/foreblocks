@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Correctness + speed checks for the mamba_hybrid Mamba2/Mamba3 blocks.
+"""foreblocks.sequence.mamba.check_mamba.
 
-Compares the chunked SSD fast paths (torch + triton) against a sequential
-reference scan, validates forward and backward, exercises the Mamba3
-time-dependent-A (adt) path, and times the full blocks.
+Correctness and speed verification for Mamba2/Mamba3 block implementations.
 
-  python check_mamba.py            # correctness + speed
-  python check_mamba.py --speed-only
+Compares chunked SSD fast paths (torch and Triton) against a sequential
+reference scan, validates forward and backward passes, exercises the Mamba3
+time-dependent-A (adt) path, and benchmarks full blocks.
+Run directly: ``python check_mamba.py`` for correctness + speed, or
+``python check_mamba.py --speed-only`` for benchmarks alone.
+
+Core API:
+- check_ssd_correctness: SSD kernel output vs sequential reference
+- check_ssd_backward: SSD backward gradients vs autograd oracle
+- check_mamba3_adt: Mamba3 adt (time-dependent A) path verification
+- check_blocks: full block forward/backward smoke test
+- check_speed: full block forward throughput benchmark
+
 """
 
 from __future__ import annotations

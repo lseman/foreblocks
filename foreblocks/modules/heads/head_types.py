@@ -1,8 +1,18 @@
 """foreblocks.modules.heads.head_types.
 
-This module implements the head types pieces for its package.
-It belongs to the forecasting head composition and projection modules area of Foreblocks.
-It exposes classes such as BaseRunState, ParallelNoneState, SerialInvertState, SerialAddState.
+Type definitions and run-state dataclasses for head composition.
+
+Defines head specification (HeadSpec), active head tracking (ActiveHead),
+and all run-state variants (ParallelNoneState, SerialInvertState, SerialAddState,
+SerialNoneState) used by HeadComposer to track execution state. Provides
+literal types for combine modes, alpha modes, and parallel/serial policies.
+Use to annotate head composition logic or extend with custom state.
+
+Core API:
+- HeadSpec: declarative head configuration with combine/alpha/Lora settings
+- ActiveHead: runtime head wrapper with enable/disable and alpha parameters
+- BaseRunState, ParallelNoneState, SerialInvertState, SerialAddState, SerialNoneState: execution state tracking
+
 """
 
 from __future__ import annotations
@@ -12,7 +22,6 @@ from typing import Any, Literal
 
 import torch
 import torch.nn as nn
-
 
 BaseHeadLike = nn.Module
 

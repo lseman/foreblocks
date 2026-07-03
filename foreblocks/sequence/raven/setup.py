@@ -2,10 +2,10 @@
 
 Build and setup helpers for the local extension package.
 It belongs to the Raven sequence-model integration helpers area of Foreblocks.
+
 """
 
 from setuptools import setup
-
 
 setup(
     name="custom_raven",

@@ -1,7 +1,16 @@
-"""KAN model definitions, normalization, and patching utilities.
+"""foreblocks.models.kan.model.
 
-Includes RevIN normalization and the core KAN forecasting model used by
-the poly-analogy ensemble architecture.
+KAN model definitions, RevIN normalization, and patching utilities.
+
+Includes RevIN reversible instance normalization and the core KAN forecasting
+model — a patch-based architecture with optional polynomial, Jacobi, and wavelet
+basis components. Provides the ``Model`` alias for ``KANModel``.
+
+Core API:
+- KANModel: core KAN forecasting model with RevIN and patch-based architecture
+- RevIN: reversible instance normalization for time series
+- compute_patch_num: compute number of patches given context window, patch length, and stride
+
 """
 
 from __future__ import annotations

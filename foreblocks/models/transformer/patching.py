@@ -1,8 +1,17 @@
 """foreblocks.models.transformer.patching.
 
-This module defines patch tokenization and detokenization utilities.
-It belongs to the modular transformer layers and helpers area of Foreblocks.
-It exposes classes such as PatchInfo, PatchTokenizer, PatchDetokenizer.
+PatchTST-style patch tokenization with Triton-accelerated detokenization.
+
+Provides PatchTokenizer for splitting time series into overlapping patch tokens
+and PatchDetokenizer for overlap-add reconstruction. Uses Triton CUDA kernels
+when available for the detokenization backward pass.
+
+Core API:
+- PatchTokenizer: patchify + embed [B,T,D] → [B,Np,D]
+- PatchDetokenizer: unpatch with overlap-add [B,Np,D] → [B,T,D]
+- PatchInfo: metadata for patch/detoken operations
+- patchify_padding_mask: convert timestep mask to patch-token mask
+
 """
 
 import math
@@ -11,7 +20,6 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 try:
     import triton
@@ -152,7 +160,12 @@ if _TRITON_AVAILABLE:
         @staticmethod
         def backward(ctx, grad_out):  # type: ignore[override]
             Np, P, D, S, BLOCK_D, T_pad = (
-                ctx.Np, ctx.P, ctx.D, ctx.S, ctx.BLOCK_D, ctx.T_pad,
+                ctx.Np,
+                ctx.P,
+                ctx.D,
+                ctx.S,
+                ctx.BLOCK_D,
+                ctx.T_pad,
             )
             B = grad_out.shape[0]
 

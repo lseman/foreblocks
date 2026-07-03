@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Benchmark Mamba2 Triton kernels vs PyTorch implementations."""
+"""foreblocks.ops.mamba.benchmark_kernels.
+
+Benchmark Mamba2 Triton kernels against PyTorch references.
+
+Measures throughput (ms) and speedup for dt_prep, fused_dt, fused_out, SSD
+forward/backward sweeps, and the full Mamba2 block path. Supports correctness
+validation mode that checks numerical parity between Triton and PyTorch
+implementations. Use when profiling or verifying Mamba2 kernel performance.
+
+Core API:
+- bench_*: individual benchmark functions returning timing dicts
+- check_correctness: numerical parity checks between Triton and PyTorch
+- main: CLI entry point with --mode (quick/full/correctness) and --output JSON
+
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -54,8 +69,10 @@ def make_ssd_args(B, T, H, P, N, chunk_size=64, device="cuda"):
 
 # ── Benchmarks ──────────────────────────────────────────────────
 
+
 def bench_dt_prep(use_triton=True, iters=50):
     from foreblocks.ops.mamba.triton_ops import dt_prep_fallback, dt_prep_triton
+
     configs = [(2, 256, 512), (2, 1024, 2048), (2, 4096, 4096)]
     results = {}
     for B, T, D in configs:
@@ -64,12 +81,15 @@ def bench_dt_prep(use_triton=True, iters=50):
         fn = dt_prep_triton if use_triton else dt_prep_fallback
         t = measure(fn, dt_raw, bias, iters=iters)
         results[f"B{B}_T{T}_D{D}"] = round(t, 4)
-        print(f"  dt_prep{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.4f} ms")
+        print(
+            f"  dt_prep{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.4f} ms"
+        )
     return results
 
 
 def bench_fused_dt(use_triton=True, iters=50):
     from foreblocks.ops.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
+
     configs = [(2, 1024, 16, 8), (2, 4096, 64, 8), (2, 4096, 64, 32)]
     results = {}
     for B, T, R, H in configs:
@@ -88,6 +108,7 @@ def bench_fused_dt(use_triton=True, iters=50):
 
 def bench_fused_out(use_triton=True, iters=50):
     from foreblocks.ops.mamba.triton_ops import fused_out_fallback, fused_out_triton
+
     configs = [(2, 256, 512), (2, 1024, 2048), (2, 4096, 4096)]
     results = {}
     for B, T, D in configs:
@@ -98,7 +119,9 @@ def bench_fused_out(use_triton=True, iters=50):
         fn = fused_out_triton if use_triton else fused_out_fallback
         t = measure(fn, y, z, res, w, iters=iters)
         results[f"B{B}_T{T}_D{D}"] = round(t, 4)
-        print(f"  fused_out{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.4f} ms")
+        print(
+            f"  fused_out{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.4f} ms"
+        )
     return results
 
 
@@ -200,7 +223,15 @@ def bench_ssd_backward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=20):
 
         try:
             t_torch = measure(
-                torch_bwd, gy, u, dt, A, Bp, Cp, D, chunk_size,
+                torch_bwd,
+                gy,
+                u,
+                dt,
+                A,
+                Bp,
+                Cp,
+                D,
+                chunk_size,
                 needs_input_grad=(True, True, False, True, True, True),
                 iters=iters,
             )
@@ -211,7 +242,15 @@ def bench_ssd_backward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=20):
 
         try:
             t_triton = measure(
-                triton_bwd, gy, u, dt, A, Bp, Cp, D, chunk_size,
+                triton_bwd,
+                gy,
+                u,
+                dt,
+                A,
+                Bp,
+                Cp,
+                D,
+                chunk_size,
                 needs_input_grad=(True, True, False, True, True, True),
                 iters=iters,
             )
@@ -234,9 +273,17 @@ def bench_ssd_backward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=20):
     return results
 
 
-def bench_full_mamba2(B, T, num_heads=8, head_dim=512,
-                      n_groups=4, d_state=16, dt_rank=64, chunk_size=64,
-                      iters=20):
+def bench_full_mamba2(
+    B,
+    T,
+    num_heads=8,
+    head_dim=512,
+    n_groups=4,
+    d_state=16,
+    dt_rank=64,
+    chunk_size=64,
+    iters=20,
+):
     from foreblocks.ops.mamba.mamba2_combined import mamba2_split_conv1d_scan_combined
 
     device = "cuda"
@@ -255,24 +302,41 @@ def bench_full_mamba2(B, T, num_heads=8, head_dim=512,
     out_proj_bias = torch.randn(d_inner, device=device)
 
     args = dict(
-        conv_weight=conv_weight, conv_bias=conv_bias,
-        dt_proj_weight=dt_proj_weight, dt_bias=dt_bias,
-        A_log=A_log, Dskip=Dskip, norm_weight=norm_weight,
-        out_proj_weight=out_proj_weight, out_proj_bias=out_proj_bias,
-        d_inner=d_inner, conv_dim=conv_dim, dt_rank=dt_rank,
-        num_heads=num_heads, head_dim=head_dim, n_groups=n_groups,
-        d_state=d_state, chunk_size=chunk_size,
-        dt_limit=(1e-4, 1.0), norm_eps=1e-6,
+        conv_weight=conv_weight,
+        conv_bias=conv_bias,
+        dt_proj_weight=dt_proj_weight,
+        dt_bias=dt_bias,
+        A_log=A_log,
+        Dskip=Dskip,
+        norm_weight=norm_weight,
+        out_proj_weight=out_proj_weight,
+        out_proj_bias=out_proj_bias,
+        d_inner=d_inner,
+        conv_dim=conv_dim,
+        dt_rank=dt_rank,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        n_groups=n_groups,
+        d_state=d_state,
+        chunk_size=chunk_size,
+        dt_limit=(1e-4, 1.0),
+        norm_eps=1e-6,
     )
 
     t_triton = measure(
-        mamba2_split_conv1d_scan_combined, projected, residual_inner,
-        use_triton_ssd=True, iters=iters,
+        mamba2_split_conv1d_scan_combined,
+        projected,
+        residual_inner,
+        use_triton_ssd=True,
+        iters=iters,
         **args,
     )
     t_torch = measure(
-        mamba2_split_conv1d_scan_combined, projected, residual_inner,
-        use_triton_ssd=False, iters=iters,
+        mamba2_split_conv1d_scan_combined,
+        projected,
+        residual_inner,
+        use_triton_ssd=False,
+        iters=iters,
         **args,
     )
     ratio = speedup(t_torch, t_triton)
@@ -317,8 +381,12 @@ def check_correctness():
     parallel_max_err = max_abs_err(y_parallel, y_p)
     tiled_max_err = max_abs_err(y_tiled, y_p)
 
-    public_args_t = [x.detach().clone().requires_grad_(True) for x in (u, dt, A, Bp, Cp, D)]
-    public_args_p = [x.detach().clone().requires_grad_(True) for x in (u, dt, A, Bp, Cp, D)]
+    public_args_t = [
+        x.detach().clone().requires_grad_(True) for x in (u, dt, A, Bp, Cp, D)
+    ]
+    public_args_p = [
+        x.detach().clone().requires_grad_(True) for x in (u, dt, A, Bp, Cp, D)
+    ]
     y_public_t = chunked_ssd_forward(*public_args_t, chunk_size=64, use_triton=True)
     y_public_p = chunked_ssd_forward(*public_args_p, chunk_size=64, use_triton=False)
     public_max_err = max_abs_err(y_public_t, y_public_p)
@@ -347,7 +415,9 @@ def check_correctness():
     z = torch.randn(B, T, H, device="cuda")
     res = torch.randn(B, T, H, device="cuda")
     w = torch.randn(H, device="cuda")
-    fo_err = max_abs_err(fused_out_triton(y, z, res, w), fused_out_fallback(y, z, res, w))
+    fo_err = max_abs_err(
+        fused_out_triton(y, z, res, w), fused_out_fallback(y, z, res, w)
+    )
 
     Bf, Tf, heads, head_dim, groups, d_state, dt_rank = 2, 256, 8, 64, 4, 16, 16
     d_inner = heads * head_dim
@@ -386,7 +456,9 @@ def check_correctness():
     print(f"  SSD forward  max_err={max_err:.2e} rel_err={rel_err:.2e}")
     print(f"  SSD parallel max_err={parallel_max_err:.2e}")
     print(f"  SSD tiled    max_err={tiled_max_err:.2e}")
-    print(f"  SSD public   max_err={public_max_err:.2e} grad_max={max(public_grad_errs.values()):.2e}")
+    print(
+        f"  SSD public   max_err={public_max_err:.2e} grad_max={max(public_grad_errs.values()):.2e}"
+    )
     print(f"  dt_prep      max_err={dt_err:.2e}")
     print(f"  fused_dt     max_err={fused_dt_err:.2e}")
     print(f"  fused_out    max_err={fo_err:.2e}")
@@ -407,9 +479,12 @@ def check_correctness():
 
 # ── Main ────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["quick", "full", "correctness"], default="quick")
+    parser.add_argument(
+        "--mode", choices=["quick", "full", "correctness"], default="quick"
+    )
     parser.add_argument("--Ts", type=int, nargs="+", default=None)
     parser.add_argument("--iters", type=int, default=30)
     parser.add_argument("--output", type=str, default=None)
@@ -427,11 +502,15 @@ def main():
 
         print("\n=== fused_dt ===")
         results["fused_dt_triton"] = bench_fused_dt(use_triton=True, iters=args.iters)
-        results["fused_dt_fallback"] = bench_fused_dt(use_triton=False, iters=args.iters)
+        results["fused_dt_fallback"] = bench_fused_dt(
+            use_triton=False, iters=args.iters
+        )
 
         print("\n=== fused_out ===")
         results["fused_out_triton"] = bench_fused_out(use_triton=True, iters=args.iters)
-        results["fused_out_fallback"] = bench_fused_out(use_triton=False, iters=args.iters)
+        results["fused_out_fallback"] = bench_fused_out(
+            use_triton=False, iters=args.iters
+        )
 
         Ts = args.Ts or [128, 256, 512, 1024, 2048, 4096]
         print(f"\n=== SSD forward sweep T={Ts} ===")
@@ -445,21 +524,31 @@ def main():
 
         print("\n=== fused_dt ===")
         results["fused_dt_triton"] = bench_fused_dt(use_triton=True, iters=args.iters)
-        results["fused_dt_fallback"] = bench_fused_dt(use_triton=False, iters=args.iters)
+        results["fused_dt_fallback"] = bench_fused_dt(
+            use_triton=False, iters=args.iters
+        )
 
         print("\n=== fused_out ===")
         results["fused_out_triton"] = bench_fused_out(use_triton=True, iters=args.iters)
-        results["fused_out_fallback"] = bench_fused_out(use_triton=False, iters=args.iters)
+        results["fused_out_fallback"] = bench_fused_out(
+            use_triton=False, iters=args.iters
+        )
 
         print(f"\n=== SSD forward sweep T={Ts} ===")
         results["ssd_fwd_sweep"] = bench_ssd_forward_sweep(Ts, iters=args.iters)
 
         print(f"\n=== SSD raw backward sweep T={Ts} ===")
-        results["ssd_raw_bwd_sweep"] = bench_ssd_backward_sweep(Ts, iters=max(10, args.iters // 2))
+        results["ssd_raw_bwd_sweep"] = bench_ssd_backward_sweep(
+            Ts, iters=max(10, args.iters // 2)
+        )
 
         print("\n=== Full Mamba2 block ===")
-        results["full_mamba2"] = bench_full_mamba2(2, 4096, iters=max(10, args.iters // 2))
-        results["full_mamba2_small"] = bench_full_mamba2(2, 1024, iters=max(10, args.iters // 2))
+        results["full_mamba2"] = bench_full_mamba2(
+            2, 4096, iters=max(10, args.iters // 2)
+        )
+        results["full_mamba2_small"] = bench_full_mamba2(
+            2, 1024, iters=max(10, args.iters // 2)
+        )
 
     elif args.mode == "correctness":
         print("=== Correctness ===")

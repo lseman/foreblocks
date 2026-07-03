@@ -1,8 +1,18 @@
 """foreblocks.modules.attention.modules.frequency_att.
 
-This module implements the frequency att pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as FourierModeSelector, FourierBlock, FrequencyAttention.
+Frequency-domain attention operations via Fourier transforms.
+
+Implements FourierCrossAttention (FEDformer) — transforms queries, keys, and
+values via rFFT, applies attention over a small set of Fourier modes, then
+inverts back to the time domain. Also provides FourierBlock and
+FourierModeSelector for standalone spectral mixing. Use when frequency-domain
+mixing is needed as a building block.
+
+Core API:
+- FrequencyAttention: FourierCrossAttention from FEDformer
+- FourierBlock: FEDformer-style frequency-domain mixing block
+- FourierModeSelector: frequency mode selection (topk or fixed)
+
 """
 
 from typing import Literal

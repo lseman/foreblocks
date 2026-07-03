@@ -1,16 +1,24 @@
-"""Fused dt_proj + dt_prep kernel.
+"""foreblocks.ops.mamba.fused_dt.
 
-Fuses:  dt_raw = F.linear(dt_hidden, dt_proj_weight) + dt_bias  (or skip if no proj)
-        dt = clamp(softplus(dt_raw), dt_min, dt_max)
+Fused dt_proj + softplus + clamp kernel.
 
-Eliminates the intermediate dt_raw tensor and saves one kernel launch.
-When dt_proj_weight is None, dt_hidden is already [B, T, H] — no projection, just bias + softplus + clamp.
+Fuses the optional low-rank linear projection (dt_hidden → dt) with softplus
+discretisation and range clamping into a single Triton kernel. When
+`dt_proj_weight is None`, treats dt_hidden as already projected [B, T, H] —
+only bias + softplus + clamp. Use when building Mamba2/Mamba3 models that
+need the dt projection step with maximum throughput.
+
+Core API:
+- fused_dt: main entry, auto-selects Triton or fallback
+- fused_dt_triton: Triton forward (falls back to PyTorch if no projection)
+- fused_dt_fallback: PyTorch reference
+
 """
+
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-
 
 try:
     import triton
@@ -26,8 +34,16 @@ if FUSED_DT_TRITON_AVAILABLE:
 
     @triton.jit
     def _fused_dt_kernel(
-        dt_hidden_ptr, dt_proj_weight_ptr, dt_bias_ptr, out_ptr,
-        B, T, dt_rank, num_heads, dt_min, dt_max,
+        dt_hidden_ptr,
+        dt_proj_weight_ptr,
+        dt_bias_ptr,
+        out_ptr,
+        B,
+        T,
+        dt_rank,
+        num_heads,
+        dt_min,
+        dt_max,
         BLOCK_DT: tl.constexpr,
     ):
         """Forward: each thread handles one (b, t, h) output element."""
@@ -48,10 +64,12 @@ if FUSED_DT_TRITON_AVAILABLE:
 
         j = tl.arange(0, BLOCK_DT)
         mask_j = j < dt_rank
-        dt_h = tl.load(dt_hidden_ptr + (bt_idx * dt_rank + j),
-                       mask=mask_j, other=0.0).to(tl.float32)
-        w = tl.load(dt_proj_weight_ptr + (h * dt_rank + j),
-                    mask=mask_j, other=0.0).to(tl.float32)
+        dt_h = tl.load(
+            dt_hidden_ptr + (bt_idx * dt_rank + j), mask=mask_j, other=0.0
+        ).to(tl.float32)
+        w = tl.load(dt_proj_weight_ptr + (h * dt_rank + j), mask=mask_j, other=0.0).to(
+            tl.float32
+        )
 
         v = tl.sum(dt_h * w)
         bias = tl.load(dt_bias_ptr + h, mask=h_mask, other=0.0).to(tl.float32)
@@ -122,10 +140,12 @@ def fused_dt_triton(
     """Triton forward. Falls back to PyTorch if dt_proj_weight is None."""
     if dt_proj_weight is None:
         return fused_dt_fallback(dt_hidden, None, dt_bias, dt_min, dt_max)
-    if not (FUSED_DT_TRITON_AVAILABLE
-            and dt_hidden.is_cuda
-            and dt_proj_weight.is_cuda
-            and dt_bias.is_cuda):
+    if not (
+        FUSED_DT_TRITON_AVAILABLE
+        and dt_hidden.is_cuda
+        and dt_proj_weight.is_cuda
+        and dt_bias.is_cuda
+    ):
         return fused_dt_fallback(dt_hidden, dt_proj_weight, dt_bias, dt_min, dt_max)
 
     B, T, dt_rank = dt_hidden.shape
@@ -136,8 +156,16 @@ def fused_dt_triton(
     BLOCK_DT = min(max(triton.next_power_of_2(dt_rank), 16), 256)
     num_warps = 4 if BLOCK_DT >= 64 else 2
     _fused_dt_kernel[(n_elements,)](
-        dt_hidden, dt_proj_weight, dt_bias, out,
-        B, T, dt_rank, num_heads, dt_min, dt_max,
+        dt_hidden,
+        dt_proj_weight,
+        dt_bias,
+        out,
+        B,
+        T,
+        dt_rank,
+        num_heads,
+        dt_min,
+        dt_max,
         BLOCK_DT=BLOCK_DT,
         num_warps=num_warps,
     )
@@ -156,8 +184,14 @@ def fused_dt_bwd_triton(
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     """Backward. Uses PyTorch — avoids atomic_add serialization in Triton bwd kernel."""
     return fused_dt_bwd_fallback(
-        grad_out, dt_hidden, dt_proj_weight, dt_bias, dt_min, dt_max,
-        compute_w_grad, compute_bias_grad,
+        grad_out,
+        dt_hidden,
+        dt_proj_weight,
+        dt_bias,
+        dt_min,
+        dt_max,
+        compute_w_grad,
+        compute_bias_grad,
     )
 
 
@@ -174,15 +208,21 @@ class _FusedDtFn(torch.autograd.Function):
         dt_hidden, dt_proj_weight, dt_bias = ctx.saved_tensors
         needs = ctx.needs_input_grad
         d_dt_hidden, d_dt_proj_weight, d_dt_bias = fused_dt_bwd_triton(
-            grad_out, dt_hidden, dt_proj_weight, dt_bias,
-            dt_min=ctx.dt_min, dt_max=ctx.dt_max,
-            compute_w_grad=needs[1], compute_bias_grad=needs[2],
+            grad_out,
+            dt_hidden,
+            dt_proj_weight,
+            dt_bias,
+            dt_min=ctx.dt_min,
+            dt_max=ctx.dt_max,
+            compute_w_grad=needs[1],
+            compute_bias_grad=needs[2],
         )
         return (
             d_dt_hidden if needs[0] else None,
             d_dt_proj_weight if needs[1] else None,
             d_dt_bias if needs[2] else None,
-            None, None,
+            None,
+            None,
         )
 
 

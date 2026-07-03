@@ -1,8 +1,14 @@
 """foreblocks.modules.attention.variants.base.
 
-This module implements the base pieces for its package.
-It belongs to the attention pattern variants area of Foreblocks.
-It exposes classes such as AttentionImpl.
+Attention implementation protocol for variant backends.
+
+Defines the AttentionImpl Protocol that all attention variants must satisfy.
+Each variant (ProbSparse, NSA, MoBA, sliding window, etc.) implements this
+protocol to plug into the parent MultiAttention module.
+
+Core API:
+- AttentionImpl: Protocol defining the forward signature for attention variants
+
 """
 
 from typing import Protocol, runtime_checkable

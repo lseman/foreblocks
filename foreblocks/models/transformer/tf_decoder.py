@@ -1,8 +1,15 @@
 """foreblocks.models.transformer.tf_decoder.
 
-This module implements the tf decoder pieces for its package.
-It belongs to the modular transformer layers and helpers area of Foreblocks.
-It exposes classes such as TransformerDecoderLayer, TransformerDecoder.
+Transformer decoder with cross-attention, incremental KV caching, and MTP support.
+
+Implements TransformerDecoderLayer with self-attention, cross-attention, and FFN
+stages. Supports autoregressive decoding via incremental state, multi-step
+ahead (MTP) targets for MoE FFNs, and Mixture-of-Depths routing.
+
+Core API:
+- TransformerDecoderLayer: decoder layer with self/cross attn and KV cache
+- TransformerDecoder: full decoder with autoregressive forward_one_step
+
 """
 
 from __future__ import annotations
@@ -722,8 +729,7 @@ class TransformerDecoder(BaseTransformer):
             else:
                 if isinstance(position_offset, int):
                     pos = (
-                        torch
-                        .arange(
+                        torch.arange(
                             position_offset,
                             position_offset + x.shape[1],
                             device=device,

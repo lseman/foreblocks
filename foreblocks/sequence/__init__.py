@@ -16,9 +16,9 @@ Subpackages:
 Core API:
 - BlockStack: configurable heterogeneous block stack
 - BLOCK_TYPES: registry of available block implementations
+
 """
 
 from foreblocks.sequence.block_stack import BLOCK_TYPES, BlockStack
-
 
 __all__ = ["BlockStack", "BLOCK_TYPES"]

@@ -1,8 +1,19 @@
 """foreblocks.anomaly.models.dagmm.
 
-This module implements the dagmm pieces for its package.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as DAGMMForward, DAGMM.
+Deep autoencoding Gaussian mixture model for window-level density scoring.
+
+DAGMM jointly trains an autoencoder and a Gaussian mixture model in the latent space.
+Anomaly is scored via sampling energy — the negative log-likelihood under the learned
+mixture distribution. Low-energy (high-density) windows are normal; high-energy windows
+are anomalous. Use when you need a compact, end-to-end trainable model that scores
+anomalies via both reconstruction error and latent-space density.
+
+Core API:
+- DAGMM: joint autoencoder + GMM anomaly detector
+- DAGMMForward: forward output with reconstruction, latent, and assignment
+- DAGMM.gmm_params: extract GMM parameters from latent/assignment
+- DAGMM.sample_energy: compute density-based anomaly energy
+
 """
 
 from __future__ import annotations
@@ -107,9 +118,10 @@ class DAGMM(nn.Module):
         diff = z.unsqueeze(1) - mu.unsqueeze(0)
         quad = (diff.pow(2) / var.unsqueeze(0)).sum(dim=2)
         log_det = torch.log(var).sum(dim=1)
-        log_prob = (
-            torch.log(phi).unsqueeze(0)
-            - 0.5 * (quad + log_det.unsqueeze(0) + z.shape[1] * torch.log(z.new_tensor(2.0 * torch.pi)))
+        log_prob = torch.log(phi).unsqueeze(0) - 0.5 * (
+            quad
+            + log_det.unsqueeze(0)
+            + z.shape[1] * torch.log(z.new_tensor(2.0 * torch.pi))
         )
         return -torch.logsumexp(log_prob, dim=1)
 
@@ -125,7 +137,11 @@ class DAGMM(nn.Module):
         recon = F.mse_loss(out.reconstruction, x)
         energy = self.sample_energy(out.latent, phi, mu, var).mean()
         cov_penalty = (1.0 / var).mean()
-        return recon + float(energy_weight) * energy + float(covariance_weight) * cov_penalty
+        return (
+            recon
+            + float(energy_weight) * energy
+            + float(covariance_weight) * cov_penalty
+        )
 
     def fit_density(self, x: torch.Tensor, batch_size: int = 512) -> None:
         z_values: list[torch.Tensor] = []
@@ -152,7 +168,9 @@ class DAGMM(nn.Module):
         var = getattr(self, "density_var_", None)
         if phi is None or mu is None or var is None:
             phi, mu, var = self.gmm_params(out.latent, out.gamma)
-        return self.sample_energy(out.latent, phi.to(x.device), mu.to(x.device), var.to(x.device))
+        return self.sample_energy(
+            out.latent, phi.to(x.device), mu.to(x.device), var.to(x.device)
+        )
 
 
 __all__ = ["DAGMM", "DAGMMForward"]

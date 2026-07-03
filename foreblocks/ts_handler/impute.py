@@ -1,8 +1,16 @@
 """foreblocks.ts_handler.impute.
 
-This module implements the impute pieces for its package.
-It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
-It exposes classes such as PositionalEncoding, EncoderLayer, SAITS, SaitsDataset.
+Time-series missing value imputation with neural network models.
+
+Implements SAITS (Self-Attention Imputation for Incomplete Time Series)
+and rolling-horizon imputation strategies. SAITS uses a transformer-based
+encoder-decoder with masked token learning for accurate multivariate
+imputation. Supports both deep learning and simpler statistical fallbacks.
+
+Core API:
+- rolling_window_impute: rolling-horizon imputation with pluggable model class
+- SAITSImputer: SAITS model wrapper for missing value imputation
+
 """
 
 import math
@@ -15,7 +23,6 @@ import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-
 
 warnings.filterwarnings("ignore")
 

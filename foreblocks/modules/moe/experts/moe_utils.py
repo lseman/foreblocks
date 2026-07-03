@@ -1,8 +1,18 @@
 """foreblocks.modules.moe.experts.moe_utils.
 
-This module implements the moe utils pieces for its package.
-It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
-It exposes functions such as maybe_compile, autocast_bf16_enabled, supports_grouped_prepacked, optimized_topk_routing.
+MoE utilities: TorchScript-compiled routing, compile wrappers, and dtype helpers.
+
+Provides optimized top-K routing functions (TorchScript and eager fallbacks),
+safe torch.compile wrapping, bf16 autocast detection, and grouped kernel capability
+detection. Use for low-level MoE infrastructure in performance-critical paths.
+
+Core API:
+- maybe_compile: safe torch.compile wrapper with graceful fallback
+- optimized_topk_routing: TorchScript-compiled top-K routing
+- eager_topk_routing: non-scripted fallback routing
+- autocast_bf16_enabled: bf16 autocast availability check
+- supports_grouped_prepacked: grouped kernel prepacked-args detection
+
 """
 
 from __future__ import annotations
@@ -11,7 +21,6 @@ import inspect
 
 import torch
 import torch.nn as nn
-
 
 try:
     from foreblocks.modules.moe.kernels.kernels import (

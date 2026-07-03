@@ -14,6 +14,7 @@ Core API:
 - AttentionLayer: attention interface and implementations
 - ConformalPredictionEngine: uncertainty quantification via conformal prediction
 - BaseHead, HeadComposer: output head composition
+
 """
 
 from foreblocks.core.att import AttentionLayer
@@ -21,7 +22,6 @@ from foreblocks.core.extend import DistilledForecastingModel
 from foreblocks.core.model import BaseHead, ForecastingModel
 from foreblocks.core.training.conformal import ConformalPredictionEngine
 from foreblocks.modules.heads import HeadComposer, HeadSpec
-
 
 __all__ = [
     "AttentionLayer",

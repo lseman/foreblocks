@@ -1,7 +1,22 @@
 """foreblocks.modules.moe.experts.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
+Mixture-of-Experts (MoE) expert routing, dispatching, and expert-layer implementations.
+
+Provides a complete MoE stack: routers (noisy-top-K, linear, hash-based, continuous,
+straight-through, soft-dense, auxiliary-token), dispatchers (token-choice and
+expert-choice), expert blocks (SwiGLU and FFN with configurable dropout), a full
+dMoE feed-forward layer with multiple fast paths, logging/reporting utilities,
+and a unified feed-forward wrapper. Use to add MoE layers to transformer
+architectures.
+
+Core API:
+- NoisyTopKRouter, LinearRouter, HashTopKRouter, ContinuousTopKRouter: routing strategies
+- DroplessPackedDispatcher, ExpertChoiceDispatcher: token packing dispatchers
+- MoE_SwiGLUExpert, MoE_FFNExpert: expert FFN implementations
+- MoEFeedForwardDMoE: full dMoE feed-forward with fast paths
+- FeedForwardBlock: unified FFN/MoE wrapper
+- MoELogger, attach_router_hook: MoE training diagnostics
+
 """
 
 from foreblocks.modules.moe.experts import dispatchers, moe, moe_logging, routers
@@ -30,7 +45,6 @@ from foreblocks.modules.moe.experts.routers import (
     Router,
     StraightThroughTopKRouter,
 )
-
 
 __all__ = [
     "AdaptiveNoisyTopKRouter",

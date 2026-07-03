@@ -2,23 +2,21 @@
 
 """Temporal Fusion Transformer components.
 
+Full TFT implementation with variable selection networks, Gated Residual Networks
+for static enrichment, and a transformer encoder-decoder backbone. Supports
+observed covariates, known past/future covariates, static features, and
+quantile forecasting with time encoding.
+
 Based on: Lim et al., "Temporal Fusion Transformers for Interpretable Multi-horizon
 Time Series Forecasting", IJF 2021.
 Paper: https://arxiv.org/abs/1912.09363
 
-Faithful pieces: Gated Linear Units, Gated Residual Networks (context via a
-separate projection, Eq. 2-4), per-step Variable Selection Networks, static
-enrichment context, temporal self-attention fusion, and quantile outputs.
+Core API:
+- TemporalFusionTransformer: TFT forecasting head with variable selection and static enrichment
+- VariableSelectionNetwork: per-time-step variable selection with learned embeddings
+- GRN: Gated Residual Network (TFT core building block)
+- GateAddNorm: gated residual connection + normalization
 
-Deviations from the paper (intentional, for the foreblocks transformer stack):
-  * The LSTM seq2seq "locality enhancement" layer is replaced by the project's
-    Transformer encoder/decoder (this is the *Temporal Fusion Transformer*; the
-    attention backbone subsumes the locality role).
-  * A single static context vector feeds the enrichment GRNs, rather than the
-    paper's four separate static contexts (VSN / LSTM-cell / LSTM-hidden /
-    enrichment).
-  * Standard multi-head attention is used (not the shared-value interpretable
-    variant); variable-selection weights are still returned for interpretability.
 """
 
 import torch
@@ -30,7 +28,6 @@ from foreblocks.models.transformer.transformer import (
     TransformerDecoder,
     TransformerEncoder,
 )
-
 
 # ---------------------------
 # Core TFT building blocks
@@ -117,9 +114,9 @@ class VariableSelectionNetwork(nn.Module):
         self.name = name
 
         # Per-variable encoders map each var feature to d_model
-        self.var_encoders = nn.ModuleList([
-            nn.Linear(d_in_per_var, d_model) for _ in range(num_vars)
-        ])
+        self.var_encoders = nn.ModuleList(
+            [nn.Linear(d_in_per_var, d_model) for _ in range(num_vars)]
+        )
 
         # Gating: compute weights over variables
         # Aggregator input is concatenated encodings [B, T, num_vars * d_model]
@@ -267,9 +264,9 @@ class TemporalFusionTransformer(nn.Module):
         enc_vars = int(self.has_target) + num_obs_vars + num_known_in_vars
         self.vsn_enc = VariableSelectionNetwork(
             num_vars=enc_vars,
-            d_in_per_var=1
-            if enc_vars == 1
-            else max(1, max(d_obs_per_var, d_known_per_var, 1)),
+            d_in_per_var=(
+                1 if enc_vars == 1 else max(1, max(d_obs_per_var, d_known_per_var, 1))
+            ),
             d_model=d_model,
             d_hidden=dim_ff,
             dropout=dropout,

@@ -1,8 +1,16 @@
 """foreblocks.models.kan.router.
 
-This module implements the router pieces for its package.
-It belongs to the Kolmogorov-Arnold Network model components area of Foreblocks.
-It exposes classes such as RouterConfig, TokenRouter.
+Token routing for MoE expert selection in KAN models.
+
+Implements a lightweight TokenRouter that routes input tokens to a subset of
+MoE experts using learned gating with top-k masking and temperature scaling.
+Includes RouterConfig dataclass and config resolution.
+
+Core API:
+- TokenRouter: learnable gating network with top-k masking for MoE expert selection
+- RouterConfig: frozen dataclass for router hyperparameters (hidden dim, temperature, top_k)
+- resolve_router_config: merge base RouterConfig with override parameters
+
 """
 
 from __future__ import annotations

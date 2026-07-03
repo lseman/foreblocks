@@ -1,8 +1,14 @@
 """foreblocks.ts_handler.auto_filter.registry.
 
-This module implements the registry pieces for its package.
-It belongs to the automatic signal filtering and denoising pipelines area of Foreblocks.
-It exposes functions such as register_filter.
+Filter registry for automatic signal denoising.
+
+Maintains a registry of registered filter functions with optional slow-filter
+detection. Used by the auto-selection core to build a catalog of available
+denoising filters and choose among them based on signal characteristics.
+
+Core API:
+- register_filter: decorator to register a filter in the auto-selection registry
+
 """
 
 from __future__ import annotations
@@ -10,7 +16,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pandas as pd
-
 
 _FILTER_REGISTRY: dict[str, Callable[[pd.Series], pd.Series]] = {}
 _SLOW_FILTERS: set[str] = set()

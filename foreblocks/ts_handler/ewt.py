@@ -1,8 +1,14 @@
 """foreblocks.ts_handler.ewt.
 
-This module implements the ewt pieces for its package.
-It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
-It exposes functions such as apply_ewt_and_detrend_parallel.
+Empirical Wavelet Transform (EWT) with parallel detrending.
+
+Applies EWT decomposition to time series using statsmodels, then detrends
+and recombines with automatic IMF selection via AIC. Provides parallel
+processing for multivariate signals.
+
+Core API:
+- apply_ewt_and_detrend_parallel: parallel EWT decomposition with detrending
+
 """
 
 # ============================
@@ -22,7 +28,6 @@ import statsmodels.api as sm
 from joblib import Parallel, delayed
 
 from foretools.ewt.ewt_core import EWT1D
-
 
 # ============================
 # Visualization

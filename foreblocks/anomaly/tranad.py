@@ -1,8 +1,17 @@
 """foreblocks.anomaly.tranad.
 
-This module implements the tranad pieces for its package.
-It belongs to the anomaly detection and reconstruction workflows area of Foreblocks.
-It exposes classes such as TranADDataset, TranADDetector.
+TranAD (Transformer-based Online Anomaly Detection) implementation.
+
+Provides the TranAD model and detector for time-series anomaly detection using
+transformer-based reconstruction with repository loss. Includes memory-efficient
+dataset and vectorized sequence creation for training and inference.
+
+Core API:
+- TranAD: transformer-based online anomaly detection model
+- TranADDetector: fit/predict detector for TranAD models
+- TranADDataset: memory-efficient dataset for sequence creation
+- create_sequences_vectorized: optimized sequence creation using vectorized operations
+
 """
 
 from __future__ import annotations

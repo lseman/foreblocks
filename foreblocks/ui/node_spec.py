@@ -1,10 +1,17 @@
-"""Node discovery decorator utilities for the foreblocks UI builder.
+"""foreblocks.ui.node_spec.
 
-This module provides the `node` decorator used to annotate model components
-with metadata for auto-discovery, graph building, and visual editing.
+Node discovery decorator for annotating model components with UI metadata.
+
+Provides the `node` decorator used to mark classes for auto-discovery by the
+foreblocks Studio. Supports type_id, category, color, inputs/outputs config,
+and optional explicit codegen specs. Decorated classes become available in
+the Studio node palette for drag-and-drop workflow construction.
+
+Core API:
+- node: decorator to register a class as a discoverable foreblocks node
+
 """
 
-# foreblocks/node.py
 from __future__ import annotations
 
 from collections.abc import Callable

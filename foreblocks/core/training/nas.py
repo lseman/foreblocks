@@ -1,8 +1,15 @@
 """foreblocks.core.training.nas.
 
-This module implements the nas pieces for its package.
-It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
-It exposes classes such as NASHelper.
+Neural Architecture Search (NAS) helper for HeadComposer-based architecture optimization.
+
+Detects ``HeadComposer`` modules in a model, separates architecture parameters
+(α) from weights (θ), and provides alpha reporting and discretization utilities.
+Also includes alpha evolution plotting for visualization during training.
+
+Core API:
+- NASHelper: detects HeadComposer modules and manages alpha optimization
+- plot_alpha_evolution: plot alpha values over training epochs
+
 """
 
 from __future__ import annotations
@@ -16,7 +23,6 @@ import torch.nn as nn
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.history import TrainingHistory
 from foreblocks.modules.heads.head_helper import HeadComposer
-
 
 try:
     import matplotlib.pyplot as plt

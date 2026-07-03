@@ -1,8 +1,17 @@
 """foreblocks.ui.discovery.
 
-This module implements the discovery pieces for its package.
-It belongs to the node metadata, discovery, and UI-facing schema helpers area of Foreblocks.
-It exposes functions such as categories_map, discover_nodes, discover_nodes_payload.
+Node discovery and auto-categorization for the foreblocks Studio UI.
+
+Scans registered foreblocks packages for node-annotated classes, builds a
+category index, and produces JSON-serializable discovery payloads. Used by
+the Studio server to populate the node palette and support drag-and-drop
+workflow construction.
+
+Core API:
+- discover_nodes: find all registered foreblocks nodes
+- discover_nodes_payload: generate JSON-serializable discovery data
+- categories_map: map category IDs to display names
+
 """
 
 # foreblocks/discovery.py
@@ -16,7 +25,6 @@ from collections.abc import Iterable
 
 # NEW: use the unified spec builder (handles inputs/outputs/config + py)
 from foreblocks.ui.auto_spec import build_node_spec
-
 
 ALLOWED_PACKAGES = [
     "foreblocks.modules.blocks",

@@ -1,14 +1,23 @@
 """foreblocks.core.training.quantization.
 
-This module defines quantization helpers.
-It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
-It exposes classes such as QuantizationConfig, QuantizationObserver, QuantizedLinear, DynamicQuantizedLinear.
+Neural network quantization helpers for training and deployment.
+
+Provides QuantizationConfig, observers, and quantized linear layers for
+fake quantization, dynamic quantization, and static quantization workflows.
+Designed for model compression and deployment on resource-constrained hardware.
+
+Core API:
+- QuantizationConfig: quantization parameters (bit width, symmetry, per-channel)
+- QuantizationObserver: min/max observer for calibration
+- QuantizedLinear: static quantized linear layer
+- DynamicQuantizedLinear: dynamic quantization linear layer
+- FakeQuantize: fake quantization stub for training-time simulation
+
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 # =========================
 # Quantization Core & Obs

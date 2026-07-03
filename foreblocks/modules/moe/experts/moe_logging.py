@@ -1,8 +1,18 @@
 """foreblocks.modules.moe.experts.moe_logging.
 
-This module implements the moe logging pieces for its package.
-It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
-It exposes classes such as MoELogger, ReportInputs.
+MoE router statistics logging, reporting, and visualization.
+
+Collects per-step router metrics (entropy, expert utilization, capacity drops,
+aux loss), persists them to JSON, and provides matplotlib-based plotting for
+utilization heatmaps, load imbalance CV, calibration diagrams, and Pareto curves.
+Designed for post-training analysis and debugging of MoE training dynamics.
+
+Core API:
+- MoELogger: per-step router metric collection with JSON persistence
+- ReportInputs: structured dataclass for build_moe_report
+- build_moe_report: generates all diagnostic figures from logged data
+- attach_router_hook: forward hook to auto-capture router metrics
+
 """
 
 # moe_logging_and_report.py
@@ -23,7 +33,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-
 
 # ╔═════════════════════════════════════════════════════════════════════════╗
 # ║                         LOGGING: TRAIN/EVAL SIDE                        ║
@@ -98,8 +107,10 @@ class MoELogger:
         capacity_dropped: int = 0,
         aux_loss: float | None = None,
         latency_ms: float | None = None,
-        meta: dict[str, np.ndarray | torch.Tensor | Sequence[int] | Sequence[float]]
-        | None = None,
+        meta: (
+            dict[str, np.ndarray | torch.Tensor | Sequence[int] | Sequence[float]]
+            | None
+        ) = None,
     ) -> None:
         # convert to numpy
         gate_logits = _to_numpy(gate_logits)

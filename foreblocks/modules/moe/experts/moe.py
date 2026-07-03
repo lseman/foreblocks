@@ -1,8 +1,19 @@
 """foreblocks.modules.moe.experts.moe.
 
-This module implements the moe pieces for its package.
-It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
-It exposes classes such as MoEFeedForwardDMoE.
+Dynamically-spaced Mixture-of-Experts (dMoE) feed-forward layer with fast routing.
+
+Implements a full-featured MoE feed-forward block with support for noisy-top-K,
+linear, hash-based, continuous, and expert-choice routing modes. Includes load
+balancing via auxiliary loss and router bias, soft capacity, entropy regularization,
+adaptive K selection, and optional fused grouped-kernel paths. Use as a drop-in
+replacement for standard FFN layers in transformer blocks.
+
+Core API:
+- MoEFeedForwardDMoE: full dMoE feed-forward with multiple router types and fast paths
+- eager_topk_routing: TorchScript-compiled top-K routing
+- optimized_topk_routing: optimized fused top-K routing
+- maybe_compile: safe torch.compile wrapper
+
 """
 
 # transformer_moe_dmoe.py
@@ -56,7 +67,6 @@ from foreblocks.modules.moe.experts.routers import (
     SoftDenseRouter,
     StraightThroughTopKRouter,
 )
-
 
 # Optional import: adjust to your package path
 try:
@@ -844,7 +854,9 @@ class MoEFeedForwardDMoE(nn.Module):
                     )  # [num_shared, T, D]
                     shared_out = (
                         shared_chunks * self.shared_scale.view(self.num_shared, 1, 1)
-                    ).sum(0)  # [T, D]
+                    ).sum(
+                        0
+                    )  # [T, D]
                     shared_cat = None
                 else:
                     shared_out = torch.zeros_like(x_flat)
@@ -873,7 +885,9 @@ class MoEFeedForwardDMoE(nn.Module):
                 _router_top_p,
                 _router_top_i,
                 router_entropy,
-            ) = self._compute_router_outputs(routed_x, tau=tau)  # [T, E]
+            ) = self._compute_router_outputs(
+                routed_x, tau=tau
+            )  # [T, E]
             if self.routing_mode == "expert_choice":
                 self.last_per_token_k = None
                 self.last_log_prob_k = None
@@ -1285,9 +1299,9 @@ class MoEFeedForwardDMoE(nn.Module):
                 step=step,
                 gate_logits=logits.detach().cpu(),
                 topk_idx=topk_idx.detach().cpu(),
-                per_token_k=per_token_k.detach().cpu()
-                if per_token_k is not None
-                else None,
+                per_token_k=(
+                    per_token_k.detach().cpu() if per_token_k is not None else None
+                ),
                 capacity_dropped=int(tokens_dropped),
                 aux_loss=float(aux_loss),
                 latency_ms=float(latency_ms),

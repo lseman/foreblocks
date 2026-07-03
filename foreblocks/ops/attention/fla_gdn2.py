@@ -1,8 +1,16 @@
 """foreblocks.ops.attention.fla_gdn2.
 
-This module implements the fla gdn2 pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as can_use_fla_gdn2, can_use_fla_gdn2_chunk, fla_gdn2_forward, fla_gdn2_chunk_forward.
+FLA GDN-2 (Gated Delta Network 2) kernel adapter with Foreblocks layouts.
+
+Wraps upstream FLA GDN-2 kernels handling layout conversion, gating signals,
+and chunk/recurrent mode selection. Use when your architecture uses GDN-2
+gated SSM mechanisms and needs FLA's optimized implementation.
+
+Core API:
+- fla_gdn2_forward: GDN-2 with chunk or recurrent mode
+- fla_gdn2_chunk_forward: chunk-mode GDN-2
+- can_use_fla_gdn2: availability guard
+
 """
 
 import os

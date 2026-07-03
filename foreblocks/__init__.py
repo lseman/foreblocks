@@ -1,13 +1,25 @@
-"""Public foreblocks API exports and lazy load helpers.
+"""foreblocks.
 
-This module exposes the main foreblocks entry points for forecasting,
-training, evaluation, and model composition without importing the full modeling
-stack at package import time.
+Top-level lazy-loading entry point for the Foreblocks time series forecasting framework.
+
+Exposes the main public API — forecasting models, trainers, evaluators, data
+handling, and model configuration — via lazy imports so the full modeling stack
+is not loaded at package import time.
+
+Core API:
+- ForecastingModel: base forecasting model class
+- GraphForecastingModel: graph-based time series forecasting
+- Trainer: unified training loop with NAS, conformal prediction, and MoE logging
+- ModelEvaluator: evaluation and metric computation
+- TimeSeriesDataset: time series dataset wrapper
+- create_dataloaders: DataLoader factory for training/evaluation
+- TimeSeriesHandler: time series data handler
+- ModelConfig, TrainingConfig: configuration dataclasses
+
 """
 
 from importlib import import_module
 from typing import TYPE_CHECKING
-
 
 if TYPE_CHECKING:
     from foreblocks.config import ModelConfig, TrainingConfig

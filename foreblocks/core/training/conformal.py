@@ -1,9 +1,16 @@
 """foreblocks.core.training.conformal.
 
-This module implements the conformal pieces for its package.
-It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
-It exposes classes such as DefaultFeatureExtractor, ConformalPredictionEngine.
-"""
+Conformal prediction engine for time-series forecasting uncertainty.
+
+Implements full conformal prediction including Split Conformal, Conformal
+Quantile Regression (CQR), EnBPI, ACI, and adaptive conformal methods. Provides
+pointwise and interval prediction with coverage guarantees. Designed for
+forecasting models where uncertainty quantification is critical.
+
+Core API:
+- DefaultFeatureExtractor: default feature extractor for conformal prediction
+- ConformalPredictionEngine: full conformal prediction engine with multiple methods
+
 
 # conformal.py — Complete State-of-the-Art Conformal Prediction Engine (Corrected v4)
 # =================================================================================
@@ -19,6 +26,8 @@ It exposes classes such as DefaultFeatureExtractor, ConformalPredictionEngine.
 # - ENBPI update can use ensemble (consistent with calibration)
 # - Proper CV+ (Jackknife+) intervals when CV models are provided
 
+"""
+
 from __future__ import annotations
 
 import pickle
@@ -29,7 +38,6 @@ from typing import Literal
 import numpy as np
 import torch
 import torch.nn as nn
-
 
 # ============================================================
 # Helpers

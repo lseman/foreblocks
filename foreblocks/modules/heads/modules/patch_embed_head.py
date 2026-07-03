@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.modules.patch_embed_head.
 
-This module implements the patch embed head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as PatchEmbed, PatchEmbedHead.
+Local patch embedding via depthwise convolution with learned interpolation.
+
+Splits sequential input into patches using strided depthwise Conv1d, projects
+them, then bilinearly interpolates back to the original temporal length. Preserves
+sequence length while introducing local receptive field inductance. Use when you
+want patch-based spatial inductive bias without changing output dimensions.
+
+Core API:
+- PatchEmbed: depthwise conv patching with interpolation back to original length
+- PatchEmbedHead: BaseHead wrapper
+
 """
 
 from __future__ import annotations

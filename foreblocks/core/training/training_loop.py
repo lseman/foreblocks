@@ -1,7 +1,19 @@
-"""Core training loop methods.
+"""foreblocks.core.training.training_loop.
 
-Extracted from the monolithic ``trainer.py``.  Provides the epoch-level
-training, evaluation, forward/backward passes, and NAS alpha steps.
+Core training-loop primitives: forward/backward passes, epoch-level training,
+evaluation, and NAS alpha optimization steps.
+
+Extracted from the monolithic Trainer to enable composability. The forward pass
+handles three model signatures via graceful fallback and distillation-aware models
+with teacher output retrieval. The backward pass supports gradient accumulation
+and AMP with step-level schedulers.
+
+Core API:
+- train_epoch: train for one epoch with optional NAS warmup
+- evaluate: evaluate model on a DataLoader and return mean loss
+- forward_pass: run a forward pass with signature fallback and distillation support
+- backward_step: execute backward pass with gradient accumulation and clipping
+
 """
 
 from __future__ import annotations
@@ -21,10 +33,10 @@ from foreblocks.core.training.batch_io import (
     unpack_batch,
 )
 
-
 # ====================================================================
 # Forward / backward helpers
 # ====================================================================
+
 
 def forward_pass(
     model: nn.Module,
@@ -63,12 +75,19 @@ def forward_pass(
         if distill_info.get("distillation_enabled", False):
             try:
                 result = model(
-                    X, y, time_feat, current_epoch,
-                    return_teacher_outputs=True, meta=meta,
+                    X,
+                    y,
+                    time_feat,
+                    current_epoch,
+                    return_teacher_outputs=True,
+                    meta=meta,
                 )
             except TypeError:
                 result = model(
-                    X, y, time_feat, current_epoch,
+                    X,
+                    y,
+                    time_feat,
+                    current_epoch,
                     return_teacher_outputs=True,
                 )
             if isinstance(result, tuple) and len(result) == 2:
@@ -130,9 +149,7 @@ def backward_step(
         ):
             scaler.unscale_(optimizer)
             if clip_val:
-                nn.utils.clip_grad_norm_(
-                    model.parameters(), clip_val
-                )
+                nn.utils.clip_grad_norm_(model.parameters(), clip_val)
             scaler.step(optimizer)
             scaler.update()
             if scheduler is not None:
@@ -145,9 +162,7 @@ def backward_step(
             or batch_idx + 1 == total_batches
         ):
             if clip_val:
-                nn.utils.clip_grad_norm_(
-                    model.parameters(), clip_val
-                )
+                nn.utils.clip_grad_norm_(model.parameters(), clip_val)
             optimizer.step()
             if scheduler is not None:
                 scheduler.step()
@@ -157,6 +172,7 @@ def backward_step(
 # ====================================================================
 # Epoch-level training & evaluation
 # ====================================================================
+
 
 def train_epoch(
     model: nn.Module,
@@ -189,7 +205,9 @@ def train_epoch(
         config.train_nas
         and nas_helper.has_nas
         and getattr(config, "nas_warmup_epochs", 0) is not None
-        and (val_loader is not None or not getattr(config, "nas_use_val_for_alpha", True))
+        and (
+            val_loader is not None or not getattr(config, "nas_use_val_for_alpha", True)
+        )
     )
 
     if do_nas and getattr(config, "nas_use_val_for_alpha", True):
@@ -225,9 +243,17 @@ def train_epoch(
 
             with amp_context():
                 outputs, aux = forward_pass_fn(
-                    model, X, y, time_feat,
-                    current_epoch, batch_idx, moe_log, moe_meta_builder, graph_kwargs,
-                    amp_context, device,
+                    model,
+                    X,
+                    y,
+                    time_feat,
+                    current_epoch,
+                    batch_idx,
+                    moe_log,
+                    moe_meta_builder,
+                    graph_kwargs,
+                    amp_context,
+                    device,
                 )
                 if y is not None and outputs.ndim == 4 and y.ndim == 3:
                     y = y.unsqueeze(-1)
@@ -236,8 +262,15 @@ def train_epoch(
 
             amp_enabled = getattr(config, "use_amp", False) and device.type == "cuda"
             backward_step_fn(
-                loss, model, config, optimizer, batch_idx, total_batches, scaler,
-                amp_enabled, scheduler=scheduler,
+                loss,
+                model,
+                config,
+                optimizer,
+                batch_idx,
+                total_batches,
+                scaler,
+                amp_enabled,
+                scheduler=scheduler,
             )
             total_loss += float(loss.detach())
             global_step_ref["step"] = global_step_ref.get("step", 0) + 1
@@ -279,9 +312,17 @@ def evaluate(
 
             with amp_context():
                 outputs, _ = forward_pass_fn(
-                    model, X, y, time_feat,
-                    0, batch_idx, moe_log, moe_meta_builder, graph_kwargs,
-                    amp_context, device,
+                    model,
+                    X,
+                    y,
+                    time_feat,
+                    0,
+                    batch_idx,
+                    moe_log,
+                    moe_meta_builder,
+                    graph_kwargs,
+                    amp_context,
+                    device,
                 )
 
                 if y is None:
@@ -299,6 +340,7 @@ def evaluate(
 # ====================================================================
 # NAS alpha-step
 # ====================================================================
+
 
 def _alpha_step(
     dataloader: DataLoader,
@@ -323,7 +365,9 @@ def _alpha_step(
         raise ValueError("[NAS] alpha_optimizer is None.")
 
     total_loss = 0.0
-    alpha_params = list(optimizer.param_groups[0]["params"]) if optimizer.param_groups else []
+    alpha_params = (
+        list(optimizer.param_groups[0]["params"]) if optimizer.param_groups else []
+    )
 
     # Freeze θ, train α
     weight_params = [p for p in model.parameters() if p not in set(alpha_params)]
@@ -353,8 +397,17 @@ def _alpha_step(
             with torch.set_grad_enabled(True):
                 with amp_context():
                     outputs, aux = forward_pass_fn(
-                        model, X, y, time_feat, 0, step, None, None, graph_kwargs,
-                        amp_context, device,
+                        model,
+                        X,
+                        y,
+                        time_feat,
+                        0,
+                        step,
+                        None,
+                        None,
+                        graph_kwargs,
+                        amp_context,
+                        device,
                     )
 
                     if y is None:

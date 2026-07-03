@@ -1,8 +1,16 @@
 """foreblocks.experimental.attention_kernels.src.triton_bwd.
 
-This module implements the triton bwd pieces for its package.
-It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
-It exposes functions such as triton_flash_bwd, can_use_triton_bwd.
+Triton-based flash-attention backward kernel with multiple scheduling strategies.
+
+Implements backward passes for Q, K, V gradients using split-K accumulation
+for unbalanced causal workloads, persistent kernels for large sequences, and a
+combined kernel that fuses dK/dV and dQ computation. Includes Ada GPU config
+selection and fused delta optimization.
+
+Core API:
+- triton_flash_bwd: backward pass via Triton with multiple kernel dispatch strategies
+- can_use_triton_bwd: check whether Triton backward kernel can handle input tensor
+
 """
 
 import os
@@ -999,7 +1007,10 @@ def _bwd_combined_kernel(
             dk + base + offs_n[:, None] * d_head + offs_d[None, :],
             dk_acc.to(dk.dtype.element_ty),
         )
-    tl.store(dv + base + offs_n[:, None] * d_head + offs_d[None, :], dv_acc.to(dv.dtype.element_ty))
+    tl.store(
+        dv + base + offs_n[:, None] * d_head + offs_d[None, :],
+        dv_acc.to(dv.dtype.element_ty),
+    )
 
     mask_block_n2: tl.constexpr = block_n2 // blk_slice_factor
     for dq_offset in range(0, block_n1, block_m2):
@@ -1077,6 +1088,7 @@ def _bwd_combined_kernel(
 # Split-K dK/dV: parallel K/V-tile accumulation for unbalanced causal workloads
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _bwd_dkdv_split_k_inner(
     dk_acc,
@@ -1133,7 +1145,9 @@ def _bwd_dkdv_split_k_inner(
             if needs_m_mask and needs_n_mask:
                 valid = row_mask[:, None] & (offs_n[None, :] < n_ctx)
             elif needs_m_mask:
-                valid = tl.broadcast_to(row_mask[:, None], (split_block_m, offs_n.shape[0]))
+                valid = tl.broadcast_to(
+                    row_mask[:, None], (split_block_m, offs_n.shape[0])
+                )
             elif needs_n_mask:
                 valid = tl.broadcast_to(
                     (offs_n < n_ctx)[None, :], (split_block_m, offs_n.shape[0])
@@ -1187,25 +1201,35 @@ def _bwd_dkdv_split_k_kernel(
     qk_scale = scale * 1.4426950408889634
 
     q_desc = tl.make_tensor_descriptor(
-        base=q + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=q + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[split_block_m, d_head],
     )
     o_desc = tl.make_tensor_descriptor(
-        base=o + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=o + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[split_block_m, d_head],
     )
     do_desc = tl.make_tensor_descriptor(
-        base=do + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=do + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[split_block_m, d_head],
     )
 
     n_mask_needed = ((pid_n + 1) * block_n) > n_ctx
     k_desc = tl.make_tensor_descriptor(
-        base=k + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=k + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_n, d_head],
     )
     v_desc = tl.make_tensor_descriptor(
-        base=v + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=v + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_n, d_head],
     )
     k_tile = k_desc.load([pid_n * block_n, 0])
@@ -1221,58 +1245,152 @@ def _bwd_dkdv_split_k_kernel(
         diag_end = ((k_col_end - 1) // split_block_m + 1) * split_block_m
 
         dk_acc, dv_acc = _bwd_dkdv_split_k_inner(
-            dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-            lse, delta, base, lse_base, offs_n,
-            diag_start, tl.minimum(diag_end, n_ctx),
-            scale, qk_scale, n_ctx, d_head, split_block_m,
-            stage=2, needs_m_mask=True, needs_n_mask=n_mask_needed,
-            fused_delta=fused_delta, prescale_k=prescale_k,
-            n_splits=n_splits, split_id=split_id,
+            dk_acc,
+            dv_acc,
+            k_tile,
+            v_tile,
+            q_desc,
+            o_desc,
+            do_desc,
+            lse,
+            delta,
+            base,
+            lse_base,
+            offs_n,
+            diag_start,
+            tl.minimum(diag_end, n_ctx),
+            scale,
+            qk_scale,
+            n_ctx,
+            d_head,
+            split_block_m,
+            stage=2,
+            needs_m_mask=True,
+            needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
+            prescale_k=prescale_k,
+            n_splits=n_splits,
+            split_id=split_id,
             split_block_m=split_block_m,
         )
         off_interior_end = (n_ctx // split_block_m) * split_block_m
         off_start = tl.maximum(diag_end, 0)
         dk_acc, dv_acc = _bwd_dkdv_split_k_inner(
-            dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-            lse, delta, base, lse_base, offs_n,
+            dk_acc,
+            dv_acc,
+            k_tile,
+            v_tile,
+            q_desc,
+            o_desc,
+            do_desc,
+            lse,
+            delta,
+            base,
+            lse_base,
+            offs_n,
             tl.maximum(off_interior_end, off_start),
             off_interior_end,
-            scale, qk_scale, n_ctx, d_head, split_block_m,
-            stage=1, needs_m_mask=False, needs_n_mask=n_mask_needed,
-            fused_delta=fused_delta, prescale_k=prescale_k,
-            n_splits=n_splits, split_id=split_id,
+            scale,
+            qk_scale,
+            n_ctx,
+            d_head,
+            split_block_m,
+            stage=1,
+            needs_m_mask=False,
+            needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
+            prescale_k=prescale_k,
+            n_splits=n_splits,
+            split_id=split_id,
             split_block_m=split_block_m,
         )
         dk_acc, dv_acc = _bwd_dkdv_split_k_inner(
-            dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-            lse, delta, base, lse_base, offs_n,
-            off_interior_end, n_ctx,
-            scale, qk_scale, n_ctx, d_head, split_block_m,
-            stage=1, needs_m_mask=True, needs_n_mask=n_mask_needed,
-            fused_delta=fused_delta, prescale_k=prescale_k,
-            n_splits=n_splits, split_id=split_id,
+            dk_acc,
+            dv_acc,
+            k_tile,
+            v_tile,
+            q_desc,
+            o_desc,
+            do_desc,
+            lse,
+            delta,
+            base,
+            lse_base,
+            offs_n,
+            off_interior_end,
+            n_ctx,
+            scale,
+            qk_scale,
+            n_ctx,
+            d_head,
+            split_block_m,
+            stage=1,
+            needs_m_mask=True,
+            needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
+            prescale_k=prescale_k,
+            n_splits=n_splits,
+            split_id=split_id,
             split_block_m=split_block_m,
         )
     else:
         interior_end = (n_ctx // split_block_m) * split_block_m
         dk_acc, dv_acc = _bwd_dkdv_split_k_inner(
-            dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-            lse, delta, base, lse_base, offs_n,
-            0, interior_end,
-            scale, qk_scale, n_ctx, d_head, split_block_m,
-            stage=0, needs_m_mask=False, needs_n_mask=n_mask_needed,
-            fused_delta=fused_delta, prescale_k=prescale_k,
-            n_splits=n_splits, split_id=split_id,
+            dk_acc,
+            dv_acc,
+            k_tile,
+            v_tile,
+            q_desc,
+            o_desc,
+            do_desc,
+            lse,
+            delta,
+            base,
+            lse_base,
+            offs_n,
+            0,
+            interior_end,
+            scale,
+            qk_scale,
+            n_ctx,
+            d_head,
+            split_block_m,
+            stage=0,
+            needs_m_mask=False,
+            needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
+            prescale_k=prescale_k,
+            n_splits=n_splits,
+            split_id=split_id,
             split_block_m=split_block_m,
         )
         dk_acc, dv_acc = _bwd_dkdv_split_k_inner(
-            dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-            lse, delta, base, lse_base, offs_n,
-            interior_end, n_ctx,
-            scale, qk_scale, n_ctx, d_head, split_block_m,
-            stage=0, needs_m_mask=True, needs_n_mask=n_mask_needed,
-            fused_delta=fused_delta, prescale_k=prescale_k,
-            n_splits=n_splits, split_id=split_id,
+            dk_acc,
+            dv_acc,
+            k_tile,
+            v_tile,
+            q_desc,
+            o_desc,
+            do_desc,
+            lse,
+            delta,
+            base,
+            lse_base,
+            offs_n,
+            interior_end,
+            n_ctx,
+            scale,
+            qk_scale,
+            n_ctx,
+            d_head,
+            split_block_m,
+            stage=0,
+            needs_m_mask=True,
+            needs_n_mask=n_mask_needed,
+            fused_delta=fused_delta,
+            prescale_k=prescale_k,
+            n_splits=n_splits,
+            split_id=split_id,
             split_block_m=split_block_m,
         )
 
@@ -1299,6 +1417,7 @@ def _bwd_dkdv_split_k_kernel(
 # ---------------------------------------------------------------------------
 # Persistent dK/dV kernel
 # ---------------------------------------------------------------------------
+
 
 @triton.jit
 def _bwd_dkdv_persistent_kernel(
@@ -1331,23 +1450,33 @@ def _bwd_dkdv_persistent_kernel(
     offs_d = tl.arange(0, d_head)
 
     q_desc = tl.make_tensor_descriptor(
-        base=q + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=q + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_m, d_head],
     )
     o_desc = tl.make_tensor_descriptor(
-        base=o + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=o + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_m, d_head],
     )
     do_desc = tl.make_tensor_descriptor(
-        base=do + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=do + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_m, d_head],
     )
     k_desc = tl.make_tensor_descriptor(
-        base=k + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=k + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_n, d_head],
     )
     v_desc = tl.make_tensor_descriptor(
-        base=v + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=v + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_n, d_head],
     )
 
@@ -1367,49 +1496,138 @@ def _bwd_dkdv_persistent_kernel(
             diag_end = ((k_col_end - 1) // block_m + 1) * block_m
 
             dk_acc, dv_acc = _bwd_dkdv_inner(
-                dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-                lse, delta, base, lse_base, offs_n,
-                diag_start, tl.minimum(diag_end, n_ctx),
-                scale, qk_scale, n_ctx, d_head, block_m,
-                stage=2, needs_m_mask=True, needs_n_mask=n_mask_needed,
-                fused_delta=fused_delta, prescale_k=prescale_k,
+                dk_acc,
+                dv_acc,
+                k_tile,
+                v_tile,
+                q_desc,
+                o_desc,
+                do_desc,
+                lse,
+                delta,
+                base,
+                lse_base,
+                offs_n,
+                diag_start,
+                tl.minimum(diag_end, n_ctx),
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_m,
+                stage=2,
+                needs_m_mask=True,
+                needs_n_mask=n_mask_needed,
+                fused_delta=fused_delta,
+                prescale_k=prescale_k,
             )
             off_interior_end = (n_ctx // block_m) * block_m
             off_start = tl.maximum(diag_end, 0)
             dk_acc, dv_acc = _bwd_dkdv_inner(
-                dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-                lse, delta, base, lse_base, offs_n,
+                dk_acc,
+                dv_acc,
+                k_tile,
+                v_tile,
+                q_desc,
+                o_desc,
+                do_desc,
+                lse,
+                delta,
+                base,
+                lse_base,
+                offs_n,
                 tl.maximum(off_interior_end, off_start),
                 off_interior_end,
-                scale, qk_scale, n_ctx, d_head, block_m,
-                stage=1, needs_m_mask=False, needs_n_mask=n_mask_needed,
-                fused_delta=fused_delta, prescale_k=prescale_k,
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_m,
+                stage=1,
+                needs_m_mask=False,
+                needs_n_mask=n_mask_needed,
+                fused_delta=fused_delta,
+                prescale_k=prescale_k,
             )
             dk_acc, dv_acc = _bwd_dkdv_inner(
-                dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-                lse, delta, base, lse_base, offs_n,
-                off_interior_end, n_ctx,
-                scale, qk_scale, n_ctx, d_head, block_m,
-                stage=1, needs_m_mask=True, needs_n_mask=n_mask_needed,
-                fused_delta=fused_delta, prescale_k=prescale_k,
+                dk_acc,
+                dv_acc,
+                k_tile,
+                v_tile,
+                q_desc,
+                o_desc,
+                do_desc,
+                lse,
+                delta,
+                base,
+                lse_base,
+                offs_n,
+                off_interior_end,
+                n_ctx,
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_m,
+                stage=1,
+                needs_m_mask=True,
+                needs_n_mask=n_mask_needed,
+                fused_delta=fused_delta,
+                prescale_k=prescale_k,
             )
         else:
             interior_end = (n_ctx // block_m) * block_m
             dk_acc, dv_acc = _bwd_dkdv_inner(
-                dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-                lse, delta, base, lse_base, offs_n,
-                0, interior_end,
-                scale, qk_scale, n_ctx, d_head, block_m,
-                stage=0, needs_m_mask=False, needs_n_mask=n_mask_needed,
-                fused_delta=fused_delta, prescale_k=prescale_k,
+                dk_acc,
+                dv_acc,
+                k_tile,
+                v_tile,
+                q_desc,
+                o_desc,
+                do_desc,
+                lse,
+                delta,
+                base,
+                lse_base,
+                offs_n,
+                0,
+                interior_end,
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_m,
+                stage=0,
+                needs_m_mask=False,
+                needs_n_mask=n_mask_needed,
+                fused_delta=fused_delta,
+                prescale_k=prescale_k,
             )
             dk_acc, dv_acc = _bwd_dkdv_inner(
-                dk_acc, dv_acc, k_tile, v_tile, q_desc, o_desc, do_desc,
-                lse, delta, base, lse_base, offs_n,
-                interior_end, n_ctx,
-                scale, qk_scale, n_ctx, d_head, block_m,
-                stage=0, needs_m_mask=True, needs_n_mask=n_mask_needed,
-                fused_delta=fused_delta, prescale_k=prescale_k,
+                dk_acc,
+                dv_acc,
+                k_tile,
+                v_tile,
+                q_desc,
+                o_desc,
+                do_desc,
+                lse,
+                delta,
+                base,
+                lse_base,
+                offs_n,
+                interior_end,
+                n_ctx,
+                scale,
+                qk_scale,
+                n_ctx,
+                d_head,
+                block_m,
+                stage=0,
+                needs_m_mask=True,
+                needs_n_mask=n_mask_needed,
+                fused_delta=fused_delta,
+                prescale_k=prescale_k,
             )
 
         out_mask = offs_n[:, None] < n_ctx
@@ -1429,6 +1647,7 @@ def _bwd_dkdv_persistent_kernel(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _is_ada_or_newer(q):
     major, minor = torch.cuda.get_device_capability(q.device)
@@ -1565,9 +1784,7 @@ def _combined_bwd_config(q, n_ctx, d_head, causal, fused_delta):
 
 
 def _use_combined_bwd(q, n_ctx, d_head, causal, fused_delta):
-    return (
-        _combined_bwd_config(q, n_ctx, d_head, causal, fused_delta) is not None
-    )
+    return _combined_bwd_config(q, n_ctx, d_head, causal, fused_delta) is not None
 
 
 def triton_flash_bwd(grad_out, q, k, v, out, lse, causal=False, softmax_scale=None):
@@ -1600,9 +1817,16 @@ def triton_flash_bwd(grad_out, q, k, v, out, lse, causal=False, softmax_scale=No
 
     combined_config = _combined_bwd_config(q, n_ctx, d_head, bool(causal), fused_delta)
     if combined_config is not None:
-        block_m1, block_n1, block_m2, block_n2, slice_factor, warps, stages, prescale_k = (
-            combined_config
-        )
+        (
+            block_m1,
+            block_n1,
+            block_m2,
+            block_n2,
+            slice_factor,
+            warps,
+            stages,
+            prescale_k,
+        ) = combined_config
         _bwd_combined_kernel[(n_ctx // block_n1, bh)](
             q,
             k,
@@ -1628,20 +1852,37 @@ def triton_flash_bwd(grad_out, q, k, v, out, lse, causal=False, softmax_scale=No
         )
         return dq, dk, dv
 
-    dkdv_block_m, dkdv_block_n, dkdv_warps, dkdv_stages, dkdv_prescale_k = _select_bwd_dkdv_config(
-        q, n_ctx, d_head, bool(causal), fused_delta
+    dkdv_block_m, dkdv_block_n, dkdv_warps, dkdv_stages, dkdv_prescale_k = (
+        _select_bwd_dkdv_config(q, n_ctx, d_head, bool(causal), fused_delta)
     )
 
     # Split-K dK/dV: unbalanced causal workloads benefit from parallel Q-tile splits
-    n_splits, split_block_m = _split_k_config(q, n_ctx, d_head, bool(causal), fused_delta)
+    n_splits, split_block_m = _split_k_config(
+        q, n_ctx, d_head, bool(causal), fused_delta
+    )
     if n_splits is not None and n_splits >= 2:
         grid = (triton.cdiv(n_ctx, dkdv_block_n), bh, n_splits)
         _bwd_dkdv_split_k_kernel[grid](
-            q, k, v, out, grad_out, lse, delta, dk, dv,
-            scale, n_ctx, d_head, causal, dkdv_block_n,
-            split_block_m, n_splits,
-            fused_delta, dkdv_prescale_k,
-            num_warps=dkdv_warps, num_stages=dkdv_stages,
+            q,
+            k,
+            v,
+            out,
+            grad_out,
+            lse,
+            delta,
+            dk,
+            dv,
+            scale,
+            n_ctx,
+            d_head,
+            causal,
+            dkdv_block_n,
+            split_block_m,
+            n_splits,
+            fused_delta,
+            dkdv_prescale_k,
+            num_warps=dkdv_warps,
+            num_stages=dkdv_stages,
         )
     # Persistent dK/dV: fills SMs when tile count < 2x SMs
     elif _use_persistent_dkdv(q, n_ctx, d_head, bool(causal)):
@@ -1649,19 +1890,48 @@ def triton_flash_bwd(grad_out, q, k, v, out, lse, causal=False, softmax_scale=No
         n_tiles_n = triton.cdiv(n_ctx, dkdv_block_n)
         n_persistent = min(n_tiles_n, sm_count * 2)
         _bwd_dkdv_persistent_kernel[(n_persistent, bh)](
-            q, k, v, out, grad_out, lse, delta, dk, dv,
-            scale, n_ctx, d_head, causal,
-            dkdv_block_m, dkdv_block_n, n_tiles_n,
-            fused_delta, dkdv_prescale_k,
-            num_warps=dkdv_warps, num_stages=dkdv_stages,
+            q,
+            k,
+            v,
+            out,
+            grad_out,
+            lse,
+            delta,
+            dk,
+            dv,
+            scale,
+            n_ctx,
+            d_head,
+            causal,
+            dkdv_block_m,
+            dkdv_block_n,
+            n_tiles_n,
+            fused_delta,
+            dkdv_prescale_k,
+            num_warps=dkdv_warps,
+            num_stages=dkdv_stages,
         )
     else:
         _bwd_dkdv_kernel[(triton.cdiv(n_ctx, dkdv_block_n), bh)](
-            q, k, v, out, grad_out, lse, delta, dk, dv,
-            scale, n_ctx, d_head, causal,
-            dkdv_block_m, dkdv_block_n,
-            fused_delta, dkdv_prescale_k,
-            num_warps=dkdv_warps, num_stages=dkdv_stages,
+            q,
+            k,
+            v,
+            out,
+            grad_out,
+            lse,
+            delta,
+            dk,
+            dv,
+            scale,
+            n_ctx,
+            d_head,
+            causal,
+            dkdv_block_m,
+            dkdv_block_n,
+            fused_delta,
+            dkdv_prescale_k,
+            num_warps=dkdv_warps,
+            num_stages=dkdv_stages,
         )
 
     dq_block_m, dq_block_n, dq_warps, dq_stages, dq_prescale_k = _select_bwd_dq_config(

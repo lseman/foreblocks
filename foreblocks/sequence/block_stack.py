@@ -1,15 +1,19 @@
-"""Heterogeneous block stack (Nemotron-style backbone).
+"""foreblocks.sequence.block_stack.
 
-Stacks a flat sequence of block types — e.g. ``["mamba2", "attn", "moe"]`` —
-each as a pre-norm residual sub-block. Unlike :class:`HybridMamba2Block`
-(which fuses an SSM and attention *in parallel* inside one block), this stacks
-heterogeneous block *types sequentially*, the pattern used by models such as
-NVIDIA Nemotron.
+Heterogeneous block stacking with Nemotron-style sequential composition.
 
-Designed to be passed to :class:`~foreblocks.core.model.ForecastingModel` as the
-``encoder`` backbone with ``model_type="hybrid_mamba"``. MoE auxiliary losses are
-accumulated into ``self.aux_loss`` so the existing aux aggregation in
-``ForecastingModel._aggregate_aux_loss`` picks them up automatically.
+Stacks a flat sequence of block types (e.g. mamba2, attn, moe) as pre-norm
+residual sub-blocks. Unlike HybridMamba2Block which fuses SSM and attention
+in parallel inside one block, this composes heterogeneous block types
+sequentially — the pattern used by models like NVIDIA Nemotron.
+Designed to be passed to ForecastingModel as the encoder backbone with
+``model_type="hybrid_mamba"``. MoE auxiliary losses accumulate into
+``self.aux_loss`` for automatic aggregation.
+
+Core API:
+- BlockStack: sequential stack of heterogeneous block types
+- BLOCK_TYPES: allowed block type names
+
 """
 
 from __future__ import annotations
@@ -21,7 +25,6 @@ from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.moe.ff import FeedForwardBlock
 from foreblocks.sequence.mamba.mamba2 import Mamba2Block
 from foreblocks.sequence.mamba.mamba3 import Mamba3Block
-
 
 BLOCK_TYPES = ("mamba2", "mamba3", "attn", "moe")
 
@@ -134,12 +137,14 @@ class BlockStack(nn.Module):
         if kind == "attn":
             return MultiAttention(d_model=d_model, **{"n_heads": 8, **attn_kwargs})
         # moe: FeedForwardBlock needs dim_ff and use_moe=True to actually route.
-        return FeedForwardBlock(**{
-            "d_model": d_model,
-            "dim_ff": 4 * d_model,
-            "use_moe": True,
-            **moe_kwargs,
-        })
+        return FeedForwardBlock(
+            **{
+                "d_model": d_model,
+                "dim_ff": 4 * d_model,
+                "use_moe": True,
+                **moe_kwargs,
+            }
+        )
 
     def forward(
         self,

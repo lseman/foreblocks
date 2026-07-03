@@ -1,8 +1,16 @@
 """foreblocks.anomaly.models.base.
 
-This module implements the base pieces for its package.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as VAEForward, ForeblocksEncoderStack.
+Base classes and utilities for anomaly detection models.
+
+Provides the VAEForward dataclass for VAE outputs and the ForeblocksEncoderStack
+for transformer encoder layers. Includes the choose_heads helper for determining
+optimal attention head counts based on model dimension.
+
+Core API:
+- VAEForward: dataclass for VAE forward outputs (reconstruction, mu, logvar)
+- ForeblocksEncoderStack: transformer encoder layer stack
+- choose_heads: helper to determine optimal attention head count
+
 """
 
 from __future__ import annotations

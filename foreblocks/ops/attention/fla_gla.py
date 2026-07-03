@@ -1,8 +1,17 @@
 """foreblocks.ops.attention.fla_gla.
 
-This module implements the fla gla pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as can_use_fla_gla, fla_gla_forward.
+Wrap upstream FLA gated-linear attention kernels with Foreblocks tensor layout.
+
+FLA provides chunk-based and recurrent gated-linear attention (GLA) implementations.
+This module bridges FLA's internal `[B, T, H, D]` layout to Foreblocks' `[B, H, T, D]`
+convention, exposing runtime availability checks and a single entry point that
+selects the mode (chunk vs recurrent). Use when you need FLA-backed GLA inside a
+Foreblocks model without manual tensor transposes.
+
+Core API:
+- can_use_fla_gla: runtime capability check (FLA installed, CUDA, shape/dtype valid)
+- fla_gla_forward: chunk or recurrent GLA with Foreblocks [B, H, T, D] layout
+
 """
 
 import os
@@ -33,7 +42,9 @@ def can_use_fla_gla(
         return False
     if initial_state.shape != q.shape[:2] + (q.shape[-1], v.shape[-1]):
         return False
-    if not (q.is_cuda and k.is_cuda and v.is_cuda and g.is_cuda and initial_state.is_cuda):
+    if not (
+        q.is_cuda and k.is_cuda and v.is_cuda and g.is_cuda and initial_state.is_cuda
+    ):
         return False
     return True
 
@@ -48,7 +59,17 @@ def fla_gla_forward(
     scale: float,
     mode: str = "chunk",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run upstream FLA GLA with Foreblocks [B, H, T, D] layout."""
+    """Run upstream FLA GLA with Foreblocks [B, H, T, D] layout.
+
+    Args:
+        q, k, v, g: query, key, value, and gate tensors [B, H, T, D].
+        initial_state: per-head state tensor [B, H, D, D].
+        scale: attention scale factor.
+        mode: "chunk" (default) or "recurrent".
+
+    Returns:
+        (output, final_state): both [B, H, T, D] and [B, H, D, D].
+    """
     if not can_use_fla_gla(q, k, v, g, initial_state):
         raise RuntimeError("FLA GLA is not available for these tensors")
     q_fla = q.transpose(1, 2).contiguous()

@@ -1,8 +1,15 @@
 """foreblocks.anomaly.models.forecasting.
 
-This module defines forecasting model wrappers and utilities.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as TransformerForecaster.
+Forecasting-based anomaly detection using transformer prediction error.
+
+Models predict the final step of a time series window given prior timesteps.
+Anomaly is detected by high prediction error — windows that are difficult to forecast
+are anomalous. Use when anomalies manifest as unusual patterns that deviate from
+learned temporal dynamics, complementing reconstruction-based methods.
+
+Core API:
+- TransformerForecaster: transformer forecaster for anomaly scoring
+
 """
 
 from __future__ import annotations

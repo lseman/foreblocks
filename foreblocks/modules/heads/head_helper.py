@@ -1,8 +1,17 @@
 """foreblocks.modules.heads.head_helper.
 
-This module implements the head helper pieces for its package.
-It belongs to the forecasting head composition and projection modules area of Foreblocks.
-It exposes classes such as HeadComposer.
+Composable forecasting head pipeline with serial, parallel, and hybrid staging.
+
+HeadComposer chains multiple heads through serial (sequential transformation),
+parallel (feature augmentation), or hybrid (parallel-augment then serial) modes.
+Supports alpha-weighted mixing (NAS-compatible), Lora residual adapters,
+MOE routing, and attention-based branch fusion. Inversion and carry-projection
+are available for reversible head chains. Use to compose preprocessing, feature
+extraction, and projection heads into a single trainable module.
+
+Core API:
+- HeadComposer: serial/parallel/hybrid head composition with alpha mixing
+
 """
 
 from __future__ import annotations

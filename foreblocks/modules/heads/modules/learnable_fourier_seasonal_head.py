@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.modules.learnable_fourier_seasonal_head.
 
-This module implements the learnable fourier seasonal head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as LearnableFourierSeasonal, LearnableFourierSeasonalHead.
+Learnable per-channel seasonal decomposition via Fourier bases.
+
+Projects input into a seasonal component (learnable linear combination of
+sin/cos bases up to K frequencies) and a remainder main component. Use when
+you need a parameterized, data-driven seasonal extractor that adapts during
+training rather than relying on fixed sinusoidal bases.
+
+Core API:
+- LearnableFourierSeasonal: learnable seasonal via sin/cos Fourier bases
+- LearnableFourierSeasonalHead: BaseHead wrapper returning (main, seasonal)
+
 """
 
 from __future__ import annotations

@@ -1,8 +1,17 @@
 """foreblocks.experimental.attention_kernels.src.triton_fwd.
 
-This module implements the triton fwd pieces for its package.
-It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
-It exposes functions such as triton_flash_fwd, can_use_triton_fwd, triton_flash_decode, can_use_triton_decode.
+Triton-based flash-attention forward and decode kernels.
+
+Implements FA2-style block-sliced forward with fused softmax, persistent kernels
+for large sequences, and flash-decoding for single-token generation with KV cache.
+Supports fp16/bf16, causal/non-causal, and head dims 16/32/64/128.
+
+Core API:
+- triton_flash_fwd: flash attention forward with FA2-style block slicing and fused softmax
+- triton_flash_decode: decode-only attention for single-token generation with KV cache
+- can_use_triton_fwd: check whether Triton forward kernel can handle input tensor
+- can_use_triton_decode: check whether Triton decode kernel can handle input tensor
+
 """
 
 import torch
@@ -112,30 +121,69 @@ def _flash_fwd_kernel(
         off_end = (start_m // block_n) * block_n
         if off_end > 0:
             acc, l_i, m_i = _attn_fwd_inner(
-                acc, l_i, m_i, q_tile, k_desc, v_desc,
-                offs_m, 0, off_end, n_ctx, block_n,
-                stage=1, needs_n_mask=False,
+                acc,
+                l_i,
+                m_i,
+                q_tile,
+                k_desc,
+                v_desc,
+                offs_m,
+                0,
+                off_end,
+                n_ctx,
+                block_n,
+                stage=1,
+                needs_n_mask=False,
             )
 
         acc, l_i, m_i = _attn_fwd_inner(
-            acc, l_i, m_i, q_tile, k_desc, v_desc,
-            offs_m, off_end,
+            acc,
+            l_i,
+            m_i,
+            q_tile,
+            k_desc,
+            v_desc,
+            offs_m,
+            off_end,
             tl.minimum(n_ctx, (pid_m + 1) * block_m),
-            n_ctx, block_n, stage=2, needs_n_mask=True,
+            n_ctx,
+            block_n,
+            stage=2,
+            needs_n_mask=True,
         )
     else:
         interior_end = (n_ctx // block_n) * block_n
         if interior_end > 0:
             acc, l_i, m_i = _attn_fwd_inner(
-                acc, l_i, m_i, q_tile, k_desc, v_desc,
-                offs_m, 0, interior_end, n_ctx, block_n,
-                stage=0, needs_n_mask=False,
+                acc,
+                l_i,
+                m_i,
+                q_tile,
+                k_desc,
+                v_desc,
+                offs_m,
+                0,
+                interior_end,
+                n_ctx,
+                block_n,
+                stage=0,
+                needs_n_mask=False,
             )
         if interior_end < n_ctx:
             acc, l_i, m_i = _attn_fwd_inner(
-                acc, l_i, m_i, q_tile, k_desc, v_desc,
-                offs_m, interior_end, n_ctx, n_ctx,
-                block_n, stage=0, needs_n_mask=True,
+                acc,
+                l_i,
+                m_i,
+                q_tile,
+                k_desc,
+                v_desc,
+                offs_m,
+                interior_end,
+                n_ctx,
+                n_ctx,
+                block_n,
+                stage=0,
+                needs_n_mask=True,
             )
 
     acc = acc / l_i[:, None]
@@ -176,19 +224,27 @@ def _flash_fwd_persistent_kernel(
     lse_base = pid_bh * n_ctx
 
     q_desc = tl.make_tensor_descriptor(
-        base=q + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=q + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_m, d_head],
     )
     k_desc = tl.make_tensor_descriptor(
-        base=k + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=k + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_n, d_head],
     )
     v_desc = tl.make_tensor_descriptor(
-        base=v + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=v + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_n, d_head],
     )
     out_desc = tl.make_tensor_descriptor(
-        base=out + base, shape=[n_ctx, d_head], strides=[d_head, 1],
+        base=out + base,
+        shape=[n_ctx, d_head],
+        strides=[d_head, 1],
         block_shape=[block_m, d_head],
     )
 
@@ -205,29 +261,68 @@ def _flash_fwd_persistent_kernel(
             off_end = (start_m // block_n) * block_n
             if off_end > 0:
                 acc, l_i, m_i = _attn_fwd_inner(
-                    acc, l_i, m_i, q_tile, k_desc, v_desc,
-                    offs_m, 0, off_end, n_ctx, block_n,
-                    stage=1, needs_n_mask=False,
+                    acc,
+                    l_i,
+                    m_i,
+                    q_tile,
+                    k_desc,
+                    v_desc,
+                    offs_m,
+                    0,
+                    off_end,
+                    n_ctx,
+                    block_n,
+                    stage=1,
+                    needs_n_mask=False,
                 )
             acc, l_i, m_i = _attn_fwd_inner(
-                acc, l_i, m_i, q_tile, k_desc, v_desc,
-                offs_m, off_end,
+                acc,
+                l_i,
+                m_i,
+                q_tile,
+                k_desc,
+                v_desc,
+                offs_m,
+                off_end,
                 tl.minimum(n_ctx, (tile_m + 1) * block_m),
-                n_ctx, block_n, stage=2, needs_n_mask=True,
+                n_ctx,
+                block_n,
+                stage=2,
+                needs_n_mask=True,
             )
         else:
             interior_end = (n_ctx // block_n) * block_n
             if interior_end > 0:
                 acc, l_i, m_i = _attn_fwd_inner(
-                    acc, l_i, m_i, q_tile, k_desc, v_desc,
-                    offs_m, 0, interior_end, n_ctx, block_n,
-                    stage=0, needs_n_mask=False,
+                    acc,
+                    l_i,
+                    m_i,
+                    q_tile,
+                    k_desc,
+                    v_desc,
+                    offs_m,
+                    0,
+                    interior_end,
+                    n_ctx,
+                    block_n,
+                    stage=0,
+                    needs_n_mask=False,
                 )
             if interior_end < n_ctx:
                 acc, l_i, m_i = _attn_fwd_inner(
-                    acc, l_i, m_i, q_tile, k_desc, v_desc,
-                    offs_m, interior_end, n_ctx, n_ctx,
-                    block_n, stage=0, needs_n_mask=True,
+                    acc,
+                    l_i,
+                    m_i,
+                    q_tile,
+                    k_desc,
+                    v_desc,
+                    offs_m,
+                    interior_end,
+                    n_ctx,
+                    n_ctx,
+                    block_n,
+                    stage=0,
+                    needs_n_mask=True,
                 )
 
         acc = acc / l_i[:, None]
@@ -264,16 +359,37 @@ def triton_flash_fwd(q, k, v, causal=False, softmax_scale=None, dropout_p=0.0):
         n_persistent = min(sm_count * 2, max(n_tiles, 64))
         grid = (n_persistent, bh)
         _flash_fwd_persistent_kernel[grid](
-            q, k, v, out, lse, scale, n_ctx, d_head, causal,
-            block_m, block_n, n_tiles,
-            num_warps=num_warps, num_stages=num_stages,
+            q,
+            k,
+            v,
+            out,
+            lse,
+            scale,
+            n_ctx,
+            d_head,
+            causal,
+            block_m,
+            block_n,
+            n_tiles,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
     else:
         grid = (n_tiles, bh)
         _flash_fwd_kernel[grid](
-            q, k, v, out, lse, scale, n_ctx, d_head, causal,
-            block_m, block_n,
-            num_warps=num_warps, num_stages=num_stages,
+            q,
+            k,
+            v,
+            out,
+            lse,
+            scale,
+            n_ctx,
+            d_head,
+            causal,
+            block_m,
+            block_n,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
     # Apply FA2-style dropout in Python (after online softmax)
     # The LSE does not account for dropout scaling (expected behavior)
@@ -356,13 +472,13 @@ def can_use_triton_fwd(q):
 
 @triton.jit
 def _flash_decode_split_kernel(
-    q,             # [BH, D]
-    k_cache,       # [BH, S, D]
-    v_cache,       # [BH, S, D]
-    seqlens,       # [BH] int32
-    part_o,        # [BH, n_splits, D] fp32
-    part_m,        # [BH, n_splits] fp32 (running max)
-    part_l,        # [BH, n_splits] fp32 (running sum)
+    q,  # [BH, D]
+    k_cache,  # [BH, S, D]
+    v_cache,  # [BH, S, D]
+    seqlens,  # [BH] int32
+    part_o,  # [BH, n_splits, D] fp32
+    part_m,  # [BH, n_splits] fp32 (running max)
+    part_l,  # [BH, n_splits] fp32 (running sum)
     scale: tl.constexpr,
     max_seqlen: tl.constexpr,
     d_head: tl.constexpr,
@@ -396,7 +512,8 @@ def _flash_decode_split_kernel(
         # [block_n, D]
         k = tl.load(
             k_cache + kv_base + cols[:, None] * d_head + offs_d[None, :],
-            mask=col_mask[:, None], other=0.0,
+            mask=col_mask[:, None],
+            other=0.0,
         ).to(tl.float32)
         # [block_n] scores for the single query row
         qk = tl.sum(q_tile[None, :] * k, axis=1)
@@ -408,7 +525,8 @@ def _flash_decode_split_kernel(
         l_i = l_i * alpha + tl.sum(p, axis=0)
         v = tl.load(
             v_cache + kv_base + cols[:, None] * d_head + offs_d[None, :],
-            mask=col_mask[:, None], other=0.0,
+            mask=col_mask[:, None],
+            other=0.0,
         ).to(tl.float32)
         acc = acc * alpha + tl.sum(p[:, None] * v, axis=0)
         m_i = m_new
@@ -422,11 +540,11 @@ def _flash_decode_split_kernel(
 
 @triton.jit
 def _flash_decode_reduce_kernel(
-    part_o,        # [BH, n_splits, D] fp32
-    part_m,        # [BH, n_splits] fp32 (log2-domain max)
-    part_l,        # [BH, n_splits] fp32
-    out,           # [BH, D] (q dtype)
-    lse,           # [BH] fp32 (natural-log)
+    part_o,  # [BH, n_splits, D] fp32
+    part_m,  # [BH, n_splits] fp32 (log2-domain max)
+    part_l,  # [BH, n_splits] fp32
+    out,  # [BH, D] (q dtype)
+    lse,  # [BH] fp32 (natural-log)
     d_head: tl.constexpr,
     n_splits: tl.constexpr,
 ):
@@ -435,16 +553,18 @@ def _flash_decode_reduce_kernel(
     offs_d = tl.arange(0, d_head)
     offs_s = tl.arange(0, n_splits)
 
-    m = tl.load(part_m + pid_bh * n_splits + offs_s)        # [n_splits]
-    l = tl.load(part_l + pid_bh * n_splits + offs_s)        # [n_splits]
+    m = tl.load(part_m + pid_bh * n_splits + offs_s)  # [n_splits]
+    l = tl.load(part_l + pid_bh * n_splits + offs_s)  # [n_splits]
     m_global = tl.max(m, axis=0)
     # Rescale each split's (l, o) into the global max frame.
-    r = tl.math.exp2(m - m_global)                          # [n_splits]
+    r = tl.math.exp2(m - m_global)  # [n_splits]
     r = tl.where(l > 0.0, r, 0.0)
     l_global = tl.sum(l * r, axis=0)
 
-    o_parts = tl.load(part_o + (pid_bh * n_splits + offs_s)[:, None] * d_head + offs_d[None, :])
-    acc = tl.sum(o_parts * r[:, None], axis=0)              # [D]
+    o_parts = tl.load(
+        part_o + (pid_bh * n_splits + offs_s)[:, None] * d_head + offs_d[None, :]
+    )
+    acc = tl.sum(o_parts * r[:, None], axis=0)  # [D]
     acc = acc / l_global
 
     tl.store(out + pid_bh * d_head + offs_d, acc.to(out.dtype.element_ty))
@@ -498,17 +618,34 @@ def triton_flash_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
     part_l = torch.empty((bh, n_splits), device=q.device, dtype=torch.float32)
 
     _flash_decode_split_kernel[(bh, n_splits)](
-        q2, k_cache, v_cache, seqlens_i, part_o, part_m, part_l,
-        scale, max_seqlen, d_head, n_splits, block_n,
-        num_warps=4, num_stages=2,
+        q2,
+        k_cache,
+        v_cache,
+        seqlens_i,
+        part_o,
+        part_m,
+        part_l,
+        scale,
+        max_seqlen,
+        d_head,
+        n_splits,
+        block_n,
+        num_warps=4,
+        num_stages=2,
     )
 
     out = torch.empty((bh, d_head), device=q.device, dtype=q.dtype)
     lse = torch.empty(bh, device=q.device, dtype=torch.float32)
     _flash_decode_reduce_kernel[(bh,)](
-        part_o, part_m, part_l, out, lse,
-        d_head, n_splits,
-        num_warps=4, num_stages=2,
+        part_o,
+        part_m,
+        part_l,
+        out,
+        lse,
+        d_head,
+        n_splits,
+        num_warps=4,
+        num_stages=2,
     )
     return out.reshape(B, H, 1, d_head), lse
 

@@ -1,8 +1,16 @@
 """foreblocks.modules.attention.multi_att.
 
-This module implements the multi att pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes classes such as MultiAttention.
+Multi-backend attention with GQA/MQA, RoPE, and optional paged KV cache.
+
+Unified attention module supporting standard, ProbSparse, sliding-window,
+softpick, frequency/DWT/AutoCor, NSA, and MoBA attention types, with
+FlashAttention/xFormers/SDPA backends and paged KV cache for causal decode.
+Use as the primary attention module in transformer layers.
+
+Core API:
+- MultiAttention: multi-backend attention with GQA/MQA and paged cache
+- _get_available_backends: detect FlashAttn, xFormers, SDPA, SoftPick availability
+
 """
 
 import torch
@@ -227,9 +235,10 @@ class MultiAttention(nn.Module):
 
         # ── QK Normalization ───────────────────────────────────────────────
         self.qk_norm = bool(qk_norm)
-        assert qk_norm_type in {"rms", "l2"}, (
-            f"qk_norm_type must be 'rms' or 'l2', got {qk_norm_type}"
-        )
+        assert qk_norm_type in {
+            "rms",
+            "l2",
+        }, f"qk_norm_type must be 'rms' or 'l2', got {qk_norm_type}"
         self.qk_norm_type = qk_norm_type
         if self.qk_norm and self.qk_norm_type == "rms":
             self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
@@ -668,28 +677,24 @@ class MultiAttention(nn.Module):
                 raise RuntimeError("MLA projections are not initialized.")
             kv_latent = self.kv_down_proj(key)  # [B, T_k, L]
             k = (
-                self
-                .k_up_proj(kv_latent)
+                self.k_up_proj(kv_latent)
                 .view(B, T_k, self.n_kv_heads, self.head_dim)
                 .transpose(1, 2)
             )
             v = (
-                self
-                .v_up_proj(kv_latent)
+                self.v_up_proj(kv_latent)
                 .view(B, T_k, self.n_kv_heads, self.head_dim)
                 .transpose(1, 2)
             )
             return q, k, v, kv_latent
 
         k = (
-            self
-            .k_proj(key)
+            self.k_proj(key)
             .view(B, T_k, self.n_kv_heads, self.head_dim)
             .transpose(1, 2)
         )
         v = (
-            self
-            .v_proj(value)
+            self.v_proj(value)
             .view(B, T_k, self.n_kv_heads, self.head_dim)
             .transpose(1, 2)
         )
@@ -857,9 +862,10 @@ class MultiAttention(nn.Module):
         )
 
         # Back to [B, H, T, D]
-        return q_bt_hd.transpose(1, 2).contiguous(), k_bt_hd.transpose(
-            1, 2
-        ).contiguous()
+        return (
+            q_bt_hd.transpose(1, 2).contiguous(),
+            k_bt_hd.transpose(1, 2).contiguous(),
+        )
 
     def _create_sliding_window_mask(
         self,

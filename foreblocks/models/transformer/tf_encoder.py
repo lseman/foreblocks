@@ -1,8 +1,16 @@
 """foreblocks.models.transformer.tf_encoder.
 
-This module implements the tf encoder pieces for its package.
-It belongs to the modular transformer layers and helpers area of Foreblocks.
-It exposes classes such as TransformerEncoderLayer, TransformerEncoder.
+Transformer encoder with lazy multi-backend attention and mixture-of-depths routing.
+
+Implements TransformerEncoderLayer with lazy attention module instantiation
+(~22M fewer dead params per 12-layer model) supporting standard, linear, Kimi,
+GLA, DeltaNet, GatedDeltaNet, and SyPE backends. Includes CT-PatchTST
+alternative tokenization and Mixture-of-Depths layer routing.
+
+Core API:
+- TransformerEncoderLayer: encoder layer with lazy attention backends
+- TransformerEncoder: full encoder with patching, time encoding, and MoD routing
+
 """
 
 from __future__ import annotations

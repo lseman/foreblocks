@@ -1,7 +1,16 @@
 """foreblocks.ops.kernels.kernels.
 
-This module implements the kernels pieces for its package.
-It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+Backward-compatibility shim: re-exports from per-kernel modules.
+
+All kernel implementations have been split into dedicated modules
+(grouped_gemm, swiglu, etc.). This file re-exports the public symbols so that
+code importing `foreblocks.ops.kernels.kernels` continues to work unchanged.
+
+Core API (re-exports):
+- grouped_mm_varM / _GroupedMMVarMFunction / _split_by_offsets: grouped GEMM with variable M
+- swiglu_gate / TritonSwiGLUGate / grouped_mlp_swiglu: SwiGLU gate and grouped MLP
+- HAS_TRITON / TRITON_AVAILABLE: Triton availability flags
+
 """
 
 # kernels.py - backward-compatibility shim

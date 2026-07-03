@@ -1,34 +1,22 @@
-# -*- coding: utf-8 -*-
 """foreblocks.models.transformer.tf_base.
 
-This module implements the tf base pieces for its package.
-It belongs to the modular transformer layers and helpers area of Foreblocks.
-It exposes classes such as NormWrapper, ResidualRunCfg, ResidualBlockMixin, MHCBlockMixin.
-"""
+Base classes and residual plumbing for modular transformer encoder/decoder.
 
-# Transformer with Toggleable GateSkip + Hybrid Attention (+ PatchTST-style OPTIONAL patching)
-# Adds: Kimi linear attention as a selectable option:
-#   attention_mode in {"standard","linear","hybrid","kimi","hybrid_kimi","kimi_3to1"}
-#
-# NEW: Optional PatchTST-style patching
-#   - Best default for encoder-decoder forecasting: PATCH ENCODER ONLY.
-#   - Encoder: [B,T,D] -> [B,Np,D] (patch tokens) and returns memory tokens (NO unpatch in encoder).
-#   - Decoder (default): stays timestep-level [B,T,D], cross-attends to patch-memory [B,Np,D].
-#   - Optionally you can patch decoder too (non-incremental only), then unpatch at the end.
-#
-# NEW: Optional mHC (manifold-constrained Hyper-Connections)
-#   - Maintains N parallel residual streams internally: [B, N, T, D]
-#   - Each residual block dynamically reads from the stream, applies the sublayer once,
-#     then writes the update back with Sinkhorn-constrained stream mixing.
-#   - Collapses streams back to [B, T, D] at output for backward compatibility.
-#   - For simplicity and safety, GateSkip remains applied on the collapsed stream only.
-#   - Decoder mHC: disabled for incremental_state (KV-cached decoding).
-#
-# NEW: Mixture-of-Depths (MoD) / Dynamic Layer Skipping
-#   - MoDRouter predicts a scalar router score per token.
-#   - MoDBudgetScheduler provides per-layer routed capacity as a keep-rate.
-#   - The top-k routed tokens are packed, processed by the block, then scattered
-#     back with a residual bypass for the rest.
+Implements NormWrapper, ResidualBlockMixin, and MHCBlockMixin that eliminate
+repetitive code across encoder and decoder layers. Provides support for
+pre/post/sandwich normalization, GateSkip residual gating, manifold-constrained
+hyper-connections (mHC), Mixture-of-Depths routing, and attention residual
+tracking. Includes PatchTST-style patching and lazy attention backends.
+
+Core API:
+- NormWrapper: norm+dropout holder for pre/post/sandwich strategies
+- ResidualBlockMixin: shared residual logic for non-mHC blocks
+- MHCBlockMixin: shared stream-wise mHC block logic
+- BaseTransformerLayer: base layer with FFN/MoE and aux_loss
+- BaseTransformer: abstract encoder/decoder base with embedding, layer building
+- ResidualRunCfg: frozen config for residual computation
+
+"""
 
 from __future__ import annotations
 
@@ -54,7 +42,6 @@ from foreblocks.models.transformer.mhc import (
     mhc_init_streams,
 )
 from foreblocks.models.transformer.patching import (
-    PatchDetokenizer,
     PatchTokenizer,
     patchify_padding_mask,
 )
@@ -1028,7 +1015,6 @@ class BaseTransformer(nn.Module, ABC):
         self.patcher = PatchTokenizer(
             self.d_model, self.patch_len, self.patch_stride, pad_end=self.patch_pad_end
         )
-
 
         self.input_adapter = nn.Linear(input_size, self.d_model)
         # Only instantiate input-level positional encoding when pos_encoding_type

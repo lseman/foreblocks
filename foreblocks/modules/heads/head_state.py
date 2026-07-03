@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.head_state.
 
-This module implements the head state pieces for its package.
-It belongs to the forecasting head composition and projection modules area of Foreblocks.
-It exposes classes such as HeadStateManager.
+Per-head mutable state management for NAS alpha mixing and enable/disable masks.
+
+HeadStateManager centralizes alpha parameters (soft/gumbel/gate/off), hardened
+architecture decisions, and per-head enable/disable toggles with context-manager
+APIs for temporary modification. Supports discretization (hardening) and alpha
+reporting for monitoring. Use to control head participation in composed pipelines
+without rebuilding the module graph.
+
+Core API:
+- HeadStateManager: central alpha, enable/disable, and discretization state
+
 """
 
 from __future__ import annotations

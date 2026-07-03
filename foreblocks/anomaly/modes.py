@@ -1,8 +1,20 @@
 """foreblocks.anomaly.modes.
 
-This module implements the modes pieces for its package.
-It belongs to the anomaly detection and reconstruction workflows area of Foreblocks.
-It exposes classes such as AnomalyDecisionResult, AnomalyBlockSpec, AnomalyBlock, VotingConfig.
+Anomaly detection modes and composable block composition.
+
+Defines anomaly detection modes (reconstruction, forecasting, representation, hybrid,
+patch_mamba, i_transformer) and the AnomalyBlock protocol for modular block composition.
+Provides AnomalyBlockStack to train and combine multiple detection blocks with voting
+strategies (majority, weighted, all, any).
+
+Core API:
+- AnomalyBlock: protocol for composable anomaly-detection blocks
+- AnomalyBlockStack: compose multiple anomaly-detection blocks and combine decisions
+- AnomalyDecisionResult: result from anomaly detection with per-block scores and voting
+- AnomalyBlockSpec: declaration of one anomaly-detection block in a stack
+- ReconstructionMode, ForecastingMode, RepresentationMode, HybridMode, PatchMambaMode, iTransformerMode: detection mode implementations
+- resolve_mode, resolve_block, list_blocks, register_block: block registry utilities
+
 """
 
 from __future__ import annotations
@@ -15,17 +27,17 @@ import torch
 import torch.nn.functional as F
 
 from foreblocks.anomaly.models import (
-    AnomalyTransformer,
-    ContrastiveTransformerEncoder,
     DAGMM,
     MLPVAE,
+    AnomalyTransformer,
+    ContrastiveTransformerEncoder,
     OmniAnomaly,
     PatchMamba,
     TranAD,
     TransformerForecaster,
     TransformerVAE,
-    iTransformer,
     association_discrepancy,
+    iTransformer,
 )
 
 # ── AnomalyBlock protocol (foreblocks-style composable block) ──
@@ -290,9 +302,9 @@ class AnomalyBlockStack:
             scores=combined_scores,
             labels=final_labels,
             threshold=0.0,
-            window_scores=np.block(block_scores).T
-            if block_scores
-            else np.empty((0, 0)),
+            window_scores=(
+                np.block(block_scores).T if block_scores else np.empty((0, 0))
+            ),
             block_scores={
                 name: scores
                 for name, (_, scores) in zip(
@@ -697,14 +709,14 @@ class PatchMambaMode:
             n_features=n_features,
             window_size=config.window_size,
             patch_size=config.get("patch_size", 4) if hasattr(config, "get") else 4,
-            d_model=config.get("d_model", 128)
-            if hasattr(config, "get")
-            else config.d_model,
+            d_model=(
+                config.get("d_model", 128) if hasattr(config, "get") else config.d_model
+            ),
             n_layers=config.get("n_layers", 4) if hasattr(config, "get") else 4,
             d_state=config.get("d_state", 16) if hasattr(config, "get") else 16,
-            dropout=config.get("dropout", 0.1)
-            if hasattr(config, "get")
-            else config.dropout,
+            dropout=(
+                config.get("dropout", 0.1) if hasattr(config, "get") else config.dropout
+            ),
         )
 
     def loss(
@@ -732,17 +744,17 @@ class iTransformerMode:
         return iTransformer(
             n_features=n_features,
             window_size=config.window_size,
-            d_model=config.get("d_model", 128)
-            if hasattr(config, "get")
-            else config.d_model,
+            d_model=(
+                config.get("d_model", 128) if hasattr(config, "get") else config.d_model
+            ),
             n_heads=config.get("n_heads") if hasattr(config, "get") else None,
             n_layers=config.get("n_layers", 2) if hasattr(config, "get") else 2,
-            dim_feedforward=config.get("dim_feedforward")
-            if hasattr(config, "get")
-            else None,
-            dropout=config.get("dropout", 0.1)
-            if hasattr(config, "get")
-            else config.dropout,
+            dim_feedforward=(
+                config.get("dim_feedforward") if hasattr(config, "get") else None
+            ),
+            dropout=(
+                config.get("dropout", 0.1) if hasattr(config, "get") else config.dropout
+            ),
         )
 
     def loss(

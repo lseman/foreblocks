@@ -1,8 +1,17 @@
 """foreblocks.modules.moe.experts.dispatchers.
 
-This module implements the dispatchers pieces for its package.
-It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
-It exposes classes such as DroplessPackedDispatcher, ExpertChoiceDispatcher.
+Token packing and scatter for Mixture-of-Experts routing.
+
+Packs token-to-expert assignments by expert index with optional capacity pruning,
+and provides scatter-back for accumulating expert outputs. Supports both token-choice
+(every token picks top-K experts) and expert-choice (every expert picks top tokens)
+routing modes with hard or soft capacity limits. Use when building custom MoE layers
+that need vectorized packing without dropping tokens.
+
+Core API:
+- DroplessPackedDispatcher: token-choice dispatcher with capacity pruning
+- ExpertChoiceDispatcher: expert-choice dispatcher with per-expert token selection
+
 """
 
 from __future__ import annotations
@@ -115,7 +124,9 @@ class DroplessPackedDispatcher:
         # Capacity calculation: hard vs soft (elastic) mode
         if soft_capacity and expert_usage is not None:
             # Qwen2.5-MoE style soft capacity: scale per expert by utilization
-            total_capacity = math.ceil(T * K * (capacity_factor or self.capacity_factor))
+            total_capacity = math.ceil(
+                T * K * (capacity_factor or self.capacity_factor)
+            )
             base_per_expert = total_capacity / max(self.num_experts, 1)
             # Clamp usage to avoid division issues; higher usage = higher capacity
             usage = expert_usage.clamp(min=1e-6)
@@ -128,15 +139,23 @@ class DroplessPackedDispatcher:
             # Standard hard capacity: fixed per expert
             per_expert_cap = torch.full(
                 (self.num_experts,),
-                max(1, math.ceil(
-                    T * K * (capacity_factor or self.capacity_factor) / self.num_experts
-                )),
+                max(
+                    1,
+                    math.ceil(
+                        T
+                        * K
+                        * (capacity_factor or self.capacity_factor)
+                        / self.num_experts
+                    ),
+                ),
                 dtype=torch.long,
                 device=device,
             )
 
         # Per-expert index tracking
-        cum_offsets = torch.cat([torch.zeros(1, device=device, dtype=torch.long), offsets[:-1]])
+        cum_offsets = torch.cat(
+            [torch.zeros(1, device=device, dtype=torch.long), offsets[:-1]]
+        )
         idx_in_expert = self._arange_buffer[:S] - cum_offsets[experts_sorted]  # type: ignore[index]
 
         if soft_capacity and expert_usage is not None:

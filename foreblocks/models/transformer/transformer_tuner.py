@@ -1,8 +1,16 @@
 """foreblocks.models.transformer.transformer_tuner.
 
-This module implements the transformer tuner pieces for its package.
-It belongs to the modular transformer layers and helpers area of Foreblocks.
-It exposes classes such as TunerConfig, SpectralPeak, ScaleBandShare, DecompositionRecommendation.
+Auto-tuning for transformer hyperparameters from time series characteristics.
+
+Analyzes signal properties (roughness, spectral entropy, periodicity, multiscale
+structure) and recommends patch lengths, stride, attention mode, decomposition
+heads, and preprocessing choices. Inspired by PatchTST and iTransformer research.
+
+Core API:
+- ModernTransformerTuner: analyze series → recommendation report
+- TunerConfig: tunable thresholds for all heuristics
+- TransformerTuningReport: Pydantic model for tuning output
+
 """
 
 from __future__ import annotations
@@ -451,9 +459,11 @@ class ModernTransformerTuner:
         forecastability_penalty = (
             self.config.forecastability_penalty_weak
             if forecastability_score < self.config.forecastability_weak
-            else self.config.forecastability_penalty_moderate
-            if forecastability_score < self.config.forecastability_strong
-            else 0
+            else (
+                self.config.forecastability_penalty_moderate
+                if forecastability_score < self.config.forecastability_strong
+                else 0
+            )
         )
 
         w = self.PATCHING_WEIGHTS
@@ -482,9 +492,11 @@ class ModernTransformerTuner:
         patching_label = (
             "good"
             if patching_score >= self.config.patching_good
-            else "moderate"
-            if patching_score >= self.config.patching_moderate
-            else "weak"
+            else (
+                "moderate"
+                if patching_score >= self.config.patching_moderate
+                else "weak"
+            )
         )
 
         # Multiscale & hierarchical logic (kept similar but cleaner)
@@ -509,12 +521,14 @@ class ModernTransformerTuner:
                         + 0.20
                         * min(
                             1.0,
-                            1.0
-                            if (
-                                short > self.config.short_long_threshold
-                                and long_ > self.config.short_long_threshold
-                            )
-                            else medium / self.config.medium_ref,
+                            (
+                                1.0
+                                if (
+                                    short > self.config.short_long_threshold
+                                    and long_ > self.config.short_long_threshold
+                                )
+                                else medium / self.config.medium_ref
+                            ),
                         )
                     )
                 )
@@ -537,9 +551,11 @@ class ModernTransformerTuner:
         multiscale_label = (
             "high"
             if multiscale_score >= self.config.multiscale_high
-            else "moderate"
-            if multiscale_score >= self.config.multiscale_moderate
-            else "low"
+            else (
+                "moderate"
+                if multiscale_score >= self.config.multiscale_moderate
+                else "low"
+            )
         )
 
         # Hierarchical (harmonic) detection - simplified
@@ -584,26 +600,30 @@ class ModernTransformerTuner:
         hierarchical_label = (
             "high"
             if hierarchical_score >= self.config.hierarchical_high
-            else "moderate"
-            if hierarchical_score >= self.config.hierarchical_moderate
-            else "low"
+            else (
+                "moderate"
+                if hierarchical_score >= self.config.hierarchical_moderate
+                else "low"
+            )
         )
 
         # Patch set for experimentation
         rec_patch_set = tuple(
-            sorted({
-                _choose_nearest_candidate(
-                    max(4.0, rec_patch_len / 2),
-                    self.candidate_patch_lengths,
-                    max_patch,
-                ),
-                rec_patch_len,
-                _choose_nearest_candidate(
-                    max(4.0, dominant_period),
-                    self.candidate_patch_lengths,
-                    max_patch,
-                ),
-            })
+            sorted(
+                {
+                    _choose_nearest_candidate(
+                        max(4.0, rec_patch_len / 2),
+                        self.candidate_patch_lengths,
+                        max_patch,
+                    ),
+                    rec_patch_len,
+                    _choose_nearest_candidate(
+                        max(4.0, dominant_period),
+                        self.candidate_patch_lengths,
+                        max_patch,
+                    ),
+                }
+            )
         )
 
         # Decomposition recommendations

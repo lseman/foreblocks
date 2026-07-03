@@ -1,15 +1,24 @@
 """foreblocks.ops.mamba.triton_ops.
 
-This module implements the triton ops pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes functions such as dt_prep_fallback, dt_prep_bwd_triton, fused_out_fallback, fused_out_bwd_triton.
+Triton kernels for dt preparation and RMSNormGated output — Mamba2 primitives.
+
+Provides Triton-accelerated dt_prep (softplus + clamp for discretisation) and
+fused_out (RMSNormGated: RMSNorm(y, weight, group_size) * silu(z)) with full
+autograd support. Both include PyTorch fallbacks. Use when building Mamba2
+blocks that need these primitives with maximum throughput.
+
+Core API:
+- dt_prep: softplus + clamp time-step preparation (Triton or fallback)
+- dt_prep_triton: Triton forward only
+- fused_out: RMSNormGated — rms_norm(y, weight, group_size) * silu(z)
+- fused_out_triton: Triton forward only
+
 """
 
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-
 
 try:
     import triton

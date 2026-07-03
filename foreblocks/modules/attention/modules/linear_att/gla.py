@@ -1,8 +1,15 @@
 """foreblocks.modules.attention.modules.linear_att.gla.
 
-This module implements the gla pieces for its package.
-It belongs to the linear and gated attention backends area of Foreblocks.
-It exposes classes such as GLABackend.
+Gated Linear Attention: per-timestep decay gate for recurrent state accumulation.
+
+Implements the GLA recurrence (S_t = exp(g_t) · S_{t-1} + k_t · v_t^T) where
+g_t = log-sigmoid(low-rank(x)) / τ is a per-channel decay gate. Supports both
+parallel chunk mode and exact recurrent mode. Use when you need linear-time
+sequence modeling with learned per-timestep forgetting.
+
+Core API:
+- GLABackend: gated linear attention with RoPE support and chunk/recurrent modes
+
 """
 
 from __future__ import annotations
@@ -233,4 +240,3 @@ class GLABackend(RoPEMixin, nn.Module):
         out = self.dropout(self.out_proj(out))
 
         return out, None, {"gla_S": S_next} if is_causal else {"gla_S": S_next}
-

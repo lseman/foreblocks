@@ -1,8 +1,15 @@
 """foreblocks.sequence.mamba.norms.
 
-This module implements the norms pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes classes such as RMSNormWeightOnly, RMSNorm.
+RMS normalization helpers for Mamba blocks.
+
+Provides RMSNormWeightOnly (parameter-only, for use with fused_out) and
+full RMSNorm wrapping the foreblocks rms_norm kernel. Used for per-head
+normalization and the RMSNormGated pattern (rms_norm(y,w) * silu(z)).
+
+Core API:
+- RMSNormWeightOnly: parameter-only RMSNorm for fused_out usage
+- RMSNorm: full RMSNorm with per-head weight and epsilon
+
 """
 
 from __future__ import annotations

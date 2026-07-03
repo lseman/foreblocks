@@ -1,10 +1,16 @@
-# informer.py
-
 """Informer-style time series forecasting head.
+
+Minimal Informer-style head using a full transformer encoder with time encoding,
+pooled representation, and a projection head for horizon prediction. Suitable for
+long-sequence time-series forecasting with efficient attention.
 
 Based on: Zhou et al., "Informer: Beyond Efficient Transformer for Long Sequence
 Time-Series Forecasting", AAAI 2021.
 Paper: https://arxiv.org/abs/2012.07436
+
+Core API:
+- Informer: minimal Informer-style forecasting head with transformer encoder
+
 """
 
 from __future__ import annotations
@@ -44,7 +50,9 @@ class Informer(nn.Module):
         self.pred_len = int(pred_len)
         self.label_len = int(label_len)
         self.in_channels = int(in_channels)
-        self.out_channels = int(out_channels) if out_channels is not None else self.in_channels
+        self.out_channels = (
+            int(out_channels) if out_channels is not None else self.in_channels
+        )
 
         self.encoder = TransformerEncoder(
             input_size=self.in_channels,

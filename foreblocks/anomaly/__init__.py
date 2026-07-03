@@ -2,11 +2,22 @@
 
 Unified anomaly detection framework: forecasting + reconstruction + representation.
 
-Anomaly provides a modular anomaly-detection pipeline that supports multiple
+Provides a modular anomaly-detection pipeline that supports multiple
 detection strategies (forecasting residuals, reconstruction error, learned
 representations) with composable backends (Mamba, Transformer, iTransformer,
 graph models). Includes confidence calibration (Platt scaling, temperature
-scaling, isotonic regression) to map raw scores to reliable uncertainty estimates."""
+scaling, isotonic regression) to map raw scores to reliable uncertainty estimates.
+
+Core API:
+- ForeblocksAnomalyDetector: unified anomaly detection pipeline
+- AnomalyDetectorConfig: configuration for anomaly detection
+- AnomalyResult, AnomalyDecisionResult: detection result types
+- ForecastingMode, ReconstructionMode, RepresentationMode, HybridMode, PatchMambaMode, iTransformerMode: detection modes
+- AnomalyBlock, AnomalyBlockSpec, AnomalyBlockStack: modular block composition
+- TemperatureScaler, PlattScaler, EnsembleScoreCombiner, isotonic_calibrate, compute_confidence, fit_score_distribution, ConfidenceResult: confidence calibration
+- StreamingAnomalyDetector, TENTAdapter, BNAdaptiveWrapper, EMAStatistics: online/streaming anomaly detection
+
+"""
 
 from foreblocks.anomaly.calibration import (
     ConfidenceResult,
@@ -22,6 +33,15 @@ from foreblocks.anomaly.detector import (
     AnomalyResult,
     ForeblocksAnomalyDetector,
 )
+from foreblocks.anomaly.models import (
+    DAGMM,
+    MLPVAE,
+    AnomalyTransformer,
+    OmniAnomaly,
+    PatchMamba,
+    TransformerVAE,
+    iTransformer,
+)
 from foreblocks.anomaly.modes import (
     AnomalyBlock,
     AnomalyBlockSpec,
@@ -30,23 +50,14 @@ from foreblocks.anomaly.modes import (
     DecisionConfig,
     ForecastingMode,
     HybridMode,
+    PatchMambaMode,
     ReconstructionMode,
     RepresentationMode,
     iTransformerMode,
-    PatchMambaMode,
+    list_blocks,
     register_block,
     resolve_block,
-    list_blocks,
     resolve_mode,
-)
-from foreblocks.anomaly.models import (
-    AnomalyTransformer,
-    DAGMM,
-    MLPVAE,
-    OmniAnomaly,
-    PatchMamba,
-    TransformerVAE,
-    iTransformer,
 )
 from foreblocks.anomaly.online import (
     BNAdaptiveWrapper,

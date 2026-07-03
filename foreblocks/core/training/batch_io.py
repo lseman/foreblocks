@@ -1,8 +1,18 @@
-"""Batch I/O utilities for Trainer.
+"""foreblocks.core.training.batch_io.
 
-Extracted from the monolithic ``trainer.py`` to reduce duplication and
-improve testability.  Provides batch unpacking, device transfer, and
-dataloader length helpers.
+Batch I/O utilities for the Trainer: unpacking, device transfer, and dataloader helpers.
+
+Normalizes diverse batch formats (dict, tuple/list, bare tensors) into a
+standard ``(X, y, time_feat, graph_kwargs)`` tuple. Handles adjacency/edge attribute
+extraction from dict batches and moves all tensors to the target device. Use when
+writing custom training loops or dataloaders that need consistent batch handling.
+
+Core API:
+- unpack_batch: normalize batch formats to (X, y, time_feat, graph_kwargs)
+- to_device: recursively move tensors/nested containers to a device
+- move_batch_to_device: full batch device transfer convenience wrapper
+- loader_len: safe dataloader length (returns None if unavailable)
+
 """
 
 from __future__ import annotations
@@ -66,11 +76,7 @@ def unpack_batch(
             third = batch[2]
             if isinstance(third, dict):
                 graph_kwargs.update(
-                    {
-                        key: value
-                        for key, value in third.items()
-                        if key in _GRAPH_KEYS
-                    }
+                    {key: value for key, value in third.items() if key in _GRAPH_KEYS}
                 )
                 return batch[0], batch[1], None, graph_kwargs
             return batch[0], batch[1], third, graph_kwargs

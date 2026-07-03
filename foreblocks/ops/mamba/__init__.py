@@ -1,7 +1,21 @@
 """foreblocks.ops.mamba.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+Mamba2 and state-space operator kernels for Foreblocks.
+
+Provides causal conv1d, fused dt projection, chunked SSM (SSD) forward/backward,
+fused Mamba2 block, RMSNorm, selective state update, and Triton helpers. All
+modules gracefully degrade when Triton is unavailable.
+
+Core API (entry points):
+- mamba2_split_conv1d_scan_combined: full Mamba2 block path
+- fused_ssd_forward: three-kernel fused SSD forward (Triton)
+- chunked_ssd_forward: chunked SSM forward with triton/pytorch toggle
+- causal_depthwise_conv1d: causal depthwise conv1d
+- fused_dt: fused dt_proj + softplus + clamp
+- fused_out: RMSNormGated (RMSNorm + silu gate)
+- dt_prep: softplus + clamp time-step preparation
+- selective_state_update: KV-cache state update
+
 """
 
 from foreblocks.ops.mamba.causal_conv1d import (
@@ -23,6 +37,10 @@ from foreblocks.ops.mamba.rms_norm import (
     RMS_NORM_TRITON_AVAILABLE,
     rms_norm,
     rms_norm_fallback,
+)
+from foreblocks.ops.mamba.selective_state_update import (
+    SELECTIVE_STATE_UPDATE_TRITON_AVAILABLE,
+    selective_state_update,
 )
 
 # rotary_apply, rotary_apply_fallback
@@ -52,11 +70,6 @@ from foreblocks.ops.mamba.triton_ops import (
     fused_out_fallback,
     fused_out_triton,
 )
-from foreblocks.ops.mamba.selective_state_update import (
-    SELECTIVE_STATE_UPDATE_TRITON_AVAILABLE,
-    selective_state_update,
-)
-
 
 ROTARY_TRITON_AVAILABLE = False  # rotary Triton kernels not yet implemented
 

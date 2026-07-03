@@ -1,8 +1,16 @@
 """foreblocks.third_party.flash_softpick_attn.
 
-This module implements the flash softpick attn pieces for its package.
-It belongs to the Foreblocks package functionality area of Foreblocks.
-It exposes classes such as ParallelSoftpickAttentionFunction.
+Fused Triton kernel for Softpick attention (Flash-Linear-Attention variant).
+
+Implements the forward pass for sparse softpick attention with chunked
+computation and efficient sequence handling. Adapted from the
+flash-linear-attention repository. Supports variable-length sequences,
+padding, and chunked inference.
+
+Core API:
+- ParallelSoftpickAttentionFunction: Triton-fused softpick attention kernel
+- prepare_lens, prepare_sequence_ids, prepare_chunk_indices: sequence prep helpers
+
 """
 
 # Adapted from the flash-linear-attention repository
@@ -11,10 +19,8 @@ It exposes classes such as ParallelSoftpickAttentionFunction.
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
 
-
 import torch
 from einops import rearrange, reduce
-
 
 try:
     import triton

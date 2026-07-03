@@ -1,8 +1,17 @@
 """foreblocks.modules.heads.modules.decomposition_head.
 
-This module implements the decomposition head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as DecompositionHead, DecompositionBlock.
+Learnable trend-seasonal decomposition via depthwise moving average.
+
+DecompositionHead separates input into trend and seasonal components using
+a learnable grouped depthwise convolution (Autoformer-style moving average).
+The seasonal branch can be projected to a hidden dimension. Use to inject
+decomposition inductive bias into forecasting models, enabling explicit
+modeling of trend and periodic components.
+
+Core API:
+- DecompositionHead: learnable trend-seasonal decomposition
+- DecompositionBlock: BaseHead wrapper
+
 """
 
 from __future__ import annotations

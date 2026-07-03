@@ -1,8 +1,17 @@
 """foreblocks.ops.attention.fla_linear_attention.
 
-This module implements the fla linear attention pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as can_use_fla_linear_attn, fla_recurrent_linear_attn_forward.
+Wrap upstream FLA fused recurrent linear attention with Foreblocks layout.
+
+FLA provides a fused recurrent implementation of linear attention (kernel-based O(T)
+attention). This module bridges FLA's internal layout to Foreblocks' `[B, H, T, D]`
+convention, exposing a runtime availability check and a single entry point. Use when
+you need FLA-backed linear attention inside a Foreblocks model without manual tensor
+transposes.
+
+Core API:
+- can_use_fla_linear_attn: runtime capability check (FLA installed, CUDA, shape/dtype valid)
+- fla_recurrent_linear_attn_forward: fused recurrent linear attention with Foreblocks layout
+
 """
 
 import os
@@ -40,7 +49,15 @@ def fla_recurrent_linear_attn_forward(
     v: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Run upstream FLA fused recurrent linear attention with [B, H, T, D] layout."""
+    """Run upstream FLA fused recurrent linear attention with [B, H, T, D] layout.
+
+    Args:
+        q, k, v: query, key, value tensors [B, H, T, D].
+        eps: normalisation epsilon.
+
+    Returns:
+        output [B, H, T, D].
+    """
     if not can_use_fla_linear_attn(q, k, v):
         raise RuntimeError("FLA fused recurrent linear attention is not available")
     fn = fla_fused_recurrent_linear_attn()

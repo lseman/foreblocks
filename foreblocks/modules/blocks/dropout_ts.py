@@ -1,17 +1,18 @@
-"""DropoutTS sample-adaptive dropout for noisy time series.
+"""foreblocks.modules.blocks.dropout_ts.
 
-This module builds a spectral noise score from detrending, FFT amplitudes, and
-spectral flatness, then maps that score to a per-sample dropout probability.
+Per-sample adaptive dropout driven by spectral noise estimation.
 
-Based on:
+Estimates instance-level noise from detrending residuals, FFT amplitude
+sparsity, and spectral flatness, then maps each sample to a dropout probability.
+Noisier windows receive stronger regularization; cleaner windows retain more
+signal. Use when input noise levels vary significantly across samples and fixed
+dropout rates degrade performance.
 
-    Zhong et al., "DropoutTS: Sample-Adaptive Dropout for Robust Time Series
-    Forecasting", arXiv 2026.
-    Paper: https://arxiv.org/abs/2601.21726
+Core API:
+- DropoutTS: end-to-end plugin computing per-sample dropout from input
+- SampleAdaptiveDropout: STE-based adaptive dropout with sensitivity curve
+- SpectralNoiseScorer: spectral flatness + reconstruction residual noise estimator
 
-The paper's core idea is to estimate instance-level noise from spectral
-sparsity/reconstruction residuals, then adapt dropout strength per sample so
-noisier windows receive stronger regularization.
 """
 
 from __future__ import annotations

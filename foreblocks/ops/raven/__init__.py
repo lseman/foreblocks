@@ -1,7 +1,21 @@
 """foreblocks.ops.raven.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the Raven sequence-model integration helpers area of Foreblocks.
+Lazy FLA attribute proxy for Raven integration helpers.
+
+Wraps upstream FLA (Fine Language Architecture) symbols behind a lazy loader
+so the FLA library is not imported at package load time. Enables Raven models
+to use FLA-backed attention, normalization, and SSM ops without requiring FLA
+as a hard dependency.
+
+Core API:
+- Attention: lazy proxy for FLA attention layer
+- Cache: lazy proxy for FLA cache
+- RavenMLP: lazy proxy for FLA gated MLP
+- RMSNorm, FusedRMSNormGated: lazy proxy for FLA normalization
+- RotaryEmbedding: lazy proxy for FLA rotary embeddings
+- fused_attnres, fused_recurrent_gsa, chunk_gsa: lazy proxy for FLA ops
+- get_layer_cache, update_layer_cache, get_unpad_data: lazy proxy for FLA utilities
+
 """
 
 from __future__ import annotations

@@ -1,17 +1,23 @@
-"""Fused Mamba2 forward kernel (conv + dt + SSM + out in one launch).
+"""foreblocks.ops.mamba.fused_mamba2.
 
-Replaces the 4-kernel standard path (causal_conv1d → dt_prep → ssd → fused_out)
-with a single kernel launch. Entry states are pre-computed via PyTorch's
-segment_sum_log (already parallel).
+Single-kernel Fused Mamba2 forward: conv + dt + SSM + output projection.
 
-Key optimization: eliminates conv_output intermediate write (~2-4 GB/layer memory
-bandwidth for typical shapes).
+Replaces the standard 4-kernel path (causal_conv1d → dt_prep → SSD scan →
+fused_out) with one kernel launch, eliminating the conv_output intermediate
+write (~2-4 GB/layer memory bandwidth savings). Entry states are pre-computed
+via PyTorch's segment_sum_log. Use when you need maximum Mamba2 throughput
+and all tensors are on CUDA.
+
+Core API:
+- fused_mamba2_forward: single-kernel Mamba2 forward, requires all CUDA tensors
+- _compute_entry_states: helper to pre-compute chunk boundary states
+
 """
+
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-
 
 try:
     import triton
@@ -29,27 +35,40 @@ if FUSED_MAMBA2_TRITON_AVAILABLE:
 
     @triton.jit
     def _fused_mamba2_fwd_kernel(
-        residual_ptr,   # [B, T, d_inner]
-        conv_in_ptr,    # [B, T, conv_dim]  — conv_input (before conv1d)
-        conv_w_ptr,     # [K, conv_dim]     — conv weights transposed
-        conv_b_ptr,     # [conv_dim]
-        dt_w_ptr,       # [H, dt_rank]
-        dt_b_ptr,       # [H]
-        A_ptr,          # [H]
-        D_ptr,          # [H, P]
-        norm_w_ptr,     # [d_inner]
-        out_w_ptr,      # [d_inner, d_model]
-        out_b_ptr,      # [d_model]
-        B_ptr,          # [B, T, H, N]
-        C_ptr,          # [B, T, H, N]
-        entry_ptr,      # [B, nc, H, P, N]
-        out_ptr,        # [B, T, d_model]
-        u_ptr,          # [B, T, H, P]  — u component
-        z_ptr,          # [B, T, d_inner]  — z component (for gating)
+        residual_ptr,  # [B, T, d_inner]
+        conv_in_ptr,  # [B, T, conv_dim]  — conv_input (before conv1d)
+        conv_w_ptr,  # [K, conv_dim]     — conv weights transposed
+        conv_b_ptr,  # [conv_dim]
+        dt_w_ptr,  # [H, dt_rank]
+        dt_b_ptr,  # [H]
+        A_ptr,  # [H]
+        D_ptr,  # [H, P]
+        norm_w_ptr,  # [d_inner]
+        out_w_ptr,  # [d_inner, d_model]
+        out_b_ptr,  # [d_model]
+        B_ptr,  # [B, T, H, N]
+        C_ptr,  # [B, T, H, N]
+        entry_ptr,  # [B, nc, H, P, N]
+        out_ptr,  # [B, T, d_model]
+        u_ptr,  # [B, T, H, P]  — u component
+        z_ptr,  # [B, T, d_inner]  — z component (for gating)
         dt_hidden_ptr,  # [B, T, dt_rank]  — dt source (before proj)
-        Bsz, T, H, P, N, nc, CHUNK_SIZE,
-        d_model, d_inner, conv_dim, dt_rank, num_heads, norm_eps,
-        dt_min, dt_max, K: tl.constexpr,
+        Bsz,
+        T,
+        H,
+        P,
+        N,
+        nc,
+        CHUNK_SIZE,
+        d_model,
+        d_inner,
+        conv_dim,
+        dt_rank,
+        num_heads,
+        norm_eps,
+        dt_min,
+        dt_max,
+        K: tl.constexpr,
         HAS_DT_PROJ: tl.constexpr,
         BLOCK_P: tl.constexpr,
         BLOCK_N: tl.constexpr,
@@ -74,7 +93,8 @@ if FUSED_MAMBA2_TRITON_AVAILABLE:
         entry_base = ((b * nc + nc_idx) * H + h) * P * N
         state = tl.load(
             entry_ptr + entry_base + p_offs[:, None] * N + n_offs[None, :],
-            mask=pn_mask, other=0.0,
+            mask=pn_mask,
+            other=0.0,
         ).to(tl.float32)
 
         a_val = tl.load(A_ptr + h).to(tl.float32)
@@ -96,37 +116,52 @@ if FUSED_MAMBA2_TRITON_AVAILABLE:
             # ── causal conv1d (depthwise, K=4) ───────────────────
             # Load conv_input for current head: [head_dim] matching BLOCK_P
             head_offset = h * P
-            conv_in_head_base = conv_in_ptr + b * T * conv_dim + t * conv_dim + head_offset
-            conv_in = tl.load(conv_in_head_base + tl.arange(0, BLOCK_P),
-                              mask=p_mask, other=0.0).to(tl.float32)
+            conv_in_head_base = (
+                conv_in_ptr + b * T * conv_dim + t * conv_dim + head_offset
+            )
+            conv_in = tl.load(
+                conv_in_head_base + tl.arange(0, BLOCK_P), mask=p_mask, other=0.0
+            ).to(tl.float32)
 
             conv_acc = tl.zeros([BLOCK_P], dtype=tl.float32)
-            conv_acc += tl.load(conv_b_ptr + p_offs, mask=p_mask, other=0.0).to(tl.float32)
+            conv_acc += tl.load(conv_b_ptr + p_offs, mask=p_mask, other=0.0).to(
+                tl.float32
+            )
             for k in range(K):
                 t_in = t_abs - (K - 1 - k)
                 valid = active & (t_in >= 0)
                 shift = t_in
-                ci_shifted = tl.load(conv_in_head_base + tl.arange(0, BLOCK_P) - shift,
-                                     mask=valid & p_mask, other=0.0).to(tl.float32)
-                w = tl.load(conv_w_ptr + k * conv_dim + p_offs,
-                            mask=p_mask, other=0.0).to(tl.float32)
+                ci_shifted = tl.load(
+                    conv_in_head_base + tl.arange(0, BLOCK_P) - shift,
+                    mask=valid & p_mask,
+                    other=0.0,
+                ).to(tl.float32)
+                w = tl.load(
+                    conv_w_ptr + k * conv_dim + p_offs, mask=p_mask, other=0.0
+                ).to(tl.float32)
                 conv_acc += ci_shifted * w
 
             # ── dt_proj + softplus + clamp ────────────────────────
             dt = tl.zeros([BLOCK_P], dtype=tl.float32)
             if HAS_DT_PROJ:
-                dh = tl.load(dt_hidden_base + tl.arange(0, BLOCK_DT),
-                             mask=tl.arange(0, BLOCK_DT) < dt_rank,
-                             other=0.0).to(tl.float32)
-                w = tl.load(dt_w_ptr + h * dt_rank + tl.arange(0, BLOCK_DT),
-                            mask=tl.arange(0, BLOCK_DT) < dt_rank,
-                            other=0.0).to(tl.float32)
+                dh = tl.load(
+                    dt_hidden_base + tl.arange(0, BLOCK_DT),
+                    mask=tl.arange(0, BLOCK_DT) < dt_rank,
+                    other=0.0,
+                ).to(tl.float32)
+                w = tl.load(
+                    dt_w_ptr + h * dt_rank + tl.arange(0, BLOCK_DT),
+                    mask=tl.arange(0, BLOCK_DT) < dt_rank,
+                    other=0.0,
+                ).to(tl.float32)
                 dt += tl.sum(dh * w)
                 dt += tl.load(dt_b_ptr + h).to(tl.float32)
             else:
-                dh = tl.load(dt_hidden_base + tl.arange(0, BLOCK_DT),
-                             mask=tl.arange(0, BLOCK_DT) < dt_rank,
-                             other=0.0).to(tl.float32)
+                dh = tl.load(
+                    dt_hidden_base + tl.arange(0, BLOCK_DT),
+                    mask=tl.arange(0, BLOCK_DT) < dt_rank,
+                    other=0.0,
+                ).to(tl.float32)
                 dh += tl.load(dt_b_ptr + h).to(tl.float32)
                 dt = tl.where(dh > 20.0, dh, tl.log(1.0 + tl.exp(dh)))
                 dt = tl.maximum(dt, dt_min)
@@ -134,12 +169,19 @@ if FUSED_MAMBA2_TRITON_AVAILABLE:
 
             # ── SSM recurrence ────────────────────────────────────
             decay = tl.exp(dt * a_val)
-            u = tl.load(u_ptr + t_abs * H * P + p_offs,
-                        mask=active & p_mask, other=0.0).to(tl.float32)
-            Bv = tl.load(B_ptr + t_abs * num_heads * N + h * N + n_offs,
-                         mask=active & n_mask, other=0.0).to(tl.float32)
-            Cv = tl.load(C_ptr + t_abs * num_heads * N + h * N + n_offs,
-                         mask=active & n_mask, other=0.0).to(tl.float32)
+            u = tl.load(
+                u_ptr + t_abs * H * P + p_offs, mask=active & p_mask, other=0.0
+            ).to(tl.float32)
+            Bv = tl.load(
+                B_ptr + t_abs * num_heads * N + h * N + n_offs,
+                mask=active & n_mask,
+                other=0.0,
+            ).to(tl.float32)
+            Cv = tl.load(
+                C_ptr + t_abs * num_heads * N + h * N + n_offs,
+                mask=active & n_mask,
+                other=0.0,
+            ).to(tl.float32)
 
             state = state * decay + dt * u[:, None] * Bv[None, :]
 
@@ -153,8 +195,11 @@ if FUSED_MAMBA2_TRITON_AVAILABLE:
             silu_z = z / (1.0 + tl.exp(-z))
 
             # out_proj (GEMV): y * silu(z) @ out_weight + residual
-            w_row = tl.load(out_w_ptr + p_offs[:, None] * D_MODEL + tl.arange(0, D_MODEL),
-                            mask=p_mask[:, None], other=0.0).to(tl.float32)
+            w_row = tl.load(
+                out_w_ptr + p_offs[:, None] * D_MODEL + tl.arange(0, D_MODEL),
+                mask=p_mask[:, None],
+                other=0.0,
+            ).to(tl.float32)
             o = tl.sum((y * silu_z)[:, None] * w_row, axis=1)
 
             # Add residual
@@ -165,6 +210,7 @@ if FUSED_MAMBA2_TRITON_AVAILABLE:
 
 
 # ── helper: compute entry states ─────────────────────────────────────
+
 
 def _compute_entry_states(
     u: torch.Tensor,
@@ -206,6 +252,7 @@ def _compute_entry_states(
     chunk_log_decay = F.pad(chunk_log_decay, (1, 0))
 
     from foreblocks.ops.mamba.ssd import _segment_sum_log
+
     decay_prefix = torch.exp(_segment_sum_log(chunk_log_decay)).transpose(1, 3)
     boundary_all = (
         decay_prefix[..., None, None] * state_summaries[:, :, None, ...]
@@ -216,6 +263,7 @@ def _compute_entry_states(
 
 
 # ── fused forward function ───────────────────────────────────────────
+
 
 def fused_mamba2_forward(
     residual_inner: torch.Tensor,
@@ -229,9 +277,9 @@ def fused_mamba2_forward(
     norm_weight: torch.Tensor,
     out_proj_weight: torch.Tensor,
     out_proj_bias: torch.Tensor | None,
-    u: torch.Tensor,           # [B, T, H, P]
-    z: torch.Tensor,           # [B, T, d_inner]
-    dt_hidden: torch.Tensor,   # [B, T, dt_rank]
+    u: torch.Tensor,  # [B, T, H, P]
+    z: torch.Tensor,  # [B, T, d_inner]
+    dt_hidden: torch.Tensor,  # [B, T, dt_rank]
     B: torch.Tensor | None = None,
     C: torch.Tensor | None = None,
     chunk_size: int = 256,
@@ -270,7 +318,8 @@ def fused_mamba2_forward(
         and residual_inner.is_cuda
         and conv_input.is_cuda
         and conv_weight.is_cuda
-        and conv_bias is not None and conv_bias.is_cuda
+        and conv_bias is not None
+        and conv_bias.is_cuda
         and dt_bias.is_cuda
         and A.is_cuda
         and D.is_cuda
@@ -279,8 +328,10 @@ def fused_mamba2_forward(
         and u.is_cuda
         and z.is_cuda
         and dt_hidden.is_cuda
-        and B is not None and B.is_cuda
-        and C is not None and C.is_cuda
+        and B is not None
+        and B.is_cuda
+        and C is not None
+        and C.is_cuda
     )
     if not can_fuse:
         raise RuntimeError(
@@ -291,7 +342,12 @@ def fused_mamba2_forward(
     out = torch.empty(Bsz, T, d_model, device=u.device, dtype=u.dtype)
 
     cumsum_dtA, entry_states = _compute_entry_states(
-        u, dt_hidden, A, B, C, chunk_size,
+        u,
+        dt_hidden,
+        A,
+        B,
+        C,
+        chunk_size,
     )
 
     block_p = min(max(triton.next_power_of_2(P), 16), 128)
@@ -301,14 +357,40 @@ def fused_mamba2_forward(
 
     grid = (Bsz * T * H,)
     _fused_mamba2_fwd_kernel[grid](
-        residual_inner, conv_input, conv_weight, conv_bias,
-        dt_proj_weight, dt_bias, A, D,
-        norm_weight, out_proj_weight, out_proj_bias,
-        B, C, entry_states, out,
-        u, z, dt_hidden,
-        Bsz, T, H, P, N, 1, chunk_size,
-        d_model, d_inner, conv_dim, dt_rank, num_heads,
-        norm_eps, dt_min, dt_max, K,
+        residual_inner,
+        conv_input,
+        conv_weight,
+        conv_bias,
+        dt_proj_weight,
+        dt_bias,
+        A,
+        D,
+        norm_weight,
+        out_proj_weight,
+        out_proj_bias,
+        B,
+        C,
+        entry_states,
+        out,
+        u,
+        z,
+        dt_hidden,
+        Bsz,
+        T,
+        H,
+        P,
+        N,
+        1,
+        chunk_size,
+        d_model,
+        d_inner,
+        conv_dim,
+        dt_rank,
+        num_heads,
+        norm_eps,
+        dt_min,
+        dt_max,
+        K,
         HAS_DT_PROJ=has_dt_proj,
         BLOCK_P=block_p,
         BLOCK_N=block_n,

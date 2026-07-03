@@ -1,36 +1,17 @@
 #!/usr/bin/env python3
-"""
-Benchmark: All Linear Attention Backends vs FLA Kernels
-========================================================
+"""foreblocks.modules.attention.modules.linear_att.bench_linear_att.
 
-Compares custom PyTorch implementations vs FLA (flash-linear-attention) kernels
-for every linear attention backend in foreblocks/modules/attention/modules/linear_att/:
+Benchmark harness comparing custom PyTorch linear attention backends against FLA (flash-linear-attn) kernels.
 
-  Backend       | Custom impl                    | FLA kernel(s)
-  --------------|--------------------------------|------------------------------------
-  rda           | RDABackend (einsum / scan)     | fused_recurrent_linear_attn
-  gla           | GLABackend (chunk + recurrent) | chunk_gla, fused_recurrent_gla
-  deltanet      | DeltaNetBackend (WY + step)    | chunk_delta_rule, fused_recurrent_delta_rule
-  gated_delta   | GatedDeltaNet (WY + step)      | chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
-  gated_deltanet2 | GatedDeltaNet2 (WY + step)  | chunk_gdn2, fused_recurrent_gdn2
-  kimi (kda)    | KimiAttention / _KDA_Fast      | chunk_kda, fused_recurrent_kda
+Runs forward and backward timing passes for all backends (RDA, GLA, DeltaNet,
+GatedDeltaNet, GatedDeltaNet2, KimiAttention) against their corresponding FLA
+Triton/TileLang kernels, with optional shape correctness checks. CLI-driven;
+runs as a script, not importable as a library.
 
-Usage
------
-  # Single config (GDN-2 only):
-  python bench_linear_att.py --backend gated_deltanet2 --batch 4 --heads 8 --seq 2048 --dk 128 --dtype bf16
+Core API (benchmark harness):
+- bench_case: run one benchmark case for one backend
+- main: CLI entry point for running all benchmarks
 
-  # Sweep all backends:
-  python bench_linear_att.py --sweep
-
-  # Include backward pass:
-  python bench_linear_att.py --backward
-
-  # Custom-only (skip FLA):
-  python bench_linear_att.py --no-fla
-
-  # Skip shape checks:
-  python bench_linear_att.py --no-check
 """
 
 from __future__ import annotations
@@ -81,7 +62,6 @@ from foreblocks.ops.attention.fla_linear_attention import (
     fla_recurrent_linear_attn_forward,
 )
 
-
 # ── Ensure repo root is on path ──────────────────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(_REPO_ROOT) not in sys.path:
@@ -108,37 +88,58 @@ def _time_ms(fn, warmup: int = 10, iters: int = 50) -> float:
 # ── Backend builders ─────────────────────────────────────────────────────────
 # All builders return a model placed on CUDA in the requested dtype.
 
+
 def _build_rda(B, T, H, dk, dv, dtype, chunk_size=64):
     return RDABackend(d_model=H * dk, n_heads=H, dropout=0.0).to("cuda", dtype)
 
 
 def _build_gla(B, T, H, dk, dv, dtype, chunk_size=64):
-    return GLABackend(d_model=H * dk, n_heads=H, dropout=0.0, mode="chunk",
-                      chunk_size=chunk_size).to("cuda", dtype)
+    return GLABackend(
+        d_model=H * dk, n_heads=H, dropout=0.0, mode="chunk", chunk_size=chunk_size
+    ).to("cuda", dtype)
 
 
 def _build_deltanet(B, T, H, dk, dv, dtype, chunk_size=64):
-    return DeltaNetBackend(d_model=H * dk, n_heads=H, dropout=0.0, mode="chunk",
-                           chunk_size=chunk_size).to("cuda", dtype)
+    return DeltaNetBackend(
+        d_model=H * dk, n_heads=H, dropout=0.0, mode="chunk", chunk_size=chunk_size
+    ).to("cuda", dtype)
 
 
 def _build_gated_delta(B, T, H, dk, dv, dtype, chunk_size=64):
-    return GatedDeltaNet(d_model=H * dk, n_heads=H, d_key=dk, d_val=dv,
-                         chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
-                         use_short_conv=False, use_mamba_gate=True).to("cuda", dtype)
+    return GatedDeltaNet(
+        d_model=H * dk,
+        n_heads=H,
+        d_key=dk,
+        d_val=dv,
+        chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
+        use_short_conv=False,
+        use_mamba_gate=True,
+    ).to("cuda", dtype)
 
 
 def _build_gdn2(B, T, H, dk, dv, dtype, chunk_size=64):
-    return GatedDeltaNet2(d_model=H * dk, n_heads=H, d_key=dk, d_val=dv,
-                          chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
-                          use_short_conv=False, eps=1e-6,
-                          allow_neg_eigval=False).to("cuda", dtype)
+    return GatedDeltaNet2(
+        d_model=H * dk,
+        n_heads=H,
+        d_key=dk,
+        d_val=dv,
+        chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
+        use_short_conv=False,
+        eps=1e-6,
+        allow_neg_eigval=False,
+    ).to("cuda", dtype)
 
 
 def _build_kimi(B, T, H, dk, dv, dtype, chunk_size=64):
-    return KimiAttention(d_model=H * dk, n_heads=H, d_key=dk, d_val=dv,
-                         expand_v=1.0, chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
-                         shortconv_mode="off").to("cuda", dtype)
+    return KimiAttention(
+        d_model=H * dk,
+        n_heads=H,
+        d_key=dk,
+        d_val=dv,
+        expand_v=1.0,
+        chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
+        shortconv_mode="off",
+    ).to("cuda", dtype)
 
 
 # ── Custom forward callables ─────────────────────────────────────────────────
@@ -150,31 +151,38 @@ _STANDALONE = ("gated_delta", "gated_deltanet2")
 def _make_custom_fwd(model, backend_name, x, inputs):
     """Return a forward-only callable for the custom model."""
     if backend_name in _STANDALONE:
+
         def fn():
             with torch.no_grad():
                 model.forward_standalone(x)
+
     else:
         # rda / gla / deltanet / kimi: forward(query, key, value) -> (out, _, state)
         def fn():
             with torch.no_grad():
                 model(**inputs)
+
     return fn
 
 
 def _make_custom_bwd(model, backend_name, x, inputs):
     """Return a forward+backward callable for the custom model."""
     if backend_name in _STANDALONE:
+
         def fn():
             x2 = x.detach().clone().requires_grad_(True)
             y, _ = model.forward_standalone(x2)
             y.backward(torch.randn_like(y), retain_graph=True)
             x2.grad = None
+
     else:
+
         def fn():
             x2 = x.detach().clone().requires_grad_(True)
             out = model(query=x2, key=x2, value=x2)[0]
             out.backward(torch.randn_like(out), retain_graph=True)
             x2.grad = None
+
     return fn
 
 
@@ -183,6 +191,7 @@ def _make_custom_bwd(model, backend_name, x, inputs):
 # FLA's [B, T, H, *] internally.  Extractors below build random tensors directly
 # in [B, H, T, *] — the bench measures kernel throughput, not parity with the
 # custom path, so independent random inputs are fine.
+
 
 def _extract_gla_fla(x, H, dk, dv):
     B, T = x.shape[0], x.shape[1]
@@ -248,7 +257,7 @@ def _extract_kda_fla(x, H, dk, dv):
 def _extract_rda_fla(x, H, dk, dv):
     B, T = x.shape[0], x.shape[1]
     dev, dt = x.device, x.dtype
-    scale = dk ** -0.5
+    scale = dk**-0.5
     q = F.elu(torch.randn(B, H, T, dk, device=dev, dtype=dt) * scale) + 1.0
     k = F.elu(torch.randn(B, H, T, dk, device=dev, dtype=dt) * scale) + 1.0
     v = torch.randn(B, H, T, dk, device=dev, dtype=dt)
@@ -256,6 +265,7 @@ def _extract_rda_fla(x, H, dk, dv):
 
 
 # ── FLA backward helper ──────────────────────────────────────────────────────
+
 
 def _grad_tensors(fla_tensors):
     """Clone the FLA input tuple with requires_grad on the floating q/k/v inputs.
@@ -273,6 +283,7 @@ def _grad_tensors(fla_tensors):
 
 
 # ── FLA forward callables ────────────────────────────────────────────────────
+
 
 def _fla_gla_fwd_chunk(fl_tensors, chunk_size=64):
     return fla_gla_forward(*fl_tensors, 1.0, mode="chunk")
@@ -322,6 +333,7 @@ def _fla_rda_fwd(fl_tensors, chunk_size=None):
 
 # ── FLA availability check helpers ───────────────────────────────────────────
 
+
 def _avail_gla(tensors):
     return can_use_fla_gla(*tensors)
 
@@ -363,11 +375,29 @@ def _avail_rda(tensors):
 
 # ── Benchmark case ───────────────────────────────────────────────────────────
 
-def bench_case(bname, build_fn, extract_fn,
-               custom_fwd_fn, custom_bwd_fn,
-               fla_fwd_fn, fla_avail_fn, fla_rccr_fn, fla_rccr_avail_fn,
-               B, T, dk, dv, dtype, chunk_size,
-               backward, warmup, iters, check, no_fla):
+
+def bench_case(
+    bname,
+    build_fn,
+    extract_fn,
+    custom_fwd_fn,
+    custom_bwd_fn,
+    fla_fwd_fn,
+    fla_avail_fn,
+    fla_rccr_fn,
+    fla_rccr_avail_fn,
+    B,
+    T,
+    dk,
+    dv,
+    dtype,
+    chunk_size,
+    backward,
+    warmup,
+    iters,
+    check,
+    no_fla,
+):
     """Run one benchmark case for one backend."""
     H = 8  # default; overridden from config
     device = "cuda"
@@ -382,16 +412,16 @@ def bench_case(bname, build_fn, extract_fn,
     D = 8 * dk
     if bname == "rda":
         x = torch.randn(B, T, D, device=device, dtype=dtype)
-        inputs = {'query': x, 'key': x, 'value': x}
+        inputs = {"query": x, "key": x, "value": x}
     elif bname == "gla":
         x = torch.randn(B, T, D, device=device, dtype=dtype)
-        inputs = {'query': x, 'key': x, 'value': x}
+        inputs = {"query": x, "key": x, "value": x}
     elif bname == "deltanet":
         x = torch.randn(B, T, D, device=device, dtype=dtype)
-        inputs = {'query': x, 'key': x, 'value': x}
+        inputs = {"query": x, "key": x, "value": x}
     else:  # gated_delta, gated_deltanet2, kimi
         x = torch.randn(B, T, D, device=device, dtype=dtype)
-        inputs = {'x': x}
+        inputs = {"x": x}
 
     # ── FLA tensors ──────────────────────────────────────────────────────
     fla_tensors = None
@@ -413,25 +443,33 @@ def bench_case(bname, build_fn, extract_fn,
     fla_chunk_ms = fla_rccr_ms = None
     if not no_fla and _HAS_FLA:
         if fla_avail and fla_tensors and fla_fwd_fn:
+
             def call_chunk():
                 fla_fwd_fn(fla_tensors, chunk_size)
+
             if backward:
+
                 def call_chunk_bwd():
                     out, _ = fla_fwd_fn(fla_tensors, chunk_size)
                     out.backward(torch.randn_like(out), retain_graph=True)
                     out.grad = None
+
                 fla_chunk_ms = _time_ms(call_chunk_bwd, warmup, iters)
             else:
                 fla_chunk_ms = _time_ms(call_chunk, warmup, iters)
 
         if fla_avail_rccr and fla_tensors and fla_rccr_fn:
+
             def call_rccr():
                 fla_rccr_fn(fla_tensors)
+
             if backward:
+
                 def call_rccr_bwd():
                     out, _ = fla_rccr_fn(fla_tensors)
                     out.backward(torch.randn_like(out), retain_graph=True)
                     out.grad = None
+
                 fla_rccr_ms = _time_ms(call_rccr_bwd, warmup, iters)
             else:
                 fla_rccr_ms = _time_ms(call_rccr, warmup, iters)
@@ -533,20 +571,28 @@ _BACKENDS = {
 
 # ── Default configs ──────────────────────────────────────────────────────────
 
+
 def _default_configs():
     configs = []
     for B in [1, 4]:
         for T in [128, 512, 2048]:
             for dk in [64, 128]:
-                configs.append(dict(B=B, T=T, dk=dk, dv=dk, dtype=torch.bfloat16, chunk_size=64))
+                configs.append(
+                    dict(B=B, T=T, dk=dk, dv=dk, dtype=torch.bfloat16, chunk_size=64)
+                )
     return configs
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark all linear attention backends vs FLA kernels")
-    parser.add_argument("--backend", type=str, default=None, help="Backend name (default: all)")
+    parser = argparse.ArgumentParser(
+        description="Benchmark all linear attention backends vs FLA kernels"
+    )
+    parser.add_argument(
+        "--backend", type=str, default=None, help="Backend name (default: all)"
+    )
     parser.add_argument("--batch", type=int, default=None)
     parser.add_argument("--heads", type=int, default=None)
     parser.add_argument("--seq", type=int, default=None)
@@ -576,15 +622,21 @@ def main():
 
     # Determine configs
     if args.sweep:
-        all_configs = _default_configs()[:args.cases]
+        all_configs = _default_configs()[: args.cases]
     else:
         H = args.heads or 8
         dk = args.dk or 128
-        all_configs = [{
-            "B": args.batch or 4, "T": args.seq or 512,
-            "dk": dk, "dv": args.dv or dk,
-            "dtype": dt, "chunk_size": args.chunk_size, "H": H,
-        }]
+        all_configs = [
+            {
+                "B": args.batch or 4,
+                "T": args.seq or 512,
+                "dk": dk,
+                "dv": args.dv or dk,
+                "dtype": dt,
+                "chunk_size": args.chunk_size,
+                "H": H,
+            }
+        ]
 
     print("=" * 100)
     print("Linear Attention Benchmark: Custom vs FLA Kernels")
@@ -592,7 +644,9 @@ def main():
     print(f"CUDA: {torch.cuda.get_device_name(0)}")
     print(f"FLA available: {_HAS_FLA} ({fla_path() if _HAS_FLA else 'N/A'})")
     print(f"Backends: {', '.join(backend_names)}")
-    print(f"Backward: {args.backward} | Check: {not args.no_check} | Iters: {args.iters}")
+    print(
+        f"Backward: {args.backward} | Check: {not args.no_check} | Iters: {args.iters}"
+    )
     print("-" * 100)
 
     total = len(backend_names) * len(all_configs)
@@ -600,9 +654,11 @@ def main():
 
     for bname in backend_names:
         bi = _BACKENDS[bname]
-        print(f"\n{'='*100}\n  Backend: {bname}\n{'='*100}")
-        print(f"{'mode':7s} {'backend':16s} {'B':>3s} {'H':>2s} {'T':>5s} {'dk':>3s} {'dv':>3s} {'dtype':>5s}  "
-              f"{'custom':>10s} {'tok/s':>7s} {'fla_chunk':>11s} {'fla_rccr':>11s}")
+        print(f"\n{'=' * 100}\n  Backend: {bname}\n{'=' * 100}")
+        print(
+            f"{'mode':7s} {'backend':16s} {'B':>3s} {'H':>2s} {'T':>5s} {'dk':>3s} {'dv':>3s} {'dtype':>5s}  "
+            f"{'custom':>10s} {'tok/s':>7s} {'fla_chunk':>11s} {'fla_rccr':>11s}"
+        )
         print("-" * 100)
 
         for c in all_configs:
@@ -612,7 +668,9 @@ def main():
             dtype = c["dtype"]
             cs = c["chunk_size"]
 
-            print(f"\n--- Case {idx}/{total}: B={c['B']} H={H} T={c['T']} dk={dk} dv={dv} {dtype} ---")
+            print(
+                f"\n--- Case {idx}/{total}: B={c['B']} H={H} T={c['T']} dk={dk} dv={dv} {dtype} ---"
+            )
 
             # Rebuild forward/bwd callables per case (model is rebuilt each time)
             # We'll create them inside bench_case by rebuilding the model
@@ -663,23 +721,33 @@ def main():
 
             if not args.no_fla and _HAS_FLA and fla_tensors:
                 if fla_avail and bi["fwd"]:
+
                     def cfn(fla_tensors=fla_tensors, chunk_size=cs, fwd_fn=bi["fwd"]):
                         fwd_fn(fla_tensors, chunk_size)
+
                     if args.backward:
-                        def cfn_bwd(fla_tensors=fla_tensors, chunk_size=cs, fwd_fn=bi["fwd"]):
+
+                        def cfn_bwd(
+                            fla_tensors=fla_tensors, chunk_size=cs, fwd_fn=bi["fwd"]
+                        ):
                             out, _ = fwd_fn(_grad_tensors(fla_tensors), chunk_size)
                             out.backward(torch.randn_like(out))
+
                         fla_chunk_ms = _safe_time(cfn_bwd, "chunk_bwd")
                     else:
                         fla_chunk_ms = _safe_time(cfn, "chunk")
 
                 if fla_avail_rccr and bi["rccr_fn"]:
+
                     def rfn(fla_tensors=fla_tensors, fwd_fn=bi["rccr_fn"]):
                         fwd_fn(fla_tensors)
+
                     if args.backward:
+
                         def rfn_bwd(fla_tensors=fla_tensors, fwd_fn=bi["rccr_fn"]):
                             out, _ = fwd_fn(_grad_tensors(fla_tensors))
                             out.backward(torch.randn_like(out))
+
                         fla_rccr_ms = _safe_time(rfn_bwd, "rccr_bwd")
                     else:
                         fla_rccr_ms = _safe_time(rfn, "rccr")
@@ -697,7 +765,9 @@ def main():
                     if fla_avail_rccr and bi["rccr_fn"]:
                         y_f2, _ = bi["rccr_fn"](fla_tensors)
                         sep = " | " if fla_avail else ""
-                        status += f"{sep}rccr={'ok' if y_f2.shape == expected else 'FAIL'}"
+                        status += (
+                            f"{sep}rccr={'ok' if y_f2.shape == expected else 'FAIL'}"
+                        )
                 except Exception as e:
                     status += f"err={e}"
 
@@ -724,7 +794,7 @@ def main():
                 line += f"  [{status}]"
             print(line)
 
-    print(f"\n{'='*100}\nDone.")
+    print(f"\n{'=' * 100}\nDone.")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,18 @@
-# -*- coding: utf-8 -*-
-"""Layer-wise LR decay (LLRD) and warmup-cosine scheduling for SOTA fine-tuning."""
+"""foreblocks.core.training.llrd.
+
+Layer-wise learning rate decay and warmup-cosine scheduling.
+
+Implements LLRD for fine-tuning pre-trained sequence models, where deeper
+layers receive lower learning rates. Provides WarmupCosineLR and
+ExponentialLR schedules compatible with multi-param-group optimizers.
+Designed for transformer and Mamba-based models.
+
+Core API:
+- WarmupCosineLR: linear warmup with cosine annealing to min LR
+- ExponentialLR: exponential decay scheduling
+- get_llrd_param_groups: create layer-wise LR-decayed param groups
+
+"""
 
 import math
 import re
@@ -58,7 +71,9 @@ class WarmupCosineLR:
                 # Cosine annealing from base_lr to min_lr
                 progress = (s - self.warmup_steps) / max(1, self.total_steps)
                 progress = min(progress, 1.0)
-                lr = min_lr + 0.5 * (base_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
+                lr = min_lr + 0.5 * (base_lr - min_lr) * (
+                    1.0 + math.cos(math.pi * progress)
+                )
 
             param_group["lr"] = lr
 
@@ -152,19 +167,21 @@ def get_llrd_param_groups(
             # Layer param: use depth-scaled LR
             layer_idx = int(match.group(1))
             depth_offset = num_layers - 1 - layer_idx
-            lr = base_lr * (decay ** depth_offset)
+            lr = base_lr * (decay**depth_offset)
             group_name = f"layer_{layer_idx}_{name.split('.')[-1][:20]}"
         else:
             # Non-layer param or no numbered layers found: use base LR
             lr = base_lr
             group_name = f"non_layer_{name[:30]}"
 
-        param_groups.append({
-            "params": [param],
-            "lr": lr,
-            "weight_decay": wd,
-            "group_name": group_name,
-        })
+        param_groups.append(
+            {
+                "params": [param],
+                "lr": lr,
+                "weight_decay": wd,
+                "group_name": group_name,
+            }
+        )
 
     return param_groups
 

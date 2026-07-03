@@ -1,8 +1,14 @@
 """foreblocks.modules.attention.utils.position.
 
-This module implements the position pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes classes such as PositionEncodingApplier.
+Composable positional transform pipeline for Q/K tensors.
+
+Registers named transform functions (RoPE, SyPE, ALiBi adapters) that are
+applied sequentially to query and key tensors before attention computation.
+Use to attach positional encoding transforms to a parent attention module.
+
+Core API:
+- PositionEncodingApplier: named-transform pipeline for Q/K positional encodings
+
 """
 
 import torch

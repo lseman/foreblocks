@@ -1,8 +1,18 @@
 """foreblocks.layers.norms.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the normalization layers and normalization helpers area of Foreblocks.
-It exposes functions such as create_norm_layer.
+Normalization layers for sequence and graph models.
+
+Provides LayerNorm (with Triton acceleration), RMSNorm, RevIN, GroupNorm,
+TemporalNorm, and a factory function for creating norm layers by name.
+
+Core API:
+- FastLayerNorm, AdaptiveLayerNorm: layer normalization variants
+- RMSNorm, AdaptiveRMSNorm: RMSNorm with optional parameters
+- RevIN: reversible instance normalization
+- ChannelLastGroupNorm: GroupNorm for channel-last tensors
+- TemporalNorm: temporal dimension normalization
+- create_norm_layer: factory for norm layers by name
+
 """
 
 from foreblocks.layers.norms.group_norm import ChannelLastGroupNorm
@@ -10,7 +20,6 @@ from foreblocks.layers.norms.layer_norm import AdaptiveLayerNorm, FastLayerNorm
 from foreblocks.layers.norms.revin import RevIN
 from foreblocks.layers.norms.rms_norm import AdaptiveRMSNorm, RMSNorm
 from foreblocks.layers.norms.temporal_norm import TemporalNorm
-
 
 __all__ = [
     "AdaptiveLayerNorm",

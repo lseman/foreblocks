@@ -1,8 +1,15 @@
 """foreblocks.ops.mamba.mamba2_combined.
 
-This module implements the mamba2 combined pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes functions such as mamba2_split_conv1d_scan_combined.
+Combined Mamba2 block: conv → dt prep → SSD scan → RMSNormGated → out_proj.
+
+Keeps the layer-level dataflow in one op boundary while reusing local Triton
+kernels for each substep. Supports attention masking, group repetition for
+GQA, and Triton-backed SSD. Use when you need a single-call Mamba2 block
+without managing intermediate tensors.
+
+Core API:
+- mamba2_split_conv1d_scan_combined: full Mamba2 block path in one call
+
 """
 
 from __future__ import annotations

@@ -1,17 +1,21 @@
-"""Neural ODE layer for continuous-time sequence modeling.
+"""foreblocks.modules.blocks.ode.
 
-Inspired by:
+Continuous-time sequence modeling via Neural ODEs.
 
-    Chen et al., "Neural Ordinary Differential Equations", NeurIPS 2018.
-    Paper: https://arxiv.org/abs/1806.07366
+Evolves hidden state along a continuous time axis using an ODE solver, enabling
+arbitrary-resolution temporal interpolation and adaptive step sizing. Supports
+torchdiffeq's adjoint solver for memory-efficient training, with Euler and RK4
+fallbacks for dependency-free operation. Use when continuous-time dynamics are
+natural (irregular sampling, variable-length sequences) or when smooth
+interpolation between observations is needed.
 
-The module can use ``torchdiffeq``'s adjoint solver when available, and also
-keeps lightweight fixed/adaptive fallback solvers for local use.
+Core API:
+- NeuralODE: ODE-based layer with torchdiffeq or custom solvers
+
 """
 
 import torch
 import torch.nn as nn
-
 
 try:
     from torchdiffeq import odeint_adjoint

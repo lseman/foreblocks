@@ -1,9 +1,15 @@
-# etsformer.py
-
 """ETSformer-style time series forecasting head.
+
+Combines exponential smoothing-based decomposition with a transformer encoder to
+model seasonal and trend components separately. Decomposes input into trend and
+seasonal parts, encodes seasonal via transformer, then projects both to forecast.
 
 Based on: Wu et al., "ETSformer: Exponential Smoothing Transformer for Time Series Forecasting",
 Paper: https://arxiv.org/abs/2306.04113
+
+Core API:
+- ETSformer: exponential smoothing transformer with seasonal-trend decomposition
+
 """
 
 from __future__ import annotations
@@ -44,7 +50,9 @@ class ETSformer(nn.Module):
         super().__init__()
         self.pred_len = int(pred_len)
         self.in_channels = int(in_channels)
-        self.out_channels = int(out_channels) if out_channels is not None else self.in_channels
+        self.out_channels = (
+            int(out_channels) if out_channels is not None else self.in_channels
+        )
         self.ma_kernel = max(int(ma_kernel), 1)
 
         self.seasonal_in = nn.Linear(self.in_channels, d_model)
@@ -115,9 +123,13 @@ class ETSformer(nn.Module):
             h, _ = layer(h, src_mask=None, src_key_padding_mask=None)
         h = self.final_norm(h)
         seasonal_pooled = h.mean(dim=1)
-        seasonal_out = self.seasonal_proj(seasonal_pooled).view(B, self.pred_len, self.out_channels)
+        seasonal_out = self.seasonal_proj(seasonal_pooled).view(
+            B, self.pred_len, self.out_channels
+        )
 
         trend_pooled = trend.mean(dim=1)
-        trend_out = self.trend_proj(trend_pooled).view(B, self.pred_len, self.out_channels)
+        trend_out = self.trend_proj(trend_pooled).view(
+            B, self.pred_len, self.out_channels
+        )
 
         return seasonal_out + trend_out

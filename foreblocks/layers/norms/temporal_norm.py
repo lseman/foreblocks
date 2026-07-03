@@ -1,8 +1,14 @@
 """foreblocks.layers.norms.temporal_norm.
 
-This module implements the temporal norm pieces for its package.
-It belongs to the normalization layers and normalization helpers area of Foreblocks.
-It exposes classes such as TemporalNorm.
+Temporal normalization for sequence models.
+
+Implements TemporalNorm with standard and robust modes, causal mode for
+autoregressive decoding, and windowed normalization. Normalizes across
+the temporal dimension for [B, T, D] tensors with optional masking.
+
+Core API:
+- TemporalNorm: temporal dimension normalization with causal and windowed modes
+
 """
 
 import torch

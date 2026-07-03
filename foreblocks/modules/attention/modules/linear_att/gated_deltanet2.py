@@ -1,56 +1,20 @@
-"""
-gated_deltanet2.py - Gated DeltaNet-2 (GDN-2)
+#!/usr/bin/env python3
+"""foreblocks.modules.attention.modules.linear_att.gated_deltanet2.
 
-Based on: "Gated DeltaNet-2: Decoupling Erase and Write in Linear Attention"
-(Hatamizadeh, Choi, Kautz — arXiv:2605.22791v1, 2026)
+Gated DeltaNet-2: decoupled erase and write in linear attention (arXiv:2605.22791).
+
 https://arxiv.org/abs/2605.22791
 
-Key innovation over Gated DeltaNet
------------------------------------
-GatedDeltaNet uses a single scalar β_t for BOTH erase and write, which forces
-two different decisions (how much old content to erase on the key side vs how
-much new content to commit on the value side) to share the same value.
+Decouples the erase and write operations that a single β gate forces in
+GatedDeltaNet: per-channel erase gate b_t controls which key coordinates read
+old state, per-channel write gate w_t controls which value coordinates are
+committed, and per-channel decay α_t applies Mamba2-style forgetting. Three
+forward modes — sequential (exact training), chunk-parallel (WY form), and
+incremental (single-step decoding).
 
-Gated DeltaNet-2 decouples these:
-  • **Erase gate**  b_t ∈ [0, 1]^dk   — channel-wise, controls which key
-    coordinates are used to read old content from memory.
-  • **Write gate**  w_t ∈ [0, 1]^dv   — channel-wise, controls which value
-    coordinates are inserted into memory.
-  • **Forget/decay** α_t ∈ (0, 1]^dk  — channel-wise, same Mamba2 gating.
+Core API:
+- GatedDeltaNet2: GDN-2 with decoupled erase/write gates and chunk modes
 
-Core recurrence (per head, per token):
-    e_t = b_t ⊙ k_t          # gated erase direction
-    z_t = w_t ⊙ v_t          # gated write target
-    S̄_t = Diag(α_t) S_{t-1}  # apply decay
-    S_t = S̄_t + k_t (z_t − r_t)^T   # delta-rule update
-        where r_t = S̄_t^T e_t        # read from decayed state along erase dir
-
-In matrix form:
-    S_t = (I − k_t e_t^T) Diag(α_t) S_{t-1} + k_t z_t^T
-
-When b_t = β·1 and w_t = β·1, GDN-2 reduces to KDA.
-When further α_t = α·1, it reduces to GatedDeltaNet.
-
-Architecture
-------------
- 1. Per-head matrix state S ∈ R^{dk × dv} maintained by the delta rule.
- 2. Channel-wise erase gate b_t ∈ [0,1]^dk via independent projection.
- 3. Channel-wise write gate w_t ∈ [0,1]^dv via independent projection.
- 4. Channel-wise decay α_t ∈ (0,1]^dk via Mamba2-style gating.
- 5. Sigmoid output gate — data-dependent gating of retrieved memories.
- 6. Head-wise RMSNorm before the output gate.
- 7. Optional short (causal) depthwise conv on Q, K, V for local context.
- 8. Optional negative-eigenvalue mode: b_t → [0,2]^dk (allows state-tracking).
-
-Three forward modes
--------------------
- * **Sequential** — step-by-step, exact, suitable for training.
- * **Chunk-parallel** — reduce Python-loop overhead; exact WY form.
- * **Incremental** — single-step decoding with layer_state KV cache.
-
-Interface matches LinearAttention / KimiAttention:
-    forward(query, key, value, attn_mask, key_padding_mask, is_causal, layer_state)
-    → Tuple[Tensor, None, None]
 """
 
 from __future__ import annotations
@@ -71,7 +35,6 @@ from foreblocks.ops.attention import (
     fused_rmsnorm_sigmoid_gate,
 )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -84,7 +47,8 @@ class _CausalConv(nn.Module):
         super().__init__()
         self.pad = kernel_size - 1
         self.conv = nn.Conv1d(
-            d_model, d_model,
+            d_model,
+            d_model,
             kernel_size=kernel_size,
             groups=d_model,
             padding=self.pad,
@@ -257,7 +221,9 @@ class GatedDeltaNet2(nn.Module):
         """Row-wise L2-normalise last dim."""
         return t / (t.norm(dim=-1, keepdim=True).clamp_min(eps))
 
-    def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _project(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Linear project and apply optional short conv. Returns (Q_raw, K_raw, V_raw)."""
         q_raw = self.q_proj(x)
         k_raw = self.k_proj(x)
@@ -337,13 +303,13 @@ class GatedDeltaNet2(nn.Module):
 
     @staticmethod
     def _delta_step_gdn2(
-        S: torch.Tensor,            # [BH, Dk, Dv]  current state
-        k_t: torch.Tensor,          # [BH, Dk]       normalised key
-        v_t: torch.Tensor,          # [BH, Dv]       value
-        q_t: torch.Tensor,          # [BH, Dk]       normalised query
-        b_t: torch.Tensor,          # [BH, Dk, 1]    erase gate
-        w_t: torch.Tensor,          # [BH, Dv, 1]    write gate
-        alpha_t: torch.Tensor,      # [BH, Dk, 1]    channel-wise decay
+        S: torch.Tensor,  # [BH, Dk, Dv]  current state
+        k_t: torch.Tensor,  # [BH, Dk]       normalised key
+        v_t: torch.Tensor,  # [BH, Dv]       value
+        q_t: torch.Tensor,  # [BH, Dk]       normalised query
+        b_t: torch.Tensor,  # [BH, Dk, 1]    erase gate
+        w_t: torch.Tensor,  # [BH, Dv, 1]    write gate
+        alpha_t: torch.Tensor,  # [BH, Dk, 1]    channel-wise decay
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Gated DeltaNet-2 single-step recurrence.
@@ -383,14 +349,14 @@ class GatedDeltaNet2(nn.Module):
 
     def _chunk_parallel(
         self,
-        S0: torch.Tensor,   # [BH, Dk, Dv]  incoming state
-        Q: torch.Tensor,    # [BH, T, Dk]   normalised query
-        K: torch.Tensor,    # [BH, T, Dk]   normalised key
-        V: torch.Tensor,    # [BH, T, Dv]   value
-        b: torch.Tensor,    # [BH, T, dk, 1]  erase gate
-        w: torch.Tensor,    # [BH, T, dv, 1]  write gate
+        S0: torch.Tensor,  # [BH, Dk, Dv]  incoming state
+        Q: torch.Tensor,  # [BH, T, Dk]   normalised query
+        K: torch.Tensor,  # [BH, T, Dk]   normalised key
+        V: torch.Tensor,  # [BH, T, Dv]   value
+        b: torch.Tensor,  # [BH, T, dk, 1]  erase gate
+        w: torch.Tensor,  # [BH, T, dv, 1]  write gate
         alpha: torch.Tensor,  # [BH, T, dk, 1]  channel-wise decay
-        out: torch.Tensor,   # [BH, T, Dv]  output buffer
+        out: torch.Tensor,  # [BH, T, Dv]  output buffer
         C: int,
     ) -> torch.Tensor:
         """
@@ -415,9 +381,9 @@ class GatedDeltaNet2(nn.Module):
         # Promote to working precision and squeeze gate trailing dims.
         # Gates arrive as [BH, T, dk|dv, 1]; squeeze the trailing singleton.
         Qf, Kf, Vf = Q.to(work), K.to(work), V.to(work)
-        bf = b.to(work).squeeze(-1)         # [BH, T, dk]  erase gate
-        wf = w.to(work).squeeze(-1)         # [BH, T, dv]  write gate
-        af = alpha.to(work).squeeze(-1)     # [BH, T, dk]  channel-wise decay
+        bf = b.to(work).squeeze(-1)  # [BH, T, dk]  erase gate
+        wf = w.to(work).squeeze(-1)  # [BH, T, dv]  write gate
+        af = alpha.to(work).squeeze(-1)  # [BH, T, dk]  channel-wise decay
 
         S0f = S0.to(work)
         eye_cache = torch.eye(C, device=Qf.device, dtype=work)
@@ -425,29 +391,29 @@ class GatedDeltaNet2(nn.Module):
         for s in range(0, T, C):
             e = min(s + C, T)
             L = e - s
-            Qc, Kc, Vc = Qf[:, s:e], Kf[:, s:e], Vf[:, s:e]   # [BH, L, dk|dv]
-            bc, wc = bf[:, s:e], wf[:, s:e]                    # [BH, L, dk|dv]
-            ac = af[:, s:e]                                    # [BH, L, dk]
+            Qc, Kc, Vc = Qf[:, s:e], Kf[:, s:e], Vf[:, s:e]  # [BH, L, dk|dv]
+            bc, wc = bf[:, s:e], wf[:, s:e]  # [BH, L, dk|dv]
+            ac = af[:, s:e]  # [BH, L, dk]
 
             # ── 1. Cumulative within-chunk decay γ_r = ∏_{i≤r} α_i ─────────
             # log-space cumsum for stability; γ is the decay from chunk start
             # (exclusive of the token's own step is handled by indexing below).
-            log_alpha = ac.clamp_min(1e-12).log()           # [BH, L, dk]
-            log_gamma = torch.cumsum(log_alpha, dim=1)       # [BH, L, dk]  (inclusive)
-            gamma = log_gamma.exp()                          # [BH, L, dk]
+            log_alpha = ac.clamp_min(1e-12).log()  # [BH, L, dk]
+            log_gamma = torch.cumsum(log_alpha, dim=1)  # [BH, L, dk]  (inclusive)
+            gamma = log_gamma.exp()  # [BH, L, dk]
 
             # Gated erase/write directions.
-            e_dir = bc * Kc                                  # e_r = b_r ⊙ k_r   [BH, L, dk]
-            z_tgt = wc * Vc                                  # z_r = w_r ⊙ v_r   [BH, L, dv]
+            e_dir = bc * Kc  # e_r = b_r ⊙ k_r   [BH, L, dk]
+            z_tgt = wc * Vc  # z_r = w_r ⊙ v_r   [BH, L, dv]
 
             # ── 2. Decay-normalised vectors (Mamba2 / KDA trick) ───────────
             # Pull all decay onto a common frame so cross-token interactions
             # use bounded ratios γ_r/γ_j ∈ (0,1] for r ≥ j.
             #   k̄_j = γ_j^{-1} ⊙ k_j ,  ē_r = γ_r ⊙ e_r ,  q̄_r = γ_r ⊙ q_r
-            inv_gamma = (-log_gamma).exp()                   # γ^{-1}            [BH, L, dk]
-            K_bar = Kc * inv_gamma                           # [BH, L, dk]
-            E_bar = e_dir * gamma                            # [BH, L, dk]
-            Q_bar = Qc * gamma                               # [BH, L, dk]
+            inv_gamma = (-log_gamma).exp()  # γ^{-1}            [BH, L, dk]
+            K_bar = Kc * inv_gamma  # [BH, L, dk]
+            E_bar = e_dir * gamma  # [BH, L, dk]
+            Q_bar = Qc * gamma  # [BH, L, dk]
 
             # ── 3. WY transform: A = (I + tril(Ē K̄ᵀ, -1))⁻¹ ───────────────
             # The within-chunk delta interactions (token r erases content
@@ -455,14 +421,14 @@ class GatedDeltaNet2(nn.Module):
             EK = torch.einsum("bik,bjk->bij", E_bar, K_bar)  # [BH, L, L]
             Tmat = torch.tril(EK, diagonal=-1)
             I_L = eye_cache[:L, :L]
-            A_mat = I_L + Tmat                               # lower-tri, unit diag
+            A_mat = I_L + Tmat  # lower-tri, unit diag
 
             # Pseudo-write U = A·Z and pseudo-erase Y = A·(Ē·S0-readout coeff).
             #   For each token r: w-update is z_r minus what e_r reads from S0
             #   and from earlier in-chunk writes. Solve the triangular systems.
             # Readout of S0 along the (decayed) erase direction:
             E_S0 = torch.einsum("bik,bkd->bid", E_bar, S0f)  # [BH, L, dv]
-            rhs = z_tgt - E_S0                               # [BH, L, dv]
+            rhs = z_tgt - E_S0  # [BH, L, dv]
             U = torch.linalg.solve_triangular(A_mat, rhs, upper=False)  # [BH, L, dv]
 
             # ── 4. Output O_r = q_r·S_r ───────────────────────────────────
@@ -472,14 +438,14 @@ class GatedDeltaNet2(nn.Module):
             #   coeff_{rj} = 1_{r≥j} · (q̄_r · k̄_j)   (bounded decay ratios)
             QK = torch.einsum("bik,bjk->bij", Q_bar, K_bar)  # [BH, L, L]
             QK = torch.tril(QK, diagonal=0)
-            O_intra = torch.einsum("bij,bjd->bid", QK, U)    # [BH, L, dv]
+            O_intra = torch.einsum("bij,bjd->bid", QK, U)  # [BH, L, dv]
             out[:, s:e] = (O_inter + O_intra).to(dtype)
 
             # ── 5. State carry S_C = Diag(γ_L)·S0 + Σ_j (γ_L/γ_j ⊙ k_j) uⱼᵀ ─
-            gamma_end = gamma[:, -1:, :]                     # [BH, 1, dk]  γ at chunk end
-            K_tail = Kc * (gamma_end * inv_gamma)            # (γ_L/γ_j) ⊙ k_j  [BH, L, dk]
-            Kt_U = torch.einsum("bjk,bjd->bkd", K_tail, U)   # [BH, dk, dv]
-            S0f = gamma_end.transpose(1, 2) * S0f + Kt_U     # [BH, dk, dv]
+            gamma_end = gamma[:, -1:, :]  # [BH, 1, dk]  γ at chunk end
+            K_tail = Kc * (gamma_end * inv_gamma)  # (γ_L/γ_j) ⊙ k_j  [BH, L, dk]
+            Kt_U = torch.einsum("bjk,bjd->bkd", K_tail, U)  # [BH, dk, dv]
+            S0f = gamma_end.transpose(1, 2) * S0f + Kt_U  # [BH, dk, dv]
 
         return S0f.to(dtype)
 
@@ -571,9 +537,7 @@ class GatedDeltaNet2(nn.Module):
             bh = b.squeeze(-1).reshape(B, self.h, T, self.dk)
             wh = w.squeeze(-1).reshape(B, self.h, T, self.dv)
             Sh = S.reshape(B, self.h, self.dk, self.dv)
-            if can_use_fla_gdn2(
-                Qh, Kh, Vh, gh, bh, wh, Sh, 0, recurrent=True
-            ):
+            if can_use_fla_gdn2(Qh, Kh, Vh, gh, bh, wh, Sh, 0, recurrent=True):
                 out_h, S_h = fla_gdn2_forward(
                     Qh,
                     Kh,
@@ -593,25 +557,32 @@ class GatedDeltaNet2(nn.Module):
                 for t in range(T):
                     out[:, t], S = self._delta_step_gdn2(
                         S,
-                        K[:, t], V[:, t], Q[:, t],
-                        b[:, t], w[:, t], alpha[:, t],
+                        K[:, t],
+                        V[:, t],
+                        Q[:, t],
+                        b[:, t],
+                        w[:, t],
+                        alpha[:, t],
                     )
         else:
             S = S.detach()
             for t in range(T):
                 out[:, t], S = self._delta_step_gdn2(
                     S,
-                    K[:, t], V[:, t], Q[:, t],
-                    b[:, t], w[:, t], alpha[:, t],
+                    K[:, t],
+                    V[:, t],
+                    Q[:, t],
+                    b[:, t],
+                    w[:, t],
+                    alpha[:, t],
                 )
 
         # Output gate + head-wise RMSNorm
         out_h = out.reshape(B, self.h, T, self.dv)
         if not skip_gate_norm:
             g = self._output_gate(x)
-            if (
-                not torch.is_grad_enabled()
-                and can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight)
+            if not torch.is_grad_enabled() and can_use_fused_rmsnorm_sigmoid_gate(
+                out_h, g, self.h_rms.weight
             ):
                 out_h = fused_rmsnorm_sigmoid_gate(
                     out_h, g, self.h_rms.weight, self.h_rms.eps
@@ -668,16 +639,20 @@ class GatedDeltaNet2(nn.Module):
         )
 
         o_t, S_new = self._delta_step_gdn2(
-            S, K[:, 0], V[:, 0], Q[:, 0],
-            b[:, 0], w[:, 0], alpha[:, 0],
+            S,
+            K[:, 0],
+            V[:, 0],
+            Q[:, 0],
+            b[:, 0],
+            w[:, 0],
+            alpha[:, 0],
         )
 
         out_h = o_t.reshape(B, self.h, 1, self.dv)
         if not skip_gate_norm:
             g = self._output_gate(x_t)
-            if (
-                not torch.is_grad_enabled()
-                and can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight)
+            if not torch.is_grad_enabled() and can_use_fused_rmsnorm_sigmoid_gate(
+                out_h, g, self.h_rms.weight
             ):
                 out_h = fused_rmsnorm_sigmoid_gate(
                     out_h, g, self.h_rms.weight, self.h_rms.eps
@@ -725,7 +700,12 @@ class GatedDeltaNet2(nn.Module):
                 pad = key_padding_mask.unsqueeze(-1).to(dtype=x.dtype)
                 x = x * (1.0 - pad)
             y, next_s = self._forward_recurrent(
-                x, state=None, k=key, v=value, skip_proj=True, skip_gate_norm=skip_gate_norm
+                x,
+                state=None,
+                k=key,
+                v=value,
+                skip_proj=True,
+                skip_gate_norm=skip_gate_norm,
             )
             if layer_state is not None:
                 layer_state["gdn2_state"] = next_s
@@ -739,7 +719,9 @@ class GatedDeltaNet2(nn.Module):
             return y, None, None
 
         # ── Cross-attention ────────────────────────────────────────────────
-        is_cross = key is not query and key is not None and key.data_ptr() != query.data_ptr()
+        is_cross = (
+            key is not query and key is not None and key.data_ptr() != query.data_ptr()
+        )
         if is_cross:
             y = self._cross_attention_approx(query, key, value, key_padding_mask)
             return y, None, None
@@ -760,7 +742,9 @@ class GatedDeltaNet2(nn.Module):
             return y, None, {"gdn2_state": next_s}
 
         # ── Standard full-sequence forward ─────────────────────────────────
-        y, next_s = self._forward_recurrent(x, state=None, skip_gate_norm=skip_gate_norm)
+        y, next_s = self._forward_recurrent(
+            x, state=None, skip_gate_norm=skip_gate_norm
+        )
         return y, None, {"gdn2_state": next_s}
 
     # ── Cross-attention approximation ────────────────────────────────────────
@@ -778,8 +762,18 @@ class GatedDeltaNet2(nn.Module):
         device, dtype = query.device, query.dtype
         BH = B * self.h
 
-        k_raw = self.k_proj(key).view(B, Tm, self.h, self.dk).permute(0, 2, 1, 3).reshape(BH, Tm, self.dk)
-        v_raw = self.v_proj(value).view(B, Tm, self.h, self.dv).permute(0, 2, 1, 3).reshape(BH, Tm, self.dv)
+        k_raw = (
+            self.k_proj(key)
+            .view(B, Tm, self.h, self.dk)
+            .permute(0, 2, 1, 3)
+            .reshape(BH, Tm, self.dk)
+        )
+        v_raw = (
+            self.v_proj(value)
+            .view(B, Tm, self.h, self.dv)
+            .permute(0, 2, 1, 3)
+            .reshape(BH, Tm, self.dv)
+        )
         K_m = self._l2_norm(k_raw)
         V_m = v_raw
 
@@ -795,12 +789,21 @@ class GatedDeltaNet2(nn.Module):
 
         S = self._init_state(BH, device, dtype)
         for t in range(Tm):
-            b_t, w_t, alpha_t = ones_1d, ones_v, torch.ones(BH, self.dk, 1, device=device, dtype=dtype)
+            b_t, w_t, alpha_t = (
+                ones_1d,
+                ones_v,
+                torch.ones(BH, self.dk, 1, device=device, dtype=dtype),
+            )
             _, S = self._delta_step_gdn2(
                 S, K_m[:, t], V_m[:, t], K_m[:, t], b_t, w_t, alpha_t
             )
 
-        q_raw = self.q_proj(query).view(B, Tq, self.h, self.dk).permute(0, 2, 1, 3).reshape(BH, Tq, self.dk)
+        q_raw = (
+            self.q_proj(query)
+            .view(B, Tq, self.h, self.dk)
+            .permute(0, 2, 1, 3)
+            .reshape(BH, Tq, self.dk)
+        )
         Q = self._l2_norm(q_raw)
 
         out = torch.zeros(BH, Tq, self.dv, device=device, dtype=dtype)

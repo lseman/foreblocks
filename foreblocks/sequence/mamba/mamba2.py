@@ -1,4 +1,16 @@
-"""Mamba2-style SSM block with **diagonal A** and optional **chunked scan**."""
+"""foreblocks.sequence.mamba.mamba2.
+
+Mamba2-style SSM block with diagonal A and optional chunked scan.
+
+Implements the Mamba2 architecture: diagonal A parameter per head, chunked
+SSD (state-space scan) with torch or Triton backend, fused-out projection
+(RMSNormGated), and a single-token autoregressive step for decoding. Supports
+both standard (split conv + scan) and fused (single Triton kernel) forward paths.
+
+Core API:
+- Mamba2Block: Mamba2-style SSM block with diagonal A and chunked scan
+
+"""
 
 from __future__ import annotations
 

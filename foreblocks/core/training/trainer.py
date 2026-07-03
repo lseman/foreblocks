@@ -1,14 +1,18 @@
-"""Enhanced Trainer with NAS and conformal prediction support.
+"""foreblocks.core.training.trainer.
 
-This module is a thin orchestrator that delegates to focused submodules:
+Unified training loop with NAS, conformal prediction, and MoE logging.
 
-* ``batch_io`` – batch unpacking and device transfer
-* ``training_loop`` – ``train_epoch``, ``evaluate``, forward/backward passes
-* ``logging`` – MLTracker and MoE logging helpers
-* ``conformal_trainer`` – conformal calibration, update, and prediction API
-* ``visualization`` – prediction and interval plots
+The ``Trainer`` orchestrates full training with optional validation, early stopping,
+checkpointing, and conformal prediction calibration. It integrates NAS alpha
+optimization, MoE expert logging, and provides visualization helpers for
+predictions and conformal intervals.
 
-See the submodule docstrings for implementation details.
+Core API:
+- Trainer: unified training loop with NAS, conformal prediction, and MoE logging
+- Trainer.train(): full training loop with optional validation and early stopping
+- Trainer.calibrate_conformal() / predict_with_intervals() / compute_coverage(): conformal prediction API
+- Trainer.plot_prediction() / plot_intervals(): visualization
+
 """
 
 from __future__ import annotations
@@ -42,7 +46,6 @@ from foreblocks.core.training.history import TrainingHistory
 from foreblocks.core.training.losses import LossComputer
 from foreblocks.core.training.nas import NASHelper
 
-
 # ── Optional imports ────────────────────────────────────────────────────
 
 try:
@@ -71,6 +74,7 @@ except Exception:
 # ========================================================================
 # Trainer
 # ========================================================================
+
 
 class Trainer:
     """Unified training loop with NAS, conformal prediction, and MoE logging.
@@ -173,7 +177,9 @@ class Trainer:
 
                 self.mltracker = MLTracker(tracking_uri=mltracker_uri)
             except Exception as _mt_err:
-                print(f"[MLTracker] Auto-track init failed, tracking disabled: {_mt_err}")
+                print(
+                    f"[MLTracker] Auto-track init failed, tracking disabled: {_mt_err}"
+                )
                 self.mltracker = None
         else:
             self.mltracker = None
@@ -186,7 +192,9 @@ class Trainer:
             self.config = config or TrainingConfig()
 
         # ── Device & AMP ───────────────────────────────────────────────
-        self._amp_enabled = getattr(self.config, "use_amp", False) and self.device.type == "cuda"
+        self._amp_enabled = (
+            getattr(self.config, "use_amp", False) and self.device.type == "cuda"
+        )
         self.scaler: GradScaler | None = GradScaler() if self._amp_enabled else None
 
         # ── Optimizer ──────────────────────────────────────────────────
@@ -203,6 +211,7 @@ class Trainer:
             # LLRD only applies to weight params, not alpha params
             if getattr(self.config, "use_llrd", False):
                 from foreblocks.core.training.llrd import get_llrd_param_groups
+
                 param_groups = get_llrd_param_groups(
                     self.model,
                     base_lr=self.config.learning_rate,
@@ -212,7 +221,10 @@ class Trainer:
                 # Filter to only include NAS weight params
                 weight_param_ids = {id(p) for p in _weight_params}
                 param_groups = [
-                    {**g, "params": [p for p in g["params"] if id(p) in weight_param_ids]}
+                    {
+                        **g,
+                        "params": [p for p in g["params"] if id(p) in weight_param_ids],
+                    }
                     for g in param_groups
                 ]
                 param_groups = [g for g in param_groups if g["params"]]
@@ -225,6 +237,7 @@ class Trainer:
             # LLRD: build param groups by layer depth
             if getattr(self.config, "use_llrd", False):
                 from foreblocks.core.training.llrd import get_llrd_param_groups
+
                 param_groups = get_llrd_param_groups(
                     self.model,
                     base_lr=self.config.learning_rate,
@@ -254,7 +267,9 @@ class Trainer:
         # ── MoE logging ────────────────────────────────────────────────
         self.moe_log: MoELogger | None = None
         self.moe_meta_builder = (
-            moe_meta_builder if moe_meta_builder is not None else self._default_moe_meta_builder
+            moe_meta_builder
+            if moe_meta_builder is not None
+            else self._default_moe_meta_builder
         )
         self._wire_moe_logger(self.model, None, self._get_step, False)
 
@@ -284,14 +299,22 @@ class Trainer:
             tsp_window=getattr(self.config, "conformal_tsp_window", 5000),
             cptc_window=getattr(self.config, "conformal_cptc_window", 500),
             cptc_tau=getattr(self.config, "conformal_cptc_tau", 1.0),
-            cptc_hard_state_filter=getattr(self.config, "conformal_cptc_hard_state_filter", False),
+            cptc_hard_state_filter=getattr(
+                self.config, "conformal_cptc_hard_state_filter", False
+            ),
             afocp_feature_dim=getattr(self.config, "conformal_afocp_feature_dim", 128),
             afocp_attn_hidden=getattr(self.config, "conformal_afocp_attn_hidden", 64),
             afocp_window=getattr(self.config, "conformal_afocp_window", 500),
             afocp_tau=getattr(self.config, "conformal_afocp_tau", 1.0),
-            afocp_internal_feat_hidden=getattr(self.config, "conformal_afocp_internal_feat_hidden", 256),
-            afocp_internal_feat_depth=getattr(self.config, "conformal_afocp_internal_feat_depth", 3),
-            afocp_internal_feat_dropout=getattr(self.config, "conformal_afocp_internal_feat_dropout", 0.1),
+            afocp_internal_feat_hidden=getattr(
+                self.config, "conformal_afocp_internal_feat_hidden", 256
+            ),
+            afocp_internal_feat_depth=getattr(
+                self.config, "conformal_afocp_internal_feat_depth", 3
+            ),
+            afocp_internal_feat_dropout=getattr(
+                self.config, "conformal_afocp_internal_feat_dropout", 0.1
+            ),
             afocp_online_lr=getattr(self.config, "conformal_afocp_online_lr", 0.0),
             afocp_online_steps=getattr(self.config, "conformal_afocp_online_steps", 1),
         )
@@ -325,9 +348,15 @@ class Trainer:
         for child in module.modules():
             try:
                 is_moe = False
-                if MoEFeedForwardDMoE is not None and isinstance(child, MoEFeedForwardDMoE):
+                if MoEFeedForwardDMoE is not None and isinstance(
+                    child, MoEFeedForwardDMoE
+                ):
                     is_moe = True
-                if FeedForwardBlock is not None and isinstance(child, FeedForwardBlock) and getattr(child, "use_moe", False):
+                if (
+                    FeedForwardBlock is not None
+                    and isinstance(child, FeedForwardBlock)
+                    and getattr(child, "use_moe", False)
+                ):
                     is_moe = True
                     moe_block = getattr(child, "block", None)
                     if moe_block is not None:
@@ -384,6 +413,7 @@ class Trainer:
             )
         if stype == "warmup_cosine":
             from foreblocks.core.training.llrd import WarmupCosineLR
+
             # Compute warmup_steps: either explicit or from ratio
             warmup_steps = getattr(self.config, "warmup_steps", 0)
             if warmup_steps == 0:
@@ -404,7 +434,8 @@ class Trainer:
                 self.optimizer,
                 warmup_steps=warmup_steps,
                 total_steps=total_steps,
-                min_lr_ratio=getattr(self.config, "min_lr", 1e-6) / getattr(self.config, "learning_rate", 1e-3),
+                min_lr_ratio=getattr(self.config, "min_lr", 1e-6)
+                / getattr(self.config, "learning_rate", 1e-3),
             )
         return None
 
@@ -428,6 +459,7 @@ class Trainer:
             return
         # WarmupCosineLR is stepped per-optimizer-step, not per-epoch
         from foreblocks.core.training.llrd import WarmupCosineLR
+
         if isinstance(self.scheduler, WarmupCosineLR):
             return
         metric = val_loss if val_loss is not None else train_loss
@@ -447,7 +479,9 @@ class Trainer:
         """Separate architecture parameters (α) from weights (θ)."""
         if not self.nas_helper.has_nas:
             return
-        self._alpha_optimizer, self._weight_params, self._alpha_params = self.nas_helper._setup_optimizer(self.optimizer, self.model)
+        self._alpha_optimizer, self._weight_params, self._alpha_params = (
+            self.nas_helper._setup_optimizer(self.optimizer, self.model)
+        )
 
     def _get_alpha_optimizer(self) -> torch.optim.Optimizer | None:
         """Return the alpha optimizer (or the main optimizer if NAS is disabled)."""
@@ -470,7 +504,9 @@ class Trainer:
     def alpha_optimizer(self, value: torch.optim.Optimizer | None) -> None:
         self._alpha_optimizer = value
 
-    def train_epoch(self, train_loader: DataLoader, val_loader: DataLoader | None = None) -> tuple[float, dict[str, float]]:
+    def train_epoch(
+        self, train_loader: DataLoader, val_loader: DataLoader | None = None
+    ) -> tuple[float, dict[str, float]]:
         """Train for one epoch (thin wrapper around ``training_loop.train_epoch``).
 
         Returns ``(total_loss, avg_components)``.
@@ -478,7 +514,10 @@ class Trainer:
         _global_step = {"step": self.global_step}
         # Pass step-level scheduler (only WarmupCosineLR for now)
         from foreblocks.core.training.llrd import WarmupCosineLR
-        step_scheduler = self.scheduler if isinstance(self.scheduler, WarmupCosineLR) else None
+
+        step_scheduler = (
+            self.scheduler if isinstance(self.scheduler, WarmupCosineLR) else None
+        )
         train_loss, components, batches = training_loop.train_epoch(
             model=self.model,
             train_loader=train_loader,
@@ -532,7 +571,9 @@ class Trainer:
         callbacks = callbacks or []
         num_epochs = epochs if epochs is not None else self.config.num_epochs
 
-        run_context, run_name = _log.init_mltracker_run_context(self.mltracker, run_name)
+        run_context, run_name = _log.init_mltracker_run_context(
+            self.mltracker, run_name
+        )
 
         with run_context:
             if self.mltracker and self.mltracker._active_run:
@@ -554,7 +595,12 @@ class Trainer:
                     _global_step = {"step": self.global_step}
                     # Pass step-level scheduler (only WarmupCosineLR for now)
                     from foreblocks.core.training.llrd import WarmupCosineLR
-                    step_scheduler = self.scheduler if isinstance(self.scheduler, WarmupCosineLR) else None
+
+                    step_scheduler = (
+                        self.scheduler
+                        if isinstance(self.scheduler, WarmupCosineLR)
+                        else None
+                    )
                     train_loss, components, batches = training_loop.train_epoch(
                         model=self.model,
                         train_loader=train_loader,
@@ -578,22 +624,38 @@ class Trainer:
                     val_loss = self.evaluate(val_loader) if val_loader else None
 
                     lr = self.optimizer.param_groups[0]["lr"]
-                    model_info = self.model.get_model_size() if hasattr(self.model, "get_model_size") else None
+                    model_info = (
+                        self.model.get_model_size()
+                        if hasattr(self.model, "get_model_size")
+                        else None
+                    )
 
                     alpha_info = None
-                    if getattr(self.config, "train_nas", False) and self.nas_helper.has_nas:
+                    if (
+                        getattr(self.config, "train_nas", False)
+                        and self.nas_helper.has_nas
+                    ):
                         alpha_info = self.nas_helper.collect_alpha_report()
 
-                    self.history.record_epoch(train_loss, val_loss, lr, components, model_info, alpha_info)
+                    self.history.record_epoch(
+                        train_loss, val_loss, lr, components, model_info, alpha_info
+                    )
 
                     if val_loader:
-                        if val_loss + getattr(self.config, "min_delta", 0) < self.best_val_loss:
+                        if (
+                            val_loss + getattr(self.config, "min_delta", 0)
+                            < self.best_val_loss
+                        ):
                             self.best_val_loss = val_loss
                             self.epochs_without_improvement = 0
-                            self.best_model_state = copy.deepcopy(self.model.state_dict())
+                            self.best_model_state = copy.deepcopy(
+                                self.model.state_dict()
+                            )
                         else:
                             self.epochs_without_improvement += 1
-                        if self.epochs_without_improvement >= getattr(self.config, "patience", 10):
+                        if self.epochs_without_improvement >= getattr(
+                            self.config, "patience", 10
+                        ):
                             print(f"\nEarly stopping at epoch {epoch + 1}")
                             completed_epochs = epoch + 1
                             stopped_early = True
@@ -604,27 +666,45 @@ class Trainer:
 
                     for cb in callbacks:
                         if hasattr(cb, "on_epoch_end"):
-                            cb.on_epoch_end(self, epoch, {
-                                "epoch": epoch,
-                                "train_loss": train_loss,
-                                "val_loss": val_loss,
-                                "lr": lr,
-                            })
+                            cb.on_epoch_end(
+                                self,
+                                epoch,
+                                {
+                                    "epoch": epoch,
+                                    "train_loss": train_loss,
+                                    "val_loss": val_loss,
+                                    "lr": lr,
+                                },
+                            )
 
                     _log.log_mltracker_metrics(
-                        self.mltracker, epoch, train_loss, lr, components, val_loss,
+                        self.mltracker,
+                        epoch,
+                        train_loss,
+                        lr,
+                        components,
+                        val_loss,
                     )
                     completed_epochs = epoch + 1
 
-            _log.log_mltracker_final(self.mltracker, completed_epochs, stopped_early, self.best_val_loss)
+            _log.log_mltracker_final(
+                self.mltracker, completed_epochs, stopped_early, self.best_val_loss
+            )
 
         if self.best_model_state is not None:
             self.model.load_state_dict(self.best_model_state)
 
-        _log.log_model_to_last_run(self.mltracker, self._last_run_id, self.model, model_name="model")
+        _log.log_model_to_last_run(
+            self.mltracker, self._last_run_id, self.model, model_name="model"
+        )
 
-        if getattr(self.config, "conformal_enabled", False) and self.conformal_engine is not None:
-            print("\n[Conformal] Engine ready. Call calibrate_conformal(cal_loader) with held-out data.")
+        if (
+            getattr(self.config, "conformal_enabled", False)
+            and self.conformal_engine is not None
+        ):
+            print(
+                "\n[Conformal] Engine ready. Call calibrate_conformal(cal_loader) with held-out data."
+            )
 
         return self.history
 
@@ -633,8 +713,12 @@ class Trainer:
     def evaluate(self, dataloader: DataLoader) -> float:
         """Evaluate model on *dataloader* and return mean loss."""
         return training_loop.evaluate(
-            self.model, dataloader, self.device, self._amp_context,
-            self.moe_log, self.moe_meta_builder,
+            self.model,
+            dataloader,
+            self.device,
+            self._amp_context,
+            self.moe_log,
+            self.moe_meta_builder,
         )
 
     # ── Conformal API ──────────────────────────────────────────────────
@@ -651,9 +735,14 @@ class Trainer:
     ) -> None:
         """Calibrate conformal engine with held-out calibration data."""
         _conf.calibrate_conformal(
-            self, cal_loader, state_model, feature_extractor,
-            jackknife_cv_models, jackknife_cv_indices,
-            enbpi_member_models, enbpi_boot_indices,
+            self,
+            cal_loader,
+            state_model,
+            feature_extractor,
+            jackknife_cv_models,
+            jackknife_cv_indices,
+            enbpi_member_models,
+            enbpi_boot_indices,
         )
 
     def update_conformal(
@@ -665,13 +754,18 @@ class Trainer:
         sequential: bool = True,
     ) -> None:
         """Online update for adaptive conformal methods."""
-        _conf.update_conformal(self, X_new, y_new, state_model, feature_extractor, sequential)
+        _conf.update_conformal(
+            self, X_new, y_new, state_model, feature_extractor, sequential
+        )
 
     def predict_with_intervals(
         self,
         X: torch.Tensor,
         return_tensors: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> (
+        tuple[np.ndarray, np.ndarray, np.ndarray]
+        | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ):
         """Predict with conformal intervals."""
         return _conf.predict_with_intervals(self, X, return_tensors)
 
@@ -691,7 +785,9 @@ class Trainer:
         sequential: bool | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Streaming (rolling) prediction over a DataLoader."""
-        return _conf.predict_with_intervals_streaming(self, dataloader, do_update, return_numpy, sequential)
+        return _conf.predict_with_intervals_streaming(
+            self, dataloader, do_update, return_numpy, sequential
+        )
 
     def compute_coverage_streaming(
         self,
@@ -711,7 +807,11 @@ class Trainer:
         save_dict: dict[str, Any] = {
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "config": self.config.__dict__ if hasattr(self.config, "__dict__") else dict(self.config),
+            "config": (
+                self.config.__dict__
+                if hasattr(self.config, "__dict__")
+                else dict(self.config)
+            ),
             "history": {
                 "train_losses": self.history.train_losses,
                 "val_losses": self.history.val_losses,
@@ -722,7 +822,10 @@ class Trainer:
         if self.alpha_optimizer is not None:
             save_dict["alpha_optimizer_state_dict"] = self.alpha_optimizer.state_dict()
 
-        if self.conformal_engine is not None and getattr(self.conformal_engine, "radii", None) is not None:
+        if (
+            self.conformal_engine is not None
+            and getattr(self.conformal_engine, "radii", None) is not None
+        ):
             save_dict["conformal_radii"] = self.conformal_engine.radii
             save_dict["conformal_method"] = self.conformal_engine.method
 
@@ -734,8 +837,13 @@ class Trainer:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.to(self.device)
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if "alpha_optimizer_state_dict" in checkpoint and self.alpha_optimizer is not None:
-            self.alpha_optimizer.load_state_dict(checkpoint["alpha_optimizer_state_dict"])
+        if (
+            "alpha_optimizer_state_dict" in checkpoint
+            and self.alpha_optimizer is not None
+        ):
+            self.alpha_optimizer.load_state_dict(
+                checkpoint["alpha_optimizer_state_dict"]
+            )
         if "config" in checkpoint:
             if hasattr(self.config, "update"):
                 self.config.update(**checkpoint["config"])
@@ -771,8 +879,12 @@ class Trainer:
     ) -> dict[str, float]:
         """Compute evaluation metrics via ``ModelEvaluator``."""
         evaluator = ModelEvaluator(self)
-        result = evaluator.compute_metrics(X_val, y_val, batch_size, graph_kwargs=graph_kwargs)
-        _log.log_to_last_run(self.mltracker, self._last_run_id, result, step=None, prefix="eval/")
+        result = evaluator.compute_metrics(
+            X_val, y_val, batch_size, graph_kwargs=graph_kwargs
+        )
+        _log.log_to_last_run(
+            self.mltracker, self._last_run_id, result, step=None, prefix="eval/"
+        )
         return result
 
     def cv(
@@ -787,7 +899,9 @@ class Trainer:
     ) -> dict[str, Any]:
         """K-fold cross-validation via ``ModelEvaluator``."""
         evaluator = ModelEvaluator(self)
-        return evaluator.cross_validation(X, y, n_windows, horizon, step_size, batch_size, graph_kwargs=graph_kwargs)
+        return evaluator.cross_validation(
+            X, y, n_windows, horizon, step_size, batch_size, graph_kwargs=graph_kwargs
+        )
 
     # ── Visualization ──────────────────────────────────────────────────
 
@@ -809,8 +923,19 @@ class Trainer:
         """Plot model predictions against actual values."""
         _viz._require_matplotlib()
         fig = _viz.plot_prediction(
-            self, X_val, y_val, graph_kwargs, full_series, offset, stride,
-            figsize, show, names, pred_color, series_color, save_path,
+            self,
+            X_val,
+            y_val,
+            graph_kwargs,
+            full_series,
+            offset,
+            stride,
+            figsize,
+            show,
+            names,
+            pred_color,
+            series_color,
+            save_path,
         )
         if self.mltracker and self._last_run_id:
             _log.log_figure_to_last_run(self.mltracker, self._last_run_id, fig)
@@ -838,12 +963,21 @@ class Trainer:
         """Plot predictions with conformal intervals."""
         _viz._require_matplotlib()
 
-        if self.conformal_engine is None or getattr(self.conformal_engine, "radii", None) is None:
-            raise RuntimeError("Conformal engine not calibrated. Call calibrate_conformal() first.")
+        if (
+            self.conformal_engine is None
+            or getattr(self.conformal_engine, "radii", None) is None
+        ):
+            raise RuntimeError(
+                "Conformal engine not calibrated. Call calibrate_conformal() first."
+            )
 
-        val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=256, shuffle=False)
+        val_loader = DataLoader(
+            TensorDataset(X_val, y_val), batch_size=256, shuffle=False
+        )
         preds, lower, upper, y_stream = self.predict_with_intervals_streaming(
-            val_loader, do_update=do_update, return_numpy=True,
+            val_loader,
+            do_update=do_update,
+            return_numpy=True,
         )
 
         N, H, D = preds.shape
@@ -852,7 +986,11 @@ class Trainer:
         if full_series is None:
             raise ValueError("full_series must be provided for time-aligned plotting.")
 
-        series = full_series.detach().cpu().numpy() if isinstance(full_series, torch.Tensor) else full_series
+        series = (
+            full_series.detach().cpu().numpy()
+            if isinstance(full_series, torch.Tensor)
+            else full_series
+        )
         if series.ndim == 1:
             series = series[:, None]
 
@@ -871,9 +1009,13 @@ class Trainer:
             if xs_full.ndim != 1:
                 raise ValueError("time_index must be 1-dimensional.")
             if len(xs_full) < coverage_end:
-                raise ValueError(f"time_index must have at least {coverage_end} elements, got {len(xs_full)}.")
+                raise ValueError(
+                    f"time_index must have at least {coverage_end} elements, got {len(xs_full)}."
+                )
             if offset + seq_len >= len(xs_full):
-                raise ValueError(f"time_index must include the first forecast boundary at {offset + seq_len}.")
+                raise ValueError(
+                    f"time_index must include the first forecast boundary at {offset + seq_len}."
+                )
             xs = xs_full[:coverage_end]
             first_forecast_x = xs_full[offset + seq_len]
             xlabel = "Time"
@@ -896,8 +1038,12 @@ class Trainer:
                 for j in range(D_plot):
                     pred_col = j if D > j else 0
                     agg_pred[start:end, j] += preds[k, :h, pred_col]
-                    agg_low[start:end, j] = np.minimum(agg_low[start:end, j], lower[k, :h, pred_col])
-                    agg_up[start:end, j] = np.maximum(agg_up[start:end, j], upper[k, :h, pred_col])
+                    agg_low[start:end, j] = np.minimum(
+                        agg_low[start:end, j], lower[k, :h, pred_col]
+                    )
+                    agg_up[start:end, j] = np.maximum(
+                        agg_up[start:end, j], upper[k, :h, pred_col]
+                    )
                 count[start:end] += 1
             have = count >= min_count
             mean_pred = np.zeros_like(agg_pred)
@@ -980,20 +1126,48 @@ class Trainer:
         interval_widths = mean_up - mean_low
         n_rows = D_plot + (1 if show_width_plot else 0)
 
-        fig, axes = plt.subplots(n_rows, 1, figsize=(figsize[0], figsize[1] * n_rows), sharex=True)
+        fig, axes = plt.subplots(
+            n_rows, 1, figsize=(figsize[0], figsize[1] * n_rows), sharex=True
+        )
         axes = np.atleast_1d(axes)
 
         for j in range(D_plot):
             ax = axes[j]
-            ax.plot(xs, series[:coverage_end, j], label=f"Actual {names[j]}", alpha=0.8, linewidth=1)
+            ax.plot(
+                xs,
+                series[:coverage_end, j],
+                label=f"Actual {names[j]}",
+                alpha=0.8,
+                linewidth=1,
+            )
             mask = have[:coverage_end]
             if mask.any():
                 yp = mean_pred[:coverage_end, j]
                 yl = mean_low[:coverage_end, j]
                 yu = mean_up[:coverage_end, j]
-                ax.plot(xs[mask], yp[mask], label=f"Predicted {names[j]}", linestyle="--", color=pred_color, linewidth=1)
-                ax.fill_between(xs[mask], yl[mask], yu[mask], color=interval_color, alpha=interval_alpha, label=f"Interval ({aggregation})")
-            ax.axvline(first_forecast_x, color="gray", linestyle="--", alpha=0.5, label="First forecast")
+                ax.plot(
+                    xs[mask],
+                    yp[mask],
+                    label=f"Predicted {names[j]}",
+                    linestyle="--",
+                    color=pred_color,
+                    linewidth=1,
+                )
+                ax.fill_between(
+                    xs[mask],
+                    yl[mask],
+                    yu[mask],
+                    color=interval_color,
+                    alpha=interval_alpha,
+                    label=f"Interval ({aggregation})",
+                )
+            ax.axvline(
+                first_forecast_x,
+                color="gray",
+                linestyle="--",
+                alpha=0.5,
+                label="First forecast",
+            )
             ax.set_title(f"{names[j]} — Forecast with Conformal Intervals")
             ax.legend(loc="upper left", fontsize=8)
             ax.grid(True, alpha=0.3)
@@ -1003,7 +1177,13 @@ class Trainer:
             for j in range(D_plot):
                 mask = have[:coverage_end]
                 widths_j = interval_widths[:coverage_end, j]
-                ax_width.plot(xs[mask], widths_j[mask], label=f"Width {names[j]}", alpha=0.8, linewidth=1)
+                ax_width.plot(
+                    xs[mask],
+                    widths_j[mask],
+                    label=f"Width {names[j]}",
+                    alpha=0.8,
+                    linewidth=1,
+                )
             ax_width.axvline(first_forecast_x, color="gray", linestyle="--", alpha=0.5)
             ax_width.set_ylabel("Interval Width")
             ax_width.set_title("Adaptive Interval Widths Over Time")
@@ -1029,11 +1209,19 @@ class Trainer:
         """Heatmap of conformal misses (outside interval) for streaming evaluation."""
         _viz._require_matplotlib()
 
-        if self.conformal_engine is None or getattr(self.conformal_engine, "radii", None) is None:
-            raise RuntimeError("Conformal engine not calibrated. Call calibrate_conformal() first.")
+        if (
+            self.conformal_engine is None
+            or getattr(self.conformal_engine, "radii", None) is None
+        ):
+            raise RuntimeError(
+                "Conformal engine not calibrated. Call calibrate_conformal() first."
+            )
 
         preds, L, U, y_true = self.predict_with_intervals_streaming(
-            dataloader, do_update=do_update, return_numpy=True, sequential=sequential,
+            dataloader,
+            do_update=do_update,
+            return_numpy=True,
+            sequential=sequential,
         )
 
         N, H, D = L.shape
@@ -1046,7 +1234,14 @@ class Trainer:
 
         fig, ax = plt.subplots(figsize=figsize)
         binary_cmap = ListedColormap(["white", "black"])
-        im = ax.imshow(miss.astype(float), aspect="auto", interpolation="nearest", cmap=binary_cmap, vmin=0, vmax=1)
+        im = ax.imshow(
+            miss.astype(float),
+            aspect="auto",
+            interpolation="nearest",
+            cmap=binary_cmap,
+            vmin=0,
+            vmax=1,
+        )
 
         ax.set_xlabel("Horizon")
         ax.set_ylabel("Window index (stream order)")

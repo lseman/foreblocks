@@ -1,8 +1,16 @@
 """foreblocks.anomaly.models.omni_anomaly.
 
-This module implements the omni anomaly pieces for its package.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as OmniAnomaly.
+GRU-VAE model for multivariate window anomaly detection.
+
+Uses a GRU-based variational autoencoder to learn the joint distribution of normal
+multivariate windows in the latent space. Anomaly is detected via reconstruction error
+and KL divergence from the prior. Inspired by OmniAnomaly, it captures both temporal
+dependencies across timesteps and cross-feature correlations. Use when you need a
+compact RNN-based model for multivariate anomaly detection without transformers.
+
+Core API:
+- OmniAnomaly: GRU-VAE backbone for multivariate anomaly detection
+
 """
 
 from __future__ import annotations

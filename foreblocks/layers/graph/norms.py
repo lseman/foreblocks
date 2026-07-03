@@ -1,8 +1,17 @@
 """foreblocks.layers.graph.norms.
 
-This module implements the norms pieces for its package.
-It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
-It exposes classes such as GraphNorm.
+Graph-specific normalization layers and activation helpers.
+
+Provides GraphNorm (normalization across node dimension for [B,T,N,F] tensors),
+activation factory, and feature normalization utilities. Designed for
+spatio-temporal graph neural networks where normalization must respect
+the node and feature dimensions.
+
+Core API:
+- GraphNorm: node-dimension normalization for [B, T, N, F] tensors
+- make_activation: activation factory
+- make_feature_norm: feature dimension normalization
+
 """
 
 from __future__ import annotations
@@ -13,7 +22,6 @@ import torch
 import torch.nn as nn
 
 from foreblocks.layers.graph.common import ActivationType, Tensor
-
 
 NormStrategy = Literal["pre_norm", "post_norm", "sandwich_norm", "none"]
 

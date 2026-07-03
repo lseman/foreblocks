@@ -1,7 +1,29 @@
 """foreblocks.modules.heads.modules.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+Reusable head modules for time-series preprocessing and feature transformation.
+
+Provides sequence-preserving head modules including wavelet decomposition,
+Fourier seasonal extraction, multi-kernel convolution, multiscale pyramid,
+patch embedding, RevIN normalization, time2vec encoding, and per-feature
+time attention. Use as preprocessing or feature-engineering layers in
+forecasting transformer architectures.
+
+Core API:
+- HaarWaveletTopK, HaarWaveletTopKHead: wavelet analysis with sparse detail
+- LearnableFourierSeasonal, LearnableFourierSeasonalHead: Fourier seasonal decomposition
+- MultiKernelConvHead: multi-kernel depthwise conv
+- MultiScaleConv, MultiScaleConvHead: multiscale pyramid with spectral filtering
+- PatchEmbed, PatchEmbedHead: depthwise patch embedding
+- RevIN, RevINHead: reversible instance normalization
+- Time2Vec, Time2VecHead: periodic temporal encoding
+- TimeAttention, TimeAttentionHead: per-feature time Transformer
+- DAIN, DAINHead: deep attention interpolation
+- DecompositionBlock, DecompositionHead: trend-seasonality decomposition
+- Differencing, DifferencingHead: reversible differencing
+- DropoutTSHead: dropout-based temporal series regularization
+- FFTTopK, FFTTopKHead: FFT-based sparse decomposition
+- Chronos2EmbedHead: Chronos-2 style embeddings
+
 """
 
 from foreblocks.modules.heads.modules.chronos2_embed_head import Chronos2EmbedHead
@@ -36,7 +58,6 @@ from foreblocks.modules.heads.modules.time_attention_head import (
     TimeAttention,
     TimeAttentionHead,
 )
-
 
 __all__ = [
     "Chronos2EmbedHead",

@@ -1,8 +1,17 @@
 """foreblocks.anomaly.models.reconstruction.
 
-This module implements the reconstruction pieces for its package.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as MLPVAE, TransformerVAE.
+Reconstruction-based anomaly detectors using autoencoders and VAEs.
+
+Provides compact MLP-based and transformer-based VAEs that learn to reconstruct normal
+windows. Anomaly is scored via reconstruction error — windows that the model cannot
+reconstruct well are anomalous. The MLPVAE offers low-latency baselines; the
+TransformerVAE captures temporal dependencies via encoder blocks. Use when you need
+a reconstruction baseline that is fast to train and easy to interpret.
+
+Core API:
+- MLPVAE: compact window VAE baseline for low-latency scoring
+- TransformerVAE: VAE with Foreblocks transformer encoder for temporal modeling
+
 """
 
 from __future__ import annotations

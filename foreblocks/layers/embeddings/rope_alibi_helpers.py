@@ -1,8 +1,15 @@
-"""
-Positional encoding helpers for attention modules.
+"""foreblocks.layers.embeddings.rope_alibi_helpers.
 
-Provides functions to apply RoPE to Q/K and ALiBi bias to attention scores.
-Used by LinearAttention, ModernLinearAttention, GatedDeltaNet, and KimiAttention.
+Positional encoding utility functions for attention modules.
+
+Provides helpers to apply RoPE to Q/K tensors and ALiBi bias to attention
+scores. Used by linear attention, gated delta net, and Kimi attention
+implementations.
+
+Core API:
+- apply_rope_qkv: apply rotary embeddings to query/key tensors
+- apply_alibi_bias: apply ALiBi positional bias to attention scores
+
 """
 
 from __future__ import annotations

@@ -1,12 +1,18 @@
 """foreblocks.ops.attention.paged_decode.
 
-This module implements the paged decode pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as triton_paged_decode.
+Triton kernel for paged KV-cache autoregressive decode.
+
+Implements causal attention over a block-based KV cache with a per-sequence block
+table, supporting grouped query attention (GQA) via kv_repeat. Computes
+softmax(q·K^T)·V while respecting causal masking and variable sequence lengths.
+Use when running autoregressive decode with paged KV cache allocation.
+
+Core API:
+- triton_paged_decode: single-kernel paged decode for [B, H, T, D] query tensors
+
 """
 
 import torch
-
 
 try:
     import triton

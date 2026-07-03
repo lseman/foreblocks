@@ -1,9 +1,19 @@
-"""Frequency-domain anomaly detection for time series windows.
+"""foreblocks.anomaly.models.frequency.
 
-Leverages spectral analysis (Fourier/Wavelet) to detect anomalies
-that manifest in frequency space rather than time domain.
-Inspired by FAN (Frequency-domain Anomaly detection), LogFT.
+Frequency-domain anomaly detection for time series windows.
+
+Detects anomalies that manifest in spectral space rather than time domain by learning
+mappings between time and frequency representations. Scores combine time-domain
+reconstruction error, frequency-domain spectral error, and deviation from normal
+spectral profiles. Use when anomalies have distinctive frequency signatures (e.g.
+sudden spectral shifts, harmonic distortions) invisible in raw time series.
+
+Core API:
+- FrequencyAnomaly: learns time↔frequency mapping with combined spectral scoring
+- LogFreqAnomaly: log-frequency variant robust to scale differences
+
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -183,7 +193,10 @@ class FrequencyAnomaly(nn.Module):
         spectral_ratio = self._spectral_deviation(x)
 
         return FrequencyAnomalyForward(
-            time_error, freq_error, spectral_ratio, x_recon,
+            time_error,
+            freq_error,
+            spectral_ratio,
+            x_recon,
         )
 
     def reconstruct_mean(self, x: torch.Tensor) -> torch.Tensor:
@@ -214,8 +227,10 @@ class FrequencyAnomaly(nn.Module):
             )
             self.normal_spectral_std_ = (
                 self.spectral_momentum * self.normal_spectral_std_
-                + (1 - self.spectral_momentum) * (
-                    (spectral_mag - self.normal_spectral_mean_).pow(2) + self.normal_spectral_std_
+                + (1 - self.spectral_momentum)
+                * (
+                    (spectral_mag - self.normal_spectral_mean_).pow(2)
+                    + self.normal_spectral_std_
                 ).sqrt()
             )
 
@@ -297,7 +312,9 @@ class LogFreqAnomaly(nn.Module):
         log_mag_recon = recon
 
         # Log-domain error
-        log_error = F.mse_loss(log_mag_recon, log_freq_proj, reduction="none").mean(dim=(1, 2))
+        log_error = F.mse_loss(log_mag_recon, log_freq_proj, reduction="none").mean(
+            dim=(1, 2)
+        )
 
         # Also reconstruct in time domain
         log_mag_back = log_mag_recon.exp()
@@ -308,7 +325,10 @@ class LogFreqAnomaly(nn.Module):
         spectral_ratio = log_error
 
         return FrequencyAnomalyForward(
-            time_error, log_error, spectral_ratio, x_recon,
+            time_error,
+            log_error,
+            spectral_ratio,
+            x_recon,
         )
 
     @staticmethod

@@ -1,39 +1,18 @@
-"""
-kimi_att.py — Kimi Delta Attention (KDA) per Kimi Linear
+"""foreblocks.modules.attention.modules.linear_att.kimi.
 
-Reference: Kimi Linear: An Expressive, Efficient Attention Architecture
-  - GitHub: https://github.com/MoonshotAI/Kimi-Linear
-  - Paper:  https://arxiv.org/abs/2510.26692
+Kimi Delta Attention (KDA) — per-channel forget gate linear attention (arXiv:2510.26692).
 
-Core recurrence (KDA — "DeltaNet with fine-grained gating"):
-    S_t = (I - β_t · k_t k_t^T) · Diag(α_t) · S_{t-1} + β_t · k_t · v_t^T
-    o_t = S_t^T · q_t
+https://arxiv.org/abs/2510.26692
 
-where:
-  - S_t in R^{d_h × d_v} — recurrent state (same shape as Gated DeltaNet)
-  - q_t, k_t in R^{d_h} — queries and keys (L2-normalized per official impl)
-  - v_t in R^{d_v} — values
-  - α_t in [0,1]^{d_h} — per-channel decay (diagonal, *vector* per head)
-  - β_t in [0,1] — scalar gate controlling write strength
+DeltaNet variant with per-channel vector forget gate (α_t ∈ [0,1]^{d_h} per
+head) instead of GatedDeltaNet's scalar gate. Uses L2-normalized Q, K with
+short causal convolutions, bottleneck gating projections, and Mamba2-style
+decay initialization. Supports chunk-parallel and exact sequential modes.
 
-Gating mechanism (differs from Gated DeltaNet):
-  - A_log in R^{H}  — constant per-head parameter (uniform [1,16], log-space)
-  - dt_bias in R^{H×K}  — per-head per-key-dim inverse time step init
-  - f_proj: hidden → head_v_dim → gate_dim  (bottleneck, no bias)
-  - g = -exp(A_log) · softplus(f_proj(x) + dt_bias)   # log-space gate
-  - α = exp(g.cumsum(dim=time))  # cumulative decay
-  - b = b_proj(x)  # raw logits → β = sigmoid(b) inside kernel
+Core API:
+- KimiAttention: public adapter with LinearAttention-compatible forward API
+- _KDA_Fast: core KDA layer with sequential and chunk-parallel forward
 
-  This gives *per-channel* forget gate (g has shape [B,T,H,K]) vs Gated
-  DeltaNet's scalar per-head gate [B,T,H].
-
-Architecture highlights (per Kimi Linear paper):
-  - Hybrid: 3:1 KDA-to-MLA layer ratio
-  - Uses short (causal) convolutions on q, k, v projections
-  - Reduces KV cache by up to 75%, up to 6× decoding throughput
-  - Trained on 5.7T tokens (48B total / 3B activated params)
-
-Reference implementation: fla-org/flash-linear-attn (KimiDeltaAttention layer)
 """
 
 from __future__ import annotations
@@ -46,7 +25,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.ops.attention import can_use_fla_kda, fla_kda_forward
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -111,8 +89,11 @@ class _ShortConv1d(nn.Module):
             x = torch.cat([cache, x], dim=2)[:, :, : T0 + self.kernel_size - 1]
         else:
             zero_pad = torch.zeros(
-                x.size(0), x.size(1), self.kernel_size - 1,
-                device=x.device, dtype=x.dtype,
+                x.size(0),
+                x.size(1),
+                self.kernel_size - 1,
+                device=x.device,
+                dtype=x.dtype,
             )
             x = torch.cat([zero_pad, x], dim=2)
 
@@ -169,7 +150,9 @@ def _kda_seq_step(
     kTS = torch.bmm(k_t.unsqueeze(1), S).squeeze(1)  # [BH, Dv]
     S = S - beta_t.unsqueeze(-1) * torch.bmm(
         k_t.unsqueeze(-1), kTS.unsqueeze(1)
-    ).squeeze(1)  # [BH, Dk, Dv]
+    ).squeeze(
+        1
+    )  # [BH, Dk, Dv]
 
     # Step 3: Write  S + β_t · k_t · v_t^T
     S = S + beta_t.unsqueeze(-1) * torch.bmm(
@@ -191,7 +174,7 @@ def _kda_chunk_parallel(
     K: torch.Tensor,
     V: torch.Tensor,
     alpha: torch.Tensor,  # [BH, T, Dk] per-step decay in (0, 1]
-    beta: torch.Tensor,   # [BH, T, 1] already sigmoid'd
+    beta: torch.Tensor,  # [BH, T, 1] already sigmoid'd
     out: torch.Tensor,
     C: int,
 ) -> torch.Tensor:
@@ -222,10 +205,10 @@ def _kda_chunk_parallel(
 
         for l in range(L):
             idx = s + l
-            k_t = Kf[:, idx, :]   # [BH, Dk]
-            v_t = Vf[:, idx, :]   # [BH, Dv]
-            q_t = Qf[:, idx, :]   # [BH, Dk]
-            a_t = alpha[:, idx, :] # [BH, Dk]
+            k_t = Kf[:, idx, :]  # [BH, Dk]
+            v_t = Vf[:, idx, :]  # [BH, Dv]
+            q_t = Qf[:, idx, :]  # [BH, Dk]
+            a_t = alpha[:, idx, :]  # [BH, Dk]
             b_t = beta[:, idx, :]  # [BH, 1]
 
             # Sequential KDA step
@@ -237,9 +220,7 @@ def _kda_chunk_parallel(
                 k_t.unsqueeze(-1), kTS.unsqueeze(1)
             ).squeeze(1)
             # 3) Write
-            S = S + b_t.unsqueeze(-1) * torch.bmm(
-                k_t.unsqueeze(-1), v_t.unsqueeze(1)
-            )
+            S = S + b_t.unsqueeze(-1) * torch.bmm(k_t.unsqueeze(-1), v_t.unsqueeze(1))
             # 4) Output
             out[:, idx, :] = torch.bmm(S.transpose(1, 2), q_t.unsqueeze(-1)).squeeze(-1)
 
@@ -349,7 +330,8 @@ class _KDA_Fast(nn.Module):
         # dt_bias: inverse time step initialization
         dt = torch.exp(
             torch.rand(self.h * self.dk, dtype=torch.float32)
-            * (math.log(0.1) - math.log(0.001)) + math.log(0.001)
+            * (math.log(0.1) - math.log(0.001))
+            + math.log(0.001)
         ).clamp(min=1e-4)
         inv_dt = dt + torch.log(-torch.expm1(-dt))
         self.dt_bias = nn.Parameter(inv_dt)
@@ -370,7 +352,9 @@ class _KDA_Fast(nn.Module):
         """L2 normalize last dimension."""
         return x / x.pow(2).sum(dim=-1, keepdim=True).clamp_min(eps).sqrt()
 
-    def _init_state(self, BH: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    def _init_state(
+        self, BH: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
         return torch.zeros(BH, self.dk, self.dv, device=device, dtype=dtype)
 
     def _project_qkv(
@@ -408,7 +392,10 @@ class _KDA_Fast(nn.Module):
         return q, k, v
 
     def _compute_gate_params(
-        self, x: torch.Tensor, BH: int, T: int,
+        self,
+        x: torch.Tensor,
+        BH: int,
+        T: int,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -489,7 +476,9 @@ class _KDA_Fast(nn.Module):
         # Cast gate params to input dtype (handles .double() / .half())
         A_log_cast = self.A_log.to(dtype)  # [H]
         dt_bias_cast = self.dt_bias.to(dtype)  # [H*K]
-        alpha_step, g_flat, beta = self._compute_gate_params(x, BH, T, A_log_cast, dt_bias_cast)
+        alpha_step, g_flat, beta = self._compute_gate_params(
+            x, BH, T, A_log_cast, dt_bias_cast
+        )
         # alpha_step  [BH, T, Dk]  per-step decay in (0, 1]
         # g_flat      [BH, T, Dk]  per-step log-decay (for chunk WY)
         # beta        [BH, T, 1]
@@ -525,8 +514,12 @@ class _KDA_Fast(nn.Module):
             )
             out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
             S_final = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
-        elif (not C) and (not torch.is_grad_enabled()) and can_use_fla_kda(
-            Q, K, V_heads, g_heads, beta_heads, S_heads, 0, recurrent=True
+        elif (
+            (not C)
+            and (not torch.is_grad_enabled())
+            and can_use_fla_kda(
+                Q, K, V_heads, g_heads, beta_heads, S_heads, 0, recurrent=True
+            )
         ):
             out_h, S_h = fla_kda_forward(
                 Q,
@@ -573,8 +566,7 @@ class _KDA_Fast(nn.Module):
 
         output_heads = self.h_rms(output_heads) * gate
         y = (
-            output_heads
-            .permute(0, 2, 1, 3)
+            output_heads.permute(0, 2, 1, 3)
             .contiguous()
             .reshape(B, T, self.h * self.dv)
         )

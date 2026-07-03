@@ -1,14 +1,25 @@
-"""Test-time adaptation and streaming anomaly detection.
+"""foreblocks.anomaly.online.
 
-Provides:
-- ITAD (Iterative Test-time Adaptation): online correction of
-  pre-trained detectors using entropy minimization and batch norm stats.
-- Streaming detector: incremental scoring for real-time anomaly detection.
-- Exponential moving average (EMA) for online threshold adaptation.
+Test-time adaptation and streaming anomaly detection for deployed models.
+
+Provides online adaptation techniques (TENT-style entropy minimization, batch norm
+adaptation) to adjust pre-trained detectors to distribution shifts at test time.
+Includes a streaming detector with adaptive thresholds via EMA statistics, and a BN-
+adaptive wrapper for existing Foreblocks detectors. Use when your deployment
+environment experiences concept drift or when you need real-time anomaly scoring
+with self-adapting thresholds.
 
 References:
 - ITAD: Iterative Test-time Adaptation for Anomaly Detection (2024)
 - TENT: Fully Test-time Adaptation by Entropy (Wang et al., 2021)
+
+Core API:
+- EMAStatistics: exponential moving average for online threshold/score tracking
+- BatchNormAdapter: adapts BN layers at test time
+- TENTAdapter: entropy-minimization test-time adaptation
+- StreamingAnomalyDetector: online scoring with adaptive thresholds
+- BNAdaptiveWrapper: wraps detectors with BN adaptation
+
 """
 
 from __future__ import annotations
@@ -20,7 +31,6 @@ from typing import Any, Protocol
 import numpy as np
 import torch
 import torch.nn as nn
-
 
 # ── Streaming EMA statistics ──
 

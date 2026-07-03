@@ -1,8 +1,19 @@
 """foreblocks.anomaly.windows.
 
-This module implements the windows pieces for its package.
-It belongs to the anomaly detection and reconstruction workflows area of Foreblocks.
-It exposes functions such as as_2d_array, fill_nan_forward, build_sliding_windows, map_window_scores.
+Sliding window construction and score aggregation for anomaly detection.
+
+Provides utilities to build sliding windows from time-series data, forward-fill
+NaN values, map window-level anomaly scores to series-level scores, and compute
+robust thresholds. Used by ForeblocksAnomalyDetector to convert raw model
+outputs into series-level anomaly labels and thresholds.
+
+Core API:
+- build_sliding_windows: create sliding windows from time-series data
+- map_window_scores: map window-level scores to series-level scores
+- robust_threshold: compute robust threshold from scores using MAD or percentile
+- as_2d_array: ensure series is 2D [T] or [T,D]
+- fill_nan_forward: forward-fill NaN values in series
+
 """
 
 from __future__ import annotations
@@ -45,9 +56,11 @@ def build_sliding_windows(series: np.ndarray, window_size: int) -> np.ndarray:
         raise ValueError(
             f"Series length {x.shape[0]} is shorter than window_size={window_size}"
         )
-    return np.lib.stride_tricks.sliding_window_view(
-        x, window_shape=window_size, axis=0
-    ).transpose(0, 2, 1).copy()
+    return (
+        np.lib.stride_tricks.sliding_window_view(x, window_shape=window_size, axis=0)
+        .transpose(0, 2, 1)
+        .copy()
+    )
 
 
 def map_window_scores(

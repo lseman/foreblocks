@@ -1,8 +1,16 @@
 """foreblocks.modules.attention.cache.decode_stream.
 
-This module implements the decode stream pieces for its package.
-It belongs to the attention key-value cache implementations area of Foreblocks.
-It exposes functions such as paged_stream_decode_standard.
+Streaming attention over a PagedKVCache using online-softmax recurrence.
+
+Consumes a block-based KV cache (vLLM-style PagedAttention) one block at a time,
+using a running max/margin and running denominator to accumulate the attention
+output without materializing the full [Tq, Tk] score matrix. Use when decoding
+autoregressively with paged KV caches — this is the eager PyTorch analogue of
+vLLM's fused paged-attention CUDA kernel.
+
+Core API:
+- paged_stream_decode_standard: streaming block-by-block attention over PagedKVCache
+
 """
 
 import torch

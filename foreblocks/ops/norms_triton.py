@@ -1,7 +1,17 @@
 """foreblocks.ops.norms_triton.
 
-This module implements the norms triton pieces for its package.
-It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+Backward-compatibility shim: re-exports Triton norm kernels.
+
+Triton norm kernels have been moved to `foreblocks.ops.kernels.layer_norm`
+and `foreblocks.ops.kernels.rms_norm`. This file re-exports the public
+symbols so that legacy imports continue to work unchanged.
+
+Core API (re-exports):
+- LayerNormTritonFunction: Triton-accelerated layer normalization
+- RMSNormTritonFunction: Triton-accelerated RMS normalization
+- FusedAddRMSNormFunction: fused add + RMSNorm
+- fused_add_rmsnorm: fused add + RMSNorm helper
+
 """
 
 # triton_backend.py - backward-compatibility shim

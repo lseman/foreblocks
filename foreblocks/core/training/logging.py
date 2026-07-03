@@ -1,7 +1,20 @@
-"""MLTracker and MoE logging helpers.
+"""foreblocks.core.training.logging.
 
-Extracted from the monolithic ``trainer.py``.  All methods are *static* or
-*instance* helpers that log to MLTracker / MoE reporting backends.
+MLTracker and MoE logging helpers extracted from the Trainer.
+
+All functions are static or instance helpers that log training parameters,
+per-epoch metrics, model architecture metadata, and end-of-training summaries
+to the MLTracker backend. Also provides last-run routing for logging eval
+metrics back to the training run without reopening it.
+
+Core API:
+- init_mltracker_run_context: create an MLTracker run context (nullcontext fallback)
+- get_mltracker_params: extract all parameters from a config object or dict
+- log_mltracker_metrics: log per-epoch metrics to the active MLTracker run
+- log_mltracker_model_info: log model architecture metadata as params and system/git tags
+- log_model_to_last_run: log model artifacts to the most recent training run
+- last_run_context: context manager for routing MLTracker calls to a previous run
+
 """
 
 from __future__ import annotations
@@ -14,7 +27,6 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-
 if TYPE_CHECKING:
     from torch.utils.tensorboard import SummaryWriter  # type: ignore
 
@@ -23,7 +35,10 @@ if TYPE_CHECKING:
 # MLTracker helpers
 # ---------------------------------------------------------------------------
 
-def init_mltracker_run_context(mltracker: Any, run_name: str | None) -> tuple[Any, str | None]:
+
+def init_mltracker_run_context(
+    mltracker: Any, run_name: str | None
+) -> tuple[Any, str | None]:
     """Create an MLTracker run context (nullcontext if no tracker)."""
     if not mltracker:
         return contextlib.nullcontext(), run_name
@@ -69,6 +84,7 @@ def build_mltracker_metrics(
 # Instance logging (must be called from Trainer)
 # ---------------------------------------------------------------------------
 
+
 def log_mltracker_params(mltracker: Any, config: Any) -> None:
     """Log training parameters to the active MLTracker run."""
     if not mltracker:
@@ -80,8 +96,12 @@ def log_mltracker_params(mltracker: Any, config: Any) -> None:
 
 
 def log_mltracker_metrics(
-    mltracker: Any, epoch: int, train_loss: float, lr: float,
-    components: dict[str, float], val_loss: float | None,
+    mltracker: Any,
+    epoch: int,
+    train_loss: float,
+    lr: float,
+    components: dict[str, float],
+    val_loss: float | None,
 ) -> None:
     """Log per-epoch metrics to the active MLTracker run."""
     if not mltracker:
@@ -93,27 +113,30 @@ def log_mltracker_metrics(
         print(f"[MLTracker] Warning: Failed to log metrics: {e}")
 
 
-def log_mltracker_model_info(mltracker: Any, model: torch.nn.Module, device: torch.device) -> None:
+def log_mltracker_model_info(
+    mltracker: Any, model: torch.nn.Module, device: torch.device
+) -> None:
     """Log model architecture metadata as params and system/git info as tags."""
     if not mltracker:
         return
     try:
         total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(
-            p.numel() for p in model.parameters() if p.requires_grad
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        mltracker.log_params(
+            {
+                "model/class": type(model).__name__,
+                "model/total_params": total_params,
+                "model/trainable_params": trainable_params,
+                "model/device": str(device),
+            }
         )
-        mltracker.log_params({
-            "model/class": type(model).__name__,
-            "model/total_params": total_params,
-            "model/trainable_params": trainable_params,
-            "model/device": str(device),
-        })
     except Exception as e:
         print(f"[MLTracker] Warning: Failed to log model info: {e}")
 
     # System + git tags (best-effort)
     try:
         from foreblocks.mltracker.mltracker import _maybe_git_info, _sys_info
+
         mltracker.set_tags({f"sys:{k}": v for k, v in _sys_info().items()})
         git = _maybe_git_info()
         if git:
@@ -123,7 +146,9 @@ def log_mltracker_model_info(mltracker: Any, model: torch.nn.Module, device: tor
 
 
 def log_mltracker_final(
-    mltracker: Any, total_epochs: int, stopped_early: bool,
+    mltracker: Any,
+    total_epochs: int,
+    stopped_early: bool,
     best_val_loss: float,
 ) -> None:
     """Log end-of-training summary metrics and tags."""
@@ -134,11 +159,13 @@ def log_mltracker_final(
         if best_val_loss < float("inf"):
             summary["best_val_loss"] = best_val_loss
         mltracker.log_metrics(summary, step=total_epochs)
-        mltracker.set_tags({
-            "trainer/early_stopped": str(stopped_early),
-            "trainer/device": "cuda",  # Could be passed as param
-            "trainer/amp": "true",
-        })
+        mltracker.set_tags(
+            {
+                "trainer/early_stopped": str(stopped_early),
+                "trainer/device": "cuda",  # Could be passed as param
+                "trainer/amp": "true",
+            }
+        )
     except Exception as e:
         print(f"[MLTracker] Warning: Failed to log final summary: {e}")
 
@@ -146,6 +173,7 @@ def log_mltracker_final(
 # ---------------------------------------------------------------------------
 # Last-run routing (for eval metrics logged back to the training run)
 # ---------------------------------------------------------------------------
+
 
 @contextlib.contextmanager
 def last_run_context(mltracker: Any, last_run_id: Any):
@@ -162,8 +190,11 @@ def last_run_context(mltracker: Any, last_run_id: Any):
 
 
 def log_to_last_run(
-    mltracker: Any, last_run_id: Any,
-    metrics: dict[str, float], step: int | None, prefix: str,
+    mltracker: Any,
+    last_run_id: Any,
+    metrics: dict[str, float],
+    step: int | None,
+    prefix: str,
 ) -> None:
     """Log metrics to the most recently finished training run without re-opening it."""
     try:
@@ -177,7 +208,9 @@ def log_to_last_run(
 
 
 def log_model_to_last_run(
-    mltracker: Any, last_run_id: Any, model: torch.nn.Module,
+    mltracker: Any,
+    last_run_id: Any,
+    model: torch.nn.Module,
     model_name: str = "model",
 ) -> None:
     """Log model artifacts (including architecture) to the most recent run."""
@@ -191,7 +224,9 @@ def log_model_to_last_run(
 
 
 def log_figure_to_last_run(
-    mltracker: Any, last_run_id: Any, fig: Any,
+    mltracker: Any,
+    last_run_id: Any,
+    fig: Any,
     artifact_path: str = "plots",
 ) -> None:
     """Best-effort figure artifact logging for the most recent run."""
@@ -207,6 +242,7 @@ def log_figure_to_last_run(
             finally:
                 with contextlib.suppress(OSError):
                     import os
+
                     os.unlink(tmp_path)
     except Exception:
         pass

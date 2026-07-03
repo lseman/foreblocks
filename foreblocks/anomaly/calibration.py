@@ -1,14 +1,21 @@
-"""Score calibration, confidence estimation, and ensemble combination.
+"""foreblocks.anomaly.calibration.
 
-Provides:
-- Temperature scaling for softmax-like score conversion
-- Isotonic regression calibration (Platt/Isotonic)
-- Confidence scoring via score distribution modeling
-- Ensemble combination with learnable or adaptive weights
+Score calibration, confidence estimation, and ensemble combination for anomaly detectors.
 
-References:
-- Temperature Scaling (Guo et al., 2017)
-- Isotonic Regression for Calibration (Jordan et al., 2019)
+Raw anomaly scores from different detectors often lack meaningful probability semantics.
+This module provides temperature scaling, Platt scaling, and isotonic regression to
+convert raw scores into calibrated probabilities. It also supports combining multiple
+detector scores via learned weights and computing per-sample confidence scores.
+Use when you need reliable thresholds, comparable scores across models, or ensemble fusion.
+
+Core API:
+- TemperatureScaler: learnable temperature for calibrating raw scores
+- PlattScaler: logistic regression scaling with bias term
+- isotonic_calibrate: non-parametric monotonic calibration
+- EnsembleScoreCombiner: combine multi-detector scores with learned weights
+- compute_confidence: per-sample confidence and uncertainty estimates
+- fit_score_distribution: fit MAD/Gaussian/percentile baseline distributions
+
 """
 
 from __future__ import annotations
@@ -21,7 +28,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 # ── Temperature scaling ──
 

@@ -1,8 +1,14 @@
 """foreblocks.modules.attention.modules.linear_att.rda.
 
-This module implements the rda pieces for its package.
-It belongs to the linear and gated attention backends area of Foreblocks.
-It exposes classes such as RDABackend.
+RDA (Riemannian Distance Attention) with configurable feature map and incremental recurrent decode.
+
+Uses an ELU+1 (or other) feature map to convert Q/K into positive feature space,
+then accumulates k_sum and kv_sum for O(L·d²) causal attention. Supports
+incremental recurrent decoding for autoregressive generation.
+
+Core API:
+- RDABackend: RDA with configurable feature_map and incremental decode
+
 """
 
 from __future__ import annotations
@@ -17,7 +23,6 @@ from foreblocks.modules.attention.modules.linear_att.base import (
     RoPEMixin,
 )
 
-
 try:
     from foreblocks.ops.attention.chunked_causal_linear_attention import (
         chunked_causal_linear_attn,
@@ -30,7 +35,6 @@ except Exception:
     chunked_causal_linear_attn = None  # type: ignore[assignment]
     can_use_fla_linear_attn = None  # type: ignore[assignment]
     fla_recurrent_linear_attn_forward = None  # type: ignore[assignment]
-
 
 
 class RDABackend(RoPEMixin, nn.Module):
@@ -118,7 +122,9 @@ class RDABackend(RoPEMixin, nn.Module):
                 out_heads = fla_recurrent_linear_attn_forward(
                     q_prime, k_prime, v, eps=1e-6
                 )
-            elif chunked_causal_linear_attn is not None and not torch.jit.is_scripting():
+            elif (
+                chunked_causal_linear_attn is not None and not torch.jit.is_scripting()
+            ):
                 # Chunk-parallel scan: differentiable, no O(B·H·T·F·Dh) intermediate.
                 out_heads = chunked_causal_linear_attn(
                     q_prime, k_prime, v, chunk_size=128, eps=1e-6

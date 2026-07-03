@@ -1,8 +1,19 @@
 """foreblocks.sequence.mamba.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes classes such as SlidingWindowAttention, HybridMamba2Block, RotaryEmbedding.
+Mamba-style SSM blocks and state-space operator kernels with Triton acceleration.
+
+Provides Mamba2 and Mamba3 block implementations, chunked SSD scan kernels,
+causal depthwise convolutions, RMS normalization, and Triton availability flags.
+Designed for high-throughput sequence modeling with optional fused Triton paths.
+
+Core API:
+- Mamba2Block: Mamba2-style SSM block with diagonal A and chunked scan
+- Mamba3Block: Mamba3-style SSM block with blockwise rotary on B/C
+- FeedForward: SwiGLU feed-forward block
+- CausalDepthwiseConv1d: causal depthwise 1-D convolution
+- RMSNorm, RMSNormWeightOnly: RMS normalization helpers
+- TRITON_AVAILABLE, CHUNKED_SSD_TRITON_AVAILABLE, ...: Triton kernel availability flags
+
 """
 
 from foreblocks.ops.mamba import (  # rotary_apply, rotary_apply_fallback stubs below
@@ -56,16 +67,12 @@ class SlidingWindowAttention:
         raise NotImplementedError("SlidingWindowAttention not yet implemented")
 
 
-
-
 # from foreblocks.sequence.mamba.hybrid import HybridMamba2Block
 class HybridMamba2Block:
     """Stub — not yet implemented."""
 
     def __init__(self, *args, **kwargs):
         raise NotImplementedError("HybridMamba2Block not yet implemented")
-
-
 
 
 # from foreblocks.sequence.mamba.rotary import RotaryEmbedding

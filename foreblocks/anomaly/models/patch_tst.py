@@ -1,9 +1,21 @@
-"""PatchTST-style patch-based temporal modeling for anomaly detection.
+"""foreblocks.anomaly.models.patch_tst.
 
-Patches the input time series into non-overlapping patches,
-then applies transformer attention per-patch.
-Inspired by PatchTST (ACL 2023) — current SOTA for time series.
+Patch-based temporal modeling for anomaly detection.
+
+Splits input windows into non-overlapping patches, then applies transformer attention
+per-patch instead of per-timestep. This reduces sequence length dramatically while
+preserving local structure. Anomaly scores come from per-patch reconstruction error.
+Includes variants: standard PatchTST forecaster, cross-variable transformer, and
+masked autoencoder (MAE-style). Use for long windows where per-timestep attention
+is too expensive.
+
+Core API:
+- PatchTSTForecaster: patch-based transformer with reconstruction scoring
+- CrossVarTransformer: per-variable encoders with cross-attention
+- MaskedForecaster: MAE-style self-supervised masked reconstruction
+
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -56,14 +68,13 @@ class PatchTSTForecaster(nn.Module):
         dim_feedforward = dim_feedforward or max(4 * d_model, 128)
 
         # Patch embedding: [batch, n_features, window_size] → [batch, n_patches, d_model]
-        self.patch_proj = nn.Linear(
-            self.n_features * self.patch_size, d_model
-        )
+        self.patch_proj = nn.Linear(self.n_features * self.patch_size, d_model)
         self.position = nn.Parameter(torch.zeros(1, n_patches, d_model))
         self.dropout = nn.Dropout(dropout)
 
         # Use custom encoder stack from foreblocks
         from foreblocks.anomaly.models.base import ForeblocksEncoderStack
+
         self.encoder = ForeblocksEncoderStack(
             d_model=d_model,
             n_heads=n_heads,
@@ -100,7 +111,9 @@ class PatchTSTForecaster(nn.Module):
         recon = recon_patches.reshape_as(x)
 
         # Per-patch error
-        patch_errors = F.mse_loss(recon, x, reduction="none").mean(dim=(1, 2))  # per-patch
+        patch_errors = F.mse_loss(recon, x, reduction="none").mean(
+            dim=(1, 2)
+        )  # per-patch
         patch_scores = patch_errors.mean(dim=1)  # per-window
 
         return PatchTSTForward(recon, patch_errors, patch_scores)
@@ -304,7 +317,9 @@ class MaskedForecaster(nn.Module):
 
         recon = self.head(decoded)
         # Only compute loss on masked tokens
-        recon_error = F.mse_loss(recon[mask_bool], x[mask_bool], reduction="none").mean(dim=1)
+        recon_error = F.mse_loss(recon[mask_bool], x[mask_bool], reduction="none").mean(
+            dim=1
+        )
 
         # Also reconstruct full for scoring
         full_recon = self.head(decoded)

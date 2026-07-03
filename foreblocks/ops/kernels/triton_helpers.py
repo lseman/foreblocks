@@ -1,7 +1,15 @@
 """foreblocks.ops.kernels.triton_helpers.
 
-This module implements the triton helpers pieces for its package.
-It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+Backward-compatibility shim: re-exports SwiGLU Triton kernels.
+
+Re-exports from `foreblocks.ops.kernels.swiglu` so that code importing
+`foreblocks.ops.kernels.triton_helpers` continues to work unchanged.
+
+Core API (re-exports):
+- swiglu_gate: SwiGLU gate function
+- TritonSwiGLUGate: Triton-accelerated SwiGLU gate
+- HAS_TRITON: Triton availability flag
+
 """
 
 # triton_helpers.py - backward-compatibility shim

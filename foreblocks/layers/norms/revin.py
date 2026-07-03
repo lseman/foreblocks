@@ -1,8 +1,15 @@
 """foreblocks.layers.norms.revin.
 
-This module implements the revin pieces for its package.
-It belongs to the normalization layers and normalization helpers area of Foreblocks.
-It exposes classes such as RevIN.
+Reversible Instance Normalization (RevIN).
+
+Implements RevIN from Kim et al. (NeurIPS 2021) — reversible instance-level
+normalization for time series. Supports norm/denorm modes for training
+and inference, with learnable affine parameters. Designed for
+non-stationary time series preprocessing.
+
+Core API:
+- RevIN: reversible instance normalization layer
+
 """
 
 import torch
@@ -39,9 +46,9 @@ class RevIN(nn.Module):
             return x_norm
 
         if mode == "denorm":
-            assert hasattr(self, "mean") and hasattr(self, "std"), (
-                "Must call norm() before denorm()"
-            )
+            assert hasattr(self, "mean") and hasattr(
+                self, "std"
+            ), "Must call norm() before denorm()"
             mean = stats.get("mean", self.mean) if stats else self.mean
             std = stats.get("std", self.std) if stats else self.std
             if self.affine:

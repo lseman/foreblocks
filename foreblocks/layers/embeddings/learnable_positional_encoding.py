@@ -1,8 +1,14 @@
 """foreblocks.layers.embeddings.learnable_positional_encoding.
 
-This module implements the learnable positional encoding pieces for its package.
-It belongs to the positional, rotary, time, and sequence embedding layers area of Foreblocks.
-It exposes classes such as LearnablePositionalEncoding.
+Learnable absolute positional encoding for sequence models.
+
+Implements learnable position embeddings (BERT/GPT-style) with optional
+low-rank factorization for parameter efficiency. Supports multiple
+initialization strategies, layer norm integration, and per-head scaling.
+
+Core API:
+- LearnablePositionalEncoding: learnable absolute position embeddings
+
 """
 
 import math

@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.projection_registry.
 
-This module implements the projection registry pieces for its package.
-It belongs to the forecasting head composition and projection modules area of Foreblocks.
-It exposes classes such as ProjectionRegistry.
+Unified factory and registry for projection and fusion helper modules.
+
+Creates projection modules on demand keyed by structured parameters (category,
+name, dimensions, projection type, kwargs). Supports linear, conv1d, hyper MLP,
+gate MLP, LoRA adapter, and multihead attention projection types. Use when
+you need a centralized, cacheable registry for building projection layers with
+consistent naming and reuse across a model architecture.
+
+Core API:
+- ProjectionRegistry: parameterized factory with keyed caching for projection modules
+
 """
 
 from __future__ import annotations

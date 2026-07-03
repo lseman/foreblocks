@@ -1,8 +1,20 @@
 """foreblocks.layers.graph.layers.
 
-This module implements the layers pieces for its package.
-It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
-It exposes classes such as CachedNorm, MessagePassing, GraphConvBase, GCNConv.
+Standard graph convolution layer implementations.
+
+Provides GCN, GAT, SAGE, and EdgeCond graph convolutions with proper
+message passing infrastructure. Includes CachedNorm for batch normalization
+caching and StochasticDepth for layer dropout. Supports batched and
+unbatched graph inputs.
+
+Core API:
+- MessagePassing: base message passing layer
+- GCNConv: graph convolutional layer
+- GATConv: graph attention layer
+- SAGEConv: simplifying graph convolution
+- EdgeCondGCN: edge-conditioned GCN
+- StochasticDepth: stochastic depth regularization
+
 """
 
 from __future__ import annotations
@@ -27,7 +39,6 @@ from foreblocks.layers.graph.common import (
     xavier_zero_bias,
 )
 from foreblocks.layers.graph.norms import make_activation, make_norm_pair
-
 
 try:
     from torch_scatter import (

@@ -1,8 +1,15 @@
 """foreblocks.layers.norms.rms_norm.
 
-This module implements the rms norm pieces for its package.
-It belongs to the normalization layers and normalization helpers area of Foreblocks.
-It exposes classes such as RMSNorm, AdaptiveRMSNorm.
+Root Mean Square Layer Normalization (RMSNorm).
+
+Implements RMSNorm with Triton acceleration for large tensors, plus an
+adaptive variant with learnable normalization parameters. RMSNorm omits
+mean-centering for efficiency while maintaining normalization quality.
+
+Core API:
+- RMSNorm: RMSNorm with Triton acceleration
+- AdaptiveRMSNorm: RMSNorm with learnable per-element parameters
+
 """
 
 import torch

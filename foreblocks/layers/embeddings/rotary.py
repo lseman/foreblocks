@@ -1,19 +1,27 @@
 """foreblocks.layers.embeddings.rotary.
 
-This module implements the rotary pieces for its package.
-It belongs to the positional, rotary, time, and sequence embedding layers area of Foreblocks.
-It exposes classes such as ApplyRotaryEmb, ApplyRotaryEmbQKV_, ApplyRotaryEmbKV_, RotaryEmbedding.
-"""
+Rotary Position Embeddings (RoPE) with optimized Triton kernels.
+
+Implements RoPE from Su et al. (2021) with batched and cu_seqlens support.
+Provides RotaryEmbedding, apply_rotary_emb functions, and Triton-accelerated
+variants. Optimized for sequence lengths up to 8192 with caching.
+
+Core API:
+- RotaryEmbedding: RoPE module with cache support
+- apply_rotary_emb: apply rotary embeddings to tensors
+- rotate_half: rotate tensor halves for RoPE computation
+
 
 # Copyright (c) 2025, Tri Dao
 # Optimized version with improved performance (batched + cu_seqlens support)
+
+"""
 
 from functools import partial
 
 import torch
 from einops import rearrange, repeat
 from torch import Tensor
-
 
 try:
     from foreblocks.ops.attention.fused_rope import (

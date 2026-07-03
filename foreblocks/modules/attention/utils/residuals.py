@@ -1,30 +1,19 @@
-"""Attention Residuals — depth-wise softmax attention over layer outputs.
+"""foreblocks.modules.attention.utils.residuals.
 
-Implements two variants of the Attention Residual (AttnRes) mechanism from
-Chen et al. (Kimi Team, 2026), which replaces fixed-unit residual accumulation
-with learned, content-dependent softmax attention over preceding layer outputs.
+Attention Residuals — learned softmax-weighted aggregation over layer outputs (arXiv:2603.15031).
 
-Original paper:
-    Chen, G., Zhang, Y., Su, J., Xu, W., Pan, S., Wang, Y., … Zhou, X.
-    (2026).
-    "Attention Residuals."
-    arXiv:2603.15031v1 [[arXiv]](https://arxiv.org/abs/2603.15031)
+https://arxiv.org/abs/2603.15031
 
-Key ideas:
-    1. *Full AttnRes* (§2): a single learnable depth-query attends over every
-       preceding layer output, replacing the fixed ``h_prev + o`` accumulation.
-    2. *Block AttnRes* (§3): layers are partitioned into blocks; attention is
-       computed over block-level representations, reducing memory/communication
-       overhead while preserving most of the gains.
-    3. Both variants use an RMSNorm on the stacked history before attention,
-       and a single learnable query vector ``q ∈ R^D`` for all layers.
+Replaces fixed residual accumulation (h_prev + o) with a learnable depth-query
+that attends over preceding layer outputs via softmax. Two variants: Full AttnRes
+(attends over all layers) and Block AttnRes (attends over block-level
+representations for reduced overhead).
 
-Classes
--------
-AttentionResidual
-    Full AttnRes — attends over all preceding layer outputs.
-BlockAttentionResidual
-    Block AttnRes — attends over block-level representations.
+Core API:
+- AttentionResidual: full AttnRes — softmax attention over all preceding layer outputs
+- BlockAttentionResidual: block AttnRes — softmax attention over block-level representations
+- normalize_attention_residual_mode: normalize residual type strings
+
 """
 
 import torch
@@ -107,7 +96,7 @@ class AttentionResidual(nn.Module):
         super().__init__()
         self.query = nn.Parameter(torch.zeros(dim))  # w_l
         self.norm = RMSNorm(dim)
-        self.scale = dim ** -0.5 if scale is None else scale
+        self.scale = dim**-0.5 if scale is None else scale
 
     def forward(self, history, return_weights=False):
         r"""Aggregate previous layer outputs via softmax attention over depth.
@@ -204,7 +193,7 @@ class BlockAttentionResidual(nn.Module):
         super().__init__()
         self.query = nn.Parameter(torch.zeros(dim))
         self.norm = RMSNorm(dim)
-        self.scale = dim ** -0.5 if scale is None else scale
+        self.scale = dim**-0.5 if scale is None else scale
 
     def forward(self, blocks, partial=None, return_weights=False):
         r"""Aggregate block-level representations via softmax attention over depth.

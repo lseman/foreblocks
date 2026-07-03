@@ -1,24 +1,26 @@
-"""GateSkip — gated skip connections with budget-constrained selection.
+"""foreblocks.modules.skip.gateskip.
 
-Implements the GateSkip mechanism from Laitenberger et al. (2026): learnable
-sigmoid gates on residual-stream outputs that enable token-wise layer skipping
-in decoder-only language models.  A budget constraint forces only the
-highest-scoring fraction of tokens to pass through the gated (expensive)
-path.  Tokens that "fail" the budget simply copy their residual directly.
+Gated skip connections with budget-constrained token selection.
 
-Key design:
-    1. *ResidualGate*: ``g = σ(W·h + b)`` — a **single linear projection**
-       with sigmoid activation (no hidden MLP).  The paper ablated MLP gates
-       and found them strictly worse than the linear gate (§4.4).
-    2. *Budget-constrained top-k*: only the top-``budget`` fraction of tokens
-       (by gate score) pass through; the rest copy the residual directly.
-    3. *Auxiliary losses*: optional L2 sparsity, budget-tracking, and
-       smoothness regularisers.
+Implements the GateSkip mechanism: learnable sigmoid gates on residual-stream
+outputs that enable token-wise layer skipping in decoder-only models. A budget
+constraint forces only the highest-scoring fraction of tokens through the gated
+(expensive) path; tokens that fail the budget copy their residual directly.
+Core design uses a single linear projection (no MLP gate) with optional L2
+sparsity, budget-tracking, and smoothness auxiliary losses.
 
 Original paper:
     Laitenberger, F., Kopiczko, D., Snoek, C. G. M., & Asano, Y. M. (2026).
     "What Layers When: Learning to Skip Compute in LLMs with Residual Gates."
     arXiv:2510.13876v3 [[arXiv]](https://arxiv.org/abs/2510.13876)
+
+Core API:
+- ResidualGate: learned sigmoid gate on residual outputs
+- gateskip_apply: gated skip with budget-constrained token selection
+- apply_skip_to_kv: copy KV cache entries for skipped tokens
+- BudgetScheduler: linear budget annealing scheduler
+- GateStats: diagnostic dataclass for gate metrics
+
 """
 
 from dataclasses import dataclass
@@ -31,18 +33,6 @@ import torch.nn as nn
 # Budget Scheduler
 # ─────────────────────────────────────────────────────────────────────────────
 class BudgetScheduler:
-    """Simple linear budget scheduler (decreasing from start to end).
-
-    Parameters
-    ----------
-    b_start : float
-        Initial budget (fraction of tokens kept through gate), default 1.0.
-    b_end : float
-        Final budget after ``total_steps``, default 0.8.
-    total_steps : int | None
-        Number of steps over which to anneal.  ``None`` or ``<=0`` returns
-        ``b_end`` immediately.
-    """
     def __init__(
         self,
         b_start: float = 1.0,
@@ -75,23 +65,6 @@ class BudgetScheduler:
 # ──────────────────────────────────────────────────────────────────────────────
 @dataclass
 class GateStats:
-    """Diagnostics for the GateSkip mechanism.
-
-    Attributes
-    ----------
-    gate_mean : torch.Tensor
-        Mean of gate values over all tokens.
-    gate_active_mean : torch.Tensor
-        Mean of gate values over active (non-padding) tokens.
-    token_keep_ratio : torch.Tensor
-        Fraction of active tokens kept through the gated path.
-    token_skip_ratio : torch.Tensor
-        Fraction of active tokens that skip the gated path (1 − keep).
-    budget_error : torch.Tensor
-        ``token_keep_ratio − budget`` — deviation from target.
-    smoothness : torch.Tensor
-        Mean absolute temporal variation of gates over adjacent tokens.
-    """
     gate_mean: torch.Tensor
     gate_active_mean: torch.Tensor
     token_keep_ratio: torch.Tensor
@@ -104,48 +77,6 @@ class GateStats:
 # GateSkip primitives
 # ──────────────────────────────────────────────────────────────────────────────
 class ResidualGate(nn.Module):
-    """Sigmoid-activated residual gate with learned token-conditioned gate.
-
-    Implements the gating formula from **GateSkip** (Laitenberger et al.,
-    2026, §3.1):
-
-        g = σ(W · h_prev + b)
-        h = h_prev + g ⊙ o
-
-    where ``o`` is the output of the downstream path (e.g. an Attention or
-    MLP block) and ``g ∈ [0,1]^{B×T×gate_dim}`` controls how much of ``o``
-    is incorporated into the residual stream.  The gate is a **single linear
-    projection** — no hidden MLP — as the paper's ablations (§4.4) show
-    linear gates strictly outperform MLP-based gates (23.2% vs 18.5%).
-
-    The gate is followed by a budget-constrained top-k selection in
-    ``gateskip_apply``: only the top-``budget`` fraction of tokens
-    (by scalar importance score) actually receive the gated update;
-    the rest copy ``h_prev`` directly.
-
-    Reference:
-        Laitenberger et al. (2026) — arXiv:2510.13876v3
-        "What Layers When: Learning to Skip Compute in LLMs with
-        Residual Gates."
-        See §3.1 "Residual Gating Mechanism" and §3.3 "Token selection".
-
-    Parameters
-    ----------
-    d_model : int
-        Input (and residual) feature dimension.
-    gate_dim : int | None
-        Number of gate channels.  Defaults to ``d_model`` (vector gate).
-        The paper's default is per-feature gating — scalar gates (``1``)
-        underperform by ~2.8% accuracy at 15% savings (§4.4).
-    init_bias : float
-        Initial bias on the gate linear layer.  Positive values bias the
-        gate open.  Default **5.0** so ``σ(5) ≈ 0.993``, making the model
-        initially nearly identical to the unmodified backbone (§3.4).
-    init_std : float
-        Standard deviation for weight initialisation.  Default **0.01**
-        to keep gates near the bias at init (§3.4).
-    """
-
     def __init__(
         self,
         d_model: int,

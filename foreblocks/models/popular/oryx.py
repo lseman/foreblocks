@@ -1,8 +1,19 @@
-"""foreblocks.models.popular.oryx.
+"""Oryx multi-mixer block and transformer stack.
 
-This module implements the oryx pieces for its package.
-It belongs to the implementations of widely used forecasting architectures area of Foreblocks.
-It exposes classes such as OryxMixerBlock, OryxLayer, OryxTransformer.
+Multi-mixer architecture combining softmax attention and a linear recurrent mixer
+(Gated Delta Net) with shared key/value projections across both mixers. Uses
+causal depthwise convolutions on K/V, GatedRMSNorm, and mixer-specific Q
+projections for efficient multi-mode sequence modeling.
+
+Based on: Li et al., "Multi-Mixer Models: Flexible Sequence Modeling with Shared
+Representations", arXiv 2605.28769v1.
+Paper: https://arxiv.org/abs/2605.28769
+
+Core API:
+- OryxMixerBlock: shared K/V multi-mixer with attention + GDN modes
+- OryxLayer: residual transformer layer with shared Oryx mixer
+- OryxTransformer: stacked Oryx transformer encoder
+
 """
 
 from __future__ import annotations
@@ -16,16 +27,6 @@ from foreblocks.modules.attention.modules.linear_att.gated_delta import (
     GatedDeltaNet,
 )
 from foreblocks.modules.attention.multi_att import MultiAttention
-
-
-"""Oryx multi-mixer block and transformer stack.
-
-Based on: Li et al., "Multi-Mixer Models: Flexible Sequence Modeling with Shared
-Representations", arXiv 2605.28769v1.
-Paper: https://arxiv.org/abs/2605.28769
-"""
-
-
 
 
 class _CausalDepthwiseConv(nn.Module):
@@ -333,22 +334,24 @@ class OryxTransformer(nn.Module):
         super().__init__()
         if num_layers < 1:
             raise ValueError("num_layers must be at least 1")
-        self.layers = nn.ModuleList([
-            OryxLayer(
-                d_model=d_model,
-                n_heads=n_heads,
-                d_ff=d_ff,
-                dropout=dropout,
-                attention_type=attention_type,
-                linear_mode=linear_mode,
-                use_short_conv=use_short_conv,
-                conv_kernel=conv_kernel,
-                gate=gate,
-                norm_type=norm_type,
-                layer_norm_eps=layer_norm_eps,
-            )
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                OryxLayer(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    d_ff=d_ff,
+                    dropout=dropout,
+                    attention_type=attention_type,
+                    linear_mode=linear_mode,
+                    use_short_conv=use_short_conv,
+                    conv_kernel=conv_kernel,
+                    gate=gate,
+                    norm_type=norm_type,
+                    layer_norm_eps=layer_norm_eps,
+                )
+                for _ in range(num_layers)
+            ]
+        )
         self.final_norm = create_norm_layer(norm_type, d_model, eps=layer_norm_eps)
 
     def forward(

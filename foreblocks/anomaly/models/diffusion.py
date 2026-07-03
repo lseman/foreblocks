@@ -1,9 +1,20 @@
-"""Diffusion-based anomaly detection for time series windows.
+"""foreblocks.anomaly.models.diffusion.
 
-Score-based diffusion (DDPM-style) trained on normal windows.
-At inference, high reconstruction error = anomalous.
-Supports classifier-free guidance and test-time adaptation.
+Diffusion-based anomaly detection for time series windows.
+
+Trains a score-based diffusion model (DDPM-style) to reconstruct normal windows.
+At inference, high reconstruction error after denoising indicates anomalous input.
+Supports classifier-free guidance for sharper reconstructions of in-distribution samples.
+Use when you need a generative approach to anomaly detection that captures complex
+multimodal distributions of normal data.
+
+Core API:
+- DiffusionAnomaly: diffusion-based anomaly detector with reconstruction scoring
+- DiffusionNetwork: time-conditional MLP for diffusion denoising
+- DiffusionScheduler: linear noise schedule and DDPM-style denoising loop
+
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +22,6 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 
 @dataclass
@@ -79,9 +89,7 @@ class DiffusionNetwork(nn.Module):
         )
         self.output_proj = nn.Linear(d_model, self.input_dim)
 
-    def forward(
-        self, x: torch.Tensor, t: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         time_emb = self.time_mlp(t)
         h = self.input_proj(x.reshape(x.shape[0], -1)) + time_emb
         for layer in self.layers:
@@ -92,13 +100,17 @@ class DiffusionNetwork(nn.Module):
 class DiffusionScheduler:
     """Linear noise schedule (DDPM-style)."""
 
-    def __init__(self, num_steps: int = 1000, beta_start: float = 1e-4, beta_end: float = 0.02) -> None:
+    def __init__(
+        self, num_steps: int = 1000, beta_start: float = 1e-4, beta_end: float = 0.02
+    ) -> None:
         self.num_steps = num_steps
         self.betas = torch.linspace(beta_start, beta_end, num_steps)
         self.alphas = 1.0 - self.betas
         self.alpha_cumprod = torch.cumprod(self.alphas, dim=0)
 
-    def noise(self, x: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def noise(
+        self, x: torch.Tensor, t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         noise = torch.randn_like(x)
         alpha = self.alpha_cumprod[t].view(-1, 1, 1)
         return (
@@ -119,11 +131,15 @@ class DiffusionScheduler:
         if num_steps is None:
             num_steps = self.num_steps
         if steps is None:
-            steps = torch.arange(num_steps - 1, -1, device=noisy.device, dtype=torch.long)
+            steps = torch.arange(
+                num_steps - 1, -1, device=noisy.device, dtype=torch.long
+            )
 
         x = noisy
         for i in steps:
-            t = torch.full((noisy.shape[0],), i.item(), device=noisy.device, dtype=torch.long)
+            t = torch.full(
+                (noisy.shape[0],), i.item(), device=noisy.device, dtype=torch.long
+            )
             predicted = model(x, t)
 
             if guidance > 1.0:
@@ -135,7 +151,10 @@ class DiffusionScheduler:
 
             alpha = self.alpha_cumprod[t]
             alpha_prev = torch.cat(
-                [torch.tensor([1.0], device=noisy.device), self.alpha_cumprod[:num_steps - 1]]
+                [
+                    torch.tensor([1.0], device=noisy.device),
+                    self.alpha_cumprod[: num_steps - 1],
+                ]
             )[t]
             beta = self.betas[t]
 
@@ -143,9 +162,8 @@ class DiffusionScheduler:
             coeff2 = torch.sqrt(alpha_prev) * beta / torch.sqrt(1 - alpha + 1e-8)
             coeff3 = torch.sqrt(alpha_prev) / torch.sqrt(1 - alpha + 1e-8)
 
-            x = (
-                torch.sqrt(alpha_prev) * predicted
-                + coeff3 * (x - coeff1 * predicted - coeff2 * predicted)
+            x = torch.sqrt(alpha_prev) * predicted + coeff3 * (
+                x - coeff1 * predicted - coeff2 * predicted
             )
         return x
 
@@ -185,18 +203,19 @@ class DiffusionAnomaly(nn.Module):
     ) -> DiffusionAnomalyForward:
         """Forward with optional pre-noised input (for testing)."""
         if noise is None:
-            noisy, _ = self.scheduler.noise(x, torch.full(
-                (x.shape[0],),
-                self.scheduler.num_steps - 1,
-                device=x.device,
-                dtype=torch.long,
-            ))
+            noisy, _ = self.scheduler.noise(
+                x,
+                torch.full(
+                    (x.shape[0],),
+                    self.scheduler.num_steps - 1,
+                    device=x.device,
+                    dtype=torch.long,
+                ),
+            )
         else:
             noisy = noise
 
-        recon = self.scheduler.denoise(
-            self.model, noisy, guidance=self.guidance
-        )
+        recon = self.scheduler.denoise(self.model, noisy, guidance=self.guidance)
         recon_error = F.mse_loss(recon, x, reduction="none").mean(dim=(1, 2))
         noise_level = float(noise.std()) if noise is not None else 1.0
         return DiffusionAnomalyForward(recon, recon_error, noise_level)
@@ -207,13 +226,9 @@ class DiffusionAnomaly(nn.Module):
     def score(self, x: torch.Tensor) -> torch.Tensor:
         return self(x).recon_error
 
-    def train_step(
-        self, x: torch.Tensor
-    ) -> torch.Tensor:
+    def train_step(self, x: torch.Tensor) -> torch.Tensor:
         """Standard diffusion training: predict noise."""
-        t = torch.randint(
-            0, self.scheduler.num_steps, (x.shape[0],), device=x.device
-        )
+        t = torch.randint(0, self.scheduler.num_steps, (x.shape[0],), device=x.device)
         noisy, target_noise = self.scheduler.noise(x, t)
         predicted = self.model(noisy, t)
         return F.mse_loss(predicted, target_noise)

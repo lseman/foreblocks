@@ -1,7 +1,9 @@
 """TimesNet block implementations for time-series forecasting.
 
-This module contains the core TimesNet building blocks used for periodicity
-extraction and local-global temporal modeling.
+Core TimesNet blocks for periodicity extraction via FFT/autocorrelation and
+local-global temporal modeling through Inception-style 2D convolutions over
+period-folded tensors. Supports amplitude, autocorrelation, and hybrid period
+detection with adaptive softmax-weighted aggregation.
 
 Based on:
 
@@ -9,12 +11,11 @@ Based on:
     Series Analysis", ICLR 2023.
     Paper: https://arxiv.org/abs/2210.02186
 
-This implementation follows TimesNet's TimesBlock: FFT period discovery,
-1D→2D folding per period, a parameter-efficient Inception 2D conv, and
-**adaptive aggregation of the k period-branches by softmax of the selected
-frequencies' amplitudes** (Eq. in §3.2 of the paper). It adds optional
-period-selection methods (amplitude / autocorrelation / hybrid), normalization
-choices, and a custom multi-pool forecasting readout for foreblocks heads.
+Core API:
+- TimesNet: 2D-variation forecasting head with adaptive period detection
+- TimesBlock: core block with Inception2D over period-folded tensors
+- Inception2D: inception-style 2D conv block over patches × periods
+
 """
 
 import math
@@ -159,12 +160,18 @@ def _topk_periods(
     strengths used for the paper's softmax-amplitude aggregation."""
     if method == "amplitude":
         return _topk_periods_amplitude(
-            x, k, min_period=min_period, max_period=max_period,
+            x,
+            k,
+            min_period=min_period,
+            max_period=max_period,
             max_period_frac=max_period_frac,
         )
     if method in ("autocorr", "autocorrelation"):
         return _topk_periods_autocorr(
-            x, k, min_period=min_period, max_period=max_period,
+            x,
+            k,
+            min_period=min_period,
+            max_period=max_period,
             max_period_frac=max_period_frac,
         )
     if method in ("hybrid", "ensemble", "amp_autocorr"):
@@ -177,14 +184,20 @@ def _topk_periods(
         k_ac = k - k_amp
 
         p_amp, a_amp = _topk_periods_amplitude(
-            x, k_amp, min_period=min_period, max_period=max_period,
+            x,
+            k_amp,
+            min_period=min_period,
+            max_period=max_period,
             max_period_frac=max_period_frac,
         )
         if k_ac <= 0:
             return p_amp, a_amp
 
         p_ac, a_ac = _topk_periods_autocorr(
-            x, k_ac, min_period=min_period, max_period=max_period,
+            x,
+            k_ac,
+            min_period=min_period,
+            max_period=max_period,
             max_period_frac=max_period_frac,
         )
         # Normalise each selector's amps to comparable scale before mixing, so
@@ -378,7 +391,9 @@ class TimesBlock(nn.Module):
 
             sample_ids = (
                 torch.arange(B, device=h.device)
-                .unsqueeze(1).expand(B, n_periods).reshape(-1)
+                .unsqueeze(1)
+                .expand(B, n_periods)
+                .reshape(-1)
             )  # [B*k]
             period_flat = p_all.reshape(-1)  # [B*k]
             weight_flat = weights.reshape(-1)  # [B*k]
@@ -388,10 +403,14 @@ class TimesBlock(nn.Module):
             key_stride = int(L + 1)  # periods are in [2, L]
             pair_key = sample_ids * key_stride + period_flat
             uniq_key, inv = torch.unique(pair_key, sorted=False, return_inverse=True)
-            w_unique = torch.zeros(uniq_key.numel(), device=h.device, dtype=torch.float32)
+            w_unique = torch.zeros(
+                uniq_key.numel(), device=h.device, dtype=torch.float32
+            )
             w_unique.scatter_add_(0, inv, weight_flat)
 
-            idx_unique = torch.div(uniq_key, key_stride, rounding_mode="floor").to(torch.long)
+            idx_unique = torch.div(uniq_key, key_stride, rounding_mode="floor").to(
+                torch.long
+            )
             period_unique = (uniq_key % key_stride).to(torch.long)
 
             # Sort by period so each contiguous bucket is one fold+conv.
@@ -462,22 +481,24 @@ class TimesNet(nn.Module):
 
         self.enc_in = nn.Linear(in_channels, d_model)
 
-        self.blocks = nn.ModuleList([
-            TimesBlock(
-                d_model=d_model,
-                k_periods=k_periods,
-                ks=inception_kernels,
-                expand=expand,
-                dropout=dropout,
-                norm_type=norm_type,
-                layer_norm_eps=layer_norm_eps,
-                use_glu_gate=use_glu_gate,
-                max_period_frac=max_period_frac,
-                pad_mode=pad_mode,
-                period_method=period_method,
-            )
-            for _ in range(n_blocks)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                TimesBlock(
+                    d_model=d_model,
+                    k_periods=k_periods,
+                    ks=inception_kernels,
+                    expand=expand,
+                    dropout=dropout,
+                    norm_type=norm_type,
+                    layer_norm_eps=layer_norm_eps,
+                    use_glu_gate=use_glu_gate,
+                    max_period_frac=max_period_frac,
+                    pad_mode=pad_mode,
+                    period_method=period_method,
+                )
+                for _ in range(n_blocks)
+            ]
+        )
 
         d_out = out_channels if quantiles is None else out_channels * len(quantiles)
 
@@ -513,9 +534,9 @@ class TimesNet(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, Cin = x.shape
-        assert Cin == self.in_channels, (
-            f"Expected {self.in_channels} channels, got {Cin}"
-        )
+        assert (
+            Cin == self.in_channels
+        ), f"Expected {self.in_channels} channels, got {Cin}"
 
         z = self.enc_in(x)
 

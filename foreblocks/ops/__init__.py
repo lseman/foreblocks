@@ -12,8 +12,9 @@ Subpackages:
   - attention: attention kernels (fla, fused_rope, paged decode, chunked linear)
   - mamba:     SSD/Mamba ops (selective state update, conv, scans)
   - raven:     Raven/FLA backend kernels
-"""
-from foreblocks.ops import attention, kernels, mamba, raven
 
+"""
+
+from foreblocks.ops import attention, kernels, mamba, raven
 
 __all__ = ["attention", "kernels", "mamba", "raven"]

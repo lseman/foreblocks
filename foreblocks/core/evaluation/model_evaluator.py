@@ -1,8 +1,16 @@
 """foreblocks.core.evaluation.model_evaluator.
 
-This module implements the model evaluator pieces for its package.
-It belongs to the evaluation and benchmarking helpers area of Foreblocks.
-It exposes classes such as ModelEvaluator.
+Model evaluation with cross-validation, metrics, and visualization.
+
+Provides a Trainer-side evaluator that runs inference with batching and AMP support,
+computes regression metrics (MAE, RMSE, MAPE), and performs sliding-window
+cross-validation. Includes matplotlib-based visualization of per-window metrics,
+learning curves, and training summaries. Use when you need standardized evaluation
+of forecasting models with cross-validation support.
+
+Core API:
+- ModelEvaluator: trainer-side evaluation with CV, metrics, and plotting
+
 """
 
 # ============================================================================
@@ -17,7 +25,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 from torch.amp import autocast
-
 
 try:
     import matplotlib.pyplot as plt

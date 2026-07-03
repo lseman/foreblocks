@@ -1,8 +1,24 @@
 """foreblocks.modules.moe.experts.routers.
 
-This module implements the routers pieces for its package.
-It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
-It exposes classes such as RouterOutput, Router, LinearRouter, NoisyTopKRouter.
+Mixture-of-Experts router implementations.
+
+Provides a hierarchy of routing strategies from simple linear to noisy top-K,
+continuous relaxation, straight-through estimation, hash-based candidate routing,
+soft-dense (all-expert), and auxiliary-token routing. All routers share a unified
+RouterOutput type and abstract Router contract. Use to swap routing strategies
+across MoE layers without changing the dispatcher or expert code.
+
+Core API:
+- Router: abstract router base class
+- RouterOutput: unified router return type
+- NoisyTopKRouter: standard noisy top-K with jitter
+- LinearRouter: simple linear baseline
+- StraightThroughTopKRouter: straight-through gradient estimation
+- ContinuousTopKRouter: continuous/soft top-K with perturb-and-pick
+- HashTopKRouter: hash-based candidate set routing
+- SoftDenseRouter: soft dense (no sparsity)
+- AuxiliaryTokenRouter: query-token based routing
+
 """
 
 from __future__ import annotations
@@ -46,7 +62,9 @@ class RouterOutput:
     k_probs: torch.Tensor | None = None
     top_p: torch.Tensor | None = None
     top_i: torch.Tensor | None = None
-    router_entropy: torch.Tensor | float = 0.0  # mean per-token entropy of gate probs [T, E]
+    router_entropy: torch.Tensor | float = (
+        0.0  # mean per-token entropy of gate probs [T, E]
+    )
 
     def __iter__(self):
         """Yield fields positionally for backward-compatible tuple unpacking."""

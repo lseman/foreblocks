@@ -1,8 +1,17 @@
 """foreblocks.layers.graph.common.
 
-This module implements the common pieces for its package.
-It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
-It exposes functions such as is_batched_adj, add_self_loops, normalize_gcn, normalize_row.
+Shared graph neural network utilities and type definitions.
+
+Provides adjacency matrix operations (self-loops, normalization, sparsification),
+activation helpers, and type aliases used across graph convolution layers.
+Supports both batched and unbatched adjacency tensors.
+
+Core API:
+- is_batched_adj: check if adjacency tensor is batched [B, N, N]
+- add_self_loops: add identity to adjacency matrix
+- normalize_gcn: symmetric GCN normalization (D^{-1/2}AD^{-1/2})
+- normalize_row: row-wise softmax normalization
+
 """
 
 from __future__ import annotations
@@ -11,7 +20,6 @@ from typing import Literal
 
 import torch
 import torch.nn as nn
-
 
 Tensor = torch.Tensor
 AggType = Literal["add", "mean", "max"]

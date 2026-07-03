@@ -1,7 +1,26 @@
 """foreblocks.models.popular.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the implementations of widely used forecasting architectures area of Foreblocks.
+Widely-used time series forecasting architectures.
+
+Implements DLinear, Informer, Autoformer, PatchTST, N-BEATS, N-HiTS,
+FEDformer, ETSformer, TimesNet, CrossFormer, TimeMixer, TimeXer, TFT,
+and non-stationary transformer variants. These are production-ready
+implementations of state-of-the-art forecasting models.
+
+Core API:
+- DLinear: linear baseline with trend-seasonal decomposition
+- Informer: ProbSparse transformer for long sequences
+- PatchTST: patch-based transformer (ICLR 2023)
+- Autoformer: auto-correlation based transformer
+- NBEATS, NBEATSx, NBEATSInterpretable: decomposition-based forecasters
+- NHiTS: hierarchical interpolation network
+- TimesNet: 2D variation for time series
+- CrossFormer: cross-scale transformer
+- TimeMixer, TimeXer: time-domain mixing and cross-variable modeling
+- TemporalFusionTransformer: multi-horizon attention model
+- NonStationaryTransformer, NonStationaryWrapper: non-stationary aware models
+- OryxMixerBlock, OryxTransformer: mixer architectures
+
 """
 
 from foreblocks.models.popular.autoformer import Autoformer
@@ -23,7 +42,6 @@ from foreblocks.models.popular.tft import TemporalFusionTransformer
 from foreblocks.models.popular.timemixer import TimeMixer
 from foreblocks.models.popular.timesnet import TimesNet
 from foreblocks.models.popular.timexer import TimeXer
-
 
 __all__ = [
     "Autoformer",

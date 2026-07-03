@@ -1,29 +1,21 @@
 """N-HiTS time-series forecasting head.
 
+Neural hierarchical interpolation with multi-rate pooling and interpolation-based
+forecasting. Each block applies MaxPool → MLP → coefficient interpolation,
+stacked hierarchically with coarse-to-fine granularity. Weight sharing across
+channels via batch folding.
+
 Faithful reimplementation of:
 
     Challu, Olivares, Oreshkin, Garza, Mergenthaler-Canseco & Dubrawski,
     "N-HiTS: Neural Hierarchical Interpolation for Time Series Forecasting",
     AAAI 2023.  Paper: https://arxiv.org/abs/2201.12886
 
-N-HiTS extends N-BEATS with three ingredients that together give
-*hierarchical interpolation* — each block specialises on a different
-frequency band of the signal:
+Core API:
+- NHiTSBlock: one N-HiTS block with MaxPool → MLP → interpolation
+- NHiTS: full N-HiTS head with hierarchical multi-rate stacks
+- _interpolate: coefficient interpolation (nearest, linear, cubic)
 
-  1. **Multi-rate signal sampling** — a MaxPool over time before the MLP. A
-     large pool emphasises low-frequency (long-scale) components.
-  2. **MLP** — maps the pooled lookback to backcast / forecast coefficients.
-  3. **Hierarchical interpolation** — the forecast is produced at a reduced
-     rate (``H / n_freq_downsample`` knots) and *interpolated* up to the full
-     horizon ``H``. Coarse blocks emit few knots (smooth/low-freq); fine
-     blocks emit many.
-
-Doubly-residual stacking (as in N-BEATS):
-    residual_l = residual_{l-1} - backcast_l
-    forecast   = sum_l forecast_l
-
-Input  : x [B, L, C]   (lookback window, C channels — weights shared over C)
-Output : y [B, H, C]   (forecast horizon H = pred_len)
 """
 
 from __future__ import annotations
@@ -31,7 +23,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 _ACT = {
     "relu": nn.ReLU,
@@ -69,10 +60,10 @@ class NHiTSBlock(nn.Module):
 
     def __init__(
         self,
-        input_size: int,          # L (lookback)
-        horizon: int,             # H (pred_len)
-        n_pool_kernel: int,       # MaxPool kernel/stride (multi-rate sampling)
-        n_freq_downsample: int,   # horizon expressivity ratio (#knots = ceil(H/this))
+        input_size: int,  # L (lookback)
+        horizon: int,  # H (pred_len)
+        n_pool_kernel: int,  # MaxPool kernel/stride (multi-rate sampling)
+        n_freq_downsample: int,  # horizon expressivity ratio (#knots = ceil(H/this))
         mlp_units: list[int],
         dropout: float = 0.0,
         activation: str = "relu",
@@ -85,8 +76,12 @@ class NHiTSBlock(nn.Module):
         self.interpolation_mode = interpolation_mode
 
         # number of interpolation knots for backcast / forecast
-        self.n_theta_forecast = max(1, (horizon + n_freq_downsample - 1) // n_freq_downsample)
-        self.n_theta_backcast = max(1, (input_size + n_freq_downsample - 1) // n_freq_downsample)
+        self.n_theta_forecast = max(
+            1, (horizon + n_freq_downsample - 1) // n_freq_downsample
+        )
+        self.n_theta_backcast = max(
+            1, (input_size + n_freq_downsample - 1) // n_freq_downsample
+        )
 
         self.pool = nn.MaxPool1d(
             kernel_size=self.n_pool_kernel, stride=self.n_pool_kernel, ceil_mode=True
@@ -108,7 +103,7 @@ class NHiTSBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # x: [N, L]
         pooled = self.pool(x.unsqueeze(1)).squeeze(1)  # [N, pooled_len]
-        theta = self.theta(self.mlp(pooled))           # [N, Kb + Kf]
+        theta = self.theta(self.mlp(pooled))  # [N, Kb + Kf]
         theta_b = theta[:, : self.n_theta_backcast]
         theta_f = theta[:, self.n_theta_backcast :]
         backcast = _interpolate(theta_b, self.input_size, self.interpolation_mode)
@@ -188,9 +183,7 @@ class NHiTS(nn.Module):
             raise ValueError(f"Expected [B, L, C], got {tuple(x.shape)}")
         B, L, C = x.shape
         if L != self.input_size:
-            raise ValueError(
-                f"input_size={self.input_size} but got lookback L={L}"
-            )
+            raise ValueError(f"input_size={self.input_size} but got lookback L={L}")
 
         # share weights across channels: fold C into the batch → [B*C, L]
         residual = x.permute(0, 2, 1).reshape(B * C, L)

@@ -1,8 +1,15 @@
 """foreblocks.data.csv.
 
-This module implements the csv pieces for its package.
-It belongs to the data loading and dataset helpers area of Foreblocks.
-It exposes classes such as CSVSource.
+CSV data loading for time-series forecasting pipelines.
+
+Provides the CSVSource node class for loading and analyzing CSV files with
+automatic dimension detection. Used in the UI/data ingestion layer to parse
+CSV files into feature matrices (X), target vectors (y), and optional time
+features.
+
+Core API:
+- CSVSource: loads data from a CSV file and automatically detects dimensions
+
 """
 
 from typing import Annotated, Any

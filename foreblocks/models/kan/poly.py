@@ -1,8 +1,19 @@
 """foreblocks.models.kan.poly.
 
-This module implements the poly pieces for its package.
-It belongs to the Kolmogorov-Arnold Network model components area of Foreblocks.
-It exposes classes such as PolyLayerConfig, HahnPolynomials, ChebyshevPolynomials, JacobiPolynomials.
+Polynomial basis functions for Kolmogorov-Arnold Network layers.
+
+Implements 9 polynomial families: Hahn, Chebyshev, Jacobi, Legendre,
+Gegenbauer, Laguerre, Fourier, Wavelet, and Probabilist Hermite. Each family
+is a trainable nn.Module that maps input tensors through a polynomial basis
+with learnable coefficients. Includes PolyLayerConfig dataclass and factory.
+
+Core API:
+- PolyLayerConfig: frozen dataclass for polynomial layer hyperparameters
+- PolyFamily: literal type for selecting polynomial families
+- build_poly_layer: factory function to create a polynomial layer from a family name
+- HahnPolynomials, ChebyshevPolynomials, JacobiPolynomials, GegenbauerPolynomials, LaguerrePolynomials, WaveletKAN, FourierKAN, ProbHermitePolynomials: individual polynomial basis modules
+- list_poly_families: return available polynomial family names
+
 """
 
 from __future__ import annotations
@@ -13,7 +24,6 @@ from typing import Literal
 
 import torch
 from torch import Tensor, nn
-
 
 PolyFamily = Literal[
     "hahn",

@@ -1,8 +1,17 @@
 """foreblocks.anomaly.models.tranad.
 
-This module implements the tranad pieces for its package.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as TranAD.
+Transformer-based adversarial learning for anomaly detection.
+
+TranAD uses two transformers — a primary decoder and a focused decoder — in an
+adversarial setup. The primary decoder reconstructs normally; the focused decoder
+receives the primary's reconstruction error as additional context to better model
+anomalous windows. The gap between the two outputs highlights anomalies. Use when
+you want an adversarial two-model approach that progressively learns to reconstruct
+both normal and anomalous patterns.
+
+Core API:
+- TranAD: adversarial dual-decoder transformer for anomaly detection
+
 """
 
 from __future__ import annotations

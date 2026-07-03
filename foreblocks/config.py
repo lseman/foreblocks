@@ -11,6 +11,7 @@ config objects that serve as contracts between components.
 Core API:
 - ModelConfig: sequence-to-sequence architecture parameters
 - TrainingConfig: optimization and training loop settings
+
 """
 
 from dataclasses import dataclass

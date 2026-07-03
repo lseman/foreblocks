@@ -1,8 +1,15 @@
 """foreblocks.modules.heads.modules.multikernel_conv_head.
 
-This module implements the multikernel conv head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as MultiKernelConv, MultiKernelConvHead.
+Multi-kernel depthwise convolution with parallel branch fusion.
+
+Runs multiple depthwise separable convolutions with different kernel sizes in
+parallel, then fuses them via a 1x1 projection. Captures temporal patterns at
+multiple scales simultaneously. Use when your data exhibits periodicities or
+patterns at varying temporal granularities.
+
+Core API:
+- MultiKernelConvHead: multi-kernel conv head with parallel branches and 1x1 fusion
+
 """
 
 from __future__ import annotations

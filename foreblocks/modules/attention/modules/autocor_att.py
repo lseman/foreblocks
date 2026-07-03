@@ -1,8 +1,16 @@
 """foreblocks.modules.attention.modules.autocor_att.
 
-This module implements the autocor att pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as AutoCorrelation, AutoCorrelationLayer.
+Auto-Correlation mechanism that discovers period-based dependencies via FFT.
+
+Computes autocorrelation of queries and keys in the frequency domain, selects
+the top-k time delays, and aggregates value series rolled by those delays.
+Designed for time-series forecasting where periodic patterns dominate — a
+vectorised re-implementation of Autoformer's time_delay_agg_training.
+
+Core API:
+- AutoCorrelation: FFT-based period discovery with time-delay aggregation
+- AutoCorrelationLayer: projection wrapper around AutoCorrelation
+
 """
 
 import math

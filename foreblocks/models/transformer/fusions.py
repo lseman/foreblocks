@@ -1,15 +1,17 @@
-# foreblocks/fusions.py
-"""
-Lightweight fused ops:
-- Dropout → Residual Add
-- Dropout → Residual Add → Norm
-- Dropout → GateSkip(residual, update) → Norm
+"""foreblocks.models.transformer.fusions.
 
-Goals:
-  - Autocast-safe
-  - Compatible with NormWrapper (uses `.norm(x)`) and plain norms (callable)
-  - Plug-and-play with ResidualGate + gateskip_apply
-  - Keep the hot path small and JIT-friendly where it matters
+Fused residual ops: dropout, add, norm, and GateSkip in a single hot path.
+
+Provides autocast-safe fused primitives for transformer residual branches,
+with optional Triton backend for add+RMSNorm on CUDA. Compatible with
+NormWrapper, ResidualGate, and plain nn.Module norms.
+
+Core API:
+- fused_dropout_add: Dropout + Residual add
+- fused_dropout_add_norm: Dropout + add + Norm (post-norm)
+- fused_dropout_gateskip_norm: Dropout + GateSkip + Norm
+- get_dropout_p: extract dropout probability from a module safely
+
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 try:
     import triton
@@ -383,5 +384,3 @@ def fused_dropout_gateskip_norm(
 
     out = _apply_norm_triton_if_possible(norm_layer, out)
     return out, skip_mask
-
-

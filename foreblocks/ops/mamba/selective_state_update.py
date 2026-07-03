@@ -12,6 +12,7 @@ MoE or multi-head designs), optional z-gating, and dt_bias injection.
 
 Core API:
 - selective_state_update: fused state update + output computation for inference
+
 """
 
 from __future__ import annotations
@@ -137,12 +138,16 @@ if SELECTIVE_STATE_UPDATE_TRITON_AVAILABLE:
             B_ptr + tl.arange(0, BLOCK_SIZE_DSTATE),
             mask=tl.arange(0, BLOCK_SIZE_DSTATE) < dstate,
             other=0.0,
-        ).to(tl.float32)  # [BLOCK_SIZE_DSTATE]
+        ).to(
+            tl.float32
+        )  # [BLOCK_SIZE_DSTATE]
         C = tl.load(
             C_ptr + tl.arange(0, BLOCK_SIZE_DSTATE),
             mask=tl.arange(0, BLOCK_SIZE_DSTATE) < dstate,
             other=0.0,
-        ).to(tl.float32)  # [BLOCK_SIZE_DSTATE]
+        ).to(
+            tl.float32
+        )  # [BLOCK_SIZE_DSTATE]
 
         # Load D if present
         if HAS_D:

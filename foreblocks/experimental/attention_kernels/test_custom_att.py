@@ -3,6 +3,7 @@
 Smoke and correctness tests for custom attention kernels.
 It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
 It exposes functions such as ref, run.
+
 """
 
 import math
@@ -12,11 +13,9 @@ from pathlib import Path
 import torch
 from custom_att import flash_attn_backward_backend, flash_attn_func
 
-
 PACKAGE_PARENT = Path(__file__).resolve().parent.parent
 if str(PACKAGE_PARENT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_PARENT))
-
 
 
 def ref(q, k, v, causal=False, scale=None):

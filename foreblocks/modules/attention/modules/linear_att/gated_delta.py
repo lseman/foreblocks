@@ -1,41 +1,18 @@
-"""
-gated_delta.py - Gated Delta Network Attention
+#!/usr/bin/env python3
+"""foreblocks.modules.attention.modules.linear_att.gated_delta.
 
-Based on: "Gated Delta Networks: Improving Mamba2 with Delta Rule" (Yang et al., 2024)
+Gated Delta Network: per-head matrix state with scalar forget/write gates (arXiv:2412.06464).
+
 https://arxiv.org/abs/2412.06464
 
-Architecture
-------------
-The Gated Delta Network extends DeltaNet with:
- 1. **Per-head matrix state** S in R^{Dk x Dv} maintained by the delta rule.
- 2. **Scalar forget gate** a_t in (0, 1] - element-wise decay of each row of S.
- 3. **Write strength** b_t in [0, 1] - controls how much the new (k,v) pair is written.
- 4. **Sigmoid output gate g_t** - data-dependent gating of retrieved memories.
- 5. **Head-wise RMSNorm** before the output gate (stabilises large S values).
- 6. **Optional short (causal) depthwise conv** on Q, K, V for local context.
+Extends DeltaNet with a scalar forget gate α_t for row-wise state decay and
+a scalar write strength β_t controlling how much each new (k, v) pair is
+committed. Three forward modes — sequential (exact training), chunk-parallel
+(WY representation), and incremental (single-step KV-cached decoding).
 
-State update (per-head):
-    err_t  = v_t - S_{t-1} @ k_t                      (prediction error)
-    S_t    = α_t · S_{t-1} + β_t · outer(err_t, k_t)  (delta rule + decay)
+Core API:
+- GatedDeltaNet: gated delta network with chunk and recurrent modes
 
-Output (per-head):
-    o_t = g_t ⊙ RMSNorm(S_t @ q_t)
-
-Three forward modes
--------------------
- * **Sequential** (default, exact, training) - step-by-step O(T·Dk·Dv) per head.
- * **Chunk-parallel** (optional, approximate intra-chunk) - reduce Python loop
-   overhead; intra-chunk uses pre-S state (standard chunk-mode approximation).
-   Exact sequential state update maintains correct S across chunks.
- * **Incremental** (layer_state dict) - single-step decoding for KV-cached
-   generation. Reads/writes "gdn_state" from/to the provided dict.
-
-Interface matches LinearAttention / KimiAttention:
-    forward(query, key, value, attn_mask, key_padding_mask, is_causal, layer_state)
-    → Tuple[Tensor, None, None]
-
-For standalone use (internal KimiAttention-style) pass `x` directly:
-    _forward_standalone(x, state) → (y, next_state)
 """
 
 from __future__ import annotations
@@ -52,7 +29,6 @@ from foreblocks.ops.attention import (
     fla_gated_delta_rule_forward,
     fused_rmsnorm_sigmoid_gate,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -192,11 +168,15 @@ class GatedDeltaNet(nn.Module):
         #   Mamba2-style: α = exp(-exp(A_log) * softplus(gk + dt_bias))
         #     - A_log from uniform(1, 16) [logged], dt_bias ≈ N(0, 1)
         #   Legacy fallback: α = sigmoid(alpha_proj(x))
-        self.gk_proj = nn.Linear(d_model, self.h, bias=True)  # raw projection for gating
+        self.gk_proj = nn.Linear(
+            d_model, self.h, bias=True
+        )  # raw projection for gating
         if self.use_mamba_gate:
             # Per-head decay parameter: A_log = log(A), A ~ uniform(1, 16)
             #     Matches NVlabs: uniform_(1, 16).log()
-            self.A_log = nn.Parameter(torch.empty(self.h, dtype=torch.float32).uniform_(1, 16).log())
+            self.A_log = nn.Parameter(
+                torch.empty(self.h, dtype=torch.float32).uniform_(1, 16).log()
+            )
             self.A_log._no_weight_decay = True
             # Per-head dt bias: Mamba2 / NVlabs inverse-softplus init.
             #   dt ~ exp(uniform(log dt_min, log dt_max)) clamped to >= dt_init_floor,
@@ -281,7 +261,9 @@ class GatedDeltaNet(nn.Module):
             # g_raw: [B, T, H] → g_log: [B, T, H] (log-space decay, always ≤ 0)
             g_raw = self.gk_proj(x)  # [B, T, H]
             if self.dt_bias is not None:
-                g_log = -self.A_log.exp() * F.softplus(g_raw + self.dt_bias)  # [B, T, H]
+                g_log = -self.A_log.exp() * F.softplus(
+                    g_raw + self.dt_bias
+                )  # [B, T, H]
             else:
                 g_log = -self.A_log.exp() * F.softplus(g_raw)  # [B, T, H]
             alpha = g_log.exp().clamp(max=1.0)  # [B, T, H] → (0, 1]
@@ -301,11 +283,7 @@ class GatedDeltaNet(nn.Module):
             .contiguous()
             .reshape(BH, T, 1)
         )
-        g_log = (
-            g_log.transpose(1, 2)
-            .contiguous()
-            .reshape(BH, T, 1)
-        )
+        g_log = g_log.transpose(1, 2).contiguous().reshape(BH, T, 1)
         return alpha, beta, g_log
 
     def _output_gate(self, x: torch.Tensor) -> torch.Tensor:
@@ -433,7 +411,9 @@ class GatedDeltaNet(nn.Module):
             q_S0 = torch.einsum("bik,bkd->bid", Qc, S)  # [BH, L, Dv]
             qkt = torch.einsum("bik,bjk->bij", Qc, Kc)  # (q_t . k_j) : [BH, L, L]
             coef = torch.tril(ratio * qkt, diagonal=0)  # [BH, L, L]
-            out[:, s:e] = (b[..., None] * q_S0 + torch.einsum("bij,bjd->bid", coef, U)).to(dtype)
+            out[:, s:e] = (
+                b[..., None] * q_S0 + torch.einsum("bij,bjd->bid", coef, U)
+            ).to(dtype)
 
             # State carry: b_L/b_j bounded in (0,1]
             end_ratio = (logb[:, -1, None] - logb).exp()  # [BH, L]
@@ -444,9 +424,7 @@ class GatedDeltaNet(nn.Module):
 
     # ── Positional encoding helpers ───────────────────────────────────────────
 
-    def _apply_rope_to_x(
-        self, x: torch.Tensor, seqlen: int
-    ) -> torch.Tensor:
+    def _apply_rope_to_x(self, x: torch.Tensor, seqlen: int) -> torch.Tensor:
         """Apply rotary position embeddings to input tensor before recurrence.
 
         NOTE: GatedDeltaNet is a recurrent attention mechanism. RoPE requires
@@ -575,9 +553,8 @@ class GatedDeltaNet(nn.Module):
         out_h = out.reshape(B, self.h, T, self.dv)  # [B, H, T, Dv]
         if not skip_gate_norm:
             g = self._output_gate(x)  # [B, H, T, Dv]
-            if (
-                not torch.is_grad_enabled()
-                and can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight)
+            if not torch.is_grad_enabled() and can_use_fused_rmsnorm_sigmoid_gate(
+                out_h, g, self.h_rms.weight
             ):
                 out_h = fused_rmsnorm_sigmoid_gate(
                     out_h, g, self.h_rms.weight, self.h_rms.eps
@@ -641,9 +618,8 @@ class GatedDeltaNet(nn.Module):
         out_h = o_t.reshape(B, self.h, 1, self.dv)  # [B, H, 1, Dv]
         if not skip_gate_norm:
             g = self._output_gate(x_t)  # [B, H, 1, Dv]
-            if (
-                not torch.is_grad_enabled()
-                and can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight)
+            if not torch.is_grad_enabled() and can_use_fused_rmsnorm_sigmoid_gate(
+                out_h, g, self.h_rms.weight
             ):
                 out_h = fused_rmsnorm_sigmoid_gate(
                     out_h, g, self.h_rms.weight, self.h_rms.eps
@@ -703,7 +679,12 @@ class GatedDeltaNet(nn.Module):
                 pad = key_padding_mask.unsqueeze(-1).to(dtype=x.dtype)
                 x = x * (1.0 - pad)
             y, next_s = self._forward_recurrent(
-                x, state=None, k=key, v=value, skip_proj=True, skip_gate_norm=skip_gate_norm
+                x,
+                state=None,
+                k=key,
+                v=value,
+                skip_proj=True,
+                skip_gate_norm=skip_gate_norm,
             )
             if layer_state is not None:
                 layer_state["gdn_state"] = next_s

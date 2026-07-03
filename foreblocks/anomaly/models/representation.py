@@ -1,8 +1,16 @@
 """foreblocks.anomaly.models.representation.
 
-This module implements the representation pieces for its package.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as ContrastiveTransformerEncoder.
+Representation learning for anomaly detection via contrastive objectives.
+
+Trains a transformer encoder to produce normalized embedding vectors for input windows
+using simple augmented-window contrastive learning. The learned representations can be
+used for nearest-neighbor scoring, clustering, or as features for downstream classifiers.
+Use when you need learned embeddings rather than reconstruction-based scoring, or when
+you plan to build anomaly detection on top of learned representations.
+
+Core API:
+- ContrastiveTransformerEncoder: transformer trained with augmented-window contrast
+
 """
 
 from __future__ import annotations

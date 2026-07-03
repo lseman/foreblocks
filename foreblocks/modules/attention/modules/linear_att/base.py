@@ -1,8 +1,17 @@
 """foreblocks.modules.attention.modules.linear_att.base.
 
-This module implements the base pieces for its package.
-It belongs to the linear and gated attention backends area of Foreblocks.
-It exposes classes such as RoPEMixin, FeatureMapRegistry.
+Shared utilities and mixins for linear attention backends.
+
+Provides RoPEMixin for per-backend rotary position embedding on Q/K tensors,
+causal Conv1d helper, and FeatureMapRegistry for configurable linear attention
+feature maps (ELU+1, ReLU, SiLU, RFF, etc.). All linear backends inherit from
+RoPEMixin; FeatureMapRegistry is used by the RDA backend.
+
+Core API:
+- RoPEMixin: per-backend RoPE on Q/K with lazy embedding initialization
+- FeatureMapRegistry: factory for linear-attention feature maps
+- _causal_conv1d: causal Conv1d + activation helper
+
 """
 
 from __future__ import annotations
@@ -51,20 +60,14 @@ class RoPEMixin:
                 head_dim=self.d_head, max_seq_len=seqlen
             )
         # RotaryEmbedding builds its cos/sin cache lazily and on-device.
-        self._rotary_emb._update_cos_sin_cache(
-            seqlen, device=q.device, dtype=q.dtype
-        )
+        self._rotary_emb._update_cos_sin_cache(seqlen, device=q.device, dtype=q.dtype)
         cos = self._rotary_emb._cos_cached
         sin = self._rotary_emb._sin_cached
         if cos is None or sin is None:
             raise RuntimeError("RotaryEmbedding cache was not initialized")
 
-        q_rot = apply_rotary_emb(
-            q.transpose(1, 2), cos[:Lq], sin[:Lq]
-        ).transpose(1, 2)
-        k_rot = apply_rotary_emb(
-            k.transpose(1, 2), cos[:Lk], sin[:Lk]
-        ).transpose(1, 2)
+        q_rot = apply_rotary_emb(q.transpose(1, 2), cos[:Lq], sin[:Lq]).transpose(1, 2)
+        k_rot = apply_rotary_emb(k.transpose(1, 2), cos[:Lk], sin[:Lk]).transpose(1, 2)
         return q_rot, k_rot
 
 
@@ -113,5 +116,3 @@ class FeatureMapRegistry:
             # Cosine-Cosine: phi(x) = cos(x), but requires L2-normalised inputs
             return torch.cos
         raise ValueError(f"Unknown feature_map: {name}")
-
-

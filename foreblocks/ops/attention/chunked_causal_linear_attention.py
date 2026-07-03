@@ -1,8 +1,18 @@
 """foreblocks.ops.attention.chunked_causal_linear_attention.
 
-This module implements the chunked causal linear attention pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as can_use_fused_recurrent_linear_attn, fused_recurrent_causal_linear_attn, chunked_causal_linear_attn.
+Chunk-parallel causal linear attention with fused Triton inference path.
+
+Implements causal linear attention (softmax-free, O(T) complexity) in two
+modes: a chunk-parallel implementation for training and a fused Triton kernel
+for fast inference. Both use [B, H, T, *] layout and support feature-mapped
+positive query/key inputs. Use when you need linear attention as an efficient
+alternative to softmax attention for long sequences.
+
+Core API:
+- chunked_causal_linear_attn: chunk-parallel causal linear attention (training + inference)
+- fused_recurrent_causal_linear_attn: fused Triton recurrent kernel (inference only)
+- can_use_fused_recurrent_linear_attn: guard for Triton kernel availability
+
 """
 
 # chunked_causal_linear_attention.py
@@ -13,7 +23,6 @@ It exposes functions such as can_use_fused_recurrent_linear_attn, fused_recurren
 import os
 
 import torch
-
 
 try:
     import triton
@@ -183,10 +192,7 @@ def chunked_causal_linear_attn(
     Returns:
         [B, H, T, Dh].
     """
-    if (
-        not torch.is_grad_enabled()
-        and can_use_fused_recurrent_linear_attn(q, k, v)
-    ):
+    if not torch.is_grad_enabled() and can_use_fused_recurrent_linear_attn(q, k, v):
         return fused_recurrent_causal_linear_attn(q, k, v, eps=eps)
 
     B, H, T, F = q.shape

@@ -1,8 +1,17 @@
 """foreblocks.models.graph_forecasting.
 
-This module implements the graph forecasting pieces for its package.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as GraphForecastingModel.
+Graph-based time series forecasting with learnable latent graphs or static adjacency.
+
+Constructs a graph (latent correlation learner, static adjacency, or external),
+runs configurable graph convolutions (GCN, SAGE, GAT, EdgeCondGCN, GraphWaveNet),
+and produces sequence outputs with optional JumpKnowledge and residual connections.
+Supports latent graph learning for unsupervised topology discovery.
+
+Core API:
+- GraphForecastingModel: generic graph forecasting stack over [B, T, N, F] tensors
+- GraphConvType: literal type for graph convolution layer choices
+- GraphOutputMode: literal type for output readout modes (sequence, last, mean, flatten_nodes)
+
 """
 
 from __future__ import annotations
@@ -25,7 +34,6 @@ from foreblocks.layers.graph.layers import (
 )
 from foreblocks.layers.graph.norms import make_norm_pair
 from foreblocks.layers.graph.spatio_temporal import GraphWaveNetBlock
-
 
 GraphConvType = Literal["gcn", "sage", "gat", "edge_cond", "graph_wavenet"]
 GraphSource = Literal["latent", "external", "static"]
@@ -150,11 +158,13 @@ class GraphForecastingModel(nn.Module):
                             pre_norm=pre_norm,
                             norm_strategy=norm_strategy,
                         ),
-                        "sd": StochasticDepth(
-                            stochastic_depth * idx / len(self.conv_types)
-                        )
-                        if stochastic_depth > 0
-                        else nn.Identity(),
+                        "sd": (
+                            StochasticDepth(
+                                stochastic_depth * idx / len(self.conv_types)
+                            )
+                            if stochastic_depth > 0
+                            else nn.Identity()
+                        ),
                     }
                 )
                 for idx, conv_type in enumerate(self.conv_types)

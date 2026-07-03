@@ -1,13 +1,22 @@
 """N-BEATS forecasting blocks.
 
-This module provides N-BEATS blocks for interpretable time series forecasting
-and related basis/block components.
+Provides N-BEATS blocks for interpretable time series forecasting and related
+basis/block components. Supports generic stacked blocks, interpretable trend
++ seasonality with fixed polynomial/Fourier bases, and N-BEATSx with exogenous
+variable support via linear or TCN-based encoding.
 
 Based on:
 
     Oreshkin et al., "N-BEATS: Neural basis expansion analysis for
     interpretable time series forecasting", ICLR 2020.
     Paper: https://arxiv.org/abs/1905.10437
+
+Core API:
+- NBEATSBlock: canonical N-BEATS generic block with backcast/forecast
+- NBEATS: stacked generic blocks with residual learning
+- NBEATSInterpretable: interpretable N-BEATS with trend + seasonality bases
+- NBEATSx: N-BEATS with exogenous variable support (linear or TCN mode)
+
 """
 
 import math
@@ -79,9 +88,9 @@ class NBEATSBlock(nn.Module):
             self.hidden_layer = make_hidden_layer()
             self.hidden_blocks = None
         else:
-            self.hidden_blocks = nn.ModuleList([
-                make_hidden_layer() for _ in range(stack_layers - 1)
-            ])
+            self.hidden_blocks = nn.ModuleList(
+                [make_hidden_layer() for _ in range(stack_layers - 1)]
+            )
             self.hidden_layer = None
 
         # Theta coefficients
@@ -184,20 +193,22 @@ class NBEATS(nn.Module):
         # Naive1 level init: forecast starts at the last observed value and blocks
         # learn residual corrections (matches Nixtla/neuralforecast).
         self.naive_level = naive_level
-        self.blocks = nn.ModuleList([
-            NBEATSBlock(
-                input_size=input_size,
-                basis_size=horizon,
-                theta_size=theta_size,
-                hidden_size=hidden_size,
-                stack_layers=stack_layers,
-                activation=activation,
-                share_weights_across_layers=share_weights_in_block,
-                dropout=dropout,
-                use_layernorm=use_layernorm,
-            )
-            for _ in range(n_blocks)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                NBEATSBlock(
+                    input_size=input_size,
+                    basis_size=horizon,
+                    theta_size=theta_size,
+                    hidden_size=hidden_size,
+                    stack_layers=stack_layers,
+                    activation=activation,
+                    share_weights_across_layers=share_weights_in_block,
+                    dropout=dropout,
+                    use_layernorm=use_layernorm,
+                )
+                for _ in range(n_blocks)
+            ]
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -223,8 +234,9 @@ class NBEATS(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def _mlp_stack(input_size: int, hidden_size: int, n_layers: int, act_fn: nn.Module,
-               dropout: float) -> nn.Sequential:
+def _mlp_stack(
+    input_size: int, hidden_size: int, n_layers: int, act_fn: nn.Module, dropout: float
+) -> nn.Sequential:
     layers: list[nn.Module] = [nn.Linear(input_size, hidden_size), act_fn]
     for _ in range(n_layers - 1):
         layers += [nn.Linear(hidden_size, hidden_size), act_fn]
@@ -272,7 +284,7 @@ def _trend_basis(length: int, degree: int) -> torch.Tensor:
     """Polynomial trend basis: ``[length, degree+1]`` with column i = (t)^i,
     t = [0, 1, ..., length-1] / length."""
     t = torch.arange(length, dtype=torch.float32) / max(length, 1)
-    return torch.stack([t ** i for i in range(degree + 1)], dim=1)  # [length, degree+1]
+    return torch.stack([t**i for i in range(degree + 1)], dim=1)  # [length, degree+1]
 
 
 def _seasonality_basis(length: int, n_harmonics: int) -> torch.Tensor:
@@ -333,9 +345,14 @@ class NBEATSInterpretable(nn.Module):
 
         def block(bc_basis, fc_basis):
             return _InterpretableBlock(
-                input_size, horizon, bc_basis.clone(), fc_basis.clone(),
-                hidden_size=hidden_size, n_layers=n_layers,
-                activation=activation, dropout=dropout,
+                input_size,
+                horizon,
+                bc_basis.clone(),
+                fc_basis.clone(),
+                hidden_size=hidden_size,
+                n_layers=n_layers,
+                activation=activation,
+                dropout=dropout,
             )
 
         self.trend_stack = nn.ModuleList(
@@ -386,15 +403,21 @@ class _ExogTCN(nn.Module):
     flavour). Stacked dilated causal convs preserve the time length T.
     """
 
-    def __init__(self, n_exog: int, n_filters: int, kernel_size: int = 3,
-                 n_layers: int = 2, activation: str = "relu"):
+    def __init__(
+        self,
+        n_exog: int,
+        n_filters: int,
+        kernel_size: int = 3,
+        n_layers: int = 2,
+        activation: str = "relu",
+    ):
         super().__init__()
         self.act = NBEATSBlock._get_activation(activation)
         self.convs = nn.ModuleList()
         self.trims: list[int] = []
         in_ch = n_exog
         for i in range(n_layers):
-            dil = 2 ** i
+            dil = 2**i
             pad = (kernel_size - 1) * dil  # causal: pad both ends, trim the right
             self.convs.append(
                 nn.Conv1d(in_ch, n_filters, kernel_size, dilation=dil, padding=pad)
@@ -430,8 +453,8 @@ class _ExogBlock(nn.Module):
 
     def __init__(
         self,
-        input_size: int,       # L
-        horizon: int,          # H
+        input_size: int,  # L
+        horizon: int,  # H
         n_exog: int,
         mode: str = "linear",  # "linear" | "tcn"
         n_filters: int = 32,
@@ -449,7 +472,9 @@ class _ExogBlock(nn.Module):
         self.mode = mode
 
         if mode == "tcn":
-            self.encoder = _ExogTCN(n_exog, n_filters, tcn_kernel, tcn_layers, activation)
+            self.encoder = _ExogTCN(
+                n_exog, n_filters, tcn_kernel, tcn_layers, activation
+            )
             self.basis_dim = n_filters
         elif mode == "linear":
             self.encoder = None
@@ -465,18 +490,16 @@ class _ExogBlock(nn.Module):
 
     def forward(
         self,
-        y: torch.Tensor,          # [B, L]
-        exog_in: torch.Tensor,    # [B, n_exog, L]
-        exog_out: torch.Tensor,   # [B, n_exog, H]
+        y: torch.Tensor,  # [B, L]
+        exog_in: torch.Tensor,  # [B, n_exog, L]
+        exog_out: torch.Tensor,  # [B, n_exog, H]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         B = y.shape[0]
-        feats = torch.cat(
-            [y, exog_in.reshape(B, -1), exog_out.reshape(B, -1)], dim=1
-        )
+        feats = torch.cat([y, exog_in.reshape(B, -1), exog_out.reshape(B, -1)], dim=1)
         h = self.mlp(feats)
 
         if self.encoder is not None:
-            basis_in = self.encoder(exog_in)    # [B, F, L]
+            basis_in = self.encoder(exog_in)  # [B, F, L]
             basis_out = self.encoder(exog_out)  # [B, F, H]
         else:
             basis_in, basis_out = exog_in, exog_out  # [B, n_exog, *]
@@ -516,7 +539,7 @@ class NBEATSx(nn.Module):
         input_size: int,
         horizon: int,
         n_exog: int = 0,
-        exog_mode: str = "linear",   # "linear" | "tcn"
+        exog_mode: str = "linear",  # "linear" | "tcn"
         trend_blocks: int = 1,
         season_blocks: int = 1,
         exog_blocks: int = 1,
@@ -542,23 +565,40 @@ class NBEATSx(nn.Module):
 
         def interp(bc, fc):
             return _InterpretableBlock(
-                input_size, horizon, bc.clone(), fc.clone(),
-                hidden_size=hidden_size, n_layers=n_layers,
-                activation=activation, dropout=dropout,
+                input_size,
+                horizon,
+                bc.clone(),
+                fc.clone(),
+                hidden_size=hidden_size,
+                n_layers=n_layers,
+                activation=activation,
+                dropout=dropout,
             )
 
-        self.trend_stack = nn.ModuleList([interp(trend_bc, trend_fc) for _ in range(trend_blocks)])
-        self.season_stack = nn.ModuleList([interp(season_bc, season_fc) for _ in range(season_blocks)])
+        self.trend_stack = nn.ModuleList(
+            [interp(trend_bc, trend_fc) for _ in range(trend_blocks)]
+        )
+        self.season_stack = nn.ModuleList(
+            [interp(season_bc, season_fc) for _ in range(season_blocks)]
+        )
 
         if n_exog > 0:
-            self.exog_stack = nn.ModuleList([
-                _ExogBlock(
-                    input_size, horizon, n_exog, mode=exog_mode, n_filters=n_filters,
-                    hidden_size=hidden_size, n_layers=n_layers,
-                    activation=activation, dropout=dropout,
-                )
-                for _ in range(exog_blocks)
-            ])
+            self.exog_stack = nn.ModuleList(
+                [
+                    _ExogBlock(
+                        input_size,
+                        horizon,
+                        n_exog,
+                        mode=exog_mode,
+                        n_filters=n_filters,
+                        hidden_size=hidden_size,
+                        n_layers=n_layers,
+                        activation=activation,
+                        dropout=dropout,
+                    )
+                    for _ in range(exog_blocks)
+                ]
+            )
         else:
             self.exog_stack = nn.ModuleList()
 

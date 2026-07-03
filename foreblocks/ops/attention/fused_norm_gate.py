@@ -1,14 +1,21 @@
 """foreblocks.ops.attention.fused_norm_gate.
 
-This module implements the fused norm gate pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as can_use_fused_rmsnorm_sigmoid_gate, fused_rmsnorm_sigmoid_gate.
+Fused RMSNorm + sigmoid gate kernel for Foreblocks attention tensors.
+
+Applies RMSNorm, element-wise sigmoid gating, and per-head weight scaling in a single
+Triton kernel launch. Designed for `[B, H, T, D]` tensors common in attention
+backends. Use when you need the combined normalization + gating step (e.g., Mamba2-style
+RMSNormGated) with maximum throughput.
+
+Core API:
+- can_use_fused_rmsnorm_sigmoid_gate: runtime capability check (Triton, CUDA, shape/dtype valid)
+- fused_rmsnorm_sigmoid_gate: fused RMSNorm(x) * weight * sigmoid(gate)
+
 """
 
 import os
 
 import torch
-
 
 try:
     import triton
@@ -75,7 +82,17 @@ def fused_rmsnorm_sigmoid_gate(
     weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Fused RMSNorm(x) * weight * gate for [B, H, T, D] tensors."""
+    """Fused RMSNorm(x) * weight * gate for [B, H, T, D] tensors.
+
+    Args:
+        x: input tensor [B, H, T, D].
+        gate: gating tensor, same shape as x.
+        weight: per-head per-dimension RMS weights [H, D].
+        eps: RMSNorm epsilon.
+
+    Returns:
+        output [B, H, T, D].
+    """
     if not can_use_fused_rmsnorm_sigmoid_gate(x, gate, weight):
         raise RuntimeError("fused_rmsnorm_sigmoid_gate is not available")
     x = x.contiguous()

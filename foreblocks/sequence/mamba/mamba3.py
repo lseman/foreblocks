@@ -1,5 +1,17 @@
-"""Mamba3-style SSM block — **no causal conv1d**, input-dependent dt/A/trap/angles,
-blockwise rotary on B/C, softplus A parametrisation."""
+"""foreblocks.sequence.mamba.mamba3.
+
+Mamba3-style SSM block without causal conv1d, with blockwise rotary on B/C.
+
+Implements Mamba3 architecture: no causal convolution — B and C come directly
+from in_proj. Input-dependent dt, A (softplus parametrized), trap, and rotary
+angles all projected from input. B and C receive RMSNormGated then blockwise
+rotary embedding before the chunked SSD scan. Includes autoregressive step.
+
+Core API:
+- Mamba3Block: Mamba3-style SSM block with blockwise rotary on B/C
+- blockwise_rotary: blockwise rotary embedding on (i, i+num_angles) pairs
+
+"""
 
 from __future__ import annotations
 
@@ -12,7 +24,6 @@ import torch.nn.functional as F
 from foreblocks.ops.mamba import chunked_ssd_forward, dt_prep, fused_out, rms_norm
 from foreblocks.sequence.mamba.norms import RMSNormWeightOnly
 from foreblocks.sequence.mamba.utils import fused_out_2d
-
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -311,9 +322,7 @@ class Mamba3Block(nn.Module):
         # y: [B, L, H*P], z: [B, L, H*P] (reshape back from [H, P])
         y_reshaped = y.reshape(y.shape[0], y.shape[1], self.d_inner)
         z_reshaped = z.reshape(z.shape[0], z.shape[1], self.d_inner)
-        y = fused_out(
-            y_reshaped, z_reshaped, self.norm.weight, eps=self.norm_eps
-        )
+        y = fused_out(y_reshaped, z_reshaped, self.norm.weight, eps=self.norm_eps)
         return self.out_proj(y)
 
     # ── helpers ───────────────────────────────────────────────────────
@@ -392,8 +401,7 @@ class Mamba3Block(nn.Module):
 
         # ── Blockwise rotary on B/C ────────────────────────────────────
         angles = (
-            angles_raw
-            .squeeze(1)
+            angles_raw.squeeze(1)
             .view(Bsz, self.num_rope_angles)
             .unsqueeze(1)
             .unsqueeze(2)
@@ -430,11 +438,9 @@ class Mamba3Block(nn.Module):
         h = abar.squeeze(-1) * h + dB  # [B, H, P, N]
         state["k_prev"] = k_cur.detach()
         # y = C*h + D*u — both must have 4 dims for correct broadcasting
-        y = (
-            (C_h[:, :, None, :] * h).sum(dim=-1).unsqueeze(1)
-            + self.D[None, None, :, None]
-            * u  # [1, 1, H, 1] * [B, 1, H, P] → [B, 1, H, P]
-        )
+        y = (C_h[:, :, None, :] * h).sum(dim=-1).unsqueeze(1) + self.D[
+            None, None, :, None
+        ] * u  # [1, 1, H, 1] * [B, 1, H, P] → [B, 1, H, P]
         state["ssm"] = h.detach()
         # y: [B, H, P] → [B, 1, H*P]
 

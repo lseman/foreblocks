@@ -1,8 +1,21 @@
 """foreblocks.ts_handler.filters.
 
-This module implements the filters pieces for its package.
-It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
-It exposes functions such as adaptive_savgol_filter, kalman_filter, lowess_filter, wiener_filter.
+Time-series filtering and denoising toolkit.
+
+Provides adaptive Savitzky-Golay, Kalman, lowess, Wiener, EMD, SSA, and
+STL filters with robust NaN handling, parallel processing, and edge-case
+safety. Supports both univariate and multivariate signals with configurable
+pre-centering and deterministic execution.
+
+Core API:
+- adaptive_savgol_filter: edge-aware Savitzky-Golay with robust pre-centering
+- kalman_filter: Kalman smoothing and filtering
+- lowess_filter: locally weighted scatterplot smoothing
+- wiener_filter: Wiener deconvolution
+- emd_filter: Empirical Mode Decomposition denoising
+- ssa_filter: Singular Spectrum Analysis
+- stl_filter: STL-based trend-seasonal decomposition
+
 """
 
 from __future__ import annotations
@@ -11,7 +24,6 @@ import numpy as np
 from joblib import Parallel, delayed
 from scipy.signal import savgol_filter, wiener as _wiener
 from statsmodels.nonparametric.smoothers_lowess import lowess
-
 
 # =============================================================================
 # filters.py (modernized / SOTA)

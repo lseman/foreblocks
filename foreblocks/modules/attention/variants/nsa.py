@@ -1,40 +1,17 @@
-"""Native Sparse Attention (NSA) — hardware-aligned hierarchical sparse attention.
+"""foreblocks.modules.attention.variants.nsa.
 
-Implements the inference-time NSA mechanism from:
+Native Sparse Attention (NSA) — hardware-aligned hierarchical sparse attention (arXiv:2502.11089).
 
-    Yuan, J., Gao, H., Dai, D., Luo, J., Zhao, L., Zhang, Z., … Liang, W.
-    (2025).
-    "Native Sparse Attention: Hardware-Aligned and Natively Trainable Sparse
-    Attention."
-    arXiv:2502.11089 [[arXiv]](https://arxiv.org/abs/2502.11089)
+https://arxiv.org/abs/2502.11089
 
-NSA replaces dense attention with three parallel branches whose outputs are
-combined per-token by independent learned gates (paper Eq. 5):
+Replaces dense attention with three parallel branches — compression (block-level
+mean-pooled keys/values), selection (top-k blocks from compression scores), and
+sliding window — combined per-token by independent learned sigmoid gates.
+Pure-PyTorch reference implementation for training.
 
-    o* = Σ_{c ∈ {cmp, slc, win}} g_c · Attn(q, K̃_c, Ṽ_c)
+Core API:
+- NSAImpl: native sparse attention with compression, selection, and sliding-window branches
 
-where each gate ``g_c ∈ [0, 1]`` comes from an MLP + sigmoid on the input
-features (they are independent sigmoids, not a softmax over branches):
-
-    * **Compression** (cmp): keys/values are pooled into block-level
-      representations and attended over coarsely. The paper uses a learnable
-      MLP φ with intra-block position encoding; this implementation uses
-      (padding-aware) mean pooling per block as a lightweight substitute.
-    * **Selection** (slc): the compression attention scores are reused as
-      block-importance scores (paper Eq. 9, ``p_cmp = softmax(qᵀ K̃_cmp)``);
-      the top-n blocks are selected and dense attention is computed over only
-      the tokens in those blocks. Here the budget is parameterized as
-      ``nsa_topk_ratio`` (fraction of blocks) rather than a fixed count.
-    * **Sliding window** (win): local attention over a fixed recent window,
-      delegated to :class:`SlidingWindowAttentionImpl`.
-
-Notes
------
-This is a pure-PyTorch implementation intended for correctness and training,
-not the fused Triton ``parallel_nsa`` kernel. It mean-pools for compression
-rather than learning φ, and does not share block selection across GQA head
-groups; otherwise the branch structure, score reuse, masking and gating follow
-the paper.
 """
 
 import math

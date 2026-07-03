@@ -1,8 +1,15 @@
 """foreblocks.layers.embeddings.informer_time_embedding.
 
-This module implements the informer time embedding pieces for its package.
-It belongs to the positional, rotary, time, and sequence embedding layers area of Foreblocks.
-It exposes classes such as InformerTimeEmbedding.
+Calendar/time feature embedding for time series forecasting.
+
+Implements the InformerTimeEmbedding from Informer (Zhou et al., AAAI 2021)
+— a learned embedding for hour, weekday, day-of-month, and month fields,
+concatenated and projected to d_model. Used for time-aware transformer
+models where calendar features improve forecasting accuracy.
+
+Core API:
+- InformerTimeEmbedding: calendar field embedding with projection
+
 """
 
 import math

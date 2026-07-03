@@ -1,7 +1,17 @@
 """foreblocks.layers.graph.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+Graph neural network layers and spatio-temporal architectures.
+
+Provides GCN, GAT, SAGE, EdgeCondGCN, MTGNN, TGGC, and GraphWaveNet
+graph convolution layers with spatio-temporal modeling. Includes latent
+graph correlation learners and adaptive edge sparsification.
+
+Core API:
+- GCNConv, GATConv, SAGEConv: standard GNN convolutions
+- MTGNNBlock, MTGNNGraphConstructor: MTGNN spatio-temporal blocks
+- TGGCBlock, TGGCModern: temporal spectral graph convolutions
+- LatentCorrelationLearner: learnable latent graph structure
+
 """
 
 from foreblocks.layers.graph.latent import (
@@ -43,7 +53,6 @@ from foreblocks.layers.graph.tggc import (
     normalized_laplacian_from_adjacency,
     symmetric_normalize_adjacency,
 )
-
 
 __all__ = [
     "AdaptiveEdgeSparsifier",

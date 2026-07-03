@@ -1,35 +1,19 @@
-"""
-ModernLinearAttention — modular linear attention with swappable backends.
+"""foreblocks.modules.attention.modules.linear_att.
 
-Backends
---------
-1. "rda"      : RDA (Riemannian Distance Attention) — original ELU+1 kernel.
-                  Configurable feature_map: "elu", "relu", "silu", "leaky_relu".
-                  O(L·d²) global, supports incremental recurrent decode.
+Modular linear attention with swappable backends.
 
-2. "gla"      : Gated Linear Attention (GLA, Yang et al. 2023).
-                  Per-timestep decay gate gk = log-sigmoid(low-rank) / τ.
-                  Parallel chunk mode + exact recurrent mode.
-                  O(L·d²) global, supports incremental decode.
+Provides a unified interface to six linear attention backends (RDA, GLA,
+DeltaNet, GatedDeltaNet, GatedDeltaNet2, KimiAttention), each implementing
+O(L·d²) sequence modeling with recurrent state. Use ModernLinearAttention for
+runtime backend selection, or import individual backends directly.
 
-3. "deltanet" : DeltaNet (Yang et al. 2024).
-                  L2-normalised Q, K with causal conv pre-processing and
-                  learnable β gate. Parallel WY chunk + exact recurrent.
-                  O(L·d²) global, supports incremental decode.
+Core API:
+- ModernLinearAttention: swappable multi-backend linear attention wrapper
+- RDABackend, GLABackend, DeltaNetBackend: standard linear attention backends
+- GatedDeltaNet, GatedDeltaNet2: gated delta network backends
+- KimiAttention: Kimi Delta Attention (KDA) with per-channel forget gates
+- RoPEMixin, FeatureMapRegistry: shared utilities and feature map factory
 
-4. "gated_delta" / "gated_deltanet"
-                : Gated DeltaNet / Mamba-2 implementation exposed through the
-                  wrapper without duplicating ``gated_delta.GatedDeltaNet``.
-
-All backends implement the same drop-in API:
-    (query, key, value, attn_mask, key_padding_mask, is_causal, layer_state)
-    → (out, None, updated_state)
-
-layer_state dict carries recurrent state under key "<backend>_state":
-    { "rda_state": {"k_sum": ..., "kv_sum": ...} }
-    { "gla_state": {"S": ...} }
-    { "deltanet_state": {"S": ...} }
-    { "gdn_state": ... }
 """
 
 from __future__ import annotations
@@ -51,7 +35,6 @@ from foreblocks.modules.attention.modules.linear_att.wrapper import (
     KimiBackend,
     ModernLinearAttention,
 )
-
 
 __all__ = [
     "FeatureMapRegistry",

@@ -1,8 +1,14 @@
 """foreblocks.modules.moe.ff.
 
-This module implements the ff pieces for its package.
-It belongs to the mixture-of-experts layers and utilities area of Foreblocks.
-It exposes classes such as FeedForwardBlock.
+Unified feed-forward block: standard FFN or MoE behind a single interface.
+
+Wraps either a standard FFN (with optional SwiGLU and Triton kernel) or a
+MoEFeedForwardDMoE layer behind a single forward signature. Use when you need
+to toggle between dense and MoE modes without changing calling code.
+
+Core API:
+- FeedForwardBlock: unified FFN/MoE wrapper with shared forward interface
+
 """
 
 from __future__ import annotations
@@ -13,7 +19,6 @@ from typing import TYPE_CHECKING
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 if TYPE_CHECKING:
     from foreblocks.modules.moe.experts.moe_logging import MoELogger

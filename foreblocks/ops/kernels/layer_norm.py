@@ -1,8 +1,16 @@
 """foreblocks.ops.kernels.layer_norm.
 
-This module implements the layer norm pieces for its package.
-It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
-It exposes classes such as LayerNormTritonFunction.
+Triton Layer Normalization with full autograd support.
+
+Implements forward and backward passes for LayerNorm with optional weight and bias
+parameters. The backward uses block-reduced weight/bias accumulation to avoid
+per-element atomics. Supports feature dims up to 64K (element-size dependent).
+Use when you need a high-throughput, drop-in LayerNorm replacement.
+
+Core API:
+- LayerNormTritonFunction: autograd function, drop-in replacement for torch.nn.LayerNorm
+- TRITON_AVAILABLE: whether Triton path is usable
+
 """
 
 # layer_norm.py
@@ -11,7 +19,6 @@ It exposes classes such as LayerNormTritonFunction.
 # -----------------------------------------------------------------------------
 
 import torch
-
 
 try:
     import triton
@@ -384,10 +391,12 @@ class LayerNormTritonFunction(torch.autograd.Function):
         BLOCK_SIZE = _block_size_for_num_cols(N, x.element_size())
         n_row_blocks = _num_backward_row_blocks(x, M)
         rows_per_program = triton.cdiv(M, n_row_blocks)
-        grad_weight_partials, grad_bias_partials = _layernorm_grad_weight_bias_block_reduce(
-            weight,
-            bias,
-            n_row_blocks,
+        grad_weight_partials, grad_bias_partials = (
+            _layernorm_grad_weight_bias_block_reduce(
+                weight,
+                bias,
+                n_row_blocks,
+            )
         )
         layernorm_bwd_kernel[(n_row_blocks,)](
             grad_output,

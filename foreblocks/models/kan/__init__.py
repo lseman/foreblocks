@@ -1,7 +1,21 @@
 """foreblocks.models.kan.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the Kolmogorov-Arnold Network model components area of Foreblocks.
+Kolmogorov-Arnold Network (KAN) time series forecasting models.
+
+Provides a patch-based KAN architecture with polynomial basis functions (Hahn,
+Chebyshev, Jacobi, Legendre, Gegenbauer, Laguerre, Fourier, Wavelet, Hermite),
+MoE expert routing, RevIN normalization, and configurable polynomial families.
+
+Core API:
+- KANModel: core KAN forecasting model with RevIN and patch-based architecture
+- Backbone: patch-based KAN encoder with MoE expert layers
+- PolyFamily: literal type for polynomial family selection
+- PolyLayerConfig: configuration for polynomial layer parameters
+- TokenRouter: token-level routing across MoE experts
+- RouterConfig: router configuration dataclass
+- build_poly_layer: factory to build a polynomial layer from a family name
+- RevIN: reversible instance normalization for time series
+
 """
 
 from foreblocks.models.kan.backbone import (
@@ -31,7 +45,6 @@ from foreblocks.models.kan.poly import (
     list_poly_families,
 )
 from foreblocks.models.kan.router import RouterConfig, TokenRouter
-
 
 __all__ = [
     "BackBone",

@@ -2,6 +2,7 @@
 
 Package initializer that exposes the public symbols for this namespace.
 It belongs to the attention key-value cache implementations area of Foreblocks.
+
 """
 
 from foreblocks.modules.attention.cache.decode_stream import (
@@ -13,7 +14,6 @@ from foreblocks.modules.attention.cache.kv import (
     PagedKVProvider,
 )
 from foreblocks.modules.attention.cache.paged import PagedKVCache
-
 
 __all__ = [
     "paged_stream_decode_standard",

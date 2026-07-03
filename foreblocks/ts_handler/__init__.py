@@ -1,11 +1,17 @@
 """foreblocks.ts_handler.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
+Time-series preprocessing, filtering, imputation, and outlier removal.
+
+Provides utilities for cleaning and transforming multivariate time series:
+filtering (Savitzky-Golay, Kalman, lowess, Wiener), missing value
+imputation (SAITS), outlier detection/removal, and EWT-based decomposition.
+
+Core API:
+- TimeSeriesHandler: unified preprocessing pipeline for time-series data
+
 """
 
 from importlib import import_module
-
 
 __all__ = [
     "TimeSeriesHandler",

@@ -1,8 +1,14 @@
 """foreblocks.sequence.raven.blocks.block.
 
-This module implements the block pieces for its package.
-It belongs to the composable neural-network blocks area of Foreblocks.
-It exposes classes such as RavenBlock.
+Transformer-style Raven block with FLA-backed attention and MLP.
+
+Wraps a Raven or FLA attention layer followed by a RavenMLP, with optional
+attnres residual projections and fused norm paths. Designed as the building
+block for Raven decoder stacks with hybrid attention support.
+
+Core API:
+- RavenBlock: transformer-style block with attention + MLP sub-layers
+
 """
 
 from __future__ import annotations
@@ -94,7 +100,9 @@ class RavenBlock(nn.Module):
         output_attentions: bool | None = False,
         attnres_states: list[torch.Tensor] | None = None,
         **kwargs: Any,
-    ) -> tuple[torch.FloatTensor, torch.Tensor | None, Cache | None, list[torch.Tensor] | None]:
+    ) -> tuple[
+        torch.FloatTensor, torch.Tensor | None, Cache | None, list[torch.Tensor] | None
+    ]:
         if self.use_attnres:
             prefix_sum = hidden_states
             if attnres_states is None:
@@ -127,7 +135,9 @@ class RavenBlock(nn.Module):
         )
 
         if self.use_attnres:
-            prefix_sum = hidden_states if prefix_sum is None else prefix_sum + hidden_states
+            prefix_sum = (
+                hidden_states if prefix_sum is None else prefix_sum + hidden_states
+            )
             residuals = [*attnres_states, prefix_sum]
             if self.attnres_is_mlp_boundary:
                 attnres_states = residuals
@@ -148,7 +158,9 @@ class RavenBlock(nn.Module):
 
         hidden_states = self.mlp(hidden_states, **kwargs)
         if self.use_attnres:
-            hidden_states = hidden_states if prefix_sum is None else prefix_sum + hidden_states
+            hidden_states = (
+                hidden_states if prefix_sum is None else prefix_sum + hidden_states
+            )
         else:
             hidden_states = residual + hidden_states
 

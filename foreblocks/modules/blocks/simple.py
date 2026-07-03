@@ -1,19 +1,17 @@
-"""Small utility blocks and normalization helpers.
+"""foreblocks.modules.blocks.simple.
 
-This module provides lightweight normalization, gated residual network, and
-activation factory helpers used across foreblocks models.
+RMSNorm, Gated Residual Networks, and activation factory helpers.
 
-``GRN`` follows the Gated Residual Network pattern popularized in Temporal
-Fusion Transformers:
+RMSNorm provides layer-normalization without mean centering (Zhang & Sennrich).
+GRN implements the TFT-style Gated Residual Network with GLU fusion, optional
+context conditioning, residual scaling, and selectable norm/activation. Use GRN
+as a universal building block for tabular/time-series feature transformation;
+use RMSNorm as a lighter alternative to LayerNorm.
 
-    Lim et al., "Temporal Fusion Transformers for Interpretable Multi-horizon
-    Time Series Forecasting", International Journal of Forecasting 2021.
-    Paper: https://arxiv.org/abs/1912.09363
+Core API:
+- RMSNorm: Root Mean Square Layer Normalization
+- GRN: Gated Residual Network with GLU, context, and residual scaling
 
-The local ``RMSNorm`` helper is based on:
-
-    Zhang & Sennrich, "Root Mean Square Layer Normalization", NeurIPS 2019.
-    Paper: https://arxiv.org/abs/1910.07467
 """
 
 import math

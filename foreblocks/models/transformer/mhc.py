@@ -12,6 +12,7 @@ Core API:
 - MHCHyperConnection: learnable stream routing module
 - mhc_init_streams, mhc_collapse_streams: stream lifecycle helpers
 - sinkhorn_doubly_stochastic: differentiable matrix projection
+
 """
 
 import torch

@@ -1,8 +1,17 @@
 """foreblocks.anomaly.detector.
 
-This module defines detector orchestration and scoring logic.
-It belongs to the anomaly detection and reconstruction workflows area of Foreblocks.
-It exposes classes such as AnomalyResult, AnomalyDetectorConfig, ForeblocksAnomalyDetector.
+Detector orchestration and scoring logic for anomaly detection.
+
+Defines the ForeblocksAnomalyDetector class that orchestrates fitting and
+scoring for neural anomaly detection models across multiple detection modes
+(forecasting, reconstruction, representation, hybrid). Provides configuration
+and result types for modular anomaly detection pipelines.
+
+Core API:
+- ForeblocksAnomalyDetector: fit/predict neural anomaly detector for multivariate time-series windows
+- AnomalyDetectorConfig: configuration for anomaly detection
+- AnomalyResult, AnomalyDecisionResult: detection result types
+
 """
 
 from __future__ import annotations

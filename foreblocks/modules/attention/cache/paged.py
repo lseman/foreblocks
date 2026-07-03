@@ -1,8 +1,16 @@
 """foreblocks.modules.attention.cache.paged.
 
-This module implements the paged pieces for its package.
-It belongs to the attention key-value cache implementations area of Foreblocks.
-It exposes classes such as PagedKVCache.
+Fixed-page KV cache for autoregressive self-attention (vLLM PagedAttention style).
+
+KV data is stored in fixed-size blocks drawn from a shared pool, with a per-sequence
+block table mapping logical token positions to physical blocks. Memory grows in
+block_size chunks rather than one contiguous buffer per sequence. Supports both
+dense KV tensors and MLA latent modes.
+
+Core API:
+- PagedKVCache: block-based KV cache with append/gather/reset operations
+- PagedKVCache.ensure: get-or-create cache stored in a per-layer layer_state dict
+
 """
 
 import torch

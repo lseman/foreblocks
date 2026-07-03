@@ -1,9 +1,19 @@
-# itransformer.py
 """iTransformer-style variable-token transformer head for time series.
+
+Reverses the typical attention direction: compresses each variable's full time
+history into a D-dim token, then applies attention over variables (tokens) instead
+of over timesteps. Supports linear or conv temporal compression, multiple output
+modes (pooled, nonpool linear, nonpool attention), and optional CLS token.
 
 Based on: iTransformer, a variable-token transformer design for improved
 time series forecasting and long-context modeling.
 Paper: https://arxiv.org/abs/2303.13538
+
+Core API:
+- ITransformer: variable-token transformer with temporal compression and multiple output modes
+- VariableTokenEncoder: encoder stack over variable tokens
+- _TemporalCompressor: compress per-variable history into D-dim token (linear or conv mode)
+
 """
 
 from typing import Literal
@@ -126,9 +136,9 @@ class VariableTokenEncoder(nn.Module):
             num_experts=num_experts,
             top_k=top_k,
         )
-        self.layers = nn.ModuleList([
-            _EncLayer(**layer_kwargs) for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [_EncLayer(**layer_kwargs) for _ in range(n_layers)]
+        )
         self.final_norm = (
             create_norm_layer(custom_norm, d_model, layer_norm_eps)
             if use_final_norm

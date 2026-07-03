@@ -1,21 +1,19 @@
-"""Fourier-based neural network blocks and feature encodings.
+"""foreblocks.modules.blocks.fourier.
 
-This module contains frequency-domain and Fourier feature layers used by
-foreblocks models for time-series applications.
+Fourier Neural Operator layers and learnable Fourier feature encodings.
 
-The spectral convolution and ``FNO1dLayer`` follow the Fourier Neural Operator
-family:
+SpectralConv1d and FNO1dLayer perform linear transforms in the Fourier domain,
+trading spatial convolutions for frequency-domain multiplications — effective
+for learning operators on structured grids or periodic time series. FourierFeatures
+injects high-frequency positional information via learnable sine/cosine encodings.
+Use FNO for problems with global dependencies; use FourierFeatures for coordinate
+inputs in implicit representations.
 
-    Li et al., "Fourier Neural Operator for Parametric Partial Differential
-    Equations", ICLR 2021.
-    Paper: https://arxiv.org/abs/2010.08895
+Core API:
+- SpectralConv1d: 1D Fourier-layer convolution in frequency domain
+- FNO1dLayer: FNO-style block with spectral conv, skip, and norm
+- FourierFeatures: learnable sine/cosine feature encoding
 
-The random/learned Fourier features are related to positional/Fourier feature
-embeddings used in implicit neural representations:
-
-    Tancik et al., "Fourier Features Let Networks Learn High Frequency
-    Functions in Low Dimensional Domains", NeurIPS 2020.
-    Paper: https://arxiv.org/abs/2006.10739
 """
 
 import math

@@ -1,8 +1,17 @@
 """foreblocks.ops.kernels.swiglu.
 
-This module implements the swiglu pieces for its package.
-It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
-It exposes functions such as swiglu_gate, grouped_mlp_swiglu.
+SwiGLU activation kernels and grouped MLP SwiGLU for packed MoE.
+
+Provides a Triton kernel for the SwiGLU gate (SiLU(gate) * x) and a grouped
+MLP path that computes the full SwiGLU MLP over variable-M expert slices. Use
+when building MoE models with SwiGLU activations that need per-expert variable
+sequence lengths.
+
+Core API:
+- swiglu_gate: Triton-accelerated SwiGLU(gate, x)
+- grouped_mlp_swiglu: grouped SwiGLU MLP over packed expert slices
+- TritonSwiGLUGate: autograd function for the Triton SwiGLU kernel
+
 """
 
 # swiglu.py
@@ -16,7 +25,6 @@ import torch
 import torch.nn.functional as F
 
 from foreblocks.ops.kernels.grouped_gemm import grouped_mm_varM
-
 
 try:
     import triton
@@ -260,11 +268,7 @@ def grouped_mlp_swiglu(
         block_k=64,
     )
 
-    if (
-        HAS_TRITON
-        and GU.is_cuda
-        and not torch.jit.is_scripting()
-    ):
+    if HAS_TRITON and GU.is_cuda and not torch.jit.is_scripting():
         G_3d = GU[:, :H].unsqueeze(0).contiguous()
         U_3d = GU[:, H:].unsqueeze(0).contiguous()
         H_act = TritonSwiGLUGate.apply(G_3d, U_3d).squeeze(0)

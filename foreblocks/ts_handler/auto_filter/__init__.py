@@ -1,7 +1,15 @@
 """foreblocks.ts_handler.auto_filter.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the automatic signal filtering and denoising pipelines area of Foreblocks.
+Automatic time-series denoising with filter selection.
+
+Provides a curated set of signal processing filters with automatic selection
+based on signal characteristics. Supports wavelet, Kalman, lowess, Savitzky-
+Golay, and deep learning-based denoising.
+
+Core API:
+- AutoFilter: main auto-selection denoising interface
+- register_filter: register custom filters in the auto-selection registry
+
 """
 
 from __future__ import annotations
@@ -10,7 +18,6 @@ import sys as _sys
 import types as _types
 
 from foreblocks.ts_handler.auto_filter import core as _core
-
 
 __all__ = _core.__all__
 

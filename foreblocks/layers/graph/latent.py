@@ -1,8 +1,17 @@
 """foreblocks.layers.graph.latent.
 
-This module implements the latent pieces for its package.
-It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
-It exposes classes such as AdaptiveEdgeSparsifier, CorrelationConfig, LatentCorrelationLearner.
+Latent graph structure learning and adaptive edge sparsification.
+
+Implements learnable correlation-based graph construction from node features,
+with adaptive thresholding for dynamic edge selection. Designed for
+multivariate time series where the spatial graph structure is unknown
+and must be learned from data.
+
+Core API:
+- AdaptiveEdgeSparsifier: learnable sparse adjacency mask
+- CorrelationConfig: configuration for latent graph learning
+- LatentCorrelationLearner: learn correlation-based graph structure
+
 """
 
 from __future__ import annotations

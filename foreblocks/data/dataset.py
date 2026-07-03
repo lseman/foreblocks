@@ -1,7 +1,16 @@
-"""Dataset utilities for foreblocks time series training.
+"""foreblocks.data.dataset.
+
+Dataset utilities for foreblocks time series training.
 
 Defines a lightweight PyTorch Dataset wrapper for time series inputs and
-convenience data loader construction helpers.
+convenience data loader construction helpers. TimeSeriesDataset wraps numpy
+arrays into PyTorch tensors, while create_dataloaders constructs training
+and validation DataLoaders.
+
+Core API:
+- TimeSeriesDataset: PyTorch dataset for time series data
+- create_dataloaders: factory for creating PyTorch DataLoaders
+
 """
 
 from __future__ import annotations
@@ -34,9 +43,9 @@ class TimeSeriesDataset(Dataset):
             return self.X[idx]
         if self.t is None:
             return self.X[idx], self.y[idx]
-        return (self.X[idx], self.y[idx]) if self.y is not None else self.X[
-            idx
-        ], self.t[idx]
+        return (
+            (self.X[idx], self.y[idx]) if self.y is not None else self.X[idx]
+        ), self.t[idx]
 
 
 def create_dataloaders(

@@ -2,6 +2,7 @@
 
 Package initializer that exposes the public symbols for this namespace.
 It belongs to the attention pattern variants area of Foreblocks.
+
 """
 
 from foreblocks.modules.attention.variants.base import AttentionImpl
@@ -17,7 +18,6 @@ from foreblocks.modules.attention.variants.sliding_window import (
 from foreblocks.modules.attention.variants.softpick import SoftpickAttentionImpl
 from foreblocks.modules.attention.variants.spectral import SpectralAttentionImpl
 from foreblocks.modules.attention.variants.standard import StandardAttentionImpl
-
 
 __all__ = [
     "AttentionImpl",

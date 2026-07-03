@@ -1,28 +1,18 @@
 """foreblocks.ui.auto_spec.
 
-This module implements the auto spec pieces for its package.
-It belongs to the node metadata, discovery, and UI-facing schema helpers area of Foreblocks.
-It exposes classes such as PortIn, PortOutBundle.
-"""
+Auto-spec utilities for node discovery and schema inference.
 
-# foreblocks/auto_spec.py
-from __future__ import annotations
+Infers inputs, outputs, and config from class annotations, dataclasses,
+pydantic models, or __init__ signatures. Builds node specification
+schemas for the foreblocks Studio UI and provides PortIn/PortOutBundle
+markers for type-annotated port declarations.
 
-import collections.abc as cabc
-import enum
-import inspect
-import types
-from collections.abc import Mapping, Sequence
-from dataclasses import fields, is_dataclass
-from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
-
+Core API:
+- PortIn: marker for input port annotations
+- PortOutBundle: marker for multiple output port names
+- build_node_spec: infer a complete node spec from a class
 
 """
-Auto-spec utilities for node discovery:
-- Infers inputs/outputs/config from class annotations, dataclasses, pydantic, or __init__.
-- Builds a generic 'py' codegen spec when not explicitly provided by the node author.
-"""
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Port markers used in type annotations
@@ -230,7 +220,7 @@ def _collect_config_from_init(cls) -> dict[str, Any]:
             continue
         try:
             sig = inspect.signature(init)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         cfg.update(_collect_config_from_signature(sig))
     return cfg
@@ -361,7 +351,7 @@ def infer_inputs(cls) -> list[str]:
             hints = {}
         try:
             sig = inspect.signature(fwd)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             sig = None
 
         if sig is not None:
@@ -375,7 +365,7 @@ def infer_inputs(cls) -> list[str]:
     # 2) __init__(...) component-like parameters as inputs
     try:
         sig_init = inspect.signature(cls.__init__)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         sig_init = None
 
     if sig_init is not None:
@@ -402,7 +392,7 @@ def infer_optional_inputs(cls, inputs: list[str]) -> list[str]:
     optional: list[str] = []
     try:
         sig_init = inspect.signature(cls.__init__)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return optional
 
     try:
@@ -500,7 +490,7 @@ def _infer_ctor_and_bindings(
     kwargs: dict[str, Any] = {}
     try:
         sig = inspect.signature(cls.__init__)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         sig = None
 
     if sig is not None:

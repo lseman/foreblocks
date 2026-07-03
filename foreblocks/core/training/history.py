@@ -1,8 +1,15 @@
 """foreblocks.core.training.history.
 
-This module implements the history pieces for its package.
-It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
-It exposes classes such as TrainingHistory.
+Training history tracking for epochs, losses, and model metadata.
+
+Provides a simple dataclass that records train/val losses, learning rates,
+loss components (task + distillation), and per-epoch model info. Use as the
+shared state between Trainer and ModelEvaluator for logging, checkpointing,
+and learning curve visualization.
+
+Core API:
+- TrainingHistory: epoch-level training state tracker
+
 """
 
 from __future__ import annotations

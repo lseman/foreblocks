@@ -1,8 +1,15 @@
 """foreblocks.sequence.mamba.feedforward.
 
-This module implements the feedforward pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes classes such as FeedForward.
+SwiGLU feed-forward block with expansion-tuned inner dimension.
+
+Implements a position-wise SwiGLU FFN matching the LLaMA / Mistral convention:
+expansion multiplier (default 8/3) rounded up to the nearest multiple of 64.
+Includes pre-norm and optional dropout. Used as the MLP component in Mamba
+and transformer-style blocks.
+
+Core API:
+- FeedForward: SwiGLU FFN with pre-norm
+
 """
 
 from __future__ import annotations

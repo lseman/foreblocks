@@ -1,12 +1,19 @@
 """foreblocks.third_party.vsgd.
 
-This module implements the vsgd pieces for its package.
-It belongs to the Foreblocks package functionality area of Foreblocks.
-It exposes classes such as VSGD.
-"""
+Variance-Squeezing SGD optimizer for improved convergence.
+
+Implements VSGD, an adaptive optimizer that squeezes gradient variance
+across training steps using prior variance estimation. Inspired by
+the generative AI TU Eindhoven research. Suitable for training
+sequence models where gradient noise impacts stability.
+
+Core API:
+- VSGD: variance-squeezing SGD optimizer
+
 
 # https://github.com/generativeai-tue/vsgd
 
+"""
 
 import torch
 from torch import Tensor

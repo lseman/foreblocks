@@ -1,8 +1,19 @@
 """foreblocks.ops.kernels.rms_norm.
 
-This module implements the rms norm pieces for its package.
-It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
-It exposes classes such as RMSNormTritonFunction, FusedAddRMSNormFunction.
+Triton RMSNorm, fused add+RMSNorm, and scale/bias kernels with full autograd.
+
+Provides forward and backward for RMS normalization, a fused kernel that combines
+residual addition with RMSNorm (saving one intermediate tensor), and scale/bias
+helpers. Use when building Mamba2-style blocks that need RMSNorm with fused
+residual connections, or when you need scale+bias on top of normalized output.
+
+Core API:
+- RMSNormTritonFunction: autograd RMSNorm with optional weight
+- FusedAddRMSNormFunction: fused (residual + update) + RMSNorm in one kernel
+- fused_add_rmsnorm: convenience wrapper for FusedAddRMSNormFunction
+- triton_scale_bias: element-wise y = x * alpha + beta
+- triton_fused_rmsnorm_scale_bias: RMSNorm + scale + bias in one kernel
+
 """
 
 # rms_norm.py
@@ -12,7 +23,6 @@ It exposes classes such as RMSNormTritonFunction, FusedAddRMSNormFunction.
 # -----------------------------------------------------------------------------
 
 import torch
-
 
 try:
     import triton
@@ -465,9 +475,7 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
         )
 
         grad_weight = (
-            grad_weight_partials.sum(dim=0).to(weight.dtype)
-            if compute_dw
-            else None
+            grad_weight_partials.sum(dim=0).to(weight.dtype) if compute_dw else None
         )
         dx = grad_input.reshape(orig_shape)
         return dx, dx, grad_weight, None

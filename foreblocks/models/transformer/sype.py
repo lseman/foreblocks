@@ -1,8 +1,15 @@
 """foreblocks.models.transformer.sype.
 
-This module defines SyPE positional and warping utilities.
-It belongs to the modular transformer layers and helpers area of Foreblocks.
-It exposes classes such as AdaptiveWarp, SyPERotator.
+Symplectic positional encoding (SyPE) with learnable warping.
+
+Implements adaptive temporal warping and symplectic rotation on query/key
+pairs for enhanced positional modeling. Matches the SyPE mechanism from
+the original paper with closed-form 2x2 flow per frequency pair.
+
+Core API:
+- AdaptiveWarp: learnable per-token temporal warping via cumsum
+- SyPERotator: symplectic flow per 2D pair applied to q/k
+
 """
 
 import torch

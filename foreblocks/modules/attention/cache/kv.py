@@ -1,8 +1,18 @@
 """foreblocks.modules.attention.cache.kv.
 
-This module implements the kv pieces for its package.
-It belongs to the attention key-value cache implementations area of Foreblocks.
-It exposes classes such as KVProvider, DenseKVProvider, PagedKVProvider.
+Unified KV provider abstraction for dense and paged key-value caches.
+
+Abstracts KV retrieval and appending behind a single interface, supporting both
+contiguous dense storage (via dict-backed accumulation) and block-based paged
+storage (wrapping PagedKVCache). Use as the KV accessor in your attention
+implementation — the provider handles gathering, MLA latent decoding, and
+batch-indexed appends.
+
+Core API:
+- KVProvider: abstract base for KV retrieval/appending
+- DenseKVProvider: dense dict-backed KV accumulation
+- PagedKVProvider: paged block-table KV wrapping PagedKVCache
+
 """
 
 from abc import ABC, abstractmethod

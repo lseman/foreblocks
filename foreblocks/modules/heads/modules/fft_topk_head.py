@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.modules.fft_topk_head.
 
-This module implements the fft topk head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as FFTTopK, FFTTopKHead.
+Frequency-domain top-K magnitude extraction for seasonal decomposition.
+
+Computes the RFFT, identifies the K highest-magnitude frequency bins, and
+splits the signal into a seasonal component (top-K frequencies) and a main
+component (residual). Use to explicitly extract dominant seasonal signals
+from time series in the frequency domain.
+
+Core API:
+- FFTTopK: top-K frequency decomposition → (main, seasonal)
+- FFTTopKHead: BaseHead wrapper
+
 """
 
 from __future__ import annotations

@@ -1,8 +1,14 @@
 """foreblocks.layers.graph.spatio_temporal.
 
-This module implements the spatio temporal pieces for its package.
-It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
-It exposes classes such as GraphWaveNetBlock.
+Graph WaveNet-style spatio-temporal residual blocks.
+
+Implements GraphWaveNetBlock combining gated temporal convolution with
+diffusion-style graph propagation and adaptive adjacency learning. Designed
+for multivariate time series forecasting with unknown spatial relationships.
+
+Core API:
+- GraphWaveNetBlock: spatio-temporal residual block with adaptive graphs
+
 """
 
 from __future__ import annotations
@@ -121,9 +127,9 @@ class GraphWaveNetBlock(nn.Module):
                 edge_index=edge_index,
                 num_nodes=x.size(2),
                 edge_weight=edge_weight,
-                batch_size=x.size(0)
-                if adj is None and edge_index is not None
-                else None,
+                batch_size=(
+                    x.size(0) if adj is None and edge_index is not None else None
+                ),
                 dtype=x.dtype,
                 device=x.device,
             )

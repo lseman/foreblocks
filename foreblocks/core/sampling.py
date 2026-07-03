@@ -1,8 +1,16 @@
 """foreblocks.core.sampling.
 
-This module defines sampling utilities.
-It belongs to the core model, training, evaluation, and sampling infrastructure area of Foreblocks.
-It exposes classes such as ScheduledSampling.
+Scheduled sampling utilities for teacher forcing during training.
+
+Provides ScheduledSampling, which generates a sampling ratio function that decays
+from full teacher forcing (ratio=1.0) to student forcing (ratio=0.0) over epochs.
+Supports linear, exponential, and constant strategies. Use during model training
+to gradually transition from teacher-forced to autoregressive generation, improving
+training stability and reducing exposure bias.
+
+Core API:
+- ScheduledSampling: node-based scheduled sampling function generator
+
 """
 
 from collections.abc import Callable

@@ -1,8 +1,17 @@
 """foreblocks.modules.heads.modules.chronos2_embed_head.
 
-This module implements the chronos2 embed head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as Chronos2EmbedHead.
+Chronos-2 embedding extraction as a trainable feature head.
+
+Hooks into a Chronos-2 pipeline to extract encoder or input-patch embeddings,
+reduces them (mean or last-token), and integrates them into the time-series
+sequence via feature concatenation, time-token prepending, or replacement.
+Lazily creates a dimension projector on first forward — call warmup() before
+building the optimizer. Use when pretrained Chronos representations improve
+forecasting for the target domain.
+
+Core API:
+- Chronos2EmbedHead: BaseHead wrapper for Chronos-2 embedding integration
+
 """
 
 from __future__ import annotations

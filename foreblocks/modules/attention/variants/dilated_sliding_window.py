@@ -1,10 +1,15 @@
-"""Dilated sliding-window attention for long-context sparse coverage.
+"""foreblocks.modules.attention.variants.dilated_sliding_window.
 
-This variant keeps the ordinary local window and adds strided keys farther
-back in the context. The pattern is inspired by dilated attention from LongNet
-and related sparse long-context models: nearby tokens are dense, while older
-tokens are sampled at a configurable dilation to increase receptive field
-without returning to full quadratic attention.
+Dilated sliding-window attention for long-context sparse coverage.
+
+Combines a local attention window with strided keys at a configurable dilation
+rate, inspired by LongNet. Nearby tokens are dense, older tokens are sampled
+sparsely at dilation steps, increasing the effective receptive field without
+full quadratic attention.
+
+Core API:
+- DilatedSlidingWindowAttentionImpl: local window + dilated long-range keys
+
 """
 
 import torch
@@ -45,12 +50,15 @@ class DilatedSlidingWindowAttentionImpl:
                         k.size(2),
                     )
                 if key_padding_mask is not None:
-                    combined = combined | key_padding_mask.view(
-                        B,
-                        1,
-                        1,
-                        k.size(2),
-                    ).bool()
+                    combined = (
+                        combined
+                        | key_padding_mask.view(
+                            B,
+                            1,
+                            1,
+                            k.size(2),
+                        ).bool()
+                    )
 
                 additive_mask = torch.zeros(
                     combined.shape,

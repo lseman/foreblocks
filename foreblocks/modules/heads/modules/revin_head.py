@@ -1,8 +1,17 @@
 """foreblocks.modules.heads.modules.revin_head.
 
-This module implements the revin head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as RevIN, RevINHead.
+Reversible Instance Normalization (RevIN) — per-variable, over-time normalization.
+
+Normalizes each variable's time series to zero-mean, unit-variance using per-sample
+statistics, with optional affine parameters for learnable re-scaling. The invert()
+method recovers the original scale from normalized output. Use when your model
+needs to handle non-stationary distributions and must produce predictions in the
+original input scale.
+
+Core API:
+- RevIN: reversible instance normalization with optional affine transform
+- RevINHead: BaseHead wrapper returning (x_norm, context)
+
 """
 
 from __future__ import annotations

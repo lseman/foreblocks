@@ -1,4 +1,17 @@
-"""Time-series denoising toolkit with automatic filter selection."""
+"""foreblocks.ts_handler.auto_filter.core.
+
+Time-series denoising toolkit with automatic filter selection.
+
+Implements the core auto-filter logic that analyzes signal characteristics
+(frequency content, noise level, seasonality) to select and apply the optimal
+denoising filter from a curated registry. Supports optimization via Optuna
+for filter hyperparameter tuning.
+
+Core API:
+- auto_denoise: main auto-selection denoising function
+- analyze_signal: extract signal features for filter selection
+
+"""
 
 from __future__ import annotations
 
@@ -45,7 +58,6 @@ from foreblocks.ts_handler.auto_filter.registry import (
     _SLOW_FILTERS,
     register_filter,
 )
-
 
 try:
     from tqdm.auto import tqdm
@@ -1138,8 +1150,7 @@ def _signal_characteristics(x: np.ndarray) -> dict[str, float]:
             )
         except Exception:
             baseline = (
-                pd
-                .Series(centered)
+                pd.Series(centered)
                 .rolling(window=sg_window, center=True, min_periods=1)
                 .median()
                 .to_numpy()
@@ -1510,9 +1521,9 @@ def tune_weights(
         )
 
     def objective(trial: optuna.Trial) -> float:
-        logits = np.array([
-            trial.suggest_float(f"w{i}", 0.01, 1.0) for i in range(n_weights)
-        ])
+        logits = np.array(
+            [trial.suggest_float(f"w{i}", 0.01, 1.0) for i in range(n_weights)]
+        )
         logits /= logits.sum()
         w = _weights_from_raw(logits)
         scores = _compute_scores(mdf_base, w)
@@ -1536,15 +1547,17 @@ def tune_weights(
 
     if warm_start:
         sw = suggest_weights(ts)
-        study.enqueue_trial({
-            "w0": sw.fidelity_mse,
-            "w1": sw.gcv,
-            "w2": sw.roughness,
-            "w3": sw.residual_autocorr,
-            "w4": sw.spectral_distance,
-            "w5": sw.residual_iid,
-            "w6": sw.derivative_corr,
-        })
+        study.enqueue_trial(
+            {
+                "w0": sw.fidelity_mse,
+                "w1": sw.gcv,
+                "w2": sw.roughness,
+                "w3": sw.residual_autocorr,
+                "w4": sw.spectral_distance,
+                "w5": sw.residual_iid,
+                "w6": sw.derivative_corr,
+            }
+        )
 
     study.optimize(objective, n_trials=n_trials, show_progress_bar=verbose)
 

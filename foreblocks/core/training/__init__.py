@@ -1,7 +1,18 @@
 """foreblocks.core.training.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
+Unified training orchestration with NAS, conformal prediction, and checkpointing.
+
+Provides the ``Trainer`` class — the main entry point for full training loops with
+optional validation, early stopping, and MLTracker logging. Also exposes loss
+computation, batch I/O, conformal calibration, and training-loop primitives.
+
+Core API:
+- Trainer: unified training loop with NAS, conformal prediction, and MoE logging
+- LossComputer: multi-component loss computation (task, distillation, regularization)
+- NASHelper: architecture parameter detection and alpha optimization management
+- TrainingHistory: epoch-level metric tracking and serialization
+- train_epoch, evaluate, forward_pass, backward_step: training-loop primitives
+
 """
 
 from typing import TYPE_CHECKING
@@ -27,7 +38,6 @@ from foreblocks.core.training.training_loop import (
     forward_pass,
     train_epoch,
 )
-
 
 __all__ = [
     # Core

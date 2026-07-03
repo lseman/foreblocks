@@ -1,8 +1,17 @@
 """foreblocks.modules.moe.experts.expert_blocks.
 
-This module implements the expert blocks pieces for its package.
-It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
-It exposes classes such as MoE_SwiGLUExpert, MoE_FFNExpert, MTPHead.
+Mixture-of-Experts feed-forward expert implementations.
+
+Provides SwiGLU and standard FFN expert classes with optional dropout, plus
+a multi-token prediction (MTP) head bank for auxiliary horizon prediction.
+Use as the expert building blocks in MoE layers where different tokens route
+to different FFNs.
+
+Core API:
+- MoE_SwiGLUExpert: SwiGLU expert with shared w12 gate/projection
+- MoE_FFNExpert: standard FFN expert with configurable activation
+- MTPHead: multi-token/horizon prediction head bank
+
 """
 
 from __future__ import annotations

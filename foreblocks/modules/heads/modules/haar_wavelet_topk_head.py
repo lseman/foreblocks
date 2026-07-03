@@ -1,8 +1,17 @@
 """foreblocks.modules.heads.modules.haar_wavelet_topk_head.
 
-This module implements the haar wavelet topk head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as HaarWaveletTopK, HaarWaveletTopKHead.
+Haar wavelet decomposition with Top-K sparse detail preservation.
+
+Performs one-level Haar wavelet analysis on sequential features, computing
+low-frequency (approximation) and high-frequency (detail) coefficients, then
+keeps only the Top-K largest-magnitude detail coefficients as a sparse mask.
+Useful for extracting sparse anomaly-like features from time series without
+losing the low-frequency trend.
+
+Core API:
+- HaarWaveletTopK: 1-level wavelet analysis with sparse detail retention
+- HaarWaveletTopKHead: BaseHead wrapper for wavelet top-k decomposition
+
 """
 
 from __future__ import annotations
@@ -71,8 +80,6 @@ class HaarWaveletTopK(nn.Module):
 
 
 class HaarWaveletTopKHead(BaseHead):
-    """BaseHead wrapper for HaarWaveletTopK. Forward -> (main, detail_sparse)."""
-
     def __init__(self, topk: int = 8):
         super().__init__(module=HaarWaveletTopK(topk=topk), name="haar_topk")
 

@@ -1,8 +1,17 @@
 """foreblocks.modules.attention.utils.compaction.
 
-This module implements the compaction pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes classes such as AttentionMatchingConfig, AttentionMatchingCompactor.
+Experimental KV cache compaction via attention matching.
+
+Retains a subset of KV slots ranked by attention key mass, aggregates nearby
+values into retained slots, and stores a learned log-bias (beta) per retained
+slot so decode can approximate the removed attention mass. Use when KV cache
+size has grown past a trigger threshold and you want to reduce memory without
+full truncation.
+
+Core API:
+- AttentionMatchingConfig: compaction parameters (keep_ratio, trigger_len, etc.)
+- AttentionMatchingCompactor: batch compaction over a PagedKVCache
+
 """
 
 from dataclasses import dataclass

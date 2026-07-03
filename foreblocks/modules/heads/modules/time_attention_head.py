@@ -1,8 +1,16 @@
 """foreblocks.modules.heads.modules.time_attention_head.
 
-This module implements the time attention head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as TimeAttention, TimeAttentionHead.
+Per-feature Transformer block over time with rotary positional embeddings.
+
+Each feature stream is treated independently — attention is computed over the
+time dimension for each feature separately, with no cross-feature attention.
+Supports causal masking, windowed attention, and RoPE for positional encoding.
+Use when you want temporal self-attention with channel-independence inductance.
+
+Core API:
+- TimeAttention: per-feature time Transformer with RoPE and causal/window support
+- TimeAttentionHead: BaseHead wrapper
+
 """
 
 from __future__ import annotations

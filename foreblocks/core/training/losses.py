@@ -1,8 +1,15 @@
 """foreblocks.core.training.losses.
 
-This module defines training losses and loss helpers.
-It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
-It exposes classes such as LossComputer.
+Multi-component loss computation with distillation, regularization, and auxiliary support.
+
+The ``LossComputer`` evaluates task loss and conditionally adds distillation loss
+(when the model implements ``compute_distillation_loss``), L1 regularization, KL
+DIVergence, and auxiliary losses. Designed to be dropped into any training loop
+that may use distillation or regularization.
+
+Core API:
+- LossComputer: handles all loss computation with task, distillation, regularization, and auxiliary components
+
 """
 
 from __future__ import annotations

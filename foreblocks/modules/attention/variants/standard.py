@@ -1,17 +1,16 @@
-"""Standard (dense) scaled dot-product attention.
+"""foreblocks.modules.attention.variants.standard.
 
-The canonical attention mechanism:
+Dense scaled dot-product attention with production KV-cache support.
 
-    Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez,
-    A. N., Kaiser, Ł., & Polosukhin, I. (2017).
-    "Attention Is All You Need." NeurIPS 2017.
-    arXiv:1706.03762 [[arXiv]](https://arxiv.org/abs/1706.03762)
+Computes softmax(QKᵀ/√d)V over the full sequence. Includes grouped-query
+attention (KV-head broadcasting), paged KV-cache decode for incremental
+generation with attention-matching compaction. This is the default attention
+path — use when no special constraints (sparsity, frequency domain, latency)
+apply.
 
-Computes ``softmax(Q Kᵀ / √d) V`` over the full sequence. Beyond the core
-mechanism this implementation also handles the parent's production paths:
-grouped-query attention (KV-head broadcasting via ``_repeat_kv``) and a
-paged-KV-cache decode path (:class:`PagedKVProvider`) for incremental
-generation, including attention-matching cache compaction.
+Core API:
+- StandardAttentionImpl: full attention with GQA and paged KV-cache decode
+
 """
 
 import torch

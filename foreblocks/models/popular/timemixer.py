@@ -1,17 +1,20 @@
-# timemixer.py
-
 """TimeMixer-style decomposable multiscale mixing for forecasting.
+
+Multi-granularity forecasting with PDM (Past-Decomposable-Mixing) that mixes
+seasonal bottom-up and trend top-down across scales, and FMM (Future-Multipredictor-Mixing)
+that ensembles predictions from all extracted scales. Creates n_levels observations
+through average downsampling, processes each with MLP mixers.
 
 Based on: Wang et al., "TimeMixer: Decomposable Multiscale Mixing for Time
 Series Forecasting", ICLR 2024.
 Paper: https://openreview.net/pdf?id=7oLshfEIC2
 
-Key ideas:
-  - Multiscale observations from average downsampling.
-  - PDM: Past-Decomposable-Mixing with seasonal bottom-up mixing and trend
-         top-down mixing.
-  - FMM: Future-Multipredictor-Mixing that ensembles predictions from all
-         extracted scales.
+Core API:
+- TimeMixer: multi-granularity forecasting with PDM and FMM
+- PastDecomposableMixing: seasonal/trend mixing across scales
+- FutureMultipredictorMixing: ensemble prediction from all scales
+- SeriesDecomp1D: moving-average trend + seasonal decomposition
+
 """
 
 import torch
@@ -34,7 +37,10 @@ class SeriesDecomp1D(nn.Module):
 
     def _init_weight(self, device, dtype):
         if self.weight is None:
-            w = torch.ones(1, 1, self.kernel_size, device=device, dtype=dtype) / self.kernel_size
+            w = (
+                torch.ones(1, 1, self.kernel_size, device=device, dtype=dtype)
+                / self.kernel_size
+            )
             self.register_buffer("weight", w, persistent=False)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -46,7 +52,10 @@ class SeriesDecomp1D(nn.Module):
         x_pad = F.pad(x_n, (pad, pad), mode=pad_mode)
         trend = F.conv1d(x_pad, self.weight.expand(C, -1, -1), groups=C)  # [B,C,L]
         seasonal = x_n - trend
-        return trend.permute(0, 2, 1).contiguous(), seasonal.permute(0, 2, 1).contiguous()
+        return (
+            trend.permute(0, 2, 1).contiguous(),
+            seasonal.permute(0, 2, 1).contiguous(),
+        )
 
 
 # =========================================================
@@ -69,7 +78,14 @@ class DownSample(nn.Module):
         self.out_channels = out_channels
         pad = (kernel_size - stride) // 2
         self.body = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, stride=stride, padding=pad, bias=False),
+            nn.Conv1d(
+                in_channels,
+                out_channels,
+                kernel_size,
+                stride=stride,
+                padding=pad,
+                bias=False,
+            ),
             create_norm_layer(norm_type, out_channels, eps=eps),
         )
 
@@ -132,15 +148,11 @@ class TemporalMix(nn.Module):
             in_dim = d_model if i == 0 else d_hidden
             layers.append(nn.Linear(in_dim, d_hidden if i < n_layers - 1 else d_model))
             if i < n_layers - 1:
-                layers.append(
-                    nn.GELU() if activation == "gelu" else nn.ReLU()
-                )
+                layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
                 if i > 0 or n_layers > 1:
                     layers.append(nn.Dropout(dropout))
             else:
-                layers.append(
-                    nn.GELU() if activation == "gelu" else nn.ReLU()
-                )
+                layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
                 if n_layers > 1:
                     layers.append(nn.Dropout(dropout))
         self.mlp = nn.Sequential(*layers)
@@ -183,15 +195,11 @@ class ChannelMix(nn.Module):
             in_dim = d_model if i == 0 else d_hidden
             layers.append(nn.Linear(in_dim, d_hidden if i < n_layers - 1 else d_model))
             if i < n_layers - 1:
-                layers.append(
-                    nn.GELU() if activation == "gelu" else nn.ReLU()
-                )
+                layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
                 if i > 0 or n_layers > 1:
                     layers.append(nn.Dropout(dropout))
             else:
-                layers.append(
-                    nn.GELU() if activation == "gelu" else nn.ReLU()
-                )
+                layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
                 if n_layers > 1:
                     layers.append(nn.Dropout(dropout))
         self.mlp = nn.Sequential(*layers)
@@ -228,29 +236,33 @@ class PMS(nn.Module):
         eps: float = 1e-5,
     ):
         super().__init__()
-        self.layers = nn.ModuleList([
-            nn.ModuleList([
-                TemporalMix(
-                    d_model=d_model,
-                    n_layers=1,
-                    dropout=dropout,
-                    expansion=expansion,
-                    activation=activation,
-                    norm_type=norm_type,
-                    eps=eps,
-                ),
-                ChannelMix(
-                    d_model=d_model,
-                    n_layers=1,
-                    dropout=dropout,
-                    expansion=expansion,
-                    activation=activation,
-                    norm_type=norm_type,
-                    eps=eps,
-                ),
-            ])
-            for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.ModuleList(
+                    [
+                        TemporalMix(
+                            d_model=d_model,
+                            n_layers=1,
+                            dropout=dropout,
+                            expansion=expansion,
+                            activation=activation,
+                            norm_type=norm_type,
+                            eps=eps,
+                        ),
+                        ChannelMix(
+                            d_model=d_model,
+                            n_layers=1,
+                            dropout=dropout,
+                            expansion=expansion,
+                            activation=activation,
+                            norm_type=norm_type,
+                            eps=eps,
+                        ),
+                    ]
+                )
+                for _ in range(n_layers)
+            ]
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for tmix, cmix in self.layers:
@@ -282,41 +294,47 @@ class PastDecomposableMixing(nn.Module):
     ):
         super().__init__()
         self.n_levels = n_levels
-        self.seasonal_mixers = nn.ModuleList([
-            TemporalMix(
-                d_model=d_model,
-                n_layers=1,
-                dropout=dropout,
-                expansion=expansion,
-                activation=activation,
-                norm_type=norm_type,
-                eps=eps,
-            )
-            for _ in range(n_levels - 1)
-        ])
-        self.trend_mixers = nn.ModuleList([
-            TemporalMix(
-                d_model=d_model,
-                n_layers=1,
-                dropout=dropout,
-                expansion=expansion,
-                activation=activation,
-                norm_type=norm_type,
-                eps=eps,
-            )
-            for _ in range(n_levels - 1)
-        ])
+        self.seasonal_mixers = nn.ModuleList(
+            [
+                TemporalMix(
+                    d_model=d_model,
+                    n_layers=1,
+                    dropout=dropout,
+                    expansion=expansion,
+                    activation=activation,
+                    norm_type=norm_type,
+                    eps=eps,
+                )
+                for _ in range(n_levels - 1)
+            ]
+        )
+        self.trend_mixers = nn.ModuleList(
+            [
+                TemporalMix(
+                    d_model=d_model,
+                    n_layers=1,
+                    dropout=dropout,
+                    expansion=expansion,
+                    activation=activation,
+                    norm_type=norm_type,
+                    eps=eps,
+                )
+                for _ in range(n_levels - 1)
+            ]
+        )
         hidden = max(int(d_model * (1.0 + expansion)), d_model)
-        self.feed_forward = nn.ModuleList([
-            nn.Sequential(
-                create_norm_layer(norm_type, d_model, eps=eps),
-                nn.Linear(d_model, hidden),
-                nn.GELU() if activation == "gelu" else nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden, d_model),
-            )
-            for _ in range(n_levels)
-        ])
+        self.feed_forward = nn.ModuleList(
+            [
+                nn.Sequential(
+                    create_norm_layer(norm_type, d_model, eps=eps),
+                    nn.Linear(d_model, hidden),
+                    nn.GELU() if activation == "gelu" else nn.ReLU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(hidden, d_model),
+                )
+                for _ in range(n_levels)
+            ]
+        )
 
     @staticmethod
     def _resize(x: torch.Tensor, target_len: int) -> torch.Tensor:
@@ -365,15 +383,17 @@ class FutureMultipredictorMixing(nn.Module):
         activation: str = "gelu",
     ):
         super().__init__()
-        self.predictors = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(d_model, d_model),
-                nn.GELU() if activation == "gelu" else nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(d_model, d_out),
-            )
-            for _ in range(n_levels)
-        ])
+        self.predictors = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(d_model, d_model),
+                    nn.GELU() if activation == "gelu" else nn.ReLU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(d_model, d_out),
+                )
+                for _ in range(n_levels)
+            ]
+        )
         self.scale_logits = nn.Parameter(torch.zeros(n_levels))
 
     @staticmethod
@@ -550,9 +570,9 @@ class TimeMixer(nn.Module):
             return x[:, :target_L, :]
         # Repeat
         repeats = (target_L + L - 1) // L
-        x_rep = x.repeat_interleave(
-            torch.tensor(repeats, device=x.device), dim=1
-        )[:, :target_L, :]
+        x_rep = x.repeat_interleave(torch.tensor(repeats, device=x.device), dim=1)[
+            :, :target_L, :
+        ]
         return x_rep
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -573,7 +593,9 @@ class TimeMixer(nn.Module):
             lvl_z = self._downsample(z, level)
             lvl_out = self.granularities[level](lvl_z)
             trend, seasonal = self.decomp(lvl_out)
-            seasonal_parts.append(seasonal if self.use_seasonal else torch.zeros_like(seasonal))
+            seasonal_parts.append(
+                seasonal if self.use_seasonal else torch.zeros_like(seasonal)
+            )
             trend_parts.append(trend if self.use_trend else torch.zeros_like(trend))
 
         mixed_scales = self.pdm(seasonal_parts, trend_parts)

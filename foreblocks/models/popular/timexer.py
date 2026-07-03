@@ -1,12 +1,20 @@
-"""TimeXer-style forecasting with endogenous/exogenous attention.
+"""foreblocks.models.popular.timexer.
+
+TimeXer-style forecasting with endogenous/exogenous variable handling via global tokens.
 
 Based on: Wang et al., "TimeXer: Empowering Transformers for Time Series
 Forecasting with Exogenous Variables".
 Paper: https://arxiv.org/abs/2402.19072
 
-The implementation keeps the paper's central ingredients: endogenous patch
-tokens, learned global endogenous tokens, patch-wise self-attention, and
-variate-wise cross-attention from endogenous globals into exogenous tokens.
+Patches input into tokens, learns global endogenous tokens, runs patch-wise
+self-attention, then uses variate-wise cross-attention from globals into exogenous
+tokens for endogenous-exogenous interaction.
+
+Core API:
+- TimeXer: full TimeXer model with endogenous/exogenous patching and global-token cross-attention
+- TimeXerBlock: self-attention plus exogenous cross-attention through global tokens
+- _patchify: convert time series into patch tokens
+
 """
 
 from __future__ import annotations
@@ -145,29 +153,41 @@ class TimeXer(nn.Module):
         self.d_model = int(d_model)
         self.quantiles = quantiles
 
-        d_out = self.out_channels if quantiles is None else self.out_channels * len(quantiles)
+        d_out = (
+            self.out_channels
+            if quantiles is None
+            else self.out_channels * len(quantiles)
+        )
 
         self.endog_patch = nn.Linear(self.patch_len, d_model)
         self.exog_patch = nn.Linear(self.patch_len, d_model)
-        self.endog_var_emb = nn.Parameter(torch.randn(1, self.in_channels, 1, d_model) * 0.02)
+        self.endog_var_emb = nn.Parameter(
+            torch.randn(1, self.in_channels, 1, d_model) * 0.02
+        )
         self.exog_var_emb = nn.Parameter(
             torch.randn(1, max(self.exog_channels, 1), 1, d_model) * 0.02
         )
-        self.patch_pos_emb = nn.Parameter(torch.randn(1, 1, max_patches, d_model) * 0.02)
-        self.global_tokens = nn.Parameter(torch.randn(1, self.in_channels, d_model) * 0.02)
+        self.patch_pos_emb = nn.Parameter(
+            torch.randn(1, 1, max_patches, d_model) * 0.02
+        )
+        self.global_tokens = nn.Parameter(
+            torch.randn(1, self.in_channels, d_model) * 0.02
+        )
         self.dropout = nn.Dropout(dropout)
 
-        self.blocks = nn.ModuleList([
-            TimeXerBlock(
-                d_model=d_model,
-                n_heads=n_heads,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                norm_type=norm_type,
-                eps=eps,
-            )
-            for _ in range(n_layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                TimeXerBlock(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    dim_feedforward=dim_feedforward,
+                    dropout=dropout,
+                    norm_type=norm_type,
+                    eps=eps,
+                )
+                for _ in range(n_layers)
+            ]
+        )
         self.final_norm = create_norm_layer(norm_type, d_model, eps=eps)
         self.horizon_proj = nn.Linear(d_model, self.pred_len)
         self.channel_mixer = nn.Linear(self.in_channels, d_out)
@@ -214,7 +234,11 @@ class TimeXer(nn.Module):
                 f"exog creates {n_patches} patches, above max_patches={self.patch_pos_emb.size(2)}"
             )
         h = self.exog_patch(patches)
-        h = h + self.exog_var_emb[:, : exog.size(-1), :, :] + self.patch_pos_emb[:, :, :n_patches, :]
+        h = (
+            h
+            + self.exog_var_emb[:, : exog.size(-1), :, :]
+            + self.patch_pos_emb[:, :, :n_patches, :]
+        )
         return self.dropout(h.flatten(1, 2))
 
     def forward(

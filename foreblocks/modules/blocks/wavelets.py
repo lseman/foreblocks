@@ -1,14 +1,18 @@
-"""MultiWavelet Transform (MWT) neural operator layers.
+"""foreblocks.modules.blocks.wavelets.
 
-Inspired by:
+MultiWavelet Transform operator layers for neural PDE and time-series learning.
 
-    Gupta et al., "Multiwavelet-based Operator Learning for Differential
-    Equations", NeurIPS 2021.
-    Paper: https://arxiv.org/abs/2109.13459
+Implements the MWT operator (Gupta et al.) using Legendre polynomial bases for
+coarse-to-fine signal decomposition. SparseKernelFT1d provides learned Fourier
+kernels in wavelet coefficient space. Use when multi-scale frequency structure
+is important — e.g., differential equation solutions with features across
+orders of magnitude, or time series with nested periodicities.
 
-This file implements Legendre/Chebyshev multiwavelet filter construction,
-Fourier-domain sparse kernels, and a compact feature extractor for time-series
-models.
+Core API:
+- MWT_CZ1d: core MultiWavelet Transform operator layer
+- MultiWaveletFeatureExtractor: stackable MWT feature extractor
+- SparseKernelFT1d: learned sparse Fourier kernel in coefficient space
+
 """
 
 import math

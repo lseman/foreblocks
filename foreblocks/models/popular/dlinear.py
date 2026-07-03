@@ -1,15 +1,20 @@
-# dlinear.py
-
 """DLinear-style time series forecasting head.
+
+Decomposes input into trend (via moving average) and seasonal components, each
+passed through a lazy-built linear projection. Supports per-channel or shared
+weights, optional trend decomposition, and channel mixing.
 
 Based on: Zeng et al., "Are Transformers Effective for Time Series Forecasting?" (DLinear),
 Paper: https://arxiv.org/abs/2205.13504
+
+Core API:
+- DLinear: trend+seasonal decomposition with lazy linear projection heads
+
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 # Use your project modules
 

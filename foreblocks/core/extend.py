@@ -1,7 +1,18 @@
-"""Extended foreblocks forecasting models with knowledge distillation.
+"""foreblocks.core.extend.
 
-This module provides DistilledForecastingModel, which adds teacher-student
-distillation support on top of the standard ForecastingModel API.
+Extended forecasting models with knowledge distillation and quantization.
+
+Adds teacher-student knowledge distillation (output, feature, and attention levels)
+on top of the standard ForecastingModel API. Includes dimension alignment adapters
+for mismatched teacher-student architectures, trainable alpha/temperature schedules,
+and per-component loss weighting. Also provides QuantizedForecastingModel with
+support for PTQ, QAT, and dynamic quantization. Use when you need to compress
+a large forecasting model via distillation or quantization.
+
+Core API:
+- DistilledForecastingModel: forecasting model with output/feature/attention distillation
+- QuantizedForecastingModel: distillation-enabled model with PTQ/QAT/dynamic quantization
+
 """
 
 import copy
@@ -55,13 +66,14 @@ class DistilledForecastingModel(ForecastingModel):
         task_type: str = "regression",  # "regression" | "logits"
         alpha_schedule=None,  # Callable[[int], float] | None
         temp_schedule=None,  # Callable[[int], float] | None
-        loss_weights: None
-        | (dict[str, float]) = None,  # keys: "output","feature","attention"
+        loss_weights: None | (
+            dict[str, float]
+        ) = None,  # keys: "output","feature","attention"
         **kwargs,
     ):
-        assert distillation_mode in self.VALID_DISTILLATION_MODES, (
-            f"Invalid distillation mode: {distillation_mode}"
-        )
+        assert (
+            distillation_mode in self.VALID_DISTILLATION_MODES
+        ), f"Invalid distillation mode: {distillation_mode}"
 
         super().__init__(**kwargs)
 
@@ -361,9 +373,9 @@ class DistilledForecastingModel(ForecastingModel):
                 self._setup_distillation()
 
     def enable_distillation(self, mode="output", teacher_model=None):
-        assert mode in self.VALID_DISTILLATION_MODES, (
-            f"Invalid distillation mode: {mode}"
-        )
+        assert (
+            mode in self.VALID_DISTILLATION_MODES
+        ), f"Invalid distillation mode: {mode}"
         self.distillation_mode = mode
         if teacher_model is not None:
             self.set_teacher_model(teacher_model)
@@ -429,10 +441,12 @@ class DistilledForecastingModel(ForecastingModel):
         self, input_tensor: torch.Tensor, num_runs=100, warmup_runs=10
     ):
         result = super().benchmark_inference(input_tensor, num_runs, warmup_runs)
-        result.update({
-            "distillation_mode": self.distillation_mode,
-            "has_teacher": self.teacher_model is not None,
-        })
+        result.update(
+            {
+                "distillation_mode": self.distillation_mode,
+                "has_teacher": self.teacher_model is not None,
+            }
+        )
         return result
 
 
@@ -455,9 +469,9 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         per_channel_quantization: bool = False,
         **kwargs,
     ):
-        assert quantization_mode in self.VALID_QUANTIZATION_MODES, (
-            f"Invalid quantization mode: {quantization_mode}"
-        )
+        assert (
+            quantization_mode in self.VALID_QUANTIZATION_MODES
+        ), f"Invalid quantization mode: {quantization_mode}"
 
         super().__init__(**kwargs)
 
@@ -638,10 +652,12 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         self, input_tensor: torch.Tensor, num_runs=100, warmup_runs=10
     ):
         result = super().benchmark_inference(input_tensor, num_runs, warmup_runs)
-        result.update({
-            "quantization_mode": self.quantization_mode,
-            "is_quantized": self.is_quantized,
-        })
+        result.update(
+            {
+                "quantization_mode": self.quantization_mode,
+                "is_quantized": self.is_quantized,
+            }
+        )
         return result
 
     def get_quantization_info(self) -> dict[str, str | int | float | bool]:

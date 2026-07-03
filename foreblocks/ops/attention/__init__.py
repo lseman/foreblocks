@@ -1,7 +1,20 @@
 """foreblocks.ops.attention.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+Attention kernels and adapters for Foreblocks.
+
+Provides FLA (flash-linear-attention) integration, Triton-accelerated RoPE, fused
+RMSNorm gating, paged decode, chunked causal linear attention, and multiple
+gated-delta-rule variants. All modules gracefully degrade when FLA or Triton
+are unavailable, raising RuntimeError on use rather than import-time failure.
+
+Core API (entry points):
+- triton_apply_rope: RoPE on [B, H, T, D] tensors
+- triton_paged_decode: paged KV-cache attention decode
+- fused_rmsnorm_sigmoid_gate: fused RMSNorm + sigmoid gate
+- fused_recurrent_causal_linear_attn: Triton recurrent linear attention
+- chunked_causal_linear_attn: chunked causal linear attention
+- can_use_fla_* / fla_*_forward: FLA adapter functions for GLA, KDA, GDN2, delta rule, gated delta rule
+
 """
 
 try:

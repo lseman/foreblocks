@@ -1,8 +1,17 @@
 """foreblocks.anomaly.models.anomaly_transformer.
 
-This module implements the anomaly transformer pieces for its package.
-It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
-It exposes classes such as AnomalyTransformerForward, AnomalyTransformer.
+Association-discrepancy transformer for reconstruction-based anomaly scoring.
+
+AnomalyTransformer learns two attention distributions — series attention from data and
+prior attention from temporal proximity — then scores anomalies via their KL divergence.
+Higher divergence between learned and expected attention patterns indicates anomalous
+timesteps. Use for window-level reconstruction scoring where anomaly manifests as
+unusual temporal attention patterns.
+
+Core API:
+- AnomalyTransformer: association-discrepancy transformer model
+- association_discrepancy: compute KL-divergence anomaly scores from attention maps
+
 """
 
 from __future__ import annotations
@@ -24,7 +33,9 @@ class AnomalyTransformerForward:
 
 
 class _AssociationAttention(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, window_size: int, dropout: float) -> None:
+    def __init__(
+        self, d_model: int, n_heads: int, window_size: int, dropout: float
+    ) -> None:
         super().__init__()
         self.d_model = int(d_model)
         self.n_heads = int(n_heads)
@@ -38,7 +49,9 @@ class _AssociationAttention(nn.Module):
         distance = (positions[:, None] - positions[None, :]).abs()
         self.register_buffer("distance", distance, persistent=False)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         bsz, length, _ = x.shape
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         q = q.view(bsz, length, self.n_heads, self.head_dim).transpose(1, 2)
@@ -51,7 +64,9 @@ class _AssociationAttention(nn.Module):
 
         sigma = F.softplus(self.sigma(x)).transpose(1, 2).unsqueeze(-1) + 1e-4
         distance = self.distance[:length, :length].to(x.device)
-        prior = torch.exp(-distance.pow(2).view(1, 1, length, length) / (2.0 * sigma.pow(2)))
+        prior = torch.exp(
+            -distance.pow(2).view(1, 1, length, length) / (2.0 * sigma.pow(2))
+        )
         prior = prior / (prior.sum(dim=-1, keepdim=True) + 1e-8)
 
         context = torch.matmul(series, v).transpose(1, 2).contiguous()
@@ -80,7 +95,9 @@ class _AnomalyTransformerLayer(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         attn_out, series, prior = self.attn(self.norm1(x))
         x = x + self.dropout(attn_out)
         x = x + self.dropout(self.ff(self.norm2(x)))

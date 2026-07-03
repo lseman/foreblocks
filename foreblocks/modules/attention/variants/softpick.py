@@ -1,21 +1,15 @@
-"""Softpick attention — rectified-softmax replacement for the attention softmax.
+"""foreblocks.modules.attention.variants.softpick.
 
-Implements Softpick attention from:
+Attention with rectified softmax — eliminates attention sinks via unnormalized weights.
 
-    Zuhri, Z. M. K., Fuadi, E. H., & Aji, A. F. (2025).
-    "Softpick: No Attention Sink, No Massive Activations with Rectified
-    Softmax."
-    arXiv:2504.20966 [[arXiv]](https://arxiv.org/abs/2504.20966)
+Softpick replaces the standard softmax normalization with a rectified variant whose
+weights need not sum to one, removing the forced probability-mass allocation that
+produces attention sinks and massive activations. Use when attention sink behavior
+is degrading model quality on long sequences.
 
-Softpick replaces the softmax normalisation in attention with a *rectified*
-variant whose weights need not sum to one, removing the forced allocation of
-probability mass that produces attention sinks and massive activations while
-matching softmax-attention quality.
+Core API:
+- SoftpickAttentionImpl: Triton-backed or fallback Softpick attention
 
-This wrapper dispatches to the fused Triton ``parallel_softpick_attn`` kernel
-from the bundled third_party implementation (handling both packed and
-``cu_seqlens`` var-length layouts). If the backend is unavailable or raises,
-it falls back to the parent's standard attention.
 """
 
 import warnings
@@ -92,8 +86,7 @@ class SoftpickAttentionImpl:
                     head_first=True,
                 )
                 out = (
-                    out
-                    .view(B, T_q, self.parent.n_heads, self.parent.head_dim)
+                    out.view(B, T_q, self.parent.n_heads, self.parent.head_dim)
                     .contiguous()
                     .view(B, T_q, self.parent.d_model)
                 )

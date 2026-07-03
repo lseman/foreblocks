@@ -1,8 +1,14 @@
 """foreblocks.sequence.mamba.conv.
 
-This module implements the conv pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes classes such as CausalDepthwiseConv1d.
+Causal depthwise 1-D convolution using the custom foreblocks kernel.
+
+Wraps the low-level ``causal_depthwise_conv1d`` op into an nn.Module with
+proper weight layout and optional bias. Used inside Mamba blocks for the
+causal convolution on the [u, B, C] projected tensor.
+
+Core API:
+- CausalDepthwiseConv1d: causal depthwise convolution module
+
 """
 
 from __future__ import annotations

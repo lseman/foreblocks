@@ -1,6 +1,28 @@
-"""Compatibility module aggregating all time-series heads.
+"""foreblocks.modules.heads.heads.
 
-Implementation now lives in per-head modules under this package.
+Aggregated re-exports of all foreblocks time-series heads.
+
+Convenience import for all head implementations: DAIN, decomposition,
+differencing, DropoutTS, FFT top-K, Haar wavelet top-K, learnable Fourier
+seasonal, multi-scale/conv, patch embedding, RevIN, Time2Vec, and
+TimeAttention. Use for quick imports without navigating subpackages.
+
+Core API (re-exports):
+- DAIN / DAINHead: deep attention interpolation head
+- DecompositionBlock / DecompositionHead: trend-seasonal decomposition
+- Differencing / DifferencingHead: differencing-based head
+- DropoutTSHead: dropout-based time series head
+- FFTTopK / FFTTopKHead: FFT top-K frequency selection head
+- HaarWaveletTopK / HaarWaveletTopKHead: Haar wavelet top-K head
+- LearnableFourierSeasonal / LearnableFourierSeasonalHead: learnable Fourier seasonal
+- MultiScaleConv / MultiScaleConvHead: multi-scale convolution head
+- MultiKernelConvHead: multi-kernel convolution head
+- PatchEmbed / PatchEmbedHead: patch embedding head
+- RevIN / RevINHead: reversible instance normalization
+- Time2Vec / Time2VecHead: time embedding layer
+- TimeAttention / TimeAttentionHead: time attention head
+- Chronos2EmbedHead: Chronos 2 embedding head
+
 """
 
 from foreblocks.modules.heads.modules.chronos2_embed_head import Chronos2EmbedHead
@@ -35,7 +57,6 @@ from foreblocks.modules.heads.modules.time_attention_head import (
     TimeAttention,
     TimeAttentionHead,
 )
-
 
 __all__ = [
     "Chronos2EmbedHead",

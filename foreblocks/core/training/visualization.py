@@ -1,7 +1,17 @@
-"""Visualization helpers for Trainer.
+"""foreblocks.core.training.visualization.
 
-Extracted from the monolithic ``trainer.py``.  Provides prediction plots,
-conformal interval plots, and violation heatmaps.
+Visualization helpers for training predictions and conformal intervals.
+
+Extracted from the Trainer module. Provides prediction-vs-actual plots,
+forecast channel name generation, and array flattening utilities for
+forecast and series data in various tensor shapes.
+
+Core API:
+- plot_prediction: plot model predictions against actual values
+- _flatten_forecast_array: flatten forecast arrays to (N, H, D)
+- _forecast_channel_names: generate channel names for forecast arrays
+- _flatten_series_array: flatten series arrays to (T, S_dim)
+
 """
 
 from __future__ import annotations
@@ -12,7 +22,6 @@ from typing import TYPE_CHECKING, Any
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-
 
 if TYPE_CHECKING:
     from foreblocks.core.training.trainer import Trainer
@@ -31,7 +40,11 @@ def _require_matplotlib() -> None:
 
 def _flatten_forecast_array(values: torch.Tensor | np.ndarray) -> np.ndarray:  # type: ignore[name-defined]
     """Flatten forecast arrays to ``(N, H, D)``."""
-    arr = values.detach().cpu().numpy() if hasattr(values, "detach") else np.asarray(values)
+    arr = (
+        values.detach().cpu().numpy()
+        if hasattr(values, "detach")
+        else np.asarray(values)
+    )
     if arr.ndim == 2:
         return arr[:, :, None]
     if arr.ndim == 3:
@@ -46,7 +59,11 @@ def _forecast_channel_names(
     names: str | list | None,
 ) -> list[str]:
     """Generate channel names for forecast arrays."""
-    arr = values.detach().cpu().numpy() if hasattr(values, "detach") else np.asarray(values)
+    arr = (
+        values.detach().cpu().numpy()
+        if hasattr(values, "detach")
+        else np.asarray(values)
+    )
     if arr.ndim <= 3:
         channels = 1 if arr.ndim == 2 else arr.shape[-1]
         if isinstance(names, str):
@@ -61,15 +78,27 @@ def _forecast_channel_names(
     if isinstance(names, str):
         names = [names]
     if names is not None and len(names) == nodes:
-        return [f"{names[node]} feature {feat}" for node in range(nodes) for feat in range(features)]
+        return [
+            f"{names[node]} feature {feat}"
+            for node in range(nodes)
+            for feat in range(features)
+        ]
     if names is not None and len(names) == channels:
         return list(names)
-    return [f"node {node} feature {feat}" for node in range(nodes) for feat in range(features)]
+    return [
+        f"node {node} feature {feat}"
+        for node in range(nodes)
+        for feat in range(features)
+    ]
 
 
 def _flatten_series_array(values: torch.Tensor | np.ndarray) -> np.ndarray:  # type: ignore[name-defined]
     """Flatten series arrays to ``(T, S_dim)``."""
-    arr = values.detach().cpu().numpy() if hasattr(values, "detach") else np.asarray(values)
+    arr = (
+        values.detach().cpu().numpy()
+        if hasattr(values, "detach")
+        else np.asarray(values)
+    )
     if arr.ndim == 1:
         return arr[:, None]
     if arr.ndim == 2:
@@ -115,7 +144,9 @@ def plot_prediction(
         starts = offset + seq_len + np.arange(N) * stride
         coverage_end = min(T, int(starts[-1] + H)) if N > 0 else 0
 
-        fig, axes = plt.subplots(D_plot, 1, figsize=(figsize[0], figsize[1] * D_plot), sharex=True)
+        fig, axes = plt.subplots(
+            D_plot, 1, figsize=(figsize[0], figsize[1] * D_plot), sharex=True
+        )
         axes = np.atleast_1d(axes)
         for j in range(D_plot):
             ax = axes[j]
@@ -134,15 +165,24 @@ def plot_prediction(
             mean_pred = np.zeros(T)
             mean_pred[have] = acc[have] / cnt[have]
             x = np.arange(coverage_end)
-            ax.plot(series[:coverage_end, j], label=f"Actual {channel_names[j]}", alpha=0.8)
+            ax.plot(
+                series[:coverage_end, j], label=f"Actual {channel_names[j]}", alpha=0.8
+            )
             if have[:coverage_end].any():
                 ax.plot(
                     x[have[:coverage_end]],
                     mean_pred[:coverage_end][have[:coverage_end]],
                     label=f"Predicted {channel_names[j]}",
-                    linestyle="--", color=pred_color,
+                    linestyle="--",
+                    color=pred_color,
                 )
-            ax.axvline(offset + seq_len, color="gray", linestyle="--", alpha=0.5, label="First forecast")
+            ax.axvline(
+                offset + seq_len,
+                color="gray",
+                linestyle="--",
+                alpha=0.5,
+                label="First forecast",
+            )
             ax.set_title(f"{channel_names[j]}: Prediction vs Actual")
             ax.legend(loc="upper left")
             ax.grid(True, alpha=0.3)
@@ -165,15 +205,27 @@ def plot_prediction(
     if len(channel_names) != D_plot:
         channel_names = [f"Feature {i}" for i in range(D_plot)]
 
-    fig, axes = plt.subplots(D_plot, 1, figsize=(figsize[0], figsize[1] * D_plot), sharex=True)
+    fig, axes = plt.subplots(
+        D_plot, 1, figsize=(figsize[0], figsize[1] * D_plot), sharex=True
+    )
     axes = np.atleast_1d(axes)
     for j in range(D_plot):
         ax = axes[j]
         horizon = np.arange(len(pred_mean))
-        ax.plot(horizon, y_mean[:, j], label=f"Actual {channel_names[j]}", marker="o", alpha=0.7)
         ax.plot(
-            horizon, pred_mean[:, j], label=f"Predicted {channel_names[j]}",
-            marker="s", linestyle="--", alpha=0.7,
+            horizon,
+            y_mean[:, j],
+            label=f"Actual {channel_names[j]}",
+            marker="o",
+            alpha=0.7,
+        )
+        ax.plot(
+            horizon,
+            pred_mean[:, j],
+            label=f"Predicted {channel_names[j]}",
+            marker="s",
+            linestyle="--",
+            alpha=0.7,
         )
         ax.set_title(f"{channel_names[j]}: Average Forecast")
         ax.legend()

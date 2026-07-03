@@ -1,15 +1,25 @@
 """foreblocks.ops.mamba.causal_conv1d.
 
-This module implements the causal conv1d pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes functions such as causal_depthwise_conv1d_reference, causal_depthwise_conv1d_triton, causal_depthwise_conv1d_bwd_triton, causal_depthwise_conv1d.
+Triton-accelerated causal depthwise 1D convolution with full autograd.
+
+Implements causal (left-padded) depthwise conv1d for Mamba-style state-space
+models. The forward and backward Triton kernels handle input gradients,
+weight gradients, and bias gradients in separate launch paths. Falls back
+to PyTorch reference when Triton is unavailable. Use when building Mamba
+models that need causal conv1d as the temporal mixing layer.
+
+Core API:
+- causal_depthwise_conv1d: main entry, auto-selects Triton or PyTorch
+- causal_depthwise_conv1d_triton: Triton forward only
+- causal_depthwise_conv1d_reference: PyTorch reference (F.pad + F.conv1d)
+- causal_depthwise_conv1d_bwd_triton: Triton backward only
+
 """
 
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-
 
 try:
     import triton
@@ -85,7 +95,9 @@ if CAUSAL_CONV1D_TRITON_AVAILABLE:
             valid = mask & (t_out < T)
             grad_idx = bd * T + t_out
             w_idx = d * K + k
-            grad_val = tl.load(grad_ptr + grad_idx, mask=valid, other=0.0).to(tl.float32)
+            grad_val = tl.load(grad_ptr + grad_idx, mask=valid, other=0.0).to(
+                tl.float32
+            )
             w_val = tl.load(weight_ptr + w_idx, mask=mask, other=0.0).to(tl.float32)
             acc += grad_val * w_val
 
@@ -238,7 +250,9 @@ def causal_depthwise_conv1d_bwd_triton(
 
     dx = torch.empty_like(x_contig) if needs_input_grad[0] else None
     dweight = torch.empty_like(weight_contig) if needs_input_grad[1] else None
-    dbias = torch.empty_like(bias) if (bias is not None and needs_input_grad[2]) else None
+    dbias = (
+        torch.empty_like(bias) if (bias is not None and needs_input_grad[2]) else None
+    )
 
     if dx is not None:
         block = min(max(triton.next_power_of_2(T), 256), 1024)
@@ -283,9 +297,11 @@ class _CausalDepthwiseConv1dFn(torch.autograd.Function):
         ctx.save_for_backward(
             x,
             weight,
-            bias
-            if bias is not None
-            else torch.tensor([], device=x.device, dtype=x.dtype),
+            (
+                bias
+                if bias is not None
+                else torch.tensor([], device=x.device, dtype=x.dtype)
+            ),
         )
         ctx.has_bias = bias is not None
         return causal_depthwise_conv1d_triton(x, weight, bias=bias)

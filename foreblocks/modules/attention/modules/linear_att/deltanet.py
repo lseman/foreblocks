@@ -1,8 +1,14 @@
 """foreblocks.modules.attention.modules.linear_att.deltanet.
 
-This module implements the deltanet pieces for its package.
-It belongs to the linear and gated attention backends area of Foreblocks.
-It exposes classes such as DeltaNetBackend.
+DeltaNet: L2-normalised Q, K with causal conv preprocessing and learnable β gate.
+
+Implements the delta-rule recurrence (S_t = S_{t-1} - β_t · (S_{t-1}·k_t - v_t) · k_t^T)
+in both parallel WY-chunk and exact sequential modes. Designed for linear-time
+sequence modeling with stateful memory — supports incremental recurrent decoding.
+
+Core API:
+- DeltaNetBackend: DeltaNet linear attention with chunk and recurrent modes
+
 """
 
 from __future__ import annotations
@@ -106,20 +112,17 @@ class DeltaNetBackend(nn.Module):
 
         # Causal conv pre-processing
         k = (
-            self
-            ._causal_conv_forward(k, self.k_conv)
+            self._causal_conv_forward(k, self.k_conv)
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
         q = (
-            self
-            ._causal_conv_forward(q, self.q_conv)
+            self._causal_conv_forward(q, self.q_conv)
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
         v = (
-            self
-            ._causal_conv_forward(v, self.v_conv)
+            self._causal_conv_forward(v, self.v_conv)
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
@@ -146,9 +149,8 @@ class DeltaNetBackend(nn.Module):
             o, S_next = fla_delta_rule_forward(
                 q, k, v, beta, S, self.scale, recurrent=False
             )
-        elif (
-            not torch.is_grad_enabled()
-            and can_use_fla_recurrent_delta_rule(q, k, v, beta, S)
+        elif not torch.is_grad_enabled() and can_use_fla_recurrent_delta_rule(
+            q, k, v, beta, S
         ):
             o, S_next = fla_recurrent_delta_rule(q, k, v, beta, S, self.scale)
         else:
@@ -218,8 +220,7 @@ class DeltaNetBackend(nn.Module):
             #   T = (I + tril(β·K·Kᵀ, -1))⁻¹
             #   u = T · (β·V − β·K·Sᵀ)   ("pseudo-values", β folded in)
             I_C = (
-                torch
-                .eye(C, device=Q.device, dtype=Q.dtype)
+                torch.eye(C, device=Q.device, dtype=Q.dtype)
                 .unsqueeze(0)
                 .unsqueeze(0)
                 .repeat(B, H, 1, 1)
@@ -235,8 +236,7 @@ class DeltaNetBackend(nn.Module):
             # since token t reads the state *after* writing its own update.
             Q_scaled = Q / self.d_head**0.5
             M = (
-                torch
-                .tril(torch.ones(C, C, device=Q.device, dtype=Q.dtype))
+                torch.tril(torch.ones(C, C, device=Q.device, dtype=Q.dtype))
                 .unsqueeze(0)
                 .unsqueeze(0)
             )

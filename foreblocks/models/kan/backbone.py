@@ -1,8 +1,18 @@
 """foreblocks.models.kan.backbone.
 
-This module implements the backbone pieces for its package.
-It belongs to the Kolmogorov-Arnold Network model components area of Foreblocks.
-It exposes classes such as PolyKAN, PolyKANBlock, HeteroMoKANLayer, FlattenHead.
+Kolmogorov-Arnold Network backbone with polynomial basis functions and MoE routing.
+
+Implements a patch-based KAN architecture with Heterogeneous MoE layers that route
+tokens across polynomial families (Hahn, Chebyshev, Jacobi, etc.). Includes
+poly-config resolution, intra/inter-patch KAN blocks, and a flatten projection head.
+
+Core API:
+- Backbone: patch-based KAN encoder with MoE expert layers and load balancing
+- HeteroMoKANLayer: MoE layer routing tokens across polynomial family experts
+- PolyKAN, PolyKANBlock: single and patch-level polynomial KAN modules
+- FlattenHead: projection head mapping KAN output to forecast window
+- resolve_poly_config: merge base PolyLayerConfig with override parameters
+
 """
 
 from __future__ import annotations
@@ -252,29 +262,31 @@ class HeteroMoKANLayer(nn.Module):
             temperature=router_temperature,
             top_k=top_k,
         )
-        self.experts = nn.ModuleList([
-            PolyKANBlock(
-                dim=d_model,
-                patch_num=patch_num,
-                family=family,
-                poly_config=poly_config,
-                degree_intra=degree_intra,
-                degree_inter=degree_inter,
-                hahn_alpha=hahn_alpha,
-                hahn_beta=hahn_beta,
-                hahn_N=hahn_N,
-                jacobi_alpha=jacobi_alpha,
-                jacobi_beta=jacobi_beta,
-                wavelet_num=wavelet_num,
-                wavelet_base_freq=wavelet_base_freq,
-                wavelet_learn_freq=wavelet_learn_freq,
-                wavelet_learn_scale=wavelet_learn_scale,
-                wavelet_learn_shift=wavelet_learn_shift,
-                fourier_base_freq=fourier_base_freq,
-                fourier_learn_freq=fourier_learn_freq,
-            )
-            for family in self.families
-        ])
+        self.experts = nn.ModuleList(
+            [
+                PolyKANBlock(
+                    dim=d_model,
+                    patch_num=patch_num,
+                    family=family,
+                    poly_config=poly_config,
+                    degree_intra=degree_intra,
+                    degree_inter=degree_inter,
+                    hahn_alpha=hahn_alpha,
+                    hahn_beta=hahn_beta,
+                    hahn_N=hahn_N,
+                    jacobi_alpha=jacobi_alpha,
+                    jacobi_beta=jacobi_beta,
+                    wavelet_num=wavelet_num,
+                    wavelet_base_freq=wavelet_base_freq,
+                    wavelet_learn_freq=wavelet_learn_freq,
+                    wavelet_learn_scale=wavelet_learn_scale,
+                    wavelet_learn_shift=wavelet_learn_shift,
+                    fourier_base_freq=fourier_base_freq,
+                    fourier_learn_freq=fourier_learn_freq,
+                )
+                for family in self.families
+            ]
+        )
         self.last_router_probs: Tensor | None = None
         self.last_router_logits: Tensor | None = None
 
@@ -382,36 +394,38 @@ class Backbone(nn.Module):
         self.W_pos = nn.Parameter(torch.randn(1, patch_num, d_model))
 
         expert_families = tuple(families or DEFAULT_POLY_FAMILIES)
-        self.encoder = nn.ModuleList([
-            HeteroMoKANLayer(
-                d_model=d_model,
-                patch_num=patch_num,
-                families=expert_families,
-                poly_config=poly_config,
-                router_config=router_config,
-                degree_intra=degree_intra,
-                degree_inter=degree_inter,
-                top_k=top_k,
-                router_temperature=router_temperature,
-                router_hidden=router_hidden,
-                use_input_norm=use_block_norm,
-                dropout=block_dropout,
-                load_balance_coef=load_balance_coef,
-                hahn_alpha=hahn_alpha,
-                hahn_beta=hahn_beta,
-                hahn_N=hahn_N,
-                jacobi_alpha=jacobi_alpha,
-                jacobi_beta=jacobi_beta,
-                wavelet_num=wavelet_num,
-                wavelet_base_freq=wavelet_base_freq,
-                wavelet_learn_freq=wavelet_learn_freq,
-                wavelet_learn_scale=wavelet_learn_scale,
-                wavelet_learn_shift=wavelet_learn_shift,
-                fourier_base_freq=fourier_base_freq,
-                fourier_learn_freq=fourier_learn_freq,
-            )
-            for _ in range(depth)
-        ])
+        self.encoder = nn.ModuleList(
+            [
+                HeteroMoKANLayer(
+                    d_model=d_model,
+                    patch_num=patch_num,
+                    families=expert_families,
+                    poly_config=poly_config,
+                    router_config=router_config,
+                    degree_intra=degree_intra,
+                    degree_inter=degree_inter,
+                    top_k=top_k,
+                    router_temperature=router_temperature,
+                    router_hidden=router_hidden,
+                    use_input_norm=use_block_norm,
+                    dropout=block_dropout,
+                    load_balance_coef=load_balance_coef,
+                    hahn_alpha=hahn_alpha,
+                    hahn_beta=hahn_beta,
+                    hahn_N=hahn_N,
+                    jacobi_alpha=jacobi_alpha,
+                    jacobi_beta=jacobi_beta,
+                    wavelet_num=wavelet_num,
+                    wavelet_base_freq=wavelet_base_freq,
+                    wavelet_learn_freq=wavelet_learn_freq,
+                    wavelet_learn_scale=wavelet_learn_scale,
+                    wavelet_learn_shift=wavelet_learn_shift,
+                    fourier_base_freq=fourier_base_freq,
+                    fourier_learn_freq=fourier_learn_freq,
+                )
+                for _ in range(depth)
+            ]
+        )
         self.last_aux: dict[str, Tensor] = {}
 
     def forward(self, x: Tensor) -> Tensor:

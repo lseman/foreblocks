@@ -1,15 +1,29 @@
 """foreblocks.ops.mamba.ssd.
 
-This module implements the ssd pieces for its package.
-It belongs to the Mamba and state-space operator kernels area of Foreblocks.
-It exposes functions such as segment_sum, chunked_ssd_forward_modular, chunked_ssd_forward_triton, chunked_ssd_forward_triton_parallel.
+Chunked state-space diffusion (SSD) forward and backward — Mamba2 scan operator.
+
+Implements the Mamba2-style structured state-space forward with chunked
+parallel scan, supporting both diagonal-A (Mamba2) and adt-based (Mamba3)
+discretisation. Provides vectorised PyTorch, Triton parallel, Triton tiled,
+and Triton direct (recurrent-in-chunk) paths. Includes trapezoidal
+discretisation support (Mamba3) and variable-length sequence handling via
+seq_idx masking.
+
+Core API:
+- chunked_ssd_forward: main entry, auto-selects Triton/pytorch path
+- chunked_ssd_forward_triton: parallel Triton chunk kernel
+- chunked_ssd_forward_triton_parallel: token-parallel Triton kernel
+- chunked_ssd_forward_triton_tiled: tiled token-parallel kernel
+- chunked_ssd_backward_triton: reverse-time Triton backward
+- chunked_ssd_forward_modular: modular forward with intermediate saving
+- segment_sum: lower-triangular cumulative sum (L-matrix)
+
 """
 
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-
 
 try:
     import triton
@@ -274,7 +288,9 @@ def _chunked_ssd_forward_torch(
     decay_prefix = torch.exp(_segment_sum_log(chunk_log_decay)).transpose(1, 3)
     boundary_all = (
         decay_prefix[..., None, None] * state_summaries[:, :, None, ...]
-    ).sum(dim=1)  # [B, nc+1, H, P, N]
+    ).sum(
+        dim=1
+    )  # [B, nc+1, H, P, N]
     states_boundary = boundary_all[:, :-1]  # [B, nc, H, P, N]
 
     # ── Inter-chunk output ─────────────────────────────────────────
@@ -282,7 +298,9 @@ def _chunked_ssd_forward_torch(
     decay_from_start = torch.exp(cumsum_dtA)  # [B, nc, C, H]
     state_entered = states_boundary.unsqueeze(2) * decay_from_start.unsqueeze(
         -1
-    ).unsqueeze(-1)  # [B, nc, C, H, P, N]
+    ).unsqueeze(
+        -1
+    )  # [B, nc, C, H, P, N]
     # y_inter[c, t, h, p] = sum_n C[c,t,h,n] * state_entered[c,t,h,p,n]
     y_inter = torch.einsum("bcthn,bcthpn->bcthp", C, state_entered)  # [B, nc, C, H, P]
 
@@ -829,7 +847,9 @@ def _chunk_scan_fwd(
     decay_from_start = torch.exp(cumsum_dtA)  # [B, nc, C, H]
     state_entered = states_boundary.unsqueeze(2) * decay_from_start.unsqueeze(
         -1
-    ).unsqueeze(-1)  # [B, nc, C, H, P, N]
+    ).unsqueeze(
+        -1
+    )  # [B, nc, C, H, P, N]
     y_inter = torch.einsum(
         "bcthn,bcthpn->bcthp", C_c, state_entered
     )  # [B, nc, C, H, P]
@@ -1128,7 +1148,7 @@ def _chunked_ssd_backward_modular(
     D_per_head = D.ndim == 1
 
     # ── Step 1: chunk_scan_bwd ──────────────────────────────────────
-    (g_states_boundary, g_C_inter, g_ddt_intra, dcs_from_inter, dcs_from_intra) = (
+    g_states_boundary, g_C_inter, g_ddt_intra, dcs_from_inter, dcs_from_intra = (
         _chunk_scan_bwd(
             gy_c,
             scan_inter,
@@ -2239,7 +2259,9 @@ def chunked_ssd_forward_triton(
     decay_prefix = torch.exp(_segment_sum_log(chunk_log_decay)).transpose(1, 3)
     boundary_all = (
         decay_prefix[..., None, None] * state_summaries[:, :, None, ...]
-    ).sum(dim=1)  # [B, nc+1, H, P, N]
+    ).sum(
+        dim=1
+    )  # [B, nc+1, H, P, N]
     entry_states = boundary_all[:, :-1]  # [B, nc, H, P, N]
 
     # ── launch ONE kernel: all (b, nc, h) threads at once ─────────

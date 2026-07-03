@@ -1,8 +1,16 @@
 """foreblocks.experimental.attention_kernels.bench.
 
-Benchmark entry points and measurement helpers.
-It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
-It exposes functions such as bench_case, main.
+Benchmark entry points and measurement helpers for custom attention kernels vs SDPA.
+
+Measures throughput (TF/s) and latency for custom forward/backward attention
+implementations (TileLang, Triton, reference) against PyTorch's SDPA. Includes
+correctness checking and a full sweep mode over dtype, sequence length, head
+dim, and causal settings.
+
+Core API:
+- bench_case: benchmark a single configuration with correctness check and speedup reporting
+- main: CLI entry point with argparse for sweep or single-case benchmarks
+
 """
 
 import argparse
@@ -14,11 +22,9 @@ import torch
 import torch.nn.functional as F
 from custom_att import flash_attn_backward_backend, flash_attn_func
 
-
 PACKAGE_PARENT = Path(__file__).resolve().parent.parent
 if str(PACKAGE_PARENT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_PARENT))
-
 
 
 def _time_ms(fn, warmup, iters):

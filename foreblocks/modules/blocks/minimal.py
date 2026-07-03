@@ -1,29 +1,19 @@
-"""Minimal graph and normalization utilities for foreblocks.
+"""foreblocks.modules.blocks.minimal.
 
-This module contains compact graph neural network primitives and
-pre-normalization helpers used throughout the library.
+Graph neural network primitives and pre-normalization wrappers.
 
-Related work represented by the small operators in this file includes:
+Provides lightweight GNN layers (Chebyshev spectral conv, GraphSAGE, GATv2,
+DiffusionConv, APPNP, MixHop) and graph-aware normalization (GraphNorm, PreNorm).
+Use when building graph-structured time series models or when node features need
+message passing before standard time-series processing. PreNorm applies GraphNorm
+before a layer for stable deep graph training.
 
-    Defferrard et al., "Convolutional Neural Networks on Graphs with Fast
-    Localized Spectral Filtering", NeurIPS 2016. (ChebNet)
-    Paper: https://arxiv.org/abs/1606.09375
+Core API:
+- GraphNorm: node-feature normalization preserving graph structure
+- PreNorm: pre-normalization wrapper for graph layers
+- ChebConv, GraphSAGE, GATv2, DiffusionConv, APPNP, MixHop: GNN layer variants
+- AdaptiveChebBlock: stabilized Chebyshev block with dynamic adjacency
 
-    Hamilton et al., "Inductive Representation Learning on Large Graphs",
-    NeurIPS 2017. (GraphSAGE)
-    Paper: https://arxiv.org/abs/1706.02216
-
-    Brody et al., "How Attentive are Graph Attention Networks?", ICLR 2022.
-    (GATv2)
-    Paper: https://arxiv.org/abs/2105.14491
-
-    Klicpera et al., "Predict then Propagate: Graph Neural Networks meet
-    Personalized PageRank", ICLR 2019. (APPNP)
-    Paper: https://arxiv.org/abs/1810.05997
-
-    Abu-El-Haija et al., "MixHop: Higher-Order Graph Convolutional
-    Architectures via Sparsified Neighborhood Mixing", ICML 2019.
-    Paper: https://arxiv.org/abs/1905.00067
 """
 
 import torch

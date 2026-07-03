@@ -1,8 +1,17 @@
 """foreblocks.modules.heads.modules.time2vec_head.
 
-This module implements the time2vec head pieces for its package.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-It exposes classes such as Time2Vec, Time2VecHead.
+Time2Vec-style periodic temporal encoding projected back to feature dimensions.
+
+Computes sinusoidal periodic features over normalized timestep positions, combines
+them with the original input, and projects back to the original feature dimension.
+Keeps sequence length and feature dimensions invariant. Use when you want to inject
+temporal position information into a model without adding a separate positional
+encoding module.
+
+Core API:
+- Time2Vec: periodic temporal encoding with learned frequencies and phases
+- Time2VecHead: BaseHead wrapper
+
 """
 
 from __future__ import annotations

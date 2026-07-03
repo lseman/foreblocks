@@ -1,8 +1,19 @@
 """foreblocks.layers.graph.tggc.
 
-This module implements the tggc pieces for its package.
-It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
-It exposes classes such as MovingAverage, SeriesDecomposition, LatentCorrelationLayer, GraphGegenbauerConv.
+Temporal Spectral Graph Convolution (TGGC) and graph construction utilities.
+
+Implements Gegenbauer polynomial-based spectral graph convolutions, latent
+correlation layer, and frequency-domain spectral filtering. Provides
+adjacency normalization helpers and temporal decomposition primitives.
+Designed for graph-based time series models using spectral graph theory.
+
+Core API:
+- MovingAverage, SeriesDecomposition: temporal decomposition primitives
+- LatentCorrelationLayer: learnable latent correlation graph
+- GraphGegenbauerConv: Gegenbauer spectral graph convolution
+- TGGCBlock, TGGCModern: TGGC spatio-temporal blocks
+- symmetric_normalize_adjacency, normalized_laplacian_from_adjacency: graph matrix ops
+
 """
 
 from __future__ import annotations

@@ -1,8 +1,18 @@
 """foreblocks.ts_handler.outlier.
 
-This module implements the outlier pieces for its package.
-It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
-It exposes functions such as fast_mad_outlier_removal, fast_quantile_outlier_removal, fast_zscore_outlier_removal, fast_iqr_outlier_removal.
+Outlier detection and removal for time series.
+
+Provides fast, vectorized outlier detection using MAD, quantile, Z-score,
+and IQR methods with Numba acceleration. Also supports IsolationForest
+and LOF for multivariate outlier detection. Integrates with TranAD for
+neural-based anomaly-driven outlier removal.
+
+Core API:
+- fast_mad_outlier_removal: median absolute deviation outlier removal
+- fast_quantile_outlier_removal: quantile-based outlier removal
+- fast_zscore_outlier_removal: Z-score outlier removal
+- fast_iqr_outlier_removal: IQR-based outlier removal
+
 """
 
 # Standard Library
@@ -16,12 +26,8 @@ from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 
 from foreblocks.anomaly.tranad import (
-    TranAD,
-    TranADDataset,
     TranADDetector,
-    create_sequences_vectorized,
 )
-
 
 # Optional imports
 try:

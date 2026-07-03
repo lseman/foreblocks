@@ -1,8 +1,14 @@
 """foreblocks.layers.norms.group_norm.
 
-This module implements the group norm pieces for its package.
-It belongs to the normalization layers and normalization helpers area of Foreblocks.
-It exposes classes such as ChannelLastGroupNorm.
+Group normalization for channel-last tensors.
+
+Provides ChannelLastGroupNorm, a GroupNorm variant optimized for tensors
+with channels in the last dimension [B, ..., C]. Supports affine
+parameters and proper permutation handling for multi-dimensional sequences.
+
+Core API:
+- ChannelLastGroupNorm: GroupNorm for [B, ..., C] tensors
+
 """
 
 import torch

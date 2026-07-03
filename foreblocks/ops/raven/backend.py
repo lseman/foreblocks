@@ -1,8 +1,18 @@
 """foreblocks.ops.raven.backend.
 
-This module implements the backend pieces for its package.
-It belongs to the Raven sequence-model integration helpers area of Foreblocks.
-It exposes functions such as fla_path, has_fla_checkout, fla_import_path, import_fla_module.
+Import-path management and lazy loading for the flash-linear-attention (FLA) package.
+
+Provides helpers to locate the FLA checkout, temporarily prepend it to
+sys.path, and lazily import FLA submodules — only when actually needed.
+Raises a clear error if FLA is neither installed nor checked out. Use
+when building integration layers that optionally depend on the upstream FLA library.
+
+Core API:
+- fla_path: resolve the FLA repository root path
+- has_fla_checkout: check whether the FLA checkout directory exists
+- fla_import_path: context manager for temporarily adding FLA to sys.path
+- import_fla_module: lazily import an FLA submodule (installs/checks out if needed)
+
 """
 
 from __future__ import annotations

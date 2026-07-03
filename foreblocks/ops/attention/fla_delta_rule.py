@@ -1,8 +1,17 @@
 """foreblocks.ops.attention.fla_delta_rule.
 
-This module implements the fla delta rule pieces for its package.
-It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
-It exposes functions such as can_use_fla_delta_rule, can_use_fla_recurrent_delta_rule, fla_delta_rule_forward, fla_recurrent_delta_rule.
+FLA delta rule kernel adapter with Foreblocks tensor layouts.
+
+Wraps upstream FLA delta rule kernels (chunk and recurrent modes), handling
+layout conversion between Foreblocks [B, H, T, D] and FLA [B, T, H, D]
+conventions. Includes CUDA availability guards and shape validation. Use when
+you want to plug in FLA's optimized delta rule attention for SSM-based models.
+
+Core API:
+- fla_delta_rule_forward: chunk-mode delta rule with layout conversion
+- fla_recurrent_delta_rule: recurrent-mode delta rule
+- can_use_fla_delta_rule: availability guard
+
 """
 
 import os
@@ -27,7 +36,9 @@ def can_use_fla_delta_rule(
         return False
     if not is_fla_available("fla.ops.delta_rule"):
         return False
-    if not (q.is_cuda and k.is_cuda and v.is_cuda and beta.is_cuda and initial_state.is_cuda):
+    if not (
+        q.is_cuda and k.is_cuda and v.is_cuda and beta.is_cuda and initial_state.is_cuda
+    ):
         return False
     if q.ndim != 4 or k.shape != q.shape or v.shape != q.shape:
         return False
