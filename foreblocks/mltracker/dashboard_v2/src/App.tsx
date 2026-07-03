@@ -1184,14 +1184,6 @@ export function App() {
 										: "Open a project to load its runs."}
 								</p>
 							</div>
-							<div className="run-sidebar-tools">
-								<button
-									className="icon-btn"
-									onClick={() => setSelectedRunIds([])}
-								>
-									✕
-								</button>
-							</div>
 						</div>
 						<div className="run-sidebar-list">
 							{!activeExperiment && (

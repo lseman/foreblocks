@@ -1,8 +1,15 @@
 """foreblocks.mltracker.mltracker_tui.
 
-This module implements the mltracker tui pieces for its package.
-It belongs to the experiment tracking, client, API, and dashboard support area of Foreblocks.
-It exposes functions such as create_app, main.
+Terminal UI for browsing and comparing ML experiments.
+
+Provides an interactive Textual-based dashboard for exploring experiments, runs,
+metrics, and artifacts stored by MLTracker. Supports filtering, sorting, and
+visual comparison of training curves across experiments.
+
+Core API:
+- create_app: build the Textual TUI application
+- main: entry point for running the TUI
+
 """
 
 from __future__ import annotations
@@ -15,7 +22,6 @@ import sys
 from pathlib import Path
 
 from foreblocks.mltracker import MLTracker
-
 
 DEFAULT_TRACKING_URI = str(Path(__file__).resolve().parent / "mltracker_data")
 
@@ -423,7 +429,11 @@ def create_app(tracking_uri: str = DEFAULT_TRACKING_URI):
             self._history_by_metric = {}
             for key, step, value, ts in history:
                 self._history_by_metric.setdefault(str(key), []).append(
-                    (int(step), float(value), str(ts))
+                    (
+                        int(step),
+                        float(value),
+                        str(ts),
+                    )
                 )
             if self._history_by_metric:
                 first_key = sorted(self._history_by_metric.keys())[0]

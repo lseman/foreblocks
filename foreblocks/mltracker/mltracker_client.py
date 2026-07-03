@@ -1,11 +1,20 @@
 """foreblocks.mltracker.mltracker_client.
 
-This module implements the mltracker client pieces for its package.
-It belongs to the experiment tracking, client, API, and dashboard support area of Foreblocks.
-It exposes classes such as MLTrackerAPI, APILogCallback.
-"""
+HTTP client and API integration for the MLTracker experiment tracking system.
+
+Provides MLTrackerAPI for server-side REST communication and the autolog_api
+decorator for remote experiment tracking. Designed as a client-side complement
+to the file-based MLTracker, enabling cloud-synced experiment management.
+
+Core API:
+- MLTrackerAPI: REST API client for MLTracker server
+- autolog_api: decorator for remote experiment autologging
+
 
 # mltracker_client.py
+
+"""
+
 from __future__ import annotations
 
 import io

@@ -1,6 +1,14 @@
-"""
-MLTracker Client
-Python client for interacting with MLTracker API
+"""foreblocks.mltracker.client.
+
+Python HTTP client for the MLTracker experiment tracking API.
+
+Provides a lightweight client for creating experiments, managing runs, logging
+metrics and parameters, and storing artifacts. Designed for integration with
+the MLTracker server and the MLTracker autologging decorator.
+
+Core API:
+- MLTrackerClient: HTTP client for MLTracker REST API
+
 """
 
 from contextlib import contextmanager

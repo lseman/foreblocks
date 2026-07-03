@@ -1,10 +1,15 @@
-"""
-MLTracker FastAPI Server (hardened + smarter)
-- Returns full runs by default for dashboard cards (params/metrics/tags)
-- Pagination, filters & sorting for /api/runs
-- Safe artifact upload/download (no traversal)
-- Background temp cleanup, better health
-- Fixes BackgroundTasks usage
+"""foreblocks.mltracker.api.
+
+MLTracker FastAPI server for experiment tracking and dashboard serving.
+
+Provides a REST API for ML experiment tracking with full run data, pagination,
+filters, sorting, and safe artifact upload/download. Includes dashboard serving
+and background temp cleanup for improved health and reliability.
+
+Core API:
+- MLTracker: experiment tracking backend
+- app: FastAPI application with REST endpoints for experiments, runs, metrics, params, and artifacts
+
 """
 
 from __future__ import annotations
@@ -149,7 +154,7 @@ def _run_duration_sql() -> str:
 def _coerce_float(value: Any) -> float | None:
     try:
         x = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if x != x:
         return None
@@ -405,9 +410,7 @@ async def get_overview(
             direction = (
                 "min"
                 if objective == "auto" and _metric_lower_is_better(primary_metric)
-                else "max"
-                if objective == "auto"
-                else objective
+                else "max" if objective == "auto" else objective
             )
             order = "ASC" if direction == "min" else "DESC"
             best_row = conn.execute(
@@ -443,7 +446,9 @@ async def get_overview(
                     "metric_value": best_row["value"],
                     "metric_step": best_row["step"],
                     "objective": direction,
-                    "duration": _dur_seconds(best_row["start_time"], best_row["end_time"]),
+                    "duration": _dur_seconds(
+                        best_row["start_time"], best_row["end_time"]
+                    ),
                 }
 
     param_stats: dict[str, dict[str, Any]] = {}
@@ -496,7 +501,9 @@ async def get_overview(
             "failed": int(totals["failed"] or 0),
             "canceled": int(totals["canceled"] or 0),
             "success_rate": (finished / run_count * 100.0) if run_count else 0.0,
-            "avg_duration": int(totals["avg_duration"]) if totals["avg_duration"] else None,
+            "avg_duration": (
+                int(totals["avg_duration"]) if totals["avg_duration"] else None
+            ),
             "recent_24h": int(totals["recent_24h"] or 0),
         },
         "status_counts": {row["status"]: int(row["count"] or 0) for row in status_rows},
@@ -512,7 +519,9 @@ async def get_overview(
                 "start_time": row["start_time"],
                 "end_time": row["end_time"],
                 "experiment_name": row["experiment_name"],
-                "duration": int(row["duration"]) if row["duration"] is not None else None,
+                "duration": (
+                    int(row["duration"]) if row["duration"] is not None else None
+                ),
             }
             for row in recent_rows
         ],
@@ -536,16 +545,14 @@ async def create_experiment(
 @app.get("/api/experiments")
 async def list_experiments(tracker: MLTracker = Depends(get_tracker)):
     with tracker._get_db() as conn:
-        rows = conn.execute(
-            """
+        rows = conn.execute("""
             SELECT e.experiment_id, e.name, e.created_at,
                    COUNT(r.run_id) AS run_count
             FROM experiments e
             LEFT JOIN runs r ON r.experiment_id = e.experiment_id
             GROUP BY e.experiment_id
             ORDER BY e.created_at DESC
-            """
-        ).fetchall()
+            """).fetchall()
     return [
         {
             "experiment_id": r["experiment_id"],

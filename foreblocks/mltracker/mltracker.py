@@ -1,8 +1,17 @@
-"""
-MLTracker - Lightweight ML Experiment Tracking System (smart version)
-- Autolog decorator with arg capture, helper injection, env/git tags
-- Safer serialization & artifact helpers
-- WAL mode, indices, and small quality-of-life upgrades
+"""foreblocks.mltracker.mltracker.
+
+Lightweight ML experiment tracking system with autologging decorator.
+
+Provides the MLTracker class for file-based experiment tracking (SQLite-backed)
+with an @autolog decorator that auto-captures function arguments, injects
+tracking helpers, and serializes results. Supports artifact storage, git tag
+integration, and environment metadata. Designed as a drop-in replacement
+for lightweight tracking without external services.
+
+Core API:
+- MLTracker: file-based experiment tracker with SQLite backend
+- autolog: decorator for auto-tracking function calls
+
 """
 
 from __future__ import annotations
@@ -25,7 +34,6 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
-
 
 try:
     import getpass

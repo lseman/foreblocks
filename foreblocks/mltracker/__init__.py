@@ -1,11 +1,19 @@
 """foreblocks.mltracker.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the experiment tracking, client, API, and dashboard support area of Foreblocks.
+Experiment tracking package with file-based and API-backed modes.
+
+Provides lightweight ML experiment tracking for training loops and hyperparameter
+studies. Supports both local SQLite-based tracking and remote API synchronization.
+
+Core API:
+- MLTracker: local file-based experiment tracker
+- MLTrackerAPI: remote API client
+- autolog_api: remote autologging decorator
+- create_tui_app: TUI dashboard for experiment inspection
+
 """
 
 from importlib import import_module
-
 
 __all__ = ["MLTracker", "MLTrackerAPI", "autolog_api", "create_tui_app"]
 
